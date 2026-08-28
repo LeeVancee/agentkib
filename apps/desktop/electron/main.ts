@@ -73,6 +73,14 @@ app.on("before-quit", (event) => {
   void runtimeHost.stop().finally(() => app.quit());
 });
 
+nativeTheme.on("updated", () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(
+    "agentkib:theme-changed",
+    nativeTheme.shouldUseDarkColors ? "dark" : "light",
+  );
+});
+
 async function startApplication(): Promise<void> {
   if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
@@ -96,10 +104,12 @@ async function startApplication(): Promise<void> {
   runtimeHandshake = await runtimeHost.start();
   const runtime = await runtimeHost.request<{
     close_behavior?: "minimize-to-tray" | "quit";
+    theme_preference?: "system" | "light" | "dark";
     effective_theme?: "light" | "dark";
   }>(RUNTIME_METHODS.runtimeInfo, {});
   closeBehavior = runtime.close_behavior;
-  if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
+  if (runtime.theme_preference) nativeTheme.themeSource = runtime.theme_preference;
+  else if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
 
   ipcMain.handle("agentkib:runtime:handshake", (event) => {
     assertTrustedRenderer(event);
@@ -181,6 +191,16 @@ function requestRendererQuitGuard(): void {
   if (!window.isVisible()) window.show();
   window.focus();
   window.webContents.send("agentkib:quit-requested");
+}
+
+function withElectronRuntimeCapabilities(runtime: unknown): unknown {
+  if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) return runtime;
+  const enriched = { ...(runtime as Record<string, unknown>) };
+  enriched.tray_available = Boolean(tray && !tray.isDestroyed());
+  if (enriched.theme_preference === "system") {
+    enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  }
+  return enriched;
 }
 
 function registerUpdateIpc(): void {
@@ -518,7 +538,9 @@ function registerShellIpc(): void {
     assertTrustedRenderer(event);
     const next = requireThemePreference(preference);
     nativeTheme.themeSource = next;
-    return requireRuntime().request(RUNTIME_METHODS.setThemePreference, { preference: next });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setThemePreference, { preference: next })
+      .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {
     assertTrustedRenderer(event);
@@ -772,9 +794,10 @@ function runtimeRequest(
 }
 
 function registerHomeIpc(): void {
-  ipcMain.handle("agentkib:home:runtime", (event) => {
+  ipcMain.handle("agentkib:home:runtime", async (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
+    const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
+    return withElectronRuntimeCapabilities(runtime);
   });
   ipcMain.handle("agentkib:home:workspaces", (event) => {
     assertTrustedRenderer(event);

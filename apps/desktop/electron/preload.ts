@@ -5,6 +5,11 @@ ipcRenderer.on("agentkib:quit-requested", () => {
   window.dispatchEvent(new Event("agentkib:quit-requested"));
 });
 
+ipcRenderer.on("agentkib:theme-changed", (_event, value: unknown) => {
+  if (value !== "light" && value !== "dark") return;
+  window.dispatchEvent(new CustomEvent("agentkib:theme-changed", { detail: value }));
+});
+
 const desktopApi = Object.freeze({
   platform: process.platform,
   runtime: Object.freeze({

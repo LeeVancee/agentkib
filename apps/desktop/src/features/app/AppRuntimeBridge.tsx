@@ -99,6 +99,16 @@ export function AppRuntimeBridge() {
     if (electronRuntime) {
       window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
     }
+    const onElectronTheme = (event: Event) => {
+      const theme = (event as CustomEvent<EffectiveTheme>).detail;
+      if (theme !== "light" && theme !== "dark") return;
+      setRuntime((current) => {
+        if (!current || current.theme_preference !== "system") return current;
+        applyTheme(theme);
+        return { ...current, effective_theme: theme };
+      });
+    };
+    if (electronRuntime) window.addEventListener("agentkib:theme-changed", onElectronTheme);
     void (async () => {
       try {
         if (!tauriRuntime) {
@@ -237,6 +247,7 @@ export function AppRuntimeBridge() {
       unlistenMenuCommand?.();
       unlistenTheme?.();
       window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+      window.removeEventListener("agentkib:theme-changed", onElectronTheme);
       window.removeEventListener("agentkib:electron-navigate", onElectronNavigate);
     };
   }, []);

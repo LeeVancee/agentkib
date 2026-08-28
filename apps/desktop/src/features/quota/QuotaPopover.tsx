@@ -14,7 +14,7 @@ import {
   visibleQuotaWindows,
 } from "@/features/quota/quota";
 import { applyTheme } from "@/core/theme";
-import { isTauriRuntime } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import type {
   EffectiveTheme,
   QuotaPopoverPreferences,
@@ -183,16 +183,24 @@ export function QuotaPopover() {
         // The main bootstrap already supplied a safe browser/system fallback.
       }
     };
-    void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) => applyTheme(payload)).then(
-      (dispose) => {
-        if (disposed) dispose();
-        else unlistenTheme = dispose;
-      },
-    );
+    if (isTauriRuntime()) {
+      void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) => applyTheme(payload)).then(
+        (dispose) => {
+          if (disposed) dispose();
+          else unlistenTheme = dispose;
+        },
+      );
+    }
+    const onElectronTheme = (event: Event) => {
+      const theme = (event as CustomEvent<EffectiveTheme>).detail;
+      if (theme === "light" || theme === "dark") applyTheme(theme);
+    };
+    if (isElectronRuntime()) window.addEventListener("agentkib:theme-changed", onElectronTheme);
     window.addEventListener("focus", syncAppearance);
     return () => {
       disposed = true;
       unlistenTheme?.();
+      window.removeEventListener("agentkib:theme-changed", onElectronTheme);
       window.removeEventListener("focus", syncAppearance);
     };
   }, []);

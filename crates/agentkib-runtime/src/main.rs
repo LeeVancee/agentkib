@@ -1543,6 +1543,7 @@ fn review_memory(request: ReviewMemoryRequest) -> anyhow::Result<agentkib_core::
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SessionIndexRequest {
     workspace_id: Option<String>,
 }

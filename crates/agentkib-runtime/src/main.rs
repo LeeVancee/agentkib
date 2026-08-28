@@ -62,8 +62,10 @@ use agentkib_protocol::{
 use agentkib_quota::resolve_win_codexbar_config;
 use agentkib_quota::{
     CollectorCapabilities, DashboardCliCollector, QuotaBackend, QuotaCollector, QuotaCommandOutput,
-    QuotaCommandRunner, QuotaSnapshot, resolve_codexbar_config, write_managed_config,
+    QuotaCommandRunner, QuotaSnapshot,
 };
+#[cfg(not(target_os = "windows"))]
+use agentkib_quota::{resolve_codexbar_config, write_managed_config};
 use agentkib_storage::{
     HardLinkSet, StorageNode, StorageOverview, StorageWorkspace,
     scan_workspace as scan_workspace_storage, scan_workspace_children,
@@ -2545,18 +2547,19 @@ fn quota_sidecar_path() -> Option<PathBuf> {
 
 fn quota_collector_environment() -> anyhow::Result<(String, BTreeMap<String, String>)> {
     let process_environment = std::env::vars().collect::<BTreeMap<_, _>>();
-    let mut environment = BTreeMap::new();
 
     #[cfg(target_os = "windows")]
     {
+        let environment = BTreeMap::new();
         let config_source = resolve_win_codexbar_config(&process_environment)
             .map(|_| "win-codexbar".to_string())
             .unwrap_or_else(|| "automatic".to_string());
-        return Ok((config_source, environment));
+        Ok((config_source, environment))
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let mut environment = BTreeMap::new();
         let home = dirs::home_dir().context("Home directory is unavailable")?;
         let (config_path, config_source) =
             if let Some(path) = resolve_codexbar_config(&home, &process_environment) {

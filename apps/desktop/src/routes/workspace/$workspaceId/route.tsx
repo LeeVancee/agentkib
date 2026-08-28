@@ -37,6 +37,7 @@ import {
   WorkspaceSessionsSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
 import { AppSidebar, type SidebarEntry } from "@/components/AppSidebar";
+import { AppShellHeader } from "@/features/app/AppShell";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import { useAppStore } from "../../../stores/app-store";
@@ -339,7 +340,6 @@ function WorkspaceLayout() {
       : entry,
   );
   const sidebarCollapsed = app.sidebarCollapsed;
-  const setSidebarCollapsed = app.setSidebarCollapsed;
   const shellClass = cn(
     "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
     sidebarCollapsed && "app-shell-sidebar-collapsed",
@@ -361,6 +361,7 @@ function WorkspaceLayout() {
   return (
     <div className={shellClass}>
       <WindowToolbar />
+      <AppShellHeader />
       <AppSidebar
         active="workspaces"
         collapsed={sidebarCollapsed}
@@ -377,7 +378,6 @@ function WorkspaceLayout() {
           });
         }}
         onBrandClick={() => navigateGlobal("home")}
-        onCollapsedChange={setSidebarCollapsed}
       />
       <main className={mainClass}>
         <div className="page-scroll-container min-h-0 flex-1">

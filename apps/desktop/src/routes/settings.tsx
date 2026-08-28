@@ -1,13 +1,10 @@
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { CircleAlert } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { cn } from "@/lib/utils";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import { localizeMessage, tr } from "../core/i18n";
-import { SettingsSidebar, type SettingsSection } from "@/features/settings/SettingsSidebar";
-import { WindowToolbar } from "@/components/WindowToolbar";
+import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { useAppStore } from "../stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { CloseBehavior, RuntimeInfo } from "../core/types";
@@ -19,8 +16,6 @@ function SettingsRoute() {
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
   const runtime = useAppStore((state) => state.runtime);
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
-  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const workspaces = useAppStore((state) => state.workspaces);
@@ -97,67 +92,31 @@ function SettingsRoute() {
     });
 
   return (
-    <div
-      className={cn(
-        "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
-        sidebarCollapsed && "app-shell-sidebar-collapsed",
+    <>
+      {!runtime && !workspacesLoaded ? (
+        <SettingsContentSkeleton />
+      ) : (
+        <GlobalSettings
+          section={section}
+          runtime={runtime}
+          workspaces={workspaces}
+          discovery={discovery}
+          insightsStatus={insightsStatus}
+          quotaStatus={quotaStatus}
+          remoteGateways={remoteGateways}
+          scanRoots={scanRoots}
+          excluded={excluded}
+          activity={activity}
+          onAddRoot={addRoot}
+          onRemoveRoot={removeRoot}
+          onRestore={restoreExcluded}
+          onCloseBehaviorChanged={changeCloseBehavior}
+          onLocaleChanged={changeRuntime}
+          onOnboardingRestarted={restartOnboarding}
+          onRemoteGatewaysChanged={refreshRemoteGateways}
+        />
       )}
-    >
-      <WindowToolbar />
-      <SettingsSidebar
-        active={section}
-        collapsed={sidebarCollapsed}
-        onSelect={setSection}
-        onBack={() => void navigate({ to: "/" })}
-        onSettings={() => setSection("general")}
-        onCollapsedChange={setSidebarCollapsed}
-      />
-      <main
-        className={cn(
-          "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm",
-          `settings-section-${section}`,
-        )}
-      >
-        <div className="page-scroll-container min-h-0 flex-1">
-          {message && (
-            <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              <CircleAlert size={17} />
-              {message}
-            </div>
-          )}
-          <section
-            className={cn(
-              "mx-auto grid w-full max-w-[1180px] gap-5 px-7 pb-10 pt-[22px] max-[900px]:px-[18px]",
-              section === "general" && "pt-4",
-            )}
-          >
-            {!runtime && !workspacesLoaded ? (
-              <SettingsContentSkeleton />
-            ) : (
-              <GlobalSettings
-                section={section}
-                runtime={runtime}
-                workspaces={workspaces}
-                discovery={discovery}
-                insightsStatus={insightsStatus}
-                quotaStatus={quotaStatus}
-                remoteGateways={remoteGateways}
-                scanRoots={scanRoots}
-                excluded={excluded}
-                activity={activity}
-                onAddRoot={addRoot}
-                onRemoveRoot={removeRoot}
-                onRestore={restoreExcluded}
-                onCloseBehaviorChanged={changeCloseBehavior}
-                onLocaleChanged={changeRuntime}
-                onOnboardingRestarted={restartOnboarding}
-                onRemoteGatewaysChanged={refreshRemoteGateways}
-              />
-            )}
-          </section>
-        </div>
-      </main>
-    </div>
+    </>
   );
 }
 

@@ -9,6 +9,7 @@ import { localizeMessage, tr } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
+import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { createGlobalNavigation } from "./GlobalShell";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
 
@@ -293,19 +294,24 @@ export function useAppNavigation() {
       next();
     }
   };
-  const openSettings = () => void navigate({ to: "/settings", search: (current) => current });
+  const openSettings = useCallback(
+    (section: SettingsSection = "general") => {
+      if (useWorkspaceStore.getState().applyingChanges) {
+        void dialogs.notify(tr("dialog.quit.changesApplying"));
+        return;
+      }
+      void navigate({
+        to: "/settings",
+        search: (current) => ({ ...current, settingsSection: section }) as never,
+      });
+    },
+    [dialogs, navigate],
+  );
 
   useEffect(() => {
     if (!navigationRequest) return;
     if (navigationRequest.page === "settings") {
-      if (useWorkspaceStore.getState().applyingChanges) {
-        void dialogs.notify(tr("dialog.quit.changesApplying"));
-      } else {
-        void navigate({
-          to: "/settings",
-          search: { settingsSection: navigationRequest.settings_section ?? "general" } as never,
-        });
-      }
+      openSettings(navigationRequest.settings_section ?? "general");
       setNavigationRequest(undefined);
       return;
     }
@@ -325,19 +331,29 @@ export function useAppNavigation() {
     navigateGlobal,
     navigateGlobalWithSearch,
     navigate,
+    openSettings,
     setNavigationRequest,
     setQuotaConfigureRequest,
   ]);
 
+  const ensureWorkspaceChangeAllowed = async () => {
+    if (!useWorkspaceStore.getState().applyingChanges) return true;
+    await dialogs.notify(tr("dialog.quit.changesApplying"));
+    return false;
+  };
+
   const selectProject = async () => {
+    if (!(await ensureWorkspaceChangeAllowed())) return;
     const selected = await open({
       directory: true,
       multiple: false,
       title: tr("dialog.addWorkspace"),
     });
     if (typeof selected === "string") {
+      if (!(await ensureWorkspaceChangeAllowed())) return;
       const workspace = await api.addWorkspace(selected);
       await loadGlobal();
+      if (!(await ensureWorkspaceChangeAllowed())) return;
       await openWorkspace(workspace);
     }
   };
@@ -404,5 +420,8 @@ export function useAppNavigation() {
     ),
     navigateGlobal,
     openSettings,
+    refreshCurrentView,
+    addWorkspace: selectProject,
+    addScanRoot: addScanRootFromDialog,
   };
 }

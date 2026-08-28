@@ -177,12 +177,17 @@ const workspaceTabs = [
   ["changes", "nav.changes", GitCompareArrows],
 ] as const;
 const globalNav: SidebarEntry<GlobalPage>[] = [
-  { id: "home", label: "nav.home", icon: Home },
-  { id: "workspaces", label: "nav.workspaces", icon: FolderGit2 },
-  { id: "catalog", label: "nav.assets", icon: Library },
-  { id: "agents", label: "nav.agents", icon: Bot },
-  { id: "quota", label: "nav.quota", icon: Gauge },
-  { id: "insights", label: "nav.insights", icon: Award },
+  { id: "home", label: "nav.home", icon: Home, shortcut: "navigate-home" },
+  {
+    id: "workspaces",
+    label: "nav.workspaces",
+    icon: FolderGit2,
+    shortcut: "navigate-workspaces",
+  },
+  { id: "catalog", label: "nav.assets", icon: Library, shortcut: "navigate-catalog" },
+  { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
+  { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },
+  { id: "insights", label: "nav.insights", icon: Award, shortcut: "navigate-insights" },
 ];
 
 function WorkspaceLayout() {
@@ -366,13 +371,16 @@ function WorkspaceLayout() {
             void dialogs.notify(tr("dialog.quit.changesApplying"));
             return;
           }
-          void navigate({ to: "/settings" });
+          void navigate({
+            to: "/settings",
+            search: (current) => ({ ...current, settingsSection: "general" }) as never,
+          });
         }}
         onBrandClick={() => navigateGlobal("home")}
         onCollapsedChange={setSidebarCollapsed}
       />
       <main className={mainClass}>
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+        <div className="page-scroll-container min-h-0 flex-1">
           {message && (
             <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {message}

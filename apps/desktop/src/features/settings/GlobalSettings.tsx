@@ -7,6 +7,7 @@ import {
   FolderGit2,
   GitCommitHorizontal,
   History,
+  Keyboard,
   Monitor,
   Moon,
   RefreshCw,
@@ -56,6 +57,13 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { cn } from "@/lib/utils";
+import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
+import {
+  ariaShortcut,
+  currentAppPlatform,
+  formatShortcut,
+  getShortcutDefinition,
+} from "@/core/keyboard-shortcuts";
 
 const buildPlatform = import.meta.env.TAURI_ENV_PLATFORM;
 const appPlatform = normalizePlatform(buildPlatform);
@@ -149,6 +157,7 @@ export function GlobalSettings({
             </SettingDetail>
           )}
         </SettingGroup>
+        <KeyboardShortcutsSetting />
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
       </div>
     );
@@ -643,6 +652,35 @@ function FileAccessSettingsRow() {
         </SettingDetail>
       )}
     </>
+  );
+}
+
+function KeyboardShortcutsSetting() {
+  const { openShortcutHelp } = useShortcutHelp();
+  const platform = currentAppPlatform();
+  const definition = getShortcutDefinition("open-help");
+  return (
+    <SettingGroup
+      title={tr("settings.shortcutsTitle")}
+      description={tr("settings.shortcutsDescription")}
+    >
+      <SettingsRow border={false}>
+        <SettingsCopy>
+          <strong>{tr("settings.shortcuts")}</strong>
+          <small>{tr("settings.shortcutsHint")}</small>
+        </SettingsCopy>
+        <Button
+          variant="outline"
+          type="button"
+          aria-keyshortcuts={ariaShortcut(definition, platform)}
+          title={`${tr("settings.viewShortcuts")} (${formatShortcut(definition, platform)})`}
+          onClick={openShortcutHelp}
+        >
+          <Keyboard size={14} />
+          {tr("settings.viewShortcuts")}
+        </Button>
+      </SettingsRow>
+    </SettingGroup>
   );
 }
 

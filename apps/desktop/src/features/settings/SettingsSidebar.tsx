@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Database,
   FolderSearch,
+  Keyboard,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -15,6 +16,12 @@ import {
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { SidebarBrand } from "@/components/SidebarBrand";
+import {
+  ariaShortcut,
+  currentAppPlatform,
+  getShortcutDefinition,
+} from "@/core/keyboard-shortcuts";
+import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 
 export type SettingsSection = "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
 
@@ -47,6 +54,8 @@ export function SettingsSidebar({
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarId = useId();
+  const { openShortcutHelp } = useShortcutHelp();
+  const platform = currentAppPlatform();
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -98,6 +107,7 @@ export function SettingsSidebar({
           className="app-sidebar-collapse-button"
           type="button"
           aria-label={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
+          aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
           aria-expanded={!collapsed}
           data-collapsed={collapsed}
           title={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
@@ -176,7 +186,29 @@ export function SettingsSidebar({
               size="content"
               className="app-sidebar-item"
               type="button"
+              title={tr("shortcuts.openHelp")}
+              aria-label={tr("shortcuts.openHelp")}
+              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-help"), platform)}
+              onClick={() => {
+                setMobileOpen(false);
+                openShortcutHelp();
+              }}
+            >
+              <span className="app-sidebar-item-icon">
+                <Keyboard size={18} />
+              </span>
+              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                {tr("shortcuts.openHelp")}
+              </span>
+            </Button>
+            <Button
+              variant="bare"
+              size="content"
+              className="app-sidebar-item"
+              type="button"
+              aria-label={tr("nav.settings")}
               title={tr("nav.settings")}
+              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
               onClick={() => {
                 setMobileOpen(false);
                 onSettings();

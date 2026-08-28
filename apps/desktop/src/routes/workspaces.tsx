@@ -128,6 +128,10 @@ function WorkspacesRoute() {
   };
 
   const addWorkspace = async () => {
+    if (useWorkspaceStore.getState().applyingChanges) {
+      await dialogs.notify(tr("dialog.quit.changesApplying"));
+      return;
+    }
     const selected = await open({
       directory: true,
       multiple: false,
@@ -135,9 +139,17 @@ function WorkspacesRoute() {
     });
     if (typeof selected !== "string") return;
     try {
+      if (useWorkspaceStore.getState().applyingChanges) {
+        await dialogs.notify(tr("dialog.quit.changesApplying"));
+        return;
+      }
       setMessage("");
       const workspace = await api.addWorkspace(selected);
       await refreshGlobalState(useAppStore.getState().runtime);
+      if (useWorkspaceStore.getState().applyingChanges) {
+        await dialogs.notify(tr("dialog.quit.changesApplying"));
+        return;
+      }
       await openWorkspace(workspace);
     } catch (error) {
       setMessage(localizeMessage(error));

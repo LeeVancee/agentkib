@@ -1,15 +1,23 @@
 import { Button } from "@/components/ui/button";
 import { useEffect, useId, useState, type ComponentType } from "react";
-import { Menu, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
+import { Keyboard, Menu, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
 import { tr } from "../core/i18n";
 import { cn } from "@/lib/utils";
 import { SidebarBrand } from "./SidebarBrand";
+import {
+  ariaShortcut,
+  currentAppPlatform,
+  getShortcutDefinition,
+  type ShortcutId,
+} from "@/core/keyboard-shortcuts";
+import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 
 export interface SidebarEntry<T extends string> {
   id: T;
   label: string;
   icon: ComponentType<{ size?: number }>;
   badge?: number;
+  shortcut?: ShortcutId;
 }
 
 export function AppSidebar<T extends string>({
@@ -31,6 +39,8 @@ export function AppSidebar<T extends string>({
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarId = useId();
+  const { openShortcutHelp } = useShortcutHelp();
+  const platform = currentAppPlatform();
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -82,6 +92,7 @@ export function AppSidebar<T extends string>({
           className="app-sidebar-collapse-button"
           type="button"
           aria-label={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
+          aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
           aria-expanded={!collapsed}
           data-collapsed={collapsed}
           title={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
@@ -117,25 +128,32 @@ export function AppSidebar<T extends string>({
             />
           </div>
           <nav className="app-sidebar-nav" aria-label={tr("common.primaryNavigation")}>
-            {entries.map(({ id, label, icon: Icon, badge }) => (
-              <Button
-                key={id}
-                variant="bare"
-                size="content"
-                className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
-                aria-current={active === id ? "page" : undefined}
-                title={tr(label)}
-                onClick={() => navigate(id)}
-              >
-                <span className="app-sidebar-item-icon">
-                  <Icon size={18} />
-                </span>
-                <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                  {tr(label)}
-                </span>
-                {badge ? <em className="app-sidebar-item-badge">{badge}</em> : null}
-              </Button>
-            ))}
+            {entries.map(({ id, label, icon: Icon, badge, shortcut }) => {
+              const shortcutDefinition = shortcut ? getShortcutDefinition(shortcut) : undefined;
+              return (
+                <Button
+                  key={id}
+                  variant="bare"
+                  size="content"
+                  className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
+                  aria-current={active === id ? "page" : undefined}
+                  aria-label={tr(label)}
+                  aria-keyshortcuts={
+                    shortcutDefinition ? ariaShortcut(shortcutDefinition, platform) : undefined
+                  }
+                  title={tr(label)}
+                  onClick={() => navigate(id)}
+                >
+                  <span className="app-sidebar-item-icon">
+                    <Icon size={18} />
+                  </span>
+                  <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                    {tr(label)}
+                  </span>
+                  {badge ? <em className="app-sidebar-item-badge">{badge}</em> : null}
+                </Button>
+              );
+            })}
           </nav>
           <div className="app-sidebar-footer">
             <Button
@@ -143,7 +161,29 @@ export function AppSidebar<T extends string>({
               size="content"
               className="app-sidebar-item"
               type="button"
+              title={tr("shortcuts.openHelp")}
+              aria-label={tr("shortcuts.openHelp")}
+              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-help"), platform)}
+              onClick={() => {
+                setMobileOpen(false);
+                openShortcutHelp();
+              }}
+            >
+              <span className="app-sidebar-item-icon">
+                <Keyboard size={18} />
+              </span>
+              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                {tr("shortcuts.openHelp")}
+              </span>
+            </Button>
+            <Button
+              variant="bare"
+              size="content"
+              className="app-sidebar-item"
+              type="button"
+              aria-label={tr("nav.settings")}
               title={tr("nav.settings")}
+              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
               onClick={() => {
                 setMobileOpen(false);
                 onSettings();

@@ -12,7 +12,7 @@ export function isTauriRuntime(): boolean {
 }
 
 export function normalizePlatform(platform?: string): AppPlatform {
-  if (platform === "darwin") return "macos";
+  if (platform === "darwin" || platform === "macos") return "macos";
   if (platform === "windows" || platform === "linux") return platform;
   return "web";
 }

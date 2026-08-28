@@ -6,13 +6,41 @@ import type { AgentKind } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
 import { GlobalShell } from "../features/app/GlobalShell";
 import { useAppNavigation } from "../features/app/useAppNavigation";
+import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
+import { ShortcutHelpProvider } from "../features/app/ShortcutHelpContext";
+import { useAppShortcuts } from "../features/app/useAppShortcuts";
+import { useAppStore } from "../stores/app-store";
+import { useState } from "react";
 
 function RootLayout() {
-  const { route, globalPage, message, refreshJobs, navigation, navigateGlobal, openSettings } =
-    useAppNavigation();
+  const {
+    route,
+    globalPage,
+    message,
+    refreshJobs,
+    navigation,
+    navigateGlobal,
+    openSettings,
+    refreshCurrentView,
+    addWorkspace,
+    addScanRoot,
+  } = useAppNavigation();
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+
+  useAppShortcuts({
+    onNavigate: navigateGlobal,
+    onOpenSettings: openSettings,
+    onRefreshCurrent: refreshCurrentView,
+    onAddWorkspace: addWorkspace,
+    onAddScanRoot: addScanRoot,
+    onToggleSidebar: () => setSidebarCollapsed((value) => !value),
+    onOpenHelp: () => setShortcutHelpOpen(true),
+    helpOpen: shortcutHelpOpen,
+  });
 
   return (
-    <>
+    <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
       <AppRuntimeBridge />
       {route.kind === "workspace" || route.kind === "settings" ? (
         <Outlet />
@@ -26,7 +54,8 @@ function RootLayout() {
           onSettings={openSettings}
         />
       )}
-    </>
+      <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+    </ShortcutHelpProvider>
   );
 }
 

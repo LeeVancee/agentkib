@@ -9,6 +9,9 @@ outputs/
 .agentkib-local/
 apps/desktop/vite.config.js
 apps/desktop/vite.config.d.ts
+apps/desktop/build/
+apps/desktop/dist-electron/
+apps/desktop/release-electron/
 apps/desktop/src-tauri/binaries/*
 !apps/desktop/src-tauri/binaries/.gitkeep
 !apps/desktop/src-tauri/binaries/agentkib-quota-sidecar-aarch64-unknown-linux-gnu

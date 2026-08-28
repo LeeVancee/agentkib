@@ -78,6 +78,7 @@ async function startApplication(): Promise<void> {
       AGENTKIB_APP_FLAVOR: appFlavor,
       AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
       AGENTKIB_APP_VERSION: app.getVersion(),
+      AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
       AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
       AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
     },
@@ -1158,6 +1159,14 @@ function resolveQuotaSidecar(): string {
 function resolveTrayIcon(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
   return path.resolve(app.getAppPath(), "src-tauri/icons/tray-icon.png");
+}
+
+function normalizeSystemLocale(locale: string | undefined): "zh-CN" | "zh-TW" | "ja-JP" | "en-US" {
+  const normalized = locale?.replaceAll("_", "-").toLowerCase() ?? "";
+  if (/^(zh|yue)-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-TW";
+  if (/^zh-(hans|cn|sg)(-|$)/.test(normalized) || normalized === "zh") return "zh-CN";
+  if (normalized === "ja" || normalized.startsWith("ja-")) return "ja-JP";
+  return "en-US";
 }
 
 async function showStartupFailure(error: unknown): Promise<void> {

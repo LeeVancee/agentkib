@@ -18,6 +18,14 @@ extraResources:
     to: windows
   - from: src-tauri/icons/tray-icon.png
     to: icons/tray-icon.png
+  - from: src-tauri/icons/app-icon-white.png
+    to: icons/app-icon-white.png
+  - from: src-tauri/icons/app-icon-black.png
+    to: icons/app-icon-black.png
+  - from: src-tauri/icons/app-icon-white-macos.png
+    to: icons/app-icon-white-macos.png
+  - from: src-tauri/icons/app-icon-black-macos.png
+    to: icons/app-icon-black-macos.png
 mac:
   icon: src-tauri/icons/icon.icns
   category: public.app-category.developer-tools

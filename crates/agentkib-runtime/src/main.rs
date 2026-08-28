@@ -5,7 +5,9 @@ use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 #[path = "../../../apps/desktop/src-tauri/src/obsidian.rs"]
@@ -96,41 +98,180 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let hub = agentkib_mcp::HubController::new(load_mcp_network_settings())?;
     hub.start()?;
     let _ = MCP_HUB.set(hub);
-    let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    let (events_tx, events_rx) = mpsc::channel();
+    spawn_stdin_reader(events_tx.clone());
+    let mut storage_scan: Option<StorageScan> = None;
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    while let Ok(event) = events_rx.recv() {
+        match event {
+            RuntimeEvent::Input(Err(error)) => return Err(error.into()),
+            RuntimeEvent::Input(Ok(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let request = match serde_json::from_str::<RpcRequest>(&line) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        write_response(
+                            &mut stdout,
+                            RpcResponse::error(
+                                Value::Null,
+                                -32700,
+                                "Parse error",
+                                Some(json!({ "detail": error.to_string() })),
+                            ),
+                        )?;
+                        continue;
+                    }
+                };
+                if request.jsonrpc != "2.0" {
+                    write_response(
+                        &mut stdout,
+                        RpcResponse::error(request.id, -32600, "Invalid JSON-RPC version", None),
+                    )?;
+                    continue;
+                }
 
-        let (response, should_shutdown) = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(request) => handle_request(request),
-            Err(error) => (
-                RpcResponse::error(
-                    Value::Null,
-                    -32700,
-                    "Parse error",
-                    Some(json!({ "detail": error.to_string() })),
-                ),
-                false,
-            ),
-        };
+                if request.method == REFRESH_STORAGE_METHOD {
+                    if let Some(response) =
+                        start_storage_scan(request, &events_tx, &mut storage_scan)
+                    {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
+                if request.method == CANCEL_STORAGE_METHOD {
+                    let response = match serde_json::from_value::<EmptyRequest>(request.params) {
+                        Ok(_) => RpcResponse::success(
+                            request.id,
+                            Value::Bool(
+                                storage_scan
+                                    .as_ref()
+                                    .map(|scan| {
+                                        scan.cancelled.store(true, Ordering::SeqCst);
+                                        true
+                                    })
+                                    .unwrap_or(false),
+                            ),
+                        ),
+                        Err(error) => invalid_params_response(request.id, error),
+                    };
+                    write_response(&mut stdout, response)?;
+                    continue;
+                }
 
-        serde_json::to_writer(&mut stdout, &response)?;
-        stdout.write_all(b"\n")?;
-        stdout.flush()?;
-
-        if should_shutdown {
-            if let Some(hub) = MCP_HUB.get() {
-                hub.shutdown();
+                let (response, should_shutdown) = handle_request(request);
+                write_response(&mut stdout, response)?;
+                if should_shutdown {
+                    if let Some(scan) = storage_scan.take() {
+                        scan.cancelled.store(true, Ordering::SeqCst);
+                    }
+                    if let Some(hub) = MCP_HUB.get() {
+                        hub.shutdown();
+                    }
+                    break;
+                }
             }
-            break;
+            RuntimeEvent::EndOfInput => {
+                if let Some(scan) = storage_scan.take() {
+                    scan.cancelled.store(true, Ordering::SeqCst);
+                }
+                if let Some(hub) = MCP_HUB.get() {
+                    hub.shutdown();
+                }
+                break;
+            }
+            RuntimeEvent::StorageFinished { request_id, result } => {
+                let is_active = storage_scan
+                    .as_ref()
+                    .is_some_and(|scan| scan.request_id == request_id);
+                if !is_active {
+                    continue;
+                }
+                storage_scan = None;
+                write_response(&mut stdout, result_response(request_id, *result))?;
+            }
         }
     }
 
     Ok(())
+}
+
+enum RuntimeEvent {
+    Input(io::Result<String>),
+    EndOfInput,
+    StorageFinished {
+        request_id: Value,
+        result: Box<anyhow::Result<RefreshReceipt>>,
+    },
+}
+
+struct StorageScan {
+    request_id: Value,
+    cancelled: Arc<AtomicBool>,
+}
+
+fn spawn_stdin_reader(events_tx: Sender<RuntimeEvent>) {
+    std::thread::spawn(move || {
+        for line in io::stdin().lock().lines() {
+            if events_tx.send(RuntimeEvent::Input(line)).is_err() {
+                return;
+            }
+        }
+        let _ = events_tx.send(RuntimeEvent::EndOfInput);
+    });
+}
+
+fn start_storage_scan(
+    request: RpcRequest,
+    events_tx: &Sender<RuntimeEvent>,
+    active_scan: &mut Option<StorageScan>,
+) -> Option<RpcResponse> {
+    if let Err(error) = serde_json::from_value::<EmptyRequest>(request.params) {
+        return Some(invalid_params_response(request.id, error));
+    }
+    if active_scan.is_some() {
+        return Some(RpcResponse::error(
+            request.id,
+            -32000,
+            "AgentKib command failed",
+            Some(json!({ "detail": "storage scan is already running" })),
+        ));
+    }
+
+    let request_id = request.id;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let worker_events = events_tx.clone();
+    let worker_request_id = request_id.clone();
+    std::thread::spawn(move || {
+        let result = refresh_storage(&worker_cancelled);
+        let _ = worker_events.send(RuntimeEvent::StorageFinished {
+            request_id: worker_request_id,
+            result: Box::new(result),
+        });
+    });
+    *active_scan = Some(StorageScan {
+        request_id,
+        cancelled,
+    });
+    None
+}
+
+fn write_response(stdout: &mut impl Write, response: RpcResponse) -> io::Result<()> {
+    serde_json::to_writer(&mut *stdout, &response).map_err(io::Error::other)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()
+}
+
+fn invalid_params_response<E: std::fmt::Display>(id: Value, error: E) -> RpcResponse {
+    RpcResponse::error(
+        id,
+        -32602,
+        "Invalid method parameters",
+        Some(json!({ "detail": error.to_string() })),
+    )
 }
 
 fn mcp_hub() -> anyhow::Result<&'static agentkib_mcp::HubController> {
@@ -268,9 +409,7 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         SET_QUOTA_PROMPT_SEEN_METHOD => command_response(request, set_quota_prompt_seen),
         STORAGE_OVERVIEW_METHOD => command_response(request, storage_overview),
         STORAGE_CHILDREN_METHOD => command_response(request, storage_children),
-        REFRESH_STORAGE_METHOD => command_response(request, refresh_storage),
         RESOLVE_STORAGE_PATH_METHOD => command_response(request, resolve_storage_path),
-        CANCEL_STORAGE_METHOD => command_response(request, cancel_storage),
         REFRESH_STATUS_METHOD => command_response(request, refresh_status),
         UPDATE_ONBOARDING_METHOD => command_response(request, update_onboarding),
         _ => (
@@ -308,16 +447,20 @@ where
         }
     };
 
-    match command(params).and_then(|result| serde_json::to_value(result).map_err(Into::into)) {
-        Ok(result) => (RpcResponse::success(request.id, result), false),
-        Err(error) => (
-            RpcResponse::error(
-                request.id,
-                -32000,
-                "AgentKib command failed",
-                Some(json!({ "detail": format!("{error:#}") })),
-            ),
-            false,
+    (result_response(request.id, command(params)), false)
+}
+
+fn result_response<TResult: serde::Serialize>(
+    id: Value,
+    result: anyhow::Result<TResult>,
+) -> RpcResponse {
+    match result.and_then(|value| serde_json::to_value(value).map_err(Into::into)) {
+        Ok(value) => RpcResponse::success(id, value),
+        Err(error) => RpcResponse::error(
+            id,
+            -32000,
+            "AgentKib command failed",
+            Some(json!({ "detail": format!("{error:#}") })),
         ),
     }
 }
@@ -2780,7 +2923,7 @@ fn resolve_storage_path(request: StoragePathRequest) -> anyhow::Result<PathBuf> 
     Ok(target)
 }
 
-fn refresh_storage(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
+fn refresh_storage(cancelled: &AtomicBool) -> anyhow::Result<RefreshReceipt> {
     let queued_at = Utc::now();
     let started_at = Utc::now();
     let mut workspaces = Store::open_default()?.list_workspaces()?;
@@ -2791,6 +2934,9 @@ fn refresh_storage(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
         .collect::<Vec<_>>();
     let mut hard_links = HardLinkSet::default();
     for workspace in workspaces {
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
         if workspace.path.parent().is_none()
             || dirs::home_dir()
                 .is_some_and(|home| platform_path::equivalent(&workspace.path, &home))
@@ -2816,7 +2962,12 @@ fn refresh_storage(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
             name: workspace.name,
             path: workspace.path,
         };
-        let scan = scan_workspace_storage(&source, &excluded, &mut hard_links, || false);
+        let scan = scan_workspace_storage(&source, &excluded, &mut hard_links, || {
+            cancelled.load(Ordering::SeqCst)
+        });
+        if scan.cancelled {
+            break;
+        }
         if scan.storage.last_success_at.is_some() {
             Store::open_default()?.save_workspace_storage(&scan.storage)?;
         } else {
@@ -2832,10 +2983,6 @@ fn refresh_storage(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
         }
     }
     Ok(completed_refresh_receipt("storage", queued_at, started_at))
-}
-
-fn cancel_storage(_: EmptyRequest) -> anyhow::Result<bool> {
-    Ok(false)
 }
 
 fn refresh_status(_: EmptyRequest) -> anyhow::Result<Vec<Value>> {

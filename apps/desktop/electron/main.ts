@@ -37,6 +37,7 @@ let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
+let appIconPreference: "white" | "black" = "white";
 let pendingUpdateVersion: string | undefined;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -104,10 +105,13 @@ async function startApplication(): Promise<void> {
   runtimeHandshake = await runtimeHost.start();
   const runtime = await runtimeHost.request<{
     close_behavior?: "minimize-to-tray" | "quit";
+    app_icon_preference?: "white" | "black";
     theme_preference?: "system" | "light" | "dark";
     effective_theme?: "light" | "dark";
   }>(RUNTIME_METHODS.runtimeInfo, {});
   closeBehavior = runtime.close_behavior;
+  appIconPreference = runtime.app_icon_preference ?? "white";
+  applyApplicationIcon(appIconPreference);
   if (runtime.theme_preference) nativeTheme.themeSource = runtime.theme_preference;
   else if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
 
@@ -544,9 +548,14 @@ function registerShellIpc(): void {
   });
   ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setAppIconPreference, {
-      preference: requireAppIconPreference(preference),
-    });
+    const next = requireAppIconPreference(preference);
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setAppIconPreference, { preference: next })
+      .then((runtime) => {
+        appIconPreference = next;
+        applyApplicationIcon(appIconPreference);
+        return runtime;
+      });
   });
 }
 
@@ -1115,6 +1124,7 @@ async function createMainWindow(): Promise<void> {
     minHeight: 680,
     show: false,
     backgroundColor: "#0a0a0a",
+    ...(process.platform !== "darwin" ? { icon: resolveApplicationIcon() } : {}),
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
@@ -1211,6 +1221,23 @@ function resolveQuotaSidecar(): string {
 function resolveTrayIcon(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
   return path.resolve(app.getAppPath(), "src-tauri/icons/tray-icon.png");
+}
+
+function resolveApplicationIcon(preference = appIconPreference): string {
+  const suffix = process.platform === "darwin" ? "-macos" : "";
+  const filename = `app-icon-${preference}${suffix}.png`;
+  if (app.isPackaged) return path.join(process.resourcesPath, "icons", filename);
+  return path.resolve(app.getAppPath(), "src-tauri/icons", filename);
+}
+
+function applyApplicationIcon(preference: "white" | "black"): void {
+  const image = nativeImage.createFromPath(resolveApplicationIcon(preference));
+  if (image.isEmpty()) return;
+  if (process.platform === "darwin") {
+    app.dock?.setIcon(image);
+    return;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setIcon(image);
 }
 
 function normalizeSystemLocale(locale: string | undefined): "zh-CN" | "zh-TW" | "ja-JP" | "en-US" {

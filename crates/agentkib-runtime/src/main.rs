@@ -60,8 +60,10 @@ use agentkib_protocol::{
 };
 use agentkib_quota::{
     CollectorCapabilities, DashboardCliCollector, QuotaBackend, QuotaCollector, QuotaCommandOutput,
-    QuotaCommandRunner, QuotaSnapshot,
+    QuotaCommandRunner, QuotaSnapshot, resolve_codexbar_config, write_managed_config,
 };
+#[cfg(target_os = "windows")]
+use agentkib_quota::resolve_win_codexbar_config;
 use agentkib_storage::{
     HardLinkSet, StorageNode, StorageOverview, StorageWorkspace,
     scan_workspace as scan_workspace_storage, scan_workspace_children,
@@ -2426,11 +2428,12 @@ fn quota_collector_status(_: EmptyRequest) -> anyhow::Result<agentkib_quota::Quo
     } else {
         QuotaBackend::CodexBarCli
     };
+    let (config_source, _) = quota_collector_environment()?;
     Store::open_default()?.quota_collector_status(
         backend,
         quota_platform_supported(),
         quota_sidecar_path().is_some(),
-        "automatic".to_owned(),
+        config_source,
         false,
     )
 }
@@ -2537,7 +2540,69 @@ fn quota_sidecar_path() -> Option<PathBuf> {
                     })
                 })
                 .filter(|path| path.is_file())
-        })
+    })
+}
+
+fn quota_collector_environment() -> anyhow::Result<(String, BTreeMap<String, String>)> {
+    let process_environment = std::env::vars().collect::<BTreeMap<_, _>>();
+    let mut environment = BTreeMap::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        let config_source = resolve_win_codexbar_config(&process_environment)
+            .map(|_| "win-codexbar".to_string())
+            .unwrap_or_else(|| "automatic".to_string());
+        return Ok((config_source, environment));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = dirs::home_dir().context("Home directory is unavailable")?;
+        let (config_path, config_source) =
+            if let Some(path) = resolve_codexbar_config(&home, &process_environment) {
+                let source = if process_environment.contains_key("CODEXBAR_CONFIG") {
+                    "environment"
+                } else {
+                    "codexbar"
+                };
+                (path, source.to_string())
+            } else {
+                let path = agentkib_store::default_data_dir()?.join("quota/codexbar-config.json");
+                let installations = Store::open_default()?.list_agent_installations()?;
+                let mut providers = Vec::new();
+                if installations
+                    .iter()
+                    .any(|value| value.installed && value.agent == AgentKind::Codex)
+                {
+                    providers.push("codex");
+                }
+                if installations
+                    .iter()
+                    .any(|value| value.installed && value.agent == AgentKind::ClaudeCode)
+                {
+                    providers.push("claude");
+                }
+                if installations
+                    .iter()
+                    .any(|value| value.installed && value.agent == AgentKind::Cursor)
+                {
+                    providers.push("cursor");
+                }
+                if providers.is_empty() {
+                    providers.push("codex");
+                }
+                write_managed_config(&path, &providers)?;
+                (path, "agentkib-managed".to_string())
+            };
+        environment.insert(
+            "CODEXBAR_CONFIG".to_string(),
+            config_path.to_string_lossy().into_owned(),
+        );
+        if let Ok(path) = std::env::var("PATH") {
+            environment.insert("PATH".to_string(), path);
+        }
+        Ok((config_source, environment))
+    }
 }
 
 #[derive(Clone)]
@@ -2616,10 +2681,11 @@ fn refresh_quota(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
     };
     let executable = quota_sidecar_path()
         .ok_or_else(|| anyhow::anyhow!("quota collector sidecar is unavailable"))?;
+    let (_, environment) = quota_collector_environment()?;
     let collector = DashboardCliCollector::new(
         backend,
         LocalQuotaRunner { executable },
-        BTreeMap::new(),
+        environment,
         CollectorCapabilities {
             platform_supported: quota_platform_supported(),
             sidecar_available: true,

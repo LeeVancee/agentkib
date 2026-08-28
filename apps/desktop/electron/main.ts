@@ -5,9 +5,13 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
+  nativeImage,
   nativeTheme,
   protocol,
   shell,
+  Tray,
+  type MenuItemConstructorOptions,
   type IpcMainInvokeEvent,
 } from "electron";
 import { autoUpdater } from "electron-updater";
@@ -27,6 +31,7 @@ app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
+let tray: Tray | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
@@ -100,7 +105,63 @@ async function startApplication(): Promise<void> {
   registerFeatureIpc();
   registerUpdateIpc();
 
+  createNativeShell();
   await createMainWindow();
+}
+
+function createNativeShell(): void {
+  const applicationMenu: MenuItemConstructorOptions[] =
+    process.platform === "darwin"
+      ? [
+          {
+            label: app.getName(),
+            submenu: [
+              { role: "about" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+          {
+            label: "View",
+            submenu: [{ role: "toggleDevTools" }, { role: "togglefullscreen" }],
+          },
+        ]
+      : [
+          {
+            label: "File",
+            submenu: [{ role: "quit" }],
+          },
+          {
+            label: "View",
+            submenu: [{ role: "reload" }, { role: "toggleDevTools" }],
+          },
+        ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenu));
+
+  const image = nativeImage.createFromPath(resolveTrayIcon());
+  if (image.isEmpty()) return;
+  if (process.platform === "darwin") image.setTemplateImage(true);
+  tray = new Tray(image);
+  tray.setToolTip(`${app.getName()} · Local Agent assets`);
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: `Open ${app.getName()}`, click: showMainWindow },
+      { type: "separator" },
+      { label: `Quit ${app.getName()}`, click: () => app.quit() },
+    ]),
+  );
+  tray.on("click", showMainWindow);
+}
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function registerUpdateIpc(): void {
@@ -391,6 +452,14 @@ function registerShellIpc(): void {
       title: title === undefined ? undefined : requireText(title, "title"),
     });
     return result.canceled ? undefined : result.filePaths[0];
+  });
+  ipcMain.handle("agentkib:shell:open-external", async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    const target = new URL(requireText(value, "url"));
+    if (target.protocol !== "https:" && target.protocol !== "http:") {
+      throw new Error("Only HTTP(S) external URLs are supported");
+    }
+    await shell.openExternal(target.toString());
   });
   ipcMain.handle("agentkib:shell:open-files-and-folders-settings", (event) => {
     assertTrustedRenderer(event);
@@ -997,6 +1066,12 @@ async function createMainWindow(): Promise<void> {
     minHeight: 680,
     show: false,
     backgroundColor: "#0a0a0a",
+    ...(process.platform === "darwin"
+      ? {
+          titleBarStyle: "hiddenInset" as const,
+          trafficLightPosition: { x: 15, y: 25 },
+        }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1009,7 +1084,8 @@ async function createMainWindow(): Promise<void> {
   window.on("close", (event) => {
     if (!shutdownStarted && closeBehavior === "minimize-to-tray") {
       event.preventDefault();
-      window.minimize();
+      if (tray) window.hide();
+      else window.minimize();
     }
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1077,6 +1153,11 @@ function resolveQuotaSidecar(): string {
       ? `${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
       : `${process.arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-gnu`;
   return path.resolve(process.cwd(), "src-tauri/binaries", `agentkib-quota-sidecar-${triple}`);
+}
+
+function resolveTrayIcon(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
+  return path.resolve(app.getAppPath(), "src-tauri/icons/tray-icon.png");
 }
 
 async function showStartupFailure(error: unknown): Promise<void> {

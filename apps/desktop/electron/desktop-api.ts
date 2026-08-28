@@ -96,6 +96,7 @@ export interface DesktopApi {
   };
   shell: {
     openDirectory(title?: string): Promise<string | undefined>;
+    openExternal(url: string): Promise<void>;
     openFilesAndFoldersSettings(): Promise<unknown>;
     quit(): Promise<unknown>;
   };

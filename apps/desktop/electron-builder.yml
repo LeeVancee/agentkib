@@ -8,6 +8,8 @@ files:
 extraResources:
   - from: build/runtime
     to: bin
+  - from: src-tauri/icons/tray-icon.png
+    to: icons/tray-icon.png
 mac:
   icon: src-tauri/icons/icon.icns
   category: public.app-category.developer-tools

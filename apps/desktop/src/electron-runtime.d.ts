@@ -171,6 +171,7 @@ interface AgentKibDesktopApi {
   };
   shell: {
     openDirectory(title?: string): Promise<string | undefined>;
+    openExternal(url: string): Promise<void>;
     openFilesAndFoldersSettings(): Promise<void>;
     quit(): Promise<void>;
   };

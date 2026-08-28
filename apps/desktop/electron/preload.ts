@@ -150,6 +150,7 @@ const desktopApi = Object.freeze({
   }),
   shell: Object.freeze({
     openDirectory: (title?: string) => ipcRenderer.invoke("agentkib:shell:open-directory", title),
+    openExternal: (url: string) => ipcRenderer.invoke("agentkib:shell:open-external", url),
     openFilesAndFoldersSettings: () =>
       ipcRenderer.invoke("agentkib:shell:open-files-and-folders-settings"),
     quit: () => ipcRenderer.invoke("agentkib:shell:quit"),

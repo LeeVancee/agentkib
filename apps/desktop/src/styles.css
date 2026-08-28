@@ -392,6 +392,10 @@ button {
   content: "";
 }
 
+.app-window-toolbar {
+  -webkit-app-region: drag;
+}
+
 .app-sidebar {
   grid-column: 1;
   grid-row: 2 / span 2;
@@ -568,6 +572,7 @@ button {
   position: absolute;
   z-index: 65;
   pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 .app-sidebar-collapse-button:hover {
   transform: translateY(-50%) scale(1.06);

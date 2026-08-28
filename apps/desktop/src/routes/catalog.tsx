@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
@@ -492,7 +491,7 @@ function McpHubPage({
   const authorize = async (serverId: string) => {
     try {
       const result = await api.startMcpOAuth(serverId, project);
-      await openUrl(result.authorization_url);
+      await api.openExternal(result.authorization_url);
     } catch (reason) {
       setError(localizeMessage(reason));
     }

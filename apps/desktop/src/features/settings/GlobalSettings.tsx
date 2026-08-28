@@ -15,7 +15,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -374,7 +373,7 @@ export function AppUpdateSetting({
     if (!update || busy) return;
     if (update.install_mode === "manual") {
       try {
-        await openUrl(update.release_url);
+        await api.openExternal(update.release_url);
       } catch (reason) {
         setError(localizeMessage(reason));
         setStatus("failed");
@@ -448,11 +447,7 @@ export function AppUpdateSetting({
             )}
           </Button>
         ) : (
-          <Button
-            type="button"
-            disabled={busy || !updatesEnabled}
-            onClick={() => void check()}
-          >
+          <Button type="button" disabled={busy || !updatesEnabled} onClick={() => void check()}>
             <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
             {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
           </Button>

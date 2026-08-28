@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
+import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
 import type {
   Achievement,
   ActivityRecord,
@@ -142,6 +143,7 @@ export const api = {
   openFilesAndFoldersSettings: () =>
     electronDesktopApi()?.shell.openFilesAndFoldersSettings() ??
     invoke<void>("open_files_and_folders_settings"),
+  openExternal: (url: string) => electronDesktopApi()?.shell.openExternal(url) ?? tauriOpenUrl(url),
   quitApp: () => electronDesktopApi()?.shell.quit() ?? invoke<void>("quit_app"),
   setCloseBehavior: (behavior?: CloseBehavior) =>
     electronDesktopApi()?.settings.setCloseBehavior(behavior) ??

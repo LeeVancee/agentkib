@@ -17,7 +17,7 @@
     "runtime:build": "cargo build --release -p agentkib-runtime",
     "runtime:stage": "node scripts/stage-electron-runtime.mjs",
     "protocol:generate": "node scripts/generate-runtime-protocol.mjs",
-    "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
+    "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:app": "node scripts/generate-app-icons.mjs",
     "icons:tray": "swift src-tauri/scripts/generate-tray-icon.swift",

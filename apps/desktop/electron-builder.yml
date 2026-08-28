@@ -8,6 +8,14 @@ files:
 extraResources:
   - from: build/runtime
     to: bin
+  - from: build/quota
+    to: bin
+  - from: src-tauri/resources/CodexBar_CodexBarCore.bundle
+    to: CodexBar_CodexBarCore.bundle
+  - from: src-tauri/resources/linux
+    to: linux
+  - from: src-tauri/resources/windows
+    to: windows
   - from: src-tauri/icons/tray-icon.png
     to: icons/tray-icon.png
 mac:
@@ -17,10 +25,13 @@ mac:
   minimumSystemVersion: 13.3.0
   target:
     - dmg
+    - zip
+  artifactName: AgentKib_${version}_macos-${arch}.${ext}
 win:
   icon: src-tauri/icons/icon.ico
   target:
     - nsis
+  artifactName: AgentKib_${version}_windows-${arch}.${ext}
 nsis:
   oneClick: false
   perMachine: false
@@ -31,6 +42,7 @@ linux:
     - AppImage
     - deb
     - rpm
+  artifactName: AgentKib_${version}_linux-${arch}.${ext}
 publish:
   provider: github
   owner: starroyhq

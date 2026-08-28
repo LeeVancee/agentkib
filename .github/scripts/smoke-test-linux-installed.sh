@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-main=${1:-/usr/bin/agentkib-desktop}
+main=${1:-}
+if [[ -z "$main" ]]; then
+  main=$(find /usr/bin /opt /usr/lib -type f \
+    \( -name agentkib-desktop -o -name agentkib -o -name AgentKib \) \
+    -perm -u+x -print -quit 2>/dev/null || true)
+fi
 [[ -x "$main" ]] || { echo "Installed AgentKib executable is missing: $main" >&2; exit 1; }
 
 if ldd "$main" | grep -q 'not found'; then

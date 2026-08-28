@@ -207,10 +207,13 @@ export const api = {
     electronDesktopApi()?.workspace.open(workspaceId, openerId) ??
     invoke<void>("open_workspace_with_app", { workspaceId, openerId }),
   workspaceSessions: (workspaceId: string) =>
+    electronDesktopApi()?.workspace.sessions(workspaceId) ??
     invoke<ConversationSessionSummary[]>("list_workspace_sessions", { workspaceId }),
   refreshWorkspaceSessions: (workspaceId: string, force = false) =>
+    electronDesktopApi()?.workspace.refreshSessions(workspaceId, force) ??
     invoke<ConversationSessionSummary[]>("refresh_workspace_sessions", { workspaceId, force }),
   sessionEvents: (sessionId: string, cursor?: string, limit = 100) =>
+    electronDesktopApi()?.workspace.sessionEvents(sessionId, cursor, limit) ??
     invoke<ConversationEventPage>("read_session_events", { sessionId, cursor, limit }),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     invoke<SessionHandoffPreparation>("prepare_session_handoff", { request }),
@@ -237,6 +240,7 @@ export const api = {
   launchSessionHandoff: (launchRequest: SessionHandoffLaunchRequest) =>
     invoke<HandoffLaunchReceipt>("launch_session_handoff", { launchRequest }),
   workspaceSessionStatus: (workspaceId: string) =>
+    electronDesktopApi()?.workspace.sessionStatus(workspaceId) ??
     invoke<ConversationIndexStatus[]>("get_workspace_session_status", { workspaceId }),
   clearSessionIndex: (workspaceId?: string) => invoke<void>("clear_session_index", { workspaceId }),
   setSessionIndexEnabled: (enabled: boolean) =>

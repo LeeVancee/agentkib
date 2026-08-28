@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
+use agentkib_conversations::{provider, providers};
 use agentkib_core::{AgentKind, McpNetworkSettings};
 use agentkib_insights::InsightsQuery;
 use agentkib_protocol::{
@@ -12,10 +13,12 @@ use agentkib_protocol::{
     LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
     LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD, PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION,
     QUOTA_COLLECTOR_STATUS_METHOD, REFRESH_STATUS_METHOD, REFRESH_WORKSPACE_METHOD,
-    RESOLVE_CONTEXT_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD, RUNTIME_INFO_METHOD, RpcRequest,
-    RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SHUTDOWN_METHOD,
-    UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
-    WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD,
+    REFRESH_WORKSPACE_SESSIONS_METHOD, RESOLVE_CONTEXT_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD,
+    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD,
+    SEARCH_CATALOG_ASSETS_METHOD, SESSION_EVENTS_METHOD, SHUTDOWN_METHOD, UPDATE_ONBOARDING_METHOD,
+    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
+    WORKSPACE_SESSIONS_METHOD,
 };
 use agentkib_quota::QuotaBackend;
 use agentkib_store::Store;
@@ -88,6 +91,10 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         WORKSPACE_GIT_HISTORY_METHOD => command_response(request, workspace_git_history),
         GIT_COMMIT_FILES_METHOD => command_response(request, git_commit_files),
         GIT_DIFF_METHOD => command_response(request, git_diff),
+        WORKSPACE_SESSIONS_METHOD => command_response(request, workspace_sessions),
+        WORKSPACE_SESSION_STATUS_METHOD => command_response(request, workspace_session_status),
+        REFRESH_WORKSPACE_SESSIONS_METHOD => command_response(request, refresh_workspace_sessions),
+        SESSION_EVENTS_METHOD => command_response(request, session_events),
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
@@ -284,6 +291,98 @@ fn git_commit_files(
 fn git_diff(request: GitDiffRequest) -> anyhow::Result<Option<agentkib_git::GitDiff>> {
     let path = Store::open_default()?.workspace_path(&request.workspace_id)?;
     agentkib_git::diff(&path, &request.request)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceSessionRequest {
+    workspace_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshWorkspaceSessionsRequest {
+    workspace_id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionEventsRequest {
+    session_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+fn workspace_sessions(
+    request: WorkspaceSessionRequest,
+) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
+    Store::open_default()?.list_conversation_sessions(&request.workspace_id)
+}
+
+fn workspace_session_status(
+    request: WorkspaceSessionRequest,
+) -> anyhow::Result<Vec<agentkib_conversations::ConversationIndexStatus>> {
+    Store::open_default()?.conversation_index_status(&request.workspace_id)
+}
+
+fn refresh_workspace_sessions(
+    request: RefreshWorkspaceSessionsRequest,
+) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
+    let store = Store::open_default()?;
+    if !request.force {
+        let statuses = store.conversation_index_status(&request.workspace_id)?;
+        if statuses.len() == 2
+            && statuses.iter().all(|status| {
+                status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
+            })
+        {
+            return store.list_conversation_sessions(&request.workspace_id);
+        }
+    }
+    let workspace = store.workspace_path(&request.workspace_id)?;
+    for source in providers() {
+        let agent = source.agent();
+        match source.list_sessions(&workspace) {
+            Ok(sessions) => {
+                store.sync_conversation_sessions(&request.workspace_id, agent, &sessions)?;
+            }
+            Err(_) => store.record_conversation_index_failure(
+                &request.workspace_id,
+                agent,
+                "errors.conversations.sourceUnavailable",
+                "Conversation source could not be read",
+            )?,
+        }
+    }
+    store.list_conversation_sessions(&request.workspace_id)
+}
+
+fn session_events(
+    request: SessionEventsRequest,
+) -> anyhow::Result<agentkib_conversations::ConversationEventPage> {
+    let store = Store::open_default()?;
+    let session = store
+        .get_conversation_session(&request.session_id)?
+        .ok_or_else(|| anyhow::anyhow!("Conversation metadata is no longer available"))?;
+    let workspace = store.workspace_path(&session.workspace_id)?;
+    let source = provider(session.agent)
+        .ok_or_else(|| anyhow::anyhow!("Conversation provider is unavailable"))?;
+    let native = source
+        .list_sessions(&workspace)?
+        .into_iter()
+        .find(|candidate| {
+            store
+                .conversation_id(session.agent, &candidate.native_ref)
+                .is_ok_and(|id| id == request.session_id)
+        })
+        .ok_or_else(|| anyhow::anyhow!("Conversation transcript is no longer available"))?;
+    source.read_events(
+        &native.native_ref,
+        request.cursor.as_deref(),
+        request.limit.unwrap_or(100),
+    )
 }
 
 #[derive(Deserialize)]

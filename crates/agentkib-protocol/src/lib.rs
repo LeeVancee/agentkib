@@ -16,6 +16,10 @@ pub const WORKSPACE_GIT_SUMMARY_METHOD: &str = "workspace.gitSummary";
 pub const WORKSPACE_GIT_HISTORY_METHOD: &str = "workspace.gitHistory";
 pub const GIT_COMMIT_FILES_METHOD: &str = "workspace.gitCommitFiles";
 pub const GIT_DIFF_METHOD: &str = "workspace.gitDiff";
+pub const WORKSPACE_SESSIONS_METHOD: &str = "workspace.sessions";
+pub const WORKSPACE_SESSION_STATUS_METHOD: &str = "workspace.sessionStatus";
+pub const REFRESH_WORKSPACE_SESSIONS_METHOD: &str = "workspace.refreshSessions";
+pub const SESSION_EVENTS_METHOD: &str = "session.events";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
@@ -124,6 +128,10 @@ export const RUNTIME_METHODS = {{
   workspaceGitHistory: "{WORKSPACE_GIT_HISTORY_METHOD}",
   gitCommitFiles: "{GIT_COMMIT_FILES_METHOD}",
   gitDiff: "{GIT_DIFF_METHOD}",
+  workspaceSessions: "{WORKSPACE_SESSIONS_METHOD}",
+  workspaceSessionStatus: "{WORKSPACE_SESSION_STATUS_METHOD}",
+  refreshWorkspaceSessions: "{REFRESH_WORKSPACE_SESSIONS_METHOD}",
+  sessionEvents: "{SESSION_EVENTS_METHOD}",
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",

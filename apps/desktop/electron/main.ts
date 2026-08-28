@@ -174,6 +174,36 @@ function registerWorkspaceIpc(): void {
       request: requireObject(request, "git diff request"),
     });
   });
+  ipcMain.handle("agentkib:workspace:sessions", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.workspaceSessions, {
+      workspaceId: requireString(id, "workspaceId"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:session-status", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.workspaceSessionStatus, {
+      workspaceId: requireString(id, "workspaceId"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:refresh-sessions", (event, id: unknown, force: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshWorkspaceSessions, {
+      workspaceId: requireString(id, "workspaceId"),
+      force: force === undefined ? false : requireBoolean(force, "force"),
+    });
+  });
+  ipcMain.handle(
+    "agentkib:session:events",
+    (event, id: unknown, cursor: unknown, limit: unknown) => {
+      assertTrustedRenderer(event);
+      return requireRuntime().request(RUNTIME_METHODS.sessionEvents, {
+        sessionId: requireString(id, "sessionId"),
+        cursor: optionalString(cursor, "cursor"),
+        limit: optionalPositiveInteger(limit, "limit"),
+      });
+    },
+  );
   ipcMain.handle("agentkib:workspace:openers", async (event, id: unknown) => {
     assertTrustedRenderer(event);
     const workspace = await findWorkspace(requireString(id, "workspaceId"));
@@ -351,6 +381,11 @@ function requireString(value: unknown, name: string): string {
 
 function requireText(value: unknown, name: string): string {
   if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  return value;
+}
+
+function requireBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") throw new TypeError(`${name} must be a boolean`);
   return value;
 }
 

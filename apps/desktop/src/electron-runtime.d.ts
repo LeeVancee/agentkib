@@ -25,6 +25,9 @@ import type {
   GitFileChange,
   GitHistoryQuery,
   GitWorkspaceSummary,
+  ConversationEventPage,
+  ConversationIndexStatus,
+  ConversationSessionSummary,
   RuntimeInfo,
   InsightsSummary,
   ContextDoctorReport,
@@ -49,6 +52,10 @@ interface AgentKibDesktopApi {
     gitHistory(id: string, query: GitHistoryQuery): Promise<GitCommitPage | undefined>;
     gitCommitFiles(id: string, oid: string): Promise<GitFileChange[] | undefined>;
     gitDiff(id: string, request: GitDiffRequest): Promise<GitDiff | undefined>;
+    sessions(id: string): Promise<ConversationSessionSummary[]>;
+    sessionStatus(id: string): Promise<ConversationIndexStatus[]>;
+    refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
+    sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
     openers(id: string): Promise<WorkspaceOpener[]>;
     open(id: string, openerId?: string): Promise<void>;
     doctorSummaries(workspaceIds: string[]): Promise<ContextDoctorSummary[]>;

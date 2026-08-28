@@ -313,6 +313,32 @@ describe("AgentKib API boundary", () => {
     });
   });
 
+  it("routes conversation reads through the Electron preload contract", async () => {
+    const sessions = vi.fn().mockResolvedValue([]);
+    const sessionStatus = vi.fn().mockResolvedValue([]);
+    const refreshSessions = vi.fn().mockResolvedValue([]);
+    const sessionEvents = vi.fn().mockResolvedValue({ events: [], warnings: [] });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        agentkibDesktop: {
+          workspace: { sessions, sessionStatus, refreshSessions, sessionEvents },
+        },
+      },
+    });
+
+    await api.workspaceSessions("workspace-1");
+    await api.workspaceSessionStatus("workspace-1");
+    await api.refreshWorkspaceSessions("workspace-1", true);
+    await api.sessionEvents("session-1", "cursor-1", 50);
+
+    expect(sessions).toHaveBeenCalledWith("workspace-1");
+    expect(sessionStatus).toHaveBeenCalledWith("workspace-1");
+    expect(refreshSessions).toHaveBeenCalledWith("workspace-1", true);
+    expect(sessionEvents).toHaveBeenCalledWith("session-1", "cursor-1", 50);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("persists quota popover display preferences through desktop preferences", async () => {
     const preferences = {
       hidden_providers: ["claude"],

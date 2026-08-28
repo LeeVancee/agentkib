@@ -18,6 +18,10 @@ export interface DesktopApi {
     gitHistory(id: string, query: unknown): Promise<unknown>;
     gitCommitFiles(id: string, oid: string): Promise<unknown>;
     gitDiff(id: string, request: unknown): Promise<unknown>;
+    sessions(id: string): Promise<unknown>;
+    sessionStatus(id: string): Promise<unknown>;
+    refreshSessions(id: string, force?: boolean): Promise<unknown>;
+    sessionEvents(id: string, cursor?: string, limit?: number): Promise<unknown>;
     openers(id: string): Promise<unknown>;
     open(id: string, openerId?: string): Promise<unknown>;
     doctorSummaries(workspaceIds: string[]): Promise<unknown>;

@@ -25,6 +25,12 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:git-commit-files", id, oid),
     gitDiff: (id: string, request: unknown) =>
       ipcRenderer.invoke("agentkib:workspace:git-diff", id, request),
+    sessions: (id: string) => ipcRenderer.invoke("agentkib:workspace:sessions", id),
+    sessionStatus: (id: string) => ipcRenderer.invoke("agentkib:workspace:session-status", id),
+    refreshSessions: (id: string, force?: boolean) =>
+      ipcRenderer.invoke("agentkib:workspace:refresh-sessions", id, force),
+    sessionEvents: (id: string, cursor?: string, limit?: number) =>
+      ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
     openers: (id: string) => ipcRenderer.invoke("agentkib:workspace:openers", id),
     open: (id: string, openerId?: string) =>
       ipcRenderer.invoke("agentkib:workspace:open", id, openerId),

@@ -21,6 +21,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { isTauriRuntime } from "@/core/platform";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { formatDateTime, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -119,9 +120,11 @@ export function WorkspaceSessionsPage({
     setError("");
     const sequence = ++cacheSequence.current;
     void (async () => {
-      unlisten = await listen<string>("agentkib:conversations-updated", (event) => {
-        if (event.payload === workspace.id) void reloadCache();
-      });
+      if (isTauriRuntime()) {
+        unlisten = await listen<string>("agentkib:conversations-updated", (event) => {
+          if (event.payload === workspace.id) void reloadCache();
+        });
+      }
       if (disposed) {
         unlisten?.();
         return;

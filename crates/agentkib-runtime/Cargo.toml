@@ -10,6 +10,7 @@ dev-app = ["agentkib-store/dev-app"]
 [dependencies]
 agentkib-protocol.workspace = true
 agentkib-adapters.workspace = true
+agentkib-conversations.workspace = true
 agentkib-core.workspace = true
 agentkib-gateways.workspace = true
 agentkib-git.workspace = true

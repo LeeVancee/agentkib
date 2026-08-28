@@ -5,7 +5,7 @@ import { api } from "@/core/api";
 import { refreshGlobalState } from "@/core/global-state";
 import { changeLocale, localizeMessage, tr } from "@/core/i18n";
 import { applyTheme } from "@/core/theme";
-import { isTauriRuntime, normalizePlatform } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime, normalizePlatform } from "@/core/platform";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -68,7 +68,9 @@ export function AppRuntimeBridge() {
   };
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    const tauriRuntime = isTauriRuntime();
+    const electronRuntime = isElectronRuntime();
+    if (!tauriRuntime && !electronRuntime) return;
 
     let disposed = false;
     let refreshReloadTimer: number | undefined;
@@ -84,6 +86,11 @@ export function AppRuntimeBridge() {
     let unlistenTheme: (() => void) | undefined;
     void (async () => {
       try {
+        if (!tauriRuntime) {
+          await refreshGlobalState(useAppStore.getState().runtime);
+          if (!disposed) setRefreshJobs(await api.refreshStatus());
+          return;
+        }
         unlisten = await listen<DiscoveryReport>("agentkib:discovery-updated", (event) => {
           setDiscovery(event.payload);
         });
@@ -251,7 +258,7 @@ export function AppRuntimeBridge() {
 
   useEffect(() => {
     const refreshRuntime = () => {
-      if (!isTauriRuntime()) return;
+      if (!isTauriRuntime() && !isElectronRuntime()) return;
 
       if (pendingRefreshKinds.current.delete("discovery")) void loadDiscoveryCache();
       void api

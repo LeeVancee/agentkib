@@ -110,7 +110,7 @@ export const api = {
     }),
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
     invoke<MemoryRecord>("review_memory", { id, status, editedContent }),
-  runtime: () => invoke<RuntimeInfo>("runtime_info"),
+  runtime: () => electronDesktopApi()?.home.runtime() ?? invoke<RuntimeInfo>("runtime_info"),
   updateOnboarding: (event: OnboardingEvent) => invoke<RuntimeInfo>("update_onboarding", { event }),
   openFilesAndFoldersSettings: () => invoke<void>("open_files_and_folders_settings"),
   quitApp: () => invoke<void>("quit_app"),
@@ -168,7 +168,8 @@ export const api = {
     invoke<ChangeSet>("plan_mcp_migration", { project, candidateIds }),
   requestRefresh: (kind: RefreshKind, force = false) =>
     invoke<RefreshReceipt>("request_refresh", { kind, force }),
-  refreshStatus: () => invoke<RefreshJobStatus[]>("get_refresh_status"),
+  refreshStatus: () =>
+    electronDesktopApi()?.home.refreshStatus() ?? invoke<RefreshJobStatus[]>("get_refresh_status"),
   storageOverview: () => invoke<StorageOverview>("get_storage_overview"),
   workspaceStorageChildren: (workspaceId: string, relativePath: string) =>
     invoke<StorageNode>("get_workspace_storage_children", { workspaceId, relativePath }),
@@ -176,7 +177,8 @@ export const api = {
     invoke<void>("open_workspace_storage_path", { workspaceId, relativePath }),
   cancelStorageScan: () => invoke<boolean>("cancel_storage_scan"),
   discoverWorkspaces: () => invoke<RefreshReceipt>("discover_workspaces"),
-  workspaces: () => invoke<WorkspaceSummary[]>("list_workspaces"),
+  workspaces: () =>
+    electronDesktopApi()?.home.workspaces() ?? invoke<WorkspaceSummary[]>("list_workspaces"),
   workspace: (id: string) => invoke<WorkspaceSummary | undefined>("get_workspace", { id }),
   workspaceGitSummary: (workspaceId: string) =>
     invoke<GitWorkspaceSummary | undefined>("get_workspace_git_summary", { workspaceId }),
@@ -263,22 +265,29 @@ export const api = {
   workspaceDoctorSummaries: async (workspaceIds: string[]) => {
     const summaries: ContextDoctorSummary[] = [];
     for (let offset = 0; offset < workspaceIds.length; offset += DOCTOR_SUMMARY_BATCH_LIMIT) {
+      const batch = workspaceIds.slice(offset, offset + DOCTOR_SUMMARY_BATCH_LIMIT);
       summaries.push(
-        ...(await invoke<ContextDoctorSummary[]>("get_workspace_doctor_summaries", {
-          workspaceIds: workspaceIds.slice(offset, offset + DOCTOR_SUMMARY_BATCH_LIMIT),
-        })),
+        ...(await (electronDesktopApi()?.workspace.doctorSummaries(batch) ??
+          invoke<ContextDoctorSummary[]>("get_workspace_doctor_summaries", {
+            workspaceIds: batch,
+          }))),
       );
     }
     return summaries;
   },
   catalogAssets: (query = "", agent?: AgentKind, workspaceId?: string, limit = 500) =>
+    electronDesktopApi()?.home.catalogAssets({ query, agent, workspaceId, limit }) ??
     invoke<CatalogAsset[]>("search_catalog_assets", { query, agent, workspaceId, limit }),
   globalMemories: (status?: MemoryStatus) =>
+    electronDesktopApi()?.home.globalMemories(status) ??
     invoke<MemoryRecord[]>("list_global_memories", { status }),
-  activity: (limit = 200) => invoke<ActivityRecord[]>("list_activity", { limit }),
+  activity: (limit = 200) =>
+    electronDesktopApi()?.home.activity(limit) ??
+    invoke<ActivityRecord[]>("list_activity", { limit }),
   refreshInsights: () => invoke<RefreshReceipt>("refresh_insights"),
   insightsView: (query: InsightsQuery = {}) => invoke<InsightsView>("get_insights_view", { query }),
   insightsSummary: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.home.insightsSummary(query) ??
     invoke<InsightsSummary>("get_insights_summary", { query }),
   insightsHeatmap: (query: InsightsQuery = {}) =>
     invoke<HeatmapPoint[]>("get_insights_heatmap", { query }),
@@ -291,7 +300,8 @@ export const api = {
   repositoryCommitBreakdown: (query: InsightsQuery = {}) =>
     invoke<RepositoryCommitBreakdown[]>("get_repository_commit_breakdown", { query }),
   achievements: () => invoke<Achievement[]>("list_achievements"),
-  insightsStatus: () => invoke<InsightsStatus>("get_insights_status"),
+  insightsStatus: () =>
+    electronDesktopApi()?.home.insightsStatus() ?? invoke<InsightsStatus>("get_insights_status"),
   gitIdentities: () => invoke<GitIdentitySummary[]>("list_git_identities"),
   addGitIdentityAlias: (email: string) =>
     invoke<GitIdentitySummary>("add_git_identity_alias", { email }),
@@ -299,7 +309,9 @@ export const api = {
     invoke<void>("set_git_identity_enabled", { id, enabled }),
   quotaSnapshot: () => invoke<QuotaSnapshot | undefined>("get_quota_snapshot"),
   refreshQuota: () => invoke<RefreshReceipt>("refresh_quota"),
-  quotaCollectorStatus: () => invoke<QuotaCollectorStatus>("get_quota_collector_status"),
+  quotaCollectorStatus: () =>
+    electronDesktopApi()?.home.quotaCollectorStatus() ??
+    invoke<QuotaCollectorStatus>("get_quota_collector_status"),
   quotaPopoverPreferences: () => invoke<QuotaPopoverPreferences>("get_quota_popover_preferences"),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>
     invoke<QuotaPopoverPreferences>("set_quota_popover_preferences", { preferences }),

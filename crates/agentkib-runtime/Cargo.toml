@@ -1,0 +1,23 @@
+[package]
+name = "agentkib-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+dev-app = ["agentkib-store/dev-app"]
+
+[dependencies]
+agentkib-protocol.workspace = true
+agentkib-adapters.workspace = true
+agentkib-core.workspace = true
+agentkib-gateways.workspace = true
+agentkib-insights.workspace = true
+agentkib-mcp.workspace = true
+agentkib-quota.workspace = true
+agentkib-store.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true

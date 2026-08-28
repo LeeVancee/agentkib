@@ -16,7 +16,6 @@ import type {
   QuotaSnapshot,
   RefreshJobStatus,
   RefreshReceipt,
-  RemoteGatewaySummary,
   ScanRoot,
   WorkspaceScan,
   WorkspaceSummary,
@@ -36,6 +35,12 @@ import type {
   InsightsView,
   ContextDoctorReport,
   WorkspaceOpener,
+  AppIconPreference,
+  CloseBehavior,
+  LocalePreference,
+  RemoteGatewayInput,
+  RemoteGatewaySummary,
+  ObsidianWorkspaceLink,
 } from "./core/types";
 
 interface AgentKibDesktopApi {
@@ -66,6 +71,14 @@ interface AgentKibDesktopApi {
   };
   shell: {
     openDirectory(title?: string): Promise<string | undefined>;
+    openFilesAndFoldersSettings(): Promise<void>;
+    quit(): Promise<void>;
+  };
+  settings: {
+    setCloseBehavior(value?: CloseBehavior): Promise<void>;
+    setLocale(preference: LocalePreference): Promise<RuntimeInfo>;
+    setThemePreference(preference: "system" | "light" | "dark"): Promise<RuntimeInfo>;
+    setAppIconPreference(preference: AppIconPreference): Promise<RuntimeInfo>;
   };
   home: {
     runtime(): Promise<RuntimeInfo>;
@@ -85,6 +98,9 @@ interface AgentKibDesktopApi {
     refreshDiscovery(): Promise<RefreshReceipt>;
     excludedWorkspaces(): Promise<ExcludedWorkspace[]>;
     remoteGateways(): Promise<RemoteGatewaySummary[]>;
+    saveRemoteGateway(input: RemoteGatewayInput): Promise<RemoteGatewaySummary>;
+    refreshRemoteGateway(id: string): Promise<RemoteGatewaySummary>;
+    removeRemoteGateway(id: string): Promise<void>;
     insightsView(query: InsightsQuery): Promise<InsightsView>;
     refreshInsights(): Promise<RefreshReceipt>;
     insightsSummary(query: InsightsQuery): Promise<InsightsSummary>;
@@ -104,6 +120,15 @@ interface AgentKibDesktopApi {
     cancelStorage(): Promise<boolean>;
     updateOnboarding(event: OnboardingEvent): Promise<RuntimeInfo>;
     obsidianIntegration(): Promise<ObsidianIntegration>;
+    addObsidianVault(path: string): Promise<ObsidianIntegration>;
+    linkWorkspaceToObsidian(
+      workspaceId: string,
+      vaultPath: string,
+      relativeTarget?: string,
+    ): Promise<ObsidianWorkspaceLink>;
+    unlinkWorkspaceFromObsidian(workspaceId: string): Promise<void>;
+    openObsidian(): Promise<void>;
+    openWorkspaceInObsidian(workspaceId: string): Promise<void>;
   };
 }
 

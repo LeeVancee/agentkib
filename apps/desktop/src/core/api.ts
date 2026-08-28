@@ -128,14 +128,21 @@ export const api = {
   updateOnboarding: (event: OnboardingEvent) =>
     electronDesktopApi()?.home.updateOnboarding(event) ??
     invoke<RuntimeInfo>("update_onboarding", { event }),
-  openFilesAndFoldersSettings: () => invoke<void>("open_files_and_folders_settings"),
-  quitApp: () => invoke<void>("quit_app"),
+  openFilesAndFoldersSettings: () =>
+    electronDesktopApi()?.shell.openFilesAndFoldersSettings() ??
+    invoke<void>("open_files_and_folders_settings"),
+  quitApp: () => electronDesktopApi()?.shell.quit() ?? invoke<void>("quit_app"),
   setCloseBehavior: (behavior?: CloseBehavior) =>
+    electronDesktopApi()?.settings.setCloseBehavior(behavior) ??
     invoke<void>("set_close_behavior", { behavior: behavior ?? null }),
-  setLocale: (preference: LocalePreference) => invoke<RuntimeInfo>("set_locale", { preference }),
+  setLocale: (preference: LocalePreference) =>
+    electronDesktopApi()?.settings.setLocale(preference) ??
+    invoke<RuntimeInfo>("set_locale", { preference }),
   setThemePreference: (preference: ThemePreference) =>
+    electronDesktopApi()?.settings.setThemePreference(preference) ??
     invoke<RuntimeInfo>("set_theme_preference", { preference }),
   setAppIconPreference: (preference: AppIconPreference) =>
+    electronDesktopApi()?.settings.setAppIconPreference(preference) ??
     invoke<RuntimeInfo>("set_app_icon_preference", { preference }),
   checkAppUpdate: () => invoke<AppUpdateInfo | undefined>("check_app_update"),
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) => {
@@ -295,28 +302,36 @@ export const api = {
   obsidianIntegration: () =>
     electronDesktopApi()?.home.obsidianIntegration() ??
     invoke<ObsidianIntegration>("get_obsidian_integration"),
-  addObsidianVault: (path: string) => invoke<ObsidianIntegration>("add_obsidian_vault", { path }),
+  addObsidianVault: (path: string) =>
+    electronDesktopApi()?.home.addObsidianVault(path) ??
+    invoke<ObsidianIntegration>("add_obsidian_vault", { path }),
   linkWorkspaceToObsidian: (workspaceId: string, vaultPath: string, relativeTarget?: string) =>
+    electronDesktopApi()?.home.linkWorkspaceToObsidian(workspaceId, vaultPath, relativeTarget) ??
     invoke<ObsidianWorkspaceLink>("link_workspace_to_obsidian", {
       workspaceId,
       vaultPath,
       relativeTarget: relativeTarget?.trim() || null,
     }),
   unlinkWorkspaceFromObsidian: (workspaceId: string) =>
+    electronDesktopApi()?.home.unlinkWorkspaceFromObsidian(workspaceId) ??
     invoke<void>("unlink_workspace_from_obsidian", { workspaceId }),
-  openObsidian: () => invoke<void>("open_obsidian"),
+  openObsidian: () => electronDesktopApi()?.home.openObsidian() ?? invoke<void>("open_obsidian"),
   openWorkspaceInObsidian: (workspaceId: string) =>
+    electronDesktopApi()?.home.openWorkspaceInObsidian(workspaceId) ??
     invoke<void>("open_workspace_in_obsidian", { workspaceId }),
   remoteGateways: () =>
     electronDesktopApi()?.home.remoteGateways() ??
     invoke<RemoteGatewaySummary[]>("list_remote_gateways"),
   saveRemoteGateway: (input: RemoteGatewayInput) =>
+    electronDesktopApi()?.home.saveRemoteGateway(input) ??
     invoke<RemoteGatewaySummary>("save_remote_gateway", { input }),
   refreshRemoteGateway: (id: string) =>
+    electronDesktopApi()?.home.refreshRemoteGateway(id) ??
     invoke<RemoteGatewaySummary>("refresh_remote_gateway", { id }),
-  removeRemoteGateway: (id: string) => invoke<void>("remove_remote_gateway", { id }),
-  scanRoots: () =>
-    electronDesktopApi()?.home.scanRoots() ?? invoke<ScanRoot[]>("list_scan_roots"),
+  removeRemoteGateway: (id: string) =>
+    electronDesktopApi()?.home.removeRemoteGateway(id) ??
+    invoke<void>("remove_remote_gateway", { id }),
+  scanRoots: () => electronDesktopApi()?.home.scanRoots() ?? invoke<ScanRoot[]>("list_scan_roots"),
   addScanRoot: (path: string, maxDepth = 5) =>
     electronDesktopApi()?.home.addScanRoot(path, maxDepth) ??
     invoke<ScanRoot>("add_scan_root", { path, maxDepth }),

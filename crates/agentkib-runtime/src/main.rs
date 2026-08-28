@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+#[path = "../../../apps/desktop/src-tauri/src/obsidian.rs"]
+mod obsidian;
 
 use agentkib_conversations::{provider, providers};
 use agentkib_core::{AgentKind, McpNetworkSettings};
@@ -12,23 +16,27 @@ use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, co
 use agentkib_platform::path as platform_path;
 use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
-    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, CANCEL_STORAGE_METHOD, EXCLUDE_WORKSPACE_METHOD,
-    GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD, HANDSHAKE_METHOD, HandshakeRequest, HandshakeResult,
-    INSIGHTS_STATUS_METHOD, INSIGHTS_SUMMARY_METHOD, INSIGHTS_VIEW_METHOD, LIST_ACTIVITY_METHOD,
+    ADD_OBSIDIAN_VAULT_METHOD, ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, CANCEL_STORAGE_METHOD,
+    EXCLUDE_WORKSPACE_METHOD, GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD, HANDSHAKE_METHOD,
+    HandshakeRequest, HandshakeResult, INSIGHTS_STATUS_METHOD, INSIGHTS_SUMMARY_METHOD,
+    INSIGHTS_VIEW_METHOD, LINK_OBSIDIAN_WORKSPACE_METHOD, LIST_ACTIVITY_METHOD,
     LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD,
     LIST_REMOTE_GATEWAYS_METHOD, LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD,
+    OBSIDIAN_INTEGRATION_METHOD, OPEN_OBSIDIAN_METHOD, OPEN_OBSIDIAN_WORKSPACE_METHOD,
     PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD,
     QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD, REFRESH_DISCOVERY_METHOD,
-    REFRESH_INSIGHTS_METHOD, REFRESH_QUOTA_METHOD, REFRESH_STATUS_METHOD, REFRESH_STORAGE_METHOD,
-    REFRESH_WORKSPACE_METHOD, REFRESH_WORKSPACE_SESSIONS_METHOD, REMOVE_SCAN_ROOT_METHOD,
+    REFRESH_INSIGHTS_METHOD, REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD,
+    REFRESH_STATUS_METHOD, REFRESH_STORAGE_METHOD, REFRESH_WORKSPACE_METHOD,
+    REFRESH_WORKSPACE_SESSIONS_METHOD, REMOVE_REMOTE_GATEWAY_METHOD, REMOVE_SCAN_ROOT_METHOD,
     RESOLVE_CONTEXT_METHOD, RESOLVE_STORAGE_PATH_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD,
-    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD,
-    SEARCH_CATALOG_ASSETS_METHOD, SESSION_EVENTS_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD,
-    SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD, SHUTDOWN_METHOD,
-    STORAGE_CHILDREN_METHOD, STORAGE_OVERVIEW_METHOD, UPDATE_ONBOARDING_METHOD,
-    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
-    WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
-    WORKSPACE_SESSIONS_METHOD,
+    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SAVE_REMOTE_GATEWAY_METHOD,
+    SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SESSION_EVENTS_METHOD,
+    SET_APP_ICON_PREFERENCE_METHOD, SET_CLOSE_BEHAVIOR_METHOD, SET_LOCALE_METHOD,
+    SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD,
+    SET_THEME_PREFERENCE_METHOD, SHUTDOWN_METHOD, STORAGE_CHILDREN_METHOD, STORAGE_OVERVIEW_METHOD,
+    UNLINK_OBSIDIAN_WORKSPACE_METHOD, UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD,
+    WORKSPACE_DOCTOR_SUMMARIES_METHOD, WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD,
+    WORKSPACE_SESSION_STATUS_METHOD, WORKSPACE_SESSIONS_METHOD,
 };
 use agentkib_quota::{
     CollectorCapabilities, DashboardCliCollector, QuotaBackend, QuotaCollector, QuotaCommandOutput,
@@ -124,6 +132,19 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         REFRESH_DISCOVERY_METHOD => command_response(request, refresh_discovery),
         LIST_EXCLUDED_WORKSPACES_METHOD => command_response(request, list_excluded_workspaces),
         LIST_REMOTE_GATEWAYS_METHOD => command_response(request, list_remote_gateways),
+        SAVE_REMOTE_GATEWAY_METHOD => command_response(request, save_remote_gateway),
+        REFRESH_REMOTE_GATEWAY_METHOD => command_response(request, refresh_remote_gateway),
+        REMOVE_REMOTE_GATEWAY_METHOD => command_response(request, remove_remote_gateway),
+        OBSIDIAN_INTEGRATION_METHOD => command_response(request, obsidian_integration),
+        ADD_OBSIDIAN_VAULT_METHOD => command_response(request, add_obsidian_vault),
+        LINK_OBSIDIAN_WORKSPACE_METHOD => command_response(request, link_obsidian_workspace),
+        UNLINK_OBSIDIAN_WORKSPACE_METHOD => command_response(request, unlink_obsidian_workspace),
+        OPEN_OBSIDIAN_METHOD => command_response(request, open_obsidian),
+        OPEN_OBSIDIAN_WORKSPACE_METHOD => command_response(request, open_obsidian_workspace),
+        SET_CLOSE_BEHAVIOR_METHOD => command_response(request, set_close_behavior),
+        SET_LOCALE_METHOD => command_response(request, set_locale),
+        SET_THEME_PREFERENCE_METHOD => command_response(request, set_theme_preference),
+        SET_APP_ICON_PREFERENCE_METHOD => command_response(request, set_app_icon_preference),
         WORKSPACE_DOCTOR_SUMMARIES_METHOD => command_response(request, workspace_doctor_summaries),
         INSIGHTS_VIEW_METHOD => command_response(request, insights_view),
         REFRESH_INSIGHTS_METHOD => command_response(request, refresh_insights),
@@ -538,14 +559,112 @@ fn save_preferences_root(data_dir: &Path, root: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum AppIconPreference {
+    #[default]
+    White,
+    Black,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum CloseBehavior {
+    MinimizeToTray,
+    Quit,
+}
+
+#[derive(Deserialize)]
+struct PreferenceRequest<T> {
+    preference: T,
+}
+
+#[derive(Deserialize)]
+struct CloseBehaviorRequest {
+    value: Option<CloseBehavior>,
+}
+
+fn stored_value<T: serde::de::DeserializeOwned>(root: &Value, key: &str, default: T) -> T {
+    root.get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or(default)
+}
+
+fn update_preference<T: Serialize>(key: &str, value: T) -> anyhow::Result<Value> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    let mut root = load_preferences_root(&data_dir);
+    root[key] = serde_json::to_value(value)?;
+    save_preferences_root(&data_dir, &root)?;
+    runtime_info(EmptyRequest {})
+}
+
+fn set_close_behavior(request: CloseBehaviorRequest) -> anyhow::Result<Value> {
+    update_preference("close_behavior", request.value)
+}
+
+fn set_locale(request: PreferenceRequest<String>) -> anyhow::Result<Value> {
+    let preference = match request.preference.as_str() {
+        "system" | "en-US" | "zh-CN" | "zh-TW" | "ja-JP" => request.preference,
+        other => anyhow::bail!("Unsupported locale preference: {other}"),
+    };
+    update_preference("locale_preference", preference)
+}
+
+fn set_theme_preference(request: PreferenceRequest<ThemePreference>) -> anyhow::Result<Value> {
+    update_preference("theme_preference", request.preference)
+}
+
+fn set_app_icon_preference(request: PreferenceRequest<AppIconPreference>) -> anyhow::Result<Value> {
+    update_preference("app_icon_preference", request.preference)
+}
+
+fn runtime_block_on<F, T>(future: F) -> anyhow::Result<T>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(future)
+}
+
 fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
     let data_dir = agentkib_store::default_data_dir()?;
     let preferences = load_preferences_root(&data_dir);
     let network = McpNetworkSettings::default();
     let development = std::env::var("AGENTKIB_APP_FLAVOR").as_deref() == Ok("ai.agentkib.dev");
-    let locale = std::env::var("AGENTKIB_LOCALE").unwrap_or_else(|_| "en-US".to_owned());
-    let effective_theme =
-        std::env::var("AGENTKIB_SYSTEM_THEME").unwrap_or_else(|_| "light".to_owned());
+    let locale_preference: String =
+        stored_value(&preferences, "locale_preference", "system".to_owned());
+    let locale = if locale_preference == "system" {
+        std::env::var("AGENTKIB_LOCALE").unwrap_or_else(|_| "en-US".to_owned())
+    } else {
+        locale_preference.clone()
+    };
+    let theme_preference: ThemePreference =
+        stored_value(&preferences, "theme_preference", ThemePreference::default());
+    let effective_theme = match theme_preference {
+        ThemePreference::System => {
+            std::env::var("AGENTKIB_SYSTEM_THEME").unwrap_or_else(|_| "light".to_owned())
+        }
+        ThemePreference::Light => "light".to_owned(),
+        ThemePreference::Dark => "dark".to_owned(),
+    };
+    let close_behavior: Option<CloseBehavior> = stored_value(&preferences, "close_behavior", None);
+    let app_icon_preference: AppIconPreference = stored_value(
+        &preferences,
+        "app_icon_preference",
+        AppIconPreference::default(),
+    );
     let home = dirs::home_dir();
 
     Ok(json!({
@@ -568,12 +687,12 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
         "mcp_network": network,
         "openclaw_config": home.as_ref().map(|path| path.join(".openclaw/openclaw.json")),
         "hermes_config": home.map(|path| path.join(".hermes/config.yaml")),
-        "close_behavior": null,
-        "locale_preference": "system",
+        "close_behavior": close_behavior,
+        "locale_preference": locale_preference,
         "effective_locale": locale,
-        "theme_preference": "system",
+        "theme_preference": theme_preference,
         "effective_theme": effective_theme,
-        "app_icon_preference": "white",
+        "app_icon_preference": app_icon_preference,
         "tray_available": false,
         "session_index_enabled": true,
         "quota_auto_refresh_enabled": preferences
@@ -701,6 +820,90 @@ fn list_remote_gateways(
 ) -> anyhow::Result<Vec<agentkib_gateways::RemoteGatewaySummary>> {
     let path = agentkib_gateways::default_registry_path(&agentkib_store::default_data_dir()?);
     agentkib_gateways::list(&path)
+}
+
+#[derive(Deserialize)]
+struct RemoteGatewayInputRequest {
+    input: agentkib_gateways::RemoteGatewayInput,
+}
+
+#[derive(Deserialize)]
+struct RemoteGatewayIdRequest {
+    id: String,
+}
+
+fn remote_gateway_path() -> anyhow::Result<PathBuf> {
+    Ok(agentkib_gateways::default_registry_path(
+        &agentkib_store::default_data_dir()?,
+    ))
+}
+
+fn save_remote_gateway(
+    request: RemoteGatewayInputRequest,
+) -> anyhow::Result<agentkib_gateways::RemoteGatewaySummary> {
+    let path = remote_gateway_path()?;
+    runtime_block_on(agentkib_gateways::save(&path, request.input))
+}
+
+fn refresh_remote_gateway(
+    request: RemoteGatewayIdRequest,
+) -> anyhow::Result<agentkib_gateways::RemoteGatewaySummary> {
+    let path = remote_gateway_path()?;
+    runtime_block_on(agentkib_gateways::refresh(&path, &request.id))
+}
+
+fn remove_remote_gateway(request: RemoteGatewayIdRequest) -> anyhow::Result<()> {
+    let path = remote_gateway_path()?;
+    runtime_block_on(agentkib_gateways::remove(&path, &request.id))
+}
+
+fn obsidian_integration(_: EmptyRequest) -> anyhow::Result<obsidian::ObsidianIntegration> {
+    obsidian::integration(&agentkib_store::default_data_dir()?)
+}
+
+#[derive(Deserialize)]
+struct ObsidianVaultRequest {
+    path: String,
+}
+
+fn add_obsidian_vault(
+    request: ObsidianVaultRequest,
+) -> anyhow::Result<obsidian::ObsidianIntegration> {
+    obsidian::add_vault(
+        &agentkib_store::default_data_dir()?,
+        Path::new(&request.path),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObsidianLinkRequest {
+    workspace_id: String,
+    vault_path: String,
+    relative_target: Option<String>,
+}
+
+fn link_obsidian_workspace(
+    request: ObsidianLinkRequest,
+) -> anyhow::Result<obsidian::ObsidianWorkspaceLink> {
+    obsidian::link_workspace(
+        &agentkib_store::default_data_dir()?,
+        &request.workspace_id,
+        Path::new(&request.vault_path),
+        request.relative_target.as_deref(),
+    )
+}
+
+fn unlink_obsidian_workspace(request: WorkspaceIdRequest) -> anyhow::Result<()> {
+    obsidian::unlink_workspace(&agentkib_store::default_data_dir()?, &request.id)
+}
+
+fn open_obsidian(_: EmptyRequest) -> anyhow::Result<()> {
+    obsidian::open_app()
+}
+
+fn open_obsidian_workspace(request: WorkspaceIdRequest) -> anyhow::Result<()> {
+    obsidian::open_workspace(&agentkib_store::default_data_dir()?, &request.id)
 }
 
 #[derive(Deserialize)]

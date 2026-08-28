@@ -39,6 +39,19 @@ const desktopApi = Object.freeze({
   }),
   shell: Object.freeze({
     openDirectory: (title?: string) => ipcRenderer.invoke("agentkib:shell:open-directory", title),
+    openFilesAndFoldersSettings: () =>
+      ipcRenderer.invoke("agentkib:shell:open-files-and-folders-settings"),
+    quit: () => ipcRenderer.invoke("agentkib:shell:quit"),
+  }),
+  settings: Object.freeze({
+    setCloseBehavior: (value: unknown) =>
+      ipcRenderer.invoke("agentkib:settings:set-close-behavior", value),
+    setLocale: (preference: string) =>
+      ipcRenderer.invoke("agentkib:settings:set-locale", preference),
+    setThemePreference: (preference: string) =>
+      ipcRenderer.invoke("agentkib:settings:set-theme", preference),
+    setAppIconPreference: (preference: string) =>
+      ipcRenderer.invoke("agentkib:settings:set-app-icon", preference),
   }),
   home: Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
@@ -55,6 +68,12 @@ const desktopApi = Object.freeze({
     refreshDiscovery: () => ipcRenderer.invoke("agentkib:home:refresh-discovery"),
     excludedWorkspaces: () => ipcRenderer.invoke("agentkib:home:excluded-workspaces"),
     remoteGateways: () => ipcRenderer.invoke("agentkib:home:remote-gateways"),
+    saveRemoteGateway: (input: unknown) =>
+      ipcRenderer.invoke("agentkib:home:save-remote-gateway", input),
+    refreshRemoteGateway: (id: string) =>
+      ipcRenderer.invoke("agentkib:home:refresh-remote-gateway", id),
+    removeRemoteGateway: (id: string) =>
+      ipcRenderer.invoke("agentkib:home:remove-remote-gateway", id),
     insightsView: (query: unknown) => ipcRenderer.invoke("agentkib:home:insights-view", query),
     refreshInsights: () => ipcRenderer.invoke("agentkib:home:refresh-insights"),
     insightsSummary: (query: unknown) =>
@@ -81,6 +100,19 @@ const desktopApi = Object.freeze({
     updateOnboarding: (event: unknown) =>
       ipcRenderer.invoke("agentkib:home:update-onboarding", event),
     obsidianIntegration: () => ipcRenderer.invoke("agentkib:home:obsidian-integration"),
+    addObsidianVault: (path: string) => ipcRenderer.invoke("agentkib:home:add-obsidian-vault", path),
+    linkWorkspaceToObsidian: (workspaceId: string, vaultPath: string, relativeTarget?: string) =>
+      ipcRenderer.invoke(
+        "agentkib:home:link-obsidian-workspace",
+        workspaceId,
+        vaultPath,
+        relativeTarget,
+      ),
+    unlinkWorkspaceFromObsidian: (workspaceId: string) =>
+      ipcRenderer.invoke("agentkib:home:unlink-obsidian-workspace", workspaceId),
+    openObsidian: () => ipcRenderer.invoke("agentkib:home:open-obsidian"),
+    openWorkspaceInObsidian: (workspaceId: string) =>
+      ipcRenderer.invoke("agentkib:home:open-obsidian-workspace", workspaceId),
   }),
 }) satisfies DesktopApi;
 

@@ -29,6 +29,7 @@ let mainWindow: BrowserWindow | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
+let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -79,6 +80,12 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("crash-loop", (error: Error) => void showStartupFailure(error));
   runtimeHandshake = await runtimeHost.start();
+  const runtime = await runtimeHost.request<{
+    close_behavior?: "minimize-to-tray" | "quit";
+    effective_theme?: "light" | "dark";
+  }>(RUNTIME_METHODS.runtimeInfo, {});
+  closeBehavior = runtime.close_behavior;
+  if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
 
   ipcMain.handle("agentkib:runtime:handshake", (event) => {
     assertTrustedRenderer(event);
@@ -256,6 +263,45 @@ function registerShellIpc(): void {
     });
     return result.canceled ? undefined : result.filePaths[0];
   });
+  ipcMain.handle("agentkib:shell:open-files-and-folders-settings", (event) => {
+    assertTrustedRenderer(event);
+    const settingsUrl =
+      process.platform === "darwin"
+        ? "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        : process.platform === "win32"
+          ? "ms-settings:privacy-broadfilesystemaccess"
+          : undefined;
+    if (!settingsUrl) throw new Error("Opening file and folder settings is not supported");
+    return shell.openExternal(settingsUrl);
+  });
+  ipcMain.handle("agentkib:shell:quit", (event) => {
+    assertTrustedRenderer(event);
+    app.quit();
+  });
+  ipcMain.handle("agentkib:settings:set-close-behavior", (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    const next = optionalCloseBehavior(value);
+    closeBehavior = next;
+    return requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value: next ?? null });
+  });
+  ipcMain.handle("agentkib:settings:set-locale", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.setLocale, {
+      preference: requireString(preference, "preference"),
+    });
+  });
+  ipcMain.handle("agentkib:settings:set-theme", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    const next = requireThemePreference(preference);
+    nativeTheme.themeSource = next;
+    return requireRuntime().request(RUNTIME_METHODS.setThemePreference, { preference: next });
+  });
+  ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.setAppIconPreference, {
+      preference: requireAppIconPreference(preference),
+    });
+  });
 }
 
 function registerHomeIpc(): void {
@@ -322,6 +368,24 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:home:remote-gateways", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listRemoteGateways, {});
+  });
+  ipcMain.handle("agentkib:home:save-remote-gateway", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.saveRemoteGateway, {
+      input: requireObject(input, "remote gateway"),
+    });
+  });
+  ipcMain.handle("agentkib:home:refresh-remote-gateway", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshRemoteGateway, {
+      id: requireString(id, "id"),
+    });
+  });
+  ipcMain.handle("agentkib:home:remove-remote-gateway", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.removeRemoteGateway, {
+      id: requireString(id, "id"),
+    });
   });
   ipcMain.handle("agentkib:home:insights-view", (event, query: unknown) => {
     assertTrustedRenderer(event);
@@ -417,16 +481,40 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:obsidian-integration", (event) => {
     assertTrustedRenderer(event);
-    return {
-      installation: {
-        installed: false,
-        app_path: undefined,
-        version: undefined,
-        cli_available: false,
-      },
-      vaults: [],
-      workspace_links: [],
-    };
+    return requireRuntime().request(RUNTIME_METHODS.obsidianIntegration, {});
+  });
+  ipcMain.handle("agentkib:home:add-obsidian-vault", (event, vaultPath: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.addObsidianVault, {
+      path: requireString(vaultPath, "path"),
+    });
+  });
+  ipcMain.handle(
+    "agentkib:home:link-obsidian-workspace",
+    (event, workspaceId: unknown, vaultPath: unknown, relativeTarget: unknown) => {
+      assertTrustedRenderer(event);
+      return requireRuntime().request(RUNTIME_METHODS.linkObsidianWorkspace, {
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        vaultPath: requireString(vaultPath, "vaultPath"),
+        relativeTarget: optionalString(relativeTarget, "relativeTarget"),
+      });
+    },
+  );
+  ipcMain.handle("agentkib:home:unlink-obsidian-workspace", (event, workspaceId: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.unlinkObsidianWorkspace, {
+      id: requireString(workspaceId, "workspaceId"),
+    });
+  });
+  ipcMain.handle("agentkib:home:open-obsidian", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.openObsidian, {});
+  });
+  ipcMain.handle("agentkib:home:open-obsidian-workspace", (event, workspaceId: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.openObsidianWorkspace, {
+      id: requireString(workspaceId, "workspaceId"),
+    });
   });
   ipcMain.handle("agentkib:workspace:doctor-summaries", (event, ids: unknown) => {
     assertTrustedRenderer(event);
@@ -486,6 +574,28 @@ function optionalString(value: unknown, name: string): string | undefined {
   return value === undefined || value === null ? undefined : requireString(value, name);
 }
 
+function optionalCloseBehavior(value: unknown): "minimize-to-tray" | "quit" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value !== "minimize-to-tray" && value !== "quit") {
+    throw new TypeError("close behavior must be minimize-to-tray or quit");
+  }
+  return value;
+}
+
+function requireThemePreference(value: unknown): "system" | "light" | "dark" {
+  if (value !== "system" && value !== "light" && value !== "dark") {
+    throw new TypeError("theme preference must be system, light, or dark");
+  }
+  return value;
+}
+
+function requireAppIconPreference(value: unknown): "white" | "black" {
+  if (value !== "white" && value !== "black") {
+    throw new TypeError("app icon preference must be white or black");
+  }
+  return value;
+}
+
 function optionalPositiveInteger(value: unknown, name: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
@@ -518,6 +628,12 @@ async function createMainWindow(): Promise<void> {
   });
   mainWindow = window;
 
+  window.on("close", (event) => {
+    if (!shutdownStarted && closeBehavior === "minimize-to-tray") {
+      event.preventDefault();
+      window.minimize();
+    }
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

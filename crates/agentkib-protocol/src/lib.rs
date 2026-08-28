@@ -32,6 +32,19 @@ pub const REMOVE_SCAN_ROOT_METHOD: &str = "discovery.removeScanRoot";
 pub const REFRESH_DISCOVERY_METHOD: &str = "discovery.refresh";
 pub const LIST_EXCLUDED_WORKSPACES_METHOD: &str = "discovery.listExcludedWorkspaces";
 pub const LIST_REMOTE_GATEWAYS_METHOD: &str = "gateways.list";
+pub const SAVE_REMOTE_GATEWAY_METHOD: &str = "gateways.save";
+pub const REFRESH_REMOTE_GATEWAY_METHOD: &str = "gateways.refresh";
+pub const REMOVE_REMOTE_GATEWAY_METHOD: &str = "gateways.remove";
+pub const OBSIDIAN_INTEGRATION_METHOD: &str = "obsidian.integration";
+pub const ADD_OBSIDIAN_VAULT_METHOD: &str = "obsidian.addVault";
+pub const LINK_OBSIDIAN_WORKSPACE_METHOD: &str = "obsidian.linkWorkspace";
+pub const UNLINK_OBSIDIAN_WORKSPACE_METHOD: &str = "obsidian.unlinkWorkspace";
+pub const OPEN_OBSIDIAN_METHOD: &str = "obsidian.open";
+pub const OPEN_OBSIDIAN_WORKSPACE_METHOD: &str = "obsidian.openWorkspace";
+pub const SET_CLOSE_BEHAVIOR_METHOD: &str = "settings.setCloseBehavior";
+pub const SET_LOCALE_METHOD: &str = "settings.setLocale";
+pub const SET_THEME_PREFERENCE_METHOD: &str = "settings.setThemePreference";
+pub const SET_APP_ICON_PREFERENCE_METHOD: &str = "settings.setAppIconPreference";
 pub const WORKSPACE_DOCTOR_SUMMARIES_METHOD: &str = "workspace.doctorSummaries";
 pub const INSIGHTS_VIEW_METHOD: &str = "insights.view";
 pub const REFRESH_INSIGHTS_METHOD: &str = "insights.refresh";
@@ -160,6 +173,19 @@ export const RUNTIME_METHODS = {{
   refreshDiscovery: "{REFRESH_DISCOVERY_METHOD}",
   listExcludedWorkspaces: "{LIST_EXCLUDED_WORKSPACES_METHOD}",
   listRemoteGateways: "{LIST_REMOTE_GATEWAYS_METHOD}",
+  saveRemoteGateway: "{SAVE_REMOTE_GATEWAY_METHOD}",
+  refreshRemoteGateway: "{REFRESH_REMOTE_GATEWAY_METHOD}",
+  removeRemoteGateway: "{REMOVE_REMOTE_GATEWAY_METHOD}",
+  obsidianIntegration: "{OBSIDIAN_INTEGRATION_METHOD}",
+  addObsidianVault: "{ADD_OBSIDIAN_VAULT_METHOD}",
+  linkObsidianWorkspace: "{LINK_OBSIDIAN_WORKSPACE_METHOD}",
+  unlinkObsidianWorkspace: "{UNLINK_OBSIDIAN_WORKSPACE_METHOD}",
+  openObsidian: "{OPEN_OBSIDIAN_METHOD}",
+  openObsidianWorkspace: "{OPEN_OBSIDIAN_WORKSPACE_METHOD}",
+  setCloseBehavior: "{SET_CLOSE_BEHAVIOR_METHOD}",
+  setLocale: "{SET_LOCALE_METHOD}",
+  setThemePreference: "{SET_THEME_PREFERENCE_METHOD}",
+  setAppIconPreference: "{SET_APP_ICON_PREFERENCE_METHOD}",
   workspaceDoctorSummaries: "{WORKSPACE_DOCTOR_SUMMARIES_METHOD}",
   insightsView: "{INSIGHTS_VIEW_METHOD}",
   refreshInsights: "{REFRESH_INSIGHTS_METHOD}",

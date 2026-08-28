@@ -28,6 +28,14 @@ export interface DesktopApi {
   };
   shell: {
     openDirectory(title?: string): Promise<string | undefined>;
+    openFilesAndFoldersSettings(): Promise<unknown>;
+    quit(): Promise<unknown>;
+  };
+  settings: {
+    setCloseBehavior(value?: string): Promise<unknown>;
+    setLocale(preference: string): Promise<unknown>;
+    setThemePreference(preference: string): Promise<unknown>;
+    setAppIconPreference(preference: string): Promise<unknown>;
   };
   home: {
     runtime(): Promise<unknown>;
@@ -42,6 +50,9 @@ export interface DesktopApi {
     refreshDiscovery(): Promise<unknown>;
     excludedWorkspaces(): Promise<unknown>;
     remoteGateways(): Promise<unknown>;
+    saveRemoteGateway(input: unknown): Promise<unknown>;
+    refreshRemoteGateway(id: string): Promise<unknown>;
+    removeRemoteGateway(id: string): Promise<unknown>;
     insightsView(query: unknown): Promise<unknown>;
     refreshInsights(): Promise<unknown>;
     insightsSummary(query: unknown): Promise<unknown>;
@@ -61,5 +72,14 @@ export interface DesktopApi {
     cancelStorage(): Promise<unknown>;
     updateOnboarding(event: unknown): Promise<unknown>;
     obsidianIntegration(): Promise<unknown>;
+    addObsidianVault(path: string): Promise<unknown>;
+    linkWorkspaceToObsidian(
+      workspaceId: string,
+      vaultPath: string,
+      relativeTarget?: string,
+    ): Promise<unknown>;
+    unlinkWorkspaceFromObsidian(workspaceId: string): Promise<unknown>;
+    openObsidian(): Promise<unknown>;
+    openWorkspaceInObsidian(workspaceId: string): Promise<unknown>;
   };
 }

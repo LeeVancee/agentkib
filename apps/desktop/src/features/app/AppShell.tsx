@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { useLocation } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import {
@@ -11,6 +12,7 @@ import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 const mainClassName =
   "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
@@ -59,6 +61,14 @@ export function AppShell({
   mainClassName?: string;
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const locationKey = useLocation({ select: (location) => location.href });
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+  }, [locationKey]);
 
   return (
     <div
@@ -71,7 +81,7 @@ export function AppShell({
       <AppShellHeader />
       {sidebar}
       <main className={cn(mainClassName, additionalMainClassName)}>
-        <div className="page-scroll-container min-h-0 flex-1">
+        <div ref={scrollContainerRef} className="page-scroll-container min-h-0 flex-1">
           {children}
         </div>
       </main>

@@ -463,7 +463,7 @@ function ProviderTabs({
               key={provider.id}
               value={provider.id}
               className={cn(
-                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-primary data-active:!text-primary-foreground data-active:!shadow-sm",
+                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
                 unavailable && "opacity-60",
               )}
             >
@@ -473,7 +473,7 @@ function ProviderTabs({
                 <small
                   className={cn(
                     "truncate text-[11px] text-muted-foreground",
-                    isActive && "text-primary-foreground/80",
+                    isActive && "text-foreground/70",
                   )}
                 >
                   {provider.identity?.account_email ??
@@ -488,7 +488,7 @@ function ProviderTabs({
                   <em
                     className={cn(
                       "text-[13px] font-bold not-italic",
-                      isActive && "text-primary-foreground",
+                      isActive && "text-primary",
                       !isActive && severity === "healthy" && "text-green-600",
                       !isActive && severity === "warning" && "text-amber-600",
                       !isActive && severity === "danger" && "text-red-600",
@@ -499,13 +499,13 @@ function ProviderTabs({
                   <i
                     className={cn(
                       "absolute inset-x-3 bottom-2 h-1 overflow-hidden rounded-full bg-muted",
-                      isActive && "bg-primary-foreground/25",
+                      isActive && "bg-primary/20",
                     )}
                   >
                     <b
                       className={cn(
                         "block h-full rounded-full bg-primary",
-                        isActive && "bg-primary-foreground",
+                        isActive && "bg-primary",
                         !isActive && severity === "warning" && "bg-amber-500",
                         !isActive && severity === "danger" && "bg-red-500",
                       )}

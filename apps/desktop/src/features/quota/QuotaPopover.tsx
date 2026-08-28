@@ -285,7 +285,7 @@ export function QuotaPopover() {
               const remaining = lowestRemaining(provider);
               return (
                 <TabsTrigger
-                  className="segmented-control-item h-auto min-w-[72px] flex-none flex-col gap-1 px-1 py-2 text-xs"
+                  className="segmented-control-item h-auto min-w-[72px] flex-none flex-col gap-1 border border-transparent px-1 py-2 text-xs transition-colors data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]"
                   key={provider.id}
                   value={provider.id}
                 >

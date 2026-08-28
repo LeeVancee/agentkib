@@ -8,15 +8,14 @@ import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import { AppUpdateSetting } from "./GlobalSettings";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 vi.mock("@/core/api", () => ({
   api: {
     checkAppUpdate: vi.fn(),
+    openExternal: vi.fn(),
     installAppUpdate: vi.fn(),
   },
 }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 const availableUpdate = {
   current_version: "0.2.0",
@@ -39,8 +38,8 @@ describe("AppUpdateSetting", () => {
   afterEach(cleanup);
   beforeEach(() => {
     vi.mocked(api.checkAppUpdate).mockReset();
+    vi.mocked(api.openExternal).mockReset();
     vi.mocked(api.installAppUpdate).mockReset();
-    vi.mocked(openUrl).mockReset();
   });
 
   it("locks repeated checks and reports an up-to-date version", async () => {
@@ -83,14 +82,14 @@ describe("AppUpdateSetting", () => {
       ...availableUpdate,
       install_mode: "manual",
     });
-    vi.mocked(openUrl).mockResolvedValue(undefined);
+    vi.mocked(api.openExternal).mockResolvedValue(undefined);
     const user = userEvent.setup();
     renderSetting();
 
     await user.click(screen.getByRole("button", { name: "Check for updates" }));
     await user.click(await screen.findByRole("button", { name: "Open Release download" }));
 
-    expect(openUrl).toHaveBeenCalledWith(availableUpdate.release_url);
+    expect(api.openExternal).toHaveBeenCalledWith(availableUpdate.release_url);
     expect(api.installAppUpdate).not.toHaveBeenCalled();
   });
 

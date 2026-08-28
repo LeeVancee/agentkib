@@ -45,6 +45,49 @@ pub const SET_CLOSE_BEHAVIOR_METHOD: &str = "settings.setCloseBehavior";
 pub const SET_LOCALE_METHOD: &str = "settings.setLocale";
 pub const SET_THEME_PREFERENCE_METHOD: &str = "settings.setThemePreference";
 pub const SET_APP_ICON_PREFERENCE_METHOD: &str = "settings.setAppIconPreference";
+pub const PLAN_CHANGES_METHOD: &str = "changes.plan";
+pub const APPLY_CHANGES_METHOD: &str = "changes.apply";
+pub const LIST_MEMORIES_METHOD: &str = "memories.list";
+pub const SEARCH_MEMORIES_METHOD: &str = "memories.search";
+pub const PROPOSE_MEMORY_METHOD: &str = "memories.propose";
+pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
+pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
+pub const SUMMARIZE_SESSION_HANDOFF_METHOD: &str = "sessions.summarizeHandoff";
+pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
+pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
+pub const CONTINUE_SESSION_HANDOFF_METHOD: &str = "sessions.continueHandoff";
+pub const LAUNCH_SESSION_HANDOFF_METHOD: &str = "sessions.launchHandoff";
+pub const CLEAR_SESSION_INDEX_METHOD: &str = "sessions.clearIndex";
+pub const SET_SESSION_INDEX_ENABLED_METHOD: &str = "sessions.setIndexEnabled";
+pub const MCP_HUB_STATUS_METHOD: &str = "mcp.hubStatus";
+pub const UPDATE_MCP_NETWORK_METHOD: &str = "mcp.updateNetwork";
+pub const LIST_MCP_SERVERS_METHOD: &str = "mcp.listServers";
+pub const GET_MCP_SERVER_METHOD: &str = "mcp.getServer";
+pub const SAVE_MCP_SERVER_METHOD: &str = "mcp.saveServer";
+pub const SAVE_MCP_LOCAL_VALUES_METHOD: &str = "mcp.saveLocalValues";
+pub const REMOVE_MCP_SERVER_METHOD: &str = "mcp.removeServer";
+pub const PROBE_MCP_RUNTIME_METHOD: &str = "mcp.probeRuntime";
+pub const START_MCP_OAUTH_METHOD: &str = "mcp.startOAuth";
+pub const LIST_MCP_RUNTIMES_METHOD: &str = "mcp.listRuntimes";
+pub const RESTART_MCP_RUNTIME_METHOD: &str = "mcp.restartRuntime";
+pub const STOP_MCP_RUNTIME_METHOD: &str = "mcp.stopRuntime";
+pub const SEARCH_MCP_REGISTRY_METHOD: &str = "mcp.searchRegistry";
+pub const REFRESH_MCP_REGISTRY_METHOD: &str = "mcp.refreshRegistry";
+pub const INSTALL_MCP_METHOD: &str = "mcp.install";
+pub const UPDATE_MCP_METHOD: &str = "mcp.update";
+pub const LIST_MCP_INSTALLATIONS_METHOD: &str = "mcp.listInstallations";
+pub const UNINSTALL_MCP_METHOD: &str = "mcp.uninstall";
+pub const SCAN_NATIVE_MCP_METHOD: &str = "mcp.scanNative";
+pub const PLAN_MCP_MIGRATION_METHOD: &str = "mcp.planMigration";
+pub const INSIGHTS_HEATMAP_METHOD: &str = "insights.heatmap";
+pub const AGENT_USAGE_BREAKDOWN_METHOD: &str = "insights.agentUsage";
+pub const MODEL_USAGE_BREAKDOWN_METHOD: &str = "insights.modelUsage";
+pub const WORKSPACE_USAGE_BREAKDOWN_METHOD: &str = "insights.workspaceUsage";
+pub const REPOSITORY_COMMIT_BREAKDOWN_METHOD: &str = "insights.repositoryCommits";
+pub const ACHIEVEMENTS_METHOD: &str = "insights.achievements";
+pub const GIT_IDENTITIES_METHOD: &str = "insights.gitIdentities";
+pub const ADD_GIT_IDENTITY_ALIAS_METHOD: &str = "insights.addGitIdentityAlias";
+pub const SET_GIT_IDENTITY_ENABLED_METHOD: &str = "insights.setGitIdentityEnabled";
 pub const WORKSPACE_DOCTOR_SUMMARIES_METHOD: &str = "workspace.doctorSummaries";
 pub const INSIGHTS_VIEW_METHOD: &str = "insights.view";
 pub const REFRESH_INSIGHTS_METHOD: &str = "insights.refresh";
@@ -186,6 +229,49 @@ export const RUNTIME_METHODS = {{
   setLocale: "{SET_LOCALE_METHOD}",
   setThemePreference: "{SET_THEME_PREFERENCE_METHOD}",
   setAppIconPreference: "{SET_APP_ICON_PREFERENCE_METHOD}",
+  planChanges: "{PLAN_CHANGES_METHOD}",
+  applyChanges: "{APPLY_CHANGES_METHOD}",
+  listMemories: "{LIST_MEMORIES_METHOD}",
+  searchMemories: "{SEARCH_MEMORIES_METHOD}",
+  proposeMemory: "{PROPOSE_MEMORY_METHOD}",
+  reviewMemory: "{REVIEW_MEMORY_METHOD}",
+  prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
+  summarizeSessionHandoff: "{SUMMARIZE_SESSION_HANDOFF_METHOD}",
+  sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
+  planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",
+  continueSessionHandoff: "{CONTINUE_SESSION_HANDOFF_METHOD}",
+  launchSessionHandoff: "{LAUNCH_SESSION_HANDOFF_METHOD}",
+  clearSessionIndex: "{CLEAR_SESSION_INDEX_METHOD}",
+  setSessionIndexEnabled: "{SET_SESSION_INDEX_ENABLED_METHOD}",
+  mcpHubStatus: "{MCP_HUB_STATUS_METHOD}",
+  updateMcpNetwork: "{UPDATE_MCP_NETWORK_METHOD}",
+  listMcpServers: "{LIST_MCP_SERVERS_METHOD}",
+  getMcpServer: "{GET_MCP_SERVER_METHOD}",
+  saveMcpServer: "{SAVE_MCP_SERVER_METHOD}",
+  saveMcpLocalValues: "{SAVE_MCP_LOCAL_VALUES_METHOD}",
+  removeMcpServer: "{REMOVE_MCP_SERVER_METHOD}",
+  probeMcpRuntime: "{PROBE_MCP_RUNTIME_METHOD}",
+  startMcpOAuth: "{START_MCP_OAUTH_METHOD}",
+  listMcpRuntimes: "{LIST_MCP_RUNTIMES_METHOD}",
+  restartMcpRuntime: "{RESTART_MCP_RUNTIME_METHOD}",
+  stopMcpRuntime: "{STOP_MCP_RUNTIME_METHOD}",
+  searchMcpRegistry: "{SEARCH_MCP_REGISTRY_METHOD}",
+  refreshMcpRegistry: "{REFRESH_MCP_REGISTRY_METHOD}",
+  installMcp: "{INSTALL_MCP_METHOD}",
+  updateMcp: "{UPDATE_MCP_METHOD}",
+  listMcpInstallations: "{LIST_MCP_INSTALLATIONS_METHOD}",
+  uninstallMcp: "{UNINSTALL_MCP_METHOD}",
+  scanNativeMcp: "{SCAN_NATIVE_MCP_METHOD}",
+  planMcpMigration: "{PLAN_MCP_MIGRATION_METHOD}",
+  insightsHeatmap: "{INSIGHTS_HEATMAP_METHOD}",
+  agentUsageBreakdown: "{AGENT_USAGE_BREAKDOWN_METHOD}",
+  modelUsageBreakdown: "{MODEL_USAGE_BREAKDOWN_METHOD}",
+  workspaceUsageBreakdown: "{WORKSPACE_USAGE_BREAKDOWN_METHOD}",
+  repositoryCommitBreakdown: "{REPOSITORY_COMMIT_BREAKDOWN_METHOD}",
+  achievements: "{ACHIEVEMENTS_METHOD}",
+  gitIdentities: "{GIT_IDENTITIES_METHOD}",
+  addGitIdentityAlias: "{ADD_GIT_IDENTITY_ALIAS_METHOD}",
+  setGitIdentityEnabled: "{SET_GIT_IDENTITY_ENABLED_METHOD}",
   workspaceDoctorSummaries: "{WORKSPACE_DOCTOR_SUMMARIES_METHOD}",
   insightsView: "{INSIGHTS_VIEW_METHOD}",
   refreshInsights: "{REFRESH_INSIGHTS_METHOD}",

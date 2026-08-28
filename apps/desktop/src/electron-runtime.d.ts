@@ -1,6 +1,11 @@
 import type { RuntimeHandshakeResult } from "../electron/generated/runtime-protocol";
 import type {
   AgentKind,
+  AppUpdateInfo,
+  AppUpdateProgress,
+  Achievement,
+  AgentUsageBreakdown,
+  ChangeSet,
   CatalogAsset,
   ContextDoctorSummary,
   ContextPreview,
@@ -30,6 +35,14 @@ import type {
   ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
+  SessionHandoffRequest,
+  SessionHandoffPreparation,
+  SessionHandoffDraft,
+  SessionHandoffLaunchRequest,
+  HandoffContinuationResult,
+  HandoffFormat,
+  HandoffLaunchReceipt,
+  PlannedSessionHandoff,
   RuntimeInfo,
   InsightsSummary,
   InsightsView,
@@ -38,15 +51,87 @@ import type {
   AppIconPreference,
   CloseBehavior,
   LocalePreference,
+  McpHubStatus,
+  McpInstallation,
+  McpInstallResult,
+  McpMigrationCandidate,
+  McpOAuthStart,
+  McpRegistryEntry,
+  McpRuntimeStatus,
+  McpServerConfig,
+  McpToolDescriptor,
   RemoteGatewayInput,
   RemoteGatewaySummary,
   ObsidianWorkspaceLink,
+  GitIdentitySummary,
 } from "./core/types";
 
 interface AgentKibDesktopApi {
   platform: NodeJS.Platform;
   runtime: {
     handshake(): Promise<RuntimeHandshakeResult>;
+  };
+  updates: {
+    check(): Promise<AppUpdateInfo | undefined>;
+    install(version: string, onEvent: (event: AppUpdateProgress) => void): Promise<void>;
+  };
+  changes: {
+    plan(project: string, manifest: Manifest, includeHome: boolean): Promise<ChangeSet>;
+    apply(changeSet: ChangeSet, approveHome: boolean): Promise<unknown>;
+  };
+  memories: {
+    list(project: string, status?: string): Promise<MemoryRecord[]>;
+    search(project: string, query: string, limit?: number): Promise<MemoryRecord[]>;
+    propose(project: string, proposal: unknown): Promise<MemoryRecord>;
+    review(id: string, status: string, editedContent?: string): Promise<MemoryRecord>;
+  };
+  sessions: {
+    clearIndex(workspaceId?: string): Promise<void>;
+    setIndexEnabled(enabled: boolean): Promise<RuntimeInfo>;
+  };
+  mcp: {
+    hubStatus(): Promise<McpHubStatus>;
+    updateNetwork(settings: unknown): Promise<McpHubStatus>;
+    listServers(project?: string): Promise<McpServerConfig[]>;
+    getServer(serverId: string, project?: string): Promise<McpServerConfig | undefined>;
+    saveServer(server: McpServerConfig, project?: string): Promise<McpServerConfig>;
+    saveLocalValues(
+      serverId: string,
+      env: Record<string, string>,
+      headers: Record<string, string>,
+      project?: string,
+    ): Promise<void>;
+    removeServer(serverId: string, project?: string): Promise<void>;
+    probeRuntime(serverId: string, project?: string): Promise<McpToolDescriptor[]>;
+    startOAuth(serverId: string, project?: string): Promise<McpOAuthStart>;
+    runtimes(): Promise<McpRuntimeStatus[]>;
+    restartRuntime(serverId: string, project?: string): Promise<McpToolDescriptor[]>;
+    stopRuntime(serverId?: string): Promise<void>;
+    searchRegistry(query: string): Promise<McpRegistryEntry[]>;
+    refreshRegistry(query: string): Promise<McpRegistryEntry[]>;
+    install(entry: McpRegistryEntry, project?: string): Promise<McpInstallResult>;
+    update(
+      installationId: string,
+      entry: McpRegistryEntry,
+      project?: string,
+    ): Promise<McpInstallResult>;
+    installations(): Promise<McpInstallation[]>;
+    uninstall(installationId: string): Promise<void>;
+    scanNative(project?: string): Promise<McpMigrationCandidate[]>;
+    planMigration(project: string, candidateIds: string[]): Promise<ChangeSet>;
+  };
+  insights: {
+    heatmap(query: InsightsQuery): Promise<import("./core/types").HeatmapPoint[]>;
+    agentUsage(query: InsightsQuery): Promise<AgentUsageBreakdown[]>;
+    modelUsage(query: InsightsQuery): Promise<import("./core/types").ModelUsageBreakdown[]>;
+    workspaceUsage(query: InsightsQuery): Promise<import("./core/types").WorkspaceUsageBreakdown[]>;
+    repositoryCommits(
+      query: InsightsQuery,
+    ): Promise<import("./core/types").RepositoryCommitBreakdown[]>;
+    achievements(): Promise<Achievement[]>;
+    gitIdentities(): Promise<GitIdentitySummary[]>;
+    addGitIdentityAlias(email: string): Promise<GitIdentitySummary>;
+    setGitIdentityEnabled(id: string, enabled: boolean): Promise<void>;
   };
   workspace: {
     scan(project: string): Promise<WorkspaceScan>;
@@ -65,6 +150,21 @@ interface AgentKibDesktopApi {
     sessionStatus(id: string): Promise<ConversationIndexStatus[]>;
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
+    prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
+    summarizeHandoff(request: SessionHandoffRequest): Promise<SessionHandoffDraft>;
+    sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
+    planHandoff(
+      workspaceId: string,
+      filename: string,
+      format: HandoffFormat,
+      editedContent: string,
+      targetAgent: AgentKind,
+    ): Promise<PlannedSessionHandoff>;
+    continueHandoff(
+      changeSet: ChangeSet,
+      launchRequest: SessionHandoffLaunchRequest,
+    ): Promise<HandoffContinuationResult>;
+    launchHandoff(launchRequest: SessionHandoffLaunchRequest): Promise<HandoffLaunchReceipt>;
     openers(id: string): Promise<WorkspaceOpener[]>;
     open(id: string, openerId?: string): Promise<void>;
     doctorSummaries(workspaceIds: string[]): Promise<ContextDoctorSummary[]>;

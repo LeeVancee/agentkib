@@ -84,12 +84,14 @@ export function AppRuntimeBridge() {
     let unlistenNavigate: (() => void) | undefined;
     let unlistenMenuCommand: (() => void) | undefined;
     let unlistenTheme: (() => void) | undefined;
+    const onElectronNavigate = (event: Event) => {
+      const payload = (event as CustomEvent<AppNavigationRequest>).detail;
+      if (payload) setNavigationRequest(payload);
+    };
+    if (electronRuntime) window.addEventListener("agentkib:electron-navigate", onElectronNavigate);
     const onElectronRefreshState = (event: Event) => {
       const status = (event as CustomEvent<RefreshJobStatus>).detail;
-      setRefreshJobs((current) => [
-        ...current.filter((job) => job.kind !== status.kind),
-        status,
-      ]);
+      setRefreshJobs((current) => [...current.filter((job) => job.kind !== status.kind), status]);
       if (status.kind === "discovery" && status.state === "succeeded") {
         void loadDiscoveryCache();
       }
@@ -235,6 +237,7 @@ export function AppRuntimeBridge() {
       unlistenMenuCommand?.();
       unlistenTheme?.();
       window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+      window.removeEventListener("agentkib:electron-navigate", onElectronNavigate);
     };
   }, []);
 

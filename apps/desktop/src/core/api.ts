@@ -97,8 +97,10 @@ export const api = {
     return { ...manifest, connections: manifest.connections ?? [] };
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>
+    electronDesktopApi()?.changes.plan(project, manifest, includeHome) ??
     invoke<ChangeSet>("plan_changes", { project, manifest, includeHome }),
   apply: (changeSet: ChangeSet, approveHome: boolean) =>
+    electronDesktopApi()?.changes.apply(changeSet, approveHome) ??
     invoke("apply_changes", { changeSet, approveHome }),
   context: (project: string, cwd: string, agent: AgentKind) =>
     electronDesktopApi()?.workspace.resolveContext(project, cwd, agent) ??
@@ -109,10 +111,18 @@ export const api = {
     return typeof selected === "string" ? selected : undefined;
   },
   memories: (project: string, status?: MemoryStatus) =>
+    electronDesktopApi()?.memories.list(project, status) ??
     invoke<MemoryRecord[]>("list_memories", { project, status }),
   searchMemories: (project: string, query: string, limit = 50) =>
+    electronDesktopApi()?.memories.search(project, query, limit) ??
     invoke<MemoryRecord[]>("search_memories", { project, query, limit }),
   proposeMemory: (project: string, content: string, memoryType: MemoryType) =>
+    electronDesktopApi()?.memories.propose(project, {
+      project_id: "",
+      memory_type: memoryType,
+      content,
+      source_agent: "agentkib-desktop",
+    }) ??
     invoke<MemoryRecord>("propose_memory", {
       project,
       proposal: {
@@ -123,6 +133,7 @@ export const api = {
       },
     }),
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
+    electronDesktopApi()?.memories.review(id, status, editedContent) ??
     invoke<MemoryRecord>("review_memory", { id, status, editedContent }),
   runtime: () => electronDesktopApi()?.home.runtime() ?? invoke<RuntimeInfo>("runtime_info"),
   updateOnboarding: (event: OnboardingEvent) =>
@@ -144,50 +155,77 @@ export const api = {
   setAppIconPreference: (preference: AppIconPreference) =>
     electronDesktopApi()?.settings.setAppIconPreference(preference) ??
     invoke<RuntimeInfo>("set_app_icon_preference", { preference }),
-  checkAppUpdate: () => invoke<AppUpdateInfo | undefined>("check_app_update"),
+  checkAppUpdate: () =>
+    electronDesktopApi()?.updates.check() ?? invoke<AppUpdateInfo | undefined>("check_app_update"),
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) => {
+    const desktop = electronDesktopApi();
+    if (desktop) return desktop.updates.install(version, onEvent);
     const channel = new Channel<AppUpdateProgress>();
     channel.onmessage = onEvent;
     return invoke<void>("install_app_update", { version, onEvent: channel });
   },
-  mcpHubStatus: () => invoke<McpHubStatus>("get_mcp_hub_status"),
+  mcpHubStatus: () =>
+    electronDesktopApi()?.mcp.hubStatus() ?? invoke<McpHubStatus>("get_mcp_hub_status"),
   updateMcpNetwork: (settings: McpNetworkSettings) =>
+    electronDesktopApi()?.mcp.updateNetwork(settings) ??
     invoke<McpHubStatus>("update_mcp_network_settings", { settings }),
-  mcpServers: (project?: string) => invoke<McpServerConfig[]>("list_mcp_servers", { project }),
+  mcpServers: (project?: string) =>
+    electronDesktopApi()?.mcp.listServers(project) ??
+    invoke<McpServerConfig[]>("list_mcp_servers", { project }),
   mcpServer: (serverId: string, project?: string) =>
+    electronDesktopApi()?.mcp.getServer(serverId, project) ??
     invoke<McpServerConfig | undefined>("get_mcp_server", { serverId, project }),
   saveMcpServer: (server: McpServerConfig, project?: string) =>
+    electronDesktopApi()?.mcp.saveServer(server, project) ??
     invoke<McpServerConfig>("save_mcp_server", { server, project }),
   saveMcpLocalValues: (
     serverId: string,
     env: Record<string, string>,
     headers: Record<string, string>,
     project?: string,
-  ) => invoke<void>("save_mcp_local_values", { serverId, env, headers, project }),
+  ) =>
+    electronDesktopApi()?.mcp.saveLocalValues(serverId, env, headers, project) ??
+    invoke<void>("save_mcp_local_values", { serverId, env, headers, project }),
   removeMcpServer: (serverId: string, project?: string) =>
+    electronDesktopApi()?.mcp.removeServer(serverId, project) ??
     invoke<void>("remove_mcp_server", { serverId, project }),
   probeMcpRuntime: (serverId: string, project?: string) =>
+    electronDesktopApi()?.mcp.probeRuntime(serverId, project) ??
     invoke<McpToolDescriptor[]>("probe_mcp_runtime", { serverId, project }),
   startMcpOAuth: (serverId: string, project?: string) =>
+    electronDesktopApi()?.mcp.startOAuth(serverId, project) ??
     invoke<McpOAuthStart>("start_mcp_oauth", { serverId, project }),
-  mcpRuntimes: () => invoke<McpRuntimeStatus[]>("list_mcp_runtimes"),
+  mcpRuntimes: () =>
+    electronDesktopApi()?.mcp.runtimes() ?? invoke<McpRuntimeStatus[]>("list_mcp_runtimes"),
   restartMcpRuntime: (serverId: string, project?: string) =>
+    electronDesktopApi()?.mcp.restartRuntime(serverId, project) ??
     invoke<McpToolDescriptor[]>("restart_mcp_runtime", { serverId, project }),
-  stopMcpRuntime: (serverId?: string) => invoke<void>("stop_mcp_runtime", { serverId }),
+  stopMcpRuntime: (serverId?: string) =>
+    electronDesktopApi()?.mcp.stopRuntime(serverId) ??
+    invoke<void>("stop_mcp_runtime", { serverId }),
   searchMcpRegistry: (query: string) =>
+    electronDesktopApi()?.mcp.searchRegistry(query) ??
     invoke<McpRegistryEntry[]>("search_mcp_registry", { query }),
   refreshMcpRegistry: (query: string) =>
+    electronDesktopApi()?.mcp.refreshRegistry(query) ??
     invoke<McpRegistryEntry[]>("refresh_mcp_registry", { query }),
   installMcp: (entry: McpRegistryEntry, project?: string) =>
+    electronDesktopApi()?.mcp.install(entry, project) ??
     invoke<McpInstallResult>("install_mcp", { entry, project, confirmed: true }),
   updateMcp: (installationId: string, entry: McpRegistryEntry, project?: string) =>
+    electronDesktopApi()?.mcp.update(installationId, entry, project) ??
     invoke<McpInstallResult>("update_mcp", { installationId, entry, project, confirmed: true }),
-  mcpInstallations: () => invoke<McpInstallation[]>("list_mcp_installations"),
+  mcpInstallations: () =>
+    electronDesktopApi()?.mcp.installations() ??
+    invoke<McpInstallation[]>("list_mcp_installations"),
   uninstallMcp: (installationId: string) =>
+    electronDesktopApi()?.mcp.uninstall(installationId) ??
     invoke<void>("uninstall_mcp", { installationId, confirmed: true }),
   nativeMcpCandidates: (project?: string) =>
+    electronDesktopApi()?.mcp.scanNative(project) ??
     invoke<McpMigrationCandidate[]>("scan_native_mcp_candidates", { project }),
   planMcpMigration: (project: string, candidateIds: string[]) =>
+    electronDesktopApi()?.mcp.planMigration(project, candidateIds) ??
     invoke<ChangeSet>("plan_mcp_migration", { project, candidateIds }),
   requestRefresh: async (kind: RefreshKind, force = false) => {
     const electron = electronDesktopApi();
@@ -198,7 +236,7 @@ export const api = {
     else if (electron && kind === "storage") receipt = await electron.home.refreshStorage();
     else receipt = await invoke<RefreshReceipt>("request_refresh", { kind, force });
     if (electron) {
-      window.dispatchEvent(
+      globalThis.window.dispatchEvent(
         new CustomEvent<RefreshJobStatus>("agentkib:electron-refresh-state", {
           detail: receipt.status,
         }),
@@ -218,10 +256,18 @@ export const api = {
     invoke<void>("open_workspace_storage_path", { workspaceId, relativePath }),
   cancelStorageScan: () =>
     electronDesktopApi()?.home.cancelStorage() ?? invoke<boolean>("cancel_storage_scan"),
-  discoverWorkspaces: () => invoke<RefreshReceipt>("discover_workspaces"),
+  discoverWorkspaces: () =>
+    electronDesktopApi()?.home.refreshDiscovery() ?? invoke<RefreshReceipt>("discover_workspaces"),
   workspaces: () =>
     electronDesktopApi()?.home.workspaces() ?? invoke<WorkspaceSummary[]>("list_workspaces"),
-  workspace: (id: string) => invoke<WorkspaceSummary | undefined>("get_workspace", { id }),
+  workspace: async (id: string) => {
+    const desktop = electronDesktopApi();
+    if (desktop) {
+      const workspaces = await desktop.home.workspaces();
+      return workspaces.find((workspace) => workspace.id === id);
+    }
+    return invoke<WorkspaceSummary | undefined>("get_workspace", { id });
+  },
   workspaceGitSummary: (workspaceId: string) =>
     electronDesktopApi()?.workspace.gitSummary(workspaceId) ??
     invoke<GitWorkspaceSummary | undefined>("get_workspace_git_summary", { workspaceId }),
@@ -250,10 +296,13 @@ export const api = {
     electronDesktopApi()?.workspace.sessionEvents(sessionId, cursor, limit) ??
     invoke<ConversationEventPage>("read_session_events", { sessionId, cursor, limit }),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
+    electronDesktopApi()?.workspace.prepareHandoff(request) ??
     invoke<SessionHandoffPreparation>("prepare_session_handoff", { request }),
   summarizeSessionHandoff: (request: SessionHandoffRequest) =>
+    electronDesktopApi()?.workspace.summarizeHandoff(request) ??
     invoke<SessionHandoffDraft>("summarize_session_handoff", { request }),
   sanitizeSessionHandoff: (format: HandoffFormat, editedContent: string) =>
+    electronDesktopApi()?.workspace.sanitizeHandoff(format, editedContent) ??
     invoke<string>("sanitize_session_handoff", { format, editedContent }),
   planSessionHandoff: (
     workspaceId: string,
@@ -262,6 +311,13 @@ export const api = {
     editedContent: string,
     targetAgent: AgentKind,
   ) =>
+    electronDesktopApi()?.workspace.planHandoff(
+      workspaceId,
+      filename,
+      format,
+      editedContent,
+      targetAgent,
+    ) ??
     invoke<PlannedSessionHandoff>("plan_session_handoff", {
       workspaceId,
       filename,
@@ -270,14 +326,19 @@ export const api = {
       targetAgent,
     }),
   continueSessionHandoff: (changeSet: ChangeSet, launchRequest: SessionHandoffLaunchRequest) =>
+    electronDesktopApi()?.workspace.continueHandoff(changeSet, launchRequest) ??
     invoke<HandoffContinuationResult>("continue_session_handoff", { changeSet, launchRequest }),
   launchSessionHandoff: (launchRequest: SessionHandoffLaunchRequest) =>
+    electronDesktopApi()?.workspace.launchHandoff(launchRequest) ??
     invoke<HandoffLaunchReceipt>("launch_session_handoff", { launchRequest }),
   workspaceSessionStatus: (workspaceId: string) =>
     electronDesktopApi()?.workspace.sessionStatus(workspaceId) ??
     invoke<ConversationIndexStatus[]>("get_workspace_session_status", { workspaceId }),
-  clearSessionIndex: (workspaceId?: string) => invoke<void>("clear_session_index", { workspaceId }),
+  clearSessionIndex: (workspaceId?: string) =>
+    electronDesktopApi()?.sessions.clearIndex(workspaceId) ??
+    invoke<void>("clear_session_index", { workspaceId }),
   setSessionIndexEnabled: (enabled: boolean) =>
+    electronDesktopApi()?.sessions.setIndexEnabled(enabled) ??
     invoke<RuntimeInfo>("set_session_index_enabled", { enabled }),
   setQuotaAutoRefreshEnabled: (enabled: boolean) =>
     electronDesktopApi()?.home.setQuotaAutoRefresh(enabled) ??
@@ -365,7 +426,8 @@ export const api = {
   activity: (limit = 200) =>
     electronDesktopApi()?.home.activity(limit) ??
     invoke<ActivityRecord[]>("list_activity", { limit }),
-  refreshInsights: () => invoke<RefreshReceipt>("refresh_insights"),
+  refreshInsights: () =>
+    electronDesktopApi()?.home.refreshInsights() ?? invoke<RefreshReceipt>("refresh_insights"),
   insightsView: (query: InsightsQuery = {}) =>
     electronDesktopApi()?.home.insightsView(query) ??
     invoke<InsightsView>("get_insights_view", { query }),
@@ -373,22 +435,32 @@ export const api = {
     electronDesktopApi()?.home.insightsSummary(query) ??
     invoke<InsightsSummary>("get_insights_summary", { query }),
   insightsHeatmap: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.insights.heatmap(query) ??
     invoke<HeatmapPoint[]>("get_insights_heatmap", { query }),
   agentUsageBreakdown: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.insights.agentUsage(query) ??
     invoke<AgentUsageBreakdown[]>("get_agent_usage_breakdown", { query }),
   modelUsageBreakdown: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.insights.modelUsage(query) ??
     invoke<ModelUsageBreakdown[]>("get_model_usage_breakdown", { query }),
   workspaceUsageBreakdown: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.insights.workspaceUsage(query) ??
     invoke<WorkspaceUsageBreakdown[]>("get_workspace_usage_breakdown", { query }),
   repositoryCommitBreakdown: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.insights.repositoryCommits(query) ??
     invoke<RepositoryCommitBreakdown[]>("get_repository_commit_breakdown", { query }),
-  achievements: () => invoke<Achievement[]>("list_achievements"),
+  achievements: () =>
+    electronDesktopApi()?.insights.achievements() ?? invoke<Achievement[]>("list_achievements"),
   insightsStatus: () =>
     electronDesktopApi()?.home.insightsStatus() ?? invoke<InsightsStatus>("get_insights_status"),
-  gitIdentities: () => invoke<GitIdentitySummary[]>("list_git_identities"),
+  gitIdentities: () =>
+    electronDesktopApi()?.insights.gitIdentities() ??
+    invoke<GitIdentitySummary[]>("list_git_identities"),
   addGitIdentityAlias: (email: string) =>
+    electronDesktopApi()?.insights.addGitIdentityAlias(email) ??
     invoke<GitIdentitySummary>("add_git_identity_alias", { email }),
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
+    electronDesktopApi()?.insights.setGitIdentityEnabled(id, enabled) ??
     invoke<void>("set_git_identity_enabled", { id, enabled }),
   quotaSnapshot: () =>
     electronDesktopApi()?.home.quotaSnapshot() ??
@@ -404,6 +476,24 @@ export const api = {
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>
     electronDesktopApi()?.home.setQuotaPreferences(preferences) ??
     invoke<QuotaPopoverPreferences>("set_quota_popover_preferences", { preferences }),
-  openQuotaDashboard: (provider?: string, window?: QuotaWindowSelector, configurePopover = false) =>
-    invoke<void>("open_quota_dashboard", { provider, window, configurePopover }),
+  openQuotaDashboard: (
+    provider?: string,
+    window?: QuotaWindowSelector,
+    configurePopover = false,
+  ) => {
+    if (electronDesktopApi()) {
+      globalThis.window.dispatchEvent(
+        new CustomEvent("agentkib:electron-navigate", {
+          detail: {
+            page: "quota",
+            provider,
+            window,
+            configure_popover: configurePopover,
+          },
+        }),
+      );
+      return Promise.resolve();
+    }
+    return invoke<void>("open_quota_dashboard", { provider, window, configurePopover });
+  },
 };

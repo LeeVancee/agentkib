@@ -5,6 +5,62 @@ export interface DesktopApi {
   runtime: {
     handshake(): Promise<RuntimeHandshakeResult>;
   };
+  updates: {
+    check(): Promise<unknown>;
+    install(version: string, onEvent: (event: unknown) => void): Promise<unknown>;
+  };
+  changes: {
+    plan(project: string, manifest: unknown, includeHome: boolean): Promise<unknown>;
+    apply(changeSet: unknown, approveHome: boolean): Promise<unknown>;
+  };
+  memories: {
+    list(project: string, status?: string): Promise<unknown>;
+    search(project: string, query: string, limit?: number): Promise<unknown>;
+    propose(project: string, proposal: unknown): Promise<unknown>;
+    review(id: string, status: string, editedContent?: string): Promise<unknown>;
+  };
+  sessions: {
+    clearIndex(workspaceId?: string): Promise<unknown>;
+    setIndexEnabled(enabled: boolean): Promise<unknown>;
+  };
+  mcp: {
+    hubStatus(): Promise<unknown>;
+    updateNetwork(settings: unknown): Promise<unknown>;
+    listServers(project?: string): Promise<unknown>;
+    getServer(serverId: string, project?: string): Promise<unknown>;
+    saveServer(server: unknown, project?: string): Promise<unknown>;
+    saveLocalValues(
+      serverId: string,
+      env: Record<string, string>,
+      headers: Record<string, string>,
+      project?: string,
+    ): Promise<unknown>;
+    removeServer(serverId: string, project?: string): Promise<unknown>;
+    probeRuntime(serverId: string, project?: string): Promise<unknown>;
+    startOAuth(serverId: string, project?: string): Promise<unknown>;
+    runtimes(): Promise<unknown>;
+    restartRuntime(serverId: string, project?: string): Promise<unknown>;
+    stopRuntime(serverId?: string): Promise<unknown>;
+    searchRegistry(query: string): Promise<unknown>;
+    refreshRegistry(query: string): Promise<unknown>;
+    install(entry: unknown, project?: string): Promise<unknown>;
+    update(installationId: string, entry: unknown, project?: string): Promise<unknown>;
+    installations(): Promise<unknown>;
+    uninstall(installationId: string): Promise<unknown>;
+    scanNative(project?: string): Promise<unknown>;
+    planMigration(project: string, candidateIds: string[]): Promise<unknown>;
+  };
+  insights: {
+    heatmap(query: unknown): Promise<unknown>;
+    agentUsage(query: unknown): Promise<unknown>;
+    modelUsage(query: unknown): Promise<unknown>;
+    workspaceUsage(query: unknown): Promise<unknown>;
+    repositoryCommits(query: unknown): Promise<unknown>;
+    achievements(): Promise<unknown>;
+    gitIdentities(): Promise<unknown>;
+    addGitIdentityAlias(email: string): Promise<unknown>;
+    setGitIdentityEnabled(id: string, enabled: boolean): Promise<unknown>;
+  };
   workspace: {
     scan(project: string): Promise<unknown>;
     prepareManifest(project: string): Promise<unknown>;
@@ -22,6 +78,18 @@ export interface DesktopApi {
     sessionStatus(id: string): Promise<unknown>;
     refreshSessions(id: string, force?: boolean): Promise<unknown>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<unknown>;
+    prepareHandoff(request: unknown): Promise<unknown>;
+    summarizeHandoff(request: unknown): Promise<unknown>;
+    sanitizeHandoff(format: string, editedContent: string): Promise<unknown>;
+    planHandoff(
+      workspaceId: string,
+      filename: string,
+      format: string,
+      editedContent: string,
+      targetAgent: string,
+    ): Promise<unknown>;
+    continueHandoff(changeSet: unknown, launchRequest: unknown): Promise<unknown>;
+    launchHandoff(launchRequest: unknown): Promise<unknown>;
     openers(id: string): Promise<unknown>;
     open(id: string, openerId?: string): Promise<unknown>;
     doctorSummaries(workspaceIds: string[]): Promise<unknown>;

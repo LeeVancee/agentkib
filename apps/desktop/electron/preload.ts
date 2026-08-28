@@ -6,6 +6,92 @@ const desktopApi = Object.freeze({
   runtime: Object.freeze({
     handshake: () => ipcRenderer.invoke("agentkib:runtime:handshake"),
   }),
+  updates: Object.freeze({
+    check: () => ipcRenderer.invoke("agentkib:updates:check"),
+    install: (version: string, onEvent: (event: unknown) => void) => {
+      const channel = "agentkib:updates:progress";
+      const listener = (_event: Electron.IpcRendererEvent, value: unknown) => onEvent(value);
+      ipcRenderer.on(channel, listener);
+      return ipcRenderer.invoke("agentkib:updates:install", version).finally(() => {
+        ipcRenderer.removeListener(channel, listener);
+      });
+    },
+  }),
+  changes: Object.freeze({
+    plan: (project: string, manifest: unknown, includeHome: boolean) =>
+      ipcRenderer.invoke("agentkib:changes:plan", project, manifest, includeHome),
+    apply: (changeSet: unknown, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:changes:apply", changeSet, approveHome),
+  }),
+  memories: Object.freeze({
+    list: (project: string, status?: string) =>
+      ipcRenderer.invoke("agentkib:memories:list", project, status),
+    search: (project: string, query: string, limit?: number) =>
+      ipcRenderer.invoke("agentkib:memories:search", project, query, limit),
+    propose: (project: string, proposal: unknown) =>
+      ipcRenderer.invoke("agentkib:memories:propose", project, proposal),
+    review: (id: string, status: string, editedContent?: string) =>
+      ipcRenderer.invoke("agentkib:memories:review", id, status, editedContent),
+  }),
+  sessions: Object.freeze({
+    clearIndex: (workspaceId?: string) =>
+      ipcRenderer.invoke("agentkib:sessions:clear-index", workspaceId),
+    setIndexEnabled: (enabled: boolean) =>
+      ipcRenderer.invoke("agentkib:sessions:set-index-enabled", enabled),
+  }),
+  mcp: Object.freeze({
+    hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
+    updateNetwork: (settings: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:update-network", settings),
+    listServers: (project?: string) => ipcRenderer.invoke("agentkib:mcp:list-servers", project),
+    getServer: (serverId: string, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:get-server", serverId, project),
+    saveServer: (server: unknown, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:save-server", server, project),
+    saveLocalValues: (
+      serverId: string,
+      env: Record<string, string>,
+      headers: Record<string, string>,
+      project?: string,
+    ) => ipcRenderer.invoke("agentkib:mcp:save-local-values", serverId, env, headers, project),
+    removeServer: (serverId: string, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:remove-server", serverId, project),
+    probeRuntime: (serverId: string, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:probe-runtime", serverId, project),
+    startOAuth: (serverId: string, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:start-oauth", serverId, project),
+    runtimes: () => ipcRenderer.invoke("agentkib:mcp:list-runtimes"),
+    restartRuntime: (serverId: string, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:restart-runtime", serverId, project),
+    stopRuntime: (serverId?: string) => ipcRenderer.invoke("agentkib:mcp:stop-runtime", serverId),
+    searchRegistry: (query: string) => ipcRenderer.invoke("agentkib:mcp:search-registry", query),
+    refreshRegistry: (query: string) => ipcRenderer.invoke("agentkib:mcp:refresh-registry", query),
+    install: (entry: unknown, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:install", entry, project),
+    update: (installationId: string, entry: unknown, project?: string) =>
+      ipcRenderer.invoke("agentkib:mcp:update", installationId, entry, project),
+    installations: () => ipcRenderer.invoke("agentkib:mcp:list-installations"),
+    uninstall: (installationId: string) =>
+      ipcRenderer.invoke("agentkib:mcp:uninstall", installationId),
+    scanNative: (project?: string) => ipcRenderer.invoke("agentkib:mcp:scan-native", project),
+    planMigration: (project: string, candidateIds: string[]) =>
+      ipcRenderer.invoke("agentkib:mcp:plan-migration", project, candidateIds),
+  }),
+  insights: Object.freeze({
+    heatmap: (query: unknown) => ipcRenderer.invoke("agentkib:insights:heatmap", query),
+    agentUsage: (query: unknown) => ipcRenderer.invoke("agentkib:insights:agent-usage", query),
+    modelUsage: (query: unknown) => ipcRenderer.invoke("agentkib:insights:model-usage", query),
+    workspaceUsage: (query: unknown) =>
+      ipcRenderer.invoke("agentkib:insights:workspace-usage", query),
+    repositoryCommits: (query: unknown) =>
+      ipcRenderer.invoke("agentkib:insights:repository-commits", query),
+    achievements: () => ipcRenderer.invoke("agentkib:insights:achievements"),
+    gitIdentities: () => ipcRenderer.invoke("agentkib:insights:git-identities"),
+    addGitIdentityAlias: (email: string) =>
+      ipcRenderer.invoke("agentkib:insights:add-git-identity-alias", email),
+    setGitIdentityEnabled: (id: string, enabled: boolean) =>
+      ipcRenderer.invoke("agentkib:insights:set-git-identity-enabled", id, enabled),
+  }),
   workspace: Object.freeze({
     scan: (project: string) => ipcRenderer.invoke("agentkib:workspace:scan", project),
     prepareManifest: (project: string) =>
@@ -31,6 +117,31 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:refresh-sessions", id, force),
     sessionEvents: (id: string, cursor?: string, limit?: number) =>
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
+    prepareHandoff: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
+    summarizeHandoff: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:session:summarize-handoff", request),
+    sanitizeHandoff: (format: string, editedContent: string) =>
+      ipcRenderer.invoke("agentkib:session:sanitize-handoff", format, editedContent),
+    planHandoff: (
+      workspaceId: string,
+      filename: string,
+      format: string,
+      editedContent: string,
+      targetAgent: string,
+    ) =>
+      ipcRenderer.invoke(
+        "agentkib:session:plan-handoff",
+        workspaceId,
+        filename,
+        format,
+        editedContent,
+        targetAgent,
+      ),
+    continueHandoff: (changeSet: unknown, launchRequest: unknown) =>
+      ipcRenderer.invoke("agentkib:session:continue-handoff", changeSet, launchRequest),
+    launchHandoff: (launchRequest: unknown) =>
+      ipcRenderer.invoke("agentkib:session:launch-handoff", launchRequest),
     openers: (id: string) => ipcRenderer.invoke("agentkib:workspace:openers", id),
     open: (id: string, openerId?: string) =>
       ipcRenderer.invoke("agentkib:workspace:open", id, openerId),
@@ -100,7 +211,8 @@ const desktopApi = Object.freeze({
     updateOnboarding: (event: unknown) =>
       ipcRenderer.invoke("agentkib:home:update-onboarding", event),
     obsidianIntegration: () => ipcRenderer.invoke("agentkib:home:obsidian-integration"),
-    addObsidianVault: (path: string) => ipcRenderer.invoke("agentkib:home:add-obsidian-vault", path),
+    addObsidianVault: (path: string) =>
+      ipcRenderer.invoke("agentkib:home:add-obsidian-vault", path),
     linkWorkspaceToObsidian: (workspaceId: string, vaultPath: string, relativeTarget?: string) =>
       ipcRenderer.invoke(
         "agentkib:home:link-obsidian-workspace",

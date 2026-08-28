@@ -52,6 +52,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
+import { hasActiveChangesFlow } from "@/features/workspace/workspace-flow";
 import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
 function WorkspaceActions({
   workspace,
@@ -220,6 +221,10 @@ function WorkspaceLayout() {
     resetWorkspace,
   } = workspaceState;
   const currentPage = getPage(location.pathname);
+  const visibleWorkspaceTabs = workspaceTabs.filter(
+    ([id]) =>
+      id !== "changes" || hasActiveChangesFlow(changeSet, workspaceState.handoffLaunchRequest),
+  );
   const activeWorkspace =
     workspace ??
     (!workspacesLoaded && selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
@@ -421,7 +426,7 @@ function WorkspaceLayout() {
             <nav aria-label={activeWorkspace.name}>
               <Tabs value={currentPage} onValueChange={(value) => navigateWorkspace(value as Page)}>
                 <TabsList className="segmented-control w-full justify-start" variant="default">
-                  {workspaceTabs.map(([id, label, Icon]) => (
+                  {visibleWorkspaceTabs.map(([id, label, Icon]) => (
                     <TabsTrigger
                       className="segmented-control-item h-9 min-h-9 flex-none px-3 text-xs sm:text-sm"
                       key={id}

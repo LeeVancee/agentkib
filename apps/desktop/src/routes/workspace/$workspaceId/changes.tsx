@@ -1,9 +1,14 @@
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../../../core/api";
-import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
+import {
+  changesReturnPage,
+  hasActiveChangesFlow,
+  type WorkspaceFlowPage,
+} from "@/features/workspace/workspace-flow";
 import { refreshGlobalState } from "../../../core/global-state";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { localizeMessage, tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -21,7 +26,6 @@ import {
 import { cn } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
 import type { AgentKind, ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
-type ChangeSetOrigin = "standard" | "doctor" | "handoff";
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -365,6 +369,24 @@ function WorkspaceChangesRoute() {
   } = useWorkspaceStore();
   const homePlanRequest = useRef(0);
   const reloadRequest = useRef(0);
+  const activeFlow = hasActiveChangesFlow(changeSet, handoffLaunchRequest);
+  const [enteredWithActiveFlow] = useState(activeFlow);
+  const navigateTo = useCallback(
+    (page: WorkspaceFlowPage, verification = false) => {
+      const to =
+        page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
+      void navigate({
+        to: to as never,
+        params: { workspaceId } as never,
+        replace: true,
+        search:
+          page === "doctor" && verification
+            ? (current) => ({ ...current, doctorVerification: "applied" }) as never
+            : undefined,
+      });
+    },
+    [navigate, workspaceId],
+  );
   useEffect(
     () => () => {
       homePlanRequest.current += 1;
@@ -372,7 +394,11 @@ function WorkspaceChangesRoute() {
     },
     [workspaceId],
   );
+  useEffect(() => {
+    if (project && !enteredWithActiveFlow) navigateTo("overview");
+  }, [enteredWithActiveFlow, navigateTo, project]);
   if (!project) return <WorkspaceChangesSkeleton />;
+  if (!enteredWithActiveFlow) return <WorkspaceChangesSkeleton />;
   const planHome = async () => {
     if (!manifest) return;
     const requestId = ++homePlanRequest.current;
@@ -417,6 +443,7 @@ function WorkspaceChangesRoute() {
       onApplied={async (keepLaunchRequest) => {
         const targetProject = project;
         const appliedDoctorRepair = changeSetOrigin === "doctor";
+        const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
         if (appliedDoctorRepair) {
@@ -436,20 +463,18 @@ function WorkspaceChangesRoute() {
           )
             setMessage(localizeMessage(error));
         } finally {
-          if (appliedDoctorRepair) {
-            void navigate({
-              to: "/workspace/$workspaceId/doctor",
-              params: { workspaceId },
-              search: (current) => ({ ...current, doctorVerification: "applied" }) as never,
-            });
-          }
+          if (!keepLaunchRequest) navigateTo(returnPage, appliedDoctorRepair);
         }
       }}
-      onLaunchCompleted={() => setHandoffLaunchRequest(undefined)}
+      onLaunchCompleted={() => {
+        setHandoffLaunchRequest(undefined);
+        navigateTo("sessions");
+      }}
       onRejected={() => {
+        const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         setHandoffLaunchRequest(undefined);
-        void navigate({ to: "/workspace/$workspaceId", params: { workspaceId } });
+        navigateTo(returnPage);
       }}
       onApplyingChange={setApplyingChanges}
     />

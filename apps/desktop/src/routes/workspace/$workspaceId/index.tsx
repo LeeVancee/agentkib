@@ -1,13 +1,15 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
+import { useAppStore } from "@/stores/app-store";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { CircleAlert, Copy, FolderGit2 } from "lucide-react";
+import { CircleAlert, Copy } from "lucide-react";
 import { formatRelativeTime, tr } from "../../../core/i18n";
 import type { AgentKind, Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
 const agentLabels: Record<AgentKind, string> = {
@@ -25,19 +27,24 @@ function Overview({
   workspace,
   scan,
   manifest,
+  onOpenDoctor,
+  onOpenChanges,
+  pendingDoctorReview,
 }: {
   workspace: WorkspaceSummary;
   scan: WorkspaceScan;
   manifest: Manifest;
+  onOpenDoctor: () => void;
+  onOpenChanges: () => void;
+  pendingDoctorReview: boolean;
 }) {
+  const doctorSummary = useAppStore((state) => state.doctorSummaries[workspace.id]);
   const configuredAgents = scan.agents.filter(
     (agent) => agent.detected || agent.warnings.length > 0,
   );
   const unconfiguredAgents = scan.agents.filter(
     (agent) => !agent.detected && agent.warnings.length === 0,
   );
-  const issueCount =
-    scan.warnings.length + scan.agents.reduce((total, agent) => total + agent.warnings.length, 0);
   const sources =
     workspace.sources
       .flatMap((source) => (source.agent ? [agentLabels[source.agent]] : []))
@@ -51,6 +58,12 @@ function Overview({
   ] as const;
   return (
     <div className="grid gap-5">
+      <WorkspaceContextHealthCard
+        summary={doctorSummary}
+        pendingReview={pendingDoctorReview}
+        onOpenDoctor={onOpenDoctor}
+        onOpenChanges={onOpenChanges}
+      />
       {scan.warnings.map((warning) => (
         <div
           className="flex items-start gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700"
@@ -169,9 +182,25 @@ function Overview({
 }
 
 function WorkspaceOverviewRoute() {
-  const { selectedWorkspace, scan, manifest } = useWorkspaceStore();
+  const navigate = useNavigate();
+  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/" });
+  const { selectedWorkspace, scan, manifest, changeSet, changeSetOrigin } = useWorkspaceStore();
   if (!selectedWorkspace || !scan || !manifest) return <WorkspaceOverviewSkeleton />;
-  return <Overview workspace={selectedWorkspace} scan={scan} manifest={manifest} />;
+  const open = (page: "doctor" | "changes") =>
+    void navigate({
+      to: `/workspace/$workspaceId/${page}` as never,
+      params: { workspaceId } as never,
+    });
+  return (
+    <Overview
+      workspace={selectedWorkspace}
+      scan={scan}
+      manifest={manifest}
+      pendingDoctorReview={Boolean(changeSet && changeSetOrigin === "doctor")}
+      onOpenDoctor={() => open("doctor")}
+      onOpenChanges={() => open("changes")}
+    />
+  );
 }
 
 export const Route = createFileRoute("/workspace/$workspaceId/")({

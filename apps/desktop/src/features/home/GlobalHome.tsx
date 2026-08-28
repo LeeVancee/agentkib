@@ -259,16 +259,27 @@ export function GlobalHome({
           </div>
         </Card>
       ) : (
-        <div className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.045] px-5 py-3.5 text-sm">
-          <span className="grid size-8 place-items-center rounded-lg bg-emerald-500/10 text-emerald-700">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.045] px-5 py-3.5 text-sm">
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-700">
             <Check size={17} />
           </span>
-          <span>
+          <span className="min-w-0 flex-1">
             <strong className="block">{tr("home.allClear")}</strong>
             <small className="mt-0.5 block text-xs text-muted-foreground">
               {tr("home.allClearDescription")}
             </small>
           </span>
+          {workspaces[0] && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 bg-background/70"
+              onClick={() => void onOpenDoctor(workspaces[0])}
+            >
+              <ShieldCheck size={14} />
+              {tr("home.openDoctor")}
+            </Button>
+          )}
         </div>
       )}
       {!workspaces.length ? (

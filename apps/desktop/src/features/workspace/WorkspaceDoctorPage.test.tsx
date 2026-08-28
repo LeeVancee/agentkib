@@ -43,7 +43,7 @@ describe("WorkspaceDoctorPage", () => {
   it("shows the one-time repair verification result", async () => {
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
       ...report,
-      summary: { ...report.summary, repairable_count: 2 },
+      summary: { ...report.summary, error_count: 2, repairable_count: 2 },
     });
 
     render(
@@ -56,7 +56,66 @@ describe("WorkspaceDoctorPage", () => {
     );
 
     expect(
-      await screen.findByText("Repairs were applied and rechecked. 2 repairable issues remain."),
+      await screen.findByText(
+        "Repairs were applied and rechecked. Issues remaining: 2 · repairable: 2.",
+      ),
     ).toBeTruthy();
+  });
+
+  it("does not describe manual issues as healthy", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, warning_count: 1 },
+      issues: [
+        {
+          id: "manual-issue",
+          code: "agent.read-only",
+          severity: "warning",
+          repairable: false,
+          evidence: [],
+        },
+      ],
+    });
+
+    render(
+      <WorkspaceDoctorPage
+        workspace={workspace}
+        onRepair={vi.fn()}
+        onDiagnosed={vi.fn()}
+        verification="applied"
+      />,
+    );
+
+    expect(await screen.findByText("Issues requiring manual action: 1.")).toBeTruthy();
+    expect(
+      screen.getByText("Repairs were applied and rechecked. Issues remaining: 1 · repairable: 0."),
+    ).toBeTruthy();
+  });
+
+  it("separates repairable and manual issues in the conclusion", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, error_count: 1, warning_count: 1, repairable_count: 1 },
+      issues: [
+        {
+          id: "repairable-issue",
+          code: "managed.missing",
+          severity: "error",
+          repairable: true,
+          evidence: [],
+        },
+        {
+          id: "manual-issue",
+          code: "agent.read-only",
+          severity: "warning",
+          repairable: false,
+          evidence: [],
+        },
+      ],
+    });
+
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
+
+    expect(await screen.findByText("Repairable: 1 · manual action: 1.")).toBeTruthy();
   });
 });

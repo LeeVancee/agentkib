@@ -58,12 +58,12 @@ use agentkib_protocol::{
     WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
     WORKSPACE_SESSIONS_METHOD, WORKSPACE_USAGE_BREAKDOWN_METHOD,
 };
+#[cfg(target_os = "windows")]
+use agentkib_quota::resolve_win_codexbar_config;
 use agentkib_quota::{
     CollectorCapabilities, DashboardCliCollector, QuotaBackend, QuotaCollector, QuotaCommandOutput,
     QuotaCommandRunner, QuotaSnapshot, resolve_codexbar_config, write_managed_config,
 };
-#[cfg(target_os = "windows")]
-use agentkib_quota::resolve_win_codexbar_config;
 use agentkib_storage::{
     HardLinkSet, StorageNode, StorageOverview, StorageWorkspace,
     scan_workspace as scan_workspace_storage, scan_workspace_children,
@@ -1638,7 +1638,7 @@ fn update_mcp_network(request: MpcNetworkRequest) -> anyhow::Result<agentkib_cor
     hub.restart(request.settings.clone())?;
     if let Err(error) = update_preference("mcp_network", &request.settings) {
         let _ = hub.restart(previous);
-        return Err(error.into());
+        return Err(error);
     }
     Ok(hub.status())
 }
@@ -2540,7 +2540,7 @@ fn quota_sidecar_path() -> Option<PathBuf> {
                     })
                 })
                 .filter(|path| path.is_file())
-    })
+        })
 }
 
 fn quota_collector_environment() -> anyhow::Result<(String, BTreeMap<String, String>)> {

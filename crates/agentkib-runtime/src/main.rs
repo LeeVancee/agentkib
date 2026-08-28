@@ -1,29 +1,46 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::io::{self, BufRead, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use agentkib_conversations::{provider, providers};
 use agentkib_core::{AgentKind, McpNetworkSettings};
-use agentkib_insights::InsightsQuery;
+use agentkib_discovery::discover as discover_local_workspaces;
+use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage};
+use agentkib_platform::path as platform_path;
+use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
-    ADD_WORKSPACE_METHOD, EXCLUDE_WORKSPACE_METHOD, GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD,
-    HANDSHAKE_METHOD, HandshakeRequest, HandshakeResult, INSIGHTS_STATUS_METHOD,
-    INSIGHTS_SUMMARY_METHOD, LIST_ACTIVITY_METHOD, LIST_AGENT_INSTALLATIONS_METHOD,
-    LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
-    LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD, PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION,
-    QUOTA_COLLECTOR_STATUS_METHOD, REFRESH_STATUS_METHOD, REFRESH_WORKSPACE_METHOD,
-    REFRESH_WORKSPACE_SESSIONS_METHOD, RESOLVE_CONTEXT_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD,
+    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, CANCEL_STORAGE_METHOD, EXCLUDE_WORKSPACE_METHOD,
+    GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD, HANDSHAKE_METHOD, HandshakeRequest, HandshakeResult,
+    INSIGHTS_STATUS_METHOD, INSIGHTS_SUMMARY_METHOD, INSIGHTS_VIEW_METHOD, LIST_ACTIVITY_METHOD,
+    LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD,
+    LIST_REMOTE_GATEWAYS_METHOD, LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD,
+    PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD,
+    QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD, REFRESH_DISCOVERY_METHOD,
+    REFRESH_INSIGHTS_METHOD, REFRESH_QUOTA_METHOD, REFRESH_STATUS_METHOD, REFRESH_STORAGE_METHOD,
+    REFRESH_WORKSPACE_METHOD, REFRESH_WORKSPACE_SESSIONS_METHOD, REMOVE_SCAN_ROOT_METHOD,
+    RESOLVE_CONTEXT_METHOD, RESOLVE_STORAGE_PATH_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD,
     RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD,
-    SEARCH_CATALOG_ASSETS_METHOD, SESSION_EVENTS_METHOD, SHUTDOWN_METHOD, UPDATE_ONBOARDING_METHOD,
+    SEARCH_CATALOG_ASSETS_METHOD, SESSION_EVENTS_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD,
+    SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD, SHUTDOWN_METHOD,
+    STORAGE_CHILDREN_METHOD, STORAGE_OVERVIEW_METHOD, UPDATE_ONBOARDING_METHOD,
     WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
     WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
     WORKSPACE_SESSIONS_METHOD,
 };
-use agentkib_quota::QuotaBackend;
+use agentkib_quota::{
+    CollectorCapabilities, DashboardCliCollector, QuotaBackend, QuotaCollector, QuotaCommandOutput,
+    QuotaCommandRunner, QuotaSnapshot,
+};
+use agentkib_storage::{
+    HardLinkSet, StorageNode, StorageOverview, StorageWorkspace,
+    scan_workspace as scan_workspace_storage, scan_workspace_children,
+};
 use agentkib_store::Store;
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 fn main() {
@@ -102,12 +119,28 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         LIST_GLOBAL_MEMORIES_METHOD => command_response(request, list_global_memories),
         LIST_ACTIVITY_METHOD => command_response(request, list_activity),
         LIST_SCAN_ROOTS_METHOD => command_response(request, list_scan_roots),
+        ADD_SCAN_ROOT_METHOD => command_response(request, add_scan_root),
+        REMOVE_SCAN_ROOT_METHOD => command_response(request, remove_scan_root),
+        REFRESH_DISCOVERY_METHOD => command_response(request, refresh_discovery),
         LIST_EXCLUDED_WORKSPACES_METHOD => command_response(request, list_excluded_workspaces),
         LIST_REMOTE_GATEWAYS_METHOD => command_response(request, list_remote_gateways),
         WORKSPACE_DOCTOR_SUMMARIES_METHOD => command_response(request, workspace_doctor_summaries),
+        INSIGHTS_VIEW_METHOD => command_response(request, insights_view),
+        REFRESH_INSIGHTS_METHOD => command_response(request, refresh_insights),
         INSIGHTS_SUMMARY_METHOD => command_response(request, insights_summary),
         INSIGHTS_STATUS_METHOD => command_response(request, insights_status),
         QUOTA_COLLECTOR_STATUS_METHOD => command_response(request, quota_collector_status),
+        QUOTA_SNAPSHOT_METHOD => command_response(request, quota_snapshot),
+        QUOTA_PREFERENCES_METHOD => command_response(request, quota_preferences),
+        SET_QUOTA_PREFERENCES_METHOD => command_response(request, set_quota_preferences),
+        REFRESH_QUOTA_METHOD => command_response(request, refresh_quota),
+        SET_QUOTA_AUTO_REFRESH_METHOD => command_response(request, set_quota_auto_refresh),
+        SET_QUOTA_PROMPT_SEEN_METHOD => command_response(request, set_quota_prompt_seen),
+        STORAGE_OVERVIEW_METHOD => command_response(request, storage_overview),
+        STORAGE_CHILDREN_METHOD => command_response(request, storage_children),
+        REFRESH_STORAGE_METHOD => command_response(request, refresh_storage),
+        RESOLVE_STORAGE_PATH_METHOD => command_response(request, resolve_storage_path),
+        CANCEL_STORAGE_METHOD => command_response(request, cancel_storage),
         REFRESH_STATUS_METHOD => command_response(request, refresh_status),
         UPDATE_ONBOARDING_METHOD => command_response(request, update_onboarding),
         _ => (
@@ -488,8 +521,26 @@ fn onboarding_state(data_dir: &Path) -> Value {
     })
 }
 
+fn load_preferences_root(data_dir: &Path) -> Value {
+    fs::read_to_string(data_dir.join("preferences.json"))
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn save_preferences_root(data_dir: &Path, root: &Value) -> anyhow::Result<()> {
+    fs::create_dir_all(data_dir)?;
+    fs::write(
+        data_dir.join("preferences.json"),
+        format!("{}\n", serde_json::to_string_pretty(root)?),
+    )?;
+    Ok(())
+}
+
 fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
     let data_dir = agentkib_store::default_data_dir()?;
+    let preferences = load_preferences_root(&data_dir);
     let network = McpNetworkSettings::default();
     let development = std::env::var("AGENTKIB_APP_FLAVOR").as_deref() == Ok("ai.agentkib.dev");
     let locale = std::env::var("AGENTKIB_LOCALE").unwrap_or_else(|_| "en-US".to_owned());
@@ -525,8 +576,14 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
         "app_icon_preference": "white",
         "tray_available": false,
         "session_index_enabled": true,
-        "quota_auto_refresh_enabled": false,
-        "quota_auto_refresh_prompt_seen": false,
+        "quota_auto_refresh_enabled": preferences
+            .get("quota_auto_refresh_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "quota_auto_refresh_prompt_seen": preferences
+            .get("quota_auto_refresh_prompt_seen")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         "onboarding": onboarding_state(&data_dir),
     }))
 }
@@ -536,17 +593,11 @@ struct EmptyRequest {}
 
 fn update_onboarding(request: UpdateOnboardingRequest) -> anyhow::Result<Value> {
     let data_dir = agentkib_store::default_data_dir()?;
-    fs::create_dir_all(&data_dir)?;
-    let path = data_dir.join("preferences.json");
-    let mut root = fs::read_to_string(&path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
+    let mut root = load_preferences_root(&data_dir);
     let mut preferences = load_onboarding_preferences(&data_dir);
     apply_onboarding_event(&mut preferences, request.event);
     root["onboarding"] = serde_json::to_value(preferences)?;
-    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))?;
+    save_preferences_root(&data_dir, &root)?;
     runtime_info(EmptyRequest {})
 }
 
@@ -598,6 +649,45 @@ fn list_activity(request: LimitRequest) -> anyhow::Result<Vec<agentkib_core::Act
 
 fn list_scan_roots(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::ScanRoot>> {
     Store::open_default()?.list_scan_roots()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddScanRootRequest {
+    path: String,
+    max_depth: usize,
+}
+
+fn add_scan_root(request: AddScanRootRequest) -> anyhow::Result<agentkib_core::ScanRoot> {
+    Store::open_default()?.add_scan_root(Path::new(&request.path), request.max_depth)
+}
+
+fn remove_scan_root(request: WorkspaceIdRequest) -> anyhow::Result<()> {
+    Store::open_default()?.remove_scan_root(&request.id)
+}
+
+fn refresh_discovery(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
+    let queued_at = Utc::now();
+    let started_at = Utc::now();
+    let roots = Store::open_default()?
+        .list_scan_roots()?
+        .into_iter()
+        .filter(|root| root.enabled)
+        .map(|root| (root.path, root.max_depth))
+        .collect::<Vec<_>>();
+    let snapshot = discover_local_workspaces(&roots);
+    Store::open_default()?.sync_discovery(
+        &snapshot.candidates,
+        &snapshot.installations,
+        &snapshot.home_assets,
+        started_at,
+        &snapshot.errors,
+    )?;
+    Ok(completed_refresh_receipt(
+        "discovery",
+        queued_at,
+        started_at,
+    ))
 }
 
 fn list_excluded_workspaces(
@@ -697,6 +787,40 @@ struct InsightsRequest {
     query: InsightsQuery,
 }
 
+#[derive(Serialize)]
+struct InsightsView {
+    summary: agentkib_insights::InsightsSummary,
+    heatmap: Vec<agentkib_insights::HeatmapPoint>,
+    agents: Vec<agentkib_insights::AgentUsageBreakdown>,
+    models: Vec<agentkib_insights::ModelUsageBreakdown>,
+    workspaces: Vec<agentkib_insights::WorkspaceUsageBreakdown>,
+    repositories: Vec<agentkib_insights::RepositoryCommitBreakdown>,
+    achievements: Vec<agentkib_insights::Achievement>,
+    status: agentkib_insights::InsightsStatus,
+}
+
+#[derive(Serialize)]
+struct RefreshReceipt {
+    kind: &'static str,
+    disposition: &'static str,
+    request_id: String,
+    status: RefreshJobStatus,
+}
+
+#[derive(Serialize)]
+struct RefreshJobStatus {
+    kind: &'static str,
+    state: &'static str,
+    request_id: String,
+    queued_at: chrono::DateTime<Utc>,
+    started_at: chrono::DateTime<Utc>,
+    finished_at: chrono::DateTime<Utc>,
+    progress_current: u64,
+    progress_total: u64,
+    error: Option<String>,
+    next_allowed_at: Option<chrono::DateTime<Utc>>,
+}
+
 fn default_insights_query() -> InsightsQuery {
     InsightsQuery {
         from: None,
@@ -713,6 +837,77 @@ fn insights_summary(
     Store::open_default()?.insights_summary(&request.query)
 }
 
+fn insights_view(request: InsightsRequest) -> anyhow::Result<InsightsView> {
+    let store = Store::open_default()?;
+    Ok(InsightsView {
+        summary: store.insights_summary(&request.query)?,
+        heatmap: store.insights_heatmap(&request.query)?,
+        agents: store.agent_usage_breakdown(&request.query)?,
+        models: store.model_usage_breakdown(&request.query)?,
+        workspaces: store.workspace_usage_breakdown(&request.query)?,
+        repositories: store.repository_commit_breakdown(&request.query)?,
+        achievements: store.list_achievements()?,
+        status: store.insights_status(false)?,
+    })
+}
+
+fn refresh_insights(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
+    let queued_at = Utc::now();
+    let request_id = format!("{}-electron", queued_at.timestamp_millis());
+    let started_at = Utc::now();
+    let store = Store::open_default()?;
+    let workspaces = store.list_workspaces()?;
+    let fingerprints = store.insight_git_fingerprints()?;
+    let usage_cursors = store.insight_usage_cursors()?;
+    drop(store);
+
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(2);
+    let policy = InsightsCollectionPolicy::for_parallelism(parallelism, true);
+    let usage = collect_usage(&usage_cursors, policy);
+    let repositories = collect_git(&workspaces, &fingerprints, policy);
+    Store::open_default()?.sync_insights(&usage, &repositories)?;
+
+    Ok(completed_refresh_receipt_with_id(
+        "insights", request_id, queued_at, started_at,
+    ))
+}
+
+fn completed_refresh_receipt(
+    kind: &'static str,
+    queued_at: chrono::DateTime<Utc>,
+    started_at: chrono::DateTime<Utc>,
+) -> RefreshReceipt {
+    let request_id = format!("{}-electron", queued_at.timestamp_millis());
+    completed_refresh_receipt_with_id(kind, request_id, queued_at, started_at)
+}
+
+fn completed_refresh_receipt_with_id(
+    kind: &'static str,
+    request_id: String,
+    queued_at: chrono::DateTime<Utc>,
+    started_at: chrono::DateTime<Utc>,
+) -> RefreshReceipt {
+    RefreshReceipt {
+        kind,
+        disposition: "queued",
+        request_id: request_id.clone(),
+        status: RefreshJobStatus {
+            kind,
+            state: "succeeded",
+            request_id,
+            queued_at,
+            started_at,
+            finished_at: Utc::now(),
+            progress_current: 1,
+            progress_total: 1,
+            error: None,
+            next_allowed_at: None,
+        },
+    }
+}
+
 fn insights_status(_: EmptyRequest) -> anyhow::Result<agentkib_insights::InsightsStatus> {
     Store::open_default()?.insights_status(false)
 }
@@ -725,11 +920,344 @@ fn quota_collector_status(_: EmptyRequest) -> anyhow::Result<agentkib_quota::Quo
     };
     Store::open_default()?.quota_collector_status(
         backend,
-        true,
-        false,
-        "unavailable".to_owned(),
+        quota_platform_supported(),
+        quota_sidecar_path().is_some(),
+        "automatic".to_owned(),
         false,
     )
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+struct QuotaWindowSelector {
+    provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
+    kind: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct QuotaPreferences {
+    #[serde(default)]
+    hidden_providers: Vec<String>,
+    #[serde(default)]
+    hidden_windows: Vec<QuotaWindowSelector>,
+}
+
+#[derive(Deserialize)]
+struct SetQuotaPreferencesRequest {
+    preferences: QuotaPreferences,
+}
+
+#[derive(Deserialize)]
+struct BoolRequest {
+    #[serde(alias = "enabled", alias = "seen")]
+    value: bool,
+}
+
+fn quota_snapshot(_: EmptyRequest) -> anyhow::Result<Option<QuotaSnapshot>> {
+    Store::open_default()?.quota_snapshot()
+}
+
+fn quota_preferences(_: EmptyRequest) -> anyhow::Result<QuotaPreferences> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    Ok(load_preferences_root(&data_dir)
+        .get("quota_popover")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default())
+}
+
+fn set_quota_preferences(request: SetQuotaPreferencesRequest) -> anyhow::Result<QuotaPreferences> {
+    let mut preferences = request.preferences;
+    preferences
+        .hidden_providers
+        .retain(|value| !value.trim().is_empty());
+    preferences.hidden_providers.sort();
+    preferences.hidden_providers.dedup();
+    preferences.hidden_windows.retain(|value| {
+        !value.provider_id.trim().is_empty()
+            && !value.kind.trim().is_empty()
+            && !value.label.trim().is_empty()
+    });
+    preferences.hidden_windows.sort();
+    preferences.hidden_windows.dedup();
+    let data_dir = agentkib_store::default_data_dir()?;
+    let mut root = load_preferences_root(&data_dir);
+    root["quota_popover"] = serde_json::to_value(&preferences)?;
+    save_preferences_root(&data_dir, &root)?;
+    Ok(preferences)
+}
+
+fn set_quota_auto_refresh(request: BoolRequest) -> anyhow::Result<Value> {
+    update_quota_boolean("quota_auto_refresh_enabled", request.value, true)
+}
+
+fn set_quota_prompt_seen(request: BoolRequest) -> anyhow::Result<Value> {
+    update_quota_boolean("quota_auto_refresh_prompt_seen", request.value, false)
+}
+
+fn update_quota_boolean(key: &str, value: bool, mark_seen: bool) -> anyhow::Result<Value> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    let mut root = load_preferences_root(&data_dir);
+    root[key] = Value::Bool(value);
+    if mark_seen {
+        root["quota_auto_refresh_prompt_seen"] = Value::Bool(true);
+    }
+    save_preferences_root(&data_dir, &root)?;
+    runtime_info(EmptyRequest {})
+}
+
+fn quota_platform_supported() -> bool {
+    cfg!(any(target_os = "macos", target_os = "linux"))
+        || cfg!(all(target_os = "windows", target_arch = "x86_64"))
+}
+
+fn quota_sidecar_path() -> Option<PathBuf> {
+    std::env::var_os("AGENTKIB_QUOTA_SIDECAR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()?
+                .parent()
+                .map(|path| {
+                    path.join(if cfg!(target_os = "windows") {
+                        "agentkib-quota-sidecar.exe"
+                    } else {
+                        "agentkib-quota-sidecar"
+                    })
+                })
+                .filter(|path| path.is_file())
+        })
+}
+
+#[derive(Clone)]
+struct LocalQuotaRunner {
+    executable: PathBuf,
+}
+
+impl QuotaCommandRunner for LocalQuotaRunner {
+    fn run(
+        &self,
+        args: &[String],
+        env: &BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> anyhow::Result<QuotaCommandOutput> {
+        let mut command = Command::new(&self.executable);
+        command
+            .args(args)
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_process_group(&mut command);
+        let mut child = command.spawn()?;
+        let tree = ProcessTree::attach(&child)?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("quota stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("quota stderr unavailable"))?;
+        let stdout_reader = std::thread::spawn(move || read_quota_output(stdout));
+        let stderr_reader = std::thread::spawn(move || read_quota_output(stderr));
+        let started = Instant::now();
+        let success = loop {
+            if started.elapsed() >= timeout {
+                let _ = tree.terminate();
+                let _ = child.wait();
+                anyhow::bail!("quota collector timed out");
+            }
+            if let Some(status) = child.try_wait()? {
+                break status.success();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        Ok(QuotaCommandOutput {
+            stdout: stdout_reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("quota stdout reader panicked"))??,
+            stderr: stderr_reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("quota stderr reader panicked"))??,
+            success,
+        })
+    }
+}
+
+fn read_quota_output(mut reader: impl Read) -> anyhow::Result<Vec<u8>> {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let mut output = Vec::new();
+    reader.by_ref().take(LIMIT + 1).read_to_end(&mut output)?;
+    if output.len() as u64 > LIMIT {
+        anyhow::bail!("quota collector output exceeded limit");
+    }
+    Ok(output)
+}
+
+fn refresh_quota(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
+    let queued_at = Utc::now();
+    let started_at = Utc::now();
+    let backend = if cfg!(target_os = "windows") {
+        QuotaBackend::WinCodexBar
+    } else {
+        QuotaBackend::CodexBarCli
+    };
+    let executable = quota_sidecar_path()
+        .ok_or_else(|| anyhow::anyhow!("quota collector sidecar is unavailable"))?;
+    let collector = DashboardCliCollector::new(
+        backend,
+        LocalQuotaRunner { executable },
+        BTreeMap::new(),
+        CollectorCapabilities {
+            platform_supported: quota_platform_supported(),
+            sidecar_available: true,
+            multi_account: true,
+            credits: true,
+        },
+    );
+    match collector.collect(Duration::from_secs(35)) {
+        Ok(snapshot) => Store::open_default()?.save_quota_snapshot(&snapshot)?,
+        Err(error) => {
+            Store::open_default()?.record_quota_failure(
+                backend,
+                "errors.quotaUnavailable",
+                Some(&error.to_string()),
+            )?;
+            return Err(error);
+        }
+    }
+    Ok(completed_refresh_receipt("quota", queued_at, started_at))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoragePathRequest {
+    workspace_id: String,
+    relative_path: String,
+}
+
+fn storage_overview(_: EmptyRequest) -> anyhow::Result<StorageOverview> {
+    Store::open_default()?.storage_overview()
+}
+
+fn checked_storage_path(
+    request: &StoragePathRequest,
+) -> anyhow::Result<(agentkib_core::WorkspaceSummary, PathBuf, PathBuf)> {
+    let relative = PathBuf::from(&request.relative_path);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        anyhow::bail!("storage path must be relative to its workspace");
+    }
+    let workspace = Store::open_default()?
+        .get_workspace(&request.workspace_id)?
+        .ok_or_else(|| anyhow::anyhow!("workspace not found"))?;
+    let root = platform_path::canonicalize(&workspace.path)?;
+    let target = platform_path::canonicalize(&root.join(relative))?;
+    if !platform_path::starts_with(&target, &root) || !target.is_dir() {
+        anyhow::bail!("storage path is outside the workspace or is not a directory");
+    }
+    Ok((workspace, root, target))
+}
+
+fn storage_children(request: StoragePathRequest) -> anyhow::Result<StorageNode> {
+    let (workspace, root, target) = checked_storage_path(&request)?;
+    let relative = target.strip_prefix(&root)?.to_path_buf();
+    let workspaces = Store::open_default()?.list_workspaces()?;
+    let excluded = workspaces
+        .iter()
+        .filter(|candidate| {
+            candidate.id != workspace.id && platform_path::starts_with(&candidate.path, &target)
+        })
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+    let source = StorageWorkspace {
+        id: workspace.id,
+        name: workspace.name,
+        path: root,
+    };
+    Ok(scan_workspace_children(
+        &source,
+        &relative,
+        &excluded,
+        &mut HardLinkSet::default(),
+        || false,
+    )
+    .node)
+}
+
+fn resolve_storage_path(request: StoragePathRequest) -> anyhow::Result<PathBuf> {
+    let (_, _, target) = checked_storage_path(&request)?;
+    Ok(target)
+}
+
+fn refresh_storage(_: EmptyRequest) -> anyhow::Result<RefreshReceipt> {
+    let queued_at = Utc::now();
+    let started_at = Utc::now();
+    let mut workspaces = Store::open_default()?.list_workspaces()?;
+    workspaces.sort_by(|left, right| left.path.cmp(&right.path));
+    let roots = workspaces
+        .iter()
+        .map(|workspace| workspace.path.clone())
+        .collect::<Vec<_>>();
+    let mut hard_links = HardLinkSet::default();
+    for workspace in workspaces {
+        if workspace.path.parent().is_none()
+            || dirs::home_dir()
+                .is_some_and(|home| platform_path::equivalent(&workspace.path, &home))
+        {
+            Store::open_default()?.record_workspace_storage_failure(
+                &workspace.id,
+                Utc::now(),
+                "storage.scanTooBroad",
+                None,
+            )?;
+            continue;
+        }
+        let excluded = roots
+            .iter()
+            .filter(|path| {
+                !platform_path::equivalent(path, &workspace.path)
+                    && platform_path::starts_with(path, &workspace.path)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let source = StorageWorkspace {
+            id: workspace.id.clone(),
+            name: workspace.name,
+            path: workspace.path,
+        };
+        let scan = scan_workspace_storage(&source, &excluded, &mut hard_links, || false);
+        if scan.storage.last_success_at.is_some() {
+            Store::open_default()?.save_workspace_storage(&scan.storage)?;
+        } else {
+            Store::open_default()?.record_workspace_storage_failure(
+                &workspace.id,
+                scan.storage.last_attempt_at,
+                scan.storage
+                    .error_key
+                    .as_deref()
+                    .unwrap_or("storage.scanUnavailable"),
+                scan.storage.error_detail.as_deref(),
+            )?;
+        }
+    }
+    Ok(completed_refresh_receipt("storage", queued_at, started_at))
+}
+
+fn cancel_storage(_: EmptyRequest) -> anyhow::Result<bool> {
+    Ok(false)
 }
 
 fn refresh_status(_: EmptyRequest) -> anyhow::Result<Vec<Value>> {

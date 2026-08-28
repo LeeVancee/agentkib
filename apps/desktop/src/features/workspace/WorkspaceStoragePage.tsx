@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { isTauriRuntime } from "@/core/platform";
 import { currentLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import type {
   AgentKind,
@@ -82,12 +83,24 @@ export function WorkspaceStoragePage({
   const [selected, setSelected] = useState<StorageSelection>();
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState("");
-  const active = job?.state === "queued" || job?.state === "running";
+  const [refreshPending, setRefreshPending] = useState(false);
+  const active = refreshPending || job?.state === "queued" || job?.state === "running";
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
+      if (!isTauriRuntime()) {
+        try {
+          const cached = await api.storageOverview();
+          if (!disposed) setOverview(cached);
+        } catch (reason) {
+          if (!disposed) setError(localizeMessage(reason));
+        } finally {
+          if (!disposed) setLoaded(true);
+        }
+        return;
+      }
       unlisten = await listen<StorageOverview>("agentkib:storage-updated", (event) => {
         if (!disposed) {
           setOverview(event.payload);
@@ -185,10 +198,14 @@ export function WorkspaceStoragePage({
 
   const start = async () => {
     setError("");
+    setRefreshPending(true);
     try {
-      await api.requestRefresh("storage", true);
+      const receipt = await api.requestRefresh("storage", true);
+      if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
     } catch (reason) {
       setError(localizeMessage(reason));
+    } finally {
+      setRefreshPending(false);
     }
   };
   const stop = async () => {

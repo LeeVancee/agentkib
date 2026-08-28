@@ -1,0 +1,35 @@
+appId: ai.agentkib
+productName: AgentKib
+directories:
+  output: release-electron
+files:
+  - dist/**
+  - dist-electron/**
+extraResources:
+  - from: build/runtime
+    to: bin
+mac:
+  icon: src-tauri/icons/icon.icns
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  minimumSystemVersion: 13.3.0
+  target:
+    - dmg
+win:
+  icon: src-tauri/icons/icon.ico
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+linux:
+  icon: src-tauri/icons/icon.png
+  category: Development
+  target:
+    - AppImage
+    - deb
+    - rpm
+publish:
+  provider: github
+  owner: starroyhq
+  repo: agentkib

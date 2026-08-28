@@ -49,13 +49,35 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:home:global-memories", status),
     activity: (limit?: number) => ipcRenderer.invoke("agentkib:home:activity", limit),
     scanRoots: () => ipcRenderer.invoke("agentkib:home:scan-roots"),
+    addScanRoot: (path: string, maxDepth: number) =>
+      ipcRenderer.invoke("agentkib:home:add-scan-root", path, maxDepth),
+    removeScanRoot: (id: string) => ipcRenderer.invoke("agentkib:home:remove-scan-root", id),
+    refreshDiscovery: () => ipcRenderer.invoke("agentkib:home:refresh-discovery"),
     excludedWorkspaces: () => ipcRenderer.invoke("agentkib:home:excluded-workspaces"),
     remoteGateways: () => ipcRenderer.invoke("agentkib:home:remote-gateways"),
+    insightsView: (query: unknown) => ipcRenderer.invoke("agentkib:home:insights-view", query),
+    refreshInsights: () => ipcRenderer.invoke("agentkib:home:refresh-insights"),
     insightsSummary: (query: unknown) =>
       ipcRenderer.invoke("agentkib:home:insights-summary", query),
     insightsStatus: () => ipcRenderer.invoke("agentkib:home:insights-status"),
     quotaCollectorStatus: () => ipcRenderer.invoke("agentkib:home:quota-collector-status"),
+    quotaSnapshot: () => ipcRenderer.invoke("agentkib:home:quota-snapshot"),
+    quotaPreferences: () => ipcRenderer.invoke("agentkib:home:quota-preferences"),
+    setQuotaPreferences: (preferences: unknown) =>
+      ipcRenderer.invoke("agentkib:home:set-quota-preferences", preferences),
+    refreshQuota: () => ipcRenderer.invoke("agentkib:home:refresh-quota"),
+    setQuotaAutoRefresh: (enabled: boolean) =>
+      ipcRenderer.invoke("agentkib:home:set-quota-auto-refresh", enabled),
+    setQuotaPromptSeen: (seen: boolean) =>
+      ipcRenderer.invoke("agentkib:home:set-quota-prompt-seen", seen),
     refreshStatus: () => ipcRenderer.invoke("agentkib:home:refresh-status"),
+    storageOverview: () => ipcRenderer.invoke("agentkib:home:storage-overview"),
+    storageChildren: (workspaceId: string, relativePath: string) =>
+      ipcRenderer.invoke("agentkib:home:storage-children", workspaceId, relativePath),
+    refreshStorage: () => ipcRenderer.invoke("agentkib:home:refresh-storage"),
+    openStoragePath: (workspaceId: string, relativePath: string) =>
+      ipcRenderer.invoke("agentkib:home:open-storage-path", workspaceId, relativePath),
+    cancelStorage: () => ipcRenderer.invoke("agentkib:home:cancel-storage"),
     updateOnboarding: (event: unknown) =>
       ipcRenderer.invoke("agentkib:home:update-onboarding", event),
     obsidianIntegration: () => ipcRenderer.invoke("agentkib:home:obsidian-integration"),

@@ -84,10 +84,12 @@ export function InsightsPage({
   section,
   workspaces,
   onSummary,
+  refreshRevision = 0,
 }: {
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
   onSummary: (summary: InsightsSummary) => void;
+  refreshRevision?: number;
 }) {
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
@@ -147,7 +149,7 @@ export function InsightsPage({
   }, [onSummary, query]);
   useEffect(() => {
     void loadInsights();
-  }, [loadInsights]);
+  }, [loadInsights, refreshRevision]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
 

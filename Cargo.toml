@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
   "apps/desktop/src-tauri",
+  "crates/agentkib-protocol",
+  "crates/agentkib-runtime",
   "crates/agentkib-platform",
   "crates/agentkib-core",
   "crates/agentkib-adapters",
@@ -23,6 +25,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+agentkib-protocol = { path = "crates/agentkib-protocol" }
 agentkib-platform = { path = "crates/agentkib-platform" }
 agentkib-core = { path = "crates/agentkib-core" }
 agentkib-adapters = { path = "crates/agentkib-adapters" }

@@ -27,13 +27,29 @@ pub const SEARCH_CATALOG_ASSETS_METHOD: &str = "catalog.searchAssets";
 pub const LIST_GLOBAL_MEMORIES_METHOD: &str = "memories.listGlobal";
 pub const LIST_ACTIVITY_METHOD: &str = "activity.list";
 pub const LIST_SCAN_ROOTS_METHOD: &str = "discovery.listScanRoots";
+pub const ADD_SCAN_ROOT_METHOD: &str = "discovery.addScanRoot";
+pub const REMOVE_SCAN_ROOT_METHOD: &str = "discovery.removeScanRoot";
+pub const REFRESH_DISCOVERY_METHOD: &str = "discovery.refresh";
 pub const LIST_EXCLUDED_WORKSPACES_METHOD: &str = "discovery.listExcludedWorkspaces";
 pub const LIST_REMOTE_GATEWAYS_METHOD: &str = "gateways.list";
 pub const WORKSPACE_DOCTOR_SUMMARIES_METHOD: &str = "workspace.doctorSummaries";
+pub const INSIGHTS_VIEW_METHOD: &str = "insights.view";
+pub const REFRESH_INSIGHTS_METHOD: &str = "insights.refresh";
 pub const INSIGHTS_SUMMARY_METHOD: &str = "insights.summary";
 pub const INSIGHTS_STATUS_METHOD: &str = "insights.status";
 pub const QUOTA_COLLECTOR_STATUS_METHOD: &str = "quota.collectorStatus";
+pub const QUOTA_SNAPSHOT_METHOD: &str = "quota.snapshot";
+pub const QUOTA_PREFERENCES_METHOD: &str = "quota.preferences";
+pub const SET_QUOTA_PREFERENCES_METHOD: &str = "quota.setPreferences";
+pub const REFRESH_QUOTA_METHOD: &str = "quota.refresh";
+pub const SET_QUOTA_AUTO_REFRESH_METHOD: &str = "quota.setAutoRefresh";
+pub const SET_QUOTA_PROMPT_SEEN_METHOD: &str = "quota.setPromptSeen";
 pub const REFRESH_STATUS_METHOD: &str = "refresh.status";
+pub const STORAGE_OVERVIEW_METHOD: &str = "storage.overview";
+pub const STORAGE_CHILDREN_METHOD: &str = "storage.children";
+pub const REFRESH_STORAGE_METHOD: &str = "storage.refresh";
+pub const RESOLVE_STORAGE_PATH_METHOD: &str = "storage.resolvePath";
+pub const CANCEL_STORAGE_METHOD: &str = "storage.cancel";
 pub const UPDATE_ONBOARDING_METHOD: &str = "onboarding.update";
 
 #[derive(Debug, Deserialize)]
@@ -139,13 +155,29 @@ export const RUNTIME_METHODS = {{
   listGlobalMemories: "{LIST_GLOBAL_MEMORIES_METHOD}",
   listActivity: "{LIST_ACTIVITY_METHOD}",
   listScanRoots: "{LIST_SCAN_ROOTS_METHOD}",
+  addScanRoot: "{ADD_SCAN_ROOT_METHOD}",
+  removeScanRoot: "{REMOVE_SCAN_ROOT_METHOD}",
+  refreshDiscovery: "{REFRESH_DISCOVERY_METHOD}",
   listExcludedWorkspaces: "{LIST_EXCLUDED_WORKSPACES_METHOD}",
   listRemoteGateways: "{LIST_REMOTE_GATEWAYS_METHOD}",
   workspaceDoctorSummaries: "{WORKSPACE_DOCTOR_SUMMARIES_METHOD}",
+  insightsView: "{INSIGHTS_VIEW_METHOD}",
+  refreshInsights: "{REFRESH_INSIGHTS_METHOD}",
   insightsSummary: "{INSIGHTS_SUMMARY_METHOD}",
   insightsStatus: "{INSIGHTS_STATUS_METHOD}",
   quotaCollectorStatus: "{QUOTA_COLLECTOR_STATUS_METHOD}",
+  quotaSnapshot: "{QUOTA_SNAPSHOT_METHOD}",
+  quotaPreferences: "{QUOTA_PREFERENCES_METHOD}",
+  setQuotaPreferences: "{SET_QUOTA_PREFERENCES_METHOD}",
+  refreshQuota: "{REFRESH_QUOTA_METHOD}",
+  setQuotaAutoRefresh: "{SET_QUOTA_AUTO_REFRESH_METHOD}",
+  setQuotaPromptSeen: "{SET_QUOTA_PROMPT_SEEN_METHOD}",
   refreshStatus: "{REFRESH_STATUS_METHOD}",
+  storageOverview: "{STORAGE_OVERVIEW_METHOD}",
+  storageChildren: "{STORAGE_CHILDREN_METHOD}",
+  refreshStorage: "{REFRESH_STORAGE_METHOD}",
+  resolveStoragePath: "{RESOLVE_STORAGE_PATH_METHOD}",
+  cancelStorage: "{CANCEL_STORAGE_METHOD}",
   updateOnboarding: "{UPDATE_ONBOARDING_METHOD}",
 }} as const;
 

@@ -12,7 +12,10 @@ import type {
   OnboardingEvent,
   ObsidianIntegration,
   QuotaCollectorStatus,
+  QuotaPopoverPreferences,
+  QuotaSnapshot,
   RefreshJobStatus,
+  RefreshReceipt,
   RemoteGatewaySummary,
   ScanRoot,
   WorkspaceScan,
@@ -30,6 +33,7 @@ import type {
   ConversationSessionSummary,
   RuntimeInfo,
   InsightsSummary,
+  InsightsView,
   ContextDoctorReport,
   WorkspaceOpener,
 } from "./core/types";
@@ -76,12 +80,28 @@ interface AgentKibDesktopApi {
     globalMemories(status?: string): Promise<MemoryRecord[]>;
     activity(limit?: number): Promise<ActivityRecord[]>;
     scanRoots(): Promise<ScanRoot[]>;
+    addScanRoot(path: string, maxDepth: number): Promise<ScanRoot>;
+    removeScanRoot(id: string): Promise<void>;
+    refreshDiscovery(): Promise<RefreshReceipt>;
     excludedWorkspaces(): Promise<ExcludedWorkspace[]>;
     remoteGateways(): Promise<RemoteGatewaySummary[]>;
+    insightsView(query: InsightsQuery): Promise<InsightsView>;
+    refreshInsights(): Promise<RefreshReceipt>;
     insightsSummary(query: InsightsQuery): Promise<InsightsSummary>;
     insightsStatus(): Promise<InsightsStatus>;
     quotaCollectorStatus(): Promise<QuotaCollectorStatus>;
+    quotaSnapshot(): Promise<QuotaSnapshot | undefined>;
+    quotaPreferences(): Promise<QuotaPopoverPreferences>;
+    setQuotaPreferences(preferences: QuotaPopoverPreferences): Promise<QuotaPopoverPreferences>;
+    refreshQuota(): Promise<RefreshReceipt>;
+    setQuotaAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
+    setQuotaPromptSeen(seen: boolean): Promise<RuntimeInfo>;
     refreshStatus(): Promise<RefreshJobStatus[]>;
+    storageOverview(): Promise<StorageOverview>;
+    storageChildren(workspaceId: string, relativePath: string): Promise<StorageNode>;
+    refreshStorage(): Promise<RefreshReceipt>;
+    openStoragePath(workspaceId: string, relativePath: string): Promise<void>;
+    cancelStorage(): Promise<boolean>;
     updateOnboarding(event: OnboardingEvent): Promise<RuntimeInfo>;
     obsidianIntegration(): Promise<ObsidianIntegration>;
   };

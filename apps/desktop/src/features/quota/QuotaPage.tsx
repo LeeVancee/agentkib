@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { api } from "@/core/api";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
-import { normalizePlatform } from "@/core/platform";
+import { isTauriRuntime, normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import {
@@ -105,6 +105,22 @@ export function QuotaPage({
     let unlistenRefresh: (() => void) | undefined;
     let unlistenPreferences: (() => void) | undefined;
     void (async () => {
+      if (!isTauriRuntime()) {
+        const { snapshot: initialSnapshot, job } = await load();
+        if (
+          autoRefreshEnabled &&
+          !requestedInitialRefresh.current &&
+          initialSnapshot?.freshness !== "fresh" &&
+          !["queued", "running", "backoff"].includes(job?.state ?? "")
+        ) {
+          requestedInitialRefresh.current = true;
+          const receipt = await api.requestRefresh("quota", false);
+          setRefreshJob(receipt.status);
+          if (receipt.status.state === "succeeded") await load();
+        }
+        setInitializing(false);
+        return;
+      }
       [unlistenQuota, unlistenRefresh, unlistenPreferences] = await Promise.all([
         listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
           if (disposed) return;
@@ -256,6 +272,7 @@ export function QuotaPage({
     try {
       const receipt = await api.refreshQuota();
       setRefreshJob(receipt.status);
+      if (receipt.status.state === "succeeded") await load();
     } catch (reason) {
       setError(localizeMessage(reason));
     } finally {

@@ -11,6 +11,10 @@ export function isTauriRuntime(): boolean {
   );
 }
 
+export function isElectronRuntime(): boolean {
+  return typeof window !== "undefined" && Boolean(window.agentkibDesktop);
+}
+
 export function normalizePlatform(platform?: string): AppPlatform {
   if (platform === "darwin" || platform === "macos") return "macos";
   if (platform === "windows" || platform === "linux") return platform;

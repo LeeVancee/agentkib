@@ -84,6 +84,19 @@ export function AppRuntimeBridge() {
     let unlistenNavigate: (() => void) | undefined;
     let unlistenMenuCommand: (() => void) | undefined;
     let unlistenTheme: (() => void) | undefined;
+    const onElectronRefreshState = (event: Event) => {
+      const status = (event as CustomEvent<RefreshJobStatus>).detail;
+      setRefreshJobs((current) => [
+        ...current.filter((job) => job.kind !== status.kind),
+        status,
+      ]);
+      if (status.kind === "discovery" && status.state === "succeeded") {
+        void loadDiscoveryCache();
+      }
+    };
+    if (electronRuntime) {
+      window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+    }
     void (async () => {
       try {
         if (!tauriRuntime) {
@@ -221,6 +234,7 @@ export function AppRuntimeBridge() {
       unlistenNavigate?.();
       unlistenMenuCommand?.();
       unlistenTheme?.();
+      window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
     };
   }, []);
 

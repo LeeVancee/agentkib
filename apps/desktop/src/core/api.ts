@@ -81,10 +81,17 @@ import type {
 
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
+function electronDesktopApi() {
+  return typeof window === "undefined" ? undefined : window.agentkibDesktop;
+}
+
 export const api = {
-  scan: (project: string) => invoke<WorkspaceScan>("scan_workspace", { project }),
+  scan: (project: string) =>
+    electronDesktopApi()?.workspace.scan(project) ??
+    invoke<WorkspaceScan>("scan_workspace", { project }),
   manifest: async (project: string) => {
-    const manifest = await invoke<Manifest>("prepare_manifest", { project });
+    const manifest = await (electronDesktopApi()?.workspace.prepareManifest(project) ??
+      invoke<Manifest>("prepare_manifest", { project }));
     // Empty legacy connections are omitted from manifest serialization.
     // Keep the React model total at the IPC boundary without writing the field back to disk.
     return { ...manifest, connections: manifest.connections ?? [] };
@@ -94,6 +101,7 @@ export const api = {
   apply: (changeSet: ChangeSet, approveHome: boolean) =>
     invoke("apply_changes", { changeSet, approveHome }),
   context: (project: string, cwd: string, agent: AgentKind) =>
+    electronDesktopApi()?.workspace.resolveContext(project, cwd, agent) ??
     invoke<ContextPreview>("resolve_context", { project, cwd, agent }),
   pickDirectory: async (title?: string) => {
     const selected = await (electronDesktopApi()?.shell.openDirectory(title) ??
@@ -174,16 +182,35 @@ export const api = {
     invoke<McpMigrationCandidate[]>("scan_native_mcp_candidates", { project }),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     invoke<ChangeSet>("plan_mcp_migration", { project, candidateIds }),
-  requestRefresh: (kind: RefreshKind, force = false) =>
-    invoke<RefreshReceipt>("request_refresh", { kind, force }),
+  requestRefresh: async (kind: RefreshKind, force = false) => {
+    const electron = electronDesktopApi();
+    let receipt: RefreshReceipt;
+    if (electron && kind === "discovery") receipt = await electron.home.refreshDiscovery();
+    else if (electron && kind === "insights") receipt = await electron.home.refreshInsights();
+    else if (electron && kind === "quota") receipt = await electron.home.refreshQuota();
+    else if (electron && kind === "storage") receipt = await electron.home.refreshStorage();
+    else receipt = await invoke<RefreshReceipt>("request_refresh", { kind, force });
+    if (electron) {
+      window.dispatchEvent(
+        new CustomEvent<RefreshJobStatus>("agentkib:electron-refresh-state", {
+          detail: receipt.status,
+        }),
+      );
+    }
+    return receipt;
+  },
   refreshStatus: () =>
     electronDesktopApi()?.home.refreshStatus() ?? invoke<RefreshJobStatus[]>("get_refresh_status"),
-  storageOverview: () => invoke<StorageOverview>("get_storage_overview"),
+  storageOverview: () =>
+    electronDesktopApi()?.home.storageOverview() ?? invoke<StorageOverview>("get_storage_overview"),
   workspaceStorageChildren: (workspaceId: string, relativePath: string) =>
+    electronDesktopApi()?.home.storageChildren(workspaceId, relativePath) ??
     invoke<StorageNode>("get_workspace_storage_children", { workspaceId, relativePath }),
   openWorkspaceStoragePath: (workspaceId: string, relativePath: string) =>
+    electronDesktopApi()?.home.openStoragePath(workspaceId, relativePath) ??
     invoke<void>("open_workspace_storage_path", { workspaceId, relativePath }),
-  cancelStorageScan: () => invoke<boolean>("cancel_storage_scan"),
+  cancelStorageScan: () =>
+    electronDesktopApi()?.home.cancelStorage() ?? invoke<boolean>("cancel_storage_scan"),
   discoverWorkspaces: () => invoke<RefreshReceipt>("discover_workspaces"),
   workspaces: () =>
     electronDesktopApi()?.home.workspaces() ?? invoke<WorkspaceSummary[]>("list_workspaces"),
@@ -246,8 +273,10 @@ export const api = {
   setSessionIndexEnabled: (enabled: boolean) =>
     invoke<RuntimeInfo>("set_session_index_enabled", { enabled }),
   setQuotaAutoRefreshEnabled: (enabled: boolean) =>
+    electronDesktopApi()?.home.setQuotaAutoRefresh(enabled) ??
     invoke<RuntimeInfo>("set_quota_auto_refresh_enabled", { enabled }),
   setQuotaAutoRefreshPromptSeen: (seen: boolean) =>
+    electronDesktopApi()?.home.setQuotaPromptSeen(seen) ??
     invoke<RuntimeInfo>("set_quota_auto_refresh_prompt_seen", { seen }),
   addWorkspace: (path: string) =>
     electronDesktopApi()?.workspace.add(path) ??
@@ -278,17 +307,24 @@ export const api = {
   openObsidian: () => invoke<void>("open_obsidian"),
   openWorkspaceInObsidian: (workspaceId: string) =>
     invoke<void>("open_workspace_in_obsidian", { workspaceId }),
-  remoteGateways: () => invoke<RemoteGatewaySummary[]>("list_remote_gateways"),
+  remoteGateways: () =>
+    electronDesktopApi()?.home.remoteGateways() ??
+    invoke<RemoteGatewaySummary[]>("list_remote_gateways"),
   saveRemoteGateway: (input: RemoteGatewayInput) =>
     invoke<RemoteGatewaySummary>("save_remote_gateway", { input }),
   refreshRemoteGateway: (id: string) =>
     invoke<RemoteGatewaySummary>("refresh_remote_gateway", { id }),
   removeRemoteGateway: (id: string) => invoke<void>("remove_remote_gateway", { id }),
-  scanRoots: () => invoke<ScanRoot[]>("list_scan_roots"),
+  scanRoots: () =>
+    electronDesktopApi()?.home.scanRoots() ?? invoke<ScanRoot[]>("list_scan_roots"),
   addScanRoot: (path: string, maxDepth = 5) =>
+    electronDesktopApi()?.home.addScanRoot(path, maxDepth) ??
     invoke<ScanRoot>("add_scan_root", { path, maxDepth }),
-  removeScanRoot: (id: string) => invoke<void>("remove_scan_root", { id }),
-  agentInstallations: () => invoke<AgentInstallation[]>("list_agent_installations"),
+  removeScanRoot: (id: string) =>
+    electronDesktopApi()?.home.removeScanRoot(id) ?? invoke<void>("remove_scan_root", { id }),
+  agentInstallations: () =>
+    electronDesktopApi()?.home.agentInstallations() ??
+    invoke<AgentInstallation[]>("list_agent_installations"),
   workspaceDoctorReport: (workspaceId: string) =>
     electronDesktopApi()?.workspace.doctorReport(workspaceId) ??
     invoke<ContextDoctorReport>("get_workspace_doctor_report", { workspaceId }),
@@ -315,7 +351,9 @@ export const api = {
     electronDesktopApi()?.home.activity(limit) ??
     invoke<ActivityRecord[]>("list_activity", { limit }),
   refreshInsights: () => invoke<RefreshReceipt>("refresh_insights"),
-  insightsView: (query: InsightsQuery = {}) => invoke<InsightsView>("get_insights_view", { query }),
+  insightsView: (query: InsightsQuery = {}) =>
+    electronDesktopApi()?.home.insightsView(query) ??
+    invoke<InsightsView>("get_insights_view", { query }),
   insightsSummary: (query: InsightsQuery = {}) =>
     electronDesktopApi()?.home.insightsSummary(query) ??
     invoke<InsightsSummary>("get_insights_summary", { query }),
@@ -337,13 +375,19 @@ export const api = {
     invoke<GitIdentitySummary>("add_git_identity_alias", { email }),
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_git_identity_enabled", { id, enabled }),
-  quotaSnapshot: () => invoke<QuotaSnapshot | undefined>("get_quota_snapshot"),
-  refreshQuota: () => invoke<RefreshReceipt>("refresh_quota"),
+  quotaSnapshot: () =>
+    electronDesktopApi()?.home.quotaSnapshot() ??
+    invoke<QuotaSnapshot | undefined>("get_quota_snapshot"),
+  refreshQuota: () =>
+    electronDesktopApi()?.home.refreshQuota() ?? invoke<RefreshReceipt>("refresh_quota"),
   quotaCollectorStatus: () =>
     electronDesktopApi()?.home.quotaCollectorStatus() ??
     invoke<QuotaCollectorStatus>("get_quota_collector_status"),
-  quotaPopoverPreferences: () => invoke<QuotaPopoverPreferences>("get_quota_popover_preferences"),
+  quotaPopoverPreferences: () =>
+    electronDesktopApi()?.home.quotaPreferences() ??
+    invoke<QuotaPopoverPreferences>("get_quota_popover_preferences"),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>
+    electronDesktopApi()?.home.setQuotaPreferences(preferences) ??
     invoke<QuotaPopoverPreferences>("set_quota_popover_preferences", { preferences }),
   openQuotaDashboard: (provider?: string, window?: QuotaWindowSelector, configurePopover = false) =>
     invoke<void>("open_quota_dashboard", { provider, window, configurePopover }),

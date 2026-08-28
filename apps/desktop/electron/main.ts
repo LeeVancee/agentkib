@@ -71,6 +71,7 @@ async function startApplication(): Promise<void> {
       AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
       AGENTKIB_APP_VERSION: app.getVersion(),
       AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+      AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
     },
   });
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
@@ -297,6 +298,23 @@ function registerHomeIpc(): void {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listScanRoots, {});
   });
+  ipcMain.handle("agentkib:home:add-scan-root", (event, rootPath: unknown, maxDepth: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.addScanRoot, {
+      path: requireString(rootPath, "path"),
+      maxDepth: requirePositiveInteger(maxDepth, "maxDepth"),
+    });
+  });
+  ipcMain.handle("agentkib:home:remove-scan-root", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.removeScanRoot, {
+      id: requireString(id, "id"),
+    });
+  });
+  ipcMain.handle("agentkib:home:refresh-discovery", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshDiscovery, {});
+  });
   ipcMain.handle("agentkib:home:excluded-workspaces", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listExcludedWorkspaces, {});
@@ -304,6 +322,16 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:home:remote-gateways", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listRemoteGateways, {});
+  });
+  ipcMain.handle("agentkib:home:insights-view", (event, query: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.insightsView, {
+      query: requireObject(query, "insights query"),
+    });
+  });
+  ipcMain.handle("agentkib:home:refresh-insights", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshInsights, {});
   });
   ipcMain.handle("agentkib:home:insights-summary", (event, query: unknown) => {
     assertTrustedRenderer(event);
@@ -319,9 +347,67 @@ function registerHomeIpc(): void {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.quotaCollectorStatus, {});
   });
+  ipcMain.handle("agentkib:home:quota-snapshot", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.quotaSnapshot, {});
+  });
+  ipcMain.handle("agentkib:home:quota-preferences", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.quotaPreferences, {});
+  });
+  ipcMain.handle("agentkib:home:set-quota-preferences", (event, preferences: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.setQuotaPreferences, {
+      preferences: requireObject(preferences, "quota preferences"),
+    });
+  });
+  ipcMain.handle("agentkib:home:refresh-quota", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshQuota, {});
+  });
+  ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.setQuotaAutoRefresh, {
+      value: requireBoolean(enabled, "enabled"),
+    });
+  });
+  ipcMain.handle("agentkib:home:set-quota-prompt-seen", (event, seen: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.setQuotaPromptSeen, {
+      value: requireBoolean(seen, "seen"),
+    });
+  });
   ipcMain.handle("agentkib:home:refresh-status", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.refreshStatus, {});
+  });
+  ipcMain.handle("agentkib:home:storage-overview", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.storageOverview, {});
+  });
+  ipcMain.handle("agentkib:home:storage-children", (event, workspaceId: unknown, relativePath: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.storageChildren, {
+      workspaceId: requireString(workspaceId, "workspaceId"),
+      relativePath: requireText(relativePath, "relativePath"),
+    });
+  });
+  ipcMain.handle("agentkib:home:refresh-storage", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshStorage, {});
+  });
+  ipcMain.handle("agentkib:home:open-storage-path", async (event, workspaceId: unknown, relativePath: unknown) => {
+    assertTrustedRenderer(event);
+    const target = await requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, {
+      workspaceId: requireString(workspaceId, "workspaceId"),
+      relativePath: requireText(relativePath, "relativePath"),
+    });
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("agentkib:home:cancel-storage", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.cancelStorage, {});
   });
   ipcMain.handle("agentkib:home:update-onboarding", (event, onboardingEvent: unknown) => {
     assertTrustedRenderer(event);
@@ -408,6 +494,12 @@ function optionalPositiveInteger(value: unknown, name: string): number | undefin
   return value;
 }
 
+function requirePositiveInteger(value: unknown, name: string): number {
+  const parsed = optionalPositiveInteger(value, name);
+  if (parsed === undefined) throw new TypeError(`${name} must be a positive integer`);
+  return parsed;
+}
+
 async function createMainWindow(): Promise<void> {
   const window = new BrowserWindow({
     title: "AgentKib",
@@ -475,6 +567,22 @@ function resolveRuntimeExecutable(): string {
   const executable = process.platform === "win32" ? "agentkib-runtime.exe" : "agentkib-runtime";
   if (app.isPackaged) return path.join(process.resourcesPath, "bin", executable);
   return path.resolve(process.cwd(), "../../target/debug", executable);
+}
+
+function resolveQuotaSidecar(): string {
+  if (process.env.AGENTKIB_QUOTA_SIDECAR) return process.env.AGENTKIB_QUOTA_SIDECAR;
+  if (app.isPackaged) {
+    return path.join(
+      process.resourcesPath,
+      "bin",
+      process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar",
+    );
+  }
+  const triple =
+    process.platform === "darwin"
+      ? `${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
+      : `${process.arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-gnu`;
+  return path.resolve(process.cwd(), "src-tauri/binaries", `agentkib-quota-sidecar-${triple}`);
 }
 
 async function showStartupFailure(error: unknown): Promise<void> {

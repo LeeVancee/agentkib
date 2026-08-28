@@ -14,6 +14,7 @@ import {
   visibleQuotaWindows,
 } from "@/features/quota/quota";
 import { applyTheme } from "@/core/theme";
+import { isTauriRuntime } from "@/core/platform";
 import type {
   EffectiveTheme,
   QuotaPopoverPreferences,
@@ -67,6 +68,20 @@ export function QuotaPopover() {
     let unlistenQuotaAutoRefresh: (() => void) | undefined;
     let unlistenQuotaAutoRefreshPrompt: (() => void) | undefined;
     void (async () => {
+      if (!isTauriRuntime()) {
+        const current = await load();
+        if (
+          current.autoRefreshEnabled &&
+          !initialRefreshRequested.current &&
+          (!current.snapshot || current.snapshot.freshness !== "fresh")
+        ) {
+          initialRefreshRequested.current = true;
+          const receipt = await api.requestRefresh("quota", false);
+          setRefreshJob(receipt.status);
+          if (receipt.status.state === "succeeded") await load();
+        }
+        return;
+      }
       [
         unlistenQuota,
         unlistenRefresh,
@@ -204,6 +219,7 @@ export function QuotaPopover() {
     try {
       const receipt = await api.refreshQuota();
       setRefreshJob(receipt.status);
+      if (receipt.status.state === "succeeded") await load();
     } catch (reason) {
       setError(localizeMessage(reason));
     }

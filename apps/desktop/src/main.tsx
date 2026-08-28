@@ -12,7 +12,7 @@ import { createAppRouter } from "./router";
 import { useAppStore } from "./stores/app-store";
 import "./styles.css";
 
-applyPlatformAttribute(import.meta.env.TAURI_ENV_PLATFORM);
+applyPlatformAttribute(import.meta.env.TAURI_ENV_PLATFORM ?? window.agentkibDesktop?.platform);
 
 async function bootstrap() {
   let locale = normalizeLocale(navigator.language);

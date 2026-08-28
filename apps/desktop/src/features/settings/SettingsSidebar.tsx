@@ -6,8 +6,6 @@ import {
   FolderSearch,
   Keyboard,
   Menu,
-  PanelLeftClose,
-  PanelLeftOpen,
   PlugZap,
   Settings,
   Settings2,
@@ -37,21 +35,15 @@ const sections: Array<{
   { id: "diagnostics", label: "settings.section.diagnostics", icon: Stethoscope },
 ];
 
-export function SettingsSidebar({
-  active,
-  onSelect,
-  onBack,
-  onSettings,
-  collapsed,
-  onCollapsedChange,
-}: {
+export function SettingsSidebar(props: {
   active: SettingsSection;
   onSelect: (section: SettingsSection) => void;
   onBack: () => void;
   onSettings: () => void;
   collapsed: boolean;
-  onCollapsedChange: (collapsed: boolean) => void;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
+  const { active, onSelect, onBack, onSettings, collapsed } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarId = useId();
   const { openShortcutHelp } = useShortcutHelp();
@@ -69,11 +61,6 @@ export function SettingsSidebar({
   const select = (section: SettingsSection) => {
     setMobileOpen(false);
     onSelect(section);
-  };
-
-  const toggleCollapsed = () => {
-    const next = !collapsed;
-    onCollapsedChange(next);
   };
 
   return (
@@ -100,31 +87,6 @@ export function SettingsSidebar({
           onClick={() => setMobileOpen(false)}
         />
       )}
-      <div className="app-shell-header">
-        <Button
-          variant="bare"
-          size="content"
-          className="app-sidebar-collapse-button"
-          type="button"
-          aria-label={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-          aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
-          aria-expanded={!collapsed}
-          data-collapsed={collapsed}
-          title={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-          onClick={toggleCollapsed}
-        >
-          <span className="app-sidebar-collapse-icon" aria-hidden="true">
-            <PanelLeftClose
-              className={cn("app-sidebar-collapse-icon-close", collapsed && "is-hidden")}
-              size={17}
-            />
-            <PanelLeftOpen
-              className={cn("app-sidebar-collapse-icon-open", !collapsed && "is-hidden")}
-              size={17}
-            />
-          </span>
-        </Button>
-      </div>
       <aside
         id={sidebarId}
         className={cn(

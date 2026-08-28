@@ -1,8 +1,7 @@
 import { Award, Bot, CircleAlert, FolderGit2, Gauge, Home, Library } from "lucide-react";
 import { Outlet } from "@tanstack/react-router";
 import { AppSidebar, type SidebarEntry } from "@/components/AppSidebar";
-import { WindowToolbar } from "@/components/WindowToolbar";
-import { cn } from "@/lib/utils";
+import { AppShell } from "./AppShell";
 import type { RefreshJobStatus } from "@/core/types";
 import type { GlobalPage } from "./app-route";
 import { useAppStore } from "@/stores/app-store";
@@ -43,13 +42,6 @@ export function GlobalShell({
   onSettings: () => void;
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
-  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
-  const shellClass = cn(
-    "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
-    sidebarCollapsed && "app-shell-sidebar-collapsed",
-  );
-  const mainClass =
-    "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
   const contentClass =
     "content !mx-auto !max-w-[1540px] !px-7 !pb-10 !pt-[14px] max-[900px]:!px-[18px]";
   const discoveryFailure = refreshJobs.find(
@@ -57,35 +49,32 @@ export function GlobalShell({
   );
 
   return (
-    <div className={shellClass}>
-      <WindowToolbar />
-      <AppSidebar
-        active={active}
-        collapsed={sidebarCollapsed}
-        entries={entries}
-        onNavigate={onNavigate}
-        onSettings={onSettings}
-        onBrandClick={() => onNavigate("home")}
-        onCollapsedChange={setSidebarCollapsed}
-      />
-      <main className={mainClass}>
-        <div className="page-scroll-container min-h-0 flex-1">
-          {message && (
-            <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              <CircleAlert size={17} />
-              {message}
-            </div>
-          )}
-          {active === "workspaces" && discoveryFailure?.error && (
-            <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {discoveryFailure.error}
-            </div>
-          )}
-          <section className={cn(contentClass, "")}>
-            <Outlet />
-          </section>
+    <AppShell
+      sidebar={
+        <AppSidebar
+          active={active}
+          collapsed={sidebarCollapsed}
+          entries={entries}
+          onNavigate={onNavigate}
+          onSettings={onSettings}
+          onBrandClick={() => onNavigate("home")}
+        />
+      }
+    >
+      {message && (
+        <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <CircleAlert size={17} />
+          {message}
         </div>
-      </main>
-    </div>
+      )}
+      {active === "workspaces" && discoveryFailure?.error && (
+        <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {discoveryFailure.error}
+        </div>
+      )}
+      <section className={contentClass}>
+        <Outlet />
+      </section>
+    </AppShell>
   );
 }

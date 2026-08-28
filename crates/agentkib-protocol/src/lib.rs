@@ -7,6 +7,11 @@ pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
 pub const PREPARE_MANIFEST_METHOD: &str = "workspace.prepareManifest";
 pub const RESOLVE_CONTEXT_METHOD: &str = "workspace.resolveContext";
+pub const ADD_WORKSPACE_METHOD: &str = "workspace.add";
+pub const REFRESH_WORKSPACE_METHOD: &str = "workspace.refresh";
+pub const EXCLUDE_WORKSPACE_METHOD: &str = "workspace.exclude";
+pub const RESTORE_EXCLUDED_WORKSPACE_METHOD: &str = "workspace.restoreExcluded";
+pub const WORKSPACE_DOCTOR_REPORT_METHOD: &str = "workspace.doctorReport";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
@@ -21,6 +26,7 @@ pub const INSIGHTS_SUMMARY_METHOD: &str = "insights.summary";
 pub const INSIGHTS_STATUS_METHOD: &str = "insights.status";
 pub const QUOTA_COLLECTOR_STATUS_METHOD: &str = "quota.collectorStatus";
 pub const REFRESH_STATUS_METHOD: &str = "refresh.status";
+pub const UPDATE_ONBOARDING_METHOD: &str = "onboarding.update";
 
 #[derive(Debug, Deserialize)]
 pub struct RpcRequest {
@@ -105,6 +111,11 @@ export const RUNTIME_METHODS = {{
   scanWorkspace: "{SCAN_WORKSPACE_METHOD}",
   prepareManifest: "{PREPARE_MANIFEST_METHOD}",
   resolveContext: "{RESOLVE_CONTEXT_METHOD}",
+  addWorkspace: "{ADD_WORKSPACE_METHOD}",
+  refreshWorkspace: "{REFRESH_WORKSPACE_METHOD}",
+  excludeWorkspace: "{EXCLUDE_WORKSPACE_METHOD}",
+  restoreExcludedWorkspace: "{RESTORE_EXCLUDED_WORKSPACE_METHOD}",
+  workspaceDoctorReport: "{WORKSPACE_DOCTOR_REPORT_METHOD}",
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",
@@ -119,6 +130,7 @@ export const RUNTIME_METHODS = {{
   insightsStatus: "{INSIGHTS_STATUS_METHOD}",
   quotaCollectorStatus: "{QUOTA_COLLECTOR_STATUS_METHOD}",
   refreshStatus: "{REFRESH_STATUS_METHOD}",
+  updateOnboarding: "{UPDATE_ONBOARDING_METHOD}",
 }} as const;
 
 export interface RuntimePeer {{

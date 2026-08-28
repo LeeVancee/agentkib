@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -132,11 +131,7 @@ function WorkspacesRoute() {
       await dialogs.notify(tr("dialog.quit.changesApplying"));
       return;
     }
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addWorkspace"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addWorkspace"));
     if (typeof selected !== "string") return;
     try {
       if (useWorkspaceStore.getState().applyingChanges) {

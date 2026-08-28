@@ -1,5 +1,4 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { open } from "@tauri-apps/plugin-dialog";
 import { GlobalHome } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import { api } from "../core/api";
@@ -30,7 +29,7 @@ function HomeRoute() {
     await navigate({ to: path as never, params: { workspaceId: workspace.id } as never });
   };
   const addScanRoot = async () => {
-    const selected = await open({ directory: true, multiple: false });
+    const selected = await api.pickDirectory();
     if (typeof selected === "string") {
       await api.addScanRoot(selected, 5);
       await api.requestRefresh("discovery", true);

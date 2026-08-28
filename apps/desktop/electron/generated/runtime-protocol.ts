@@ -7,6 +7,11 @@ export const RUNTIME_METHODS = {
   scanWorkspace: "workspace.scan",
   prepareManifest: "workspace.prepareManifest",
   resolveContext: "workspace.resolveContext",
+  addWorkspace: "workspace.add",
+  refreshWorkspace: "workspace.refresh",
+  excludeWorkspace: "workspace.exclude",
+  restoreExcludedWorkspace: "workspace.restoreExcluded",
+  workspaceDoctorReport: "workspace.doctorReport",
   runtimeInfo: "runtime.info",
   listWorkspaces: "workspaces.list",
   listAgentInstallations: "agents.listInstallations",
@@ -21,6 +26,7 @@ export const RUNTIME_METHODS = {
   insightsStatus: "insights.status",
   quotaCollectorStatus: "quota.collectorStatus",
   refreshStatus: "refresh.status",
+  updateOnboarding: "onboarding.update",
 } as const;
 
 export interface RuntimePeer {

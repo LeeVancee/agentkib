@@ -12,8 +12,20 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:prepare-manifest", project),
     resolveContext: (project: string, cwd: string, agent: string) =>
       ipcRenderer.invoke("agentkib:workspace:resolve-context", project, cwd, agent),
+    add: (path: string) => ipcRenderer.invoke("agentkib:workspace:add", path),
+    refresh: (id: string) => ipcRenderer.invoke("agentkib:workspace:refresh", id),
+    exclude: (id: string) => ipcRenderer.invoke("agentkib:workspace:exclude", id),
+    restoreExcluded: (path: string) =>
+      ipcRenderer.invoke("agentkib:workspace:restore-excluded", path),
+    doctorReport: (id: string) => ipcRenderer.invoke("agentkib:workspace:doctor-report", id),
+    openers: (id: string) => ipcRenderer.invoke("agentkib:workspace:openers", id),
+    open: (id: string, openerId?: string) =>
+      ipcRenderer.invoke("agentkib:workspace:open", id, openerId),
     doctorSummaries: (workspaceIds: string[]) =>
       ipcRenderer.invoke("agentkib:workspace:doctor-summaries", workspaceIds),
+  }),
+  shell: Object.freeze({
+    openDirectory: (title?: string) => ipcRenderer.invoke("agentkib:shell:open-directory", title),
   }),
   home: Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
@@ -31,6 +43,9 @@ const desktopApi = Object.freeze({
     insightsStatus: () => ipcRenderer.invoke("agentkib:home:insights-status"),
     quotaCollectorStatus: () => ipcRenderer.invoke("agentkib:home:quota-collector-status"),
     refreshStatus: () => ipcRenderer.invoke("agentkib:home:refresh-status"),
+    updateOnboarding: (event: unknown) =>
+      ipcRenderer.invoke("agentkib:home:update-onboarding", event),
+    obsidianIntegration: () => ipcRenderer.invoke("agentkib:home:obsidian-integration"),
   }),
 }) satisfies DesktopApi;
 

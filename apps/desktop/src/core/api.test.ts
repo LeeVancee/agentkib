@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 describe("AgentKib API boundary", () => {
-  beforeEach(() => vi.mocked(invoke).mockReset());
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    Reflect.deleteProperty(globalThis, "window");
+  });
+
+  afterEach(() => Reflect.deleteProperty(globalThis, "window"));
 
   it("normalizes omitted legacy connections in manifest drafts", async () => {
     vi.mocked(invoke).mockResolvedValue({
@@ -179,6 +184,19 @@ describe("AgentKib API boundary", () => {
     expect(invoke).toHaveBeenCalledWith("get_workspace_doctor_report", {
       workspaceId: "workspace-1",
     });
+  });
+
+  it("routes Doctor reports through the Electron preload contract", async () => {
+    const doctorReport = vi.fn().mockResolvedValue({ summary: { workspace_id: "workspace-1" } });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { agentkibDesktop: { workspace: { doctorReport } } },
+    });
+
+    await api.workspaceDoctorReport("workspace-1");
+
+    expect(doctorReport).toHaveBeenCalledWith("workspace-1");
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("batches Doctor summaries within the backend limit", async () => {

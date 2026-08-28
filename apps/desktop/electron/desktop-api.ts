@@ -9,7 +9,17 @@ export interface DesktopApi {
     scan(project: string): Promise<unknown>;
     prepareManifest(project: string): Promise<unknown>;
     resolveContext(project: string, cwd: string, agent: string): Promise<unknown>;
+    add(path: string): Promise<unknown>;
+    refresh(id: string): Promise<unknown>;
+    exclude(id: string): Promise<unknown>;
+    restoreExcluded(path: string): Promise<unknown>;
+    doctorReport(id: string): Promise<unknown>;
+    openers(id: string): Promise<unknown>;
+    open(id: string, openerId?: string): Promise<unknown>;
     doctorSummaries(workspaceIds: string[]): Promise<unknown>;
+  };
+  shell: {
+    openDirectory(title?: string): Promise<string | undefined>;
   };
   home: {
     runtime(): Promise<unknown>;
@@ -25,5 +35,7 @@ export interface DesktopApi {
     insightsStatus(): Promise<unknown>;
     quotaCollectorStatus(): Promise<unknown>;
     refreshStatus(): Promise<unknown>;
+    updateOnboarding(event: unknown): Promise<unknown>;
+    obsidianIntegration(): Promise<unknown>;
   };
 }

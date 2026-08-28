@@ -3,9 +3,11 @@ import path from "node:path";
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   nativeTheme,
   protocol,
+  shell,
   type IpcMainInvokeEvent,
 } from "electron";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "./generated/runtime-protocol";
@@ -84,6 +86,7 @@ async function startApplication(): Promise<void> {
   });
   registerWorkspaceIpc();
   registerHomeIpc();
+  registerShellIpc();
 
   await createMainWindow();
 }
@@ -114,6 +117,87 @@ function registerWorkspaceIpc(): void {
       });
     },
   );
+  ipcMain.handle("agentkib:workspace:add", (event, workspacePath: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.addWorkspace, {
+      path: requireString(workspacePath, "path"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:refresh", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.refreshWorkspace, {
+      id: requireString(id, "id"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:exclude", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.excludeWorkspace, {
+      id: requireString(id, "id"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:restore-excluded", (event, workspacePath: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.restoreExcludedWorkspace, {
+      path: requireString(workspacePath, "path"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:doctor-report", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.workspaceDoctorReport, {
+      id: requireString(id, "id"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:openers", async (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    const workspace = await findWorkspace(requireString(id, "workspaceId"));
+    if (!workspace) return [];
+    return [
+      {
+        id: "system-file-manager",
+        name: process.platform === "darwin" ? "Finder" : "File manager",
+        category: "file-manager",
+        preferred: true,
+      },
+    ];
+  });
+  ipcMain.handle("agentkib:workspace:open", async (event, id: unknown, openerId: unknown) => {
+    assertTrustedRenderer(event);
+    if (openerId !== undefined && openerId !== "system-file-manager") {
+      throw new Error(`Unsupported workspace opener: ${String(openerId)}`);
+    }
+    const workspace = await findWorkspace(requireString(id, "workspaceId"));
+    if (!workspace) throw new Error("Workspace not found");
+    const error = await shell.openPath(workspace.path);
+    if (error) throw new Error(error);
+  });
+}
+
+async function findWorkspace(id: string): Promise<{ path: string } | undefined> {
+  const workspaces = await requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {});
+  if (!Array.isArray(workspaces)) return undefined;
+  const workspace = workspaces.find(
+    (value): value is { id: string; path: string } =>
+      typeof value === "object" &&
+      value !== null &&
+      "id" in value &&
+      "path" in value &&
+      (value as { id?: unknown }).id === id &&
+      typeof (value as { path?: unknown }).path === "string",
+  );
+  return workspace ? { path: workspace.path } : undefined;
+}
+
+function registerShellIpc(): void {
+  ipcMain.handle("agentkib:shell:open-directory", async (event, title: unknown) => {
+    assertTrustedRenderer(event);
+    const window = mainWindow;
+    if (!window) throw new Error("AgentKib window is not ready");
+    const result = await dialog.showOpenDialog(window, {
+      properties: ["openDirectory"],
+      title: title === undefined ? undefined : requireText(title, "title"),
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  });
 }
 
 function registerHomeIpc(): void {
@@ -181,6 +265,25 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:home:refresh-status", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.refreshStatus, {});
+  });
+  ipcMain.handle("agentkib:home:update-onboarding", (event, onboardingEvent: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.updateOnboarding, {
+      event: requireObject(onboardingEvent, "onboarding event"),
+    });
+  });
+  ipcMain.handle("agentkib:home:obsidian-integration", (event) => {
+    assertTrustedRenderer(event);
+    return {
+      installation: {
+        installed: false,
+        app_path: undefined,
+        version: undefined,
+        cli_available: false,
+      },
+      vaults: [],
+      workspace_links: [],
+    };
   });
   ipcMain.handle("agentkib:workspace:doctor-summaries", (event, ids: unknown) => {
     assertTrustedRenderer(event);

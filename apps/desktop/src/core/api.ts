@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
 import type {
   Achievement,
   ActivityRecord,
@@ -94,6 +95,11 @@ export const api = {
     invoke("apply_changes", { changeSet, approveHome }),
   context: (project: string, cwd: string, agent: AgentKind) =>
     invoke<ContextPreview>("resolve_context", { project, cwd, agent }),
+  pickDirectory: async (title?: string) => {
+    const selected = await (electronDesktopApi()?.shell.openDirectory(title) ??
+      tauriOpen({ directory: true, multiple: false, title }));
+    return typeof selected === "string" ? selected : undefined;
+  },
   memories: (project: string, status?: MemoryStatus) =>
     invoke<MemoryRecord[]>("list_memories", { project, status }),
   searchMemories: (project: string, query: string, limit = 50) =>
@@ -111,7 +117,9 @@ export const api = {
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
     invoke<MemoryRecord>("review_memory", { id, status, editedContent }),
   runtime: () => electronDesktopApi()?.home.runtime() ?? invoke<RuntimeInfo>("runtime_info"),
-  updateOnboarding: (event: OnboardingEvent) => invoke<RuntimeInfo>("update_onboarding", { event }),
+  updateOnboarding: (event: OnboardingEvent) =>
+    electronDesktopApi()?.home.updateOnboarding(event) ??
+    invoke<RuntimeInfo>("update_onboarding", { event }),
   openFilesAndFoldersSettings: () => invoke<void>("open_files_and_folders_settings"),
   quitApp: () => invoke<void>("quit_app"),
   setCloseBehavior: (behavior?: CloseBehavior) =>
@@ -189,8 +197,10 @@ export const api = {
   gitDiff: (workspaceId: string, request: GitDiffRequest) =>
     invoke<GitDiff | undefined>("get_git_diff", { workspaceId, request }),
   workspaceOpeners: (workspaceId: string) =>
+    electronDesktopApi()?.workspace.openers(workspaceId) ??
     invoke<WorkspaceOpener[]>("list_workspace_openers", { workspaceId }),
   openWorkspaceWithApp: (workspaceId: string, openerId?: string) =>
+    electronDesktopApi()?.workspace.open(workspaceId, openerId) ??
     invoke<void>("open_workspace_with_app", { workspaceId, openerId }),
   workspaceSessions: (workspaceId: string) =>
     invoke<ConversationSessionSummary[]>("list_workspace_sessions", { workspaceId }),
@@ -231,12 +241,23 @@ export const api = {
     invoke<RuntimeInfo>("set_quota_auto_refresh_enabled", { enabled }),
   setQuotaAutoRefreshPromptSeen: (seen: boolean) =>
     invoke<RuntimeInfo>("set_quota_auto_refresh_prompt_seen", { seen }),
-  addWorkspace: (path: string) => invoke<WorkspaceSummary>("add_workspace", { path }),
-  refreshWorkspace: (id: string) => invoke<WorkspaceSummary>("refresh_workspace", { id }),
-  excludeWorkspace: (id: string) => invoke<void>("exclude_workspace", { id }),
-  excludedWorkspaces: () => invoke<ExcludedWorkspace[]>("list_excluded_workspaces"),
-  restoreExcludedWorkspace: (path: string) => invoke<void>("restore_excluded_workspace", { path }),
-  obsidianIntegration: () => invoke<ObsidianIntegration>("get_obsidian_integration"),
+  addWorkspace: (path: string) =>
+    electronDesktopApi()?.workspace.add(path) ??
+    invoke<WorkspaceSummary>("add_workspace", { path }),
+  refreshWorkspace: (id: string) =>
+    electronDesktopApi()?.workspace.refresh(id) ??
+    invoke<WorkspaceSummary>("refresh_workspace", { id }),
+  excludeWorkspace: (id: string) =>
+    electronDesktopApi()?.workspace.exclude(id) ?? invoke<void>("exclude_workspace", { id }),
+  excludedWorkspaces: () =>
+    electronDesktopApi()?.home.excludedWorkspaces() ??
+    invoke<ExcludedWorkspace[]>("list_excluded_workspaces"),
+  restoreExcludedWorkspace: (path: string) =>
+    electronDesktopApi()?.workspace.restoreExcluded(path) ??
+    invoke<void>("restore_excluded_workspace", { path }),
+  obsidianIntegration: () =>
+    electronDesktopApi()?.home.obsidianIntegration() ??
+    invoke<ObsidianIntegration>("get_obsidian_integration"),
   addObsidianVault: (path: string) => invoke<ObsidianIntegration>("add_obsidian_vault", { path }),
   linkWorkspaceToObsidian: (workspaceId: string, vaultPath: string, relativeTarget?: string) =>
     invoke<ObsidianWorkspaceLink>("link_workspace_to_obsidian", {
@@ -261,6 +282,7 @@ export const api = {
   removeScanRoot: (id: string) => invoke<void>("remove_scan_root", { id }),
   agentInstallations: () => invoke<AgentInstallation[]>("list_agent_installations"),
   workspaceDoctorReport: (workspaceId: string) =>
+    electronDesktopApi()?.workspace.doctorReport(workspaceId) ??
     invoke<ContextDoctorReport>("get_workspace_doctor_report", { workspaceId }),
   workspaceDoctorSummaries: async (workspaceIds: string[]) => {
     const summaries: ContextDoctorSummary[] = [];

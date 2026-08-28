@@ -1,5 +1,4 @@
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
@@ -49,11 +48,7 @@ function SettingsRoute() {
 
   const addRoot = () =>
     run(async () => {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: tr("dialog.addScanRoot"),
-      });
+      const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
       if (typeof selected !== "string") return;
       await api.addScanRoot(selected, 5);
       setScanRoots(await api.scanRoots());

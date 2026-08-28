@@ -1,17 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use agentkib_core::{AgentKind, McpNetworkSettings};
 use agentkib_insights::InsightsQuery;
 use agentkib_protocol::{
-    HANDSHAKE_METHOD, HandshakeRequest, HandshakeResult, INSIGHTS_STATUS_METHOD,
-    INSIGHTS_SUMMARY_METHOD, LIST_ACTIVITY_METHOD, LIST_AGENT_INSTALLATIONS_METHOD,
-    LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
-    LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD, PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION,
-    QUOTA_COLLECTOR_STATUS_METHOD, REFRESH_STATUS_METHOD, RESOLVE_CONTEXT_METHOD,
-    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD,
-    SEARCH_CATALOG_ASSETS_METHOD, SHUTDOWN_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    ADD_WORKSPACE_METHOD, EXCLUDE_WORKSPACE_METHOD, HANDSHAKE_METHOD, HandshakeRequest,
+    HandshakeResult, INSIGHTS_STATUS_METHOD, INSIGHTS_SUMMARY_METHOD, LIST_ACTIVITY_METHOD,
+    LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD,
+    LIST_REMOTE_GATEWAYS_METHOD, LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD,
+    PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD,
+    REFRESH_STATUS_METHOD, REFRESH_WORKSPACE_METHOD, RESOLVE_CONTEXT_METHOD,
+    RESTORE_EXCLUDED_WORKSPACE_METHOD, RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer,
+    SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SHUTDOWN_METHOD, UPDATE_ONBOARDING_METHOD,
+    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
 };
 use agentkib_quota::QuotaBackend;
 use agentkib_store::Store;
@@ -75,6 +78,11 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         SCAN_WORKSPACE_METHOD => command_response(request, scan_workspace),
         PREPARE_MANIFEST_METHOD => command_response(request, prepare_manifest),
         RESOLVE_CONTEXT_METHOD => command_response(request, resolve_context),
+        ADD_WORKSPACE_METHOD => command_response(request, add_workspace),
+        REFRESH_WORKSPACE_METHOD => command_response(request, refresh_workspace),
+        EXCLUDE_WORKSPACE_METHOD => command_response(request, exclude_workspace),
+        RESTORE_EXCLUDED_WORKSPACE_METHOD => command_response(request, restore_excluded_workspace),
+        WORKSPACE_DOCTOR_REPORT_METHOD => command_response(request, get_workspace_doctor_report),
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
@@ -89,6 +97,7 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         INSIGHTS_STATUS_METHOD => command_response(request, insights_status),
         QUOTA_COLLECTOR_STATUS_METHOD => command_response(request, quota_collector_status),
         REFRESH_STATUS_METHOD => command_response(request, refresh_status),
+        UPDATE_ONBOARDING_METHOD => command_response(request, update_onboarding),
         _ => (
             RpcResponse::error(
                 request.id,
@@ -197,6 +206,34 @@ fn resolve_context(
 }
 
 #[derive(Deserialize)]
+struct WorkspacePathRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceIdRequest {
+    id: String,
+}
+
+fn add_workspace(request: WorkspacePathRequest) -> anyhow::Result<agentkib_core::WorkspaceSummary> {
+    Store::open_default()?.add_workspace(Path::new(&request.path))
+}
+
+fn refresh_workspace(
+    request: WorkspaceIdRequest,
+) -> anyhow::Result<agentkib_core::WorkspaceSummary> {
+    Store::open_default()?.refresh_workspace(&request.id)
+}
+
+fn exclude_workspace(request: WorkspaceIdRequest) -> anyhow::Result<()> {
+    Store::open_default()?.exclude_workspace(&request.id)
+}
+
+fn restore_excluded_workspace(request: WorkspacePathRequest) -> anyhow::Result<()> {
+    Store::open_default()?.restore_excluded_workspace(Path::new(&request.path))
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CatalogAssetsRequest {
     #[serde(default)]
@@ -209,6 +246,94 @@ struct CatalogAssetsRequest {
 
 fn default_catalog_limit() -> usize {
     500
+}
+
+const ONBOARDING_VERSION: u32 = 1;
+
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+struct OnboardingPreferences {
+    #[serde(default)]
+    acknowledged_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    doctor_completed: bool,
+    #[serde(default)]
+    repairable_count: usize,
+    #[serde(default)]
+    repair_applied: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+enum OnboardingEvent {
+    DoctorCompleted {
+        workspace_id: String,
+        repairable_count: usize,
+    },
+    RepairApplied {
+        workspace_id: String,
+    },
+    Dismissed,
+    Restarted,
+}
+
+#[derive(Deserialize)]
+struct UpdateOnboardingRequest {
+    event: OnboardingEvent,
+}
+
+fn apply_onboarding_event(preferences: &mut OnboardingPreferences, event: OnboardingEvent) {
+    match event {
+        OnboardingEvent::DoctorCompleted {
+            workspace_id,
+            repairable_count,
+        } => {
+            if preferences.workspace_id.as_deref() != Some(workspace_id.as_str()) {
+                preferences.repair_applied = false;
+            }
+            preferences.workspace_id = Some(workspace_id);
+            preferences.doctor_completed = true;
+            preferences.repairable_count = repairable_count;
+            if repairable_count == 0 {
+                preferences.acknowledged_version = ONBOARDING_VERSION;
+            }
+        }
+        OnboardingEvent::RepairApplied { workspace_id } => {
+            preferences.workspace_id = Some(workspace_id);
+            preferences.repair_applied = true;
+        }
+        OnboardingEvent::Dismissed => {
+            preferences.acknowledged_version = ONBOARDING_VERSION;
+        }
+        OnboardingEvent::Restarted => {
+            *preferences = OnboardingPreferences::default();
+        }
+    }
+}
+
+fn load_onboarding_preferences(data_dir: &Path) -> OnboardingPreferences {
+    let path = data_dir.join("preferences.json");
+    let Ok(contents) = fs::read_to_string(path) else {
+        return OnboardingPreferences::default();
+    };
+    serde_json::from_str::<Value>(&contents)
+        .ok()
+        .and_then(|root| root.get("onboarding").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn onboarding_state(data_dir: &Path) -> Value {
+    let preferences = load_onboarding_preferences(data_dir);
+    json!({
+        "version": ONBOARDING_VERSION,
+        "acknowledged_version": preferences.acknowledged_version,
+        "workspace_id": preferences.workspace_id,
+        "doctor_completed": preferences.doctor_completed,
+        "repairable_count": preferences.repairable_count,
+        "repair_applied": preferences.repair_applied,
+    })
 }
 
 fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
@@ -250,18 +375,28 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
         "session_index_enabled": true,
         "quota_auto_refresh_enabled": false,
         "quota_auto_refresh_prompt_seen": false,
-        "onboarding": {
-            "version": 1,
-            "acknowledged_version": 0,
-            "doctor_completed": false,
-            "repairable_count": 0,
-            "repair_applied": false,
-        },
+        "onboarding": onboarding_state(&data_dir),
     }))
 }
 
 #[derive(Deserialize)]
 struct EmptyRequest {}
+
+fn update_onboarding(request: UpdateOnboardingRequest) -> anyhow::Result<Value> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    fs::create_dir_all(&data_dir)?;
+    let path = data_dir.join("preferences.json");
+    let mut root = fs::read_to_string(&path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let mut preferences = load_onboarding_preferences(&data_dir);
+    apply_onboarding_event(&mut preferences, request.event);
+    root["onboarding"] = serde_json::to_value(preferences)?;
+    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))?;
+    runtime_info(EmptyRequest {})
+}
 
 fn list_workspaces(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::WorkspaceSummary>> {
     Store::open_default()?.list_workspaces()
@@ -347,6 +482,12 @@ fn workspace_doctor_summaries(
                 .unwrap_or_else(|_| unavailable_doctor_summary(workspace_id))
         })
         .collect())
+}
+
+fn get_workspace_doctor_report(
+    request: WorkspaceIdRequest,
+) -> anyhow::Result<agentkib_core::ContextDoctorReport> {
+    workspace_doctor_report(&request.id)
 }
 
 fn workspace_doctor_report(

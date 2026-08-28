@@ -18,6 +18,13 @@ const desktopApi = Object.freeze({
     restoreExcluded: (path: string) =>
       ipcRenderer.invoke("agentkib:workspace:restore-excluded", path),
     doctorReport: (id: string) => ipcRenderer.invoke("agentkib:workspace:doctor-report", id),
+    gitSummary: (id: string) => ipcRenderer.invoke("agentkib:workspace:git-summary", id),
+    gitHistory: (id: string, query: unknown) =>
+      ipcRenderer.invoke("agentkib:workspace:git-history", id, query),
+    gitCommitFiles: (id: string, oid: string) =>
+      ipcRenderer.invoke("agentkib:workspace:git-commit-files", id, oid),
+    gitDiff: (id: string, request: unknown) =>
+      ipcRenderer.invoke("agentkib:workspace:git-diff", id, request),
     openers: (id: string) => ipcRenderer.invoke("agentkib:workspace:openers", id),
     open: (id: string, openerId?: string) =>
       ipcRenderer.invoke("agentkib:workspace:open", id, openerId),

@@ -189,12 +189,16 @@ export const api = {
     electronDesktopApi()?.home.workspaces() ?? invoke<WorkspaceSummary[]>("list_workspaces"),
   workspace: (id: string) => invoke<WorkspaceSummary | undefined>("get_workspace", { id }),
   workspaceGitSummary: (workspaceId: string) =>
+    electronDesktopApi()?.workspace.gitSummary(workspaceId) ??
     invoke<GitWorkspaceSummary | undefined>("get_workspace_git_summary", { workspaceId }),
   workspaceGitHistory: (workspaceId: string, query: GitHistoryQuery = {}) =>
+    electronDesktopApi()?.workspace.gitHistory(workspaceId, query) ??
     invoke<GitCommitPage | undefined>("list_workspace_git_history", { workspaceId, query }),
   gitCommitFiles: (workspaceId: string, oid: string) =>
+    electronDesktopApi()?.workspace.gitCommitFiles(workspaceId, oid) ??
     invoke<GitFileChange[] | undefined>("list_git_commit_files", { workspaceId, oid }),
   gitDiff: (workspaceId: string, request: GitDiffRequest) =>
+    electronDesktopApi()?.workspace.gitDiff(workspaceId, request) ??
     invoke<GitDiff | undefined>("get_git_diff", { workspaceId, request }),
   workspaceOpeners: (workspaceId: string) =>
     electronDesktopApi()?.workspace.openers(workspaceId) ??

@@ -6,15 +6,16 @@ use std::path::Path;
 use agentkib_core::{AgentKind, McpNetworkSettings};
 use agentkib_insights::InsightsQuery;
 use agentkib_protocol::{
-    ADD_WORKSPACE_METHOD, EXCLUDE_WORKSPACE_METHOD, HANDSHAKE_METHOD, HandshakeRequest,
-    HandshakeResult, INSIGHTS_STATUS_METHOD, INSIGHTS_SUMMARY_METHOD, LIST_ACTIVITY_METHOD,
-    LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD,
-    LIST_REMOTE_GATEWAYS_METHOD, LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD,
-    PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD,
-    REFRESH_STATUS_METHOD, REFRESH_WORKSPACE_METHOD, RESOLVE_CONTEXT_METHOD,
-    RESTORE_EXCLUDED_WORKSPACE_METHOD, RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer,
-    SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SHUTDOWN_METHOD, UPDATE_ONBOARDING_METHOD,
-    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    ADD_WORKSPACE_METHOD, EXCLUDE_WORKSPACE_METHOD, GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD,
+    HANDSHAKE_METHOD, HandshakeRequest, HandshakeResult, INSIGHTS_STATUS_METHOD,
+    INSIGHTS_SUMMARY_METHOD, LIST_ACTIVITY_METHOD, LIST_AGENT_INSTALLATIONS_METHOD,
+    LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
+    LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD, PREPARE_MANIFEST_METHOD, PROTOCOL_VERSION,
+    QUOTA_COLLECTOR_STATUS_METHOD, REFRESH_STATUS_METHOD, REFRESH_WORKSPACE_METHOD,
+    RESOLVE_CONTEXT_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD, RUNTIME_INFO_METHOD, RpcRequest,
+    RpcResponse, RuntimePeer, SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SHUTDOWN_METHOD,
+    UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD,
 };
 use agentkib_quota::QuotaBackend;
 use agentkib_store::Store;
@@ -83,6 +84,10 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         EXCLUDE_WORKSPACE_METHOD => command_response(request, exclude_workspace),
         RESTORE_EXCLUDED_WORKSPACE_METHOD => command_response(request, restore_excluded_workspace),
         WORKSPACE_DOCTOR_REPORT_METHOD => command_response(request, get_workspace_doctor_report),
+        WORKSPACE_GIT_SUMMARY_METHOD => command_response(request, workspace_git_summary),
+        WORKSPACE_GIT_HISTORY_METHOD => command_response(request, workspace_git_history),
+        GIT_COMMIT_FILES_METHOD => command_response(request, git_commit_files),
+        GIT_DIFF_METHOD => command_response(request, git_diff),
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
@@ -231,6 +236,54 @@ fn exclude_workspace(request: WorkspaceIdRequest) -> anyhow::Result<()> {
 
 fn restore_excluded_workspace(request: WorkspacePathRequest) -> anyhow::Result<()> {
     Store::open_default()?.restore_excluded_workspace(Path::new(&request.path))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceGitHistoryRequest {
+    workspace_id: String,
+    #[serde(default)]
+    query: agentkib_git::GitHistoryQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitFilesRequest {
+    workspace_id: String,
+    oid: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDiffRequest {
+    workspace_id: String,
+    request: agentkib_git::GitDiffRequest,
+}
+
+fn workspace_git_summary(
+    request: WorkspaceIdRequest,
+) -> anyhow::Result<Option<agentkib_git::GitWorkspaceSummary>> {
+    let path = Store::open_default()?.workspace_path(&request.id)?;
+    agentkib_git::workspace_summary(&path)
+}
+
+fn workspace_git_history(
+    request: WorkspaceGitHistoryRequest,
+) -> anyhow::Result<Option<agentkib_git::GitCommitPage>> {
+    let path = Store::open_default()?.workspace_path(&request.workspace_id)?;
+    agentkib_git::history(&path, &request.query)
+}
+
+fn git_commit_files(
+    request: GitCommitFilesRequest,
+) -> anyhow::Result<Option<Vec<agentkib_git::GitFileChange>>> {
+    let path = Store::open_default()?.workspace_path(&request.workspace_id)?;
+    agentkib_git::commit_files(&path, &request.oid)
+}
+
+fn git_diff(request: GitDiffRequest) -> anyhow::Result<Option<agentkib_git::GitDiff>> {
+    let path = Store::open_default()?.workspace_path(&request.workspace_id)?;
+    agentkib_git::diff(&path, &request.request)
 }
 
 #[derive(Deserialize)]

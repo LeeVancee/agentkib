@@ -14,6 +14,10 @@ export interface DesktopApi {
     exclude(id: string): Promise<unknown>;
     restoreExcluded(path: string): Promise<unknown>;
     doctorReport(id: string): Promise<unknown>;
+    gitSummary(id: string): Promise<unknown>;
+    gitHistory(id: string, query: unknown): Promise<unknown>;
+    gitCommitFiles(id: string, oid: string): Promise<unknown>;
+    gitDiff(id: string, request: unknown): Promise<unknown>;
     openers(id: string): Promise<unknown>;
     open(id: string, openerId?: string): Promise<unknown>;
     doctorSummaries(workspaceIds: string[]): Promise<unknown>;

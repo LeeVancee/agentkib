@@ -199,6 +199,32 @@ describe("AgentKib API boundary", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("routes Git workspace reads through the Electron preload contract", async () => {
+    const gitSummary = vi.fn().mockResolvedValue(undefined);
+    const gitHistory = vi.fn().mockResolvedValue(undefined);
+    const gitCommitFiles = vi.fn().mockResolvedValue([]);
+    const gitDiff = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        agentkibDesktop: {
+          workspace: { gitSummary, gitHistory, gitCommitFiles, gitDiff },
+        },
+      },
+    });
+
+    await api.workspaceGitSummary("workspace-1");
+    await api.workspaceGitHistory("workspace-1", { merges_only: true });
+    await api.gitCommitFiles("workspace-1", "abc123");
+    await api.gitDiff("workspace-1", { kind: "worktree" });
+
+    expect(gitSummary).toHaveBeenCalledWith("workspace-1");
+    expect(gitHistory).toHaveBeenCalledWith("workspace-1", { merges_only: true });
+    expect(gitCommitFiles).toHaveBeenCalledWith("workspace-1", "abc123");
+    expect(gitDiff).toHaveBeenCalledWith("workspace-1", { kind: "worktree" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("batches Doctor summaries within the backend limit", async () => {
     const workspaceIds = Array.from({ length: 201 }, (_, index) => `workspace-${index}`);
     vi.mocked(invoke)

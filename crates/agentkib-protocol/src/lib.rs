@@ -12,6 +12,10 @@ pub const REFRESH_WORKSPACE_METHOD: &str = "workspace.refresh";
 pub const EXCLUDE_WORKSPACE_METHOD: &str = "workspace.exclude";
 pub const RESTORE_EXCLUDED_WORKSPACE_METHOD: &str = "workspace.restoreExcluded";
 pub const WORKSPACE_DOCTOR_REPORT_METHOD: &str = "workspace.doctorReport";
+pub const WORKSPACE_GIT_SUMMARY_METHOD: &str = "workspace.gitSummary";
+pub const WORKSPACE_GIT_HISTORY_METHOD: &str = "workspace.gitHistory";
+pub const GIT_COMMIT_FILES_METHOD: &str = "workspace.gitCommitFiles";
+pub const GIT_DIFF_METHOD: &str = "workspace.gitDiff";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
@@ -116,6 +120,10 @@ export const RUNTIME_METHODS = {{
   excludeWorkspace: "{EXCLUDE_WORKSPACE_METHOD}",
   restoreExcludedWorkspace: "{RESTORE_EXCLUDED_WORKSPACE_METHOD}",
   workspaceDoctorReport: "{WORKSPACE_DOCTOR_REPORT_METHOD}",
+  workspaceGitSummary: "{WORKSPACE_GIT_SUMMARY_METHOD}",
+  workspaceGitHistory: "{WORKSPACE_GIT_HISTORY_METHOD}",
+  gitCommitFiles: "{GIT_COMMIT_FILES_METHOD}",
+  gitDiff: "{GIT_DIFF_METHOD}",
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",

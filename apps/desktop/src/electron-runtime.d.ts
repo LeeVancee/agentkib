@@ -19,6 +19,12 @@ import type {
   WorkspaceSummary,
   AgentInstallation,
   ActivityRecord,
+  GitCommitPage,
+  GitDiff,
+  GitDiffRequest,
+  GitFileChange,
+  GitHistoryQuery,
+  GitWorkspaceSummary,
   RuntimeInfo,
   InsightsSummary,
   ContextDoctorReport,
@@ -39,6 +45,10 @@ interface AgentKibDesktopApi {
     exclude(id: string): Promise<void>;
     restoreExcluded(path: string): Promise<void>;
     doctorReport(id: string): Promise<ContextDoctorReport>;
+    gitSummary(id: string): Promise<GitWorkspaceSummary | undefined>;
+    gitHistory(id: string, query: GitHistoryQuery): Promise<GitCommitPage | undefined>;
+    gitCommitFiles(id: string, oid: string): Promise<GitFileChange[] | undefined>;
+    gitDiff(id: string, request: GitDiffRequest): Promise<GitDiff | undefined>;
     openers(id: string): Promise<WorkspaceOpener[]>;
     open(id: string, openerId?: string): Promise<void>;
     doctorSummaries(workspaceIds: string[]): Promise<ContextDoctorSummary[]>;

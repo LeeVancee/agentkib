@@ -147,6 +147,33 @@ function registerWorkspaceIpc(): void {
       id: requireString(id, "id"),
     });
   });
+  ipcMain.handle("agentkib:workspace:git-summary", (event, id: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.workspaceGitSummary, {
+      id: requireString(id, "workspaceId"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:git-history", (event, id: unknown, query: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.workspaceGitHistory, {
+      workspaceId: requireString(id, "workspaceId"),
+      query: requireObject(query, "git history query"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:git-commit-files", (event, id: unknown, oid: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.gitCommitFiles, {
+      workspaceId: requireString(id, "workspaceId"),
+      oid: requireString(oid, "oid"),
+    });
+  });
+  ipcMain.handle("agentkib:workspace:git-diff", (event, id: unknown, request: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.gitDiff, {
+      workspaceId: requireString(id, "workspaceId"),
+      request: requireObject(request, "git diff request"),
+    });
+  });
   ipcMain.handle("agentkib:workspace:openers", async (event, id: unknown) => {
     assertTrustedRenderer(event);
     const workspace = await findWorkspace(requireString(id, "workspaceId"));

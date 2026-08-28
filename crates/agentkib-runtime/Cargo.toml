@@ -12,6 +12,7 @@ agentkib-protocol.workspace = true
 agentkib-adapters.workspace = true
 agentkib-core.workspace = true
 agentkib-gateways.workspace = true
+agentkib-git.workspace = true
 agentkib-insights.workspace = true
 agentkib-mcp.workspace = true
 agentkib-quota.workspace = true

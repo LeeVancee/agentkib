@@ -245,6 +245,7 @@ dependencies = [
  "agentkib-adapters",
  "agentkib-core",
  "agentkib-gateways",
+ "agentkib-git",
  "agentkib-insights",
  "agentkib-mcp",
  "agentkib-protocol",

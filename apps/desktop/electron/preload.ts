@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi } from "./desktop-api";
 
+ipcRenderer.on("agentkib:quit-requested", () => {
+  window.dispatchEvent(new Event("agentkib:quit-requested"));
+});
+
 const desktopApi = Object.freeze({
   platform: process.platform,
   runtime: Object.freeze({

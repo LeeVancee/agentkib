@@ -35,6 +35,7 @@ let tray: Tray | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
+let quitApproved = false;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let pendingUpdateVersion: string | undefined;
 
@@ -62,6 +63,11 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", (event) => {
   if (shutdownStarted || !runtimeHost) return;
+  if (!quitApproved) {
+    event.preventDefault();
+    requestRendererQuitGuard();
+    return;
+  }
   event.preventDefault();
   shutdownStarted = true;
   void runtimeHost.stop().finally(() => app.quit());
@@ -165,7 +171,25 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
+function requestRendererQuitGuard(): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) {
+    quitApproved = true;
+    app.quit();
+    return;
+  }
+  if (!window.isVisible()) window.show();
+  window.focus();
+  window.webContents.send("agentkib:quit-requested");
+}
+
 function registerUpdateIpc(): void {
+  const updaterChannel =
+    process.platform === "darwin" || process.platform === "win32" ? process.arch : undefined;
+  if (updaterChannel) autoUpdater.channel = updaterChannel;
+  autoUpdater.on("before-quit-for-update", () => {
+    quitApproved = true;
+  });
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   ipcMain.handle("agentkib:updates:check", async (event) => {
@@ -475,6 +499,7 @@ function registerShellIpc(): void {
   });
   ipcMain.handle("agentkib:shell:quit", (event) => {
     assertTrustedRenderer(event);
+    quitApproved = true;
     app.quit();
   });
   ipcMain.handle("agentkib:settings:set-close-behavior", (event, value: unknown) => {
@@ -1083,11 +1108,15 @@ async function createMainWindow(): Promise<void> {
   mainWindow = window;
 
   window.on("close", (event) => {
-    if (!shutdownStarted && closeBehavior === "minimize-to-tray") {
+    if (shutdownStarted || quitApproved) return;
+    if (closeBehavior === "minimize-to-tray") {
       event.preventDefault();
       if (tray) window.hide();
       else window.minimize();
+      return;
     }
+    event.preventDefault();
+    requestRendererQuitGuard();
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {

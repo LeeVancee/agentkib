@@ -301,11 +301,13 @@ export function AppRuntimeBridge() {
   const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
   quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    const tauriRuntime = isTauriRuntime();
+    const electronRuntime = isElectronRuntime();
+    if (!tauriRuntime && !electronRuntime) return;
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("agentkib:quit-requested", async () => {
+    const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
       try {
@@ -325,13 +327,19 @@ export function AppRuntimeBridge() {
       } finally {
         quitPromptOpen.current = false;
       }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    };
+    if (electronRuntime) {
+      window.addEventListener("agentkib:quit-requested", handleQuitRequest);
+    } else {
+      void listen("agentkib:quit-requested", handleQuitRequest).then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      });
+    }
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("agentkib:quit-requested", handleQuitRequest);
     };
   }, [dialogs]);
 

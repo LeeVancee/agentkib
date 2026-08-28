@@ -207,24 +207,28 @@ jobs:
         include:
           - name: macOS
             arch: arm64
+            updater_channel: arm64
             os: macos-15
             artifact: macos-arm64
             asset_suffix: macos-arm64
             bundles: app,dmg
           - name: macOS
             arch: x64
+            updater_channel: x64
             os: macos-15-intel
             artifact: macos-x64
             asset_suffix: macos-x64
             bundles: app,dmg
           - name: Windows
             arch: x64
+            updater_channel: x64
             os: windows-2025
             artifact: windows-x64
             asset_suffix: windows-x64
             bundles: nsis
           - name: Windows
             arch: arm64-preview
+            updater_channel: arm64
             os: windows-11-arm
             artifact: windows-arm64-preview
             asset_suffix: windows-arm64-preview
@@ -425,7 +429,7 @@ jobs:
               done
               metadata="$electron_dir/latest-mac.yml"
               test -s "$metadata"
-              cp "$metadata" "$DESKTOP_RELEASE_DIR/latest-mac-${{ matrix.arch }}.yml"
+              cp "$metadata" "$DESKTOP_RELEASE_DIR/${{ matrix.updater_channel }}-mac.yml"
               ;;
             Windows)
               for artifact in "$electron_dir"/*.exe "$electron_dir"/*.blockmap; do
@@ -433,7 +437,7 @@ jobs:
               done
               metadata="$electron_dir/latest.yml"
               test -s "$metadata"
-              cp "$metadata" "$DESKTOP_RELEASE_DIR/latest-windows-${{ matrix.arch }}.yml"
+              cp "$metadata" "$DESKTOP_RELEASE_DIR/${{ matrix.updater_channel }}.yml"
               ;;
             Linux)
               for artifact in "$electron_dir"/*.deb "$electron_dir"/*.AppImage "$electron_dir"/*.blockmap; do
@@ -640,20 +644,6 @@ jobs:
             cp "$source" "$destination"
           done < <(find "$WORKFLOW_ARTIFACTS_DIR" -type f -print0)
 
-          node "$RELEASE_WORKFLOW_SCRIPTS_DIR/merge-electron-updater-metadata.mjs" \
-            "$RELEASE_ASSETS_DIR/latest-mac.yml" \
-            "$RELEASE_ASSETS_DIR/latest-mac-arm64.yml" \
-            "$RELEASE_ASSETS_DIR/latest-mac-x64.yml"
-          node "$RELEASE_WORKFLOW_SCRIPTS_DIR/merge-electron-updater-metadata.mjs" \
-            "$RELEASE_ASSETS_DIR/latest.yml" \
-            "$RELEASE_ASSETS_DIR/latest-windows-arm64.yml" \
-            "$RELEASE_ASSETS_DIR/latest-windows-x64.yml"
-          rm -f \
-            "$RELEASE_ASSETS_DIR/latest-mac-arm64.yml" \
-            "$RELEASE_ASSETS_DIR/latest-mac-x64.yml" \
-            "$RELEASE_ASSETS_DIR/latest-windows-arm64.yml" \
-            "$RELEASE_ASSETS_DIR/latest-windows-x64.yml"
-
           cat > "$RUNNER_TEMP/required-release-assets.txt" <<EOF
           ${prefix}_linux-arm64.AppImage
           ${prefix}_linux-arm64.AppImage.sha256
@@ -679,8 +669,10 @@ jobs:
           ${prefix}_windows-x64.exe.sha256
           latest-linux-arm64.yml
           latest-linux.yml
-          latest-mac.yml
-          latest.yml
+          arm64-mac.yml
+          x64-mac.yml
+          arm64.yml
+          x64.yml
           EOF
 
           find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -exec basename {} \; \
@@ -715,7 +707,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for metadata in latest-linux.yml latest-linux-arm64.yml latest-mac.yml latest.yml; do
+          for metadata in latest-linux.yml latest-linux-arm64.yml arm64-mac.yml x64-mac.yml arm64.yml x64.yml; do
             file="$RELEASE_ASSETS_DIR/$metadata"
             test -s "$file"
             grep -Eq "^version: ${APP_VERSION//./\\.}$" "$file"

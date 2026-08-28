@@ -33,7 +33,14 @@ export class RuntimeRequestError extends Error {
   readonly data: unknown;
 
   constructor(error: RuntimeRpcError) {
-    super(error.message);
+    const detail =
+      typeof error.data === "object" &&
+      error.data !== null &&
+      "detail" in error.data &&
+      typeof error.data.detail === "string"
+        ? error.data.detail
+        : undefined;
+    super(detail ? `${error.message}: ${detail}` : error.message);
     this.name = "RuntimeRequestError";
     this.code = error.code;
     this.data = error.data;

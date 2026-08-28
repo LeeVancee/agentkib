@@ -21,6 +21,10 @@ use agentkib_conversations::{
 use agentkib_core::{AgentKind, McpNetworkSettings};
 use agentkib_discovery::discover as discover_local_workspaces;
 use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage};
+use agentkib_platform::applications::{
+    WorkspaceApplicationCategory, detect_workspace_applications,
+    open_workspace as open_workspace_application,
+};
 use agentkib_platform::path as platform_path;
 use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
@@ -34,26 +38,27 @@ use agentkib_protocol::{
     LIST_ACTIVITY_METHOD, LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD,
     LIST_GLOBAL_MEMORIES_METHOD, LIST_MCP_INSTALLATIONS_METHOD, LIST_MCP_RUNTIMES_METHOD,
     LIST_MCP_SERVERS_METHOD, LIST_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
-    LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACES_METHOD, MCP_HUB_STATUS_METHOD,
-    MODEL_USAGE_BREAKDOWN_METHOD, OBSIDIAN_INTEGRATION_METHOD, OPEN_OBSIDIAN_METHOD,
-    OPEN_OBSIDIAN_WORKSPACE_METHOD, PLAN_CHANGES_METHOD, PLAN_MCP_MIGRATION_METHOD,
-    PLAN_SESSION_HANDOFF_METHOD, PREPARE_MANIFEST_METHOD, PREPARE_SESSION_HANDOFF_METHOD,
-    PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
-    QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD,
-    REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD, REFRESH_MCP_REGISTRY_METHOD,
-    REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD, REFRESH_STATUS_METHOD,
-    REFRESH_STORAGE_METHOD, REFRESH_WORKSPACE_METHOD, REFRESH_WORKSPACE_SESSIONS_METHOD,
-    REMOVE_MCP_SERVER_METHOD, REMOVE_REMOTE_GATEWAY_METHOD, REMOVE_SCAN_ROOT_METHOD,
-    REPOSITORY_COMMIT_BREAKDOWN_METHOD, RESOLVE_CONTEXT_METHOD, RESOLVE_STORAGE_PATH_METHOD,
-    RESTART_MCP_RUNTIME_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD, REVIEW_MEMORY_METHOD,
-    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SANITIZE_SESSION_HANDOFF_METHOD,
-    SAVE_MCP_LOCAL_VALUES_METHOD, SAVE_MCP_SERVER_METHOD, SAVE_REMOTE_GATEWAY_METHOD,
-    SCAN_NATIVE_MCP_METHOD, SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD,
-    SEARCH_MCP_REGISTRY_METHOD, SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD,
-    SET_APP_ICON_PREFERENCE_METHOD, SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD,
-    SET_LOCALE_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD,
-    SET_QUOTA_PROMPT_SEEN_METHOD, SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD,
-    SHUTDOWN_METHOD, START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
+    LIST_SCAN_ROOTS_METHOD, LIST_WORKSPACE_OPENERS_METHOD, LIST_WORKSPACES_METHOD,
+    MCP_HUB_STATUS_METHOD, MODEL_USAGE_BREAKDOWN_METHOD, OBSIDIAN_INTEGRATION_METHOD,
+    OPEN_OBSIDIAN_METHOD, OPEN_OBSIDIAN_WORKSPACE_METHOD, OPEN_WORKSPACE_WITH_APP_METHOD,
+    PLAN_CHANGES_METHOD, PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD,
+    PREPARE_MANIFEST_METHOD, PREPARE_SESSION_HANDOFF_METHOD, PROBE_MCP_RUNTIME_METHOD,
+    PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD,
+    QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD, REFRESH_DISCOVERY_METHOD,
+    REFRESH_INSIGHTS_METHOD, REFRESH_MCP_REGISTRY_METHOD, REFRESH_QUOTA_METHOD,
+    REFRESH_REMOTE_GATEWAY_METHOD, REFRESH_STATUS_METHOD, REFRESH_STORAGE_METHOD,
+    REFRESH_WORKSPACE_METHOD, REFRESH_WORKSPACE_SESSIONS_METHOD, REMOVE_MCP_SERVER_METHOD,
+    REMOVE_REMOTE_GATEWAY_METHOD, REMOVE_SCAN_ROOT_METHOD, REPOSITORY_COMMIT_BREAKDOWN_METHOD,
+    RESOLVE_CONTEXT_METHOD, RESOLVE_STORAGE_PATH_METHOD, RESTART_MCP_RUNTIME_METHOD,
+    RESTORE_EXCLUDED_WORKSPACE_METHOD, REVIEW_MEMORY_METHOD, RUNTIME_INFO_METHOD, RpcRequest,
+    RpcResponse, RuntimePeer, SANITIZE_SESSION_HANDOFF_METHOD, SAVE_MCP_LOCAL_VALUES_METHOD,
+    SAVE_MCP_SERVER_METHOD, SAVE_REMOTE_GATEWAY_METHOD, SCAN_NATIVE_MCP_METHOD,
+    SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SEARCH_MCP_REGISTRY_METHOD,
+    SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD, SET_APP_ICON_PREFERENCE_METHOD,
+    SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD, SET_LOCALE_METHOD,
+    SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD,
+    SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD, SHUTDOWN_METHOD,
+    START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
     STORAGE_OVERVIEW_METHOD, SUMMARIZE_SESSION_HANDOFF_METHOD, UNINSTALL_MCP_METHOD,
     UNLINK_OBSIDIAN_WORKSPACE_METHOD, UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD,
     UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
@@ -324,6 +329,8 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         WORKSPACE_SESSIONS_METHOD => command_response(request, workspace_sessions),
         WORKSPACE_SESSION_STATUS_METHOD => command_response(request, workspace_session_status),
         REFRESH_WORKSPACE_SESSIONS_METHOD => command_response(request, refresh_workspace_sessions),
+        LIST_WORKSPACE_OPENERS_METHOD => command_response(request, list_workspace_openers),
+        OPEN_WORKSPACE_WITH_APP_METHOD => command_response(request, open_workspace_with_app),
         SESSION_EVENTS_METHOD => command_response(request, session_events),
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
         SUMMARIZE_SESSION_HANDOFF_METHOD => command_response(request, summarize_session_handoff),
@@ -663,6 +670,124 @@ fn refresh_workspace_sessions(
         }
     }
     store.list_conversation_sessions(&request.workspace_id)
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct WorkspaceOpenerPreferences {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    global_recent: Option<String>,
+    #[serde(default)]
+    by_workspace: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct WorkspaceOpener {
+    id: String,
+    name: String,
+    category: WorkspaceApplicationCategory,
+    preferred: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenWorkspaceWithAppRequest {
+    workspace_id: String,
+    opener_id: Option<String>,
+}
+
+fn list_workspace_openers(
+    request: WorkspaceSessionRequest,
+) -> anyhow::Result<Vec<WorkspaceOpener>> {
+    let store = Store::open_default()?;
+    let _ = store.workspace_path(&request.workspace_id)?;
+    let applications = detect_workspace_applications();
+    let preferences = load_workspace_opener_preferences()?;
+    let preferred = preferred_workspace_opener(&applications, &preferences, &request.workspace_id);
+    Ok(applications
+        .into_iter()
+        .map(|application| WorkspaceOpener {
+            preferred: preferred.as_deref() == Some(application.id.as_str()),
+            id: application.id,
+            name: application.name,
+            category: application.category,
+        })
+        .collect())
+}
+
+fn open_workspace_with_app(request: OpenWorkspaceWithAppRequest) -> anyhow::Result<()> {
+    let store = Store::open_default()?;
+    let path = store.workspace_path(&request.workspace_id)?;
+    let applications = detect_workspace_applications();
+    let preferences = load_workspace_opener_preferences()?;
+    let selected = request
+        .opener_id
+        .clone()
+        .or_else(|| preferred_workspace_opener(&applications, &preferences, &request.workspace_id));
+    let selected = selected.ok_or_else(|| anyhow::anyhow!("No workspace opener is available"))?;
+    if !applications
+        .iter()
+        .any(|application| application.id == selected)
+    {
+        anyhow::bail!("Workspace opener is not installed: {selected}");
+    }
+    open_workspace_application(&selected, &path)
+        .map_err(|error| anyhow::anyhow!("Failed to open workspace: {error}"))?;
+
+    if request.opener_id.is_some() {
+        let data_dir = agentkib_store::default_data_dir()?;
+        let mut root = load_preferences_root(&data_dir);
+        let mut preferences = load_workspace_opener_preferences_from_root(&root);
+        preferences.global_recent = Some(selected.clone());
+        preferences
+            .by_workspace
+            .insert(request.workspace_id, selected);
+        root["workspace_openers"] = serde_json::to_value(preferences)?;
+        save_preferences_root(&data_dir, &root)?;
+    }
+    Ok(())
+}
+
+fn load_workspace_opener_preferences() -> anyhow::Result<WorkspaceOpenerPreferences> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    Ok(load_workspace_opener_preferences_from_root(
+        &load_preferences_root(&data_dir),
+    ))
+}
+
+fn load_workspace_opener_preferences_from_root(root: &Value) -> WorkspaceOpenerPreferences {
+    stored_value(
+        root,
+        "workspace_openers",
+        WorkspaceOpenerPreferences::default(),
+    )
+}
+
+fn preferred_workspace_opener(
+    applications: &[agentkib_platform::applications::WorkspaceApplication],
+    preferences: &WorkspaceOpenerPreferences,
+    workspace_id: &str,
+) -> Option<String> {
+    let installed = |id: &str| applications.iter().any(|application| application.id == id);
+    preferences
+        .by_workspace
+        .get(workspace_id)
+        .filter(|id| installed(id))
+        .cloned()
+        .or_else(|| {
+            preferences
+                .global_recent
+                .as_ref()
+                .filter(|id| installed(id))
+                .cloned()
+        })
+        .or_else(|| {
+            applications
+                .iter()
+                .find(|application| {
+                    application.category == WorkspaceApplicationCategory::FileManager
+                })
+                .map(|application| application.id.clone())
+        })
 }
 
 fn session_events(

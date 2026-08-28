@@ -19,6 +19,8 @@ export const RUNTIME_METHODS = {
   workspaceSessions: "workspace.sessions",
   workspaceSessionStatus: "workspace.sessionStatus",
   refreshWorkspaceSessions: "workspace.refreshSessions",
+  listWorkspaceOpeners: "workspace.openers",
+  openWorkspaceWithApp: "workspace.openWith",
   sessionEvents: "session.events",
   runtimeInfo: "runtime.info",
   listWorkspaces: "workspaces.list",

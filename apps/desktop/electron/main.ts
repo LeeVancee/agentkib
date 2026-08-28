@@ -451,44 +451,19 @@ function registerWorkspaceIpc(): void {
       ...requireObject(launchRequest, "launchRequest"),
     });
   });
-  ipcMain.handle("agentkib:workspace:openers", async (event, id: unknown) => {
+  ipcMain.handle("agentkib:workspace:openers", (event, id: unknown) => {
     assertTrustedRenderer(event);
-    const workspace = await findWorkspace(requireString(id, "workspaceId"));
-    if (!workspace) return [];
-    return [
-      {
-        id: "system-file-manager",
-        name: process.platform === "darwin" ? "Finder" : "File manager",
-        category: "file-manager",
-        preferred: true,
-      },
-    ];
+    return requireRuntime().request(RUNTIME_METHODS.listWorkspaceOpeners, {
+      workspaceId: requireString(id, "workspaceId"),
+    });
   });
   ipcMain.handle("agentkib:workspace:open", async (event, id: unknown, openerId: unknown) => {
     assertTrustedRenderer(event);
-    if (openerId !== undefined && openerId !== "system-file-manager") {
-      throw new Error(`Unsupported workspace opener: ${String(openerId)}`);
-    }
-    const workspace = await findWorkspace(requireString(id, "workspaceId"));
-    if (!workspace) throw new Error("Workspace not found");
-    const error = await shell.openPath(workspace.path);
-    if (error) throw new Error(error);
+    return requireRuntime().request(RUNTIME_METHODS.openWorkspaceWithApp, {
+      workspaceId: requireString(id, "workspaceId"),
+      openerId: optionalString(openerId, "openerId"),
+    });
   });
-}
-
-async function findWorkspace(id: string): Promise<{ path: string } | undefined> {
-  const workspaces = await requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {});
-  if (!Array.isArray(workspaces)) return undefined;
-  const workspace = workspaces.find(
-    (value): value is { id: string; path: string } =>
-      typeof value === "object" &&
-      value !== null &&
-      "id" in value &&
-      "path" in value &&
-      (value as { id?: unknown }).id === id &&
-      typeof (value as { path?: unknown }).path === "string",
-  );
-  return workspace ? { path: workspace.path } : undefined;
 }
 
 function registerShellIpc(): void {

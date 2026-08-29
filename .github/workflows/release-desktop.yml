@@ -345,6 +345,11 @@ jobs:
             fi
           elif [[ "$RUNNER_OS" == Windows ]]; then
             args+=(--win nsis)
+            if [[ "${{ matrix.arch }}" == arm64-preview ]]; then
+              args+=(--arm64)
+            else
+              args+=(--x64)
+            fi
           else
             args+=(--linux deb AppImage)
           fi

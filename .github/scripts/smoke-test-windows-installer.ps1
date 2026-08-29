@@ -23,9 +23,10 @@ if (Test-Path -LiteralPath $installLocation) {
 }
 
 function Install-AgentKib {
-  & $installer.FullName "/S" "/D=$installLocation"
-  if ($LASTEXITCODE -ne 0) {
-    throw "AgentKib installer failed with exit code $LASTEXITCODE"
+  $arguments = @("/S", "/D=$installLocation")
+  $process = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
+  if ($process.ExitCode -ne 0) {
+    throw "AgentKib installer failed with exit code $($process.ExitCode)"
   }
 }
 

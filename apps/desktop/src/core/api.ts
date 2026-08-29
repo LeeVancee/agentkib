@@ -87,6 +87,14 @@ function electronDesktopApi() {
   return typeof window === "undefined" ? undefined : window.agentkibDesktop;
 }
 
+function emitElectronRefreshState(status: RefreshJobStatus) {
+  globalThis.window.dispatchEvent(
+    new CustomEvent<RefreshJobStatus>("agentkib:electron-refresh-state", {
+      detail: status,
+    }),
+  );
+}
+
 export const api = {
   scan: (project: string) =>
     electronDesktopApi()?.workspace.scan(project) ??
@@ -232,20 +240,41 @@ export const api = {
     invoke<ChangeSet>("plan_mcp_migration", { project, candidateIds }),
   requestRefresh: async (kind: RefreshKind, force = false) => {
     const electron = electronDesktopApi();
-    let receipt: RefreshReceipt;
-    if (electron && kind === "discovery") receipt = await electron.home.refreshDiscovery();
-    else if (electron && kind === "insights") receipt = await electron.home.refreshInsights();
-    else if (electron && kind === "quota") receipt = await electron.home.refreshQuota();
-    else if (electron && kind === "storage") receipt = await electron.home.refreshStorage();
-    else receipt = await invoke<RefreshReceipt>("request_refresh", { kind, force });
-    if (electron) {
-      globalThis.window.dispatchEvent(
-        new CustomEvent<RefreshJobStatus>("agentkib:electron-refresh-state", {
-          detail: receipt.status,
-        }),
-      );
+    const electronRequestId = electron
+      ? `electron-${kind}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      : undefined;
+    if (electron && electronRequestId) {
+      const startedAt = new Date().toISOString();
+      emitElectronRefreshState({
+        kind,
+        state: "running",
+        request_id: electronRequestId,
+        queued_at: startedAt,
+        started_at: startedAt,
+      });
     }
-    return receipt;
+
+    try {
+      let receipt: RefreshReceipt;
+      if (electron && kind === "discovery") receipt = await electron.home.refreshDiscovery();
+      else if (electron && kind === "insights") receipt = await electron.home.refreshInsights();
+      else if (electron && kind === "quota") receipt = await electron.home.refreshQuota();
+      else if (electron && kind === "storage") receipt = await electron.home.refreshStorage();
+      else receipt = await invoke<RefreshReceipt>("request_refresh", { kind, force });
+      if (electron) emitElectronRefreshState(receipt.status);
+      return receipt;
+    } catch (error) {
+      if (electron && electronRequestId) {
+        emitElectronRefreshState({
+          kind,
+          state: "failed",
+          request_id: electronRequestId,
+          finished_at: new Date().toISOString(),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      throw error;
+    }
   },
   refreshStatus: () =>
     electronDesktopApi()?.home.refreshStatus() ?? invoke<RefreshJobStatus[]>("get_refresh_status"),

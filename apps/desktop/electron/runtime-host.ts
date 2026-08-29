@@ -8,6 +8,8 @@ import {
   type RuntimeRpcError,
 } from "./generated/runtime-protocol";
 
+const HEALTHY_RUNTIME_RESET_MS = 30_000;
+
 interface RuntimeHostOptions {
   executablePath: string;
   clientVersion: string;
@@ -54,6 +56,7 @@ export class DesktopRuntimeHost extends EventEmitter {
   #child?: ChildProcessWithoutNullStreams;
   #nextRequestId = 1;
   #restartCount = 0;
+  #lastReadyAt = 0;
   #restartTimer?: NodeJS.Timeout;
   #stopping = false;
 
@@ -70,6 +73,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     if (this.#child) throw new Error("AgentKib runtime is already running");
     this.#stopping = false;
     this.#restartCount = 0;
+    this.#lastReadyAt = 0;
     return this.#spawnAndHandshake();
   }
 
@@ -141,6 +145,7 @@ export class DesktopRuntimeHost extends EventEmitter {
       );
     }
 
+    this.#lastReadyAt = Date.now();
     this.emit("ready", handshake);
     return handshake;
   }
@@ -179,6 +184,11 @@ export class DesktopRuntimeHost extends EventEmitter {
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
     this.emit("exit", { code, signal, expected: this.#stopping });
+
+    if (this.#lastReadyAt > 0 && Date.now() - this.#lastReadyAt >= HEALTHY_RUNTIME_RESET_MS) {
+      this.#restartCount = 0;
+    }
+    this.#lastReadyAt = 0;
 
     if (this.#stopping || this.#restartCount >= this.#options.maxRestarts) {
       if (!this.#stopping) this.emit("crash-loop", error);

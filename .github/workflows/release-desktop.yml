@@ -500,7 +500,7 @@ jobs:
             git curl tar gzip xz file findutils which binutils \
             gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
             gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel \
-            librsvg2-devel libxdo-devel rpm-build rpmdevtools cpio \
+            librsvg2-devel libxdo-devel libxcrypt-compat rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - name: Checkout selected revision

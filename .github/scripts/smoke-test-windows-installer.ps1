@@ -12,57 +12,25 @@ if (-not $installer) {
   throw "No NSIS installer was found under $SearchRoot"
 }
 
+$temporaryRoot = if ($env:RUNNER_TEMP) {
+  $env:RUNNER_TEMP
+} else {
+  [System.IO.Path]::GetTempPath()
+}
+$installLocation = Join-Path $temporaryRoot "agentkib-installer-smoke-$PID"
+if (Test-Path -LiteralPath $installLocation) {
+  throw "Smoke-test installation path already exists: $installLocation"
+}
+
 function Install-AgentKib {
-  $process = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+  $arguments = @("/S", "/D=$installLocation")
+  $process = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
   if ($process.ExitCode -ne 0) {
     throw "AgentKib installer failed with exit code $($process.ExitCode)"
   }
 }
 
-function Get-AgentKibInstallLocation {
-  $entries = foreach ($registryPath in @(
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-    "HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-  )) {
-    Get-ItemProperty $registryPath -ErrorAction SilentlyContinue
-  }
-  $entry = $entries |
-    Where-Object { $_.DisplayName -eq "AgentKib" } |
-    Select-Object -First 1
-  if ($entry.InstallLocation) {
-    $installLocation = $entry.InstallLocation.Trim().Trim('"')
-    if (Test-Path -LiteralPath $installLocation) {
-      return $installLocation
-    }
-    # A 32-bit NSIS installer launched from a SYSTEM session on Windows ARM64
-    # redirects systemprofile from System32 to SysWOW64. Normal user installs
-    # do not hit this path, but headless VM smoke tests must follow the redirect.
-    $redirected = $installLocation -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
-    if (Test-Path -LiteralPath $redirected) {
-      return $redirected
-    }
-  }
-
-  $localAppDataRoots = @($env:LOCALAPPDATA)
-  $redirectedLocalAppData = $env:LOCALAPPDATA -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
-  if ($redirectedLocalAppData -ne $env:LOCALAPPDATA) {
-    $localAppDataRoots += $redirectedLocalAppData
-  }
-
-  $uniqueLocalAppDataRoots = $localAppDataRoots | Select-Object -Unique
-  foreach ($localAppDataRoot in $uniqueLocalAppDataRoots) {
-    foreach ($relativePath in @("AgentKib", "Programs\AgentKib")) {
-      $candidate = Join-Path $localAppDataRoot $relativePath
-      if (Test-Path -LiteralPath (Join-Path $candidate "AgentKib.exe")) {
-        return $candidate
-      }
-    }
-  }
-  throw "AgentKib installation location was not found"
-}
-
 Install-AgentKib
-$installLocation = Get-AgentKibInstallLocation
 $executable = @(
   (Join-Path $installLocation "AgentKib.exe"),
   (Join-Path $installLocation "agentkib.exe"),

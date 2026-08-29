@@ -23,10 +23,9 @@ if (Test-Path -LiteralPath $installLocation) {
 }
 
 function Install-AgentKib {
-  $arguments = @("/S", "/D=$installLocation")
-  $process = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
-  if ($process.ExitCode -ne 0) {
-    throw "AgentKib installer failed with exit code $($process.ExitCode)"
+  & $installer.FullName "/S" "/D=$installLocation"
+  if ($LASTEXITCODE -ne 0) {
+    throw "AgentKib installer failed with exit code $LASTEXITCODE"
   }
 }
 
@@ -42,8 +41,19 @@ function Find-AgentKibExecutable {
     $candidateRoots += (Join-Path $programFilesX86 "AgentKib")
   }
 
+  $uninstallRoots = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+  )
+  foreach ($uninstallRoot in $uninstallRoots) {
+    $candidateRoots += Get-ItemProperty -Path $uninstallRoot -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -eq "AgentKib" -and $_.InstallLocation } |
+      Select-Object -ExpandProperty InstallLocation
+  }
+
   foreach ($root in ($candidateRoots | Select-Object -Unique)) {
-    if (Test-Path -LiteralPath $root) {
+    if ($root -and (Test-Path -LiteralPath $root)) {
       $found = Get-ChildItem -LiteralPath $root -Filter "AgentKib.exe" -File -Recurse |
         Select-Object -First 1
       if ($found) {
@@ -78,6 +88,8 @@ if (-not $SkipLaunch) {
   }
   Stop-Process -Id $app.Id -Force
   $app.WaitForExit()
+  Get-Process -Name "AgentKib" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 $dataDirectory = Join-Path $env:LOCALAPPDATA "ai.agentkib"
@@ -99,6 +111,10 @@ if (-not $uninstaller) {
 $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
+}
+$uninstallDeadline = (Get-Date).AddSeconds(30)
+while ((Test-Path -LiteralPath $executable.FullName) -and (Get-Date) -lt $uninstallDeadline) {
+  Start-Sleep -Milliseconds 500
 }
 if (Test-Path -LiteralPath $executable.FullName) {
   throw "AgentKib.exe remained after uninstall"

@@ -837,7 +837,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               category: tr(`milestones.category.${track.category}`),
             })}
             style={{ left: `${50 / milestoneCount}%`, right: `${50 / milestoneCount}%` }}
-            className="pointer-events-none absolute top-[11px] z-0 h-0.5 w-auto bg-border"
+            className="pointer-events-none absolute top-[35px] z-0 h-0.5 w-auto bg-border"
           />
           {track.milestones.map((milestone) => {
             const reached = achievementReached(milestone);
@@ -846,7 +846,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               <ToggleGroupItem
                 value={milestone.code}
                 className={cn(
-                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-start content-start justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
+                  "achievement-track-milestone segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-center content-center justify-items-center gap-1.5 border border-transparent px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
                   reached && "text-foreground",
                   current && "text-[var(--blue)]",
                 )}

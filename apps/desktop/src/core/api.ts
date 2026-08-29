@@ -19,6 +19,7 @@ import type {
   ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
+  DiscoveryReport,
   ExcludedWorkspace,
   GitCommitPage,
   GitDiff,
@@ -260,6 +261,9 @@ export const api = {
     electronDesktopApi()?.home.cancelStorage() ?? invoke<boolean>("cancel_storage_scan"),
   discoverWorkspaces: () =>
     electronDesktopApi()?.home.refreshDiscovery() ?? invoke<RefreshReceipt>("discover_workspaces"),
+  discoveryReport: () =>
+    electronDesktopApi()?.home.discoveryReport() ??
+    invoke<DiscoveryReport | undefined>("get_discovery_report"),
   workspaces: () =>
     electronDesktopApi()?.home.workspaces() ?? invoke<WorkspaceSummary[]>("list_workspaces"),
   workspace: async (id: string) => {

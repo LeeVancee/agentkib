@@ -51,10 +51,12 @@ export function AppRuntimeBridge() {
       api.agentInstallations(),
       api.catalogAssets(),
     ]);
+    const nextDiscovery = isElectronRuntime() ? await api.discoveryReport() : undefined;
     setWorkspaces(nextWorkspaces);
     setWorkspacesLoaded(true);
     setInstallations(nextInstallations);
     setCatalog(nextCatalog);
+    if (nextDiscovery) setDiscovery(nextDiscovery);
     try {
       const summaries = await api.workspaceDoctorSummaries(
         nextWorkspaces.map((workspace) => workspace.id),
@@ -113,6 +115,8 @@ export function AppRuntimeBridge() {
       try {
         if (!tauriRuntime) {
           await refreshGlobalState(useAppStore.getState().runtime);
+          const discovery = await api.discoveryReport();
+          if (!disposed && discovery) setDiscovery(discovery);
           if (!disposed) setRefreshJobs(await api.refreshStatus());
           return;
         }

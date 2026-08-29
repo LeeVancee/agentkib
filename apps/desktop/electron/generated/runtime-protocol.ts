@@ -32,6 +32,7 @@ export const RUNTIME_METHODS = {
   addScanRoot: "discovery.addScanRoot",
   removeScanRoot: "discovery.removeScanRoot",
   refreshDiscovery: "discovery.refresh",
+  discoveryReport: "discovery.report",
   listExcludedWorkspaces: "discovery.listExcludedWorkspaces",
   listRemoteGateways: "gateways.list",
   saveRemoteGateway: "gateways.save",

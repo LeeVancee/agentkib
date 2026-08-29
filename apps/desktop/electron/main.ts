@@ -832,6 +832,10 @@ function registerHomeIpc(): void {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.refreshDiscovery, {});
   });
+  ipcMain.handle("agentkib:home:discovery-report", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.discoveryReport, {});
+  });
   ipcMain.handle("agentkib:home:excluded-workspaces", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listExcludedWorkspaces, {});

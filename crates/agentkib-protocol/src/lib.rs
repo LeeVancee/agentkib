@@ -32,6 +32,7 @@ pub const LIST_SCAN_ROOTS_METHOD: &str = "discovery.listScanRoots";
 pub const ADD_SCAN_ROOT_METHOD: &str = "discovery.addScanRoot";
 pub const REMOVE_SCAN_ROOT_METHOD: &str = "discovery.removeScanRoot";
 pub const REFRESH_DISCOVERY_METHOD: &str = "discovery.refresh";
+pub const DISCOVERY_REPORT_METHOD: &str = "discovery.report";
 pub const LIST_EXCLUDED_WORKSPACES_METHOD: &str = "discovery.listExcludedWorkspaces";
 pub const LIST_REMOTE_GATEWAYS_METHOD: &str = "gateways.list";
 pub const SAVE_REMOTE_GATEWAY_METHOD: &str = "gateways.save";
@@ -218,6 +219,7 @@ export const RUNTIME_METHODS = {{
   addScanRoot: "{ADD_SCAN_ROOT_METHOD}",
   removeScanRoot: "{REMOVE_SCAN_ROOT_METHOD}",
   refreshDiscovery: "{REFRESH_DISCOVERY_METHOD}",
+  discoveryReport: "{DISCOVERY_REPORT_METHOD}",
   listExcludedWorkspaces: "{LIST_EXCLUDED_WORKSPACES_METHOD}",
   listRemoteGateways: "{LIST_REMOTE_GATEWAYS_METHOD}",
   saveRemoteGateway: "{SAVE_REMOTE_GATEWAY_METHOD}",

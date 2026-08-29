@@ -197,6 +197,7 @@ interface AgentKibDesktopApi {
     addScanRoot(path: string, maxDepth: number): Promise<ScanRoot>;
     removeScanRoot(id: string): Promise<void>;
     refreshDiscovery(): Promise<RefreshReceipt>;
+    discoveryReport(): Promise<import("./core/types").DiscoveryReport | undefined>;
     excludedWorkspaces(): Promise<ExcludedWorkspace[]>;
     remoteGateways(): Promise<RemoteGatewaySummary[]>;
     saveRemoteGateway(input: RemoteGatewayInput): Promise<RemoteGatewaySummary>;

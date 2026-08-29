@@ -187,6 +187,7 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:home:add-scan-root", path, maxDepth),
     removeScanRoot: (id: string) => ipcRenderer.invoke("agentkib:home:remove-scan-root", id),
     refreshDiscovery: () => ipcRenderer.invoke("agentkib:home:refresh-discovery"),
+    discoveryReport: () => ipcRenderer.invoke("agentkib:home:discovery-report"),
     excludedWorkspaces: () => ipcRenderer.invoke("agentkib:home:excluded-workspaces"),
     remoteGateways: () => ipcRenderer.invoke("agentkib:home:remote-gateways"),
     saveRemoteGateway: (input: unknown) =>

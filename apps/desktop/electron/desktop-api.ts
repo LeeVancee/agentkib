@@ -117,6 +117,7 @@ export interface DesktopApi {
     addScanRoot(path: string, maxDepth: number): Promise<unknown>;
     removeScanRoot(id: string): Promise<unknown>;
     refreshDiscovery(): Promise<unknown>;
+    discoveryReport(): Promise<unknown>;
     excludedWorkspaces(): Promise<unknown>;
     remoteGateways(): Promise<unknown>;
     saveRemoteGateway(input: unknown): Promise<unknown>;

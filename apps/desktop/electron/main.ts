@@ -163,7 +163,7 @@ function createNativeShell(): void {
         ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenu));
 
-  const image = nativeImage.createFromPath(resolveTrayIcon());
+  const image = createTrayImage();
   if (image.isEmpty()) return;
   if (process.platform === "darwin") image.setTemplateImage(true);
   tray = new Tray(image);
@@ -1196,6 +1196,26 @@ function resolveQuotaSidecar(): string {
 function resolveTrayIcon(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
   return path.resolve(app.getAppPath(), "src-tauri/icons/tray-icon.png");
+}
+
+function createTrayImage(): Electron.NativeImage {
+  const source = nativeImage.createFromPath(resolveTrayIcon());
+  if (source.isEmpty() || process.platform !== "darwin") return source;
+
+  const image = nativeImage.createEmpty();
+  image.addRepresentation({
+    scaleFactor: 1,
+    width: 16,
+    height: 16,
+    buffer: source.resize({ width: 16, height: 16 }).toPNG(),
+  });
+  image.addRepresentation({
+    scaleFactor: 2,
+    width: 32,
+    height: 32,
+    buffer: source.resize({ width: 32, height: 32 }).toPNG(),
+  });
+  return image;
 }
 
 function resolveApplicationIcon(preference = appIconPreference): string {

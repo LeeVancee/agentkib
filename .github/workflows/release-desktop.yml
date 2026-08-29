@@ -345,6 +345,11 @@ jobs:
             fi
           elif [[ "$RUNNER_OS" == Windows ]]; then
             args+=(--win nsis)
+            if [[ "${{ matrix.arch }}" == arm64-preview ]]; then
+              args+=(--arm64)
+            else
+              args+=(--x64)
+            fi
           else
             args+=(--linux deb AppImage)
           fi
@@ -500,7 +505,7 @@ jobs:
             git curl tar gzip xz file findutils which binutils \
             gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
             gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel \
-            librsvg2-devel libxdo-devel rpm-build rpmdevtools cpio \
+            librsvg2-devel libxdo-devel libxcrypt-compat rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - name: Checkout selected revision

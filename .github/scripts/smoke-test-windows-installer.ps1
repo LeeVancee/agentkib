@@ -6,56 +6,84 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "*.exe" -File -Recurse |
-  Where-Object { $_.Name -notlike "*.blockmap" -and $_.Name -notlike "uninstaller*.exe" } |
+$installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "AgentKib_*_windows-*.exe" -File |
   Select-Object -First 1
 if (-not $installer) {
   throw "No NSIS installer was found under $SearchRoot"
 }
 
+$temporaryRoot = if ($env:RUNNER_TEMP) {
+  $env:RUNNER_TEMP
+} else {
+  [System.IO.Path]::GetTempPath()
+}
+$installLocation = Join-Path $temporaryRoot "agentkib-installer-smoke-$PID"
+if (Test-Path -LiteralPath $installLocation) {
+  throw "Smoke-test installation path already exists: $installLocation"
+}
+
 function Install-AgentKib {
-  $process = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+  $arguments = @("/S", "/D=$installLocation")
+  $process = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
   if ($process.ExitCode -ne 0) {
     throw "AgentKib installer failed with exit code $($process.ExitCode)"
   }
 }
 
-function Get-AgentKibInstallLocation {
-  $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName -eq "AgentKib" } |
-    Select-Object -First 1
-  if ($entry.InstallLocation) {
-    $installLocation = $entry.InstallLocation.Trim().Trim('"')
-    if (Test-Path -LiteralPath $installLocation) {
-      return $installLocation
-    }
-    # A 32-bit NSIS installer launched from a SYSTEM session on Windows ARM64
-    # redirects systemprofile from System32 to SysWOW64. Normal user installs
-    # do not hit this path, but headless VM smoke tests must follow the redirect.
-    $redirected = $installLocation -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
-    if (Test-Path -LiteralPath $redirected) {
-      return $redirected
-    }
-    return $installLocation
+function Find-AgentKibExecutable {
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidateRoots = @(
+    $installLocation,
+    (Join-Path $env:ProgramFiles "AgentKib")
+  )
+  if ($programFilesX86) {
+    $candidateRoots += (Join-Path $programFilesX86 "AgentKib")
   }
-  foreach ($candidate in @(
-    (Join-Path $env:LOCALAPPDATA "AgentKib"),
-    (Join-Path $env:LOCALAPPDATA "Programs\AgentKib")
-  )) {
-    if (Test-Path -LiteralPath (Join-Path $candidate "AgentKib.exe")) {
-      return $candidate
+
+  # A 32-bit NSIS installer running under the Windows ARM64 system profile can
+  # redirect System32\config\systemprofile to SysWOW64\config\systemprofile.
+  $localAppDataRoots = @($env:LOCALAPPDATA)
+  $redirectedLocalAppData = $env:LOCALAPPDATA -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
+  if ($redirectedLocalAppData -and $redirectedLocalAppData -ne $env:LOCALAPPDATA) {
+    $localAppDataRoots += $redirectedLocalAppData
+  }
+  foreach ($localAppDataRoot in ($localAppDataRoots | Select-Object -Unique)) {
+    if ($localAppDataRoot) {
+      $candidateRoots += Join-Path $localAppDataRoot "Programs\AgentKib"
+      $candidateRoots += Join-Path $localAppDataRoot "AgentKib"
     }
   }
-  throw "AgentKib installation location was not found"
+
+  $uninstallRoots = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+  )
+  foreach ($uninstallRoot in $uninstallRoots) {
+    $registryLocations = Get-ItemProperty -Path $uninstallRoot -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -eq "AgentKib" -and $_.InstallLocation } |
+      Select-Object -ExpandProperty InstallLocation
+    foreach ($registryLocation in $registryLocations) {
+      $normalizedLocation = $registryLocation.Trim().Trim('"')
+      $candidateRoots += $normalizedLocation
+      $candidateRoots += $normalizedLocation -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
+    }
+  }
+
+  foreach ($root in ($candidateRoots | Select-Object -Unique)) {
+    if ($root -and (Test-Path -LiteralPath $root)) {
+      $found = Get-ChildItem -LiteralPath $root -Filter "AgentKib.exe" -File -Recurse |
+        Select-Object -First 1
+      if ($found) {
+        return $found
+      }
+    }
+  }
+  return $null
 }
 
 Install-AgentKib
-$installLocation = Get-AgentKibInstallLocation
-$executable = @(
-  (Join-Path $installLocation "AgentKib.exe"),
-  (Join-Path $installLocation "agentkib.exe"),
-  (Join-Path $installLocation "agentkib-desktop.exe")
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$executable = Find-AgentKibExecutable
 if (-not $executable) {
   throw "Installed AgentKib executable was not found under $installLocation"
 }
@@ -71,13 +99,15 @@ if (-not $SkipQuota) {
 }
 
 if (-not $SkipLaunch) {
-  $app = Start-Process -FilePath $executable -PassThru
+  $app = Start-Process -FilePath $executable.FullName -PassThru
   Start-Sleep -Seconds 8
   if ($app.HasExited) {
     throw "Installed AgentKib exited during startup with code $($app.ExitCode)"
   }
   Stop-Process -Id $app.Id -Force
   $app.WaitForExit()
+  Get-Process -Name "AgentKib" -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 $dataDirectory = Join-Path $env:LOCALAPPDATA "ai.agentkib"
@@ -90,15 +120,21 @@ if (-not (Test-Path -LiteralPath $sentinel)) {
   throw "User data was removed by an overwrite installation"
 }
 
-$uninstaller = Join-Path $installLocation "uninstall.exe"
-if (-not (Test-Path -LiteralPath $uninstaller)) {
+$installationRoot = Split-Path -Parent $executable.FullName
+$uninstaller = Get-ChildItem -LiteralPath $installationRoot -Filter "Uninstall*.exe" -File |
+  Select-Object -First 1
+if (-not $uninstaller) {
   throw "AgentKib uninstaller was not found"
 }
-$uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+$uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
 }
-if (Test-Path -LiteralPath $executable) {
+$uninstallDeadline = (Get-Date).AddSeconds(30)
+while ((Test-Path -LiteralPath $executable.FullName) -and (Get-Date) -lt $uninstallDeadline) {
+  Start-Sleep -Milliseconds 500
+}
+if (Test-Path -LiteralPath $executable.FullName) {
   throw "AgentKib.exe remained after uninstall"
 }
 if (-not (Test-Path -LiteralPath $sentinel)) {

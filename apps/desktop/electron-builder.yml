@@ -1,5 +1,6 @@
 appId: ai.agentkib
 productName: AgentKib
+executableName: AgentKib
 directories:
   output: release-electron
 files:
@@ -46,6 +47,8 @@ nsis:
 linux:
   icon: resources/icons/icon.png
   category: Development
+  maintainer: AgentKib contributors
+  vendor: AgentKib
   target:
     - AppImage
     - deb

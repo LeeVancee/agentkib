@@ -13,7 +13,7 @@ extraResources:
   - from: src-tauri/resources/CodexBar_CodexBarCore.bundle
     to: CodexBar_CodexBarCore.bundle
   - from: src-tauri/resources/linux
-    to: linux
+    to: bin/linux
   - from: src-tauri/resources/windows
     to: windows
   - from: src-tauri/icons/tray-icon.png

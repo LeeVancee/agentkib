@@ -30,12 +30,32 @@ function Install-AgentKib {
   }
 }
 
+function Find-AgentKibExecutable {
+  $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidateRoots = @(
+    $installLocation,
+    (Join-Path $env:LOCALAPPDATA "Programs\AgentKib"),
+    (Join-Path $env:LOCALAPPDATA "AgentKib"),
+    (Join-Path $env:ProgramFiles "AgentKib")
+  )
+  if ($programFilesX86) {
+    $candidateRoots += (Join-Path $programFilesX86 "AgentKib")
+  }
+
+  foreach ($root in ($candidateRoots | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $root) {
+      $found = Get-ChildItem -LiteralPath $root -Filter "AgentKib.exe" -File -Recurse |
+        Select-Object -First 1
+      if ($found) {
+        return $found
+      }
+    }
+  }
+  return $null
+}
+
 Install-AgentKib
-$executable = @(
-  (Join-Path $installLocation "AgentKib.exe"),
-  (Join-Path $installLocation "agentkib.exe"),
-  (Join-Path $installLocation "agentkib-desktop.exe")
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$executable = Find-AgentKibExecutable
 if (-not $executable) {
   throw "Installed AgentKib executable was not found under $installLocation"
 }
@@ -51,7 +71,7 @@ if (-not $SkipQuota) {
 }
 
 if (-not $SkipLaunch) {
-  $app = Start-Process -FilePath $executable -PassThru
+  $app = Start-Process -FilePath $executable.FullName -PassThru
   Start-Sleep -Seconds 8
   if ($app.HasExited) {
     throw "Installed AgentKib exited during startup with code $($app.ExitCode)"
@@ -70,7 +90,8 @@ if (-not (Test-Path -LiteralPath $sentinel)) {
   throw "User data was removed by an overwrite installation"
 }
 
-$uninstaller = Get-ChildItem -LiteralPath $installLocation -Filter "Uninstall*.exe" -File |
+$installationRoot = Split-Path -Parent $executable.FullName
+$uninstaller = Get-ChildItem -LiteralPath $installationRoot -Filter "Uninstall*.exe" -File |
   Select-Object -First 1
 if (-not $uninstaller) {
   throw "AgentKib uninstaller was not found"
@@ -79,7 +100,7 @@ $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -W
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
 }
-if (Test-Path -LiteralPath $executable) {
+if (Test-Path -LiteralPath $executable.FullName) {
   throw "AgentKib.exe remained after uninstall"
 }
 if (-not (Test-Path -LiteralPath $sentinel)) {

@@ -33,13 +33,17 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$runtime/home" "$runtime/config" "$runtime/data" "$runtime/cache"
+electron_args=()
+if [[ "$(id -u)" -eq 0 ]]; then
+  electron_args+=(--no-sandbox)
+fi
 setsid env \
   HOME="$runtime/home" \
   XDG_CONFIG_HOME="$runtime/config" \
   XDG_DATA_HOME="$runtime/data" \
   XDG_CACHE_HOME="$runtime/cache" \
   GDK_BACKEND=x11 \
-  dbus-run-session -- xvfb-run -a "$main" >"$runtime/agentkib.log" 2>&1 &
+  dbus-run-session -- xvfb-run -a "$main" "${electron_args[@]}" >"$runtime/agentkib.log" 2>&1 &
 pid=$!
 sleep 6
 

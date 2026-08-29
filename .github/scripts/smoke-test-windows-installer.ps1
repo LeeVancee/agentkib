@@ -34,12 +34,24 @@ function Find-AgentKibExecutable {
   $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   $candidateRoots = @(
     $installLocation,
-    (Join-Path $env:LOCALAPPDATA "Programs\AgentKib"),
-    (Join-Path $env:LOCALAPPDATA "AgentKib"),
     (Join-Path $env:ProgramFiles "AgentKib")
   )
   if ($programFilesX86) {
     $candidateRoots += (Join-Path $programFilesX86 "AgentKib")
+  }
+
+  # A 32-bit NSIS installer running under the Windows ARM64 system profile can
+  # redirect System32\config\systemprofile to SysWOW64\config\systemprofile.
+  $localAppDataRoots = @($env:LOCALAPPDATA)
+  $redirectedLocalAppData = $env:LOCALAPPDATA -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
+  if ($redirectedLocalAppData -and $redirectedLocalAppData -ne $env:LOCALAPPDATA) {
+    $localAppDataRoots += $redirectedLocalAppData
+  }
+  foreach ($localAppDataRoot in ($localAppDataRoots | Select-Object -Unique)) {
+    if ($localAppDataRoot) {
+      $candidateRoots += Join-Path $localAppDataRoot "Programs\AgentKib"
+      $candidateRoots += Join-Path $localAppDataRoot "AgentKib"
+    }
   }
 
   $uninstallRoots = @(
@@ -48,9 +60,14 @@ function Find-AgentKibExecutable {
     "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
   )
   foreach ($uninstallRoot in $uninstallRoots) {
-    $candidateRoots += Get-ItemProperty -Path $uninstallRoot -ErrorAction SilentlyContinue |
+    $registryLocations = Get-ItemProperty -Path $uninstallRoot -ErrorAction SilentlyContinue |
       Where-Object { $_.DisplayName -eq "AgentKib" -and $_.InstallLocation } |
       Select-Object -ExpandProperty InstallLocation
+    foreach ($registryLocation in $registryLocations) {
+      $normalizedLocation = $registryLocation.Trim().Trim('"')
+      $candidateRoots += $normalizedLocation
+      $candidateRoots += $normalizedLocation -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
+    }
   }
 
   foreach ($root in ($candidateRoots | Select-Object -Unique)) {

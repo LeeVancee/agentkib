@@ -3112,6 +3112,9 @@ fn refresh_storage(cancelled: &AtomicBool) -> anyhow::Result<RefreshReceipt> {
             )?;
         }
     }
+    if cancelled.load(Ordering::SeqCst) {
+        anyhow::bail!("storage.scanStopped");
+    }
     Ok(completed_refresh_receipt("storage", queued_at, started_at))
 }
 

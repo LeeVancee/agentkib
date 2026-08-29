@@ -6,8 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "*.exe" -File -Recurse |
-  Where-Object { $_.Name -notlike "*.blockmap" -and $_.Name -notlike "uninstaller*.exe" } |
+$installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "AgentKib_*_windows-*.exe" -File |
   Select-Object -First 1
 if (-not $installer) {
   throw "No NSIS installer was found under $SearchRoot"
@@ -21,7 +20,13 @@ function Install-AgentKib {
 }
 
 function Get-AgentKibInstallLocation {
-  $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+  $entries = foreach ($registryPath in @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+  )) {
+    Get-ItemProperty $registryPath -ErrorAction SilentlyContinue
+  }
+  $entry = $entries |
     Where-Object { $_.DisplayName -eq "AgentKib" } |
     Select-Object -First 1
   if ($entry.InstallLocation) {
@@ -36,14 +41,21 @@ function Get-AgentKibInstallLocation {
     if (Test-Path -LiteralPath $redirected) {
       return $redirected
     }
-    return $installLocation
   }
-  foreach ($candidate in @(
-    (Join-Path $env:LOCALAPPDATA "AgentKib"),
-    (Join-Path $env:LOCALAPPDATA "Programs\AgentKib")
-  )) {
-    if (Test-Path -LiteralPath (Join-Path $candidate "AgentKib.exe")) {
-      return $candidate
+
+  $localAppDataRoots = @($env:LOCALAPPDATA)
+  $redirectedLocalAppData = $env:LOCALAPPDATA -replace '(?i)\\System32\\config\\systemprofile\\', '\SysWOW64\config\systemprofile\'
+  if ($redirectedLocalAppData -ne $env:LOCALAPPDATA) {
+    $localAppDataRoots += $redirectedLocalAppData
+  }
+
+  $uniqueLocalAppDataRoots = $localAppDataRoots | Select-Object -Unique
+  foreach ($localAppDataRoot in $uniqueLocalAppDataRoots) {
+    foreach ($relativePath in @("AgentKib", "Programs\AgentKib")) {
+      $candidate = Join-Path $localAppDataRoot $relativePath
+      if (Test-Path -LiteralPath (Join-Path $candidate "AgentKib.exe")) {
+        return $candidate
+      }
     }
   }
   throw "AgentKib installation location was not found"
@@ -90,11 +102,12 @@ if (-not (Test-Path -LiteralPath $sentinel)) {
   throw "User data was removed by an overwrite installation"
 }
 
-$uninstaller = Join-Path $installLocation "uninstall.exe"
-if (-not (Test-Path -LiteralPath $uninstaller)) {
+$uninstaller = Get-ChildItem -LiteralPath $installLocation -Filter "Uninstall*.exe" -File |
+  Select-Object -First 1
+if (-not $uninstaller) {
   throw "AgentKib uninstaller was not found"
 }
-$uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
+$uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -Wait -PassThru
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
 }

@@ -846,7 +846,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               <ToggleGroupItem
                 value={milestone.code}
                 className={cn(
-                  "achievement-track-milestone segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-center content-center justify-items-center gap-1.5 border border-transparent px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
+                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-center content-center justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
                   reached && "text-foreground",
                   current && "text-[var(--blue)]",
                 )}

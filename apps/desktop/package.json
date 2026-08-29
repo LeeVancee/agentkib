@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "pnpm dev:electron",
     "dev:tauri": "tauri dev --features dev-app --config src-tauri/tauri.dev.conf.json",
-    "dev:electron": "pnpm protocol:generate && pnpm runtime:build:dev && pnpm electron:build && concurrently -k -n renderer,electron \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:1420 && cross-env AGENTKIB_DEV=1 VITE_DEV_SERVER_URL=http://127.0.0.1:1420 electron dist-electron/main.cjs\"",
+    "dev:electron": "pnpm protocol:generate && pnpm quota:prepare && pnpm quota:stage && pnpm runtime:build:dev && pnpm electron:build && concurrently -k -n renderer,electron \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:1420 && cross-env AGENTKIB_DEV=1 VITE_DEV_SERVER_URL=http://127.0.0.1:1420 electron dist-electron/main.cjs\"",
     "dev:web": "vite",
     "build": "pnpm build:electron",
     "build:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm runtime:stage && pnpm build:web && pnpm electron:build",
@@ -16,6 +16,7 @@
     "runtime:build:dev": "cargo build -p agentkib-runtime --features dev-app",
     "runtime:build": "cargo build --release -p agentkib-runtime",
     "runtime:stage": "node scripts/stage-electron-runtime.mjs",
+    "quota:stage": "node scripts/stage-electron-quota.mjs",
     "protocol:generate": "node scripts/generate-runtime-protocol.mjs",
     "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",

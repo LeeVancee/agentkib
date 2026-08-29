@@ -1179,11 +1179,11 @@ function resolveQuotaSidecar(): string {
       process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar",
     );
   }
-  const triple =
-    process.platform === "darwin"
-      ? `${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
-      : `${process.arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-gnu`;
-  return path.resolve(process.cwd(), "src-tauri/binaries", `agentkib-quota-sidecar-${triple}`);
+  return path.resolve(
+    process.cwd(),
+    "build/quota",
+    process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar",
+  );
 }
 
 function resolveTrayIcon(): string {

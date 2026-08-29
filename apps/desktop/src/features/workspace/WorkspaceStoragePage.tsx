@@ -7,7 +7,7 @@ import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@platform-events";
 import { hierarchy, treemap, treemapResquarify } from "d3-hierarchy";
 import {
   CircleAlert,

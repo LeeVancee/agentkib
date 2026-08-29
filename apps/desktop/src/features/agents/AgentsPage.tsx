@@ -479,8 +479,8 @@ function AgentManagementView({
         <div className="grid grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_80px] items-center gap-3 border-b border-border-subtle bg-muted/20 px-4 py-2.5 text-[11px] font-semibold tracking-[0.04em] text-muted-foreground">
           <span>{tr("agents.name")}</span>
           <span>{tr("agents.agentType")}</span>
-          <span>{tr("agents.status")}</span>
-          <span>{tr("common.workspaces")}</span>
+          <span className="text-center">{tr("agents.status")}</span>
+          <span className="text-center">{tr("nav.workspaces")}</span>
           <span />
         </div>
         {items.map(({ agent, installation, workspaceCount }) => (
@@ -504,13 +504,13 @@ function AgentManagementView({
             <Badge
               variant={installation?.installed ? "secondary" : "outline"}
               className={cn(
-                "w-fit text-xs",
+                "w-fit justify-self-center text-xs",
                 installation?.installed && "bg-emerald-500/10 text-emerald-700",
               )}
             >
               {tr(installation?.installed ? "common.enabled" : "common.disabled")}
             </Badge>
-            <span className="text-sm tabular-nums">{workspaceCount}</span>
+            <span className="text-center text-sm tabular-nums">{workspaceCount}</span>
             <Button
               variant="outline"
               size="sm"

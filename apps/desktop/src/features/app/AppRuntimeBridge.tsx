@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@platform-events";
+import { platformWindow } from "@platform-window";
 import { api } from "@/core/api";
 import { refreshGlobalState } from "@/core/global-state";
 import { changeLocale, localizeMessage, tr } from "@/core/i18n";
@@ -214,7 +214,7 @@ export function AppRuntimeBridge() {
           unlistenMenuCommand?.();
           return;
         }
-        unlistenTheme = await listen<EffectiveTheme>("tauri://theme-changed", (event) => {
+        unlistenTheme = await listen<EffectiveTheme>("theme-changed", (event) => {
           setRuntime((current) => {
             if (!current || current.theme_preference !== "system") return current;
             applyTheme(event.payload);
@@ -259,13 +259,12 @@ export function AppRuntimeBridge() {
   useEffect(() => {
     if (!isTauriRuntime() || appPlatform !== "macos") return;
 
-    const appWindow = getCurrentWindow();
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
     const syncFullscreen = async () => {
       try {
-        const fullscreen = await appWindow.isFullscreen();
+        const fullscreen = await platformWindow.isFullscreen();
         if (!disposed) setIsFullscreen(fullscreen);
       } catch {
         if (!disposed) setIsFullscreen(false);
@@ -273,7 +272,7 @@ export function AppRuntimeBridge() {
     };
 
     void syncFullscreen();
-    void appWindow
+    void platformWindow
       .onResized(() => {
         void syncFullscreen();
       })

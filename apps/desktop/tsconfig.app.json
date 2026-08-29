@@ -11,7 +11,12 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "paths": { "@/*": ["./src/*"] },
+    "paths": {
+      "@/*": ["./src/*"],
+      "@platform-api": ["./src/core/platform-api/index.ts"],
+      "@platform-events": ["./src/core/platform-events/index.ts"],
+      "@platform-window": ["./src/core/platform-window/index.ts"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

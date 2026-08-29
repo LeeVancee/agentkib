@@ -9,7 +9,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@platform-events";
 import {
   Activity,
   Award,

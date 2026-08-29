@@ -2,8 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { platformWindow } from "@platform-window";
+import { listen } from "@platform-events";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "lucide-react";
 import { api } from "@/core/api";
 import { changeLocale, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
@@ -135,7 +135,7 @@ export function QuotaPopover() {
       if (!disposed) setError(localizeMessage(reason));
     });
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") void getCurrentWindow().hide();
+      if (event.key === "Escape") void platformWindow.hide();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -192,12 +192,12 @@ export function QuotaPopover() {
       }
     };
     if (isTauriRuntime()) {
-      void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) =>
-        applyTheme(payload),
-      ).then((dispose) => {
-        if (disposed) dispose();
-        else unlistenTheme = dispose;
-      });
+      void listen<EffectiveTheme>("theme-changed", ({ payload }) => applyTheme(payload)).then(
+        (dispose) => {
+          if (disposed) dispose();
+          else unlistenTheme = dispose;
+        },
+      );
     }
     const onElectronTheme = (event: Event) => {
       const theme = (event as CustomEvent<EffectiveTheme>).detail;

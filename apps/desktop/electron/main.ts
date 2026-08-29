@@ -694,6 +694,10 @@ function registerShellIpc(): void {
     if (!settingsUrl) throw new Error("Opening file and folder settings is not supported");
     return shell.openExternal(settingsUrl);
   });
+  ipcMain.handle("agentkib:shell:hide-window", (event) => {
+    assertTrustedRenderer(event);
+    BrowserWindow.fromWebContents(event.sender)?.hide();
+  });
   ipcMain.handle("agentkib:shell:quit", (event) => {
     assertTrustedRenderer(event);
     quitApproved = true;

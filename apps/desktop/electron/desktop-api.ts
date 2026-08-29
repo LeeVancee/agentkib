@@ -98,6 +98,7 @@ export interface DesktopApi {
     openDirectory(title?: string): Promise<string | undefined>;
     openExternal(url: string): Promise<void>;
     openFilesAndFoldersSettings(): Promise<unknown>;
+    hideWindow(): Promise<void>;
     quit(): Promise<unknown>;
   };
   settings: {

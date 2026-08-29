@@ -1,6 +1,4 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
-import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
-import { openUrl as tauriOpenUrl } from "@tauri-apps/plugin-opener";
+import { platformApi } from "@platform-api";
 import type {
   Achievement,
   ActivityRecord,
@@ -83,6 +81,10 @@ import type {
 
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
+function invoke<T>(command: string, args?: Record<string, unknown>) {
+  return platformApi.invoke<T>(command, args);
+}
+
 function electronDesktopApi() {
   return typeof window === "undefined" ? undefined : window.agentkibDesktop;
 }
@@ -117,7 +119,7 @@ export const api = {
     invoke<ContextPreview>("resolve_context", { project, cwd, agent }),
   pickDirectory: async (title?: string) => {
     const selected = await (electronDesktopApi()?.shell.openDirectory(title) ??
-      tauriOpen({ directory: true, multiple: false, title }));
+      platformApi.openDirectory(title));
     return typeof selected === "string" ? selected : undefined;
   },
   memories: (project: string, status?: MemoryStatus) =>
@@ -152,7 +154,8 @@ export const api = {
   openFilesAndFoldersSettings: () =>
     electronDesktopApi()?.shell.openFilesAndFoldersSettings() ??
     invoke<void>("open_files_and_folders_settings"),
-  openExternal: (url: string) => electronDesktopApi()?.shell.openExternal(url) ?? tauriOpenUrl(url),
+  openExternal: (url: string) =>
+    electronDesktopApi()?.shell.openExternal(url) ?? platformApi.openExternal(url),
   quitApp: () => electronDesktopApi()?.shell.quit() ?? invoke<void>("quit_app"),
   setCloseBehavior: (behavior?: CloseBehavior) =>
     electronDesktopApi()?.settings.setCloseBehavior(behavior) ??
@@ -171,9 +174,7 @@ export const api = {
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) => {
     const desktop = electronDesktopApi();
     if (desktop) return desktop.updates.install(version, onEvent);
-    const channel = new Channel<AppUpdateProgress>();
-    channel.onmessage = onEvent;
-    return invoke<void>("install_app_update", { version, onEvent: channel });
+    return platformApi.installAppUpdate(version, onEvent);
   },
   mcpHubStatus: () =>
     electronDesktopApi()?.mcp.hubStatus() ?? invoke<McpHubStatus>("get_mcp_hub_status"),

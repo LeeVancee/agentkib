@@ -502,9 +502,11 @@ function registerShellIpc(): void {
   });
   ipcMain.handle("agentkib:settings:set-locale", (event, preference: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setLocale, {
-      preference: requireString(preference, "preference"),
-    });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setLocale, {
+        preference: requireString(preference, "preference"),
+      })
+      .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:settings:set-theme", (event, preference: unknown) => {
     assertTrustedRenderer(event);
@@ -522,7 +524,7 @@ function registerShellIpc(): void {
       .then((runtime) => {
         appIconPreference = next;
         applyApplicationIcon(appIconPreference);
-        return runtime;
+        return withElectronRuntimeCapabilities(runtime);
       });
   });
 }
@@ -590,9 +592,11 @@ function registerFeatureIpc(): void {
   });
   ipcMain.handle("agentkib:sessions:set-index-enabled", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setSessionIndexEnabled, {
-      value: requireBoolean(enabled, "enabled"),
-    });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setSessionIndexEnabled, {
+        value: requireBoolean(enabled, "enabled"),
+      })
+      .then(withElectronRuntimeCapabilities);
   });
 
   ipcMain.handle("agentkib:mcp:hub-status", (event) =>
@@ -898,15 +902,19 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setQuotaAutoRefresh, {
-      value: requireBoolean(enabled, "enabled"),
-    });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setQuotaAutoRefresh, {
+        value: requireBoolean(enabled, "enabled"),
+      })
+      .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:home:set-quota-prompt-seen", (event, seen: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setQuotaPromptSeen, {
-      value: requireBoolean(seen, "seen"),
-    });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setQuotaPromptSeen, {
+        value: requireBoolean(seen, "seen"),
+      })
+      .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:home:refresh-status", (event) => {
     assertTrustedRenderer(event);
@@ -948,9 +956,11 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:update-onboarding", (event, onboardingEvent: unknown) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.updateOnboarding, {
-      event: requireObject(onboardingEvent, "onboarding event"),
-    });
+    return requireRuntime()
+      .request(RUNTIME_METHODS.updateOnboarding, {
+        event: requireObject(onboardingEvent, "onboarding event"),
+      })
+      .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:home:obsidian-integration", (event) => {
     assertTrustedRenderer(event);

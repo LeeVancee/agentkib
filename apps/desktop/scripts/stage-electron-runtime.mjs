@@ -14,18 +14,22 @@ copyFileSync(source, destination);
 if (process.platform !== "win32") chmodSync(destination, 0o755);
 
 const quotaDirectory = path.join(desktopRoot, "build/quota");
-const quotaExecutable = process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar";
+const quotaExecutable =
+  process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar";
 mkdirSync(quotaDirectory, { recursive: true });
 const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
 const target = process.platform === "darwin" ? `${arch}-apple-darwin` : `${arch}-unknown-linux-gnu`;
-const quotaSource = process.platform === "win32"
-  ? path.join(desktopRoot, "src-tauri/resources/windows", quotaExecutable)
-  : path.join(desktopRoot, "src-tauri/binaries", `agentkib-quota-sidecar-${target}`);
+const quotaSource =
+  process.platform === "win32"
+    ? path.join(desktopRoot, "resources/quota/resources/windows", quotaExecutable)
+    : path.join(desktopRoot, "resources/quota/binaries", `agentkib-quota-sidecar-${target}`);
 
 try {
   statSync(quotaSource);
 } catch {
-  process.stdout.write("AgentKib quota sidecar: no prepared host binary, skipping Electron staging.\n");
+  process.stdout.write(
+    "AgentKib quota sidecar: no prepared host binary, skipping Electron staging.\n",
+  );
   process.exit(0);
 }
 const quotaDestination = path.join(quotaDirectory, quotaExecutable);

@@ -10,6 +10,14 @@ ipcRenderer.on("agentkib:theme-changed", (_event, value: unknown) => {
   window.dispatchEvent(new CustomEvent("agentkib:theme-changed", { detail: value }));
 });
 
+ipcRenderer.on("agentkib:electron-refresh-state", (_event, value: unknown) => {
+  window.dispatchEvent(new CustomEvent("agentkib:electron-refresh-state", { detail: value }));
+});
+
+ipcRenderer.on("agentkib:quota-updated", (_event, value: unknown) => {
+  window.dispatchEvent(new CustomEvent("agentkib:quota-updated", { detail: value }));
+});
+
 const desktopApi = Object.freeze({
   platform: process.platform,
   runtime: Object.freeze({

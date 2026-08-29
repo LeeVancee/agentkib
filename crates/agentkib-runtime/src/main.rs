@@ -10,7 +10,6 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-#[path = "../../../apps/desktop/src-tauri/src/obsidian.rs"]
 mod obsidian;
 
 use agentkib_conversations::{

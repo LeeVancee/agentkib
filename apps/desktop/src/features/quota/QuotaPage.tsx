@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { api } from "@/core/api";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
-import { isTauriRuntime, normalizePlatform } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime, normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import {
@@ -77,9 +77,7 @@ export function QuotaPage({
   const autoRefreshEnabled = useAppStore(
     (state) => state.runtime?.quota_auto_refresh_enabled === true,
   );
-  const promptSeen = useAppStore(
-    (state) => state.runtime?.quota_auto_refresh_prompt_seen === true,
-  );
+  const promptSeen = useAppStore((state) => state.runtime?.quota_auto_refresh_prompt_seen === true);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const pendingRefresh = useRef(false);
   const requestedInitialRefresh = useRef(false);
@@ -104,6 +102,15 @@ export function QuotaPage({
     let unlistenQuota: (() => void) | undefined;
     let unlistenRefresh: (() => void) | undefined;
     let unlistenPreferences: (() => void) | undefined;
+    const onElectronQuotaUpdated = (event: Event) => {
+      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
+      if (!isElectronRuntime() || !payload || disposed) return;
+      setSnapshot(payload);
+      if (document.visibilityState === "visible") void api.quotaCollectorStatus().then(setStatus);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+    }
     void (async () => {
       if (!isTauriRuntime()) {
         const { snapshot: initialSnapshot, job } = await load();
@@ -184,6 +191,7 @@ export function QuotaPage({
       unlistenQuota?.();
       unlistenRefresh?.();
       unlistenPreferences?.();
+      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
     };
   }, [autoRefreshEnabled]);
 
@@ -388,10 +396,7 @@ export function QuotaPage({
       </Collapsible>
 
       {!autoRefreshEnabled && !promptSeen && (
-        <QuotaAutoRefreshPrompt
-          onEnableAutoRefresh={enableAutoRefresh}
-          onNotNow={markPromptSeen}
-        />
+        <QuotaAutoRefreshPrompt onEnableAutoRefresh={enableAutoRefresh} onNotNow={markPromptSeen} />
       )}
 
       {!snapshot && (

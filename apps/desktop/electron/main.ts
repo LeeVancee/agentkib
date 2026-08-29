@@ -39,6 +39,63 @@ let quitApproved = false;
 let closeBehavior: "minimize-to-tray" | "quit" | undefined;
 let appIconPreference: "white" | "black" = "white";
 let pendingUpdateVersion: string | undefined;
+let applicationInitialized = false;
+let applicationInitialization: Promise<void> | undefined;
+let startupFailureWindow: BrowserWindow | undefined;
+let ipcHandlersRegistered = false;
+let nativeShellCreated = false;
+let quotaRefreshTimer: NodeJS.Timeout | undefined;
+let quotaRefreshPromise: Promise<ElectronQuotaRefreshReceipt> | undefined;
+
+const QUOTA_REFRESH_INTERVAL_MS = 60_000;
+const QUOTA_REFRESH_VISIBLE_MAX_AGE_MS = 5 * 60_000;
+const QUOTA_REFRESH_BACKGROUND_MAX_AGE_MS = 15 * 60_000;
+const QUOTA_RESET_GRACE_MS = 60_000;
+
+interface ElectronRuntimeInfo {
+  close_behavior?: "minimize-to-tray" | "quit";
+  app_icon_preference?: "white" | "black";
+  theme_preference?: "system" | "light" | "dark";
+  effective_theme?: "light" | "dark";
+  quota_auto_refresh_enabled?: boolean;
+}
+
+interface ElectronQuotaWindow {
+  remaining_percent?: number;
+  reset_at?: string;
+}
+
+interface ElectronQuotaProvider {
+  windows?: ElectronQuotaWindow[];
+  accounts?: Array<{ windows?: ElectronQuotaWindow[] }>;
+}
+
+interface ElectronQuotaSnapshot {
+  freshness?: "fresh" | "stale" | "unavailable";
+  providers?: ElectronQuotaProvider[];
+}
+
+interface ElectronQuotaCollectorStatus {
+  last_success_at?: string;
+}
+
+interface ElectronQuotaRefreshReceipt {
+  kind: "quota";
+  disposition: "queued" | "already-running" | "backoff";
+  request_id: string;
+  status: {
+    kind: "quota";
+    state: "succeeded";
+    request_id: string;
+    queued_at: string;
+    started_at: string;
+    finished_at: string;
+    progress_current: number;
+    progress_total: number;
+    error?: string;
+    next_allowed_at?: string;
+  };
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -55,7 +112,7 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0 && runtimeHandshake) void createMainWindow();
+  if (BrowserWindow.getAllWindows().length === 0 && applicationInitialized) void createMainWindow();
 });
 
 app.on("window-all-closed", () => {
@@ -71,6 +128,7 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
+  stopQuotaScheduler();
   void runtimeHost.stop().finally(() => app.quit());
 });
 
@@ -100,34 +158,63 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
+    if (!applicationInitialized) {
+      void initializeApplication().catch(showStartupFailure);
+    }
   });
   runtimeHost.on("crash-loop", (error: Error) => void showStartupFailure(error));
   runtimeHandshake = await runtimeHost.start();
-  const runtime = await runtimeHost.request<{
-    close_behavior?: "minimize-to-tray" | "quit";
-    app_icon_preference?: "white" | "black";
-    theme_preference?: "system" | "light" | "dark";
-    effective_theme?: "light" | "dark";
-  }>(RUNTIME_METHODS.runtimeInfo, {});
-  closeBehavior = runtime.close_behavior;
-  appIconPreference = runtime.app_icon_preference ?? "white";
-  applyApplicationIcon(appIconPreference);
-  if (runtime.theme_preference) nativeTheme.themeSource = runtime.theme_preference;
-  else if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
+  await initializeApplication();
+}
 
-  ipcMain.handle("agentkib:runtime:handshake", (event) => {
-    assertTrustedRenderer(event);
-    if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
-    return runtimeHandshake;
-  });
-  registerWorkspaceIpc();
-  registerHomeIpc();
-  registerShellIpc();
-  registerFeatureIpc();
-  registerUpdateIpc();
+async function initializeApplication(): Promise<void> {
+  if (applicationInitialized) return;
+  if (applicationInitialization) return applicationInitialization;
 
-  createNativeShell();
-  await createMainWindow();
+  applicationInitialization = (async () => {
+    const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
+      RUNTIME_METHODS.runtimeInfo,
+      {},
+    );
+    closeBehavior = runtime.close_behavior;
+    appIconPreference = runtime.app_icon_preference ?? "white";
+    applyApplicationIcon(appIconPreference);
+    if (runtime.theme_preference) nativeTheme.themeSource = runtime.theme_preference;
+    else if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
+
+    if (!ipcHandlersRegistered) {
+      ipcMain.handle("agentkib:runtime:handshake", (event) => {
+        assertTrustedRenderer(event);
+        if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
+        return runtimeHandshake;
+      });
+      registerWorkspaceIpc();
+      registerHomeIpc();
+      registerShellIpc();
+      registerFeatureIpc();
+      registerUpdateIpc();
+      ipcHandlersRegistered = true;
+    }
+
+    if (!nativeShellCreated) {
+      createNativeShell();
+      nativeShellCreated = true;
+    }
+    await createMainWindow();
+    applicationInitialized = true;
+    startQuotaScheduler();
+    if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
+      startupFailureWindow.close();
+      startupFailureWindow = undefined;
+    }
+  })();
+
+  try {
+    await applicationInitialization;
+  } catch (error) {
+    applicationInitialization = undefined;
+    throw error;
+  }
 }
 
 function createNativeShell(): void {
@@ -198,6 +285,124 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   }
   return enriched;
+}
+
+function startQuotaScheduler(): void {
+  stopQuotaScheduler();
+  void requestQuotaIfDue().catch(() => undefined);
+  quotaRefreshTimer = setInterval(() => {
+    void requestQuotaIfDue().catch(() => undefined);
+  }, QUOTA_REFRESH_INTERVAL_MS);
+}
+
+function stopQuotaScheduler(): void {
+  if (!quotaRefreshTimer) return;
+  clearInterval(quotaRefreshTimer);
+  quotaRefreshTimer = undefined;
+}
+
+async function requestQuotaIfDue(): Promise<void> {
+  if (!applicationInitialized || !runtimeHandshake || shutdownStarted || quotaRefreshPromise)
+    return;
+
+  const host = requireRuntime();
+  const runtime = await host.request<ElectronRuntimeInfo>(RUNTIME_METHODS.runtimeInfo, {});
+  if (!runtime.quota_auto_refresh_enabled) return;
+
+  const [snapshot, collectorStatus] = await Promise.all([
+    host.request<ElectronQuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {}),
+    host.request<ElectronQuotaCollectorStatus>(RUNTIME_METHODS.quotaCollectorStatus, {}),
+  ]);
+  const lastSuccessAt = collectorStatus.last_success_at
+    ? Date.parse(collectorStatus.last_success_at)
+    : Number.NaN;
+  const lowRemaining = snapshot?.providers?.some((provider) => {
+    const windows = [
+      ...(provider.windows ?? []),
+      ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
+    ];
+    return windows.some(
+      (window) =>
+        typeof window.remaining_percent === "number" &&
+        Number.isFinite(window.remaining_percent) &&
+        window.remaining_percent <= 20,
+    );
+  });
+  const windowVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+  const maxAge =
+    windowVisible || lowRemaining
+      ? QUOTA_REFRESH_VISIBLE_MAX_AGE_MS
+      : QUOTA_REFRESH_BACKGROUND_MAX_AGE_MS;
+  const staleByAge = !Number.isFinite(lastSuccessAt) || Date.now() - lastSuccessAt >= maxAge;
+  const resetDue = snapshot?.providers?.some((provider) => {
+    const windows = [
+      ...(provider.windows ?? []),
+      ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
+    ];
+    return windows.some((window) => {
+      const resetAt = window.reset_at ? Date.parse(window.reset_at) : Number.NaN;
+      return (
+        Number.isFinite(resetAt) &&
+        resetAt <= Date.now() - QUOTA_RESET_GRACE_MS &&
+        (!Number.isFinite(lastSuccessAt) || lastSuccessAt < resetAt)
+      );
+    });
+  });
+
+  if (snapshot?.freshness !== "stale" && !staleByAge && !resetDue) return;
+  await requestQuotaRefresh(host);
+}
+
+function requestQuotaRefresh(host = requireRuntime()): Promise<ElectronQuotaRefreshReceipt> {
+  if (quotaRefreshPromise) return quotaRefreshPromise;
+
+  const startedAt = new Date().toISOString();
+  const promise = host
+    .request<ElectronQuotaRefreshReceipt>(RUNTIME_METHODS.refreshQuota, {})
+    .then((receipt) => {
+      emitElectronRefreshState(receipt.status);
+      void host
+        .request<ElectronQuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {})
+        .then((snapshot) => {
+          if (snapshot) sendRendererEvent("agentkib:quota-updated", snapshot);
+        })
+        .catch(() => undefined);
+      return receipt;
+    })
+    .catch((error: unknown) => {
+      emitElectronRefreshState({
+        kind: "quota",
+        state: "failed",
+        request_id: `electron-quota-${Date.now()}`,
+        finished_at: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    });
+  quotaRefreshPromise = promise;
+  void promise
+    .finally(() => {
+      if (quotaRefreshPromise === promise) quotaRefreshPromise = undefined;
+    })
+    .catch(() => undefined);
+  emitElectronRefreshState({
+    kind: "quota",
+    state: "running",
+    request_id: `electron-quota-${Date.now()}`,
+    queued_at: startedAt,
+    started_at: startedAt,
+  });
+  return promise;
+}
+
+function emitElectronRefreshState(status: unknown): void {
+  sendRendererEvent("agentkib:electron-refresh-state", status);
+}
+
+function sendRendererEvent(channel: string, payload: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(channel, payload);
+  }
 }
 
 function registerUpdateIpc(): void {
@@ -902,15 +1107,20 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:refresh-quota", (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshQuota, {});
+    return requestQuotaRefresh();
   });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
     return requireRuntime()
-      .request(RUNTIME_METHODS.setQuotaAutoRefresh, {
+      .request<ElectronRuntimeInfo>(RUNTIME_METHODS.setQuotaAutoRefresh, {
         value: requireBoolean(enabled, "enabled"),
       })
-      .then(withElectronRuntimeCapabilities);
+      .then((runtime) => {
+        if (runtime.quota_auto_refresh_enabled) {
+          void requestQuotaIfDue().catch(() => undefined);
+        }
+        return withElectronRuntimeCapabilities(runtime);
+      });
   });
   ipcMain.handle("agentkib:home:set-quota-prompt-seen", (event, seen: unknown) => {
     assertTrustedRenderer(event);
@@ -1202,7 +1412,7 @@ function resolveQuotaSidecar(): string {
 
 function resolveTrayIcon(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
-  return path.resolve(app.getAppPath(), "src-tauri/icons/tray-icon.png");
+  return path.resolve(app.getAppPath(), "resources/icons/tray-icon.png");
 }
 
 function createTrayImage(): Electron.NativeImage {
@@ -1229,7 +1439,7 @@ function resolveApplicationIcon(preference = appIconPreference): string {
   const suffix = process.platform === "darwin" ? "-macos" : "";
   const filename = `app-icon-${preference}${suffix}.png`;
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", filename);
-  return path.resolve(app.getAppPath(), "src-tauri/icons", filename);
+  return path.resolve(app.getAppPath(), "resources/icons", filename);
 }
 
 function applyApplicationIcon(preference: "white" | "black"): void {
@@ -1255,11 +1465,20 @@ async function showStartupFailure(error: unknown): Promise<void> {
   process.stderr.write(`AgentKib failed to start: ${message}\n`);
   if (!app.isReady()) return;
 
+  if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
+    startupFailureWindow.focus();
+    return;
+  }
+
   const window = new BrowserWindow({
     title: "AgentKib startup error",
     width: 720,
     height: 420,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  startupFailureWindow = window;
+  window.once("closed", () => {
+    if (startupFailureWindow === window) startupFailureWindow = undefined;
   });
   const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The Rust runtime did not become ready.</p><code>${escapeHtml(message)}</code>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);

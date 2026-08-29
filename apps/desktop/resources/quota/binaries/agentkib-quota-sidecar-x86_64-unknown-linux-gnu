@@ -14,7 +14,7 @@ for candidate in \
   "/usr/lib/AgentKib/linux/CodexBarCLI" \
   "/usr/lib/agentkib/linux/CodexBarCLI" \
   "/usr/lib/agentkib-desktop/linux/CodexBarCLI" \
-  "$self_dir/../../apps/desktop/src-tauri/resources/linux/CodexBarCLI"
+  "$self_dir/../../apps/desktop/resources/quota/resources/linux/CodexBarCLI"
 do
   if [ -x "$candidate" ]; then
     exec "$candidate" "$@"

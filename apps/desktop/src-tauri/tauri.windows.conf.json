@@ -17,17 +17,17 @@
   },
   "bundle": {
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "icon": ["../resources/icons/icon.ico"],
     "resources": {
-      "resources/windows/": "windows/",
-      "resources/licenses/Win-CodexBar-LICENSE.txt": "licenses/Win-CodexBar-LICENSE.txt",
-      "resources/licenses/Win-CodexBar-NOTICE.txt": "licenses/Win-CodexBar-NOTICE.txt"
+      "../resources/quota/resources/windows/": "windows/",
+      "../resources/quota/resources/licenses/Win-CodexBar-LICENSE.txt": "licenses/Win-CodexBar-LICENSE.txt",
+      "../resources/quota/resources/licenses/Win-CodexBar-NOTICE.txt": "licenses/Win-CodexBar-NOTICE.txt"
     },
     "windows": {
       "minimumWebview2Version": "111.0.1661.15",
       "nsis": {
         "installMode": "currentUser",
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "../resources/icons/icon.ico"
       }
     }
   }

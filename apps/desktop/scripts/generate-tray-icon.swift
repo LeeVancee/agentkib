@@ -7,7 +7,7 @@ let canvasSize = 44
 let scriptDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let defaultOutput = scriptDirectory
     .deletingLastPathComponent()
-    .appendingPathComponent("icons/tray-icon.png")
+    .appendingPathComponent("resources/icons/tray-icon.png")
 let output = CommandLine.arguments.dropFirst().first.map {
     URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
 } ?? defaultOutput

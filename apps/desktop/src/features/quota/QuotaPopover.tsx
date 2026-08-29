@@ -67,6 +67,14 @@ export function QuotaPopover() {
     let unlistenPreferences: (() => void) | undefined;
     let unlistenQuotaAutoRefresh: (() => void) | undefined;
     let unlistenQuotaAutoRefreshPrompt: (() => void) | undefined;
+    const onElectronQuotaUpdated = (event: Event) => {
+      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
+      if (!isElectronRuntime() || !payload || disposed) return;
+      setSnapshot(payload);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+    }
     void (async () => {
       if (!isTauriRuntime()) {
         const current = await load();
@@ -88,8 +96,7 @@ export function QuotaPopover() {
         unlistenPreferences,
         unlistenQuotaAutoRefresh,
         unlistenQuotaAutoRefreshPrompt,
-      ] =
-        await Promise.all([
+      ] = await Promise.all([
         listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
           if (!disposed) setSnapshot(payload);
         }),
@@ -108,10 +115,10 @@ export function QuotaPopover() {
         listen<boolean>("agentkib:quota-auto-refresh-updated", ({ payload }) => {
           if (!disposed) setAutoRefreshEnabled(payload);
         }),
-          listen<boolean>("agentkib:quota-auto-refresh-prompt-updated", ({ payload }) => {
-            if (!disposed) setPromptSeen(payload);
-          }),
-        ]);
+        listen<boolean>("agentkib:quota-auto-refresh-prompt-updated", ({ payload }) => {
+          if (!disposed) setPromptSeen(payload);
+        }),
+      ]);
       const current = await load();
       if (
         !disposed &&
@@ -138,6 +145,7 @@ export function QuotaPopover() {
       unlistenPreferences?.();
       unlistenQuotaAutoRefresh?.();
       unlistenQuotaAutoRefreshPrompt?.();
+      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
@@ -184,12 +192,12 @@ export function QuotaPopover() {
       }
     };
     if (isTauriRuntime()) {
-      void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) => applyTheme(payload)).then(
-        (dispose) => {
-          if (disposed) dispose();
-          else unlistenTheme = dispose;
-        },
-      );
+      void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) =>
+        applyTheme(payload),
+      ).then((dispose) => {
+        if (disposed) dispose();
+        else unlistenTheme = dispose;
+      });
     }
     const onElectronTheme = (event: Event) => {
       const theme = (event as CustomEvent<EffectiveTheme>).detail;

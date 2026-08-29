@@ -10,24 +10,24 @@ extraResources:
     to: bin
   - from: build/quota
     to: bin
-  - from: src-tauri/resources/CodexBar_CodexBarCore.bundle
+  - from: resources/quota/resources/CodexBar_CodexBarCore.bundle
     to: CodexBar_CodexBarCore.bundle
-  - from: src-tauri/resources/linux
+  - from: resources/quota/resources/linux
     to: bin/linux
-  - from: src-tauri/resources/windows
+  - from: resources/quota/resources/windows
     to: windows
-  - from: src-tauri/icons/tray-icon.png
+  - from: resources/icons/tray-icon.png
     to: icons/tray-icon.png
-  - from: src-tauri/icons/app-icon-white.png
+  - from: resources/icons/app-icon-white.png
     to: icons/app-icon-white.png
-  - from: src-tauri/icons/app-icon-black.png
+  - from: resources/icons/app-icon-black.png
     to: icons/app-icon-black.png
-  - from: src-tauri/icons/app-icon-white-macos.png
+  - from: resources/icons/app-icon-white-macos.png
     to: icons/app-icon-white-macos.png
-  - from: src-tauri/icons/app-icon-black-macos.png
+  - from: resources/icons/app-icon-black-macos.png
     to: icons/app-icon-black-macos.png
 mac:
-  icon: src-tauri/icons/icon.icns
+  icon: resources/icons/icon.icns
   category: public.app-category.developer-tools
   hardenedRuntime: true
   minimumSystemVersion: 13.3.0
@@ -36,7 +36,7 @@ mac:
     - zip
   artifactName: AgentKib_${version}_macos-${arch}.${ext}
 win:
-  icon: src-tauri/icons/icon.ico
+  icon: resources/icons/icon.ico
   target:
     - nsis
   artifactName: AgentKib_${version}_windows-${arch}.${ext}
@@ -44,7 +44,7 @@ nsis:
   oneClick: false
   perMachine: false
 linux:
-  icon: src-tauri/icons/icon.png
+  icon: resources/icons/icon.png
   category: Development
   target:
     - AppImage

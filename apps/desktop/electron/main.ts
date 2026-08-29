@@ -131,37 +131,30 @@ async function startApplication(): Promise<void> {
 }
 
 function createNativeShell(): void {
-  const applicationMenu: MenuItemConstructorOptions[] =
-    process.platform === "darwin"
-      ? [
-          {
-            label: app.getName(),
-            submenu: [
-              { role: "about" },
-              { type: "separator" },
-              { role: "hide" },
-              { role: "hideOthers" },
-              { role: "unhide" },
-              { type: "separator" },
-              { role: "quit" },
-            ],
-          },
-          {
-            label: "View",
-            submenu: [{ role: "toggleDevTools" }, { role: "togglefullscreen" }],
-          },
-        ]
-      : [
-          {
-            label: "File",
-            submenu: [{ role: "quit" }],
-          },
-          {
-            label: "View",
-            submenu: [{ role: "reload" }, { role: "toggleDevTools" }],
-          },
-        ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(applicationMenu));
+  if (process.platform === "darwin") {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([
+        {
+          label: app.getName(),
+          submenu: [
+            { role: "about" },
+            { type: "separator" },
+            { role: "hide" },
+            { role: "hideOthers" },
+            { role: "unhide" },
+            { type: "separator" },
+            { role: "quit" },
+          ],
+        },
+        {
+          label: "View",
+          submenu: [{ role: "toggleDevTools" }, { role: "togglefullscreen" }],
+        },
+      ]),
+    );
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 
   const image = createTrayImage();
   if (image.isEmpty()) return;

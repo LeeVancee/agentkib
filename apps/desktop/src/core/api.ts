@@ -82,7 +82,7 @@ import type {
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
 function invoke<T>(command: string, args?: Record<string, unknown>) {
-  return platformApi.invoke<T>(command, args);
+  return args === undefined ? platformApi.invoke<T>(command) : platformApi.invoke<T>(command, args);
 }
 
 function electronDesktopApi() {

@@ -5,7 +5,8 @@ import type { AppUpdateProgress } from "@/core/types";
 import type { PlatformApi } from "./types";
 
 export const platformApi: PlatformApi = {
-  invoke: <T>(command: string, args?: Record<string, unknown>) => tauriInvoke<T>(command, args),
+  invoke: <T>(command: string, args?: Record<string, unknown>) =>
+    args === undefined ? tauriInvoke<T>(command) : tauriInvoke<T>(command, args),
   openDirectory: async (title) => {
     const selected = await tauriOpen({ directory: true, multiple: false, title });
     return typeof selected === "string" ? selected : undefined;

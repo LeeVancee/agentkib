@@ -49,7 +49,7 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { isTauriRuntime } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import { buildHeatmapMonthMarkers } from "@/features/insights/insights";
 import type {
   Achievement,
@@ -94,7 +94,7 @@ export function InsightsPage({
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
-  const [range, setRange] = useState<"52w" | "year">("52w");
+  const [range, setRange] = useState<"52w" | "year">("year");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
   const [summary, setSummary] = useState<InsightsSummary>();
   const [points, setPoints] = useState<HeatmapPoint[]>([]);
@@ -151,30 +151,39 @@ export function InsightsPage({
     void loadInsights();
   }, [loadInsights, refreshRevision]);
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
-      if (disposed) return;
-      if (event.payload.kind !== "insights") return;
-      if (event.payload.state === "queued" || event.payload.state === "running") setBusy(true);
-      if (event.payload.state === "succeeded") {
+    const handleRefreshState = (status: RefreshJobStatus) => {
+      if (status.kind !== "insights") return;
+      if (status.state === "queued" || status.state === "running") setBusy(true);
+      if (status.state === "succeeded") {
         setBusy(false);
         if (document.visibilityState === "visible") void loadInsights();
         else pendingRefresh.current = true;
       }
-      if (event.payload.state === "failed") {
+      if (status.state === "failed") {
         setBusy(false);
-        setError(event.payload.error ?? tr("errors.generic"));
+        setError(status.error ?? tr("errors.generic"));
       }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    };
+    const onElectronRefreshState = (event: Event) => {
+      handleRefreshState((event as CustomEvent<RefreshJobStatus>).detail);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+    }
+    if (isTauriRuntime()) {
+      void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
+        if (!disposed) handleRefreshState(event.payload);
+      }).then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      });
+    }
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
     };
   }, [loadInsights]);
   useEffect(() => {

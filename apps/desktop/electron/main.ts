@@ -46,11 +46,16 @@ let ipcHandlersRegistered = false;
 let nativeShellCreated = false;
 let quotaRefreshTimer: NodeJS.Timeout | undefined;
 let quotaRefreshPromise: Promise<ElectronQuotaRefreshReceipt> | undefined;
+let insightsRefreshTimer: NodeJS.Timeout | undefined;
+let insightsRefreshPromise: Promise<ElectronInsightsRefreshReceipt> | undefined;
 
 const QUOTA_REFRESH_INTERVAL_MS = 60_000;
 const QUOTA_REFRESH_VISIBLE_MAX_AGE_MS = 5 * 60_000;
 const QUOTA_REFRESH_BACKGROUND_MAX_AGE_MS = 15 * 60_000;
 const QUOTA_RESET_GRACE_MS = 60_000;
+const INSIGHTS_INITIAL_DELAY_MS = 30_000;
+const INSIGHTS_REFRESH_INTERVAL_MS = 60_000;
+const INSIGHTS_MAX_AGE_MS = 30 * 60_000;
 
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
@@ -97,6 +102,28 @@ interface ElectronQuotaRefreshReceipt {
   };
 }
 
+interface ElectronInsightsStatus {
+  refreshed_at?: string;
+}
+
+interface ElectronInsightsRefreshReceipt {
+  kind: "insights";
+  disposition: "queued" | "already-running" | "backoff";
+  request_id: string;
+  status: {
+    kind: "insights";
+    state: "succeeded";
+    request_id: string;
+    queued_at: string;
+    started_at: string;
+    finished_at: string;
+    progress_current: number;
+    progress_total: number;
+    error?: string;
+    next_allowed_at?: string;
+  };
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -129,6 +156,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   shutdownStarted = true;
   stopQuotaScheduler();
+  stopInsightsScheduler();
   void runtimeHost.stop().finally(() => app.quit());
 });
 
@@ -203,6 +231,7 @@ async function initializeApplication(): Promise<void> {
     await createMainWindow();
     applicationInitialized = true;
     startQuotaScheduler();
+    startInsightsScheduler();
     if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
       startupFailureWindow.close();
       startupFailureWindow = undefined;
@@ -299,6 +328,72 @@ function stopQuotaScheduler(): void {
   if (!quotaRefreshTimer) return;
   clearInterval(quotaRefreshTimer);
   quotaRefreshTimer = undefined;
+}
+
+function startInsightsScheduler(): void {
+  stopInsightsScheduler();
+  insightsRefreshTimer = setTimeout(() => {
+    void requestInsightsIfDue().catch(() => undefined);
+    insightsRefreshTimer = setInterval(() => {
+      void requestInsightsIfDue().catch(() => undefined);
+    }, INSIGHTS_REFRESH_INTERVAL_MS);
+  }, INSIGHTS_INITIAL_DELAY_MS);
+}
+
+function stopInsightsScheduler(): void {
+  if (!insightsRefreshTimer) return;
+  clearTimeout(insightsRefreshTimer);
+  insightsRefreshTimer = undefined;
+}
+
+async function requestInsightsIfDue(): Promise<void> {
+  if (!applicationInitialized || !runtimeHandshake || shutdownStarted || insightsRefreshPromise)
+    return;
+
+  const host = requireRuntime();
+  const status = await host.request<ElectronInsightsStatus>(RUNTIME_METHODS.insightsStatus, {});
+  const refreshedAt = status.refreshed_at ? Date.parse(status.refreshed_at) : Number.NaN;
+  if (Number.isFinite(refreshedAt) && Date.now() - refreshedAt < INSIGHTS_MAX_AGE_MS) return;
+  await requestInsightsRefresh(host);
+}
+
+function requestInsightsRefresh(
+  host = requireRuntime(),
+): Promise<ElectronInsightsRefreshReceipt> {
+  if (insightsRefreshPromise) return insightsRefreshPromise;
+
+  const requestId = `electron-insights-${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  const promise = host
+    .request<ElectronInsightsRefreshReceipt>(RUNTIME_METHODS.refreshInsights, {})
+    .then((receipt) => {
+      emitElectronRefreshState(receipt.status);
+      return receipt;
+    })
+    .catch((error: unknown) => {
+      emitElectronRefreshState({
+        kind: "insights",
+        state: "failed",
+        request_id: requestId,
+        finished_at: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    });
+  insightsRefreshPromise = promise;
+  void promise
+    .finally(() => {
+      if (insightsRefreshPromise === promise) insightsRefreshPromise = undefined;
+    })
+    .catch(() => undefined);
+  emitElectronRefreshState({
+    kind: "insights",
+    state: "running",
+    request_id: requestId,
+    queued_at: startedAt,
+    started_at: startedAt,
+  });
+  return promise;
 }
 
 async function requestQuotaIfDue(): Promise<void> {
@@ -1079,7 +1174,7 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:refresh-insights", (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshInsights, {});
+    return requestInsightsRefresh();
   });
   ipcMain.handle("agentkib:home:insights-summary", (event, query: unknown) => {
     assertTrustedRenderer(event);

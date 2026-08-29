@@ -17,7 +17,10 @@
     ]
   },
   "bundle": {
-    "icon": ["../resources/icons/icon.icns"],
+    "icon": [
+      "../resources/icons/icon.icns",
+      "../resources/icons/icon.png"
+    ],
     "macOS": {
       "minimumSystemVersion": "13.3"
     },

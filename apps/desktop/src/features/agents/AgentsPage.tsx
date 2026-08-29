@@ -476,7 +476,7 @@ function AgentManagementView({
   const agentTable = (items: typeof rows) => (
     <div className="overflow-x-auto">
       <div className="min-w-[620px]">
-        <div className="grid grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_auto] items-center gap-3 border-b border-border-subtle bg-muted/20 px-4 py-2.5 text-[11px] font-semibold tracking-[0.04em] text-muted-foreground">
+        <div className="grid grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_80px] items-center gap-3 border-b border-border-subtle bg-muted/20 px-4 py-2.5 text-[11px] font-semibold tracking-[0.04em] text-muted-foreground">
           <span>{tr("agents.name")}</span>
           <span>{tr("agents.agentType")}</span>
           <span>{tr("agents.status")}</span>
@@ -485,7 +485,7 @@ function AgentManagementView({
         </div>
         {items.map(({ agent, installation, workspaceCount }) => (
           <div
-            className="grid min-h-[64px] grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_auto] items-center gap-3 border-b border-border-subtle px-4 py-2.5 last:border-b-0 hover:bg-muted/20"
+            className="grid min-h-[64px] grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_80px] items-center gap-3 border-b border-border-subtle px-4 py-2.5 last:border-b-0 hover:bg-muted/20"
             key={agent}
           >
             <div className="flex min-w-0 items-center gap-3">
@@ -514,7 +514,7 @@ function AgentManagementView({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 rounded-lg px-2.5"
+              className="h-8 w-fit justify-self-end rounded-lg px-2.5"
               onClick={() => onOpenAgent(agent)}
             >
               {tr(installation?.installed ? "agents.manage" : "agents.view")}

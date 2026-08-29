@@ -3046,8 +3046,12 @@ fn application_icon(preference: AppIconPreference) -> tauri::image::Image<'stati
 #[cfg(target_os = "macos")]
 fn application_icon_png(preference: AppIconPreference) -> &'static [u8] {
     match preference {
-        AppIconPreference::White => include_bytes!("../../resources/icons/app-icon-white-macos.png"),
-        AppIconPreference::Black => include_bytes!("../../resources/icons/app-icon-black-macos.png"),
+        AppIconPreference::White => {
+            include_bytes!("../../resources/icons/app-icon-white-macos.png")
+        }
+        AppIconPreference::Black => {
+            include_bytes!("../../resources/icons/app-icon-black-macos.png")
+        }
     }
 }
 

@@ -441,13 +441,14 @@ impl UsageProvider for CodexProvider {
                     }),
             );
         }
-        let fingerprint = source_fingerprint(&source_paths);
+        let fingerprint = format!("codex-models-v2:{}", source_fingerprint(&source_paths));
         if cursor
             .as_ref()
             .is_some_and(|value| value.value == fingerprint)
         {
             return Ok(unchanged_batch(AgentKind::Codex, fingerprint));
         }
+        let session_models = codex_session_models(home);
         let mut detailed_events = BTreeMap::<CodexAggregateKey, UsageEvent>::new();
         let mut detailed_sessions = BTreeSet::new();
         for path in source_paths
@@ -495,6 +496,14 @@ impl UsageProvider for CodexProvider {
                     .and_then(Value::as_str)
                     .and_then(parse_datetime);
                 let day = occurred_at.map(local_day);
+                let model = value
+                    .pointer("/payload/info/model")
+                    .or_else(|| value.pointer("/payload/model"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| session_models.get(path).cloned());
                 merge_codex_event(
                     &mut detailed_events,
                     UsageEvent {
@@ -503,10 +512,7 @@ impl UsageProvider for CodexProvider {
                         workspace_path: workspace.clone(),
                         occurred_at,
                         day,
-                        model: value
-                            .pointer("/payload/info/model")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
+                        model,
                         input_tokens: json_u64(usage, "input_tokens"),
                         output_tokens: json_u64(usage, "output_tokens"),
                         cache_read_tokens: json_u64(usage, "cached_input_tokens"),
@@ -535,6 +541,53 @@ impl UsageProvider for CodexProvider {
 }
 
 type CodexAggregateKey = (String, Option<NaiveDate>, Option<String>, Option<PathBuf>);
+
+fn codex_session_models(home: &Path) -> BTreeMap<PathBuf, String> {
+    let Ok(entries) = fs::read_dir(home) else {
+        return BTreeMap::new();
+    };
+    let mut models = BTreeMap::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if !name.starts_with("state_") || path.extension().is_none_or(|value| value != "sqlite") {
+            continue;
+        }
+        let Ok(connection) = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) else {
+            continue;
+        };
+        let Ok(mut statement) = connection.prepare(
+            "SELECT rollout_path, model FROM threads WHERE rollout_path IS NOT NULL AND model IS NOT NULL AND model != ''",
+        ) else {
+            continue;
+        };
+        let Ok(rows) = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            continue;
+        };
+        for row in rows.filter_map(Result::ok) {
+            let model = row.1.trim();
+            if model.is_empty() {
+                continue;
+            }
+            let rollout = PathBuf::from(row.0);
+            let rollout = if rollout.is_absolute() {
+                rollout
+            } else {
+                home.join(rollout)
+            };
+            models.insert(rollout, model.to_string());
+        }
+    }
+    models
+}
 
 fn merge_codex_event(aggregates: &mut BTreeMap<CodexAggregateKey, UsageEvent>, event: UsageEvent) {
     let session = event.session_key.clone().unwrap_or_default();

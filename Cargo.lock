@@ -219,6 +219,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentkib-protocol"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agentkib-quota"
 version = "0.5.0"
 dependencies = [
@@ -228,6 +236,32 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "agentkib-runtime"
+version = "0.5.0"
+dependencies = [
+ "agentkib-adapters",
+ "agentkib-conversations",
+ "agentkib-core",
+ "agentkib-discovery",
+ "agentkib-gateways",
+ "agentkib-git",
+ "agentkib-insights",
+ "agentkib-mcp",
+ "agentkib-platform",
+ "agentkib-protocol",
+ "agentkib-quota",
+ "agentkib-storage",
+ "agentkib-store",
+ "anyhow",
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

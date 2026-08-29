@@ -1,7 +1,7 @@
 export function WindowToolbar() {
   return (
     <div
-      className="pointer-events-auto fixed inset-x-0 top-0 z-[45] h-[var(--window-toolbar-height)] bg-transparent"
+      className="app-window-toolbar pointer-events-auto fixed inset-x-0 top-0 z-[45] h-[var(--window-toolbar-height)] bg-transparent"
       data-tauri-drag-region
     />
   );

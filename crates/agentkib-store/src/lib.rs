@@ -1108,6 +1108,30 @@ impl Store {
         value.map(|value| parse_time(&value)).transpose()
     }
 
+    pub fn latest_discovery_report(&self) -> Result<Option<DiscoveryReport>> {
+        let row: Option<(String, String, i64, i64, String)> = self
+            .connection
+            .query_row(
+                "SELECT started_at, finished_at, discovered_count, removed_count, errors FROM discovery_runs ORDER BY finished_at DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+
+        row.map(
+            |(started_at, finished_at, discovered_count, removed_count, errors)| {
+                Ok(DiscoveryReport {
+                    started_at: parse_time(&started_at)?,
+                    finished_at: parse_time(&finished_at)?,
+                    discovered_count: usize::try_from(discovered_count)?,
+                    removed_count: usize::try_from(removed_count)?,
+                    errors: serde_json::from_str(&errors)?,
+                })
+            },
+        )
+        .transpose()
+    }
+
     pub fn latest_activity_at(&self, action: &str) -> Result<Option<DateTime<Utc>>> {
         let value: Option<String> = self.connection.query_row(
             "SELECT MAX(created_at) FROM audit_events WHERE action = ?1",

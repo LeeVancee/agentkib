@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 describe("AgentKib API boundary", () => {
-  beforeEach(() => vi.mocked(invoke).mockReset());
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    Reflect.deleteProperty(globalThis, "window");
+  });
+
+  afterEach(() => Reflect.deleteProperty(globalThis, "window"));
 
   it("normalizes omitted legacy connections in manifest drafts", async () => {
     vi.mocked(invoke).mockResolvedValue({
@@ -181,6 +186,45 @@ describe("AgentKib API boundary", () => {
     });
   });
 
+  it("routes Doctor reports through the Electron preload contract", async () => {
+    const doctorReport = vi.fn().mockResolvedValue({ summary: { workspace_id: "workspace-1" } });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { agentkibDesktop: { workspace: { doctorReport } } },
+    });
+
+    await api.workspaceDoctorReport("workspace-1");
+
+    expect(doctorReport).toHaveBeenCalledWith("workspace-1");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("routes Git workspace reads through the Electron preload contract", async () => {
+    const gitSummary = vi.fn().mockResolvedValue(undefined);
+    const gitHistory = vi.fn().mockResolvedValue(undefined);
+    const gitCommitFiles = vi.fn().mockResolvedValue([]);
+    const gitDiff = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        agentkibDesktop: {
+          workspace: { gitSummary, gitHistory, gitCommitFiles, gitDiff },
+        },
+      },
+    });
+
+    await api.workspaceGitSummary("workspace-1");
+    await api.workspaceGitHistory("workspace-1", { merges_only: true });
+    await api.gitCommitFiles("workspace-1", "abc123");
+    await api.gitDiff("workspace-1", { kind: "worktree" });
+
+    expect(gitSummary).toHaveBeenCalledWith("workspace-1");
+    expect(gitHistory).toHaveBeenCalledWith("workspace-1", { merges_only: true });
+    expect(gitCommitFiles).toHaveBeenCalledWith("workspace-1", "abc123");
+    expect(gitDiff).toHaveBeenCalledWith("workspace-1", { kind: "worktree" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("batches Doctor summaries within the backend limit", async () => {
     const workspaceIds = Array.from({ length: 201 }, (_, index) => `workspace-${index}`);
     vi.mocked(invoke)
@@ -267,6 +311,32 @@ describe("AgentKib API boundary", () => {
       workspaceId: "workspace-1",
       force: true,
     });
+  });
+
+  it("routes conversation reads through the Electron preload contract", async () => {
+    const sessions = vi.fn().mockResolvedValue([]);
+    const sessionStatus = vi.fn().mockResolvedValue([]);
+    const refreshSessions = vi.fn().mockResolvedValue([]);
+    const sessionEvents = vi.fn().mockResolvedValue({ events: [], warnings: [] });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        agentkibDesktop: {
+          workspace: { sessions, sessionStatus, refreshSessions, sessionEvents },
+        },
+      },
+    });
+
+    await api.workspaceSessions("workspace-1");
+    await api.workspaceSessionStatus("workspace-1");
+    await api.refreshWorkspaceSessions("workspace-1", true);
+    await api.sessionEvents("session-1", "cursor-1", 50);
+
+    expect(sessions).toHaveBeenCalledWith("workspace-1");
+    expect(sessionStatus).toHaveBeenCalledWith("workspace-1");
+    expect(refreshSessions).toHaveBeenCalledWith("workspace-1", true);
+    expect(sessionEvents).toHaveBeenCalledWith("session-1", "cursor-1", 50);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("persists quota popover display preferences through desktop preferences", async () => {

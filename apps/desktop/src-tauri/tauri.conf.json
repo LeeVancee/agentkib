@@ -10,24 +10,34 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "AgentKib", "width": 1360, "height": 860, "minWidth": 900, "minHeight": 680, "decorations": true, "transparent": false }],
-    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost" }
+    "windows": [
+      {
+        "title": "AgentKib",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 900,
+        "minHeight": 680,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2RkI4RjFBQUFGRDExQUIKUldTckVmMnFHby83NXNLYXAxdUx2NFYvSytkcFB4amh1OFQvVXo1dTlnOWR1dWI3eTNFeE9JZmEK",
-      "endpoints": [
-        "https://github.com/starroyhq/agentkib/releases/latest/download/latest.json"
-      ]
+      "endpoints": ["https://github.com/starroyhq/agentkib/releases/latest/download/latest.json"]
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png"
+      "../resources/icons/32x32.png",
+      "../resources/icons/128x128.png",
+      "../resources/icons/128x128@2x.png"
     ]
   }
 }

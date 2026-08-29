@@ -78,6 +78,7 @@ use tauri_plugin_shell::{ShellExt, process::CommandEvent};
 
 mod app_updates;
 mod i18n;
+#[path = "../../../../crates/agentkib-runtime/src/obsidian.rs"]
 mod obsidian;
 mod platform;
 mod refresh;
@@ -3037,16 +3038,20 @@ fn apply_native_theme(app: &AppHandle, preference: ThemePreference) -> tauri::Re
 #[cfg(not(target_os = "macos"))]
 fn application_icon(preference: AppIconPreference) -> tauri::image::Image<'static> {
     match preference {
-        AppIconPreference::White => tauri::include_image!("icons/app-icon-white.png"),
-        AppIconPreference::Black => tauri::include_image!("icons/app-icon-black.png"),
+        AppIconPreference::White => tauri::include_image!("../resources/icons/app-icon-white.png"),
+        AppIconPreference::Black => tauri::include_image!("../resources/icons/app-icon-black.png"),
     }
 }
 
 #[cfg(target_os = "macos")]
 fn application_icon_png(preference: AppIconPreference) -> &'static [u8] {
     match preference {
-        AppIconPreference::White => include_bytes!("../icons/app-icon-white-macos.png"),
-        AppIconPreference::Black => include_bytes!("../icons/app-icon-black-macos.png"),
+        AppIconPreference::White => {
+            include_bytes!("../../resources/icons/app-icon-white-macos.png")
+        }
+        AppIconPreference::Black => {
+            include_bytes!("../../resources/icons/app-icon-black-macos.png")
+        }
     }
 }
 
@@ -4027,9 +4032,9 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .text("quit", translate_app_name(locale, "tray.quit", app_name))
         .build()?;
     #[cfg(target_os = "windows")]
-    let tray_image = tauri::include_image!("icons/tray-icon-windows.png");
+    let tray_image = tauri::include_image!("../resources/icons/tray-icon-windows.png");
     #[cfg(not(target_os = "windows"))]
-    let tray_image = tauri::include_image!("icons/tray-icon.png");
+    let tray_image = tauri::include_image!("../resources/icons/tray-icon.png");
     let tray = TrayIconBuilder::with_id("agentkib-status")
         .icon(tray_image)
         .menu(&menu)

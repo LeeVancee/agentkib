@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@platform-events";
 import {
   Check,
   ChevronDown,
@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { api } from "@/core/api";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
-import { normalizePlatform } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime, normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import {
@@ -77,9 +77,7 @@ export function QuotaPage({
   const autoRefreshEnabled = useAppStore(
     (state) => state.runtime?.quota_auto_refresh_enabled === true,
   );
-  const promptSeen = useAppStore(
-    (state) => state.runtime?.quota_auto_refresh_prompt_seen === true,
-  );
+  const promptSeen = useAppStore((state) => state.runtime?.quota_auto_refresh_prompt_seen === true);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const pendingRefresh = useRef(false);
   const requestedInitialRefresh = useRef(false);
@@ -104,7 +102,32 @@ export function QuotaPage({
     let unlistenQuota: (() => void) | undefined;
     let unlistenRefresh: (() => void) | undefined;
     let unlistenPreferences: (() => void) | undefined;
+    const onElectronQuotaUpdated = (event: Event) => {
+      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
+      if (!isElectronRuntime() || !payload || disposed) return;
+      setSnapshot(payload);
+      if (document.visibilityState === "visible") void api.quotaCollectorStatus().then(setStatus);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+    }
     void (async () => {
+      if (!isTauriRuntime()) {
+        const { snapshot: initialSnapshot, job } = await load();
+        if (
+          autoRefreshEnabled &&
+          !requestedInitialRefresh.current &&
+          initialSnapshot?.freshness !== "fresh" &&
+          !["queued", "running", "backoff"].includes(job?.state ?? "")
+        ) {
+          requestedInitialRefresh.current = true;
+          const receipt = await api.requestRefresh("quota", false);
+          setRefreshJob(receipt.status);
+          if (receipt.status.state === "succeeded") await load();
+        }
+        setInitializing(false);
+        return;
+      }
       [unlistenQuota, unlistenRefresh, unlistenPreferences] = await Promise.all([
         listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
           if (disposed) return;
@@ -168,6 +191,7 @@ export function QuotaPage({
       unlistenQuota?.();
       unlistenRefresh?.();
       unlistenPreferences?.();
+      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
     };
   }, [autoRefreshEnabled]);
 
@@ -256,6 +280,7 @@ export function QuotaPage({
     try {
       const receipt = await api.refreshQuota();
       setRefreshJob(receipt.status);
+      if (receipt.status.state === "succeeded") await load();
     } catch (reason) {
       setError(localizeMessage(reason));
     } finally {
@@ -371,10 +396,7 @@ export function QuotaPage({
       </Collapsible>
 
       {!autoRefreshEnabled && !promptSeen && (
-        <QuotaAutoRefreshPrompt
-          onEnableAutoRefresh={enableAutoRefresh}
-          onNotNow={markPromptSeen}
-        />
+        <QuotaAutoRefreshPrompt onEnableAutoRefresh={enableAutoRefresh} onNotNow={markPromptSeen} />
       )}
 
       {!snapshot && (
@@ -446,7 +468,7 @@ function ProviderTabs({
               key={provider.id}
               value={provider.id}
               className={cn(
-                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-primary data-active:!text-primary-foreground data-active:!shadow-sm",
+                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
                 unavailable && "opacity-60",
               )}
             >
@@ -456,7 +478,7 @@ function ProviderTabs({
                 <small
                   className={cn(
                     "truncate text-[11px] text-muted-foreground",
-                    isActive && "text-primary-foreground/80",
+                    isActive && "text-foreground/70",
                   )}
                 >
                   {provider.identity?.account_email ??
@@ -471,7 +493,7 @@ function ProviderTabs({
                   <em
                     className={cn(
                       "text-[13px] font-bold not-italic",
-                      isActive && "text-primary-foreground",
+                      isActive && "text-primary",
                       !isActive && severity === "healthy" && "text-green-600",
                       !isActive && severity === "warning" && "text-amber-600",
                       !isActive && severity === "danger" && "text-red-600",
@@ -482,13 +504,13 @@ function ProviderTabs({
                   <i
                     className={cn(
                       "absolute inset-x-3 bottom-2 h-1 overflow-hidden rounded-full bg-muted",
-                      isActive && "bg-primary-foreground/25",
+                      isActive && "bg-primary/20",
                     )}
                   >
                     <b
                       className={cn(
                         "block h-full rounded-full bg-primary",
-                        isActive && "bg-primary-foreground",
+                        isActive && "bg-primary",
                         !isActive && severity === "warning" && "bg-amber-500",
                         !isActive && severity === "danger" && "bg-red-500",
                       )}

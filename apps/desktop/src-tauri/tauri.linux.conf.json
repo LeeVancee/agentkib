@@ -20,15 +20,15 @@
     "category": "DeveloperTool",
     "shortDescription": "Local asset and context control center for coding agents",
     "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.png"
+      "../resources/icons/32x32.png",
+      "../resources/icons/128x128.png",
+      "../resources/icons/128x128@2x.png",
+      "../resources/icons/icon.png"
     ],
-    "externalBin": ["binaries/agentkib-quota-sidecar"],
+    "externalBin": ["../resources/quota/binaries/agentkib-quota-sidecar"],
     "resources": {
-      "resources/linux/": "linux/",
-      "resources/licenses/CodexBar-LICENSE.txt": "licenses/CodexBar-LICENSE.txt"
+      "../resources/quota/resources/linux/": "linux/",
+      "../resources/quota/resources/licenses/CodexBar-LICENSE.txt": "licenses/CodexBar-LICENSE.txt"
     },
     "linux": {
       "appimage": {

@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@platform-events";
+import { platformWindow } from "@platform-window";
 import { api } from "@/core/api";
 import { refreshGlobalState } from "@/core/global-state";
 import { changeLocale, localizeMessage, tr } from "@/core/i18n";
 import { applyTheme } from "@/core/theme";
-import { isTauriRuntime, normalizePlatform } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime, normalizePlatform } from "@/core/platform";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -51,10 +51,12 @@ export function AppRuntimeBridge() {
       api.agentInstallations(),
       api.catalogAssets(),
     ]);
+    const nextDiscovery = isElectronRuntime() ? await api.discoveryReport() : undefined;
     setWorkspaces(nextWorkspaces);
     setWorkspacesLoaded(true);
     setInstallations(nextInstallations);
     setCatalog(nextCatalog);
+    if (nextDiscovery) setDiscovery(nextDiscovery);
     try {
       const summaries = await api.workspaceDoctorSummaries(
         nextWorkspaces.map((workspace) => workspace.id),
@@ -68,7 +70,9 @@ export function AppRuntimeBridge() {
   };
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    const tauriRuntime = isTauriRuntime();
+    const electronRuntime = isElectronRuntime();
+    if (!tauriRuntime && !electronRuntime) return;
 
     let disposed = false;
     let refreshReloadTimer: number | undefined;
@@ -82,8 +86,40 @@ export function AppRuntimeBridge() {
     let unlistenNavigate: (() => void) | undefined;
     let unlistenMenuCommand: (() => void) | undefined;
     let unlistenTheme: (() => void) | undefined;
+    const onElectronNavigate = (event: Event) => {
+      const payload = (event as CustomEvent<AppNavigationRequest>).detail;
+      if (payload) setNavigationRequest(payload);
+    };
+    if (electronRuntime) window.addEventListener("agentkib:electron-navigate", onElectronNavigate);
+    const onElectronRefreshState = (event: Event) => {
+      const status = (event as CustomEvent<RefreshJobStatus>).detail;
+      setRefreshJobs((current) => [...current.filter((job) => job.kind !== status.kind), status]);
+      if (status.kind === "discovery" && status.state === "succeeded") {
+        void loadDiscoveryCache();
+      }
+    };
+    if (electronRuntime) {
+      window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+    }
+    const onElectronTheme = (event: Event) => {
+      const theme = (event as CustomEvent<EffectiveTheme>).detail;
+      if (theme !== "light" && theme !== "dark") return;
+      setRuntime((current) => {
+        if (!current || current.theme_preference !== "system") return current;
+        applyTheme(theme);
+        return { ...current, effective_theme: theme };
+      });
+    };
+    if (electronRuntime) window.addEventListener("agentkib:theme-changed", onElectronTheme);
     void (async () => {
       try {
+        if (!tauriRuntime) {
+          await refreshGlobalState(useAppStore.getState().runtime);
+          const discovery = await api.discoveryReport();
+          if (!disposed && discovery) setDiscovery(discovery);
+          if (!disposed) setRefreshJobs(await api.refreshStatus());
+          return;
+        }
         unlisten = await listen<DiscoveryReport>("agentkib:discovery-updated", (event) => {
           setDiscovery(event.payload);
         });
@@ -178,7 +214,7 @@ export function AppRuntimeBridge() {
           unlistenMenuCommand?.();
           return;
         }
-        unlistenTheme = await listen<EffectiveTheme>("tauri://theme-changed", (event) => {
+        unlistenTheme = await listen<EffectiveTheme>("theme-changed", (event) => {
           setRuntime((current) => {
             if (!current || current.theme_preference !== "system") return current;
             applyTheme(event.payload);
@@ -214,19 +250,21 @@ export function AppRuntimeBridge() {
       unlistenNavigate?.();
       unlistenMenuCommand?.();
       unlistenTheme?.();
+      window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+      window.removeEventListener("agentkib:theme-changed", onElectronTheme);
+      window.removeEventListener("agentkib:electron-navigate", onElectronNavigate);
     };
   }, []);
 
   useEffect(() => {
     if (!isTauriRuntime() || appPlatform !== "macos") return;
 
-    const appWindow = getCurrentWindow();
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
     const syncFullscreen = async () => {
       try {
-        const fullscreen = await appWindow.isFullscreen();
+        const fullscreen = await platformWindow.isFullscreen();
         if (!disposed) setIsFullscreen(fullscreen);
       } catch {
         if (!disposed) setIsFullscreen(false);
@@ -234,7 +272,7 @@ export function AppRuntimeBridge() {
     };
 
     void syncFullscreen();
-    void appWindow
+    void platformWindow
       .onResized(() => {
         void syncFullscreen();
       })
@@ -251,7 +289,7 @@ export function AppRuntimeBridge() {
 
   useEffect(() => {
     const refreshRuntime = () => {
-      if (!isTauriRuntime()) return;
+      if (!isTauriRuntime() && !isElectronRuntime()) return;
 
       if (pendingRefreshKinds.current.delete("discovery")) void loadDiscoveryCache();
       void api
@@ -277,11 +315,13 @@ export function AppRuntimeBridge() {
   const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
   quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    const tauriRuntime = isTauriRuntime();
+    const electronRuntime = isElectronRuntime();
+    if (!tauriRuntime && !electronRuntime) return;
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen("agentkib:quit-requested", async () => {
+    const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
       try {
@@ -301,13 +341,19 @@ export function AppRuntimeBridge() {
       } finally {
         quitPromptOpen.current = false;
       }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    };
+    if (electronRuntime) {
+      window.addEventListener("agentkib:quit-requested", handleQuitRequest);
+    } else {
+      void listen("agentkib:quit-requested", handleQuitRequest).then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      });
+    }
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("agentkib:quit-requested", handleQuitRequest);
     };
   }, [dialogs]);
 

@@ -2,8 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { platformWindow } from "@platform-window";
+import { listen } from "@platform-events";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "lucide-react";
 import { api } from "@/core/api";
 import { changeLocale, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
@@ -14,6 +14,7 @@ import {
   visibleQuotaWindows,
 } from "@/features/quota/quota";
 import { applyTheme } from "@/core/theme";
+import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import type {
   EffectiveTheme,
   QuotaPopoverPreferences,
@@ -66,15 +67,36 @@ export function QuotaPopover() {
     let unlistenPreferences: (() => void) | undefined;
     let unlistenQuotaAutoRefresh: (() => void) | undefined;
     let unlistenQuotaAutoRefreshPrompt: (() => void) | undefined;
+    const onElectronQuotaUpdated = (event: Event) => {
+      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
+      if (!isElectronRuntime() || !payload || disposed) return;
+      setSnapshot(payload);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+    }
     void (async () => {
+      if (!isTauriRuntime()) {
+        const current = await load();
+        if (
+          current.autoRefreshEnabled &&
+          !initialRefreshRequested.current &&
+          (!current.snapshot || current.snapshot.freshness !== "fresh")
+        ) {
+          initialRefreshRequested.current = true;
+          const receipt = await api.requestRefresh("quota", false);
+          setRefreshJob(receipt.status);
+          if (receipt.status.state === "succeeded") await load();
+        }
+        return;
+      }
       [
         unlistenQuota,
         unlistenRefresh,
         unlistenPreferences,
         unlistenQuotaAutoRefresh,
         unlistenQuotaAutoRefreshPrompt,
-      ] =
-        await Promise.all([
+      ] = await Promise.all([
         listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
           if (!disposed) setSnapshot(payload);
         }),
@@ -93,10 +115,10 @@ export function QuotaPopover() {
         listen<boolean>("agentkib:quota-auto-refresh-updated", ({ payload }) => {
           if (!disposed) setAutoRefreshEnabled(payload);
         }),
-          listen<boolean>("agentkib:quota-auto-refresh-prompt-updated", ({ payload }) => {
-            if (!disposed) setPromptSeen(payload);
-          }),
-        ]);
+        listen<boolean>("agentkib:quota-auto-refresh-prompt-updated", ({ payload }) => {
+          if (!disposed) setPromptSeen(payload);
+        }),
+      ]);
       const current = await load();
       if (
         !disposed &&
@@ -113,7 +135,7 @@ export function QuotaPopover() {
       if (!disposed) setError(localizeMessage(reason));
     });
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") void getCurrentWindow().hide();
+      if (event.key === "Escape") void platformWindow.hide();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -123,6 +145,7 @@ export function QuotaPopover() {
       unlistenPreferences?.();
       unlistenQuotaAutoRefresh?.();
       unlistenQuotaAutoRefreshPrompt?.();
+      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
@@ -168,16 +191,24 @@ export function QuotaPopover() {
         // The main bootstrap already supplied a safe browser/system fallback.
       }
     };
-    void listen<EffectiveTheme>("tauri://theme-changed", ({ payload }) => applyTheme(payload)).then(
-      (dispose) => {
-        if (disposed) dispose();
-        else unlistenTheme = dispose;
-      },
-    );
+    if (isTauriRuntime()) {
+      void listen<EffectiveTheme>("theme-changed", ({ payload }) => applyTheme(payload)).then(
+        (dispose) => {
+          if (disposed) dispose();
+          else unlistenTheme = dispose;
+        },
+      );
+    }
+    const onElectronTheme = (event: Event) => {
+      const theme = (event as CustomEvent<EffectiveTheme>).detail;
+      if (theme === "light" || theme === "dark") applyTheme(theme);
+    };
+    if (isElectronRuntime()) window.addEventListener("agentkib:theme-changed", onElectronTheme);
     window.addEventListener("focus", syncAppearance);
     return () => {
       disposed = true;
       unlistenTheme?.();
+      window.removeEventListener("agentkib:theme-changed", onElectronTheme);
       window.removeEventListener("focus", syncAppearance);
     };
   }, []);
@@ -204,6 +235,7 @@ export function QuotaPopover() {
     try {
       const receipt = await api.refreshQuota();
       setRefreshJob(receipt.status);
+      if (receipt.status.state === "succeeded") await load();
     } catch (reason) {
       setError(localizeMessage(reason));
     }
@@ -269,7 +301,7 @@ export function QuotaPopover() {
               const remaining = lowestRemaining(provider);
               return (
                 <TabsTrigger
-                  className="segmented-control-item h-auto min-w-[72px] flex-none flex-col gap-1 px-1 py-2 text-xs"
+                  className="segmented-control-item h-auto min-w-[72px] flex-none flex-col gap-1 border border-transparent px-1 py-2 text-xs transition-colors data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]"
                   key={provider.id}
                   value={provider.id}
                 >

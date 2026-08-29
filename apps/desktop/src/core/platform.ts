@@ -5,15 +5,17 @@ type TauriWindow = Window & {
 };
 
 export function isTauriRuntime(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    Boolean((window as TauriWindow).__TAURI_INTERNALS__)
-  );
+  return typeof window !== "undefined" && Boolean((window as TauriWindow).__TAURI_INTERNALS__);
+}
+
+export function isElectronRuntime(): boolean {
+  return typeof window !== "undefined" && Boolean(window.agentkibDesktop);
 }
 
 export function normalizePlatform(platform?: string): AppPlatform {
   if (platform === "darwin" || platform === "macos") return "macos";
-  if (platform === "windows" || platform === "linux") return platform;
+  if (platform === "windows" || platform === "win32") return "windows";
+  if (platform === "linux") return platform;
   return "web";
 }
 

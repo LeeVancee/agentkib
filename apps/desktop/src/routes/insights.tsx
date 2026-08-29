@@ -25,9 +25,13 @@ function InsightsRoute() {
   const refreshJobs = useAppStore((state) => state.refreshJobs);
   const setInsightsSummary = useAppStore((state) => state.setInsightsSummary);
   const [refreshError, setRefreshError] = useState("");
-  const refreshing = refreshJobs.some(
-    (job) => job.kind === "insights" && (job.state === "queued" || job.state === "running"),
-  );
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  const refreshing =
+    refreshPending ||
+    refreshJobs.some(
+      (job) => job.kind === "insights" && (job.state === "queued" || job.state === "running"),
+    );
 
   const setSection = (nextSection: InsightsSection) => {
     void navigate({
@@ -38,10 +42,16 @@ function InsightsRoute() {
 
   const refresh = async () => {
     setRefreshError("");
+    setRefreshPending(true);
     try {
-      await api.requestRefresh("insights", true);
+      const receipt = await api.requestRefresh("insights", true);
+      if (receipt.status.state === "succeeded") {
+        setRefreshRevision((value) => value + 1);
+      }
     } catch (error) {
       setRefreshError(localizeMessage(error));
+    } finally {
+      setRefreshPending(false);
     }
   };
 
@@ -94,6 +104,7 @@ function InsightsRoute() {
           section={section}
           workspaces={workspaces}
           onSummary={setInsightsSummary}
+          refreshRevision={refreshRevision}
         />
       </Suspense>
     </div>

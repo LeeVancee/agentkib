@@ -1,12 +1,13 @@
 param(
   [Parameter(Mandatory = $true)]
   [string] $SearchRoot,
-  [switch] $SkipLaunch
+  [switch] $SkipLaunch,
+  [switch] $SkipQuota
 )
 
 $ErrorActionPreference = "Stop"
 $installer = Get-ChildItem -LiteralPath $SearchRoot -Filter "*.exe" -File -Recurse |
-  Where-Object { $_.FullName -match "[\\/]bundle[\\/]nsis[\\/]" } |
+  Where-Object { $_.Name -notlike "*.blockmap" -and $_.Name -notlike "uninstaller*.exe" } |
   Select-Object -First 1
 if (-not $installer) {
   throw "No NSIS installer was found under $SearchRoot"
@@ -52,14 +53,21 @@ Install-AgentKib
 $installLocation = Get-AgentKibInstallLocation
 $executable = @(
   (Join-Path $installLocation "AgentKib.exe"),
+  (Join-Path $installLocation "agentkib.exe"),
   (Join-Path $installLocation "agentkib-desktop.exe")
 ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $executable) {
   throw "Installed AgentKib executable was not found under $installLocation"
 }
-$quotaSidecar = Join-Path $installLocation "windows\agentkib-quota-sidecar.exe"
-if (-not (Test-Path -LiteralPath $quotaSidecar)) {
-  throw "The bundled Windows quota collector was not found under $installLocation"
+if (-not $SkipQuota) {
+  $quotaSidecar = @(
+    (Join-Path $installLocation "resources\bin\agentkib-quota-sidecar.exe"),
+    (Join-Path $installLocation "resources\windows\agentkib-quota-sidecar.exe"),
+    (Join-Path $installLocation "windows\agentkib-quota-sidecar.exe")
+  ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $quotaSidecar) {
+    throw "The bundled Windows quota collector was not found under $installLocation"
+  }
 }
 
 if (-not $SkipLaunch) {

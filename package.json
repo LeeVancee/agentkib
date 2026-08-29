@@ -5,7 +5,10 @@
   "scripts": {
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
+    "dev:tauri": "pnpm --filter @agentkib/desktop dev:tauri",
+    "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
+    "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "format": "oxfmt apps/desktop/src",
     "format:check": "oxfmt --check apps/desktop/src",
     "lint": "oxlint apps/desktop/src",

@@ -9,7 +9,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "@platform-events";
 import {
   Activity,
   Award,
@@ -49,7 +49,7 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { isTauriRuntime } from "@/core/platform";
+import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import { buildHeatmapMonthMarkers } from "@/features/insights/insights";
 import type {
   Achievement,
@@ -84,15 +84,17 @@ export function InsightsPage({
   section,
   workspaces,
   onSummary,
+  refreshRevision = 0,
 }: {
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
   onSummary: (summary: InsightsSummary) => void;
+  refreshRevision?: number;
 }) {
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
-  const [range, setRange] = useState<"52w" | "year">("52w");
+  const [range, setRange] = useState<"52w" | "year">("year");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
   const [summary, setSummary] = useState<InsightsSummary>();
   const [points, setPoints] = useState<HeatmapPoint[]>([]);
@@ -147,32 +149,41 @@ export function InsightsPage({
   }, [onSummary, query]);
   useEffect(() => {
     void loadInsights();
-  }, [loadInsights]);
+  }, [loadInsights, refreshRevision]);
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
-      if (disposed) return;
-      if (event.payload.kind !== "insights") return;
-      if (event.payload.state === "queued" || event.payload.state === "running") setBusy(true);
-      if (event.payload.state === "succeeded") {
+    const handleRefreshState = (status: RefreshJobStatus) => {
+      if (status.kind !== "insights") return;
+      if (status.state === "queued" || status.state === "running") setBusy(true);
+      if (status.state === "succeeded") {
         setBusy(false);
         if (document.visibilityState === "visible") void loadInsights();
         else pendingRefresh.current = true;
       }
-      if (event.payload.state === "failed") {
+      if (status.state === "failed") {
         setBusy(false);
-        setError(event.payload.error ?? tr("errors.generic"));
+        setError(status.error ?? tr("errors.generic"));
       }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    };
+    const onElectronRefreshState = (event: Event) => {
+      handleRefreshState((event as CustomEvent<RefreshJobStatus>).detail);
+    };
+    if (isElectronRuntime()) {
+      window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
+    }
+    if (isTauriRuntime()) {
+      void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
+        if (!disposed) handleRefreshState(event.payload);
+      }).then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      });
+    }
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
     };
   }, [loadInsights]);
   useEffect(() => {
@@ -826,7 +837,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               category: tr(`milestones.category.${track.category}`),
             })}
             style={{ left: `${50 / milestoneCount}%`, right: `${50 / milestoneCount}%` }}
-            className="pointer-events-none absolute top-[11px] z-0 h-0.5 w-auto bg-border"
+            className="pointer-events-none absolute top-[35px] z-0 h-0.5 w-auto bg-border"
           />
           {track.milestones.map((milestone) => {
             const reached = achievementReached(milestone);
@@ -835,7 +846,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               <ToggleGroupItem
                 value={milestone.code}
                 className={cn(
-                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-start content-start justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
+                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-center content-center justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
                   reached && "text-foreground",
                   current && "text-[var(--blue)]",
                 )}

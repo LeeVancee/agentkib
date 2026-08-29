@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { refreshGlobalState } from "@/core/global-state";
@@ -344,11 +343,7 @@ export function useAppNavigation() {
 
   const selectProject = async () => {
     if (!(await ensureWorkspaceChangeAllowed())) return;
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addWorkspace"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addWorkspace"));
     if (typeof selected === "string") {
       if (!(await ensureWorkspaceChangeAllowed())) return;
       const workspace = await api.addWorkspace(selected);
@@ -377,11 +372,7 @@ export function useAppNavigation() {
   };
 
   async function addScanRootFromDialog() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addScanRoot"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
     if (typeof selected === "string") {
       await api.addScanRoot(selected, 5);
       await loadGlobal();

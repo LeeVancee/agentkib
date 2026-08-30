@@ -6,7 +6,7 @@ import {
   RUNTIME_METHODS,
   type RuntimeHandshakeResult,
   type RuntimeRpcError,
-} from "./generated/runtime-protocol";
+} from "../generated/runtime-protocol";
 
 const HEALTHY_RUNTIME_RESET_MS = 30_000;
 

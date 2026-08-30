@@ -1,4 +1,4 @@
-import type { DesktopApi } from "../../electron/desktop-api";
+import type { DesktopApi } from "../../electron/api";
 
 export function desktopApi(): DesktopApi {
   const desktop = globalThis.window?.agentkibDesktop;

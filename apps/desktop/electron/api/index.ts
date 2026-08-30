@@ -1,4 +1,4 @@
-import type { RuntimeHandshakeResult } from "./generated/runtime-protocol";
+import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import type {
   AgentKind,
   AppMenuCommandRequest,
@@ -69,7 +69,7 @@ import type {
   RemoteGatewaySummary,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
-} from "../src/core/types";
+} from "../../src/core/types";
 
 export type DesktopEventUnsubscribe = () => void;
 
@@ -136,15 +136,15 @@ export interface DesktopApi {
     planMigration(project: string, candidateIds: string[]): Promise<ChangeSet>;
   };
   insights: {
-    heatmap(query: InsightsQuery): Promise<import("../src/core/types").HeatmapPoint[]>;
+    heatmap(query: InsightsQuery): Promise<import("../../src/core/types").HeatmapPoint[]>;
     agentUsage(query: InsightsQuery): Promise<AgentUsageBreakdown[]>;
-    modelUsage(query: InsightsQuery): Promise<import("../src/core/types").ModelUsageBreakdown[]>;
+    modelUsage(query: InsightsQuery): Promise<import("../../src/core/types").ModelUsageBreakdown[]>;
     workspaceUsage(
       query: InsightsQuery,
-    ): Promise<import("../src/core/types").WorkspaceUsageBreakdown[]>;
+    ): Promise<import("../../src/core/types").WorkspaceUsageBreakdown[]>;
     repositoryCommits(
       query: InsightsQuery,
-    ): Promise<import("../src/core/types").RepositoryCommitBreakdown[]>;
+    ): Promise<import("../../src/core/types").RepositoryCommitBreakdown[]>;
     achievements(): Promise<Achievement[]>;
     gitIdentities(): Promise<GitIdentitySummary[]>;
     addGitIdentityAlias(email: string): Promise<GitIdentitySummary>;
@@ -216,7 +216,7 @@ export interface DesktopApi {
     addScanRoot(path: string, maxDepth: number): Promise<ScanRoot>;
     removeScanRoot(id: string): Promise<void>;
     refreshDiscovery(): Promise<RefreshReceipt>;
-    discoveryReport(): Promise<import("../src/core/types").DiscoveryReport | undefined>;
+    discoveryReport(): Promise<import("../../src/core/types").DiscoveryReport | undefined>;
     excludedWorkspaces(): Promise<ExcludedWorkspace[]>;
     remoteGateways(): Promise<RemoteGatewaySummary[]>;
     saveRemoteGateway(input: RemoteGatewayInput): Promise<RemoteGatewaySummary>;

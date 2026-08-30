@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi } from "./desktop-api";
+import type { DesktopApi } from "../api";
 import type {
   AppMenuCommandRequest,
   AppNavigationRequest,
+  AppUpdateProgress,
   QuotaSnapshot,
   RefreshJobStatus,
-} from "../src/core/types";
+} from "../../src/core/types";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const ipcListener = (_event: Electron.IpcRendererEvent, value: T) => listener(value);
@@ -34,9 +35,10 @@ const desktopApi = Object.freeze({
   }),
   updates: Object.freeze({
     check: () => ipcRenderer.invoke("agentkib:updates:check"),
-    install: (version: string, onEvent: (event: unknown) => void) => {
+    install: (version: string, onEvent: (event: AppUpdateProgress) => void) => {
       const channel = "agentkib:updates:progress";
-      const listener = (_event: Electron.IpcRendererEvent, value: unknown) => onEvent(value);
+      const listener = (_event: Electron.IpcRendererEvent, value: AppUpdateProgress) =>
+        onEvent(value);
       ipcRenderer.on(channel, listener);
       return ipcRenderer.invoke("agentkib:updates:install", version).finally(() => {
         ipcRenderer.removeListener(channel, listener);

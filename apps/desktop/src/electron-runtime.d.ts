@@ -1,4 +1,4 @@
-import type { DesktopApi } from "../electron/desktop-api";
+import type { DesktopApi } from "../electron/api";
 
 declare global {
   interface Window {

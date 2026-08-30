@@ -41,7 +41,6 @@ const packageJson = {
 };
 
 writeFileSync(path.join(appRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`);
-writeFileSync(path.join(appRoot, ".npmrc"), "node-linker=hoisted\n");
 process.stdout.write(`Electron Forge app: staged ${appRoot}.\n`);
 
 function copy(source, destination) {

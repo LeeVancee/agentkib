@@ -68,7 +68,6 @@ const config: ForgeConfig = {
       /^\/scripts(?:\/|$)/,
       /^\/src(?:\/|$)/,
       /^\/src-tauri(?:\/|$)/,
-      /^\/\.npmrc$/,
       /^\/(?:components\.json|electron-builder\.yml|forge\.config\.ts|index\.html)$/,
       /^\/tsconfig(?:\..+)?\.json$/,
       /^\/vite(?:\..+)?\.config\.ts$/,

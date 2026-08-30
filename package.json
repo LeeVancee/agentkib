@@ -9,6 +9,8 @@
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
+    "dist:forge": "pnpm --filter @agentkib/desktop dist:forge",
+    "forge:package": "pnpm --filter @agentkib/desktop forge:package",
     "format": "oxfmt apps/desktop/src",
     "format:check": "oxfmt --check apps/desktop/src",
     "lint": "oxlint apps/desktop/src",

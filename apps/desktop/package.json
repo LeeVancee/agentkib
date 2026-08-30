@@ -2,6 +2,7 @@
   "name": "@agentkib/desktop",
   "private": true,
   "version": "0.5.0",
+  "productName": "AgentKib",
   "description": "Desktop app for discovering, diagnosing, and synchronizing coding agent configuration.",
   "author": "AgentKib contributors",
   "homepage": "https://github.com/starroyhq/agentkib",
@@ -22,12 +23,26 @@
     "quota:stage": "node scripts/stage-electron-quota.mjs",
     "protocol:generate": "node scripts/generate-runtime-protocol.mjs",
     "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
+    "forge:stage": "node scripts/stage-forge-resources.mjs && node scripts/stage-forge-app.mjs && pnpm --dir build/forge-app install --ignore-workspace --lockfile=false",
+    "forge:makers:prepare": "node scripts/prepare-forge-makers.mjs",
+    "forge:prepare": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && pnpm forge:stage",
+    "forge:package": "pnpm forge:prepare && electron-forge package build/forge-app",
+    "forge:make": "pnpm forge:prepare && pnpm forge:makers:prepare && electron-forge make build/forge-app",
+    "dist:forge": "pnpm forge:make",
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:app": "node scripts/generate-app-icons.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",
     "test": "pnpm runtime:build:dev && vitest run",
     "typecheck": "tsc -b --pretty false",
     "tauri": "tauri"
+  },
+  "config": {
+    "forge": "./forge.config.ts"
+  },
+  "pnpm": {
+    "executionEnv": {
+      "nodeVersion": "22.17.1"
+    }
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -52,6 +67,13 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-deb": "^7.11.2",
+    "@electron-forge/maker-dmg": "^7.11.2",
+    "@electron-forge/maker-rpm": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/shared-types": "^7.11.2",
     "@rolldown/binding-linux-x64-gnu": "1.2.5",
     "@tailwindcss/oxide-linux-x64-gnu": "4.3.3",
     "@tailwindcss/vite": "^4.1.18",
@@ -72,6 +94,7 @@
     "electron-builder": "^26.15.7",
     "electron-builder-squirrel-windows": "26.15.7",
     "jsdom": "^25.0.1",
+    "node-gyp": "^12.4.0",
     "shadcn": "^4.18.0",
     "typescript": "~5.7.2",
     "vite": "^8.2.2",

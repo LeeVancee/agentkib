@@ -5,20 +5,19 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
-  Menu,
   nativeImage,
   nativeTheme,
   protocol,
   shell,
-  Tray,
   type IpcMainInvokeEvent,
 } from "electron";
 import { autoUpdater } from "electron-updater";
+import type { SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost } from "./runtime-host";
 import { registerRuntimeIpc } from "./ipc/runtime";
+import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import {
-  assertTrustedRenderer as assertTrustedRendererEvent,
   optionalCloseBehavior,
   optionalPositiveInteger,
   optionalString,
@@ -44,7 +43,7 @@ app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
-let tray: Tray | undefined;
+let nativeShell: ElectronNativeShell | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
@@ -56,7 +55,7 @@ let applicationInitialized = false;
 let applicationInitialization: Promise<void> | undefined;
 let startupFailureWindow: BrowserWindow | undefined;
 let ipcHandlersRegistered = false;
-let nativeShellCreated = false;
+let closePromptOpen = false;
 let quotaRefreshTimer: NodeJS.Timeout | undefined;
 let quotaRefreshPromise: Promise<ElectronQuotaRefreshReceipt> | undefined;
 let insightsRefreshTimer: NodeJS.Timeout | undefined;
@@ -75,6 +74,7 @@ interface ElectronRuntimeInfo {
   app_icon_preference?: "white" | "black";
   theme_preference?: "system" | "light" | "dark";
   effective_theme?: "light" | "dark";
+  effective_locale?: SupportedLocale;
   quota_auto_refresh_enabled?: boolean;
 }
 
@@ -152,7 +152,9 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0 && applicationInitialized) void createMainWindow();
+  if (!applicationInitialized) return;
+  if (!mainWindow || mainWindow.isDestroyed()) void createMainWindow();
+  else showMainWindow();
 });
 
 app.on("window-all-closed", () => {
@@ -170,15 +172,12 @@ app.on("before-quit", (event) => {
   shutdownStarted = true;
   stopQuotaScheduler();
   stopInsightsScheduler();
+  nativeShell?.destroy();
   void runtimeHost.stop().finally(() => app.quit());
 });
 
 nativeTheme.on("updated", () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send(
-    "agentkib:theme-changed",
-    nativeTheme.shouldUseDarkColors ? "dark" : "light",
-  );
+  sendRendererEvent("agentkib:theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });
 
 async function startApplication(): Promise<void> {
@@ -231,7 +230,7 @@ async function initializeApplication(): Promise<void> {
       });
       registerRuntimeIpc({
         runtime: requireRuntime,
-        mainWindow: () => mainWindow,
+        assertTrustedRenderer,
         withRuntimeCapabilities: withElectronRuntimeCapabilities,
       });
       registerHomeIpc();
@@ -240,9 +239,19 @@ async function initializeApplication(): Promise<void> {
       ipcHandlersRegistered = true;
     }
 
-    if (!nativeShellCreated) {
-      createNativeShell();
-      nativeShellCreated = true;
+    if (!nativeShell) {
+      nativeShell = new ElectronNativeShell({
+        runtime: requireRuntime,
+        mainWindow: () => mainWindow,
+        preloadPath: path.join(__dirname, "preload.cjs"),
+        rendererUrl,
+        trayIconPath: resolveNativeShellTrayIcon(),
+        locale: runtime.effective_locale ?? normalizeSystemLocale(app.getLocale()),
+        showMainWindow,
+        requestQuit: requestRendererQuitGuard,
+        requestRefresh: requestNativeRefresh,
+      });
+      nativeShell.create();
     }
     await createMainWindow();
     applicationInitialized = true;
@@ -262,49 +271,9 @@ async function initializeApplication(): Promise<void> {
   }
 }
 
-function createNativeShell(): void {
-  if (process.platform === "darwin") {
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate([
-        {
-          label: app.getName(),
-          submenu: [
-            { role: "about" },
-            { type: "separator" },
-            { role: "hide" },
-            { role: "hideOthers" },
-            { role: "unhide" },
-            { type: "separator" },
-            { role: "quit" },
-          ],
-        },
-        {
-          label: "View",
-          submenu: [{ role: "toggleDevTools" }, { role: "togglefullscreen" }],
-        },
-      ]),
-    );
-  } else {
-    Menu.setApplicationMenu(null);
-  }
-
-  const image = createTrayImage();
-  if (image.isEmpty()) return;
-  if (process.platform === "darwin") image.setTemplateImage(true);
-  tray = new Tray(image);
-  tray.setToolTip(`${app.getName()} · Local Agent assets`);
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `Open ${app.getName()}`, click: showMainWindow },
-      { type: "separator" },
-      { label: `Quit ${app.getName()}`, click: () => app.quit() },
-    ]),
-  );
-  tray.on("click", showMainWindow);
-}
-
 function showMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (process.platform === "darwin") app.dock?.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -317,15 +286,30 @@ function requestRendererQuitGuard(): void {
     app.quit();
     return;
   }
-  if (!window.isVisible()) window.show();
-  window.focus();
+  showMainWindow();
   window.webContents.send("agentkib:quit-requested");
+}
+
+function requestNativeRefresh(kind: "discovery" | "insights" | "quota" | "all"): void {
+  const requests =
+    kind === "all"
+      ? [
+          requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery),
+          requestInsightsRefresh(),
+          requestQuotaRefresh(),
+        ]
+      : kind === "discovery"
+        ? [requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery)]
+        : kind === "insights"
+          ? [requestInsightsRefresh()]
+          : [requestQuotaRefresh()];
+  void Promise.allSettled(requests).then(() => nativeShell?.refreshTrayStatus());
 }
 
 function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) return runtime;
   const enriched = { ...(runtime as Record<string, unknown>) };
-  enriched.tray_available = Boolean(tray && !tray.isDestroyed());
+  enriched.tray_available = nativeShell?.trayAvailable ?? false;
   if (enriched.theme_preference === "system") {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   }
@@ -537,6 +521,7 @@ function requestQuotaRefresh(host = requireRuntime()): Promise<ElectronQuotaRefr
 
 function emitElectronRefreshState(status: unknown): void {
   sendRendererEvent("agentkib:electron-refresh-state", status);
+  void nativeShell?.refreshTrayStatus();
 }
 
 function sendRendererEvent(channel: string, payload: unknown): void {
@@ -673,10 +658,13 @@ function registerShellIpc(): void {
   ipcMain.handle("agentkib:settings:set-locale", (event, preference: unknown) => {
     assertTrustedRenderer(event);
     return requireRuntime()
-      .request(RUNTIME_METHODS.setLocale, {
+      .request<ElectronRuntimeInfo>(RUNTIME_METHODS.setLocale, {
         preference: requireString(preference, "preference"),
       })
-      .then(withElectronRuntimeCapabilities);
+      .then((runtime) => {
+        if (runtime.effective_locale) nativeShell?.setLocale(runtime.effective_locale);
+        return withElectronRuntimeCapabilities(runtime);
+      });
   });
   ipcMain.handle("agentkib:settings:set-theme", (event, preference: unknown) => {
     assertTrustedRenderer(event);
@@ -945,7 +933,9 @@ function registerHomeIpc(): void {
 const MEMORY_STATUSES = new Set(["pending", "approved", "rejected", "invalidated"]);
 
 function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
-  assertTrustedRendererEvent(event, mainWindow);
+  if (mainWindow && event.sender === mainWindow.webContents) return;
+  if (nativeShell?.ownsWebContents(event.sender)) return;
+  throw new Error("Rejected IPC from an unknown renderer");
 }
 
 function requireRuntime(): DesktopRuntimeHost {
@@ -980,14 +970,16 @@ async function createMainWindow(): Promise<void> {
 
   window.on("close", (event) => {
     if (shutdownStarted || quitApproved) return;
+    event.preventDefault();
     if (closeBehavior === "minimize-to-tray") {
-      event.preventDefault();
-      if (tray) window.hide();
-      else window.minimize();
+      nativeShell?.hideMainWindow();
       return;
     }
-    event.preventDefault();
-    requestRendererQuitGuard();
+    if (closeBehavior === "quit") {
+      requestRendererQuitGuard();
+      return;
+    }
+    void showFirstClosePrompt(window);
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
@@ -1001,8 +993,65 @@ async function createMainWindow(): Promise<void> {
     if (mainWindow === window) mainWindow = undefined;
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) await window.loadURL(process.env.VITE_DEV_SERVER_URL);
-  else await window.loadURL("app://bundle/index.html");
+  await window.loadURL(rendererUrl());
+}
+
+async function showFirstClosePrompt(window: BrowserWindow): Promise<void> {
+  if (closePromptOpen || window.isDestroyed()) return;
+  closePromptOpen = true;
+  const appName = app.getName();
+  const trayAvailable = nativeShell?.trayAvailable ?? false;
+  const isLinuxTray = trayAvailable && process.platform === "linux";
+  const translate = (key: string) => nativeShell?.translate(key, { appName }) ?? key;
+  try {
+    const result = await dialog.showMessageBox(window, {
+      type: "question",
+      title: translate("dialog.close.title"),
+      message: translate(
+        trayAvailable
+          ? isLinuxTray
+            ? "dialog.close.messageSystemTray"
+            : "dialog.close.message"
+          : "dialog.close.messageNoTray",
+      ),
+      buttons: [
+        translate(
+          trayAvailable
+            ? isLinuxTray
+              ? "dialog.close.hideSystemTray"
+              : "dialog.close.hide"
+            : "dialog.close.minimize",
+        ),
+        translate("dialog.close.quit"),
+        translate("dialog.close.cancel"),
+      ],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    if (result.response === 0) {
+      await persistCloseBehavior("minimize-to-tray");
+      nativeShell?.hideMainWindow();
+    } else if (result.response === 1) {
+      await persistCloseBehavior("quit");
+      requestRendererQuitGuard();
+    }
+  } finally {
+    closePromptOpen = false;
+  }
+}
+
+async function persistCloseBehavior(value: "minimize-to-tray" | "quit"): Promise<void> {
+  await requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value });
+  closeBehavior = value;
+}
+
+function rendererUrl(surface?: "quota-popover"): string {
+  const base = process.env.VITE_DEV_SERVER_URL ?? "app://bundle/index.html";
+  if (!surface) return base;
+  const url = new URL(base);
+  url.searchParams.set("surface", surface);
+  return url.toString();
 }
 
 async function registerRendererProtocol(): Promise<void> {
@@ -1056,36 +1105,11 @@ function resolveQuotaSidecar(): string {
   );
 }
 
-function resolveTrayIcon(): string {
-  if (app.isPackaged) return path.join(process.resourcesPath, "icons", "tray-icon.png");
-  return path.resolve(app.getAppPath(), "resources/icons/tray-icon.png");
-}
-
-function createTrayImage(): Electron.NativeImage {
-  const source = nativeImage.createFromPath(resolveTrayIcon());
-  if (source.isEmpty() || process.platform !== "darwin") return source;
-
-  const image = nativeImage.createEmpty();
-  image.addRepresentation({
-    scaleFactor: 1,
-    width: 16,
-    height: 16,
-    buffer: source.resize({ width: 16, height: 16 }).toPNG(),
-  });
-  image.addRepresentation({
-    scaleFactor: 2,
-    width: 32,
-    height: 32,
-    buffer: source.resize({ width: 32, height: 32 }).toPNG(),
-  });
-  return image;
-}
-
 function resolveApplicationIcon(preference = appIconPreference): string {
   const suffix = process.platform === "darwin" ? "-macos" : "";
   const filename = `app-icon-${preference}${suffix}.png`;
   if (app.isPackaged) return path.join(process.resourcesPath, "icons", filename);
-  return path.resolve(app.getAppPath(), "resources/icons", filename);
+  return path.resolve(__dirname, "../resources/icons", filename);
 }
 
 function applyApplicationIcon(preference: "white" | "black"): void {

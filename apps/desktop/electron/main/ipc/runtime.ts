@@ -1,8 +1,7 @@
-import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import type { DesktopRuntimeHost } from "../runtime-host";
 import {
-  assertTrustedRenderer,
   optionalPositiveInteger,
   optionalString,
   requireBoolean,
@@ -22,24 +21,24 @@ const KNOWN_AGENTS = new Set([
 
 interface RuntimeIpcOptions {
   runtime(): DesktopRuntimeHost;
-  mainWindow(): BrowserWindow | undefined;
+  assertTrustedRenderer(event: IpcMainInvokeEvent): void;
   withRuntimeCapabilities(runtime: unknown): unknown;
 }
 
 export function registerRuntimeIpc({
   runtime,
-  mainWindow,
+  assertTrustedRenderer,
   withRuntimeCapabilities: withElectronRuntimeCapabilities,
 }: RuntimeIpcOptions): void {
   function registerWorkspaceIpc(): void {
     ipcMain.handle("agentkib:workspace:scan", (event, project: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.scanWorkspace, {
         project: requireString(project, "project"),
       });
     });
     ipcMain.handle("agentkib:workspace:prepare-manifest", (event, project: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.prepareManifest, {
         project: requireString(project, "project"),
       });
@@ -47,7 +46,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:workspace:resolve-context",
       (event, project: unknown, cwd: unknown, agent: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         const parsedAgent = requireString(agent, "agent");
         if (!KNOWN_AGENTS.has(parsedAgent)) throw new Error(`Unsupported agent: ${parsedAgent}`);
         return runtime().request(RUNTIME_METHODS.resolveContext, {
@@ -58,76 +57,76 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:workspace:add", (event, workspacePath: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.addWorkspace, {
         path: requireString(workspacePath, "path"),
       });
     });
     ipcMain.handle("agentkib:workspace:refresh", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.refreshWorkspace, {
         id: requireString(id, "id"),
       });
     });
     ipcMain.handle("agentkib:workspace:exclude", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.excludeWorkspace, {
         id: requireString(id, "id"),
       });
     });
     ipcMain.handle("agentkib:workspace:restore-excluded", (event, workspacePath: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.restoreExcludedWorkspace, {
         path: requireString(workspacePath, "path"),
       });
     });
     ipcMain.handle("agentkib:workspace:doctor-report", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.workspaceDoctorReport, {
         id: requireString(id, "id"),
       });
     });
     ipcMain.handle("agentkib:workspace:git-summary", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.workspaceGitSummary, {
         id: requireString(id, "workspaceId"),
       });
     });
     ipcMain.handle("agentkib:workspace:git-history", (event, id: unknown, query: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.workspaceGitHistory, {
         workspaceId: requireString(id, "workspaceId"),
         query: requireObject(query, "git history query"),
       });
     });
     ipcMain.handle("agentkib:workspace:git-commit-files", (event, id: unknown, oid: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.gitCommitFiles, {
         workspaceId: requireString(id, "workspaceId"),
         oid: requireString(oid, "oid"),
       });
     });
     ipcMain.handle("agentkib:workspace:git-diff", (event, id: unknown, request: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.gitDiff, {
         workspaceId: requireString(id, "workspaceId"),
         request: requireObject(request, "git diff request"),
       });
     });
     ipcMain.handle("agentkib:workspace:sessions", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.workspaceSessions, {
         workspaceId: requireString(id, "workspaceId"),
       });
     });
     ipcMain.handle("agentkib:workspace:session-status", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.workspaceSessionStatus, {
         workspaceId: requireString(id, "workspaceId"),
       });
     });
     ipcMain.handle("agentkib:workspace:refresh-sessions", (event, id: unknown, force: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.refreshWorkspaceSessions, {
         workspaceId: requireString(id, "workspaceId"),
         force: force === undefined ? false : requireBoolean(force, "force"),
@@ -136,7 +135,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:session:events",
       (event, id: unknown, cursor: unknown, limit: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtime().request(RUNTIME_METHODS.sessionEvents, {
           sessionId: requireString(id, "sessionId"),
           cursor: optionalString(cursor, "cursor"),
@@ -145,13 +144,13 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:session:prepare-handoff", (event, request: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtimeRequest(event, RUNTIME_METHODS.prepareSessionHandoff, {
         request: requireObject(request, "handoff request"),
       });
     });
     ipcMain.handle("agentkib:session:summarize-handoff", (event, request: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtimeRequest(event, RUNTIME_METHODS.summarizeSessionHandoff, {
         request: requireObject(request, "handoff request"),
       });
@@ -159,7 +158,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:session:sanitize-handoff",
       (event, format: unknown, editedContent: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.sanitizeSessionHandoff, {
           format: requireString(format, "format"),
           editedContent: requireText(editedContent, "editedContent"),
@@ -176,7 +175,7 @@ export function registerRuntimeIpc({
         editedContent: unknown,
         targetAgent: unknown,
       ) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.planSessionHandoff, {
           workspaceId: requireString(workspaceId, "workspaceId"),
           filename: requireString(filename, "filename"),
@@ -189,7 +188,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:session:continue-handoff",
       (event, changeSet: unknown, launchRequest: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.continueSessionHandoff, {
           changeSet: requireObject(changeSet, "changeSet"),
           launchRequest: requireObject(launchRequest, "launchRequest"),
@@ -197,19 +196,19 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:session:launch-handoff", (event, launchRequest: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtimeRequest(event, RUNTIME_METHODS.launchSessionHandoff, {
         ...requireObject(launchRequest, "launchRequest"),
       });
     });
     ipcMain.handle("agentkib:workspace:openers", (event, id: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.listWorkspaceOpeners, {
         workspaceId: requireString(id, "workspaceId"),
       });
     });
     ipcMain.handle("agentkib:workspace:open", async (event, id: unknown, openerId: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.openWorkspaceWithApp, {
         workspaceId: requireString(id, "workspaceId"),
         openerId: optionalString(openerId, "openerId"),
@@ -221,7 +220,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:changes:plan",
       (event, project: unknown, manifest: unknown, includeHome: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtime().request(RUNTIME_METHODS.planChanges, {
           project: requireString(project, "project"),
           manifest: requireObject(manifest, "manifest"),
@@ -230,14 +229,14 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:changes:apply", (event, changeSet: unknown, approveHome: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.applyChanges, {
         changeSet: requireObject(changeSet, "changeSet"),
         approveHome: requireBoolean(approveHome, "approveHome"),
       });
     });
     ipcMain.handle("agentkib:memories:list", (event, project: unknown, status: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.listMemories, {
         project: requireString(project, "project"),
         status: status === undefined ? null : optionalString(status, "status"),
@@ -246,7 +245,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:memories:search",
       (event, project: unknown, query: unknown, limit: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtime().request(RUNTIME_METHODS.searchMemories, {
           project: requireString(project, "project"),
           query: requireText(query, "query"),
@@ -255,7 +254,7 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:memories:propose", (event, project: unknown, proposal: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.proposeMemory, {
         project: requireString(project, "project"),
         proposal: requireObject(proposal, "proposal"),
@@ -264,7 +263,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:memories:review",
       (event, id: unknown, status: unknown, editedContent: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         return runtime().request(RUNTIME_METHODS.reviewMemory, {
           id: requireString(id, "id"),
           status: requireString(status, "status"),
@@ -273,13 +272,13 @@ export function registerRuntimeIpc({
       },
     );
     ipcMain.handle("agentkib:sessions:clear-index", (event, workspaceId: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.clearSessionIndex, {
         workspaceId: optionalString(workspaceId, "workspaceId"),
       });
     });
     ipcMain.handle("agentkib:sessions:set-index-enabled", (event, enabled: unknown) => {
-      assertTrustedRenderer(event, mainWindow());
+      assertTrustedRenderer(event);
       return runtime()
         .request(RUNTIME_METHODS.setSessionIndexEnabled, {
           value: requireBoolean(enabled, "enabled"),
@@ -398,7 +397,7 @@ export function registerRuntimeIpc({
     ipcMain.handle(
       "agentkib:mcp:plan-migration",
       (event, project: unknown, candidateIds: unknown) => {
-        assertTrustedRenderer(event, mainWindow());
+        assertTrustedRenderer(event);
         if (!Array.isArray(candidateIds)) throw new TypeError("candidateIds must be an array");
         return runtime().request(RUNTIME_METHODS.planMcpMigration, {
           project: requireString(project, "project"),
@@ -458,7 +457,7 @@ export function registerRuntimeIpc({
     method: string,
     params: unknown,
   ): Promise<unknown> {
-    assertTrustedRenderer(event, mainWindow());
+    assertTrustedRenderer(event);
     return runtime().request(method, params);
   }
 

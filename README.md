@@ -69,7 +69,7 @@ macOS v0.3.2 及以后版本已签名并通过 Apple 公证；Windows 安装包�
 
 ### 从源码运行
 
-需要 Rust stable、Node.js、pnpm 10，以及当前平台的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)。macOS 需要 Xcode Command Line Tools；Windows 需要 Visual Studio Build Tools 2022 和 Windows SDK；Linux 需要 GTK 3、WebKitGTK 4.1、AppIndicator、librsvg 和 libxdo。
+需要 Rust stable、Node.js 和 pnpm 10。macOS 需要 Xcode Command Line Tools；Windows 需要 Visual Studio Build Tools 2022、Windows SDK 和 WebView2 111+；Linux 需要 Electron 所需的 GTK 3 运行库。
 
 ```bash
 pnpm install
@@ -194,7 +194,7 @@ macOS packages newer than v0.3.1 are signed with AgentKib's Developer ID Applica
 
 ### Run from source
 
-Install Rust stable, Node.js, pnpm 10, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform. The desktop runtime requires macOS 13.3+, WebView2 111+ on Windows 11, or WebKitGTK 2.40+ on Linux.
+Install Rust stable, Node.js, and pnpm 10. The Electron desktop runtime requires macOS 13.3+, WebView2 111+ on Windows 11, or GTK 3 on Linux.
 
 ```bash
 pnpm install
@@ -275,17 +275,16 @@ Only run this command for an app downloaded from the official AgentKib Releases 
 在仓库根目录构建当前平台的桌面包。Build a desktop package for the current platform from the repository root:
 
 ```bash
-pnpm tauri build
+pnpm dist:electron
 ```
 
-Linux 环境诊断与打包脚本 / Linux environment and package scripts:
+Linux 环境诊断 / Linux environment diagnostics:
 
 ```bash
-apps/desktop/scripts/diagnose-linux.sh
-apps/desktop/scripts/build-linux-bundles.sh
+apps/desktop/scripts/diagnose-linux.sh --strict
 ```
 
-构建产物位于 `target/release/bundle/`。Build output is written to `target/release/bundle/`. Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+构建产物位于 `apps/desktop/release-electron/`。Build output is written to `apps/desktop/release-electron/`. Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ```bash
 cargo fmt --all -- --check

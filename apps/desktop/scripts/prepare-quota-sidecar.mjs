@@ -58,7 +58,7 @@ const releases = {
 const windowsArmNsis = {
   asset: "nsis-3.11.zip",
   sha1: "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d",
-  url: "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip",
+  url: "https://sourceforge.net/projects/nsis/files/NSIS%203/3.11/nsis-3.11.zip/download",
 };
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -223,16 +223,16 @@ async function prepareWindowsArmNsis() {
   const localAppData = process.env.LOCALAPPDATA;
   if (!localAppData) return;
 
-  const tauriToolsDirectory = resolve(localAppData, "tauri");
-  const nsisDirectory = join(tauriToolsDirectory, "NSIS");
+  const nsisCacheDirectory = resolve(localAppData, "AgentKibBuild/cache/nsis");
+  const nsisDirectory = join(nsisCacheDirectory, "NSIS");
   const nativeCompiler = join(nsisDirectory, "Bin/makensis.exe");
   const compilerLauncher = join(nsisDirectory, "makensis.exe");
 
   try {
     await access(nativeCompiler);
   } catch {
-    await mkdir(tauriToolsDirectory, { recursive: true });
-    const archivePath = join(tauriToolsDirectory, windowsArmNsis.asset);
+    await mkdir(nsisCacheDirectory, { recursive: true });
+    const archivePath = join(nsisCacheDirectory, windowsArmNsis.asset);
     if (!(await hasExpectedHash(archivePath, windowsArmNsis.sha1, "sha1"))) {
       await rm(archivePath, { force: true });
       const temporary = `${archivePath}.download`;

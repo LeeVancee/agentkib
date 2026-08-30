@@ -209,35 +209,29 @@ jobs:
             updater_channel: arm64
             os: macos-15
             artifact: macos-arm64
-            asset_suffix: macos-arm64
           - name: macOS
             arch: x64
             updater_channel: x64
             os: macos-15-intel
             artifact: macos-x64
-            asset_suffix: macos-x64
           - name: Windows
             arch: x64
             updater_channel: x64
             os: windows-2025
             artifact: windows-x64
-            asset_suffix: windows-x64
           - name: Windows
             arch: arm64-preview
             updater_channel: arm64
             os: windows-11-arm
             artifact: windows-arm64-preview
-            asset_suffix: windows-arm64-preview
           - name: Ubuntu
             arch: x64
             os: ubuntu-22.04
             artifact: linux-ubuntu-x64
-            asset_suffix: linux-x64
           - name: Ubuntu
             arch: arm64-preview
             os: ubuntu-24.04-arm
             artifact: linux-ubuntu-arm64-preview
-            asset_suffix: linux-arm64-preview
 
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}

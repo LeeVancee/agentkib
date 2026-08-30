@@ -129,7 +129,7 @@ AgentKib 会区分“已安装”和“只发现了卸载后留下的本地数�
 | --- | --- |
 | macOS 13.3+（Apple Silicon / Intel） | 主要开发与验收平台 |
 | Windows 11 x64（WebView2 111+） | PR 验证平台代码；发布工作流构建并烟测 NSIS |
-| Ubuntu 22.04 x64（WebKitGTK 2.40+） | 核心 CI 平台；发布工作流构建并验证 `.deb` 与 AppImage |
+| Ubuntu 22.04 x64（Electron／GTK 3） | 核心 CI 平台；发布工作流构建并验证 `.deb` 与 AppImage |
 | Fedora x64 | PR 验证平台代码；发布工作流构建并验证 `.rpm` |
 | Windows ARM64 / Linux ARM64 | Preview；发布工作流生成并验证预览包 |
 
@@ -254,7 +254,7 @@ Optional Obsidian and OpenClaw/Hermes Remote Gateway integrations must be config
 | --- | --- |
 | macOS 13.3+ (Apple Silicon / Intel) | Primary development and acceptance platform |
 | Windows 11 x64 (WebView2 111+) | Platform code checked on PRs; release workflow builds and smoke-tests NSIS |
-| Ubuntu 22.04 x64 (WebKitGTK 2.40+) | Core CI platform; release workflow builds and verifies `.deb` and AppImage |
+| Ubuntu 22.04 x64 (Electron / GTK 3) | Core CI platform; release workflow builds and verifies `.deb` and AppImage |
 | Fedora x64 | Platform code checked on PRs; release workflow builds and verifies `.rpm` |
 | Windows ARM64 / Linux ARM64 | Preview; release workflow builds and verifies preview packages |
 

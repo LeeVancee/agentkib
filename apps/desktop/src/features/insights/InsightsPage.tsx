@@ -9,7 +9,6 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { listen } from "@platform-events";
 import {
   Activity,
   Award,
@@ -34,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import {
   achievementReached,
   buildAchievementWallItems,
@@ -49,7 +49,6 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import { buildHeatmapMonthMarkers } from "@/features/insights/insights";
 import type {
   Achievement,
@@ -151,8 +150,6 @@ export function InsightsPage({
     void loadInsights();
   }, [loadInsights, refreshRevision]);
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
     const handleRefreshState = (status: RefreshJobStatus) => {
       if (status.kind !== "insights") return;
       if (status.state === "queued" || status.state === "running") setBusy(true);
@@ -166,25 +163,7 @@ export function InsightsPage({
         setError(status.error ?? tr("errors.generic"));
       }
     };
-    const onElectronRefreshState = (event: Event) => {
-      handleRefreshState((event as CustomEvent<RefreshJobStatus>).detail);
-    };
-    if (isElectronRuntime()) {
-      window.addEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
-    }
-    if (isTauriRuntime()) {
-      void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
-        if (!disposed) handleRefreshState(event.payload);
-      }).then((dispose) => {
-        if (disposed) dispose();
-        else unlisten = dispose;
-      });
-    }
-    return () => {
-      disposed = true;
-      unlisten?.();
-      window.removeEventListener("agentkib:electron-refresh-state", onElectronRefreshState);
-    };
+    return desktopApi().events.onRefreshState(handleRefreshState);
   }, [loadInsights]);
   useEffect(() => {
     const refreshVisibleInsights = () => {

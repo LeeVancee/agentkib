@@ -7,7 +7,6 @@ import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEffect, useMemo, useState } from "react";
-import { listen } from "@platform-events";
 import { hierarchy, treemap, treemapResquarify } from "d3-hierarchy";
 import {
   CircleAlert,
@@ -20,7 +19,6 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
-import { isTauriRuntime } from "@/core/platform";
 import { currentLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import type {
   AgentKind,
@@ -30,7 +28,6 @@ import type {
   WorkspaceStorage,
   WorkspaceSummary,
 } from "@/core/types";
-import { cn } from "@/lib/utils";
 
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -88,30 +85,7 @@ export function WorkspaceStoragePage({
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
     void (async () => {
-      if (!isTauriRuntime()) {
-        try {
-          const cached = await api.storageOverview();
-          if (!disposed) setOverview(cached);
-        } catch (reason) {
-          if (!disposed) setError(localizeMessage(reason));
-        } finally {
-          if (!disposed) setLoaded(true);
-        }
-        return;
-      }
-      unlisten = await listen<StorageOverview>("agentkib:storage-updated", (event) => {
-        if (!disposed) {
-          setOverview(event.payload);
-          setTrail([]);
-          setSelected(undefined);
-        }
-      });
-      if (disposed) {
-        unlisten?.();
-        return;
-      }
       try {
         const cached = await api.storageOverview();
         if (!disposed) setOverview(cached);
@@ -123,7 +97,6 @@ export function WorkspaceStoragePage({
     })();
     return () => {
       disposed = true;
-      unlisten?.();
     };
   }, []);
 
@@ -163,7 +136,6 @@ export function WorkspaceStoragePage({
     [agent, overview, workspaceById],
   );
   const current = trail.at(-1);
-  const currentStorage = current ? storageById.get(current.workspaceId) : undefined;
   const displayed = current
     ? current.node.children.map((node) => ({ workspaceId: current.workspaceId, node }))
     : workspaceNodes;

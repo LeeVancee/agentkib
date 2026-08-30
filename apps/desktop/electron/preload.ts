@@ -1,25 +1,34 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi } from "./desktop-api";
+import type {
+  AppMenuCommandRequest,
+  AppNavigationRequest,
+  QuotaSnapshot,
+  RefreshJobStatus,
+} from "../src/core/types";
 
-ipcRenderer.on("agentkib:quit-requested", () => {
-  window.dispatchEvent(new Event("agentkib:quit-requested"));
-});
-
-ipcRenderer.on("agentkib:theme-changed", (_event, value: unknown) => {
-  if (value !== "light" && value !== "dark") return;
-  window.dispatchEvent(new CustomEvent("agentkib:theme-changed", { detail: value }));
-});
-
-ipcRenderer.on("agentkib:electron-refresh-state", (_event, value: unknown) => {
-  window.dispatchEvent(new CustomEvent("agentkib:electron-refresh-state", { detail: value }));
-});
-
-ipcRenderer.on("agentkib:quota-updated", (_event, value: unknown) => {
-  window.dispatchEvent(new CustomEvent("agentkib:quota-updated", { detail: value }));
-});
+function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
+  const ipcListener = (_event: Electron.IpcRendererEvent, value: T) => listener(value);
+  ipcRenderer.on(channel, ipcListener);
+  return () => ipcRenderer.removeListener(channel, ipcListener);
+}
 
 const desktopApi = Object.freeze({
   platform: process.platform,
+  events: Object.freeze({
+    onQuitRequested: (listener: () => void) =>
+      subscribe("agentkib:quit-requested", () => listener()),
+    onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
+      subscribe("agentkib:theme-changed", listener),
+    onRefreshState: (listener: (status: RefreshJobStatus) => void) =>
+      subscribe("agentkib:electron-refresh-state", listener),
+    onQuotaUpdated: (listener: (snapshot: QuotaSnapshot) => void) =>
+      subscribe("agentkib:quota-updated", listener),
+    onNavigate: (listener: (request: AppNavigationRequest) => void) =>
+      subscribe("agentkib:navigate", listener),
+    onMenuCommand: (listener: (request: AppMenuCommandRequest) => void) =>
+      subscribe("agentkib:app-command", listener),
+  }),
   runtime: Object.freeze({
     handshake: () => ipcRenderer.invoke("agentkib:runtime:handshake"),
   }),
@@ -170,6 +179,8 @@ const desktopApi = Object.freeze({
     openExternal: (url: string) => ipcRenderer.invoke("agentkib:shell:open-external", url),
     openFilesAndFoldersSettings: () =>
       ipcRenderer.invoke("agentkib:shell:open-files-and-folders-settings"),
+    openQuotaDashboard: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:shell:open-quota-dashboard", request),
     hideWindow: () => ipcRenderer.invoke("agentkib:shell:hide-window"),
     quit: () => ipcRenderer.invoke("agentkib:shell:quit"),
   }),

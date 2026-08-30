@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@platform-events";
 import {
   Archive,
   ArrowLeft,
@@ -21,7 +20,6 @@ import {
   Wrench,
 } from "lucide-react";
 import { api } from "@/core/api";
-import { isTauriRuntime } from "@/core/platform";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { formatDateTime, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -76,17 +74,6 @@ export function WorkspaceSessionsPage({
   const readSequence = useRef(0);
   const cacheSequence = useRef(0);
 
-  const reloadCache = async () => {
-    const sequence = ++cacheSequence.current;
-    const [nextSessions, nextStatuses] = await Promise.all([
-      api.workspaceSessions(workspace.id),
-      api.workspaceSessionStatus(workspace.id),
-    ]);
-    if (sequence !== cacheSequence.current) return;
-    setSessions(nextSessions);
-    setStatuses(nextStatuses);
-  };
-
   const refresh = async (force: boolean) => {
     const sequence = ++cacheSequence.current;
     setRefreshing(true);
@@ -107,7 +94,6 @@ export function WorkspaceSessionsPage({
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
     if (!enabled) {
       setSessions([]);
       setStatuses([]);
@@ -120,15 +106,6 @@ export function WorkspaceSessionsPage({
     setError("");
     const sequence = ++cacheSequence.current;
     void (async () => {
-      if (isTauriRuntime()) {
-        unlisten = await listen<string>("agentkib:conversations-updated", (event) => {
-          if (event.payload === workspace.id) void reloadCache();
-        });
-      }
-      if (disposed) {
-        unlisten?.();
-        return;
-      }
       try {
         const nextSessions = await api.refreshWorkspaceSessions(workspace.id, true);
         if (disposed || sequence !== cacheSequence.current) return;
@@ -146,7 +123,6 @@ export function WorkspaceSessionsPage({
       disposed = true;
       cacheSequence.current += 1;
       readSequence.current += 1;
-      unlisten?.();
     };
   }, [workspace.id, enabled]);
 

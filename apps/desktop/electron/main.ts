@@ -357,9 +357,7 @@ async function requestInsightsIfDue(): Promise<void> {
   await requestInsightsRefresh(host);
 }
 
-function requestInsightsRefresh(
-  host = requireRuntime(),
-): Promise<ElectronInsightsRefreshReceipt> {
+function requestInsightsRefresh(host = requireRuntime()): Promise<ElectronInsightsRefreshReceipt> {
   if (insightsRefreshPromise) return insightsRefreshPromise;
 
   const requestId = `electron-insights-${Date.now()}`;
@@ -394,6 +392,37 @@ function requestInsightsRefresh(
     started_at: startedAt,
   });
   return promise;
+}
+
+function requestRefreshWithEvents(
+  kind: "discovery" | "storage",
+  method: string,
+): Promise<{ status: unknown }> {
+  const requestId = `electron-${kind}-${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  emitElectronRefreshState({
+    kind,
+    state: "running",
+    request_id: requestId,
+    queued_at: startedAt,
+    started_at: startedAt,
+  });
+  return requireRuntime()
+    .request<{ status: unknown }>(method, {})
+    .then((receipt) => {
+      emitElectronRefreshState(receipt.status);
+      return receipt;
+    })
+    .catch((error: unknown) => {
+      emitElectronRefreshState({
+        kind,
+        state: "failed",
+        request_id: requestId,
+        finished_at: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    });
 }
 
 async function requestQuotaIfDue(): Promise<void> {
@@ -789,6 +818,13 @@ function registerShellIpc(): void {
     if (!settingsUrl) throw new Error("Opening file and folder settings is not supported");
     return shell.openExternal(settingsUrl);
   });
+  ipcMain.handle("agentkib:shell:open-quota-dashboard", (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const navigation = requireObject(request, "navigation request");
+    if (navigation.page !== "quota") throw new Error("Only quota navigation is supported");
+    showMainWindow();
+    mainWindow?.webContents.send("agentkib:navigate", navigation);
+  });
   ipcMain.handle("agentkib:shell:hide-window", (event) => {
     assertTrustedRenderer(event);
     BrowserWindow.fromWebContents(event.sender)?.hide();
@@ -1134,7 +1170,7 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:refresh-discovery", (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshDiscovery, {});
+    return requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery);
   });
   ipcMain.handle("agentkib:home:discovery-report", (event) => {
     assertTrustedRenderer(event);
@@ -1249,7 +1285,7 @@ function registerHomeIpc(): void {
   );
   ipcMain.handle("agentkib:home:refresh-storage", (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshStorage, {});
+    return requestRefreshWithEvents("storage", RUNTIME_METHODS.refreshStorage);
   });
   ipcMain.handle(
     "agentkib:home:open-storage-path",

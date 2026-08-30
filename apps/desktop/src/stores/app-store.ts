@@ -20,7 +20,6 @@ import type {
 type Updater<T> = T | ((current: T) => T);
 
 interface AppState {
-  isFullscreen: boolean;
   sidebarCollapsed: boolean;
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
@@ -46,7 +45,6 @@ interface AppState {
 
 interface AppActions {
   reset: () => void;
-  setIsFullscreen: (value: Updater<boolean>) => void;
   setSidebarCollapsed: (value: Updater<boolean>) => void;
   setRuntime: (value: Updater<RuntimeInfo | undefined>) => void;
   setWorkspaces: (value: Updater<WorkspaceSummary[]>) => void;
@@ -98,7 +96,6 @@ function persistSidebarCollapsed(value: boolean) {
 }
 
 export const useAppStore = create<AppState & AppActions>((set) => ({
-  isFullscreen: false,
   sidebarCollapsed: initialSidebarCollapsed(),
   workspaces: [],
   workspacesLoaded: false,
@@ -114,7 +111,6 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
   quotaConfigureRequest: 0,
   reset: () =>
     set({
-      isFullscreen: false,
       sidebarCollapsed: false,
       runtime: undefined,
       workspaces: [],
@@ -137,8 +133,6 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
       quotaConfigureRequest: 0,
       globalError: undefined,
     }),
-  setIsFullscreen: (value) =>
-    set((state) => ({ isFullscreen: resolve(value, state.isFullscreen) })),
   setSidebarCollapsed: (value) =>
     set((state) => {
       const next = resolve(value, state.sidebarCollapsed);

@@ -2,10 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { platformWindow } from "@platform-window";
-import { listen } from "@platform-events";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "lucide-react";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import { changeLocale, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
 import {
   compareQuotaProviders,
@@ -14,7 +13,6 @@ import {
   visibleQuotaWindows,
 } from "@/features/quota/quota";
 import { applyTheme } from "@/core/theme";
-import { isElectronRuntime, isTauriRuntime } from "@/core/platform";
 import type {
   EffectiveTheme,
   QuotaPopoverPreferences,
@@ -62,63 +60,17 @@ export function QuotaPopover() {
 
   useEffect(() => {
     let disposed = false;
-    let unlistenQuota: (() => void) | undefined;
-    let unlistenRefresh: (() => void) | undefined;
-    let unlistenPreferences: (() => void) | undefined;
-    let unlistenQuotaAutoRefresh: (() => void) | undefined;
-    let unlistenQuotaAutoRefreshPrompt: (() => void) | undefined;
-    const onElectronQuotaUpdated = (event: Event) => {
-      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
-      if (!isElectronRuntime() || !payload || disposed) return;
-      setSnapshot(payload);
-    };
-    if (isElectronRuntime()) {
-      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
-    }
+    const desktop = desktopApi();
+    const unlistenQuota = desktop.events.onQuotaUpdated((snapshot) => {
+      if (!disposed) setSnapshot(snapshot);
+    });
+    const unlistenRefresh = desktop.events.onRefreshState((status) => {
+      if (disposed || status.kind !== "quota") return;
+      setRefreshJob(status);
+      if (status.state === "failed") setError(status.error ?? tr("errors.quotaUnavailable"));
+      if (status.state === "succeeded") setError("");
+    });
     void (async () => {
-      if (!isTauriRuntime()) {
-        const current = await load();
-        if (
-          current.autoRefreshEnabled &&
-          !initialRefreshRequested.current &&
-          (!current.snapshot || current.snapshot.freshness !== "fresh")
-        ) {
-          initialRefreshRequested.current = true;
-          const receipt = await api.requestRefresh("quota", false);
-          setRefreshJob(receipt.status);
-          if (receipt.status.state === "succeeded") await load();
-        }
-        return;
-      }
-      [
-        unlistenQuota,
-        unlistenRefresh,
-        unlistenPreferences,
-        unlistenQuotaAutoRefresh,
-        unlistenQuotaAutoRefreshPrompt,
-      ] = await Promise.all([
-        listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
-          if (!disposed) setSnapshot(payload);
-        }),
-        listen<RefreshJobStatus>("agentkib:refresh-state", ({ payload }) => {
-          if (disposed || payload.kind !== "quota") return;
-          setRefreshJob(payload);
-          if (payload.state === "failed") setError(payload.error ?? tr("errors.quotaUnavailable"));
-          if (payload.state === "succeeded") setError("");
-        }),
-        listen<QuotaPopoverPreferences>(
-          "agentkib:quota-popover-preferences-updated",
-          ({ payload }) => {
-            if (!disposed) setPreferences(payload);
-          },
-        ),
-        listen<boolean>("agentkib:quota-auto-refresh-updated", ({ payload }) => {
-          if (!disposed) setAutoRefreshEnabled(payload);
-        }),
-        listen<boolean>("agentkib:quota-auto-refresh-prompt-updated", ({ payload }) => {
-          if (!disposed) setPromptSeen(payload);
-        }),
-      ]);
       const current = await load();
       if (
         !disposed &&
@@ -135,17 +87,13 @@ export function QuotaPopover() {
       if (!disposed) setError(localizeMessage(reason));
     });
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") void platformWindow.hide();
+      if (event.key === "Escape") void desktop.shell.hideWindow();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       disposed = true;
-      unlistenQuota?.();
-      unlistenRefresh?.();
-      unlistenPreferences?.();
-      unlistenQuotaAutoRefresh?.();
-      unlistenQuotaAutoRefreshPrompt?.();
-      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+      unlistenQuota();
+      unlistenRefresh();
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
@@ -180,7 +128,6 @@ export function QuotaPopover() {
 
   useEffect(() => {
     let disposed = false;
-    let unlistenTheme: (() => void) | undefined;
     const syncAppearance = async () => {
       try {
         const runtime = await api.runtime();
@@ -191,24 +138,13 @@ export function QuotaPopover() {
         // The main bootstrap already supplied a safe browser/system fallback.
       }
     };
-    if (isTauriRuntime()) {
-      void listen<EffectiveTheme>("theme-changed", ({ payload }) => applyTheme(payload)).then(
-        (dispose) => {
-          if (disposed) dispose();
-          else unlistenTheme = dispose;
-        },
-      );
-    }
-    const onElectronTheme = (event: Event) => {
-      const theme = (event as CustomEvent<EffectiveTheme>).detail;
-      if (theme === "light" || theme === "dark") applyTheme(theme);
-    };
-    if (isElectronRuntime()) window.addEventListener("agentkib:theme-changed", onElectronTheme);
+    const unlistenTheme = desktopApi().events.onThemeChanged((theme: EffectiveTheme) =>
+      applyTheme(theme),
+    );
     window.addEventListener("focus", syncAppearance);
     return () => {
       disposed = true;
-      unlistenTheme?.();
-      window.removeEventListener("agentkib:theme-changed", onElectronTheme);
+      unlistenTheme();
       window.removeEventListener("focus", syncAppearance);
     };
   }, []);
@@ -261,10 +197,7 @@ export function QuotaPopover() {
 
   return (
     <main className="fixed inset-0 grid grid-rows-[48px_auto_minmax(0,1fr)_48px] overflow-hidden bg-background text-foreground">
-      <header
-        className="flex items-center gap-2 border-b border-border px-3"
-        data-tauri-drag-region
-      >
+      <header className="app-window-toolbar flex items-center gap-2 border-b border-border px-3">
         <strong>{tr("nav.quota")}</strong>
         {snapshot && (
           <span

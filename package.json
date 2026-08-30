@@ -5,7 +5,6 @@
   "scripts": {
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
-    "dev:tauri": "pnpm --filter @agentkib/desktop dev:tauri",
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
@@ -14,7 +13,6 @@
     "lint": "oxlint apps/desktop/src",
     "lint:fix": "oxlint apps/desktop/src --fix",
     "test": "pnpm --filter @agentkib/desktop test",
-    "tauri": "pnpm --filter @agentkib/desktop tauri",
     "typecheck": "pnpm --filter @agentkib/desktop typecheck"
   },
   "devDependencies": {

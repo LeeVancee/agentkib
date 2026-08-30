@@ -8,7 +8,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@platform-events";
 import {
   Check,
   ChevronDown,
@@ -20,8 +19,9 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
-import { isElectronRuntime, isTauriRuntime, normalizePlatform } from "@/core/platform";
+import { normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
 import {
@@ -51,7 +51,7 @@ export function QuotaPage({
   initialProvider,
   initialWindow,
   configurePopoverRequest = 0,
-  popoverSupported = normalizePlatform(import.meta.env.TAURI_ENV_PLATFORM) === "macos",
+  popoverSupported = normalizePlatform(desktopApi().platform) === "macos",
 }: {
   initialProvider?: string;
   initialWindow?: QuotaWindowSelector;
@@ -99,67 +99,25 @@ export function QuotaPage({
 
   useEffect(() => {
     let disposed = false;
-    let unlistenQuota: (() => void) | undefined;
-    let unlistenRefresh: (() => void) | undefined;
-    let unlistenPreferences: (() => void) | undefined;
-    const onElectronQuotaUpdated = (event: Event) => {
-      const payload = (event as CustomEvent<QuotaSnapshot>).detail;
-      if (!isElectronRuntime() || !payload || disposed) return;
-      setSnapshot(payload);
+    const desktop = desktopApi();
+    const unlistenQuota = desktop.events.onQuotaUpdated((snapshot) => {
+      if (disposed) return;
+      setSnapshot(snapshot);
       if (document.visibilityState === "visible") void api.quotaCollectorStatus().then(setStatus);
-    };
-    if (isElectronRuntime()) {
-      window.addEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
-    }
+      else pendingRefresh.current = true;
+    });
+    const unlistenRefresh = desktop.events.onRefreshState((status) => {
+      if (disposed || status.kind !== "quota") return;
+      setRefreshJob(status);
+      if (status.state === "succeeded") {
+        setError("");
+        if (document.visibilityState === "visible")
+          void load().catch((reason) => setError(localizeMessage(reason)));
+        else pendingRefresh.current = true;
+      }
+      if (status.state === "failed") setError(status.error ?? tr("errors.quotaUnavailable"));
+    });
     void (async () => {
-      if (!isTauriRuntime()) {
-        const { snapshot: initialSnapshot, job } = await load();
-        if (
-          autoRefreshEnabled &&
-          !requestedInitialRefresh.current &&
-          initialSnapshot?.freshness !== "fresh" &&
-          !["queued", "running", "backoff"].includes(job?.state ?? "")
-        ) {
-          requestedInitialRefresh.current = true;
-          const receipt = await api.requestRefresh("quota", false);
-          setRefreshJob(receipt.status);
-          if (receipt.status.state === "succeeded") await load();
-        }
-        setInitializing(false);
-        return;
-      }
-      [unlistenQuota, unlistenRefresh, unlistenPreferences] = await Promise.all([
-        listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
-          if (disposed) return;
-          setSnapshot(payload);
-          if (document.visibilityState === "visible")
-            void api.quotaCollectorStatus().then(setStatus);
-          else pendingRefresh.current = true;
-        }),
-        listen<RefreshJobStatus>("agentkib:refresh-state", ({ payload }) => {
-          if (disposed || payload.kind !== "quota") return;
-          setRefreshJob(payload);
-          if (payload.state === "succeeded") {
-            setError("");
-            if (document.visibilityState === "visible")
-              void load().catch((reason) => setError(localizeMessage(reason)));
-            else pendingRefresh.current = true;
-          }
-          if (payload.state === "failed") setError(payload.error ?? tr("errors.quotaUnavailable"));
-        }),
-        listen<QuotaPopoverPreferences>(
-          "agentkib:quota-popover-preferences-updated",
-          ({ payload }) => {
-            if (!disposed) setPreferences(payload);
-          },
-        ),
-      ]);
-      if (disposed) {
-        unlistenQuota();
-        unlistenRefresh();
-        unlistenPreferences();
-        return;
-      }
       const { snapshot: initialSnapshot, job } = await load();
       if (
         disposed ||
@@ -188,10 +146,8 @@ export function QuotaPage({
     });
     return () => {
       disposed = true;
-      unlistenQuota?.();
-      unlistenRefresh?.();
-      unlistenPreferences?.();
-      window.removeEventListener("agentkib:quota-updated", onElectronQuotaUpdated);
+      unlistenQuota();
+      unlistenRefresh();
     };
   }, [autoRefreshEnabled]);
 

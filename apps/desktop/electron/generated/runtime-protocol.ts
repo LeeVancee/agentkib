@@ -103,7 +103,6 @@ export const RUNTIME_METHODS = {
   refreshQuota: "quota.refresh",
   setQuotaAutoRefresh: "quota.setAutoRefresh",
   setQuotaPromptSeen: "quota.setPromptSeen",
-  refreshStatus: "refresh.status",
   storageOverview: "storage.overview",
   storageChildren: "storage.children",
   refreshStorage: "storage.refresh",

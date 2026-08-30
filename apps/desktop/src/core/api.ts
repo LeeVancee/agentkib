@@ -105,12 +105,13 @@ export const api = {
   nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     desktopApi().mcp.planMigration(project, candidateIds),
-  requestRefresh: (kind: RefreshKind, _force = false) => {
+  requestRefresh: (kind: RefreshKind, force = false) => {
     const desktop = desktopApi();
-    if (kind === "discovery") return desktop.home.refreshDiscovery();
-    if (kind === "insights") return desktop.home.refreshInsights();
-    if (kind === "quota") return desktop.home.refreshQuota();
-    if (kind === "storage") return desktop.home.refreshStorage();
+    if (kind === "discovery") return desktop.home.refreshDiscovery(force);
+    if (kind === "insights") return desktop.home.refreshInsights(force);
+    if (kind === "gateways") return desktop.home.refreshGateways(force);
+    if (kind === "quota") return desktop.home.refreshQuota(force);
+    if (kind === "storage") return desktop.home.refreshStorage(force);
     return Promise.reject(new Error(`Unsupported Electron refresh kind: ${kind}`));
   },
   refreshStatus: () => desktopApi().home.refreshStatus(),

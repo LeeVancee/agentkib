@@ -208,10 +208,13 @@ const desktopApi = Object.freeze({
     addScanRoot: (path: string, maxDepth: number) =>
       ipcRenderer.invoke("agentkib:home:add-scan-root", path, maxDepth),
     removeScanRoot: (id: string) => ipcRenderer.invoke("agentkib:home:remove-scan-root", id),
-    refreshDiscovery: () => ipcRenderer.invoke("agentkib:home:refresh-discovery"),
+    refreshDiscovery: (force?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:refresh-discovery", force),
     discoveryReport: () => ipcRenderer.invoke("agentkib:home:discovery-report"),
     excludedWorkspaces: () => ipcRenderer.invoke("agentkib:home:excluded-workspaces"),
     remoteGateways: () => ipcRenderer.invoke("agentkib:home:remote-gateways"),
+    refreshGateways: (force?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:refresh-gateways", force),
     saveRemoteGateway: (input: unknown) =>
       ipcRenderer.invoke("agentkib:home:save-remote-gateway", input),
     refreshRemoteGateway: (id: string) =>
@@ -219,7 +222,8 @@ const desktopApi = Object.freeze({
     removeRemoteGateway: (id: string) =>
       ipcRenderer.invoke("agentkib:home:remove-remote-gateway", id),
     insightsView: (query: unknown) => ipcRenderer.invoke("agentkib:home:insights-view", query),
-    refreshInsights: () => ipcRenderer.invoke("agentkib:home:refresh-insights"),
+    refreshInsights: (force?: boolean) =>
+      ipcRenderer.invoke("agentkib:home:refresh-insights", force),
     insightsSummary: (query: unknown) =>
       ipcRenderer.invoke("agentkib:home:insights-summary", query),
     insightsStatus: () => ipcRenderer.invoke("agentkib:home:insights-status"),
@@ -228,7 +232,7 @@ const desktopApi = Object.freeze({
     quotaPreferences: () => ipcRenderer.invoke("agentkib:home:quota-preferences"),
     setQuotaPreferences: (preferences: unknown) =>
       ipcRenderer.invoke("agentkib:home:set-quota-preferences", preferences),
-    refreshQuota: () => ipcRenderer.invoke("agentkib:home:refresh-quota"),
+    refreshQuota: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-quota", force),
     setQuotaAutoRefresh: (enabled: boolean) =>
       ipcRenderer.invoke("agentkib:home:set-quota-auto-refresh", enabled),
     setQuotaPromptSeen: (seen: boolean) =>
@@ -237,7 +241,7 @@ const desktopApi = Object.freeze({
     storageOverview: () => ipcRenderer.invoke("agentkib:home:storage-overview"),
     storageChildren: (workspaceId: string, relativePath: string) =>
       ipcRenderer.invoke("agentkib:home:storage-children", workspaceId, relativePath),
-    refreshStorage: () => ipcRenderer.invoke("agentkib:home:refresh-storage"),
+    refreshStorage: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-storage", force),
     openStoragePath: (workspaceId: string, relativePath: string) =>
       ipcRenderer.invoke("agentkib:home:open-storage-path", workspaceId, relativePath),
     cancelStorage: () => ipcRenderer.invoke("agentkib:home:cancel-storage"),

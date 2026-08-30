@@ -12,11 +12,12 @@ import {
   type IpcMainInvokeEvent,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import type { SupportedLocale } from "../../src/core/types";
+import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost } from "./runtime-host";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
+import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import {
   optionalCloseBehavior,
   optionalPositiveInteger,
@@ -44,6 +45,7 @@ app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
 let nativeShell: ElectronNativeShell | undefined;
+let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
@@ -56,18 +58,6 @@ let applicationInitialization: Promise<void> | undefined;
 let startupFailureWindow: BrowserWindow | undefined;
 let ipcHandlersRegistered = false;
 let closePromptOpen = false;
-let quotaRefreshTimer: NodeJS.Timeout | undefined;
-let quotaRefreshPromise: Promise<ElectronQuotaRefreshReceipt> | undefined;
-let insightsRefreshTimer: NodeJS.Timeout | undefined;
-let insightsRefreshPromise: Promise<ElectronInsightsRefreshReceipt> | undefined;
-
-const QUOTA_REFRESH_INTERVAL_MS = 60_000;
-const QUOTA_REFRESH_VISIBLE_MAX_AGE_MS = 5 * 60_000;
-const QUOTA_REFRESH_BACKGROUND_MAX_AGE_MS = 15 * 60_000;
-const QUOTA_RESET_GRACE_MS = 60_000;
-const INSIGHTS_INITIAL_DELAY_MS = 30_000;
-const INSIGHTS_REFRESH_INTERVAL_MS = 60_000;
-const INSIGHTS_MAX_AGE_MS = 30 * 60_000;
 
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
@@ -78,74 +68,12 @@ interface ElectronRuntimeInfo {
   quota_auto_refresh_enabled?: boolean;
 }
 
-interface ElectronQuotaWindow {
-  remaining_percent?: number;
-  reset_at?: string;
-}
-
-interface ElectronQuotaProvider {
-  windows?: ElectronQuotaWindow[];
-  accounts?: Array<{ windows?: ElectronQuotaWindow[] }>;
-}
-
-interface ElectronQuotaSnapshot {
-  freshness?: "fresh" | "stale" | "unavailable";
-  providers?: ElectronQuotaProvider[];
-}
-
-interface ElectronQuotaCollectorStatus {
-  last_success_at?: string;
-}
-
-interface ElectronQuotaRefreshReceipt {
-  kind: "quota";
-  disposition: "queued" | "already-running" | "backoff";
-  request_id: string;
-  status: {
-    kind: "quota";
-    state: "succeeded";
-    request_id: string;
-    queued_at: string;
-    started_at: string;
-    finished_at: string;
-    progress_current: number;
-    progress_total: number;
-    error?: string;
-    next_allowed_at?: string;
-  };
-}
-
-interface ElectronInsightsStatus {
-  refreshed_at?: string;
-}
-
-interface ElectronInsightsRefreshReceipt {
-  kind: "insights";
-  disposition: "queued" | "already-running" | "backoff";
-  request_id: string;
-  status: {
-    kind: "insights";
-    state: "succeeded";
-    request_id: string;
-    queued_at: string;
-    started_at: string;
-    finished_at: string;
-    progress_current: number;
-    progress_total: number;
-    error?: string;
-    next_allowed_at?: string;
-  };
-}
-
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
 
   app.whenReady().then(startApplication).catch(showStartupFailure);
@@ -170,8 +98,7 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
-  stopQuotaScheduler();
-  stopInsightsScheduler();
+  refreshCoordinator?.stop();
   nativeShell?.destroy();
   void runtimeHost.stop().finally(() => app.quit());
 });
@@ -198,9 +125,20 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
+    refreshCoordinator?.setRuntimeAvailable(true);
     if (!applicationInitialized) {
       void initializeApplication().catch(showStartupFailure);
+    } else if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
+      startupFailureWindow.close();
+      startupFailureWindow = undefined;
     }
+  });
+  runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
+    runtimeHandshake = undefined;
+    if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
+  });
+  runtimeHost.on("restart-error", (error: unknown) => {
+    process.stderr.write(`AgentKib runtime restart failed: ${String(error)}\n`);
   });
   runtimeHost.on("crash-loop", (error: Error) => void showStartupFailure(error));
   runtimeHandshake = await runtimeHost.start();
@@ -239,6 +177,17 @@ async function initializeApplication(): Promise<void> {
       ipcHandlersRegistered = true;
     }
 
+    if (!refreshCoordinator) {
+      refreshCoordinator = new ElectronRefreshCoordinator({
+        runtime: requireRuntime,
+        isMainWindowVisible: () =>
+          Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+        onStatus: emitElectronRefreshState,
+        onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
+          sendRendererEvent("agentkib:quota-updated", snapshot),
+      });
+    }
+
     if (!nativeShell) {
       nativeShell = new ElectronNativeShell({
         runtime: requireRuntime,
@@ -247,6 +196,7 @@ async function initializeApplication(): Promise<void> {
         rendererUrl,
         trayIconPath: resolveNativeShellTrayIcon(),
         locale: runtime.effective_locale ?? normalizeSystemLocale(app.getLocale()),
+        refreshStatus: () => refreshCoordinator?.statuses() ?? [],
         showMainWindow,
         requestQuit: requestRendererQuitGuard,
         requestRefresh: requestNativeRefresh,
@@ -255,8 +205,7 @@ async function initializeApplication(): Promise<void> {
     }
     await createMainWindow();
     applicationInitialized = true;
-    startQuotaScheduler();
-    startInsightsScheduler();
+    refreshCoordinator.start();
     if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
       startupFailureWindow.close();
       startupFailureWindow = undefined;
@@ -291,19 +240,11 @@ function requestRendererQuitGuard(): void {
 }
 
 function requestNativeRefresh(kind: "discovery" | "insights" | "quota" | "all"): void {
-  const requests =
+  const request =
     kind === "all"
-      ? [
-          requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery),
-          requestInsightsRefresh(),
-          requestQuotaRefresh(),
-        ]
-      : kind === "discovery"
-        ? [requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery)]
-        : kind === "insights"
-          ? [requestInsightsRefresh()]
-          : [requestQuotaRefresh()];
-  void Promise.allSettled(requests).then(() => nativeShell?.refreshTrayStatus());
+      ? requireRefreshCoordinator().requestAll(true)
+      : requireRefreshCoordinator().request(kind, true);
+  void request.finally(() => nativeShell?.refreshTrayStatus()).catch(() => undefined);
 }
 
 function withElectronRuntimeCapabilities(runtime: unknown): unknown {
@@ -316,210 +257,7 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
   return enriched;
 }
 
-function startQuotaScheduler(): void {
-  stopQuotaScheduler();
-  void requestQuotaIfDue().catch(() => undefined);
-  quotaRefreshTimer = setInterval(() => {
-    void requestQuotaIfDue().catch(() => undefined);
-  }, QUOTA_REFRESH_INTERVAL_MS);
-}
-
-function stopQuotaScheduler(): void {
-  if (!quotaRefreshTimer) return;
-  clearInterval(quotaRefreshTimer);
-  quotaRefreshTimer = undefined;
-}
-
-function startInsightsScheduler(): void {
-  stopInsightsScheduler();
-  insightsRefreshTimer = setTimeout(() => {
-    void requestInsightsIfDue().catch(() => undefined);
-    insightsRefreshTimer = setInterval(() => {
-      void requestInsightsIfDue().catch(() => undefined);
-    }, INSIGHTS_REFRESH_INTERVAL_MS);
-  }, INSIGHTS_INITIAL_DELAY_MS);
-}
-
-function stopInsightsScheduler(): void {
-  if (!insightsRefreshTimer) return;
-  clearTimeout(insightsRefreshTimer);
-  insightsRefreshTimer = undefined;
-}
-
-async function requestInsightsIfDue(): Promise<void> {
-  if (!applicationInitialized || !runtimeHandshake || shutdownStarted || insightsRefreshPromise)
-    return;
-
-  const host = requireRuntime();
-  const status = await host.request<ElectronInsightsStatus>(RUNTIME_METHODS.insightsStatus, {});
-  const refreshedAt = status.refreshed_at ? Date.parse(status.refreshed_at) : Number.NaN;
-  if (Number.isFinite(refreshedAt) && Date.now() - refreshedAt < INSIGHTS_MAX_AGE_MS) return;
-  await requestInsightsRefresh(host);
-}
-
-function requestInsightsRefresh(host = requireRuntime()): Promise<ElectronInsightsRefreshReceipt> {
-  if (insightsRefreshPromise) return insightsRefreshPromise;
-
-  const requestId = `electron-insights-${Date.now()}`;
-  const startedAt = new Date().toISOString();
-  const promise = host
-    .request<ElectronInsightsRefreshReceipt>(RUNTIME_METHODS.refreshInsights, {})
-    .then((receipt) => {
-      emitElectronRefreshState(receipt.status);
-      return receipt;
-    })
-    .catch((error: unknown) => {
-      emitElectronRefreshState({
-        kind: "insights",
-        state: "failed",
-        request_id: requestId,
-        finished_at: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    });
-  insightsRefreshPromise = promise;
-  void promise
-    .finally(() => {
-      if (insightsRefreshPromise === promise) insightsRefreshPromise = undefined;
-    })
-    .catch(() => undefined);
-  emitElectronRefreshState({
-    kind: "insights",
-    state: "running",
-    request_id: requestId,
-    queued_at: startedAt,
-    started_at: startedAt,
-  });
-  return promise;
-}
-
-function requestRefreshWithEvents(
-  kind: "discovery" | "storage",
-  method: string,
-): Promise<{ status: unknown }> {
-  const requestId = `electron-${kind}-${Date.now()}`;
-  const startedAt = new Date().toISOString();
-  emitElectronRefreshState({
-    kind,
-    state: "running",
-    request_id: requestId,
-    queued_at: startedAt,
-    started_at: startedAt,
-  });
-  return requireRuntime()
-    .request<{ status: unknown }>(method, {})
-    .then((receipt) => {
-      emitElectronRefreshState(receipt.status);
-      return receipt;
-    })
-    .catch((error: unknown) => {
-      emitElectronRefreshState({
-        kind,
-        state: "failed",
-        request_id: requestId,
-        finished_at: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    });
-}
-
-async function requestQuotaIfDue(): Promise<void> {
-  if (!applicationInitialized || !runtimeHandshake || shutdownStarted || quotaRefreshPromise)
-    return;
-
-  const host = requireRuntime();
-  const runtime = await host.request<ElectronRuntimeInfo>(RUNTIME_METHODS.runtimeInfo, {});
-  if (!runtime.quota_auto_refresh_enabled) return;
-
-  const [snapshot, collectorStatus] = await Promise.all([
-    host.request<ElectronQuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {}),
-    host.request<ElectronQuotaCollectorStatus>(RUNTIME_METHODS.quotaCollectorStatus, {}),
-  ]);
-  const lastSuccessAt = collectorStatus.last_success_at
-    ? Date.parse(collectorStatus.last_success_at)
-    : Number.NaN;
-  const lowRemaining = snapshot?.providers?.some((provider) => {
-    const windows = [
-      ...(provider.windows ?? []),
-      ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
-    ];
-    return windows.some(
-      (window) =>
-        typeof window.remaining_percent === "number" &&
-        Number.isFinite(window.remaining_percent) &&
-        window.remaining_percent <= 20,
-    );
-  });
-  const windowVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
-  const maxAge =
-    windowVisible || lowRemaining
-      ? QUOTA_REFRESH_VISIBLE_MAX_AGE_MS
-      : QUOTA_REFRESH_BACKGROUND_MAX_AGE_MS;
-  const staleByAge = !Number.isFinite(lastSuccessAt) || Date.now() - lastSuccessAt >= maxAge;
-  const resetDue = snapshot?.providers?.some((provider) => {
-    const windows = [
-      ...(provider.windows ?? []),
-      ...(provider.accounts ?? []).flatMap((account) => account.windows ?? []),
-    ];
-    return windows.some((window) => {
-      const resetAt = window.reset_at ? Date.parse(window.reset_at) : Number.NaN;
-      return (
-        Number.isFinite(resetAt) &&
-        resetAt <= Date.now() - QUOTA_RESET_GRACE_MS &&
-        (!Number.isFinite(lastSuccessAt) || lastSuccessAt < resetAt)
-      );
-    });
-  });
-
-  if (snapshot?.freshness !== "stale" && !staleByAge && !resetDue) return;
-  await requestQuotaRefresh(host);
-}
-
-function requestQuotaRefresh(host = requireRuntime()): Promise<ElectronQuotaRefreshReceipt> {
-  if (quotaRefreshPromise) return quotaRefreshPromise;
-
-  const startedAt = new Date().toISOString();
-  const promise = host
-    .request<ElectronQuotaRefreshReceipt>(RUNTIME_METHODS.refreshQuota, {})
-    .then((receipt) => {
-      emitElectronRefreshState(receipt.status);
-      void host
-        .request<ElectronQuotaSnapshot | undefined>(RUNTIME_METHODS.quotaSnapshot, {})
-        .then((snapshot) => {
-          if (snapshot) sendRendererEvent("agentkib:quota-updated", snapshot);
-        })
-        .catch(() => undefined);
-      return receipt;
-    })
-    .catch((error: unknown) => {
-      emitElectronRefreshState({
-        kind: "quota",
-        state: "failed",
-        request_id: `electron-quota-${Date.now()}`,
-        finished_at: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    });
-  quotaRefreshPromise = promise;
-  void promise
-    .finally(() => {
-      if (quotaRefreshPromise === promise) quotaRefreshPromise = undefined;
-    })
-    .catch(() => undefined);
-  emitElectronRefreshState({
-    kind: "quota",
-    state: "running",
-    request_id: `electron-quota-${Date.now()}`,
-    queued_at: startedAt,
-    started_at: startedAt,
-  });
-  return promise;
-}
-
-function emitElectronRefreshState(status: unknown): void {
+function emitElectronRefreshState(status: RefreshJobStatus): void {
   sendRendererEvent("agentkib:electron-refresh-state", status);
   void nativeShell?.refreshTrayStatus();
 }
@@ -741,9 +479,12 @@ function registerHomeIpc(): void {
       id: requireString(id, "id"),
     });
   });
-  ipcMain.handle("agentkib:home:refresh-discovery", (event) => {
+  ipcMain.handle("agentkib:home:refresh-discovery", (event, force: unknown) => {
     assertTrustedRenderer(event);
-    return requestRefreshWithEvents("discovery", RUNTIME_METHODS.refreshDiscovery);
+    return requireRefreshCoordinator().request(
+      "discovery",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
   });
   ipcMain.handle("agentkib:home:discovery-report", (event) => {
     assertTrustedRenderer(event);
@@ -756,6 +497,13 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:home:remote-gateways", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listRemoteGateways, {});
+  });
+  ipcMain.handle("agentkib:home:refresh-gateways", (event, force: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRefreshCoordinator().request(
+      "gateways",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
   });
   ipcMain.handle("agentkib:home:save-remote-gateway", (event, input: unknown) => {
     assertTrustedRenderer(event);
@@ -781,9 +529,12 @@ function registerHomeIpc(): void {
       query: requireObject(query, "insights query"),
     });
   });
-  ipcMain.handle("agentkib:home:refresh-insights", (event) => {
+  ipcMain.handle("agentkib:home:refresh-insights", (event, force: unknown) => {
     assertTrustedRenderer(event);
-    return requestInsightsRefresh();
+    return requireRefreshCoordinator().request(
+      "insights",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
   });
   ipcMain.handle("agentkib:home:insights-summary", (event, query: unknown) => {
     assertTrustedRenderer(event);
@@ -813,9 +564,12 @@ function registerHomeIpc(): void {
       preferences: requireObject(preferences, "quota preferences"),
     });
   });
-  ipcMain.handle("agentkib:home:refresh-quota", (event) => {
+  ipcMain.handle("agentkib:home:refresh-quota", (event, force: unknown) => {
     assertTrustedRenderer(event);
-    return requestQuotaRefresh();
+    return requireRefreshCoordinator().request(
+      "quota",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
   });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
@@ -825,7 +579,7 @@ function registerHomeIpc(): void {
       })
       .then((runtime) => {
         if (runtime.quota_auto_refresh_enabled) {
-          void requestQuotaIfDue().catch(() => undefined);
+          void requireRefreshCoordinator().refreshIfDue();
         }
         return withElectronRuntimeCapabilities(runtime);
       });
@@ -840,7 +594,7 @@ function registerHomeIpc(): void {
   });
   ipcMain.handle("agentkib:home:refresh-status", (event) => {
     assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshStatus, {});
+    return requireRefreshCoordinator().statuses();
   });
   ipcMain.handle("agentkib:home:storage-overview", (event) => {
     assertTrustedRenderer(event);
@@ -856,9 +610,12 @@ function registerHomeIpc(): void {
       });
     },
   );
-  ipcMain.handle("agentkib:home:refresh-storage", (event) => {
+  ipcMain.handle("agentkib:home:refresh-storage", (event, force: unknown) => {
     assertTrustedRenderer(event);
-    return requestRefreshWithEvents("storage", RUNTIME_METHODS.refreshStorage);
+    return requireRefreshCoordinator().request(
+      "storage",
+      force === undefined ? true : requireBoolean(force, "force"),
+    );
   });
   ipcMain.handle(
     "agentkib:home:open-storage-path",
@@ -943,6 +700,11 @@ function requireRuntime(): DesktopRuntimeHost {
   return runtimeHost;
 }
 
+function requireRefreshCoordinator(): ElectronRefreshCoordinator {
+  if (!refreshCoordinator) throw new Error("AgentKib refresh coordinator is not ready");
+  return refreshCoordinator;
+}
+
 async function createMainWindow(): Promise<void> {
   const window = new BrowserWindow({
     title: "AgentKib",
@@ -981,6 +743,7 @@ async function createMainWindow(): Promise<void> {
     }
     void showFirstClosePrompt(window);
   });
+  window.on("focus", () => void refreshCoordinator?.refreshIfDue());
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

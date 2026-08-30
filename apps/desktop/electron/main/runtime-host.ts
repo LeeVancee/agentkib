@@ -99,7 +99,10 @@ export class DesktopRuntimeHost extends EventEmitter {
 
   async stop(): Promise<void> {
     this.#stopping = true;
-    if (this.#restartTimer) clearTimeout(this.#restartTimer);
+    if (this.#restartTimer) {
+      clearTimeout(this.#restartTimer);
+      this.#restartTimer = undefined;
+    }
 
     const child = this.#child;
     if (!child || child.exitCode !== null) return;
@@ -112,7 +115,10 @@ export class DesktopRuntimeHost extends EventEmitter {
     }
 
     await Promise.race([exited, delay(this.#options.shutdownTimeoutMs)]);
-    if (child.exitCode === null) child.kill();
+    if (child.exitCode === null) {
+      child.kill();
+      await Promise.race([exited, delay(500)]);
+    }
   }
 
   async #spawnAndHandshake(): Promise<RuntimeHandshakeResult> {
@@ -129,20 +135,27 @@ export class DesktopRuntimeHost extends EventEmitter {
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => this.#handleLine(line));
     child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
+    child.once("error", (error) => this.#handleSpawnError(child, error));
 
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
     });
 
-    const handshake = await this.request<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
-      protocolVersion: PROTOCOL_VERSION,
-      client: { name: "agentkib-electron", version: this.#options.clientVersion },
-    });
-    if (handshake.protocolVersion !== PROTOCOL_VERSION) {
-      throw new Error(
-        `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
-      );
+    let handshake: RuntimeHandshakeResult;
+    try {
+      handshake = await this.request<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
+        protocolVersion: PROTOCOL_VERSION,
+        client: { name: "agentkib-electron", version: this.#options.clientVersion },
+      });
+      if (handshake.protocolVersion !== PROTOCOL_VERSION) {
+        throw new Error(
+          `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
+        );
+      }
+    } catch (error) {
+      if (this.#child === child && child.exitCode === null) child.kill();
+      throw error;
     }
 
     this.#lastReadyAt = Date.now();
@@ -185,13 +198,27 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#pending.clear();
     this.emit("exit", { code, signal, expected: this.#stopping });
 
+    this.#scheduleRestart(error);
+  }
+
+  #handleSpawnError(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.#child !== child) return;
+    this.#child = undefined;
+    for (const pending of this.#pending.values()) pending.reject(error);
+    this.#pending.clear();
+    this.emit("exit", { code: null, signal: null, expected: this.#stopping });
+    this.#scheduleRestart(error);
+  }
+
+  #scheduleRestart(error: Error): void {
     if (this.#lastReadyAt > 0 && Date.now() - this.#lastReadyAt >= HEALTHY_RUNTIME_RESET_MS) {
       this.#restartCount = 0;
     }
     this.#lastReadyAt = 0;
 
-    if (this.#stopping || this.#restartCount >= this.#options.maxRestarts) {
-      if (!this.#stopping) this.emit("crash-loop", error);
+    if (this.#stopping || this.#restartTimer) return;
+    if (this.#restartCount >= this.#options.maxRestarts) {
+      this.emit("crash-loop", error);
       return;
     }
 

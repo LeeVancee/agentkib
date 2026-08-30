@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { refreshGlobalState } from "@/core/global-state";
@@ -26,6 +26,9 @@ export function AppRuntimeBridge() {
     setDoctorSummaries,
     setCatalog,
     setDiscovery,
+    setRemoteGateways,
+    setInsightsSummary,
+    setInsightsStatus,
     setQuotaStatus,
     setNavigationRequest,
     setMenuCommand,
@@ -35,7 +38,7 @@ export function AppRuntimeBridge() {
   const pendingRefreshKinds = useRef(new Set<string>());
   const quitPromptOpen = useRef(false);
 
-  const loadDiscoveryCache = async () => {
+  const loadDiscoveryCache = useCallback(async () => {
     const [nextWorkspaces, nextInstallations, nextCatalog] = await Promise.all([
       api.workspaces(),
       api.agentInstallations(),
@@ -57,23 +60,49 @@ export function AppRuntimeBridge() {
     } catch {
       setDoctorSummaries({});
     }
-  };
+  }, [
+    setCatalog,
+    setDiscovery,
+    setDoctorSummaries,
+    setInstallations,
+    setWorkspaces,
+    setWorkspacesLoaded,
+  ]);
+
+  const loadCompletedRefresh = useCallback(
+    async (kind: RefreshJobStatus["kind"]) => {
+      if (kind === "discovery") {
+        await loadDiscoveryCache();
+      } else if (kind === "gateways") {
+        setRemoteGateways(await api.remoteGateways());
+      } else if (kind === "insights") {
+        const [summary, status] = await Promise.all([api.insightsSummary(), api.insightsStatus()]);
+        setInsightsSummary(summary);
+        setInsightsStatus(status);
+      } else if (kind === "quota") {
+        setQuotaStatus(await api.quotaCollectorStatus());
+      }
+    },
+    [loadDiscoveryCache, setInsightsStatus, setInsightsSummary, setQuotaStatus, setRemoteGateways],
+  );
 
   useEffect(() => {
     let disposed = false;
-    let refreshReloadTimer: number | undefined;
+    const refreshReloadTimers = new Map<RefreshJobStatus["kind"], number>();
     const desktop = desktopApi();
     const onRefreshState = (status: RefreshJobStatus) => {
       setRefreshJobs((current) => [...current.filter((job) => job.kind !== status.kind), status]);
-      if (status.kind === "discovery" && status.state === "succeeded") {
+      if (status.state === "succeeded") {
         if (document.visibilityState !== "visible") {
-          pendingRefreshKinds.current.add("discovery");
+          pendingRefreshKinds.current.add(status.kind);
           return;
         }
-        window.clearTimeout(refreshReloadTimer);
-        refreshReloadTimer = window.setTimeout(() => {
-          if (!disposed) void loadDiscoveryCache();
+        window.clearTimeout(refreshReloadTimers.get(status.kind));
+        const timer = window.setTimeout(() => {
+          refreshReloadTimers.delete(status.kind);
+          if (!disposed) void loadCompletedRefresh(status.kind);
         }, 100);
+        refreshReloadTimers.set(status.kind, timer);
       }
     };
     const onThemeChanged = (theme: EffectiveTheme) => {
@@ -114,14 +143,27 @@ export function AppRuntimeBridge() {
     })();
     return () => {
       disposed = true;
-      window.clearTimeout(refreshReloadTimer);
+      for (const timer of refreshReloadTimers.values()) window.clearTimeout(timer);
+      refreshReloadTimers.clear();
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, []);
+  }, [
+    loadCompletedRefresh,
+    setDiscovery,
+    setMenuCommand,
+    setMessage,
+    setNavigationRequest,
+    setQuotaStatus,
+    setRefreshJobs,
+    setRuntime,
+  ]);
 
   useEffect(() => {
     const refreshRuntime = () => {
-      if (pendingRefreshKinds.current.delete("discovery")) void loadDiscoveryCache();
+      for (const kind of pendingRefreshKinds.current) {
+        pendingRefreshKinds.current.delete(kind);
+        void loadCompletedRefresh(kind as RefreshJobStatus["kind"]);
+      }
       void api
         .runtime()
         .then(async (nextRuntime) => {
@@ -133,7 +175,7 @@ export function AppRuntimeBridge() {
     };
     window.addEventListener("focus", refreshRuntime);
     return () => window.removeEventListener("focus", refreshRuntime);
-  }, []);
+  }, [loadCompletedRefresh, setRuntime]);
 
   const hasUnsavedDraft = Boolean(
     workspaceStore.manifest &&

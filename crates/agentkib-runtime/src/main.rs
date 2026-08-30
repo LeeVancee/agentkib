@@ -46,7 +46,7 @@ use agentkib_protocol::{
     PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD,
     QUOTA_SNAPSHOT_METHOD, REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD,
     REFRESH_MCP_REGISTRY_METHOD, REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD,
-    REFRESH_STATUS_METHOD, REFRESH_STORAGE_METHOD, REFRESH_WORKSPACE_METHOD,
+    REFRESH_STORAGE_METHOD, REFRESH_WORKSPACE_METHOD,
     REFRESH_WORKSPACE_SESSIONS_METHOD, REMOVE_MCP_SERVER_METHOD, REMOVE_REMOTE_GATEWAY_METHOD,
     REMOVE_SCAN_ROOT_METHOD, REPOSITORY_COMMIT_BREAKDOWN_METHOD, RESOLVE_CONTEXT_METHOD,
     RESOLVE_STORAGE_PATH_METHOD, RESTART_MCP_RUNTIME_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD,
@@ -417,7 +417,6 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         STORAGE_OVERVIEW_METHOD => command_response(request, storage_overview),
         STORAGE_CHILDREN_METHOD => command_response(request, storage_children),
         RESOLVE_STORAGE_PATH_METHOD => command_response(request, resolve_storage_path),
-        REFRESH_STATUS_METHOD => command_response(request, refresh_status),
         UPDATE_ONBOARDING_METHOD => command_response(request, update_onboarding),
         _ => (
             RpcResponse::error(
@@ -3115,10 +3114,6 @@ fn refresh_storage(cancelled: &AtomicBool) -> anyhow::Result<RefreshReceipt> {
         anyhow::bail!("storage.scanStopped");
     }
     Ok(completed_refresh_receipt("storage", queued_at, started_at))
-}
-
-fn refresh_status(_: EmptyRequest) -> anyhow::Result<Vec<Value>> {
-    Ok(Vec::new())
 }
 
 fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {

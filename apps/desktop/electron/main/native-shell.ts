@@ -43,6 +43,7 @@ interface NativeShellOptions {
   rendererUrl(surface?: "quota-popover"): string;
   trayIconPath: string;
   locale: SupportedLocale;
+  refreshStatus(): RefreshJobStatus[];
   showMainWindow(): void;
   requestQuit(): void;
   requestRefresh(kind: "discovery" | "insights" | "quota" | "all"): void;
@@ -54,6 +55,7 @@ export class ElectronNativeShell {
   #tray: Tray | undefined;
   #quotaPopover: BrowserWindow | undefined;
   #trayRefresh: Promise<void> | undefined;
+  #trayRefreshPending = false;
 
   constructor(options: NativeShellOptions) {
     this.#options = options;
@@ -92,7 +94,10 @@ export class ElectronNativeShell {
 
   async refreshTrayStatus(): Promise<void> {
     if (!this.trayAvailable) return;
-    if (this.#trayRefresh) return this.#trayRefresh;
+    if (this.#trayRefresh) {
+      this.#trayRefreshPending = true;
+      return this.#trayRefresh;
+    }
 
     const refresh = this.#loadTrayStatus()
       .then(({ workspaces, hub, refreshJobs }) => {
@@ -103,7 +108,12 @@ export class ElectronNativeShell {
         if (this.trayAvailable) this.#tray?.setContextMenu(this.#buildTrayMenu([], undefined, []));
       })
       .finally(() => {
-        if (this.#trayRefresh === refresh) this.#trayRefresh = undefined;
+        if (this.#trayRefresh !== refresh) return;
+        this.#trayRefresh = undefined;
+        if (this.#trayRefreshPending) {
+          this.#trayRefreshPending = false;
+          void this.refreshTrayStatus();
+        }
       });
     this.#trayRefresh = refresh;
     return refresh;
@@ -339,11 +349,11 @@ export class ElectronNativeShell {
     refreshJobs: RefreshJobStatus[];
   }> {
     const runtime = this.#options.runtime();
-    const [workspaces, hub, refreshJobs] = await Promise.all([
+    const [workspaces, hub] = await Promise.all([
       runtime.request<WorkspaceSummary[]>(RUNTIME_METHODS.listWorkspaces, {}),
       runtime.request<McpHubStatus>(RUNTIME_METHODS.mcpHubStatus, {}),
-      runtime.request<RefreshJobStatus[]>(RUNTIME_METHODS.refreshStatus, {}),
     ]);
+    const refreshJobs = this.#options.refreshStatus();
     return { workspaces, hub, refreshJobs };
   }
 

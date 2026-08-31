@@ -84,19 +84,24 @@ jobs:
         run: |
           dnf install -y \
             git curl tar gzip xz file findutils which binutils \
-            gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
+            gcc gcc-c++ make libatomic openssl-devel pkgconf-pkg-config patchelf \
             gtk3-devel rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 22
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
+          npm install --global "pnpm@$pnpm_version"
+          pnpm --version
 
       - uses: dtolnay/rust-toolchain@stable
 

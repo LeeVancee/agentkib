@@ -640,12 +640,12 @@ jobs:
           ${prefix}_linux-arm64.AppImage.sha256
           ${prefix}_linux-arm64.deb
           ${prefix}_linux-arm64.deb.sha256
-          ${prefix}_linux-x64.AppImage
-          ${prefix}_linux-x64.AppImage.sha256
-          ${prefix}_linux-x64.deb
-          ${prefix}_linux-x64.deb.sha256
-          ${prefix}_linux-x64.rpm
-          ${prefix}_linux-x64.rpm.sha256
+          ${prefix}_linux-x86_64.AppImage
+          ${prefix}_linux-x86_64.AppImage.sha256
+          ${prefix}_linux-amd64.deb
+          ${prefix}_linux-amd64.deb.sha256
+          ${prefix}_linux-x86_64.rpm
+          ${prefix}_linux-x86_64.rpm.sha256
           ${prefix}_macos-arm64.dmg
           ${prefix}_macos-arm64.dmg.sha256
           ${prefix}_macos-arm64.zip
@@ -669,9 +669,14 @@ jobs:
           find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -exec basename {} \; \
             | LC_ALL=C sort > "$RUNNER_TEMP/actual-release-assets.txt"
 
+          missing_required_asset=false
           while IFS= read -r required; do
-            test -s "$RELEASE_ASSETS_DIR/$required"
+            if [[ ! -s "$RELEASE_ASSETS_DIR/$required" ]]; then
+              echo "Missing required release artifact: $required" >&2
+              missing_required_asset=true
+            fi
           done < "$RUNNER_TEMP/required-release-assets.txt"
+          [[ "$missing_required_asset" == false ]]
 
           while IFS= read -r actual; do
             case "$actual" in

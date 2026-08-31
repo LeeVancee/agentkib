@@ -7,6 +7,8 @@ import { applyTheme } from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useHomeQueryEvents } from "@/features/home/home-query";
+import { useInsightsQueryEvents } from "@/features/insights/insights-query";
 import { useQuotaQueryEvents } from "@/features/quota/quota-query";
 import type {
   AppMenuCommandRequest,
@@ -85,6 +87,8 @@ export function AppRuntimeBridge() {
   );
 
   useQuotaQueryEvents();
+  useHomeQueryEvents();
+  useInsightsQueryEvents();
 
   useEffect(() => {
     let disposed = false;

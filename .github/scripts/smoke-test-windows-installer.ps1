@@ -82,6 +82,22 @@ function Find-AgentKibExecutable {
   return $null
 }
 
+function Stop-AgentKibProcesses {
+  $stopDeadline = (Get-Date).AddSeconds(15)
+  do {
+    $runningProcesses = @(Get-Process -Name "AgentKib" -ErrorAction SilentlyContinue)
+    if ($runningProcesses.Count -eq 0) {
+      return
+    }
+    $runningProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $stopDeadline)
+
+  $remainingProcessIds = @(Get-Process -Name "AgentKib" -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Id)
+  throw "AgentKib processes remained after termination: $($remainingProcessIds -join ', ')"
+}
+
 Install-AgentKib
 $executable = Find-AgentKibExecutable
 if (-not $executable) {
@@ -104,10 +120,7 @@ if (-not $SkipLaunch) {
   if ($app.HasExited) {
     throw "Installed AgentKib exited during startup with code $($app.ExitCode)"
   }
-  Stop-Process -Id $app.Id -Force
-  $app.WaitForExit()
-  Get-Process -Name "AgentKib" -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
+  Stop-AgentKibProcesses
 }
 
 $dataDirectory = Join-Path $env:LOCALAPPDATA "ai.agentkib"
@@ -119,6 +132,7 @@ Install-AgentKib
 if (-not (Test-Path -LiteralPath $sentinel)) {
   throw "User data was removed by an overwrite installation"
 }
+Stop-AgentKibProcesses
 
 $installationRoot = Split-Path -Parent $executable.FullName
 $uninstaller = Get-ChildItem -LiteralPath $installationRoot -Filter "Uninstall*.exe" -File |

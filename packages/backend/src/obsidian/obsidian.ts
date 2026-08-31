@@ -54,7 +54,10 @@ export async function createWorkspaceLink(
   const target = await canonicalizeAllowMissing(path.resolve(root, relativePath));
   if (!startsWith(target, root))
     throw backendError("VALIDATION", "Obsidian link path escapes vault");
-  await validateVaultPath(workspacePath);
+  const workspace = await canonicalize(workspacePath).catch(() => undefined);
+  const { stat } = await import("node:fs/promises");
+  if (!workspace || !(await stat(workspace).catch(() => undefined))?.isDirectory())
+    throw backendError("VALIDATION", "The selected workspace is not a directory");
   return WorkspaceLink.parse({
     workspace_id: workspaceId,
     vault_path: root,

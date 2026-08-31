@@ -21,11 +21,14 @@ import type { BackendMethodRegistry } from "../worker/host.js";
 import {
   McpRuntimeHub,
   loadMcpConfig,
+  loadEffectiveMcpConfig,
   listMcpServers,
   getMcpServer,
   saveMcpConfig,
+  saveMcpLocalValues,
   removeMcpServer,
   McpServer,
+  maskSecrets as maskMcpSecrets,
 } from "../mcp/index.js";
 import { loadGatewayConfig, listGateways, saveGatewayConfig, Gateway } from "../gateways/index.js";
 import {
@@ -160,7 +163,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   >();
   const storedInstallations = store.database
     .prepare(
-      "SELECT id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at FROM mcp_installations ORDER BY name",
+      "SELECT id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at, server_id FROM mcp_installations ORDER BY name",
     )
     .all() as Array<Record<string, unknown>>;
   for (const row of storedInstallations) {
@@ -174,7 +177,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       status: String(row.status),
       installed_at: String(row.installed_at),
       updated_at: String(row.updated_at),
-      server_id: "",
+      server_id: typeof row.server_id === "string" ? row.server_id : "",
     });
   }
   const registryEntrySchema = z.object({
@@ -482,7 +485,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       .object({ file: z.string().optional(), project: z.string().nullable().optional() })
       .parse(params);
     if (value.file) return value.file;
-    if (value.project) return path.join(value.project, "mcp.json");
+    if (value.project) return path.join(value.project, ".agentkib", "mcp.json");
     return defaultMcpFile;
   };
   const resolveGatewayFile = (params: unknown): string => {
@@ -508,9 +511,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     return McpServer.parse(raw);
   };
   const publicMcpServer = (server: McpServer): unknown => {
-    const transport = server.transport;
+    const safe = maskMcpSecrets(server) as McpServer;
+    const transport = safe.transport;
     const { transport: _nested, ...details } = transport;
-    return { ...server, ...details, transport: transport.transport };
+    const { transport: _serverTransport, ...serverDetails } = safe;
+    return { ...serverDetails, ...details, transport: transport.transport };
   };
   const hubStatus = () => {
     const runtimes = mcpHub.status();
@@ -619,7 +624,16 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     "workspace.doctorReport": async (params) => {
       const value = z.object({ id: z.string() }).parse(params);
       const workspace = store.getWorkspace(value.id);
-      return diagnoseWorkspace(workspace.canonical_path, workspace.id);
+      const installedAgents = new Set(
+        store
+          .listAgentInstallations()
+          .filter((installation) => installation.installed)
+          .map((installation) => installation.agent)
+          .filter((agent): agent is import("../domain/types.js").AgentKind =>
+            ["codex", "claude-code", "cursor", "open-claw", "hermes", "deepseek-harness"].includes(agent as never),
+          ),
+      );
+      return diagnoseWorkspace(workspace.canonical_path, workspace.id, { installedAgents });
     },
     "workspace.doctorSummaries": async (params) => {
       const value = z.object({ workspaceIds: z.array(z.string()).max(100) }).parse(params);
@@ -634,7 +648,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           } catch {
             return {
               workspace_id: workspaceId,
-              error_count: 0,
+              error_count: 1,
               warning_count: 0,
               info_count: 0,
               repairable_count: 0,
@@ -1352,11 +1366,18 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         schema_version: 1,
         servers: [],
       }));
+      const publicServer: McpServer = {
+        ...server,
+        transport:
+          server.transport.transport === "stdio"
+            ? { ...server.transport, env: {} }
+            : { ...server.transport, headers: {} },
+      };
       await saveMcpConfig(file, {
         ...config,
-        servers: [...config.servers.filter((item) => item.id !== server.id), server],
+        servers: [...config.servers.filter((item) => item.id !== server.id), publicServer],
       });
-      return publicMcpServer(server);
+      return publicMcpServer(publicServer);
     },
     "mcp.saveLocalValues": async (params: unknown) => {
       const value = z
@@ -1366,21 +1387,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           headers: z.record(z.string(), z.string()),
         })
         .parse(params);
-      const file = resolveMcpFile(params);
-      const config = await loadMcpConfig(file);
-      const server = config.servers.find((item) => item.id === value.serverId);
-      if (!server) throw backendError("NOT_FOUND", `MCP server not found: ${value.serverId}`);
-      const transport =
-        server.transport.transport === "stdio"
-          ? { ...server.transport, env: value.env }
-          : { ...server.transport, headers: value.headers };
-      await saveMcpConfig(file, {
-        ...config,
-        servers: config.servers.map((item) =>
-          item.id === server.id ? { ...item, transport } : item,
-        ),
-      });
-      return publicMcpServer({ ...server, transport });
+      return saveMcpLocalValues(resolveMcpFile(params), value.serverId, value.env, value.headers).then(publicMcpServer);
     },
     "mcp.removeServer": async (params: unknown) => {
       const value = z
@@ -1408,12 +1415,12 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const value = z
         .object({ id: z.string().optional(), serverId: z.string().optional() })
         .parse(params);
-      const config = await loadMcpConfig(resolveMcpFile(params));
+      const config = await loadEffectiveMcpConfig(resolveMcpFile(params));
       const server = config.servers.find((item) => item.id === (value.id ?? value.serverId));
       if (!server)
         throw backendError("NOT_FOUND", `MCP server not found: ${value.id ?? value.serverId}`);
       const tools = await mcpHub.listTools(server, signal);
-      return { ok: true, tools };
+      return tools;
     },
     "mcp.startOAuth": async (params: unknown) => {
       const value = z
@@ -1432,7 +1439,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const serverId = value.id ?? value.serverId;
       if (!serverId) throw backendError("VALIDATION", "MCP server id is required");
       await mcpHub.stop(serverId);
-      const config = await loadMcpConfig(resolveMcpFile(params));
+      const config = await loadEffectiveMcpConfig(resolveMcpFile(params));
       const server = config.servers.find((item) => item.id === serverId);
       if (!server) throw backendError("NOT_FOUND", `MCP server not found: ${serverId}`);
       return mcpHub.start(server, signal);
@@ -1543,7 +1550,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       mcpInstallations.set(installation.id, installation);
       store.database
         .prepare(
-          "INSERT INTO mcp_installations(id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status",
+          "INSERT INTO mcp_installations(id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at, server_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status, server_id = excluded.server_id",
         )
         .run(
           installation.id,
@@ -1555,6 +1562,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           installation.status,
           installation.installed_at,
           installation.updated_at,
+          installation.server_id,
         );
       return {
         installation: { ...installation, server_id: undefined },
@@ -1577,6 +1585,8 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         { entry: value.entry, project: value.project },
         new AbortController().signal,
       )) as { installation: unknown; server: unknown; tools: unknown[] };
+      if (current.server_id)
+        await removeMcpServer(resolveMcpFile({ project: value.project }), current.server_id).catch(() => undefined);
       mcpInstallations.delete(value.installationId);
       store.database
         .prepare("DELETE FROM mcp_installations WHERE id = ?")
@@ -1592,7 +1602,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const current = mcpInstallations.get(value.installationId);
       if (!current)
         throw backendError("NOT_FOUND", `MCP installation not found: ${value.installationId}`);
-      if (current.server_id) await removeMcpServer(defaultMcpFile, current.server_id).catch(() => undefined);
+      if (current.server_id) {
+        await removeMcpServer(defaultMcpFile, current.server_id).catch(() => undefined);
+        for (const workspace of store.listWorkspaces())
+          await removeMcpServer(resolveMcpFile({ project: workspace.canonical_path }), current.server_id).catch(() => undefined);
+      }
       if (current.install_path) await rm(current.install_path, { recursive: true, force: true });
       mcpInstallations.delete(value.installationId);
       store.database

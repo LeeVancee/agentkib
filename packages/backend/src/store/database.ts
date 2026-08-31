@@ -48,6 +48,11 @@ export function migrateDatabase(database: DatabaseSync): void {
       throw error;
     }
   }
+  // Keep the public schema version aligned with the Rust runtime's version 10.
+  // The installation-to-server association is an additive compatibility column;
+  // older databases can receive it without changing the shared schema version.
+  if (!hasColumn(database, "mcp_installations", "server_id"))
+    database.exec("ALTER TABLE mcp_installations ADD COLUMN server_id TEXT;");
   database.exec(
     "CREATE INDEX IF NOT EXISTS idx_usage_events_session_precision " +
       "ON usage_events(session_hash, date_precision);",

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "lucide-react";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
@@ -19,6 +20,7 @@ import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_QUOTA_PREFERENCES,
+  quotaKeys,
   useQuotaPreferences,
   useQuotaQueryEvents,
   useQuotaRefreshJob,
@@ -54,6 +56,7 @@ export function QuotaPopover() {
     (refreshJob?.state === "failed" ? refreshJob.error : undefined) ||
     "";
   const desktop = useMemo(() => desktopApi(), []);
+  const queryClient = useQueryClient();
 
   useQuotaQueryEvents();
 
@@ -95,6 +98,7 @@ export function QuotaPopover() {
         if (disposed) return;
         applyTheme(runtime.effective_theme);
         await changeLocale(runtime.effective_locale);
+        await queryClient.invalidateQueries({ queryKey: quotaKeys.preferences() });
       } catch {
         // The main bootstrap already supplied a safe browser/system fallback.
       }
@@ -108,7 +112,7 @@ export function QuotaPopover() {
       unlistenTheme();
       window.removeEventListener("focus", syncAppearance);
     };
-  }, []);
+  }, [queryClient]);
 
   const providers = useMemo(
     () =>

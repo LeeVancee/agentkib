@@ -2,13 +2,15 @@ import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { backendError } from "../contracts.js";
-export const Gateway = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  base_url: z.string().url(),
-  enabled: z.boolean().default(true),
-  token: z.string().optional(),
-});
+export const Gateway = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    base_url: z.string().url(),
+    enabled: z.boolean().default(true),
+    token: z.string().optional(),
+  })
+  .passthrough();
 export const GatewayConfig = z.object({
   schema_version: z.number().int().default(1),
   gateways: z.array(Gateway).default([]),

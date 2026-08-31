@@ -218,8 +218,8 @@ Rust may be deleted only when all gates pass:
 - [x] Workspace, changes, adapters, doctor, and Git ported.
 - [x] Discovery and conversations ported.
 - [x] Insights, storage, and quota ported.
-- [ ] MCP, gateways, and Obsidian ported.
-- [ ] Electron IPC bound to TypeScript backend.
+- [x] MCP, gateways, and Obsidian foundational services implemented; OAuth, registry/install flows, and full remote parity remain.
+- [ ] Electron IPC bound to TypeScript backend (worker host adapter and opt-in `AGENTKIB_TS_BACKEND=1` startup path are ready; Rust remains the default).
 - [ ] Cross-platform packaging updated.
 - [ ] Parity and acceptance gates passed.
 - [ ] Rust and Cargo removed.

@@ -20,5 +20,6 @@ export * from "./gateways/index.js";
 export * from "./obsidian/index.js";
 export * from "./changes/index.js";
 export * from "./doctor/index.js";
+export * from "./process/index.js";
 export * from "./store/database.js";
 export * from "./store/paths.js";

@@ -15,6 +15,7 @@ import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost } from "./runtime-host";
+import { BackendWorkerHost, backendWorkerUrl } from "./backend-worker-host";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
@@ -46,7 +47,8 @@ app.setPath("sessionData", electronDataPath);
 let mainWindow: BrowserWindow | undefined;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
-let runtimeHost: DesktopRuntimeHost | undefined;
+type RuntimeHost = DesktopRuntimeHost | BackendWorkerHost;
+let runtimeHost: RuntimeHost | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -111,18 +113,30 @@ async function startApplication(): Promise<void> {
   if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
 
-  runtimeHost = new DesktopRuntimeHost({
-    executablePath: resolveRuntimeExecutable(),
-    clientVersion: app.getVersion(),
-    environment: {
-      AGENTKIB_APP_FLAVOR: appFlavor,
-      AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
-      AGENTKIB_APP_VERSION: app.getVersion(),
-      AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
-      AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-      AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
-    },
-  });
+  if (process.env.AGENTKIB_TS_BACKEND === "1") {
+    const databasePath =
+      process.env.AGENTKIB_DATABASE_PATH ?? path.join(app.getPath("userData"), "agentkib.db");
+    runtimeHost = new BackendWorkerHost({
+      workerUrl: backendWorkerUrl(),
+      database_path: databasePath,
+      quota_executable: resolveQuotaSidecar(),
+      mcp_config_path: path.join(app.getPath("userData"), "mcp.json"),
+      gateway_config_path: path.join(app.getPath("userData"), "gateways.json"),
+    });
+  } else {
+    runtimeHost = new DesktopRuntimeHost({
+      executablePath: resolveRuntimeExecutable(),
+      clientVersion: app.getVersion(),
+      environment: {
+        AGENTKIB_APP_FLAVOR: appFlavor,
+        AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
+        AGENTKIB_APP_VERSION: app.getVersion(),
+        AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
+        AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+        AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
+      },
+    });
+  }
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
     refreshCoordinator?.setRuntimeAvailable(true);
@@ -697,7 +711,7 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
 
 function requireRuntime(): DesktopRuntimeHost {
   if (!runtimeHost || !runtimeHandshake) throw new Error("AgentKib runtime is not ready");
-  return runtimeHost;
+  return runtimeHost as DesktopRuntimeHost;
 }
 
 function requireRefreshCoordinator(): ElectronRefreshCoordinator {

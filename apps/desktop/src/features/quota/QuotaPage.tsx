@@ -82,14 +82,16 @@ export function QuotaPage({
   const pendingRefresh = useRef(false);
   const requestedInitialRefresh = useRef(false);
 
-  const load = async () => {
-    const [nextSnapshot, nextStatus, refreshJobs, nextPreferences] = await Promise.all([
-      api.quotaSnapshot(),
+  const load = async (revealPage = false) => {
+    const nextSnapshot = await api.quotaSnapshot();
+    setSnapshot(nextSnapshot);
+    if (revealPage) setInitializing(false);
+
+    const [nextStatus, refreshJobs, nextPreferences] = await Promise.all([
       api.quotaCollectorStatus(),
       api.refreshStatus(),
       api.quotaPopoverPreferences(),
     ]);
-    setSnapshot(nextSnapshot);
     setStatus(nextStatus);
     setPreferences(nextPreferences);
     const nextJob = refreshJobs.find((job) => job.kind === "quota");
@@ -118,7 +120,7 @@ export function QuotaPage({
       if (status.state === "failed") setError(status.error ?? tr("errors.quotaUnavailable"));
     });
     void (async () => {
-      const { snapshot: initialSnapshot, job } = await load();
+      const { snapshot: initialSnapshot, job } = await load(true);
       if (
         disposed ||
         !autoRefreshEnabled ||

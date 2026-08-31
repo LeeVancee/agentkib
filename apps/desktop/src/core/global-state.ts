@@ -4,22 +4,70 @@ import { useAppStore } from "../stores/app-store";
 
 let refreshSequence = 0;
 
-export async function refreshGlobalState(currentRuntime?: RuntimeInfo) {
+type RefreshGlobalStateOptions = {
+  deferNonCritical?: boolean;
+};
+
+function afterFirstPaint(task: () => void) {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    setTimeout(task, 0);
+    return;
+  }
+  window.requestAnimationFrame(() => window.setTimeout(task, 0));
+}
+
+async function loadDerivedState(
+  workspaces: Awaited<ReturnType<typeof api.workspaces>>,
+  sequence: number,
+) {
+  if (sequence !== refreshSequence) return;
+
+  const [doctorResult, insightsResult, quotaResult] = await Promise.allSettled([
+    api.workspaceDoctorSummaries(workspaces.map((workspace) => workspace.id)),
+    Promise.all([api.insightsSummary(), api.insightsStatus()]),
+    api.quotaCollectorStatus(),
+  ]);
+  if (sequence !== refreshSequence) return;
+
+  const nextState: {
+    doctorSummaries?: Record<
+      string,
+      Awaited<ReturnType<typeof api.workspaceDoctorSummaries>>[number]
+    >;
+    insightsSummary?: Awaited<ReturnType<typeof api.insightsSummary>>;
+    insightsStatus?: Awaited<ReturnType<typeof api.insightsStatus>>;
+    quotaStatus?: Awaited<ReturnType<typeof api.quotaCollectorStatus>>;
+  } = {};
+
+  if (doctorResult.status === "fulfilled") {
+    nextState.doctorSummaries = Object.fromEntries(
+      doctorResult.value.map((summary) => [summary.workspace_id, summary]),
+    );
+  }
+  if (insightsResult.status === "fulfilled") {
+    [nextState.insightsSummary, nextState.insightsStatus] = insightsResult.value;
+  }
+  if (quotaResult.status === "fulfilled") {
+    nextState.quotaStatus = quotaResult.value;
+  }
+  useAppStore.setState(nextState);
+}
+
+export async function refreshGlobalState(
+  currentRuntime?: RuntimeInfo,
+  options: RefreshGlobalStateOptions = {},
+) {
   const sequence = ++refreshSequence;
   const nextRuntimePromise = currentRuntime ? Promise.resolve(currentRuntime) : api.runtime();
   const previous = useAppStore.getState();
-  const [
-    workspacesResult,
-    installationsResult,
-    catalogResult,
-    globalMemoriesResult,
-    activityResult,
-    scanRootsResult,
-    excludedResult,
-    runtimeResult,
-    remoteGatewaysResult,
-  ] = await Promise.allSettled([
-    api.workspaces(),
+  const workspacesPromise = api.workspaces();
+  const workspaces = await workspacesPromise;
+  const initialState = { ...previous, workspaces, workspacesLoaded: true };
+  if (sequence === refreshSequence) {
+    useAppStore.setState({ workspaces, workspacesLoaded: true });
+  }
+
+  const secondaryResultsPromise = Promise.allSettled([
     api.agentInstallations(),
     api.catalogAssets(),
     api.globalMemories(),
@@ -29,67 +77,43 @@ export async function refreshGlobalState(currentRuntime?: RuntimeInfo) {
     nextRuntimePromise,
     api.remoteGateways(),
   ]);
-  const valueOr = <T>(result: PromiseSettledResult<T>, fallback: T): T =>
-    result.status === "fulfilled" ? result.value : fallback;
-  if (workspacesResult.status === "rejected") {
-    throw workspacesResult.reason;
-  }
-  const workspaces = valueOr(workspacesResult, previous.workspaces);
-  const installations = valueOr(installationsResult, previous.installations);
-  const catalog = valueOr(catalogResult, previous.catalog);
-  const globalMemories = valueOr(globalMemoriesResult, previous.globalMemories);
-  const activity = valueOr(activityResult, previous.activity);
-  const scanRoots = valueOr(scanRootsResult, previous.scanRoots);
-  const excluded = valueOr(excludedResult, previous.excluded);
-  const runtime = valueOr(runtimeResult, currentRuntime ?? previous.runtime);
-  const remoteGateways = valueOr(remoteGatewaysResult, previous.remoteGateways);
-
-  let doctorSummaries = {};
-  try {
-    const summaries = await api.workspaceDoctorSummaries(
-      workspaces.map((workspace) => workspace.id),
-    );
-    doctorSummaries = Object.fromEntries(
-      summaries.map((summary) => [summary.workspace_id, summary]),
-    );
-  } catch {
-    /* 首次迁移或后台扫描尚未完成时显示空状态。 */
-  }
-
-  let insightsSummary = useAppStore.getState().insightsSummary;
-  let insightsStatus = useAppStore.getState().insightsStatus;
-  try {
-    [insightsSummary, insightsStatus] = await Promise.all([
-      api.insightsSummary(),
-      api.insightsStatus(),
-    ]);
-  } catch {
-    /* 首次迁移或后台采集尚未完成时显示空状态。 */
-  }
-
-  let quotaStatus = useAppStore.getState().quotaStatus;
-  try {
-    quotaStatus = await api.quotaCollectorStatus();
-  } catch {
-    /* Sidecar 尚未准备时由诊断页展示不可用状态。 */
-  }
-
-  const state = {
-    workspaces,
-    workspacesLoaded: true,
-    installations,
-    catalog,
-    globalMemories,
-    activity,
-    scanRoots,
-    excluded,
-    runtime,
-    remoteGateways,
-    doctorSummaries,
-    insightsSummary,
-    insightsStatus,
-    quotaStatus,
+  const applySecondaryState = async () => {
+    const [
+      installationsResult,
+      catalogResult,
+      globalMemoriesResult,
+      activityResult,
+      scanRootsResult,
+      excludedResult,
+      runtimeResult,
+      remoteGatewaysResult,
+    ] = await secondaryResultsPromise;
+    const valueOr = <T>(result: PromiseSettledResult<T>, fallback: T): T =>
+      result.status === "fulfilled" ? result.value : fallback;
+    const state = {
+      ...initialState,
+      installations: valueOr(installationsResult, previous.installations),
+      catalog: valueOr(catalogResult, previous.catalog),
+      globalMemories: valueOr(globalMemoriesResult, previous.globalMemories),
+      activity: valueOr(activityResult, previous.activity),
+      scanRoots: valueOr(scanRootsResult, previous.scanRoots),
+      excluded: valueOr(excludedResult, previous.excluded),
+      runtime: valueOr(runtimeResult, currentRuntime ?? previous.runtime),
+      remoteGateways: valueOr(remoteGatewaysResult, previous.remoteGateways),
+    };
+    if (sequence === refreshSequence) useAppStore.setState(state);
+    return state;
   };
-  if (sequence === refreshSequence) useAppStore.setState(state);
-  return state;
+
+  if (options.deferNonCritical) {
+    void (async () => {
+      await applySecondaryState();
+      afterFirstPaint(() => void loadDerivedState(workspaces, sequence));
+    })();
+    return initialState;
+  }
+
+  await applySecondaryState();
+  await loadDerivedState(workspaces, sequence);
+  return useAppStore.getState();
 }

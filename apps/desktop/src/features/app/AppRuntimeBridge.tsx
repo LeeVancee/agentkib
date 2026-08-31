@@ -130,7 +130,7 @@ export function AppRuntimeBridge() {
           await api.addWorkspace(legacy);
           localStorage.removeItem("agentkib.project");
         }
-        await refreshGlobalState(useAppStore.getState().runtime);
+        await refreshGlobalState(useAppStore.getState().runtime, { deferNonCritical: true });
         const [discovery, refreshJobs] = await Promise.all([
           api.discoveryReport(),
           api.refreshStatus(),

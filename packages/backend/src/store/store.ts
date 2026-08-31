@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "./database.js";
 import { canonicalize, canonicalizeAllowMissing } from "../platform/path.js";
 import { stat } from "node:fs/promises";
+import path from "node:path";
 import { BackendError, backendError } from "../contracts.js";
 import type {
   AddWorkspaceInput,
@@ -12,6 +13,8 @@ import type {
   Workspace,
   MemoryStatus,
 } from "../domain/types.js";
+import type { WorkspaceScan } from "../domain/types.js";
+import type { GitRepositorySnapshot } from "../insights/types.js";
 
 const optional = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
@@ -71,6 +74,169 @@ export class BackendStore {
   }
   workspacePath(id: string): string {
     return this.getWorkspace(id).canonical_path;
+  }
+  recordWorkspaceScan(canonicalPath: string, result: WorkspaceScan): void {
+    const now = new Date().toISOString();
+    try {
+      this.database.exec("BEGIN IMMEDIATE");
+      const updated = this.database
+        .prepare(
+          "UPDATE workspaces SET asset_count = ?, warning_count = ?, last_scanned_at = ? WHERE canonical_path = ?",
+        )
+        .run(result.assets.length, result.warnings.length, now, canonicalPath);
+      if (!updated.changes)
+        throw backendError("NOT_FOUND", `Workspace not found: ${canonicalPath}`);
+      const row = this.database
+        .prepare("SELECT id FROM workspaces WHERE canonical_path = ?")
+        .get(canonicalPath) as { id: string };
+      this.database.prepare("DELETE FROM catalog_assets WHERE workspace_id = ?").run(row.id);
+      const insert = this.database.prepare(
+        "INSERT INTO catalog_assets (id, scope, workspace_id, agent, kind, name, path, summary, size, modified_at, summary_key, summary_params) VALUES (?, 'workspace', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const asset of result.assets) {
+        insert.run(
+          randomUUID(),
+          row.id,
+          asset.agent,
+          asset.kind,
+          path.basename(asset.path),
+          asset.path,
+          asset.summary,
+          asset.size,
+          now,
+          asset.summary_key ?? null,
+          JSON.stringify(asset.summary_params ?? {}),
+        );
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw BackendError.from(error);
+    }
+  }
+  listWorkspaceSources(workspaceId: string): Array<Record<string, unknown>> {
+    return this.database
+      .prepare(
+        "SELECT agent, evidence, session_count, last_active_at FROM workspace_sources WHERE workspace_id = ? ORDER BY agent, evidence",
+      )
+      .all(workspaceId) as Array<Record<string, unknown>>;
+  }
+  async upsertDiscoveredWorkspace(candidate: {
+    path: string;
+    evidence: string;
+    source_agent?: string;
+    session_count: number;
+  }): Promise<void> {
+    const canonicalPath = await canonicalizeAllowMissing(candidate.path);
+    if (
+      this.database
+        .prepare("SELECT 1 FROM excluded_workspaces WHERE canonical_path = ?")
+        .get(canonicalPath)
+    )
+      return;
+    const now = new Date().toISOString();
+    const existing = this.database
+      .prepare("SELECT id FROM workspaces WHERE canonical_path = ?")
+      .get(canonicalPath) as { id: string } | undefined;
+    const id = existing?.id ?? randomUUID();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      if (existing) {
+        this.database
+          .prepare("UPDATE workspaces SET last_discovered_at = ? WHERE id = ?")
+          .run(now, id);
+      } else {
+        this.database
+          .prepare(
+            "INSERT INTO workspaces (id, canonical_path, name, status, last_discovered_at) VALUES (?, ?, ?, 'healthy', ?)",
+          )
+          .run(id, canonicalPath, path.basename(canonicalPath) || canonicalPath, now);
+      }
+      this.database
+        .prepare(
+          "INSERT INTO workspace_sources (workspace_id, agent, evidence, session_count, last_active_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(workspace_id, agent, evidence) DO UPDATE SET session_count = excluded.session_count, last_active_at = excluded.last_active_at",
+        )
+        .run(
+          id,
+          candidate.source_agent ?? "codex",
+          candidate.evidence,
+          candidate.session_count,
+          now,
+        );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw BackendError.from(error);
+    }
+  }
+  syncGitSnapshot(snapshot: GitRepositorySnapshot): void {
+    let salt = (
+      this.database.prepare("SELECT value FROM schema_meta WHERE key = 'insights_salt'").get() as
+        | { value?: string }
+        | undefined
+    )?.value;
+    if (!salt) {
+      salt = `${randomUUID()}${randomUUID()}`;
+      this.database
+        .prepare("INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('insights_salt', ?)")
+        .run(salt);
+    }
+    const hashIdentity = (email: string) =>
+      createHmac("sha256", salt!).update(email.trim().toLowerCase()).digest("hex");
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const identity of snapshot.identities) {
+        const identityHash = hashIdentity(identity.email);
+        this.database
+          .prepare(
+            "INSERT INTO git_identities(id, identity_hash, source, label, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?) ON CONFLICT(identity_hash) DO UPDATE SET source = excluded.source, label = excluded.label",
+          )
+          .run(identityHash, identityHash, identity.source, identity.label, now);
+      }
+      if (snapshot.changed) {
+        this.database
+          .prepare("DELETE FROM commit_attributions WHERE repository_group_id = ?")
+          .run(snapshot.repository_group_id);
+        this.database
+          .prepare("DELETE FROM git_commits WHERE repository_group_id = ?")
+          .run(snapshot.repository_group_id);
+        const insert = this.database.prepare(
+          "INSERT INTO git_commits(repository_group_id, commit_hash, authored_at, day, author_identity_hash, is_mine) VALUES (?, ?, ?, ?, ?, EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = ? AND enabled = 1))",
+        );
+        for (const commit of snapshot.commits) {
+          const day = commit.authored_at.slice(0, 10);
+          const identityHash = hashIdentity(commit.author_email);
+          insert.run(
+            snapshot.repository_group_id,
+            commit.hash,
+            commit.authored_at,
+            day,
+            identityHash,
+            identityHash,
+          );
+        }
+      }
+      this.database
+        .prepare(
+          "UPDATE git_commits SET is_mine = EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)",
+        )
+        .run();
+      this.database
+        .prepare(
+          "INSERT INTO insight_cursors(provider, cursor_json, available, quality, imported_events, updated_at) VALUES (?, ?, 1, 'exact', ?, ?) ON CONFLICT(provider) DO UPDATE SET cursor_json = excluded.cursor_json, available = 1, quality = 'exact', imported_events = excluded.imported_events, error = NULL, updated_at = excluded.updated_at",
+        )
+        .run(
+          `git:${snapshot.repository_group_id}`,
+          snapshot.fingerprint,
+          snapshot.commits.length,
+          now,
+        );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw BackendError.from(error);
+    }
   }
   async addWorkspace(input: AddWorkspaceInput): Promise<Workspace> {
     const canonicalPath = await canonicalize(input.path);
@@ -132,6 +298,96 @@ export class BackendStore {
         "SELECT canonical_path, created_at FROM excluded_workspaces ORDER BY created_at DESC",
       )
       .all() as unknown as ExcludedWorkspace[];
+  }
+
+  listAgentInstallations(): Array<{
+    agent: string;
+    installed: boolean;
+    configured: boolean;
+    version?: string;
+    home?: string;
+    warnings: string[];
+  }> {
+    const rows = this.database
+      .prepare(
+        "SELECT agent, installed, configured, version, home, warnings FROM agent_installations ORDER BY agent",
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => {
+      let warnings: string[] = [];
+      try {
+        const parsed = JSON.parse(String(row.warnings ?? "[]"));
+        if (Array.isArray(parsed))
+          warnings = parsed.filter((item): item is string => typeof item === "string");
+      } catch {
+        warnings = ["Stored installation warnings are invalid"];
+      }
+      return {
+        agent: String(row.agent),
+        installed: Boolean(row.installed),
+        configured: Boolean(row.configured),
+        ...(typeof row.version === "string" ? { version: row.version } : {}),
+        ...(typeof row.home === "string" ? { home: row.home } : {}),
+        warnings,
+      };
+    });
+  }
+
+  searchCatalogAssets(
+    query: string,
+    agent?: string,
+    workspaceId?: string,
+    limit = 500,
+  ): Array<Record<string, unknown>> {
+    const pattern = `%${query.trim().replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    return this.database
+      .prepare(
+        "SELECT id, scope, workspace_id, agent, kind, name, path, summary, size, modified_at, summary_key, summary_params FROM catalog_assets WHERE (name LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR COALESCE(summary_key, '') LIKE ? ESCAPE '\\') AND (? IS NULL OR agent = ?) AND (? IS NULL OR workspace_id = ?) ORDER BY modified_at DESC, name ASC LIMIT ?",
+      )
+      .all(
+        pattern,
+        pattern,
+        pattern,
+        pattern,
+        agent ?? null,
+        agent ?? null,
+        workspaceId ?? null,
+        workspaceId ?? null,
+        Math.min(Math.max(Math.floor(limit), 1), 500),
+      ) as Array<Record<string, unknown>>;
+  }
+
+  listGlobalMemories(status?: MemoryStatus): Memory[] {
+    const rows = status
+      ? this.database
+          .prepare("SELECT * FROM memories WHERE status = ? ORDER BY created_at DESC")
+          .all(status)
+      : this.database.prepare("SELECT * FROM memories ORDER BY created_at DESC").all();
+    return (rows as Array<Record<string, unknown>>).map(memory);
+  }
+
+  listActivity(limit = 200): Array<{
+    id: string;
+    project_id?: string;
+    action: string;
+    detail: string;
+    created_at: string;
+  }> {
+    return this.database
+      .prepare(
+        "SELECT id, project_id, action, detail, created_at FROM audit_events ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(Math.min(Math.max(Math.floor(limit), 1), 500))
+      .map((row) => {
+        const value = row as Record<string, unknown>;
+        return {
+          id: String(value.id),
+          ...(typeof value.project_id === "string" ? { project_id: value.project_id } : {}),
+          action: String(value.action),
+          detail: String(value.detail),
+          created_at: String(value.created_at),
+        };
+      });
   }
 
   proposeMemory(input: ProposeMemoryInput): Memory {

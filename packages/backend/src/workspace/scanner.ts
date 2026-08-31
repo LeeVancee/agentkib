@@ -88,10 +88,12 @@ export async function scanWorkspace(root: string): Promise<WorkspaceScan> {
     warnings: string[] = [];
   let manifest_exists = false;
   try {
-    await loadManifest(root);
+    await lstat(path.join(root, ".agentkib", "manifest.yaml"));
     manifest_exists = true;
+    await loadManifest(root);
   } catch (error) {
-    if ((error as { code?: string }).code !== "NOT_FOUND") warnings.push((error as Error).message);
+    if ((error as { code?: string }).code !== "ENOENT" && (error as { code?: string }).code !== "NOT_FOUND")
+      warnings.push((error as Error).message);
   }
   const agents: AgentDetection[] = [];
   for (const agent of [

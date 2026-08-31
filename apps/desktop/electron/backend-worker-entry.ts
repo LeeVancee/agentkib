@@ -7,6 +7,7 @@ const options = workerData as
       database_path?: string;
       scan_roots?: Array<{ path: string; max_depth?: number }>;
       quota_executable?: string;
+      quota_config_path?: string;
       mcp_config_path?: string;
       gateway_config_path?: string;
       mcp_registry_path?: string;
@@ -17,6 +18,7 @@ const runtime = options?.database_path
       database_path: options.database_path,
       scan_roots: options.scan_roots,
       quota_executable: options.quota_executable,
+      quota_config_path: options.quota_config_path,
       mcp_config_path: options.mcp_config_path,
       gateway_config_path: options.gateway_config_path,
       mcp_registry_path: options.mcp_registry_path,

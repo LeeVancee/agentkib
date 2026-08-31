@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   createFileRoute,
   Outlet,
@@ -35,7 +36,7 @@ import {
 } from "@/features/workspace/WorkspaceSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "../../../stores/app-store";
-import { useHomeWorkspaces } from "@/features/home/home-query";
+import { homeKeys, useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { formatRelativeTime, localizeMessage, tr } from "../../../core/i18n";
@@ -131,8 +132,8 @@ function WorkspaceSummaryStrip({
     { label: tr("workspace.discoverySources"), value: workspace.sources.length, icon: GitBranch },
     {
       label: tr("workspace.lastScanLabel"),
-      value: workspace.last_active_at
-        ? formatRelativeTime(workspace.last_active_at)
+      value: workspace.last_scanned_at
+        ? formatRelativeTime(workspace.last_scanned_at)
         : tr("common.never"),
       icon: Clock3,
     },
@@ -178,6 +179,7 @@ function WorkspaceLayout() {
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
   const setRuntime = useAppStore((state) => state.setRuntime);
   const workspaceState = useWorkspaceStore();
+  const queryClient = useQueryClient();
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
   const workspace = workspaces.find((item) => item.id === workspaceId);
   const {
@@ -242,6 +244,7 @@ function WorkspaceLayout() {
       setManifest(resolvedManifest);
       setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
       setRuntime(runtimeResult.value);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
       if (!resolvedManifest && currentPage !== "doctor") {
         void navigate({
           to: "/workspace/$workspaceId/doctor",

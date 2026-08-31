@@ -5,12 +5,7 @@ import { Card } from "@/components/ui/card";
 import { useEffect, useState } from "react";
 import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
 import { localizeMessage, tr } from "@/core/i18n";
-import type {
-  ContextDoctorReport,
-  ContextDoctorSummary,
-  DoctorAssetStatus,
-  WorkspaceSummary,
-} from "@/core/types";
+import type { ContextDoctorSummary, DoctorAssetStatus, WorkspaceSummary } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
 import { useHomeDoctorReport } from "@/features/home/home-query";
@@ -40,6 +35,10 @@ export function WorkspaceDoctorPage({
   }, [onDiagnosed, report, workspace.id]);
 
   const activeReport = report?.summary.workspace_id === workspace.id ? report : undefined;
+  // Older/partial runtimes may omit the optional coverage matrix. Keep the
+  // diagnostic page usable while the report is being upgraded.
+  const matrix = activeReport?.matrix ?? [];
+  const issues = activeReport?.issues ?? [];
 
   const repair = async () => {
     setRepairing(true);
@@ -126,7 +125,7 @@ export function WorkspaceDoctorPage({
               <span>Skills</span>
               <span>MCP</span>
             </div>
-            {activeReport.matrix.map((row) => (
+            {matrix.map((row) => (
               <div
                 className="grid min-w-[680px] grid-cols-[minmax(220px,1.4fr)_repeat(3,minmax(120px,1fr))] items-center gap-3 border-b border-border px-4 py-2.5 last:border-b-0"
                 role="row"
@@ -159,13 +158,13 @@ export function WorkspaceDoctorPage({
               </p>
             </div>
           </div>
-          {!activeReport.issues.length && (
+          {!issues.length && (
             <div className="grid min-h-[96px] place-content-center justify-items-center gap-2 text-sm text-muted-foreground">
               <ShieldCheck size={22} />
               <strong>{tr("doctor.allClear")}</strong>
             </div>
           )}
-          {activeReport.issues.map((issue) => (
+          {issues.map((issue) => (
             <article
               className={cn(
                 "flex items-start gap-3 border-b px-4 py-3 last:border-b-0",
@@ -202,7 +201,7 @@ export function WorkspaceDoctorPage({
                     ? tr(`status.asset.${issue.asset_kind}`)
                     : tr("doctor.workspace")}
                 </p>
-                {issue.evidence.map((evidence, index) => (
+                {(issue.evidence ?? []).map((evidence, index) => (
                   <div
                     className="mt-2 grid gap-0.5 rounded-md border border-current/10 bg-background/60 px-2.5 py-2 text-xs"
                     key={`${issue.id}-${index}`}

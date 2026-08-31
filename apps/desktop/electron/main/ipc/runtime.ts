@@ -23,12 +23,14 @@ interface RuntimeIpcOptions {
   runtime(): DesktopRuntimeHost;
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
   withRuntimeCapabilities(runtime: unknown): unknown;
+  launchInteractive?(plan: unknown): Promise<string>;
 }
 
 export function registerRuntimeIpc({
   runtime,
   assertTrustedRenderer,
   withRuntimeCapabilities: withElectronRuntimeCapabilities,
+  launchInteractive,
 }: RuntimeIpcOptions): void {
   function registerWorkspaceIpc(): void {
     ipcMain.handle("agentkib:workspace:scan", (event, project: unknown) => {
@@ -192,6 +194,14 @@ export function registerRuntimeIpc({
         return runtimeRequest(event, RUNTIME_METHODS.continueSessionHandoff, {
           changeSet: requireObject(changeSet, "changeSet"),
           launchRequest: requireObject(launchRequest, "launchRequest"),
+        }).then(async (result) => {
+          if (!launchInteractive || !result || typeof result !== "object" || !("launch" in result)) return result;
+          try {
+            const terminal = await launchInteractive((result as { launch: unknown }).launch);
+            return { ...(result as Record<string, unknown>), receipt: { ...((result as { receipt?: Record<string, unknown> }).receipt ?? {}), terminal } };
+          } catch (error) {
+            return { status: "applied-launch-failed", error: { key: "errors.handoff.launchAfterApplyFailed", params: {}, detail: error instanceof Error ? error.message : String(error) } };
+          }
         });
       },
     );
@@ -199,6 +209,10 @@ export function registerRuntimeIpc({
       assertTrustedRenderer(event);
       return runtimeRequest(event, RUNTIME_METHODS.launchSessionHandoff, {
         ...requireObject(launchRequest, "launchRequest"),
+      }).then(async (result) => {
+        if (!launchInteractive || !result || typeof result !== "object" || !("launch" in result)) return result;
+        const terminal = await launchInteractive((result as { launch: unknown }).launch);
+        return { ...(result as Record<string, unknown>), terminal };
       });
     });
     ipcMain.handle("agentkib:workspace:openers", (event, id: unknown) => {

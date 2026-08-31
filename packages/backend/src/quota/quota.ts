@@ -21,8 +21,13 @@ export interface QuotaProvider {
   id: string;
   name: string;
   enabled: boolean;
+  source?: string;
+  status?: { level: string; label: string; updated_at?: string };
+  identity?: { account_email?: string; plan?: string };
   windows: QuotaWindow[];
+  credits?: { remaining: number; unit: string };
   error?: string;
+  updated_at?: string;
   accounts?: unknown[];
 }
 export interface QuotaSnapshot {
@@ -71,9 +76,45 @@ const quotaProviderSchema = z
     id: z.string(),
     name: z.string(),
     enabled: z.boolean(),
+    source: z.string().optional(),
+    status: z
+      .object({
+        level: z.string(),
+        label: z.string(),
+        updatedAt: z.string().optional(),
+      })
+      .nullable()
+      .optional(),
+    identity: z
+      .object({ accountEmail: z.string().optional(), plan: z.string().optional() })
+      .nullable()
+      .optional(),
     windows: z.array(quotaWindowSchema).default([]),
+    credits: z
+      .object({ remaining: z.number().finite(), unit: z.string() })
+      .nullable()
+      .optional(),
     error: z.unknown().optional(),
-    accounts: z.array(z.unknown()).default([]),
+    updatedAt: z.string().optional(),
+    accounts: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            label: z.string(),
+            active: z.boolean(),
+            identity: z
+              .object({ accountEmail: z.string().optional(), plan: z.string().optional() })
+              .nullable()
+              .optional(),
+            windows: z.array(quotaWindowSchema).default([]),
+            error: z.unknown().optional(),
+            updatedAt: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .nullish()
+      .transform((value) => value ?? []),
   })
   .passthrough();
 const dashboardSchema = z
@@ -81,18 +122,24 @@ const dashboardSchema = z
     schemaVersion: z.literal(1),
     generatedAt: z.string(),
     staleAfterSeconds: z.number().finite().nonnegative().default(300),
-    host: z.object({ codexBarVersion: z.string().optional() }).passthrough().optional(),
+    host: z.object({ codexBarVersion: z.string().nullish() }).passthrough().optional(),
     providers: z.array(quotaProviderSchema).default([]),
   })
   .passthrough();
 export class NodeQuotaRunner implements CommandRunner {
-  constructor(private readonly executable: string) {}
+  constructor(
+    private readonly executable: string,
+    private readonly configPath?: string,
+  ) {}
   async run(args: string[], timeoutMs: number, signal?: AbortSignal): Promise<CommandOutput> {
     try {
       const result = await promisify(execFile)(this.executable, args, {
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         signal,
+        env: this.configPath
+          ? { ...process.env, CODEXBAR_CONFIG: this.configPath }
+          : process.env,
       });
       return { stdout: result.stdout, stderr: result.stderr, success: true };
     } catch (error) {
@@ -131,10 +178,33 @@ export async function collectQuota(
   if (!result.success || Number.isNaN(Date.parse(result.data?.generatedAt ?? "")))
     throw backendError("VALIDATION", "Quota collector returned invalid dashboard JSON");
   const raw = result.data;
+  const identity = (value: { accountEmail?: string; plan?: string } | null | undefined) =>
+    value
+      ? {
+          ...(value.accountEmail ? { account_email: value.accountEmail } : {}),
+          ...(value.plan ? { plan: value.plan } : {}),
+        }
+      : undefined;
+  const diagnostic = (value: unknown): string | undefined => {
+    if (typeof value === "string") return sanitizeDiagnostic(value);
+    if (value && typeof value === "object" && "message" in value) {
+      const message = (value as { message?: unknown }).message;
+      if (typeof message === "string") return sanitizeDiagnostic(message);
+    }
+    return value === undefined || value === null ? undefined : "Provider unavailable";
+  };
+  const windows = (items: Array<z.infer<typeof quotaWindowSchema>>) =>
+    items.map((window) => ({
+      kind: window.kind,
+      label: window.label,
+      used_percent: window.usedPercent,
+      remaining_percent: window.remainingPercent,
+      reset_at: window.resetAt,
+    }));
   const snapshot: QuotaSnapshot = {
     schema_version: 1,
     backend,
-    backend_version: raw.host?.codexBarVersion,
+    backend_version: raw.host?.codexBarVersion ?? undefined,
     generated_at: raw.generatedAt,
     fetched_at: new Date().toISOString(),
     stale_after_seconds: raw.staleAfterSeconds,
@@ -143,15 +213,30 @@ export async function collectQuota(
       id: provider.id,
       name: provider.name,
       enabled: provider.enabled,
-      windows: provider.windows.map((window) => ({
-        kind: window.kind,
-        label: window.label,
-        used_percent: window.usedPercent,
-        remaining_percent: window.remainingPercent,
-        reset_at: window.resetAt,
+      source: provider.source,
+      status: provider.status
+        ? {
+            level: provider.status.level,
+            label: provider.status.label,
+            updated_at: provider.status.updatedAt,
+          }
+        : undefined,
+      identity: identity(provider.identity),
+      windows: windows(provider.windows),
+      credits: provider.credits
+        ? { remaining: provider.credits.remaining, unit: provider.credits.unit }
+        : undefined,
+      error: diagnostic(provider.error),
+      updated_at: provider.updatedAt,
+      accounts: provider.accounts.map((account) => ({
+        id: account.id,
+        label: account.label,
+        active: account.active,
+        identity: identity(account.identity),
+        windows: windows(account.windows),
+        error: diagnostic(account.error),
+        updated_at: account.updatedAt,
       })),
-      error: typeof provider.error === "string" ? provider.error : undefined,
-      accounts: provider.accounts,
     })),
   };
   return refreshFreshness(snapshot);

@@ -1,20 +1,22 @@
 import { z } from "zod";
 import { BackendStore } from "../store/store.js";
 import { scanWorkspace } from "../workspace/scanner.js";
-import { loadManifest } from "../workspace/manifest.js";
+import { loadManifest, manifestPath } from "../workspace/manifest.js";
 import { defaultManifest } from "../adapters/manifest.js";
 import { workspaceSummary, history, commitFiles, diff } from "../git/git.js";
 import type { GitDiffRequest } from "../git/git.js";
+import { collectGit } from "../insights/git.js";
 import { discover } from "../discovery/discovery.js";
 import { diagnoseWorkspace } from "../doctor/doctor.js";
 import { listWorkspaceSessions } from "../conversations/indexer.js";
 import { parseTranscript } from "../conversations/transcript.js";
 import { prepareHandoff, sanitizeHandoffContent } from "../conversations/handoff.js";
-import { planChangeSet, applyChangeSet } from "../changes/changeset.js";
+import { planChangeSet, applyChangeSet, hashContent } from "../changes/changeset.js";
 import type { ChangeSet } from "../changes/changeset.js";
 import { scanStorage } from "../storage/storage.js";
 import { collectQuota, NodeQuotaRunner, selectBackend } from "../quota/quota.js";
 import { backendError } from "../contracts.js";
+import { runManaged } from "../process/process.js";
 import type { BackendMethodRegistry } from "../worker/host.js";
 import {
   McpRuntimeHub,
@@ -32,15 +34,56 @@ import {
   createWorkspaceLink,
   validateVaultPath,
   WorkspaceLink,
+  saveStoredIntegration,
+  ObsidianStored,
 } from "../obsidian/index.js";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { createHmac, randomUUID } from "node:crypto";
+import { readFile, rename, writeFile, lstat, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { stringify as stringifyYaml } from "yaml";
+import { parse as parseToml } from "@iarna/toml";
+
+function buildAchievements(
+  summary: { total_tokens: number; session_count: number; my_commits: number; active_days: number; longest_streak: number },
+  workspaceCount: number,
+  agentCount = 0,
+) {
+  const tracks: Array<[string, number[] , number]> = [
+    ["token", [100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000, 1_000_000_000_000], summary.total_tokens],
+    ["session", [10, 50, 100, 500, 1_000, 5_000, 10_000], summary.session_count],
+    ["commit", [1, 10, 100, 1_000, 5_000, 10_000], summary.my_commits],
+    ["active-days", [7, 30, 100, 365, 1_000], summary.active_days],
+    ["streak", [3, 7, 14, 30, 60, 100, 180, 365], summary.longest_streak],
+    ["workspaces", [1, 5, 10, 25, 50, 100], workspaceCount],
+    ["agents", [1, 2, 3, 4, 5], agentCount],
+  ];
+  const milestones = tracks.flatMap(([category, thresholds, progress]) =>
+    thresholds.map((threshold) => ({
+      code: `${category}-${threshold}`,
+      category,
+      threshold,
+      progress: Math.min(progress, threshold),
+    })),
+  );
+  return milestones.concat([
+    "special-first-changeset",
+    "special-first-memory",
+    "special-shared-workspace",
+    "special-exact-attribution",
+    "special-remote-handshake",
+    "special-night-owl",
+    "special-comeback",
+    "special-same-day-delivery",
+  ].map((code) => ({ code, category: "special", threshold: 1, progress: 0 })));
+}
+
 const id = z.object({ id: z.string() });
 export interface BackendRuntimeOptions {
   database_path: string;
   scan_roots?: Array<{ path: string; max_depth?: number }>;
   quota_executable?: string;
+  quota_config_path?: string;
   mcp_config_path?: string;
   gateway_config_path?: string;
   mcp_registry_path?: string;
@@ -55,7 +98,15 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   const defaultMcpRegistryFile =
     options.mcp_registry_path ??
     path.join(path.dirname(options.database_path), "mcp-registry.json");
-  let latestQuota: Awaited<ReturnType<typeof collectQuota>> | undefined;
+  let latestQuota: Awaited<ReturnType<typeof collectQuota>> = {
+    schema_version: 1,
+    backend: selectBackend(),
+    generated_at: new Date(0).toISOString(),
+    fetched_at: new Date(0).toISOString(),
+    stale_after_seconds: 300,
+    freshness: "unavailable",
+    providers: [],
+  };
   let storageAbort: AbortController | undefined;
   let quotaPreferences: {
     hidden_providers: string[];
@@ -63,6 +114,22 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   } = { hidden_providers: [], hidden_windows: [] };
   const obsidianVaults: ObsidianVault[] = [];
   const obsidianLinks: WorkspaceLink[] = [];
+  const obsidianIntegrationFile = path.join(path.dirname(options.database_path), "obsidian-integration.json");
+  let storedObsidian: ObsidianStored = { manual_vaults: [], workspace_links: {} };
+  try {
+    storedObsidian = ObsidianStored.parse(JSON.parse(readFileSync(obsidianIntegrationFile, "utf8")));
+  } catch {
+    // First run or an unreadable optional integration file.
+  }
+  for (const vaultPath of storedObsidian.manual_vaults) {
+    obsidianVaults.push({ path: vaultPath, name: path.basename(vaultPath), source: "manual" });
+  }
+  for (const link of Object.values(storedObsidian.workspace_links)) obsidianLinks.push(link);
+  const persistObsidian = async () =>
+    saveStoredIntegration(obsidianIntegrationFile, {
+      manual_vaults: obsidianVaults.map((vault) => vault.path),
+      workspace_links: Object.fromEntries(obsidianLinks.map((link) => [link.workspace_id, link])),
+    });
   type RegistryEntry = {
     name: string;
     description: string;
@@ -91,6 +158,52 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       server_id: string;
     }
   >();
+  const storedInstallations = store.database
+    .prepare(
+      "SELECT id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at FROM mcp_installations ORDER BY name",
+    )
+    .all() as Array<Record<string, unknown>>;
+  for (const row of storedInstallations) {
+    mcpInstallations.set(String(row.id), {
+      id: String(row.id),
+      name: String(row.name),
+      package_kind: String(row.package_kind) as RegistryEntry["package_kind"],
+      identifier: String(row.identifier),
+      version: typeof row.version === "string" ? row.version : undefined,
+      install_path: typeof row.install_path === "string" ? row.install_path : undefined,
+      status: String(row.status),
+      installed_at: String(row.installed_at),
+      updated_at: String(row.updated_at),
+      server_id: "",
+    });
+  }
+  const registryEntrySchema = z.object({
+    name: z.string(),
+    description: z.string(),
+    version: z.string(),
+    package_kind: z.enum(["npm", "pypi", "remote", "local"]),
+    identifier: z.string(),
+    runtime_hint: z.string().optional(),
+    url: z.string().url().optional(),
+    required_env: z.array(z.string()).default([]),
+    runtime_arguments: z.array(z.string()).default([]),
+    package_arguments: z.array(z.string()).default([]),
+  });
+  const loadMcpRegistry = async (): Promise<void> => {
+    try {
+      const parsed = z
+        .array(z.record(z.string(), z.unknown()))
+        .parse(JSON.parse(await readFile(defaultMcpRegistryFile, "utf8")));
+      mcpRegistry.splice(
+        0,
+        mcpRegistry.length,
+        ...parsed.map((entry) => registryEntrySchema.parse(entry) as RegistryEntry),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        throw backendError("VALIDATION", "MCP registry cache is invalid");
+    }
+  };
   const scanRoots = [...(options.scan_roots ?? [])];
   let runtimeSettings = {
     close_behavior: undefined as "minimize-to-tray" | "quit" | undefined,
@@ -100,7 +213,270 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     quota_auto_refresh_enabled: false,
     quota_prompt_seen: false,
   };
+  const preferencesPath = path.join(path.dirname(options.database_path), "preferences.json");
+  let sessionIndexEnabled = true;
+  let onboarding = {
+    version: 1,
+    acknowledged_version: 0,
+    workspace_id: undefined as string | undefined,
+    doctor_completed: false,
+    repairable_count: 0,
+    repair_applied: false,
+  };
+  try {
+    const root = JSON.parse(readFileSync(preferencesPath, "utf8")) as Record<string, unknown>;
+    if (typeof root.session_index_enabled === "boolean")
+      sessionIndexEnabled = root.session_index_enabled;
+    if (root.close_behavior === "minimize-to-tray" || root.close_behavior === "quit")
+      runtimeSettings.close_behavior = root.close_behavior;
+    if (
+      root.locale_preference === "system" ||
+      root.locale_preference === "zh-CN" ||
+      root.locale_preference === "zh-TW" ||
+      root.locale_preference === "ja-JP" ||
+      root.locale_preference === "en-US"
+    )
+      runtimeSettings.locale_preference = root.locale_preference;
+    if (
+      root.theme_preference === "system" ||
+      root.theme_preference === "light" ||
+      root.theme_preference === "dark"
+    )
+      runtimeSettings.theme_preference = root.theme_preference;
+    if (root.app_icon_preference === "white" || root.app_icon_preference === "black")
+      runtimeSettings.app_icon_preference = root.app_icon_preference;
+    if (typeof root.quota_auto_refresh_enabled === "boolean")
+      runtimeSettings.quota_auto_refresh_enabled = root.quota_auto_refresh_enabled;
+    if (typeof root.quota_auto_refresh_prompt_seen === "boolean")
+      runtimeSettings.quota_prompt_seen = root.quota_auto_refresh_prompt_seen;
+    if (root.quota_preferences && typeof root.quota_preferences === "object") {
+      const quota = root.quota_preferences as Record<string, unknown>;
+      if (
+        Array.isArray(quota.hidden_providers) &&
+        Array.isArray(quota.hidden_windows) &&
+        quota.hidden_providers.every((item) => typeof item === "string") &&
+        quota.hidden_windows.every((item) => typeof item === "object" && item !== null)
+      ) {
+        quotaPreferences = {
+          hidden_providers: quota.hidden_providers as string[],
+          hidden_windows: quota.hidden_windows as Array<Record<string, unknown>>,
+        };
+      }
+    }
+    if (root.onboarding && typeof root.onboarding === "object")
+      onboarding = { ...onboarding, ...(root.onboarding as Partial<typeof onboarding>) };
+  } catch {
+    // First run: defaults above are the compatible Rust defaults.
+  }
+  const persistPreferences = async (updates: Record<string, unknown>): Promise<void> => {
+    let root: Record<string, unknown> = {};
+    try {
+      root = JSON.parse(await readFile(preferencesPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      // The preferences file is optional on first run.
+    }
+    const temp = `${preferencesPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(temp, JSON.stringify({ ...root, ...updates }, null, 2) + "\n", { mode: 0o600 });
+    await rename(temp, preferencesPath);
+  };
   let insightsRefreshedAt: string | undefined;
+  let catalogInitialized = false;
+  type InsightQuery = {
+    from?: string;
+    to?: string;
+    agent?: string;
+    workspace_id?: string;
+    repository_group_id?: string;
+  };
+  const insightQuery = (params: unknown): InsightQuery =>
+    z
+      .object({
+        from: z.string().optional(),
+        to: z.string().optional(),
+        agent: z.string().optional(),
+        workspace_id: z.string().optional(),
+        repository_group_id: z.string().optional(),
+      })
+      .parse(params ?? {});
+  const buildInsightsView = (query: InsightQuery) => {
+    const from = query.from ?? `${new Date().getFullYear()}-01-01`;
+    const to = query.to ?? new Date().toISOString().slice(0, 10);
+    const usage = store.database
+      .prepare(
+        "SELECT COALESCE(SUM(u.total_tokens),0) total, COALESCE(SUM(u.input_tokens),0) input, COALESCE(SUM(u.output_tokens),0) output, COALESCE(SUM(u.cache_read_tokens + u.cache_write_tokens),0) cache, COALESCE(SUM(u.reasoning_tokens),0) reasoning, COALESCE(SUM(u.session_count),0) sessions, MAX(CASE u.quality WHEN 'incomplete' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END) quality FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? AND (? IS NULL OR u.surface_agent=?) AND (? IS NULL OR u.workspace_id=?) AND (? IS NULL OR w.repository_group_id=?)",
+      )
+      .get(
+        from,
+        to,
+        query.agent ?? null,
+        query.agent ?? null,
+        query.workspace_id ?? null,
+        query.workspace_id ?? null,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      ) as Record<string, unknown>;
+    const commits = store.database
+      .prepare(
+        "SELECT COALESCE(SUM(is_mine),0) my_commits, COUNT(*) all_commits, COALESCE(SUM(EXISTS(SELECT 1 FROM commit_attributions a WHERE a.repository_group_id=c.repository_group_id AND a.commit_hash=c.commit_hash AND a.confidence='exact' AND (? IS NULL OR a.agent=?))),0) attributed_commits FROM git_commits c WHERE c.day>=? AND c.day<=? AND (? IS NULL OR c.repository_group_id=?)",
+      )
+      .get(
+        query.agent ?? null,
+        query.agent ?? null,
+        from,
+        to,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      ) as Record<string, unknown>;
+    const heatmap = new Map<string, {
+      date: string;
+      tokens: number;
+      my_commits: number;
+      all_commits: number;
+      attributed_commits: number;
+      sessions: number;
+      quality: "exact" | "estimated" | "incomplete";
+    }>();
+    const firstDay = new Date(`${from}T00:00:00Z`);
+    const lastDay = new Date(`${to}T00:00:00Z`);
+    if (!Number.isNaN(firstDay.getTime()) && !Number.isNaN(lastDay.getTime())) {
+      for (
+        const day = new Date(firstDay);
+        day <= lastDay;
+        day.setUTCDate(day.getUTCDate() + 1)
+      ) {
+        const date = day.toISOString().slice(0, 10);
+        heatmap.set(date, {
+          date,
+          tokens: 0,
+          my_commits: 0,
+          all_commits: 0,
+          attributed_commits: 0,
+          sessions: 0,
+          quality: "exact",
+        });
+      }
+    }
+    const usageHeatRows = store.database
+      .prepare(
+        "SELECT u.day, COALESCE(SUM(u.total_tokens),0) tokens, COALESCE(SUM(u.session_count),0) sessions, MAX(CASE u.quality WHEN 'incomplete' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END) quality FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? AND (? IS NULL OR u.surface_agent=?) AND (? IS NULL OR u.workspace_id=?) AND (? IS NULL OR w.repository_group_id=?) GROUP BY u.day",
+      )
+      .all(
+        from,
+        to,
+        query.agent ?? null,
+        query.agent ?? null,
+        query.workspace_id ?? null,
+        query.workspace_id ?? null,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      ) as Array<Record<string, unknown>>;
+    for (const row of usageHeatRows) {
+      const point = heatmap.get(String(row.day));
+      if (!point) continue;
+      point.tokens = Number(row.tokens);
+      point.sessions = Number(row.sessions);
+      point.quality = Number(row.quality) === 2 ? "incomplete" : Number(row.quality) === 1 ? "estimated" : "exact";
+    }
+    const commitHeatRows = store.database
+      .prepare(
+        "SELECT day, COALESCE(SUM(is_mine),0) my_commits, COUNT(*) all_commits, COALESCE(SUM(EXISTS(SELECT 1 FROM commit_attributions a WHERE a.repository_group_id=git_commits.repository_group_id AND a.commit_hash=git_commits.commit_hash AND a.confidence='exact' AND (? IS NULL OR a.agent=?))),0) attributed_commits FROM git_commits WHERE day>=? AND day<=? AND (? IS NULL OR repository_group_id=?) GROUP BY day ORDER BY day",
+      )
+      .all(query.agent ?? null, query.agent ?? null, from, to, query.repository_group_id ?? null, query.repository_group_id ?? null) as Array<Record<string, unknown>>;
+    for (const row of commitHeatRows) {
+      const point = heatmap.get(String(row.day));
+      if (!point) continue;
+      point.my_commits = Number(row.my_commits);
+      point.all_commits = Number(row.all_commits);
+      point.attributed_commits = Number(row.attributed_commits);
+    }
+    const heatmapPoints = [...heatmap.values()];
+    const activeDates = heatmapPoints
+      .filter((point) => point.tokens > 0 || point.sessions > 0 || point.my_commits > 0)
+      .map((point) => point.date);
+    const repositories = store.database
+      .prepare(
+        "SELECT c.repository_group_id, COALESCE(MIN(w.name),'Repository') name, COALESCE(SUM(c.is_mine),0) my_commits, COUNT(*) all_commits, COALESCE(SUM(EXISTS(SELECT 1 FROM commit_attributions a WHERE a.repository_group_id=c.repository_group_id AND a.commit_hash=c.commit_hash AND a.confidence='exact' AND (? IS NULL OR a.agent=?))),0) attributed_commits FROM git_commits c LEFT JOIN workspaces w ON w.repository_group_id=c.repository_group_id WHERE c.day>=? AND c.day<=? AND (? IS NULL OR c.repository_group_id=?) GROUP BY c.repository_group_id ORDER BY all_commits DESC",
+      )
+      .all(query.agent ?? null, query.agent ?? null, from, to, query.repository_group_id ?? null, query.repository_group_id ?? null);
+    const agents = store.database
+      .prepare(
+        "SELECT surface_agent agent, COALESCE(SUM(total_tokens),0) total_tokens, COALESCE(SUM(input_tokens),0) input_tokens, COALESCE(SUM(output_tokens),0) output_tokens, COALESCE(SUM(cache_read_tokens+cache_write_tokens),0) cache_tokens, COALESCE(SUM(reasoning_tokens),0) reasoning_tokens, COALESCE(SUM(session_count),0) session_count FROM usage_events WHERE day>=? AND day<=? GROUP BY surface_agent ORDER BY total_tokens DESC",
+      )
+      .all(from, to);
+    const models = store.database
+      .prepare(
+        "SELECT COALESCE(NULLIF(model,''),'__unknown_model__') model, COALESCE(SUM(total_tokens),0) total_tokens, COALESCE(SUM(session_count),0) session_count FROM usage_events WHERE day>=? AND day<=? GROUP BY model ORDER BY total_tokens DESC LIMIT 20",
+      )
+      .all(from, to);
+    const workspaces = store.database
+      .prepare(
+        "SELECT u.workspace_id, COALESCE(w.name,'__unlinked_workspace__') name, COALESCE(SUM(u.total_tokens),0) total_tokens, COALESCE(SUM(u.session_count),0) session_count FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? GROUP BY u.workspace_id, w.name HAVING total_tokens>0 OR session_count>0 ORDER BY total_tokens DESC",
+      )
+      .all(from, to);
+    const sortedActive = activeDates.slice().sort();
+    let longestStreak = 0;
+    let runningStreak = 0;
+    let previous: Date | undefined;
+    for (const date of sortedActive) {
+      const current = new Date(`${date}T00:00:00Z`);
+      if (previous && current.getTime() - previous.getTime() === 86_400_000) runningStreak += 1;
+      else runningStreak = 1;
+      longestStreak = Math.max(longestStreak, runningStreak);
+      previous = current;
+    }
+    let currentStreak = 0;
+    if (sortedActive.length) {
+      const today = new Date(`${to}T00:00:00Z`);
+      const last = new Date(`${sortedActive.at(-1)}T00:00:00Z`);
+      if (today.getTime() - last.getTime() <= 86_400_000) {
+        currentStreak = 1;
+        for (let index = sortedActive.length - 1; index > 0; index -= 1) {
+          const a = new Date(`${sortedActive[index]}T00:00:00Z`).getTime();
+          const b = new Date(`${sortedActive[index - 1]}T00:00:00Z`).getTime();
+          if (a - b !== 86_400_000) break;
+          currentStreak += 1;
+        }
+      }
+    }
+    const summary = {
+      total_tokens: Number(usage.total),
+      input_tokens: Number(usage.input),
+      output_tokens: Number(usage.output),
+      cache_tokens: Number(usage.cache),
+      reasoning_tokens: Number(usage.reasoning),
+      session_count: Number(usage.sessions),
+      my_commits: Number(commits.my_commits),
+      all_commits: Number(commits.all_commits),
+      attributed_commits: Number(commits.attributed_commits),
+      active_days: activeDates.length,
+      current_streak: currentStreak,
+      longest_streak: longestStreak,
+      quality: Number(usage.quality) === 2 ? "incomplete" as const : Number(usage.quality) === 1 ? "estimated" as const : "exact" as const,
+      coverage_from: activeDates[0],
+      coverage_to: activeDates.at(-1),
+      refreshed_at: insightsRefreshedAt,
+    };
+    return {
+      summary: {
+        ...summary,
+      },
+      heatmap: heatmapPoints,
+      agents,
+      models,
+      workspaces,
+      repositories,
+      achievements: buildAchievements(summary, Number(workspaces.length), agents.filter((agent) => Number((agent as Record<string, unknown>).total_tokens) > 0 || Number((agent as Record<string, unknown>).session_count) > 0).length),
+      status: registry["insights.status"]({}, new AbortController().signal),
+    };
+  };
+  const refreshInsights = async () => {
+    for (const workspace of store.listWorkspaces()) {
+      const snapshot = await collectGit(workspace.canonical_path);
+      if (snapshot) store.syncGitSnapshot(snapshot);
+    }
+    insightsRefreshedAt = new Date().toISOString();
+    return registry["insights.status"]({}, new AbortController().signal);
+  };
   const resolveMcpFile = (params: unknown): string => {
     const value = z
       .object({ file: z.string().optional(), project: z.string().nullable().optional() })
@@ -160,7 +536,35 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     throw backendError("NOT_FOUND", `Session not found: ${sessionId}`);
   };
   const publicWorkspace = (value: ReturnType<BackendStore["listWorkspaces"]>) =>
-    value.map((workspace) => ({ ...workspace, path: workspace.canonical_path, sources: [] }));
+    value.map((workspace) => ({
+      ...workspace,
+      path: workspace.canonical_path,
+      sources: store.listWorkspaceSources(workspace.id).map((source) => ({
+        ...(typeof source.agent === "string" && source.agent !== "unknown"
+          ? { agent: source.agent }
+          : {}),
+        evidence: source.evidence,
+        session_count: Number(source.session_count ?? 0),
+        ...(typeof source.last_active_at === "string"
+          ? { last_active_at: source.last_active_at }
+          : {}),
+      })),
+    }));
+  const scanAndRecord = async (workspacePath: string) => {
+    const result = await scanWorkspace(workspacePath);
+    const workspace = store
+      .listWorkspaces()
+      .find((item) => path.resolve(item.canonical_path) === path.resolve(workspacePath));
+    if (workspace) store.recordWorkspaceScan(workspace.canonical_path, result);
+    return result;
+  };
+  const ensureCatalog = async () => {
+    if (catalogInitialized) return;
+    catalogInitialized = true;
+    for (const workspace of store.listWorkspaces()) {
+      await scanAndRecord(workspace.canonical_path);
+    }
+  };
   const registry: Record<string, (params: unknown, signal: AbortSignal) => unknown> = {
     "runtime.info": () => ({
       app_name: "AgentKib",
@@ -173,6 +577,17 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       mcp_hub: hubStatus(),
       mcp_network: { port: 0, lan_enabled: false, lan_risk_accepted: false },
       ...runtimeSettings,
+      locale_preference: runtimeSettings.locale_preference ?? "system",
+      effective_locale:
+        (runtimeSettings.locale_preference && runtimeSettings.locale_preference !== "system"
+          ? runtimeSettings.locale_preference
+          : undefined) ?? (process.env.LANG?.toLowerCase().includes("zh") ? "zh-TW" : "en-US"),
+      effective_theme:
+        runtimeSettings.theme_preference === "system" ? "light" : runtimeSettings.theme_preference,
+      tray_available: true,
+      quota_auto_refresh_prompt_seen: runtimeSettings.quota_prompt_seen,
+      session_index_enabled: sessionIndexEnabled,
+      onboarding,
       protocolVersion: 1,
       runtime: { name: "@agentkib/backend", version: "0.5.0" },
       pid: process.pid,
@@ -184,7 +599,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .refine((item) => item.project || item.root)
         .parse(params);
       if (signal.aborted) throw backendError("CANCELLED", "Workspace scan cancelled");
-      return scanWorkspace(value.project ?? value.root!);
+      return scanAndRecord(value.project ?? value.root!);
     },
     "workspace.prepareManifest": async (params) => {
       const value = z.object({ project: z.string() }).parse(params);
@@ -199,12 +614,36 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const value = z.object({ id: z.string() }).parse(params);
       const workspace = store.getWorkspace(value.id);
       if (signal.aborted) throw backendError("CANCELLED", "Workspace refresh cancelled");
-      return scanWorkspace(workspace.canonical_path);
+      return scanAndRecord(workspace.canonical_path);
     },
     "workspace.doctorReport": async (params) => {
       const value = z.object({ id: z.string() }).parse(params);
       const workspace = store.getWorkspace(value.id);
       return diagnoseWorkspace(workspace.canonical_path, workspace.id);
+    },
+    "workspace.doctorSummaries": async (params) => {
+      const value = z.object({ workspaceIds: z.array(z.string()).max(100) }).parse(params);
+      const summaries = await Promise.all(
+        value.workspaceIds.map(async (workspaceId) => {
+          try {
+            const report = await registry["workspace.doctorReport"](
+              { id: workspaceId },
+              new AbortController().signal,
+            );
+            return (report as { summary: unknown }).summary;
+          } catch {
+            return {
+              workspace_id: workspaceId,
+              error_count: 0,
+              warning_count: 0,
+              info_count: 0,
+              repairable_count: 0,
+              checked_at: new Date().toISOString(),
+            };
+          }
+        }),
+      );
+      return summaries;
     },
     "workspace.sessions": async (params) => {
       const value = z.object({ workspaceId: z.string() }).parse(params);
@@ -287,6 +726,17 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .parse(params);
       return sanitizeHandoffContent(value.editedContent, process.env.HOME).content;
     },
+    "sessions.clearIndex": async (params) => {
+      z.object({ workspaceId: z.string().optional() }).parse(params);
+      // The TypeScript index is derived from transcripts and has no separate cache to invalidate.
+      return undefined;
+    },
+    "sessions.setIndexEnabled": async (params) => {
+      sessionIndexEnabled = z.object({ value: z.boolean() }).parse(params).value;
+      if (!sessionIndexEnabled) await persistPreferences({ session_index_enabled: false });
+      else await persistPreferences({ session_index_enabled: true });
+      return registry["runtime.info"]({}, new AbortController().signal);
+    },
     "sessions.summarizeHandoff": async (params) => {
       const value = z.object({ request: z.record(z.string(), z.unknown()) }).parse(params);
       const request = value.request as {
@@ -363,14 +813,104 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         path.join(path.dirname(options.database_path), "backups"),
         false,
       );
+      const targetAgent = String(value.launchRequest.target_agent);
+      if (targetAgent !== "codex" && targetAgent !== "claude-code")
+        throw backendError("VALIDATION", "target Agent does not support interactive continuation");
       return {
         status: "launched",
-        receipt: { target_agent: String(value.launchRequest.target_agent), terminal: "pending" },
+        receipt: { target_agent: targetAgent, terminal: "pending" },
+        launch: {
+          command: targetAgent === "codex" ? "codex" : "claude",
+          args:
+            targetAgent === "codex"
+              ? ["-c", `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.'`]
+              : ["--append-system-prompt", `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.`],
+          cwd: path.resolve(store.workspacePath(String(value.launchRequest.workspace_id))),
+        },
       };
     },
     "sessions.launchHandoff": (params) => {
-      const value = z.object({ target_agent: z.string() }).passthrough().parse(params);
-      return { target_agent: value.target_agent, terminal: "pending" };
+      const value = z
+        .object({ workspace_id: z.string(), filename: z.string(), target_agent: z.string() })
+        .parse(params);
+      if (!/^[A-Za-z0-9._-]+\.(md|json)$/.test(value.filename))
+        throw backendError("VALIDATION", "Invalid handoff filename");
+      const targetAgent = value.target_agent;
+      if (targetAgent !== "codex" && targetAgent !== "claude-code")
+        throw backendError("VALIDATION", "target Agent does not support interactive continuation");
+      const project = path.resolve(store.workspacePath(value.workspace_id));
+      const handoff = path.join(project, ".agentkib", "handoffs", value.filename);
+      try {
+        readFileSync(handoff, "utf8");
+      } catch {
+        throw backendError("NOT_FOUND", "Handoff file not found");
+      }
+      return {
+        target_agent: targetAgent,
+        terminal: "pending",
+        launch: {
+          command: targetAgent === "codex" ? "codex" : "claude",
+          args:
+            targetAgent === "codex"
+              ? ["-c", `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.'`]
+              : ["--append-system-prompt", `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.`],
+          cwd: project,
+        },
+      };
+    },
+    "onboarding.update": async (params) => {
+      const value = z
+        .object({
+          event: z.discriminatedUnion("event", [
+            z.object({
+              event: z.literal("doctor-completed"),
+              workspace_id: z.string(),
+              repairable_count: z.number().int().nonnegative(),
+            }),
+            z.object({ event: z.literal("repair-applied"), workspace_id: z.string() }),
+            z.object({ event: z.literal("dismissed") }),
+            z.object({ event: z.literal("restarted") }),
+          ]),
+        })
+        .parse(params);
+      switch (value.event.event) {
+        case "doctor-completed":
+          if (onboarding.workspace_id !== value.event.workspace_id)
+            onboarding.repair_applied = false;
+          onboarding = {
+            ...onboarding,
+            workspace_id: value.event.workspace_id,
+            doctor_completed: true,
+            repairable_count: value.event.repairable_count,
+            acknowledged_version:
+              value.event.repairable_count === 0
+                ? onboarding.version
+                : onboarding.acknowledged_version,
+          };
+          break;
+        case "repair-applied":
+          onboarding = {
+            ...onboarding,
+            workspace_id: value.event.workspace_id,
+            repair_applied: true,
+          };
+          break;
+        case "dismissed":
+          onboarding = { ...onboarding, acknowledged_version: onboarding.version };
+          break;
+        case "restarted":
+          onboarding = {
+            version: 1,
+            acknowledged_version: 0,
+            workspace_id: undefined,
+            doctor_completed: false,
+            repairable_count: 0,
+            repair_applied: false,
+          };
+          break;
+      }
+      await persistPreferences({ onboarding });
+      return registry["runtime.info"]({}, new AbortController().signal);
     },
     "workspace.openers": () => [
       { id: "file-manager", name: "File manager", category: "file-manager", preferred: true },
@@ -408,21 +948,26 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         warnings: [],
       };
     },
-    "workspace.add": async (params) =>
-      store
-        .addWorkspace(
-          z
-            .object({
-              path: z.string().optional(),
-              project: z.string().optional(),
-              name: z.string().optional(),
-              status: z.enum(["healthy", "attention"]).optional(),
-            })
-            .refine((value) => value.path || value.project, "Workspace path is required")
-            .transform((value) => ({ ...value, path: value.path ?? value.project! }))
-            .parse(params),
-        )
-        .then((workspace) => ({ ...workspace, path: workspace.canonical_path, sources: [] })),
+    "workspace.add": async (params) => {
+      const workspace = await store.addWorkspace(
+        z
+          .object({
+            path: z.string().optional(),
+            project: z.string().optional(),
+            name: z.string().optional(),
+            status: z.enum(["healthy", "attention"]).optional(),
+          })
+          .refine((value) => value.path || value.project, "Workspace path is required")
+          .transform((value) => ({ ...value, path: value.path ?? value.project! }))
+          .parse(params),
+      );
+      await scanAndRecord(workspace.canonical_path);
+      return {
+        ...workspace,
+        path: workspace.canonical_path,
+        sources: store.listWorkspaceSources(workspace.id),
+      };
+    },
     "workspace.exclude": (params) => {
       store.excludeWorkspace(id.parse(params).id);
       return { ok: true };
@@ -436,8 +981,13 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       return { ok: true };
     },
     "workspace.gitSummary": async (params) => {
-      const value = z.object({ workspaceId: z.string() }).parse(params);
-      return workspaceSummary(store.workspacePath(value.workspaceId));
+      const value = z
+        .object({ workspaceId: z.string().optional(), id: z.string().optional() })
+        .refine((input) => input.workspaceId || input.id, "Workspace id is required")
+        .parse(params);
+      // JSON-RPC responses must contain an explicit value; `undefined` is
+      // rejected by the worker response schema for non-repository workspaces.
+      return (await workspaceSummary(store.workspacePath(value.workspaceId ?? value.id!))) ?? null;
     },
     "workspace.gitHistory": async (params) => {
       const value = z
@@ -450,7 +1000,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         since?: string;
         until?: string;
       };
-      return history(store.workspacePath(value.workspaceId), query);
+      return (await history(store.workspacePath(value.workspaceId), query)) ?? null;
     },
     "workspace.gitCommitFiles": async (params) => {
       const value = z.object({ workspaceId: z.string(), oid: z.string() }).parse(params);
@@ -473,6 +1023,10 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       if (signal.aborted) throw backendError("CANCELLED", "Discovery report cancelled");
       const started = new Date().toISOString();
       const result = await discover(scanRoots);
+      for (const candidate of result.candidates) {
+        if (signal.aborted) throw backendError("CANCELLED", "Discovery report cancelled");
+        await store.upsertDiscoveredWorkspace(candidate);
+      }
       return {
         started_at: started,
         finished_at: new Date().toISOString(),
@@ -575,7 +1129,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .parse(params);
       return store.reviewMemory(value.id, value.status, value.edited_content);
     },
-    "changes.plan": (params) => {
+    "changes.plan": async (params) => {
       const value = z
         .object({
           project: z.string(),
@@ -583,9 +1137,94 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           includeHome: z.boolean(),
         })
         .parse(params);
-      void value.manifest;
-      void value.includeHome;
-      return planChangeSet(value.project, []);
+      const manifest = value.manifest as unknown as import("../domain/types.js").Manifest;
+      const project = path.resolve(value.project);
+      const changes: Array<import("../changes/changeset.js").FileChange> = [];
+      const add = async (
+        target: string,
+        after: string,
+        scope: "project" | "agent-home" = "project",
+        risk: "low" | "medium" | "high" = "medium",
+        validator: "json" | "yaml" | "toml" | "markdown" | "text" = "text",
+      ) => {
+        const before = await readFile(target, "utf8").catch(() => "");
+        if (before === after) return;
+        const current = await readFile(target).catch(() => undefined);
+        changes.push({ target, scope, before, after, risk, validator, ...(current ? { original_hash: hashContent(current) } : {}) });
+      };
+      await add(manifestPath(project), stringifyYaml(manifest), "project", "low", "yaml");
+      const managed = (existing: string, content: string) => {
+        const start = "<!-- agentkib:managed:start -->";
+        const end = "<!-- agentkib:managed:end -->";
+        const block = `${start}\n${content.trim()}\n${end}`;
+        const range = new RegExp(`${start}[\\s\\S]*?${end}`, "m");
+        return range.test(existing) ? existing.replace(range, block) : `${existing.trimEnd()}${existing.trim() ? "\\n\\n" : ""}${block}\\n`;
+      };
+      const enabled = (agent: import("../domain/types.js").AgentKind) => manifest.adapters?.[agent]?.enabled !== false;
+      if (["codex", "cursor", "open-claw", "hermes"].some((agent) => enabled(agent as import("../domain/types.js").AgentKind)))
+        await add(path.join(project, "AGENTS.md"), managed(await readFile(path.join(project, "AGENTS.md"), "utf8").catch(() => ""), manifest.instructions.shared), "project", "medium", "markdown");
+      if (enabled("claude-code")) {
+        const override = manifest.instructions.platform_overrides["claude-code"]?.trim();
+        await add(path.join(project, "CLAUDE.md"), managed(await readFile(path.join(project, "CLAUDE.md"), "utf8").catch(() => ""), `@AGENTS.md${override ? `\n\n${override}` : ""}`), "project", "medium", "markdown");
+      }
+      const legacy = manifest.connections.filter((connection) => connection.name !== "agentkib");
+      if (legacy.length) {
+        const servers = Object.fromEntries(legacy.map((connection) => [connection.name, connection.transport === "stdio" ? { command: connection.command, args: connection.args ?? [], env: connection.env } : { url: connection.url, headers: connection.env }]));
+        await add(path.join(project, ".mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2) + "\n", "project", "medium", "json");
+        await add(path.join(project, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2) + "\n", "project", "medium", "json");
+      }
+      if (!value.includeHome) return planChangeSet(project, changes);
+      return planChangeSet(project, changes);
+    },
+    "agents.listInstallations": () => store.listAgentInstallations(),
+    "catalog.searchAssets": async (params) => {
+      await ensureCatalog();
+      const value = z
+        .object({
+          query: z.string().default(""),
+          agent: z.string().optional(),
+          workspace_id: z.string().optional(),
+          workspaceId: z.string().optional(),
+          limit: z.number().int().positive().max(500).default(500),
+        })
+        .parse(params);
+      return store
+        .searchCatalogAssets(
+          value.query,
+          value.agent,
+          value.workspace_id ?? value.workspaceId,
+          value.limit,
+        )
+        .map((row) => ({
+          ...row,
+          path: String(row.path),
+          ...(typeof row.summary_params === "string"
+            ? {
+                summary_params: (() => {
+                  try {
+                    const parsed = JSON.parse(row.summary_params);
+                    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                      ? parsed
+                      : {};
+                  } catch {
+                    return {};
+                  }
+                })(),
+              }
+            : {}),
+        }));
+    },
+    "memories.listGlobal": (params) => {
+      const value = z
+        .object({ status: z.enum(["pending", "approved", "rejected", "invalidated"]).optional() })
+        .parse(params);
+      return store.listGlobalMemories(value.status);
+    },
+    "activity.list": (params) => {
+      const value = z
+        .object({ limit: z.number().int().positive().max(500).default(200) })
+        .parse(params);
+      return store.listActivity(value.limit);
     },
     "changes.apply": async (params) => {
       const value = z
@@ -597,88 +1236,94 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         value.approveHome,
       );
     },
-    "insights.status": () => ({
-      providers: ["codex", "claude-code"].map((agent) => ({
-        agent,
-        available: false,
-        quality: "incomplete",
-        imported_events: 0,
-      })),
-      refreshed_at: insightsRefreshedAt,
-      running: false,
-    }),
-    "insights.refresh": () => {
-      insightsRefreshedAt = new Date().toISOString();
-      return registry["insights.status"]({}, new AbortController().signal);
+    "insights.status": () => {
+      const rows = store.database
+        .prepare(
+          "SELECT provider, available, quality, coverage_from, coverage_to, imported_events, error FROM insight_cursors WHERE provider NOT LIKE 'git:%' ORDER BY provider",
+        )
+        .all() as Array<Record<string, unknown>>;
+      const known = new Map(rows.map((row) => [String(row.provider), row]));
+      const providers = ["codex", "claude-code", "cursor", "open-claw", "hermes", "deepseek-harness"].map((agent) => {
+        const row = known.get(agent);
+        return {
+          agent,
+          available: Boolean(row?.available),
+          quality: String(row?.quality ?? "incomplete"),
+          coverage_from: typeof row?.coverage_from === "string" ? row.coverage_from : undefined,
+          coverage_to: typeof row?.coverage_to === "string" ? row.coverage_to : undefined,
+          imported_events: Number(row?.imported_events ?? 0),
+          error: typeof row?.error === "string" ? row.error : undefined,
+        };
+      });
+      return { providers, refreshed_at: insightsRefreshedAt, running: false };
     },
-    "insights.summary": () => ({
-      total_tokens: 0,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_tokens: 0,
-      reasoning_tokens: 0,
-      session_count: 0,
-      my_commits: 0,
-      all_commits: 0,
-      attributed_commits: 0,
-      active_days: 0,
-      current_streak: 0,
-      longest_streak: 0,
-      quality: "incomplete",
-      refreshed_at: insightsRefreshedAt,
-    }),
-    "insights.view": () => ({
-      summary: registry["insights.summary"]({}, new AbortController().signal),
-      heatmap: [],
-      agents: [],
-      models: [],
-      workspaces: [],
-      repositories: [],
-      achievements: [],
-      status: registry["insights.status"]({}, new AbortController().signal),
-    }),
-    "insights.heatmap": () => [],
-    "insights.agentUsage": () => [],
-    "insights.modelUsage": () => [],
-    "insights.workspaceUsage": () => [],
-    "insights.repositoryCommits": () => [],
-    "insights.achievements": () => [],
-    "insights.gitIdentities": () => [],
+    "insights.refresh": async () => refreshInsights(),
+    "insights.summary": (params) => buildInsightsView(insightQuery(params)).summary,
+    "insights.view": (params) => buildInsightsView(insightQuery(params)),
+    "insights.heatmap": (params) => buildInsightsView(insightQuery(params)).heatmap,
+    "insights.agentUsage": (params) => buildInsightsView(insightQuery(params)).agents,
+    "insights.modelUsage": (params) => buildInsightsView(insightQuery(params)).models,
+    "insights.workspaceUsage": (params) => buildInsightsView(insightQuery(params)).workspaces,
+    "insights.repositoryCommits": (params) => buildInsightsView(insightQuery(params)).repositories,
+    "insights.achievements": () => {
+      const view = buildInsightsView({});
+      const workspaceCount = store.database
+        .prepare("SELECT COUNT(*) count FROM workspaces WHERE status != 'excluded'")
+        .get() as { count: number };
+      return buildAchievements(view.summary, Number(workspaceCount.count), view.agents.filter((agent) => Number((agent as Record<string, unknown>).total_tokens) > 0 || Number((agent as Record<string, unknown>).session_count) > 0).length);
+    },
+    "insights.gitIdentities": () =>
+      (store.database
+        .prepare("SELECT id, label, source, enabled FROM git_identities ORDER BY source, label")
+        .all() as Array<Record<string, unknown>>).map((row) => ({
+        id: String(row.id),
+        label: String(row.label),
+        source: String(row.source),
+        enabled: Boolean(row.enabled),
+      })),
     "insights.addGitIdentityAlias": (params) => {
       const value = z.object({ email: z.string().email() }).parse(params);
-      return { id: value.email, label: value.email, source: "runtime", enabled: true };
+      const salt = (store.database.prepare("SELECT value FROM schema_meta WHERE key = 'insights_salt'").get() as { value?: string } | undefined)?.value ?? randomUUID();
+      store.database.prepare("INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('insights_salt', ?)").run(salt);
+      const id = createHmac("sha256", salt).update(value.email.trim().toLowerCase()).digest("hex");
+      store.database.prepare("INSERT INTO git_identities(id, identity_hash, source, label, enabled, created_at) VALUES (?, ?, 'manual', 'settings.gitIdentityAlias', 1, ?) ON CONFLICT(identity_hash) DO UPDATE SET enabled = 1").run(id, id, new Date().toISOString());
+      return { id, label: "settings.gitIdentityAlias", source: "manual", enabled: true };
     },
     "insights.setGitIdentityEnabled": (params) => {
       z.object({ id: z.string(), enabled: z.boolean() }).parse(params);
       return { ok: true };
     },
-    "settings.setCloseBehavior": (params) => {
+    "settings.setCloseBehavior": async (params) => {
       runtimeSettings.close_behavior =
         z.object({ value: z.enum(["minimize-to-tray", "quit"]).nullable() }).parse(params).value ??
         undefined;
+      await persistPreferences({ close_behavior: runtimeSettings.close_behavior ?? null });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
-    "settings.setLocale": (params) => {
+    "settings.setLocale": async (params) => {
       runtimeSettings.locale_preference = z
-        .object({ preference: z.string() })
+        .object({ preference: z.enum(["zh-CN", "zh-TW", "ja-JP", "en-US", "system"]) })
         .parse(params).preference;
+      await persistPreferences({ locale_preference: runtimeSettings.locale_preference });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
-    "settings.setThemePreference": (params) => {
+    "settings.setThemePreference": async (params) => {
       runtimeSettings.theme_preference = z
         .object({ preference: z.enum(["system", "light", "dark"]) })
         .parse(params).preference;
+      await persistPreferences({ theme_preference: runtimeSettings.theme_preference });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
-    "settings.setAppIconPreference": (params) => {
+    "settings.setAppIconPreference": async (params) => {
       runtimeSettings.app_icon_preference = z
         .object({ preference: z.enum(["white", "black"]) })
         .parse(params).preference;
+      await persistPreferences({ app_icon_preference: runtimeSettings.app_icon_preference });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
     "quota.collect": async (_params, signal) =>
       collectQuota(
-        new NodeQuotaRunner(options.quota_executable ?? "codexbar-cli"),
+        new NodeQuotaRunner(options.quota_executable ?? "codexbar-cli", options.quota_config_path),
         undefined,
         30_000,
         signal,
@@ -770,6 +1415,16 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const tools = await mcpHub.listTools(server, signal);
       return { ok: true, tools };
     },
+    "mcp.startOAuth": async (params: unknown) => {
+      const value = z
+        .object({ id: z.string().optional(), serverId: z.string().optional() })
+        .parse(params);
+      const serverId = value.id ?? value.serverId;
+      if (!serverId) throw backendError("VALIDATION", "MCP server id is required");
+      // The OAuth browser callback belongs to Electron main; this headless backend deliberately
+      // refuses to mint or expose an authorization URL until that adapter is wired.
+      throw backendError("IO", `MCP OAuth is unavailable for server: ${serverId}`);
+    },
     "mcp.restartRuntime": async (params: unknown, signal: AbortSignal) => {
       const value = z
         .object({ id: z.string().optional(), serverId: z.string().optional() })
@@ -786,40 +1441,16 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const value = z.object({ settings: z.record(z.string(), z.unknown()) }).parse(params);
       return { ...value.settings, ...hubStatus() };
     },
-    "mcp.searchRegistry": (params: unknown) => {
+    "mcp.searchRegistry": async (params: unknown) => {
       const value = z.object({ query: z.string().default("") }).parse(params);
+      if (!mcpRegistry.length) await loadMcpRegistry();
       const query = value.query.toLowerCase();
       return mcpRegistry.filter((entry) =>
         `${entry.name} ${entry.description} ${entry.identifier}`.toLowerCase().includes(query),
       );
     },
     "mcp.refreshRegistry": async (params: unknown) => {
-      try {
-        const parsed = z
-          .array(z.record(z.string(), z.unknown()))
-          .parse(JSON.parse(await readFile(defaultMcpRegistryFile, "utf8")));
-        const entries = parsed.map(
-          (entry) =>
-            z
-              .object({
-                name: z.string(),
-                description: z.string(),
-                version: z.string(),
-                package_kind: z.enum(["npm", "pypi", "remote", "local"]),
-                identifier: z.string(),
-                runtime_hint: z.string().optional(),
-                url: z.string().url().optional(),
-                required_env: z.array(z.string()).default([]),
-                runtime_arguments: z.array(z.string()).default([]),
-                package_arguments: z.array(z.string()).default([]),
-              })
-              .parse(entry) as RegistryEntry,
-        );
-        mcpRegistry.splice(0, mcpRegistry.length, ...entries);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-          throw backendError("VALIDATION", "MCP registry cache is invalid");
-      }
+      await loadMcpRegistry();
       return registry["mcp.searchRegistry"](params, new AbortController().signal);
     },
     "mcp.install": async (params: unknown) => {
@@ -845,6 +1476,15 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .parse(value.entry) as RegistryEntry;
       if (entry.package_kind === "remote" && !entry.url)
         throw backendError("VALIDATION", "Remote MCP entries require a URL");
+      let installPath: string | undefined;
+      if (entry.package_kind === "npm" || entry.package_kind === "pypi") {
+        installPath = path.join(path.dirname(options.database_path), "mcp-packages", `${entry.name.replace(/[^A-Za-z0-9._-]+/g, "-")}-${entry.version}`);
+        const packageSpec = `${entry.identifier}${entry.version ? entry.package_kind === "npm" ? `@${entry.version}` : `==${entry.version}` : ""}`;
+        const result = entry.package_kind === "npm"
+          ? await runManaged({ executable: "npm", args: ["install", "--ignore-scripts", "--no-package-lock", "--prefix", installPath, packageSpec], timeoutMs: 120_000 })
+          : await runManaged({ executable: "uv", args: ["pip", "install", "--target", installPath, packageSpec], timeoutMs: 120_000 });
+        if (result.code !== 0) throw backendError("IO", `${entry.package_kind} MCP package installation failed`);
+      }
       const serverId = `${entry.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${randomUUID().slice(0, 8)}`;
       const server: McpServer =
         entry.package_kind === "remote"
@@ -894,12 +1534,28 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         package_kind: entry.package_kind,
         identifier: entry.identifier,
         version: entry.version,
-        status: "configured",
+        install_path: installPath,
+        status: installPath ? "installed" : "configured",
         installed_at: now,
         updated_at: now,
         server_id: server.id,
       };
       mcpInstallations.set(installation.id, installation);
+      store.database
+        .prepare(
+          "INSERT INTO mcp_installations(id, name, package_kind, identifier, version, install_path, status, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, status = excluded.status",
+        )
+        .run(
+          installation.id,
+          installation.name,
+          installation.package_kind,
+          installation.identifier,
+          installation.version ?? null,
+          installation.install_path ?? null,
+          installation.status,
+          installation.installed_at,
+          installation.updated_at,
+        );
       return {
         installation: { ...installation, server_id: undefined },
         server: publicMcpServer(server),
@@ -922,6 +1578,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         new AbortController().signal,
       )) as { installation: unknown; server: unknown; tools: unknown[] };
       mcpInstallations.delete(value.installationId);
+      store.database
+        .prepare("DELETE FROM mcp_installations WHERE id = ?")
+        .run(value.installationId);
       return result;
     },
     "mcp.listInstallations": () =>
@@ -933,15 +1592,85 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const current = mcpInstallations.get(value.installationId);
       if (!current)
         throw backendError("NOT_FOUND", `MCP installation not found: ${value.installationId}`);
+      if (current.server_id) await removeMcpServer(defaultMcpFile, current.server_id).catch(() => undefined);
+      if (current.install_path) await rm(current.install_path, { recursive: true, force: true });
       mcpInstallations.delete(value.installationId);
+      store.database
+        .prepare("DELETE FROM mcp_installations WHERE id = ?")
+        .run(value.installationId);
       return { ok: true };
     },
-    "mcp.scanNative": () => [],
-    "mcp.planMigration": (params: unknown) => {
+    "mcp.scanNative": async (params: unknown) => {
+      const value = z.object({ project: z.string().optional() }).parse(params);
+      const project = value.project ?? store.listWorkspaces()[0]?.canonical_path;
+      if (!project) return [];
+      const files = [
+        ["claude-code", path.join(project, ".mcp.json")],
+        ["cursor", path.join(project, ".cursor", "mcp.json")],
+        ["codex", path.join(project, ".codex", "config.toml")],
+      ] as const;
+      const candidates: Array<Record<string, unknown>> = [];
+      for (const [agent, file] of files) {
+        if (!(await lstat(file).catch(() => undefined))) continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = file.endsWith(".toml") ? parseToml(await readFile(file, "utf8")) as Record<string, unknown> : JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        const serversValue = file.endsWith(".toml") ? parsed.mcp_servers : parsed.mcpServers;
+        const servers = serversValue && typeof serversValue === "object" ? serversValue as Record<string, unknown> : {};
+        for (const [name, raw] of Object.entries(servers)) {
+          const server = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+          candidates.push({
+            id: `${agent}:${file}:${name}`,
+            agent,
+            scope: "project",
+            name,
+            source_path: file,
+            transport: typeof server.url === "string" ? "http" : "stdio",
+            endpoint: String(server.url ?? server.command ?? ""),
+            has_secret_values: Object.keys((server.env ?? {}) as object).some((key) => /token|secret|key|password/i.test(key)),
+            supported: Boolean(server.url || server.command),
+            warnings: server.url || server.command ? [] : ["MCP entry has no URL or command"],
+          });
+        }
+      }
+      return candidates;
+    },
+    "mcp.planMigration": async (params: unknown) => {
       const value = z
         .object({ project: z.string(), candidateIds: z.array(z.string()) })
         .parse(params);
-      return planChangeSet(value.project, []);
+      if (!value.candidateIds.length) throw backendError("VALIDATION", "Select at least one native MCP candidate");
+      const candidates = await registry["mcp.scanNative"]({ project: value.project }, new AbortController().signal) as Array<Record<string, unknown>>;
+      const selected = candidates.filter((candidate) => value.candidateIds.includes(String(candidate.id)) && candidate.supported);
+      if (selected.length !== value.candidateIds.length) throw backendError("CONFLICT", "Native MCP candidates changed; scan again");
+      const target = path.join(value.project, ".agentkib", "mcp.json");
+      const existing = await loadMcpConfig(target).catch(() => ({ schema_version: 1, servers: [] }));
+      const servers = selected.map((candidate) => ({
+        id: `${String(candidate.agent)}-${String(candidate.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        name: String(candidate.name), enabled: true, allow_tools: [], lan_allow_tools: [], targets: [String(candidate.agent)],
+        transport: candidate.transport === "http" ? { transport: "streamable-http" as const, url: String(candidate.endpoint), headers: {} } : { transport: "stdio" as const, command: String(candidate.endpoint), args: [], env: {} },
+      }));
+      const merged = [...existing.servers.filter((server) => !servers.some((item) => item.name === server.name)), ...servers];
+      const changes: Array<import("../changes/changeset.js").FileChange> = [];
+      const before = await readFile(target, "utf8").catch(() => "");
+      changes.push({ target, scope: "project", before, ...(before ? { original_hash: hashContent(before) } : {}), after: JSON.stringify({ schema_version: 1, servers: merged }, null, 2) + "\n", risk: "medium", validator: "json" });
+      for (const source of [...new Set(selected.map((candidate) => String(candidate.source_path)))]) {
+        const sourceBefore = await readFile(source, "utf8").catch(() => "");
+        if (!sourceBefore || source.endsWith(".toml")) continue;
+        try {
+          const sourceDoc = JSON.parse(sourceBefore) as Record<string, unknown>;
+          const sourceServers = sourceDoc.mcpServers && typeof sourceDoc.mcpServers === "object" ? sourceDoc.mcpServers as Record<string, unknown> : {};
+          for (const candidate of selected.filter((item) => item.source_path === source)) delete sourceServers[String(candidate.name)];
+          const sourceAfter = JSON.stringify({ ...sourceDoc, mcpServers: sourceServers }, null, 2) + "\n";
+          changes.push({ target: source, scope: "project", before: sourceBefore, original_hash: hashContent(sourceBefore), after: sourceAfter, risk: "medium", validator: "json" });
+        } catch {
+          throw backendError("VALIDATION", `Native MCP configuration is invalid: ${source}`);
+        }
+      }
+      return planChangeSet(value.project, changes);
     },
     "gateways.list": async (params: unknown) =>
       (await listGateways(resolveGatewayFile(params))).map((gateway) => ({
@@ -954,13 +1683,14 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           (gateway.token ? "token" : "none"),
         username: (gateway as Gateway & { username?: string }).username,
         has_credentials: Boolean(gateway.token),
-        state: "pending",
-        capabilities: [],
-        session_count: 0,
-        workspaces: [],
-        assets: [],
+        state: (gateway as Gateway & { state?: string }).state ?? "pending",
+        version: (gateway as Gateway & { version?: string }).version,
+        capabilities: (gateway as Gateway & { capabilities?: string[] }).capabilities ?? [],
+        session_count: Number((gateway as Gateway & { session_count?: number }).session_count ?? 0),
+        workspaces: (gateway as Gateway & { workspaces?: unknown[] }).workspaces ?? [],
+        assets: (gateway as Gateway & { assets?: unknown[] }).assets ?? [],
       })),
-    "gateways.save": async (params: unknown) => {
+    "gateways.save": async (params: unknown, signal: AbortSignal) => {
       const value = z
         .object({
           gateway: Gateway.optional(),
@@ -986,7 +1716,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         ...config,
         gateways: [...config.gateways.filter((item) => item.id !== gateway.id), gateway],
       });
-      return {
+      const saved = {
         id: gateway.id,
         kind: (gateway as Gateway & { kind?: string }).kind ?? "open-claw",
         name: gateway.name,
@@ -1002,6 +1732,12 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         workspaces: [],
         assets: [],
       };
+      // Match Rust's save semantics: persist first, then immediately probe the endpoint.
+      try {
+        return await registry["gateways.refresh"]({ id: gateway.id }, signal);
+      } catch {
+        return saved;
+      }
     },
     "gateways.remove": async (params: unknown) => {
       const value = z.object({ id: z.string() }).parse(params);
@@ -1012,12 +1748,28 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       });
       return { ok: true };
     },
-    "gateways.refresh": async (params: unknown) => {
+    "gateways.refresh": async (params: unknown, signal: AbortSignal) => {
       const value = z.object({ id: z.string() }).parse(params);
-      const gateways = await registry["gateways.list"]({}, new AbortController().signal);
-      const gateway = (gateways as Array<{ id: string }>).find((item) => item.id === value.id);
+      const file = resolveGatewayFile(params);
+      const config = await loadGatewayConfig(file);
+      const gateway = config.gateways.find((item) => item.id === value.id);
       if (!gateway) throw backendError("NOT_FOUND", `Gateway not found: ${value.id}`);
-      return gateway;
+      try {
+        const response = await fetch(gateway.base_url, { headers: gateway.token ? { Authorization: `Bearer ${gateway.token}` } : {}, signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+        Object.assign(gateway, {
+          state: "connected",
+          version: typeof body.version === "string" ? body.version : undefined,
+          capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((item): item is string => typeof item === "string") : [],
+          last_connected_at: new Date().toISOString(),
+          last_error: undefined,
+        });
+      } catch (error) {
+        Object.assign(gateway, { state: "error", last_error: error instanceof Error ? error.message : "Gateway refresh failed" });
+      }
+      await saveGatewayConfig(file, config);
+      return (await registry["gateways.list"](params, new AbortController().signal) as Array<Record<string, unknown>>).find((item) => item.id === value.id);
     },
     "obsidian.open": (params: unknown) => {
       const value = z
@@ -1044,6 +1796,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         source: "manual",
       });
       if (!obsidianVaults.some((item) => item.path === vault.path)) obsidianVaults.push(vault);
+      await persistObsidian();
       return registry["obsidian.integration"]({}, new AbortController().signal);
     },
     "obsidian.linkWorkspace": async (params: unknown) => {
@@ -1060,6 +1813,8 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         name: path.basename(value.vaultPath),
         source: "manual",
       });
+      const knownVault = obsidianVaults.some((item) => path.resolve(item.path) === path.resolve(vault.path));
+      if (!knownVault) throw backendError("NOT_FOUND", "The Obsidian vault must be added before it can be linked");
       const link = await createWorkspaceLink(
         workspace.canonical_path,
         vault,
@@ -1069,6 +1824,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const existing = obsidianLinks.findIndex((item) => item.workspace_id === workspace.id);
       if (existing >= 0) obsidianLinks[existing] = link;
       else obsidianLinks.push(link);
+      await persistObsidian();
       return {
         workspace_id: link.workspace_id,
         vault_path: link.vault_path,
@@ -1079,7 +1835,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const value = z.object({ id: z.string() }).parse(params);
       const index = obsidianLinks.findIndex((item) => item.workspace_id === value.id);
       if (index >= 0) obsidianLinks.splice(index, 1);
-      return { ok: true };
+      return persistObsidian().then(() => ({ ok: true }));
     },
     "obsidian.openWorkspace": (params: unknown) => {
       const value = z.object({ id: z.string() }).parse(params);
@@ -1099,7 +1855,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       config_source: "runtime",
     }),
     "quota.preferences": () => quotaPreferences,
-    "quota.setPreferences": (params: unknown) => {
+    "quota.setPreferences": async (params: unknown) => {
       const value = z
         .object({
           preferences: z.object({
@@ -1109,16 +1865,23 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         })
         .parse(params);
       quotaPreferences = value.preferences;
+      await persistPreferences({ quota_preferences: quotaPreferences });
       return quotaPreferences;
     },
-    "quota.setAutoRefresh": (params: unknown) => {
+    "quota.setAutoRefresh": async (params: unknown) => {
       runtimeSettings.quota_auto_refresh_enabled = z
         .object({ value: z.boolean() })
         .parse(params).value;
+      await persistPreferences({
+        quota_auto_refresh_enabled: runtimeSettings.quota_auto_refresh_enabled,
+      });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
-    "quota.setPromptSeen": (params: unknown) => {
+    "quota.setPromptSeen": async (params: unknown) => {
       runtimeSettings.quota_prompt_seen = z.object({ value: z.boolean() }).parse(params).value;
+      await persistPreferences({
+        quota_auto_refresh_prompt_seen: runtimeSettings.quota_prompt_seen,
+      });
       return registry["runtime.info"]({}, new AbortController().signal);
     },
     "quota.refresh": async (_params: unknown, signal: AbortSignal) =>

@@ -144,7 +144,17 @@ export function InsightsPage({
   const filterClass =
     "h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1";
 
-  if (!view) return <InsightsSkeleton section={section} />;
+  if (!view) {
+    if (error) {
+      return (
+        <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <CircleAlert size={16} />
+          {error}
+        </div>
+      );
+    }
+    return <InsightsSkeleton section={section} />;
+  }
 
   return (
     <div className="relative grid gap-5">

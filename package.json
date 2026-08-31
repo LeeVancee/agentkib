@@ -6,6 +6,7 @@
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
+    "dev:typescript": "pnpm --filter @agentkib/desktop dev:typescript",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "format": "oxfmt packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",

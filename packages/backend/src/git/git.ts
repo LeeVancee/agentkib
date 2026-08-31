@@ -8,7 +8,12 @@ export interface GitWorkspaceSummary {
   worktree_root: string;
   head?: string;
   head_oid?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  stash_count: number;
   detached: boolean;
+  refs: Array<{ name: string; full_name: string; kind: string; current: boolean }>;
   changes: Array<{ path: string; kind: string; conflicted: boolean }>;
 }
 export interface GitHistoryQuery {
@@ -24,6 +29,7 @@ export interface GitCommitSummary {
   subject: string;
   author_name: string;
   authored_at: string;
+  refs: Array<{ name: string; full_name: string; kind: string; current: boolean }>;
 }
 export interface GitCommitPage {
   commits: GitCommitSummary[];
@@ -67,6 +73,54 @@ export async function workspaceSummary(
     (await git(worktree_root, ["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "")).trim() ||
     undefined;
   const oid = (await git(worktree_root, ["rev-parse", "HEAD"]).catch(() => "")).trim() || undefined;
+  const upstream =
+    (
+      await git(worktree_root, [
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+      ]).catch(() => "")
+    ).trim() || undefined;
+  let ahead = 0;
+  let behind = 0;
+  if (upstream) {
+    const counts = (
+      await git(worktree_root, [
+        "rev-list",
+        "" + upstream + "...HEAD",
+        "--left-right",
+        "--count",
+      ]).catch(() => "")
+    )
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    behind = Number.isFinite(counts[0]) ? counts[0] : 0;
+    ahead = Number.isFinite(counts[1]) ? counts[1] : 0;
+  }
+  const stash_count = (await git(worktree_root, ["stash", "list"]).catch(() => ""))
+    .split("\n")
+    .filter(Boolean).length;
+  const refs = (
+    await git(worktree_root, ["for-each-ref", "--format=%(refname)\t%(HEAD)"]).catch(() => "")
+  )
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [full_name, marker] = line.split("\t");
+      const kind = full_name.startsWith("refs/tags/")
+        ? "tag"
+        : full_name.startsWith("refs/remotes/")
+          ? "remote-branch"
+          : "local-branch";
+      return {
+        full_name,
+        name: full_name.replace(/^refs\/(heads|remotes|tags)\//, ""),
+        kind,
+        current: marker === "*",
+      };
+    });
   const status = await git(worktree_root, ["status", "--porcelain=v1"]);
   const changes = status
     .split("\n")
@@ -81,7 +135,12 @@ export async function workspaceSummary(
     worktree_root,
     head,
     head_oid: oid,
+    upstream,
+    ahead,
+    behind,
+    stash_count,
     detached: !head,
+    refs,
     changes,
   };
 }
@@ -96,7 +155,7 @@ export async function history(
     "log",
     `--max-count=${limit + 1}`,
     "--date=iso-strict",
-    "--format=%H%x1f%P%x1f%an%x1f%aI%x1f%s",
+    "--format=%H%x1f%P%x1f%an%x1f%aI%x1f%D%x1f%s",
   ];
   if (query.author) args.push(`--author=${query.author}`);
   if (query.since) args.push(`--since=${query.since}`);
@@ -108,8 +167,35 @@ export async function history(
   }
   const lines = (await git(summary.worktree_root, args)).trim().split("\n").filter(Boolean);
   const commits = lines.slice(0, limit).map((line) => {
-    const [oid, parents, author_name, authored_at, subject] = line.split("\x1f");
-    return { oid, parents: parents ? parents.split(" ") : [], author_name, authored_at, subject };
+    const [oid, parents, author_name, authored_at, decoration, subject] = line.split("\x1f");
+    const refs = decoration
+      ? decoration
+          .split(", ")
+          .filter(Boolean)
+          .map((value) => {
+            const current = value.startsWith("HEAD -> ");
+            const clean = value.replace(/^HEAD -> /, "");
+            const full_name = clean.startsWith("tag: ")
+              ? `refs/tags/${clean.slice(5)}`
+              : clean.startsWith("origin/")
+                ? `refs/remotes/${clean}`
+                : `refs/heads/${clean}`;
+            const kind = clean.startsWith("tag: ")
+              ? "tag"
+              : clean.includes("/")
+                ? "remote-branch"
+                : "local-branch";
+            return { name: clean.replace(/^tag: /, ""), full_name, kind, current };
+          })
+      : [];
+    return {
+      oid,
+      parents: parents ? parents.split(" ") : [],
+      author_name,
+      authored_at,
+      refs,
+      subject,
+    };
   });
   return { commits, repository_fingerprint: summary.head_oid ?? "" };
 }

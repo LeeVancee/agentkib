@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "pnpm dev:electron",
     "dev:electron": "pnpm protocol:generate && pnpm quota:prepare && pnpm quota:stage && pnpm runtime:build:dev && pnpm electron:build && concurrently -k -n renderer,electron \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:1420 && cross-env AGENTKIB_DEV=1 VITE_DEV_SERVER_URL=http://127.0.0.1:1420 electron dist-electron/main.cjs\"",
+    "dev:typescript": "pnpm protocol:generate && pnpm quota:prepare && pnpm quota:stage && pnpm electron:build && concurrently -k -n renderer,electron \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:1420 && cross-env AGENTKIB_DEV=1 AGENTKIB_TS_BACKEND=1 VITE_DEV_SERVER_URL=http://127.0.0.1:1420 electron dist-electron/main.cjs\"",
     "build": "pnpm build:electron",
     "build:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm runtime:stage && pnpm build:web && pnpm electron:build",
     "build:typescript": "pnpm protocol:generate && pnpm quota:prepare && pnpm quota:stage && pnpm build:web && pnpm electron:build && pnpm verify:typescript-package",
@@ -21,7 +22,7 @@
     "quota:stage": "node scripts/stage-electron-quota.mjs",
     "protocol:generate": "node scripts/generate-runtime-protocol.mjs",
     "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
-    "dist:typescript": "pnpm build:typescript && electron-builder",
+    "dist:typescript": "pnpm build:typescript && electron-builder --config electron-builder.typescript.yml",
     "verify:typescript-package": "node scripts/verify-typescript-package.mjs",
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",

@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import {
   app,
@@ -113,16 +115,23 @@ async function startApplication(): Promise<void> {
   if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
 
-  if (process.env.AGENTKIB_TS_BACKEND === "1") {
+  const rustRuntimeAvailable = existsSync(resolveRuntimeExecutable());
+  const useTypescriptBackend =
+    process.env.AGENTKIB_TS_BACKEND === "1" ||
+    (process.env.AGENTKIB_TS_BACKEND !== "0" && !rustRuntimeAvailable);
+  if (useTypescriptBackend) {
     const databasePath =
-      process.env.AGENTKIB_DATABASE_PATH ?? path.join(app.getPath("userData"), "agentkib.db");
+      process.env.AGENTKIB_DATABASE_PATH ??
+      path.join(app.getPath("appData"), appFlavor, "agentkib.db");
+    const dataRoot = path.dirname(databasePath);
     runtimeHost = new BackendWorkerHost({
       workerUrl: backendWorkerUrl(),
       database_path: databasePath,
       quota_executable: resolveQuotaSidecar(),
-      mcp_config_path: path.join(app.getPath("userData"), "mcp.json"),
-      gateway_config_path: path.join(app.getPath("userData"), "gateways.json"),
-      mcp_registry_path: path.join(app.getPath("userData"), "mcp-registry.json"),
+      quota_config_path: path.join(dataRoot, "quota", "codexbar-config.json"),
+      mcp_config_path: path.join(dataRoot, "mcp.json"),
+      gateway_config_path: path.join(dataRoot, "gateways.json"),
+      mcp_registry_path: path.join(dataRoot, "mcp-registry.json"),
     });
   } else {
     runtimeHost = new DesktopRuntimeHost({
@@ -185,6 +194,7 @@ async function initializeApplication(): Promise<void> {
         runtime: requireRuntime,
         assertTrustedRenderer,
         withRuntimeCapabilities: withElectronRuntimeCapabilities,
+        launchInteractive,
       });
       registerHomeIpc();
       registerShellIpc();
@@ -270,6 +280,39 @@ function withElectronRuntimeCapabilities(runtime: unknown): unknown {
     enriched.effective_theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   }
   return enriched;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function launchInteractive(plan: unknown): Promise<string> {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("Invalid interactive launch plan");
+  const input = plan as { command?: unknown; args?: unknown; cwd?: unknown };
+  const command = typeof input.command === "string" ? input.command : "";
+  const args = Array.isArray(input.args) && input.args.every((item) => typeof item === "string") ? input.args as string[] : [];
+  const cwd = typeof input.cwd === "string" ? input.cwd : "";
+  if (!command || !cwd || [command, cwd, ...args].some((value) => /[\0\r\n]/.test(value))) throw new Error("Invalid interactive launch arguments");
+  if (process.platform === "darwin") {
+    const script = path.join(app.getPath("temp"), `agentkib-handoff-${process.pid}-${Date.now()}.command`);
+    const body = `#!/bin/sh\ncd ${shellQuote(cwd)}\nexec ${[command, ...args].map(shellQuote).join(" ")}\n`;
+    await writeFile(script, body, { mode: 0o700 });
+    await chmod(script, 0o700);
+    const error = await shell.openPath(script);
+    if (error) throw new Error(error);
+    return "Terminal.app";
+  }
+  const executable = process.platform === "win32" ? "wt.exe" : "xdg-terminal-exec";
+  const terminalArgs = process.platform === "win32"
+    ? ["-d", cwd, "cmd.exe", "/K", command, ...args]
+    : ["--", command, ...args];
+  const child = spawn(executable, terminalArgs, { cwd, detached: true, windowsHide: false, stdio: "ignore" });
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", () => resolve());
+    child.once("error", reject);
+  });
+  child.unref();
+  return process.platform === "win32" ? "Windows Terminal" : "xdg-terminal-exec";
 }
 
 function emitElectronRefreshState(status: RefreshJobStatus): void {
@@ -928,7 +971,7 @@ async function showStartupFailure(error: unknown): Promise<void> {
   window.once("closed", () => {
     if (startupFailureWindow === window) startupFailureWindow = undefined;
   });
-  const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The Rust runtime did not become ready.</p><code>${escapeHtml(message)}</code>`;
+  const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The backend did not become ready.</p><code>${escapeHtml(message)}</code>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 

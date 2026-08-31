@@ -9,6 +9,7 @@ const options = workerData as
       database_path?: string;
       scan_roots?: Array<{ path: string; max_depth?: number }>;
       quota_executable?: string;
+      quota_config_path?: string;
     }
   | undefined;
 const runtime = options?.database_path
@@ -16,6 +17,7 @@ const runtime = options?.database_path
       database_path: options.database_path,
       scan_roots: options.scan_roots,
       quota_executable: options.quota_executable,
+      quota_config_path: options.quota_config_path,
     })
   : undefined;
 const registry = runtime?.registry ?? {};

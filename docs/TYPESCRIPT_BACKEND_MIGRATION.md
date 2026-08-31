@@ -217,9 +217,17 @@ Rust may be deleted only when all gates pass:
 - [x] Platform and store modules ported.
 - [x] Workspace, changes, adapters, doctor, and Git ported.
 - [x] Discovery and conversations ported.
-- [x] Insights, storage, and quota ported.
-- [x] MCP, gateways, and Obsidian foundational services implemented; OAuth, registry/install flows, and full remote parity remain.
-- [x] Electron IPC bound to TypeScript backend through the worker host adapter and opt-in `AGENTKIB_TS_BACKEND=1` startup path; Rust remains the default.
+- [x] Storage and quota primitives ported.
+- [ ] Insights aggregation/import parity and persisted usage breakdowns.
+- [ ] Manifest-to-adapter ChangeSet generation and native MCP migration discovery.
+- [x] MCP configuration, registry cache, safe install planning, gateways, and Obsidian foundations ported.
+- [ ] MCP native package execution (`npm`/`uv`), OAuth flows, live gateway network refresh, and full managed-process parity.
+- [ ] Handoff model summarization and visible terminal launch parity.
+- [x] TypeScript-only Electron package gate builds web, main, preload, and backend worker without the Rust runtime resource.
+- [x] Protocol coverage audit: all 105 renderer runtime methods have a TypeScript registry handler (handshake/shutdown remain worker transport methods).
+- [ ] Native package builds and startup smoke checks on Windows and Linux release hosts.
+- [x] MCP, gateways, and Obsidian foundational services implemented; the remaining MCP/OAuth/remote gaps are listed above.
+- [x] Electron IPC bound to TypeScript backend through the worker host adapter; `AGENTKIB_TS_BACKEND=1` forces it, and TS-only packages select it automatically when no Rust binary is present.
 - [x] High-priority workspace, doctor, sessions, Git, discovery, insights, settings, quota, storage, MCP, gateway, Obsidian, registry/install, and handoff calls are routed; full native parity remains under review.
 - [ ] Cross-platform packaging updated.
 - [ ] Parity and acceptance gates passed.
@@ -228,6 +236,12 @@ Rust may be deleted only when all gates pass:
 ## TypeScript package gate
 
 `pnpm --filter @agentkib/desktop build:typescript` builds the renderer, Electron main/preload, and the worker without requiring the Rust runtime. `verify:typescript-package` checks that all three JavaScript artifacts are present before `electron-builder` runs.
+
+Use `pnpm dev:typescript` for local development with the TypeScript worker. The existing `pnpm dev` path remains the Rust development oracle until the cutover gates are complete.
+
+### Local data path
+
+The TypeScript Electron worker must open the flavor database at `<appData>/<flavor>/agentkib.db`, alongside the Rust runtime database. The Electron `userData` directory is only for Chromium/Electron state; using `<appData>/<flavor>/electron/agentkib.db` creates a fresh empty database and makes every workspace, asset, usage, and commit view appear as zero.
 
 The worker is platform-neutral JavaScript. The packaging matrix remains:
 

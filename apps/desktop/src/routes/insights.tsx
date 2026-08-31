@@ -99,7 +99,7 @@ function InsightsRoute() {
           {refreshError}
         </div>
       )}
-      <Suspense fallback={<InsightsSkeleton />}>
+      <Suspense fallback={<InsightsSkeleton section={section} />}>
         <InsightsPageLazy
           section={section}
           workspaces={workspaces}

@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { QuotaPopover } from "@/features/quota/QuotaPopover";
@@ -14,6 +15,16 @@ import { useAppStore } from "./stores/app-store";
 import "./styles.css";
 
 applyPlatformAttribute(desktopApi().platform);
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    },
+  },
+});
 
 async function bootstrap() {
   let locale = normalizeLocale(navigator.language);
@@ -35,7 +46,9 @@ async function bootstrap() {
     surface === "quota-popover" ? <QuotaPopover /> : <RouterProvider router={createAppRouter()} />;
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <AppDialogProvider>{app}</AppDialogProvider>
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>{app}</AppDialogProvider>
+      </QueryClientProvider>
     </StrictMode>,
   );
 }

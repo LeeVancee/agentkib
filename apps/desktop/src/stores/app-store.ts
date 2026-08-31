@@ -35,7 +35,6 @@ interface AppState {
   remoteGateways: RemoteGatewaySummary[];
   insightsSummary?: InsightsSummary;
   insightsStatus?: InsightsStatus;
-  quotaStatus?: import("../core/types").QuotaCollectorStatus;
   navigationRequest?: AppNavigationRequest;
   menuCommand?: AppMenuCommandRequest;
   refreshJobs: RefreshJobStatus[];
@@ -60,9 +59,6 @@ interface AppActions {
   setRemoteGateways: (value: Updater<RemoteGatewaySummary[]>) => void;
   setInsightsSummary: (value: Updater<InsightsSummary | undefined>) => void;
   setInsightsStatus: (value: Updater<InsightsStatus | undefined>) => void;
-  setQuotaStatus: (
-    value: Updater<import("../core/types").QuotaCollectorStatus | undefined>,
-  ) => void;
   setNavigationRequest: (value: Updater<AppNavigationRequest | undefined>) => void;
   setMenuCommand: (value: Updater<AppMenuCommandRequest | undefined>) => void;
   setRefreshJobs: (value: Updater<RefreshJobStatus[]>) => void;
@@ -126,7 +122,6 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
       remoteGateways: [],
       insightsSummary: undefined,
       insightsStatus: undefined,
-      quotaStatus: undefined,
       navigationRequest: undefined,
       menuCommand: undefined,
       refreshJobs: [],
@@ -160,7 +155,6 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
     set((state) => ({ insightsSummary: resolve(value, state.insightsSummary) })),
   setInsightsStatus: (value) =>
     set((state) => ({ insightsStatus: resolve(value, state.insightsStatus) })),
-  setQuotaStatus: (value) => set((state) => ({ quotaStatus: resolve(value, state.quotaStatus) })),
   setNavigationRequest: (value) =>
     set((state) => ({ navigationRequest: resolve(value, state.navigationRequest) })),
   setMenuCommand: (value) => set((state) => ({ menuCommand: resolve(value, state.menuCommand) })),

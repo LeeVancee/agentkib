@@ -7,6 +7,7 @@ import { applyTheme } from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useQuotaQueryEvents } from "@/features/quota/quota-query";
 import type {
   AppMenuCommandRequest,
   AppNavigationRequest,
@@ -29,7 +30,6 @@ export function AppRuntimeBridge() {
     setRemoteGateways,
     setInsightsSummary,
     setInsightsStatus,
-    setQuotaStatus,
     setNavigationRequest,
     setMenuCommand,
     setRefreshJobs,
@@ -79,12 +79,12 @@ export function AppRuntimeBridge() {
         const [summary, status] = await Promise.all([api.insightsSummary(), api.insightsStatus()]);
         setInsightsSummary(summary);
         setInsightsStatus(status);
-      } else if (kind === "quota") {
-        setQuotaStatus(await api.quotaCollectorStatus());
       }
     },
-    [loadDiscoveryCache, setInsightsStatus, setInsightsSummary, setQuotaStatus, setRemoteGateways],
+    [loadDiscoveryCache, setInsightsStatus, setInsightsSummary, setRemoteGateways],
   );
+
+  useQuotaQueryEvents();
 
   useEffect(() => {
     let disposed = false;
@@ -117,11 +117,6 @@ export function AppRuntimeBridge() {
       desktop.events.onNavigate((request: AppNavigationRequest) => setNavigationRequest(request)),
       desktop.events.onMenuCommand((request: AppMenuCommandRequest) => setMenuCommand(request)),
       desktop.events.onThemeChanged(onThemeChanged),
-      desktop.events.onQuotaUpdated(() => {
-        void api.quotaCollectorStatus().then((status) => {
-          if (!disposed) setQuotaStatus(status);
-        });
-      }),
     ];
     void (async () => {
       try {
@@ -153,7 +148,6 @@ export function AppRuntimeBridge() {
     setMenuCommand,
     setMessage,
     setNavigationRequest,
-    setQuotaStatus,
     setRefreshJobs,
     setRuntime,
   ]);

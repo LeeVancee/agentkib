@@ -22,10 +22,9 @@ async function loadDerivedState(
 ) {
   if (sequence !== refreshSequence) return;
 
-  const [doctorResult, insightsResult, quotaResult] = await Promise.allSettled([
+  const [doctorResult, insightsResult] = await Promise.allSettled([
     api.workspaceDoctorSummaries(workspaces.map((workspace) => workspace.id)),
     Promise.all([api.insightsSummary(), api.insightsStatus()]),
-    api.quotaCollectorStatus(),
   ]);
   if (sequence !== refreshSequence) return;
 
@@ -36,7 +35,6 @@ async function loadDerivedState(
     >;
     insightsSummary?: Awaited<ReturnType<typeof api.insightsSummary>>;
     insightsStatus?: Awaited<ReturnType<typeof api.insightsStatus>>;
-    quotaStatus?: Awaited<ReturnType<typeof api.quotaCollectorStatus>>;
   } = {};
 
   if (doctorResult.status === "fulfilled") {
@@ -46,9 +44,6 @@ async function loadDerivedState(
   }
   if (insightsResult.status === "fulfilled") {
     [nextState.insightsSummary, nextState.insightsStatus] = insightsResult.value;
-  }
-  if (quotaResult.status === "fulfilled") {
-    nextState.quotaStatus = quotaResult.value;
   }
   useAppStore.setState(nextState);
 }

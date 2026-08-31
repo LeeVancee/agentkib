@@ -197,7 +197,7 @@ export function InsightsPage({
   const filterClass =
     "h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1";
 
-  if (initializing) return <InsightsSkeleton />;
+  if (initializing) return <InsightsSkeleton section={section} />;
 
   return (
     <div className="relative grid gap-5">
@@ -800,9 +800,9 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
           </span>
         ))}
       </div>
-      <div className="overflow-hidden border-b border-border px-5 pb-4 pt-7">
+      <div className="overflow-x-auto overflow-y-hidden border-b border-border px-5 pb-4 pt-7">
         <ToggleGroup
-          className="segmented-control segmented-control-grid relative w-full min-w-0 gap-0 pb-2"
+          className="segmented-control segmented-control-grid relative w-full min-w-0 gap-0 pb-2 max-[760px]:min-w-[640px]"
           value={[selected.code]}
           onValueChange={(values) => {
             const next = track.milestones.find((milestone) => milestone.code === values[0]);

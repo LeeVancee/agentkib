@@ -6,6 +6,7 @@ import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { useAppStore } from "../stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useQuotaStatus } from "@/features/quota/quota-query";
 import type { CloseBehavior, RuntimeInfo } from "../core/types";
 
 type SettingsSearch = { settingsSection?: SettingsSection };
@@ -20,7 +21,7 @@ function SettingsRoute() {
   const workspaces = useAppStore((state) => state.workspaces);
   const discovery = useAppStore((state) => state.discovery);
   const insightsStatus = useAppStore((state) => state.insightsStatus);
-  const quotaStatus = useAppStore((state) => state.quotaStatus);
+  const { data: quotaStatus } = useQuotaStatus();
   const remoteGateways = useAppStore((state) => state.remoteGateways);
   const setRemoteGateways = useAppStore((state) => state.setRemoteGateways);
   const scanRoots = useAppStore((state) => state.scanRoots);

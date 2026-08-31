@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
-import { refreshGlobalState } from "@/core/global-state";
 import { localizeMessage, tr } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -11,6 +10,13 @@ import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { createGlobalNavigation } from "./GlobalShell";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
+import {
+  homeKeys,
+  useOptionalQueryClient,
+  useHomeMemories,
+  useHomeRefreshJobs,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
@@ -26,19 +32,20 @@ export function useAppNavigation() {
   const routeGlobalPage = route.kind === "global" ? route.page : "home";
   const globalPage = routeGlobalPage;
   const appMode = route.kind === "settings" ? "settings" : "main";
+  const queryClient = useOptionalQueryClient();
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: globalMemories = [] } = useHomeMemories();
+  const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const settingsSection = search.settingsSection ?? "general";
   const quotaProvider = search.quotaProvider;
   const quotaWindow = search.quotaWindow;
   const appStore = useAppStore();
   const workspaceStore = useWorkspaceStore();
   const {
-    workspaces,
-    globalMemories,
     navigationRequest,
     setNavigationRequest,
     menuCommand,
     setMenuCommand,
-    refreshJobs,
     setQuotaConfigureRequest,
   } = appStore;
   const {
@@ -115,7 +122,7 @@ export function useAppNavigation() {
   };
 
   const loadGlobal = async () => {
-    await refreshGlobalState(useAppStore.getState().runtime);
+    await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
 
   const refreshDiscovery = async () => {
@@ -254,7 +261,7 @@ export function useAppNavigation() {
     if (
       route.kind !== "workspace" ||
       selectedWorkspace?.id === workspaceRouteId ||
-      !useAppStore.getState().workspacesLoaded ||
+      workspacesPending ||
       !workspaceRouteId
     )
       return;

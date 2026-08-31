@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,10 +25,15 @@ import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../core/api";
-import { refreshGlobalState } from "../core/global-state";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { formatRelativeTime, localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
+import {
+  homeKeys,
+  useHomeCatalog,
+  useHomeRefreshJobs,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { ChevronRight, FolderGit2, MoreHorizontal, RefreshCw, Search, Trash2 } from "lucide-react";
 import type { AgentKind, Manifest, RefreshJobStatus, WorkspaceSummary } from "../core/types";
@@ -47,12 +53,12 @@ const agentLabels: Record<AgentKind, string> = {
 function WorkspacesRoute() {
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
+  const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as WorkspacesSearch;
   const view = search.workspaceView ?? "list";
-  const workspaces = useAppStore((state) => state.workspaces);
-  const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
-  const catalog = useAppStore((state) => state.catalog);
-  const refreshJobs = useAppStore((state) => state.refreshJobs);
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
+  const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const setRuntime = useAppStore((state) => state.setRuntime);
   const openRequest = useRef(0);
   const {
@@ -140,7 +146,7 @@ function WorkspacesRoute() {
       }
       setMessage("");
       const workspace = await api.addWorkspace(selected);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
       if (useWorkspaceStore.getState().applyingChanges) {
         await dialogs.notify(tr("dialog.quit.changesApplying"));
         return;
@@ -162,7 +168,7 @@ function WorkspacesRoute() {
   const refreshWorkspace = async (id: string) => {
     try {
       await api.refreshWorkspace(id);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
     } catch (error) {
       setMessage(localizeMessage(error));
     }
@@ -175,13 +181,13 @@ function WorkspacesRoute() {
       return;
     try {
       await api.excludeWorkspace(id);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
     } catch (error) {
       setMessage(localizeMessage(error));
     }
   };
 
-  if (!workspacesLoaded) return <WorkspacesSkeleton view={view} />;
+  if (workspacesPending || catalogPending) return <WorkspacesSkeleton view={view} />;
 
   return (
     <WorkspacesPage

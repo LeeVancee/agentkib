@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { useHomeInstallations } from "@/features/home/home-query";
 import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
 import { api } from "../../../core/api";
@@ -8,7 +9,8 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 function WorkspaceSessionsRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/sessions" });
-  const { runtime, installations, setRuntime } = useAppStore();
+  const { runtime, setRuntime } = useAppStore();
+  const { data: installations = [] } = useHomeInstallations();
   const { selectedWorkspace, scan, setChangeSet, setChangeSetOrigin, setHandoffLaunchRequest } =
     useWorkspaceStore();
   if (!selectedWorkspace || !scan) return <WorkspaceSessionsSkeleton />;

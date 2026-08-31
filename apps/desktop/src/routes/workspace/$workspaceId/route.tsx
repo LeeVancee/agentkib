@@ -41,6 +41,7 @@ import { AppShellHeader } from "@/features/app/AppShell";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import { useAppStore } from "../../../stores/app-store";
+import { useHomeMemories, useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { formatRelativeTime, localizeMessage, tr } from "../../../core/i18n";
@@ -198,8 +199,10 @@ function WorkspaceLayout() {
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
   const app = useAppStore();
   const workspaceState = useWorkspaceStore();
-  const workspace = app.workspaces.find((item) => item.id === workspaceId);
-  const { setRuntime, globalMemories, workspacesLoaded } = app;
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: globalMemories = [] } = useHomeMemories();
+  const workspace = workspaces.find((item) => item.id === workspaceId);
+  const { setRuntime } = app;
   const {
     project,
     selectedWorkspace,
@@ -223,7 +226,7 @@ function WorkspaceLayout() {
   const currentPage = getPage(location.pathname);
   const activeWorkspace =
     workspace ??
-    (!workspacesLoaded && selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
+    (workspacesPending && selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
   const hasUnsavedDraft = Boolean(
     manifest && baselineManifest && JSON.stringify(manifest) !== baselineManifest,
   );
@@ -350,7 +353,7 @@ function WorkspaceLayout() {
     "content !mx-auto !max-w-[1540px] !px-7 !pb-10 !pt-[22px] max-[900px]:!px-[18px]";
 
   if (!activeWorkspace) {
-    return workspacesLoaded ? (
+    return !workspacesPending ? (
       <div className="grid h-full min-h-[240px] place-items-center p-8 text-sm text-muted-foreground">
         {tr("common.notFound")}
       </div>

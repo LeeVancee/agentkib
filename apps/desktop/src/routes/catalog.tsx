@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
@@ -16,10 +17,15 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
-import { refreshGlobalState } from "../core/global-state";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
 import { formatDateTime, localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
+import {
+  homeKeys,
+  useHomeCatalog,
+  useHomeMemories,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
   Boxes,
@@ -66,12 +72,12 @@ type CatalogSearch = { assetSection?: AssetSection };
 
 function CatalogRoute() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as CatalogSearch;
   const section = search.assetSection ?? "instructions";
-  const assets = useAppStore((state) => state.catalog);
-  const workspaces = useAppStore((state) => state.workspaces);
-  const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
-  const memories = useAppStore((state) => state.globalMemories);
+  const { data: assets = [], isPending: assetsPending } = useHomeCatalog();
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: memories = [], isPending: memoriesPending } = useHomeMemories();
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const openRequest = useRef(0);
@@ -103,9 +109,9 @@ function CatalogRoute() {
     });
   };
   const reload = async () => {
-    await refreshGlobalState(useAppStore.getState().runtime);
+    await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
-  if (!workspacesLoaded) return <CatalogSkeleton />;
+  if (assetsPending || workspacesPending || memoriesPending) return <CatalogSkeleton />;
   const openWorkspace = async (workspace: WorkspaceSummary): Promise<boolean> => {
     const requestId = ++openRequest.current;
     setBusy(true);

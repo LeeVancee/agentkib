@@ -8,12 +8,12 @@
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
-    "format": "oxfmt apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",
-    "format:check": "oxfmt --check apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",
-    "lint": "oxlint apps/desktop/src apps/desktop/electron",
-    "lint:fix": "oxlint apps/desktop/src apps/desktop/electron --fix",
-    "test": "pnpm --filter @agentkib/desktop test",
-    "typecheck": "pnpm --filter @agentkib/desktop typecheck"
+    "format": "oxfmt packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",
+    "format:check": "oxfmt --check packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",
+    "lint": "oxlint packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron",
+    "lint:fix": "oxlint packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron --fix",
+    "test": "pnpm --filter @agentkib/backend test && pnpm --filter @agentkib/desktop test",
+    "typecheck": "pnpm --filter @agentkib/backend typecheck && pnpm --filter @agentkib/desktop typecheck"
   },
   "devDependencies": {
     "oxfmt": "^0.64.0",

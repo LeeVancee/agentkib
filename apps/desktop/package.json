@@ -13,7 +13,7 @@
     "build": "pnpm build:electron",
     "build:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm runtime:stage && pnpm build:web && pnpm electron:build",
     "build:web": "tsc -b && vite build",
-    "electron:build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+    "electron:build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.backend-worker.config.ts",
     "runtime:build:dev": "cargo build -p agentkib-runtime --features dev-app",
     "runtime:build": "cargo build --release -p agentkib-runtime",
     "runtime:stage": "node scripts/stage-electron-runtime.mjs",
@@ -26,6 +26,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@agentkib/backend": "workspace:*",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@tanstack/react-query": "^5",

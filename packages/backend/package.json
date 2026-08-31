@@ -1,0 +1,27 @@
+{
+  "name": "@agentkib/backend",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

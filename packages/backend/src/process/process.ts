@@ -9,6 +9,7 @@ export interface ManagedCommand {
   timeoutMs?: number;
   maxOutputBytes?: number;
   signal?: AbortSignal;
+  input?: string;
 }
 export interface ManagedOutput {
   code: number | null;
@@ -27,7 +28,7 @@ export async function runManaged(command: ManagedCommand): Promise<ManagedOutput
     env: command.env ? { ...process.env, ...command.env } : process.env,
     shell: false,
     detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [command.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
   let stdout = "",
     stderr = "",
@@ -55,6 +56,9 @@ export async function runManaged(command: ManagedCommand): Promise<ManagedOutput
     });
   collect(child.stdout!, "stdout");
   collect(child.stderr!, "stderr");
+  if (command.input !== undefined && child.stdin) {
+    child.stdin.end(command.input);
+  }
   const abort = () => terminate(child);
   command.signal?.addEventListener("abort", abort, { once: true });
   const timeout = command.timeoutMs ?? 15_000;
@@ -81,7 +85,16 @@ function terminate(child: ReturnType<typeof spawn>): void {
   if (child.killed) return;
   try {
     if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-    else child.kill("SIGKILL");
+    else if (process.platform === "win32" && child.pid) {
+      // npm/uv shims commonly fan out to a node/python child. Killing only the
+      // shim leaves those descendants behind, so terminate the Windows process
+      // tree explicitly before falling back to child.kill.
+      const tree = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      tree.once("error", () => child.kill("SIGKILL"));
+    } else child.kill("SIGKILL");
   } catch {
     child.kill("SIGKILL");
   }

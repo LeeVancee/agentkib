@@ -62,7 +62,7 @@ export interface SessionHandoffDraft {
   redaction_count: number;
   included_message_count: number;
   omitted_tool_count: number;
-  context_source: "native-compaction" | "full-transcript";
+  context_source: "native-compaction" | "full-transcript" | "model-summary";
   warnings: string[];
 }
 export type SessionHandoffPreparation =

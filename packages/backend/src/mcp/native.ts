@@ -4,6 +4,7 @@ import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "@iarna/toml";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import JSON5 from "json5";
 import type { AgentKind } from "../domain/types.js";
 
 export interface NativeMcpCandidate {
@@ -97,7 +98,7 @@ export async function removeNativeCandidates(
     ? parseToml(content)
     : source.endsWith(".yaml")
       ? parseYaml(content)
-      : JSON.parse(content);
+      : JSON5.parse(content);
   const pointer =
     agent === "open-claw"
       ? ["mcp", "servers"]
@@ -123,7 +124,8 @@ async function scanFile(
   pointer: string[],
   output: NativeMcpCandidate[],
 ): Promise<void> {
-  if (!(await lstat(file).catch(() => undefined))) return;
+  const metadata = await lstat(file).catch(() => undefined);
+  if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) return;
   const content = await readFile(file, "utf8").catch(() => undefined);
   if (content === undefined) return;
   let parsed: unknown;
@@ -132,7 +134,7 @@ async function scanFile(
       ? parseToml(content)
       : file.endsWith(".yaml")
         ? parseYaml(content)
-        : JSON.parse(content);
+        : JSON5.parse(content);
   } catch {
     return;
   }

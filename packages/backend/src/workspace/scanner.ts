@@ -92,7 +92,10 @@ export async function scanWorkspace(root: string): Promise<WorkspaceScan> {
     manifest_exists = true;
     await loadManifest(root);
   } catch (error) {
-    if ((error as { code?: string }).code !== "ENOENT" && (error as { code?: string }).code !== "NOT_FOUND")
+    if (
+      (error as { code?: string }).code !== "ENOENT" &&
+      (error as { code?: string }).code !== "NOT_FOUND"
+    )
       warnings.push((error as Error).message);
   }
   const agents: AgentDetection[] = [];
@@ -128,6 +131,9 @@ export async function scanWorkspace(root: string): Promise<WorkspaceScan> {
       warnings: warnings.slice(warningBefore),
     });
   }
+  const unique = new Map<string, AssetRecord>();
+  for (const item of assets) unique.set(`${item.agent}:${item.path}`, item);
+  assets.splice(0, assets.length, ...unique.values());
   assets.sort((a, b) => a.path.localeCompare(b.path) || a.agent.localeCompare(b.agent));
   return { root, manifest_exists, agents, assets, warnings };
 }
@@ -154,7 +160,7 @@ async function walk(
     if (!(await isSafeScanEntry(full))) continue;
     if (entry.isDirectory())
       await walk(agent, full, defaultKind, summary, output, warnings, depth + 1);
-    else if (entry.isFile())
+    else if (entry.isFile() && isAssetFile(full, defaultKind))
       output.push(
         await asset(
           agent,
@@ -165,6 +171,11 @@ async function walk(
         ),
       );
   }
+}
+function isAssetFile(file: string, kind: AssetKind): boolean {
+  const name = path.basename(file).toLowerCase();
+  if (kind === "skill") return name === "skill.md" || /\.(md|mdc|json|toml)$/i.test(name);
+  return /\.(md|mdc|json|toml)$/i.test(name);
 }
 function kindOf(file: string): AssetKind {
   const lower = file.toLowerCase();

@@ -156,6 +156,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
+      json5:
+        specifier: ^2.2.3
+        version: 2.2.3
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -837,6 +840,7 @@ packages:
   '@rolldown/binding-linux-x64-gnu@1.2.5':
     resolution: {integrity: sha512-Mgj59/HTuYeK9Gz2MA+mBWKnHsAgkBSec15ZMb1st3oIfFbX7gCjOae7GydHhzcyQi9Z/7M1QuN9bR3oFqF0jQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
+    cpu: [x64]
     os: [linux]
 
   '@rolldown/binding-linux-x64-musl@1.2.5':
@@ -932,6 +936,7 @@ packages:
   '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
     resolution: {integrity: sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==}
     engines: {node: '>= 20'}
+    cpu: [x64]
     os: [linux]
 
   '@tailwindcss/oxide-linux-x64-musl@4.3.3':

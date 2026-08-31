@@ -1,9 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { createHash } from "node:crypto";
 import { createMcpProbe } from "./transport.js";
 import { McpServer } from "./config.js";
 import { BackendError, backendError } from "../contracts.js";
 export interface McpRuntimeStatus {
   server_id: string;
+  server_name?: string;
+  config_hash?: string;
   state: "stopped" | "starting" | "running" | "error";
   started_at?: string;
   last_used_at?: string;
@@ -25,7 +28,13 @@ export class McpRuntimeHub {
       status: McpRuntimeStatus;
     }
   >();
-  constructor(private readonly timeoutMs = 15_000) {}
+  private readonly idleTimer: NodeJS.Timeout;
+  constructor(private readonly timeoutMs = 15_000) {
+    // Match the native runtime's 15 minute idle reaper so stdio children do not
+    // survive indefinitely when a workspace is left open.
+    this.idleTimer = setInterval(() => void this.reapIdle(), 60_000);
+    this.idleTimer.unref();
+  }
   status(serverId?: string): McpRuntimeStatus[] {
     const values = [...this.runtimes.values()].map((runtime) => runtime.status);
     return serverId ? values.filter((value) => value.server_id === serverId) : values;
@@ -35,7 +44,12 @@ export class McpRuntimeHub {
     const existing = this.runtimes.get(server.id);
     if (existing?.status.state === "running") return existing.status;
     const probe = createMcpProbe(server);
-    const status: McpRuntimeStatus = { server_id: server.id, state: "starting" };
+    const status: McpRuntimeStatus = {
+      server_id: server.id,
+      server_name: server.name,
+      config_hash: hashServer(server),
+      state: "starting",
+    };
     this.runtimes.set(server.id, {
       server,
       client: probe.client,
@@ -64,12 +78,14 @@ export class McpRuntimeHub {
     try {
       const result = await this.withTimeout(runtime.client.listTools(), signal);
       runtime.status.last_used_at = new Date().toISOString();
-      return (result.tools ?? []).map((tool) => ({
-        server_id: server.id,
-        name: tool.name,
-        description: tool.description,
-        input_schema: tool.inputSchema,
-      }));
+      return (result.tools ?? [])
+        .filter((tool) => !server.allow_tools.length || server.allow_tools.includes(tool.name))
+        .map((tool) => ({
+          server_id: server.id,
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.inputSchema,
+        }));
     } catch (error) {
       throw error instanceof BackendError
         ? error
@@ -85,7 +101,15 @@ export class McpRuntimeHub {
     this.runtimes.delete(serverId);
   }
   async shutdown(): Promise<void> {
+    clearInterval(this.idleTimer);
     await Promise.all([...this.runtimes.keys()].map((id) => this.stop(id)));
+  }
+  private async reapIdle(): Promise<void> {
+    const cutoff = Date.now() - 15 * 60_000;
+    for (const [id, runtime] of this.runtimes) {
+      const last = runtime.status.last_used_at ?? runtime.status.started_at;
+      if (last && Date.parse(last) < cutoff) await this.stop(id);
+    }
   }
   private async withTimeout<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (signal?.aborted) throw backendError("CANCELLED", "MCP operation cancelled");
@@ -113,4 +137,8 @@ export class McpRuntimeHub {
       );
     });
   }
+}
+
+function hashServer(server: McpServer): string {
+  return createHash("sha256").update(JSON.stringify(server)).digest("hex");
 }

@@ -17,13 +17,20 @@ export function createMcpProbe(server: McpServer): McpProbeDescriptor {
       env: server.transport.env,
       cwd: server.transport.cwd,
     });
-  else if (server.transport.transport === "streamable-http")
+  else if (server.transport.transport === "streamable-http") {
+    const credentials = (server as McpServer & { oauth_credentials?: { access_token?: string } })
+      .oauth_credentials;
+    const headers = { ...server.transport.headers };
+    if (credentials?.access_token && !headers.authorization)
+      headers.authorization = `Bearer ${credentials.access_token}`;
     transport = new StreamableHTTPClientTransport(new URL(server.transport.url), {
-      requestInit: { headers: server.transport.headers },
+      requestInit: { headers },
     });
-  else
+  } else {
+    const headers = { ...server.transport.headers };
     transport = new SSEClientTransport(new URL(server.transport.url), {
-      requestInit: { headers: server.transport.headers },
+      requestInit: { headers },
     });
+  }
   return { client, transport };
 }

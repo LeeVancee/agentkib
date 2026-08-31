@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BackendStore } from "../store/store.js";
 import { scanWorkspace } from "../workspace/scanner.js";
 import { loadManifest } from "../workspace/manifest.js";
+import { resolveWorkspaceContext } from "../workspace/context.js";
 import { defaultManifest } from "../adapters/manifest.js";
 import { workspaceSummary, history, commitFiles, diff } from "../git/git.js";
 import type { GitDiffRequest } from "../git/git.js";
@@ -45,8 +46,16 @@ import {
 } from "../obsidian/index.js";
 import path from "node:path";
 import { createHmac, randomUUID } from "node:crypto";
-import { readFile, rename, writeFile, rm } from "node:fs/promises";
+import { readFile, rename, writeFile, rm, mkdtemp } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import {
+  discoverOAuthServerInfo,
+  registerClient,
+  startAuthorization,
+  exchangeAuthorization,
+} from "@modelcontextprotocol/sdk/client/auth.js";
 
 function buildAchievements(
   summary: {
@@ -95,6 +104,113 @@ function buildAchievements(
       "special-same-day-delivery",
     ].map((code) => ({ code, category: "special", threshold: 1, progress: 0 })),
   );
+}
+
+const HANDOFF_SUMMARY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    objective: { type: "string" },
+    completed_work: { type: "array", items: { type: "string" } },
+    decisions: { type: "array", items: { type: "string" } },
+    current_state: { type: "string" },
+    risks: { type: "array", items: { type: "string" } },
+    next_steps: { type: "array", items: { type: "string" } },
+  },
+  required: ["objective", "completed_work", "decisions", "current_state", "risks", "next_steps"],
+} as const;
+
+async function summarizeWithAgent(
+  sourceAgent: string,
+  input: string,
+): Promise<{
+  objective: string;
+  completed_work: string[];
+  decisions: string[];
+  current_state: string;
+  risks: string[];
+  next_steps: string[];
+}> {
+  const temporary = await mkdtemp(path.join(tmpdir(), "agentkib-handoff-"));
+  try {
+    const schemaPath = path.join(temporary, "summary-schema.json");
+    const outputPath = path.join(temporary, "summary-output.json");
+    await writeFile(schemaPath, JSON.stringify(HANDOFF_SUMMARY_SCHEMA));
+    const command =
+      sourceAgent === "codex" ? "codex" : sourceAgent === "claude-code" ? "claude" : "";
+    if (!command)
+      throw backendError("VALIDATION", "The source Agent does not support handoff summarization");
+    const result = await runManaged(
+      sourceAgent === "codex"
+        ? {
+            executable: command,
+            args: [
+              "exec",
+              "--ephemeral",
+              "--sandbox",
+              "read-only",
+              "--skip-git-repo-check",
+              "--ignore-user-config",
+              "--ignore-rules",
+              "--disable",
+              "shell_tool",
+              "--disable",
+              "unified_exec",
+              "--disable",
+              "code_mode",
+              "--color",
+              "never",
+              "--output-schema",
+              schemaPath,
+              "--output-last-message",
+              outputPath,
+              "-",
+            ],
+            cwd: temporary,
+            input,
+            timeoutMs: 120_000,
+            maxOutputBytes: 64 * 1024,
+          }
+        : {
+            executable: command,
+            args: [
+              "-p",
+              "--no-session-persistence",
+              "--safe-mode",
+              "--tools",
+              "",
+              "--output-format",
+              "json",
+              "--json-schema",
+              JSON.stringify(HANDOFF_SUMMARY_SCHEMA),
+            ],
+            cwd: temporary,
+            input,
+            timeoutMs: 120_000,
+            maxOutputBytes: 512 * 1024,
+          },
+    );
+    if (result.code !== 0)
+      throw backendError(
+        "IO",
+        `${sourceAgent} handoff summarization failed: ${result.stderr.slice(0, 500)}`,
+      );
+    const raw = sourceAgent === "codex" ? await readFile(outputPath, "utf8") : result.stdout;
+    const envelope = JSON.parse(raw) as Record<string, unknown>;
+    const parsed = sourceAgent === "claude-code" ? envelope.structured_output : envelope;
+    return z
+      .object({
+        objective: z.string(),
+        completed_work: z.array(z.string()),
+        decisions: z.array(z.string()),
+        current_state: z.string(),
+        risks: z.array(z.string()),
+        next_steps: z.array(z.string()),
+      })
+      .parse(parsed);
+  } finally {
+    await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 const id = z.object({ id: z.string() });
@@ -237,6 +353,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     quota_auto_refresh_enabled: false,
     quota_prompt_seen: false,
   };
+  let mcpNetwork: {
+    port: number;
+    lan_enabled: boolean;
+    lan_risk_accepted: boolean;
+  } = { port: 47_653, lan_enabled: false, lan_risk_accepted: false };
   const preferencesPath = path.join(path.dirname(options.database_path), "preferences.json");
   let sessionIndexEnabled = true;
   let onboarding = {
@@ -273,6 +394,18 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       runtimeSettings.quota_auto_refresh_enabled = root.quota_auto_refresh_enabled;
     if (typeof root.quota_auto_refresh_prompt_seen === "boolean")
       runtimeSettings.quota_prompt_seen = root.quota_auto_refresh_prompt_seen;
+    if (root.mcp_network && typeof root.mcp_network === "object") {
+      const network = root.mcp_network as Record<string, unknown>;
+      if (
+        Number.isInteger(network.port) &&
+        Number(network.port) >= 1 &&
+        Number(network.port) <= 65_535
+      )
+        mcpNetwork.port = Number(network.port);
+      if (typeof network.lan_enabled === "boolean") mcpNetwork.lan_enabled = network.lan_enabled;
+      if (typeof network.lan_risk_accepted === "boolean")
+        mcpNetwork.lan_risk_accepted = network.lan_risk_accepted;
+    }
     if (root.quota_preferences && typeof root.quota_preferences === "object") {
       const quota = root.quota_preferences as Record<string, unknown>;
       if (
@@ -601,18 +734,98 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     const { transport: _serverTransport, ...serverDetails } = safe;
     return { ...serverDetails, ...details, transport: transport.transport };
   };
+  let mcpNetworkServer: Server | undefined;
+  const pendingMcpOAuth = new Map<
+    string,
+    {
+      serverId: string;
+      project?: string;
+      authorizationServer: string;
+      client: Record<string, unknown>;
+      codeVerifier: string;
+      redirectUri: string;
+    }
+  >();
   const hubStatus = () => {
     const runtimes = mcpHub.status();
     return {
       running: true,
-      bind_address: "127.0.0.1",
-      port: 0,
-      lan_enabled: false,
-      accessible_addresses: [],
-      runtime_count: runtimes.length,
+      bind_address: mcpNetwork.lan_enabled ? "0.0.0.0" : "127.0.0.1",
+      port: mcpNetwork.port,
+      lan_enabled: mcpNetwork.lan_enabled,
+      accessible_addresses: [
+        `http://${mcpNetwork.lan_enabled ? "0.0.0.0" : "127.0.0.1"}:${mcpNetwork.port}`,
+      ],
+      runtime_count: runtimes.filter((runtime) => runtime.state === "running").length,
       error_count: runtimes.filter((runtime) => runtime.state === "error").length,
       last_error: runtimes.find((runtime) => runtime.error)?.error,
     };
+  };
+  const startMcpNetwork = async (): Promise<void> => {
+    if (mcpNetworkServer) return;
+    const host = mcpNetwork.lan_enabled ? "0.0.0.0" : "127.0.0.1";
+    const server = createServer(async (request, response) => {
+      if (request.url === "/healthz") {
+        response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        response.end("ok");
+        return;
+      }
+      const parsed = new URL(request.url ?? "/", `http://127.0.0.1:${mcpNetwork.port}`);
+      const match = parsed.pathname.match(/^\/oauth\/callback\/([^/]+)$/);
+      if (request.method === "GET" && match) {
+        const state = parsed.searchParams.get("state");
+        const code = parsed.searchParams.get("code");
+        const pending = state ? pendingMcpOAuth.get(state) : undefined;
+        if (!pending || !code) {
+          response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+          response.end("AgentKib MCP authorization failed.");
+          return;
+        }
+        try {
+          const tokens = await exchangeAuthorization(pending.authorizationServer, {
+            clientInformation: pending.client as never,
+            authorizationCode: code,
+            codeVerifier: pending.codeVerifier,
+            redirectUri: pending.redirectUri,
+          });
+          const file = resolveMcpFile({ project: pending.project });
+          const config = await loadMcpConfig(file);
+          const serverConfig = config.servers.find((item) => item.id === pending.serverId);
+          if (!serverConfig) throw new Error("MCP server no longer exists");
+          const localFile = path.join(path.dirname(file), "mcp.local.json");
+          const local = await loadMcpConfig(localFile);
+          const localServer = { ...serverConfig, oauth_credentials: tokens };
+          await saveMcpConfig(localFile, {
+            ...local,
+            servers: [...local.servers.filter((item) => item.id !== pending.serverId), localServer],
+          });
+          pendingMcpOAuth.delete(state!);
+          response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+          response.end("AgentKib MCP authorization completed. You can close this window.");
+        } catch {
+          pendingMcpOAuth.delete(state!);
+          response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+          response.end("AgentKib MCP authorization failed.");
+        }
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(mcpNetwork.port, host, () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    });
+    mcpNetworkServer = server;
+  };
+  const stopMcpNetwork = async (): Promise<void> => {
+    const server = mcpNetworkServer;
+    mcpNetworkServer = undefined;
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   };
   const findSession = async (sessionId: string) => {
     for (const workspace of store.listWorkspaces()) {
@@ -664,7 +877,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       database_path: options.database_path,
       mcp_package_root: path.join(path.dirname(options.database_path), "mcp-packages"),
       mcp_hub: hubStatus(),
-      mcp_network: { port: 0, lan_enabled: false, lan_risk_accepted: false },
+      mcp_network: mcpNetwork,
       ...runtimeSettings,
       locale_preference: runtimeSettings.locale_preference ?? "system",
       effective_locale:
@@ -866,20 +1079,68 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       if (!source.native_ref)
         throw backendError("NOT_FOUND", "Conversation transcript is not available");
       const events = await parseTranscript(source.native_ref, source.agent, undefined, 300);
-      const selected = events.events.slice(-20);
+      const selected = events.events;
       const result = prepareHandoff(
         source,
         request,
         {
           messages: selected,
-          omitted_tool_count: Math.max(0, events.events.length - selected.length),
+          omitted_tool_count: 0,
           warnings: events.warnings,
         },
         process.env.HOME,
       );
-      if (result.status === "ready")
-        return { ...result.draft, context_source: "model-summary" as const };
-      throw backendError("VALIDATION", "Handoff could not be summarized within limits");
+      if (result.status === "ready") return result.draft;
+      const input = selected
+        .map(
+          (event) =>
+            `${event.kind}${event.tool_name ? ` (${event.tool_name})` : ""}: ${event.content ?? ""}`,
+        )
+        .join("\n\n");
+      if (Buffer.byteLength(input) > 1024 * 1024)
+        throw backendError(
+          "VALIDATION",
+          "Conversation exceeds the 1 MiB summary input limit; compact it in the source Agent first",
+        );
+      const summary = await summarizeWithAgent(source.agent, input);
+      const safeSummary = sanitizeHandoffContent(
+        [
+          `Objective: ${summary.objective}`,
+          `Completed work: ${summary.completed_work.join("; ")}`,
+          `Decisions: ${summary.decisions.join("; ")}`,
+          `Current state: ${summary.current_state}`,
+          `Risks: ${summary.risks.join("; ")}`,
+          `Next steps: ${summary.next_steps.join("; ")}`,
+        ].join("\n"),
+        process.env.HOME,
+      );
+      const generated = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `handoff-${source.agent}-${request.target_agent}-${generated}.${request.format === "json" ? "json" : "md"}`;
+      const content =
+        request.format === "json"
+          ? JSON.stringify(
+              {
+                session_id: source.id,
+                source_agent: source.agent,
+                target_agent: request.target_agent,
+                summary,
+              },
+              null,
+              2,
+            ) + "\n"
+          : `# Agent handoff\n\nSource: ${source.agent}\nTarget: ${request.target_agent}\n\n## Summary\n\n${safeSummary.content}\n`;
+      if (Buffer.byteLength(content) > 512 * 1024)
+        throw backendError("VALIDATION", "Rendered handoff exceeds 512 KiB");
+      return {
+        filename,
+        format: request.format,
+        content,
+        redaction_count: safeSummary.redaction_count,
+        included_message_count: selected.length,
+        omitted_tool_count: 0,
+        context_source: "model-summary" as const,
+        warnings: events.warnings,
+      };
     },
     "sessions.planHandoff": (params) => {
       const value = z
@@ -1049,28 +1310,28 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     },
     "workspace.resolveContext": async (params) => {
       const value = z
-        .object({ project: z.string(), cwd: z.string(), agent: z.string() })
+        .object({
+          project: z.string(),
+          cwd: z.string(),
+          agent: z.enum([
+            "codex",
+            "claude-code",
+            "cursor",
+            "open-claw",
+            "hermes",
+            "deepseek-harness",
+          ]),
+        })
         .parse(params);
       const manifest = await loadManifest(value.project).catch(() =>
         defaultManifest(value.project),
       );
-      return {
-        agent: value.agent,
-        project: value.project,
-        cwd: value.cwd,
-        sections: [
-          {
-            source: "manifest",
-            scope: "shared",
-            content: manifest.instructions.shared,
-            precedence: 0,
-          },
-        ],
-        visible_skills: manifest.skills.map((skill) => skill.name),
-        visible_connections: manifest.connections.map((connection) => connection.name),
-        approved_memories: [],
-        warnings: [],
-      };
+      return resolveWorkspaceContext(
+        value.project,
+        value.cwd,
+        value.agent,
+        manifest,
+      );
     },
     "workspace.add": async (params) => {
       const workspace = await store.addWorkspace(
@@ -1507,9 +1768,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       return { ok: true };
     },
     "mcp.listRuntimes": () =>
-      mcpHub
-        .status()
-        .map((runtime) => ({ ...runtime, server_name: runtime.server_id, config_hash: "" })),
+      mcpHub.status().map((runtime) => ({
+        ...runtime,
+        server_name: runtime.server_name ?? runtime.server_id,
+        config_hash: runtime.config_hash ?? "",
+      })),
     "mcp.stopRuntime": async (params: unknown) => {
       const value = z
         .object({
@@ -1538,9 +1801,65 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .parse(params);
       const serverId = value.id ?? value.serverId;
       if (!serverId) throw backendError("VALIDATION", "MCP server id is required");
-      // The OAuth browser callback belongs to Electron main; this headless backend deliberately
-      // refuses to mint or expose an authorization URL until that adapter is wired.
-      throw backendError("IO", `MCP OAuth is unavailable for server: ${serverId}`);
+      const config = await loadEffectiveMcpConfig(resolveMcpFile(params));
+      const server = config.servers.find((item) => item.id === serverId);
+      if (!server) throw backendError("NOT_FOUND", `MCP server not found: ${serverId}`);
+      if (server.transport.transport !== "streamable-http")
+        throw backendError("VALIDATION", "OAuth is supported only for Streamable HTTP MCP servers");
+      await startMcpNetwork().catch((error) => {
+        throw backendError("IO", `MCP OAuth callback server could not start: ${String(error)}`);
+      });
+      const callback = `http://127.0.0.1:${mcpNetwork.port}/oauth/callback/${encodeURIComponent(serverId)}`;
+      const transport = server.transport as typeof server.transport & {
+        oauth_authorization_url?: string;
+        oauth_scope?: string;
+      };
+      let authorizationServer = server.transport.url;
+      let metadata: Awaited<
+        ReturnType<typeof discoverOAuthServerInfo>
+      >["authorizationServerMetadata"];
+      try {
+        const discovered = await discoverOAuthServerInfo(server.transport.url);
+        authorizationServer = discovered.authorizationServerUrl;
+        metadata = discovered.authorizationServerMetadata;
+      } catch {
+        // Some MCP servers expose an explicit authorization endpoint instead of
+        // RFC 8414 metadata; retain that compatibility path.
+      }
+      const explicit = transport.oauth_authorization_url;
+      if (explicit) authorizationServer = explicit;
+      const clientMetadata = {
+        client_name: "AgentKib",
+        redirect_uris: [callback],
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      };
+      const client = await registerClient(authorizationServer, {
+        metadata,
+        clientMetadata,
+      }).catch(() => ({ client_id: `agentkib-${randomUUID()}` }));
+      const state = randomUUID();
+      const { authorizationUrl, codeVerifier } = await startAuthorization(authorizationServer, {
+        metadata,
+        clientInformation: client as never,
+        redirectUrl: callback,
+        scope: transport.oauth_scope,
+        state,
+        resource: new URL(server.transport.url),
+      });
+      pendingMcpOAuth.set(state, {
+        serverId,
+        project:
+          typeof (params as Record<string, unknown>).project === "string"
+            ? ((params as Record<string, unknown>).project as string)
+            : undefined,
+        authorizationServer,
+        client,
+        codeVerifier,
+        redirectUri: callback,
+      });
+      return { authorization_url: authorizationUrl.toString() };
     },
     "mcp.restartRuntime": async (params: unknown, signal: AbortSignal) => {
       const value = z
@@ -1554,9 +1873,32 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       if (!server) throw backendError("NOT_FOUND", `MCP server not found: ${serverId}`);
       return mcpHub.start(server, signal);
     },
-    "mcp.updateNetwork": (params: unknown) => {
+    "mcp.updateNetwork": async (params: unknown) => {
       const value = z.object({ settings: z.record(z.string(), z.unknown()) }).parse(params);
-      return { ...value.settings, ...hubStatus() };
+      const settings = z
+        .object({
+          port: z.number().int().min(1).max(65_535),
+          lan_enabled: z.boolean(),
+          lan_risk_accepted: z.boolean().default(false),
+        })
+        .parse(value.settings);
+      if (settings.lan_enabled && !settings.lan_risk_accepted)
+        throw backendError("PERMISSION", "LAN mode requires explicit risk acceptance");
+      const previous = mcpNetwork;
+      await stopMcpNetwork();
+      mcpNetwork = settings;
+      try {
+        await startMcpNetwork();
+        await persistPreferences({ mcp_network: mcpNetwork });
+      } catch (error) {
+        mcpNetwork = previous;
+        await startMcpNetwork().catch(() => undefined);
+        throw backendError(
+          "IO",
+          `MCP Hub could not bind to port ${settings.port}: ${String(error)}`,
+        );
+      }
+      return hubStatus();
     },
     "mcp.searchRegistry": async (params: unknown) => {
       const value = z.object({ query: z.string().default("") }).parse(params);
@@ -2156,6 +2498,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   return {
     registry: registry as BackendMethodRegistry,
     close: async () => {
+      await stopMcpNetwork();
       await mcpHub.shutdown();
       store.close();
     },

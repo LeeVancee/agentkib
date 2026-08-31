@@ -6,6 +6,7 @@ export * from "./worker/host.js";
 export * from "./domain/types.js";
 export * from "./store/store.js";
 export * from "./workspace/manifest.js";
+export * from "./workspace/context.js";
 export * from "./workspace/scanner.js";
 export * from "./adapters/manifest.js";
 export * from "./git/git.js";

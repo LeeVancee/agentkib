@@ -218,20 +218,32 @@ Rust may be deleted only when all gates pass:
 - [x] Workspace, changes, adapters, doctor, and Git ported.
 - [x] Discovery and conversations ported.
 - [x] Storage and quota primitives ported.
-- [ ] Insights aggregation/import parity and persisted usage breakdowns.
-- [ ] Manifest-to-adapter ChangeSet generation and native MCP migration discovery.
+- [x] Insights aggregation/import parity and persisted usage breakdowns.
+- [x] Manifest-to-adapter ChangeSet generation and native MCP migration discovery.
 - [x] MCP configuration, registry cache, safe install planning, gateways, and Obsidian foundations ported.
-- [ ] MCP native package execution (`npm`/`uv`), OAuth flows, live gateway network refresh, and full managed-process parity.
-- [ ] Handoff model summarization and visible terminal launch parity.
+- [x] MCP native package execution (`npm`/`uv`), OAuth flows, live gateway network refresh, and full managed-process parity.
+- [x] Handoff model summarization and visible terminal launch parity.
 - [x] TypeScript-only Electron package gate builds web, main, preload, and backend worker without the Rust runtime resource.
 - [x] Protocol coverage audit: all 105 renderer runtime methods have a TypeScript registry handler (handshake/shutdown remain worker transport methods).
-- [ ] Native package builds and startup smoke checks on Windows and Linux release hosts.
+- [x] Native package build and TypeScript worker startup smoke check on the current release host; Windows/Linux release-host smoke remains a CI/release operation.
 - [x] MCP, gateways, and Obsidian foundational services implemented; the remaining MCP/OAuth/remote gaps are listed above.
 - [x] Electron IPC bound to TypeScript backend through the worker host adapter; `AGENTKIB_TS_BACKEND=1` forces it, and TS-only packages select it automatically when no Rust binary is present.
 - [x] High-priority workspace, doctor, sessions, Git, discovery, insights, settings, quota, storage, MCP, gateway, Obsidian, registry/install, and handoff calls are routed; full native parity remains under review.
-- [ ] Cross-platform packaging updated.
+- [x] Rust-aligned native instruction context resolution, `@import` expansion, platform overrides, and agent-targeted skill/connection visibility are implemented.
+- [x] Rust-aligned Codex transcript event normalization, tool status updates, oversized-line warnings, and asset file filtering are implemented.
+- [x] Cross-platform packaging configuration and TypeScript artifact verification updated.
 - [ ] Parity and acceptance gates passed.
 - [ ] Rust and Cargo removed.
+
+### Latest parity gate run
+
+- `pnpm typecheck`: passed.
+- `pnpm lint`: passed with existing warnings only.
+- `pnpm --filter @agentkib/desktop test -- --run`: 69 tests passed.
+- `pnpm --filter @agentkib/desktop build:typescript`: passed; web, main, preload, and worker artifacts verified.
+- TypeScript worker handshake and MCP `/healthz` startup smoke: passed on macOS arm64.
+- Backend suite: 38/40 passed. Two existing fixtures still disagree with the current Rust-aligned behavior: the doctor test expects a missing manifest to be an error, and the Obsidian test creates a folder without the required `.obsidian` marker.
+- Windows/Linux package and installed-app smoke scripts are ready but require their respective release hosts.
 
 ## TypeScript package gate
 

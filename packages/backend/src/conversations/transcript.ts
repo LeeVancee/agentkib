@@ -46,19 +46,14 @@ export async function parseTranscript(
           tools,
         );
         if (!parsed) {
-          const legacyRole =
-            typeof value.role === "string"
-              ? value.role
-              : typeof value.type === "string"
-                ? value.type
-                : "";
+          const legacyRole = typeof value.role === "string" ? value.role : "";
           const legacyContent =
             typeof value.content === "string"
               ? value.content
               : typeof value.message === "string"
                 ? value.message
                 : undefined;
-          if (legacyContent || legacyRole)
+          if (legacyContent)
             ordered.push({
               line: index,
               event: messageEvent(

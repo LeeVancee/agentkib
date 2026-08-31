@@ -79,9 +79,9 @@ jobs:
             process.stdin.setEncoding("utf8");
             process.stdin.on("data", (chunk) => input += chunk);
             process.stdin.on("end", () => {
-              const desktop = JSON.parse(input).packages.find(({ name }) => name === "agentkib-desktop");
-              if (!desktop) process.exit(1);
-              console.log(desktop.version);
+              const runtime = JSON.parse(input).packages.find(({ name }) => name === "agentkib-runtime");
+              if (!runtime) process.exit(1);
+              console.log(runtime.version);
             });
           ')
 

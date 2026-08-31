@@ -122,6 +122,33 @@ describe("useAppNavigation guards", () => {
     expect(testDoubles.notify).toHaveBeenCalledOnce();
   });
 
+  it("blocks direct workspace navigation while a ChangeSet is applying", async () => {
+    const currentWorkspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace-1",
+      name: "Current workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const nextWorkspace: WorkspaceSummary = {
+      ...currentWorkspace,
+      id: "workspace-2",
+      path: "C:/workspace-2",
+      name: "Next workspace",
+    };
+    useWorkspaceStore.setState({ applyingChanges: true, selectedWorkspace: currentWorkspace });
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => result.current.openWorkspace(nextWorkspace));
+
+    expect(testDoubles.navigate).not.toHaveBeenCalled();
+    expect(testDoubles.notify).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(currentWorkspace);
+    expect(useWorkspaceStore.getState().applyingChanges).toBe(true);
+  });
+
   it("rechecks the ChangeSet state after the directory picker", async () => {
     testDoubles.open.mockImplementation(async () => {
       useWorkspaceStore.setState({ applyingChanges: true });

@@ -152,6 +152,12 @@ export function useAppNavigation() {
       setWorkspaceDrafts((drafts) => ({ ...drafts, [selectedWorkspace.id]: manifest }));
   }, [hasUnsavedDraft, manifest, selectedWorkspace, setWorkspaceDrafts]);
 
+  const ensureWorkspaceChangeAllowed = useCallback(async () => {
+    if (!useWorkspaceStore.getState().applyingChanges) return true;
+    await dialogs.notify(tr("dialog.quit.changesApplying"));
+    return false;
+  }, [dialogs]);
+
   const leaveWorkspace = async (next: () => void, clearRouteSearch = true): Promise<boolean> => {
     if (useWorkspaceStore.getState().applyingChanges) {
       await dialogs.notify(tr("dialog.quit.changesApplying"));
@@ -204,6 +210,7 @@ export function useAppNavigation() {
 
   const openWorkspace = useCallback(
     async (workspace: WorkspaceSummary, initialPage: Page = "overview") => {
+      if (!(await ensureWorkspaceChangeAllowed())) return;
       const requestId = ++workspaceOpenRequest.current;
       persistWorkspaceDraft();
       setMessage("");
@@ -220,6 +227,7 @@ export function useAppNavigation() {
       navigateWorkspacePageFor(workspace.id, initialPage);
     },
     [
+      ensureWorkspaceChangeAllowed,
       navigateWorkspacePageFor,
       persistWorkspaceDraft,
       setBaselineManifest,
@@ -321,12 +329,6 @@ export function useAppNavigation() {
     setNavigationRequest,
     setQuotaConfigureRequest,
   ]);
-
-  const ensureWorkspaceChangeAllowed = async () => {
-    if (!useWorkspaceStore.getState().applyingChanges) return true;
-    await dialogs.notify(tr("dialog.quit.changesApplying"));
-    return false;
-  };
 
   const selectProject = async () => {
     if (!(await ensureWorkspaceChangeAllowed())) return;

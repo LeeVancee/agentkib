@@ -101,8 +101,7 @@ export function SettingsSidebar(props: {
                 <ArrowLeft size={18} />
               </span>
               <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                <strong>{tr("nav.settings")}</strong>
-                <small>{tr("settings.backToApp")}</small>
+                {tr("settings.backToApp")}
               </span>
             </Button>
           </div>

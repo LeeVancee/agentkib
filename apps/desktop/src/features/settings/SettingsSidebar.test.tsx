@@ -27,7 +27,7 @@ describe("SettingsSidebar v8 navigation", () => {
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Settings Back" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     expect(screen.getAllByRole("button")).toHaveLength(7);
   });
 });

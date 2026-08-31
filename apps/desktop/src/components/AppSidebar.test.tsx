@@ -29,7 +29,7 @@ describe("AppSidebar v8 navigation", () => {
     expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-keyshortcuts")).toBe(
       "Control+,",
     );
-    expect(screen.getByText("General, discovery, and integrations")).toBeTruthy();
+    expect(screen.queryByText("General, discovery, and integrations")).toBeNull();
   });
 
   it("keeps shortcut semantics without rendering inline shortcut hints", () => {

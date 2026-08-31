@@ -3,7 +3,6 @@
   "sidebar.tasks": "Tasks",
   "sidebar.development": "Development",
   "sidebar.tools": "Tools",
-  "sidebar.settingsDescription": "General, discovery, and integrations",
   "agents.filters": "Agent filters",
   "agents.filter.all": "All",
   "agents.filter.enabled": "Enabled",

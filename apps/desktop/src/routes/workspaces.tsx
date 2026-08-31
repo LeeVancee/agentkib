@@ -206,41 +206,45 @@ function WorkspacesPage({
   const selectedWorkspace =
     filtered.find((workspace) => workspace.id === selectedId) ?? filtered[0];
   const viewControls = (
-    <div className="flex flex-wrap items-center gap-2">
-      <ToggleGroup
-        spacing={0}
-        variant="default"
-        size="sm"
-        className="segmented-control shrink-0"
-        value={[view]}
-        onValueChange={(values) => {
-          const value = values[0];
-          if (value === "list" || value === "storage") onViewChange(value);
-        }}
-        aria-label={tr("workspace.viewLabel")}
+    <ToggleGroup
+      spacing={0}
+      variant="default"
+      size="sm"
+      className="segmented-control shrink-0"
+      value={[view]}
+      onValueChange={(values) => {
+        const value = values[0];
+        if (value === "list" || value === "storage") onViewChange(value);
+      }}
+      aria-label={tr("workspace.viewLabel")}
+    >
+      <ToggleGroupItem
+        value="list"
+        className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
       >
-        <ToggleGroupItem
-          value="list"
-          className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
-        >
-          {tr("workspace.view.list")}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="storage"
-          className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
-        >
-          {tr("workspace.view.storage")}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      {view === "list" && (
-        <Button className="h-9 rounded-lg px-3.5" onClick={onAddWorkspace}>
-          <FolderGit2 size={15} />
-          {tr("workspace.addManually")}
-        </Button>
-      )}
-    </div>
+        {tr("workspace.view.list")}
+      </ToggleGroupItem>
+      <ToggleGroupItem
+        value="storage"
+        className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
+      >
+        {tr("workspace.view.storage")}
+      </ToggleGroupItem>
+    </ToggleGroup>
   );
-  const pageIntro = <section className="flex justify-end">{viewControls}</section>;
+  const pageIntro = (
+    <section className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        {view === "list" && (
+          <Button className="h-9 rounded-lg px-3.5" onClick={onAddWorkspace}>
+            <FolderGit2 size={15} />
+            {tr("workspace.addManually")}
+          </Button>
+        )}
+      </div>
+      {viewControls}
+    </section>
+  );
   const filterBar = (
     <Card className="overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm">
       <CardContent className="grid gap-3 p-4 sm:p-5">

@@ -3,7 +3,6 @@
   "sidebar.tasks": "任务",
   "sidebar.development": "开发",
   "sidebar.tools": "工具",
-  "sidebar.settingsDescription": "通用、发现与集成",
   "agents.filters": "Agent 筛选",
   "agents.filter.all": "全部",
   "agents.filter.enabled": "已启用",

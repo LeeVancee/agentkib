@@ -475,6 +475,30 @@ button {
     opacity 180ms ease,
     visibility 180ms ease;
 }
+@media (min-width: 1024px) {
+  .app-shell-sidebar-motion-to-settings > .app-sidebar > .app-sidebar-content {
+    animation: app-sidebar-enter-from-right 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .app-shell-sidebar-motion-to-primary > .app-sidebar > .app-sidebar-content {
+    animation: app-sidebar-enter-from-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+@keyframes app-sidebar-enter-from-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes app-sidebar-enter-from-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
 .app-sidebar-content {
   display: flex;
   width: 100%;
@@ -511,15 +535,6 @@ button {
 }
 .sidebar-brand-label {
   white-space: nowrap;
-}
-.sidebar-brand-mark {
-  display: block;
-  width: 1.5rem;
-  height: 1.5rem;
-  object-fit: contain;
-}
-:root[data-theme="dark"] .sidebar-brand-mark {
-  filter: invert(1);
 }
 .app-sidebar-nav {
   display: flex;
@@ -763,7 +778,7 @@ button {
   border-top: 0;
 }
 .app-sidebar-settings-entry {
-  min-height: 4.25rem;
+  min-height: 2.75rem;
   border: 1px solid var(--sidebar-border);
   background: color-mix(in srgb, var(--background) 82%, transparent);
   padding-inline: 0.875rem;
@@ -773,20 +788,11 @@ button {
 .app-sidebar-settings-entry:hover {
   background: color-mix(in srgb, var(--background) 94%, transparent);
 }
-.app-sidebar-settings-entry strong,
-.app-settings-back strong {
+.app-sidebar-settings-entry strong {
   display: block;
   color: var(--sidebar-foreground);
   font-size: 0.8125rem;
   font-weight: 600;
-}
-.app-sidebar-settings-entry small,
-.app-settings-back small {
-  display: block;
-  margin-top: 0.125rem;
-  color: color-mix(in srgb, var(--sidebar-foreground) 56%, transparent);
-  font-size: 0.6875rem;
-  font-weight: 450;
 }
 .app-sidebar-status-dot {
   width: 0.4375rem;
@@ -1039,5 +1045,9 @@ button {
   }
   .app-sidebar-collapse-icon svg {
     transition: none;
+  }
+  .app-shell-sidebar-motion-to-settings > .app-sidebar > .app-sidebar-content,
+  .app-shell-sidebar-motion-to-primary > .app-sidebar > .app-sidebar-content {
+    animation: none;
   }
 }

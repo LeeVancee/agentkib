@@ -8,7 +8,7 @@ import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const mainClassName =
   "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
@@ -50,11 +50,13 @@ export function AppShellHeader({ children }: { children?: ReactNode }) {
 
 export function AppShell({
   sidebar,
+  sidebarMode = "primary",
   children,
   toolbar,
   mainClassName: additionalMainClassName,
 }: {
   sidebar: ReactNode;
+  sidebarMode?: "primary" | "settings";
   children: ReactNode;
   toolbar?: ReactNode;
   mainClassName?: string;
@@ -62,6 +64,17 @@ export function AppShell({
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const locationKey = useLocation({ select: (location) => location.href });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const previousSidebarMode = useRef(sidebarMode);
+  const [sidebarMotion, setSidebarMotion] = useState<"to-primary" | "to-settings" | null>(null);
+
+  useLayoutEffect(() => {
+    if (previousSidebarMode.current === sidebarMode) return;
+    previousSidebarMode.current = sidebarMode;
+    setSidebarMotion(sidebarMode === "settings" ? "to-settings" : "to-primary");
+
+    const timeout = window.setTimeout(() => setSidebarMotion(null), 280);
+    return () => window.clearTimeout(timeout);
+  }, [sidebarMode]);
 
   useEffect(() => {
     if (scrollContainerRef.current) {
@@ -74,6 +87,7 @@ export function AppShell({
       className={cn(
         "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
         sidebarCollapsed && "app-shell-sidebar-collapsed",
+        sidebarMotion && `app-shell-sidebar-motion-${sidebarMotion}`,
       )}
     >
       <WindowToolbar />

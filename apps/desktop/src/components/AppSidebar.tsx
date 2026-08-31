@@ -370,7 +370,6 @@ export function AppSidebar(props: {
               </span>
               <span className="app-sidebar-item-label min-w-0 flex-1 text-left">
                 <strong>{tr("nav.settings")}</strong>
-                <small>{tr("sidebar.settingsDescription")}</small>
               </span>
             </Button>
           </div>

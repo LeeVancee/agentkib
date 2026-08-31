@@ -3,7 +3,6 @@
   "sidebar.tasks": "タスク",
   "sidebar.development": "開発",
   "sidebar.tools": "ツール",
-  "sidebar.settingsDescription": "一般、検出、連携",
   "agents.filters": "Agent フィルター",
   "agents.filter.all": "すべて",
   "agents.filter.enabled": "有効",

@@ -205,6 +205,7 @@ function AppShellRouter({
   return (
     <AppShell
       sidebar={sidebar}
+      sidebarMode={isSettings ? "settings" : "primary"}
       toolbar={
         <AppToolbar
           breadcrumb={breadcrumb}

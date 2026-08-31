@@ -835,7 +835,7 @@ async function registerRendererProtocol(): Promise<void> {
       contents = await readFile(assetPath);
     }
 
-    return new Response(contents, {
+    return new Response(contents as unknown as BodyInit, {
       headers: {
         "content-type": contentType(assetPath),
         "content-security-policy":

@@ -6,6 +6,15 @@ directories:
 files:
   - dist/**
   - dist-electron/**
+  - "!**/*.map"
+  - "!**/*.tsbuildinfo"
+  - "!**/.DS_Store"
+electronLanguages:
+  - en-US
+  - ja
+  - zh-CN
+  - zh-TW
+compression: maximum
 extraResources:
   - from: build/runtime
     to: bin

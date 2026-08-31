@@ -18,7 +18,7 @@ const config = {
     target: "es2022",
     rollupOptions: {
       output: {
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (id.indexOf("/lucide-react/") >= 0) return "icons";
           if (
             ["/react/", "/react-dom/", "/scheduler/", "/i18next/", "/react-i18next/"].some(

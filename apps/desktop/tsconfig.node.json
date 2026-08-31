@@ -4,6 +4,7 @@
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
     "skipLibCheck": true,
+    "types": ["node"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "paths": { "@/*": ["./src/*"] },

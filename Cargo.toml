@@ -64,3 +64,10 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 toml = "0.9"
 uuid = { version = "1.17", features = ["v4", "serde"] }
 walkdir = "2.5"
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

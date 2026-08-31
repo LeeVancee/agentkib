@@ -29,12 +29,12 @@ import type { DesktopRuntimeHost } from "./runtime-host";
 const QUOTA_POPOVER_WIDTH = 392;
 const QUOTA_POPOVER_HEIGHT = 560;
 
-const messages = {
+const messages: Record<SupportedLocale, Record<string, string>> = {
   "en-US": enUS,
   "ja-JP": jaJP,
   "zh-CN": zhCN,
   "zh-TW": zhTW,
-} satisfies Record<SupportedLocale, Record<string, string>>;
+};
 
 interface NativeShellOptions {
   runtime(): DesktopRuntimeHost;

@@ -325,7 +325,7 @@ jobs:
             if [[ "$SHOULD_PUBLISH" == true ]]; then
               export CSC_LINK="$APPLE_CERTIFICATE"
               export CSC_KEY_PASSWORD="$APPLE_CERTIFICATE_PASSWORD"
-              export CSC_NAME="$APPLE_SIGNING_IDENTITY"
+              export CSC_NAME="${APPLE_SIGNING_IDENTITY#Developer ID Application: }"
               export APPLE_API_KEY="$APPLE_API_KEY_PATH"
               args+=(--config.mac.notarize=true)
             fi

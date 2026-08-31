@@ -38,6 +38,7 @@ describe("GlobalHome", () => {
         onOpenDoctor={onOpenDoctor}
         onOpenAssets={vi.fn()}
         onAddRoot={vi.fn().mockResolvedValue(undefined)}
+        onRefresh={vi.fn()}
         onRuntimeChanged={vi.fn()}
       />,
     );

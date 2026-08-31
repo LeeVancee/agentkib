@@ -18,6 +18,7 @@ function createActions(overrides: Partial<AppShortcutActions> = {}): AppShortcut
     onAddWorkspace: vi.fn().mockResolvedValue(undefined),
     onAddScanRoot: vi.fn().mockResolvedValue(undefined),
     onToggleSidebar: vi.fn(),
+    onOpenSearch: vi.fn(),
     onOpenHelp: vi.fn(),
     helpOpen: false,
     ...overrides,
@@ -31,18 +32,20 @@ describe("useAppShortcuts", () => {
 
   afterEach(cleanup);
 
-  it("routes navigation, refresh, sidebar, and help shortcuts", () => {
+  it("routes navigation, refresh, sidebar, search, and help shortcuts", () => {
     const actions = createActions();
     render(<ShortcutHarness {...actions} />);
 
     fireEvent.keyDown(window, { key: "1", ctrlKey: true });
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
     fireEvent.keyDown(window, { key: "b", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     fireEvent.keyDown(window, { key: "/", ctrlKey: true });
 
     expect(actions.onNavigate).toHaveBeenCalledWith("home");
     expect(actions.onRefreshCurrent).toHaveBeenCalledOnce();
     expect(actions.onToggleSidebar).toHaveBeenCalledOnce();
+    expect(actions.onOpenSearch).toHaveBeenCalledOnce();
     expect(actions.onOpenHelp).toHaveBeenCalledOnce();
   });
 

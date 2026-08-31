@@ -21,7 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SelectControl } from "@/components/ui/select-control";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
@@ -527,7 +527,7 @@ function SettingsRow({ children, border = true }: { children: ReactNode; border?
   return (
     <div
       className={cn(
-        "flex min-h-16 flex-wrap items-center justify-between gap-4 px-5 py-3",
+        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,280px)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
         border && "border-b border-border/60",
       )}
     >
@@ -575,17 +575,17 @@ function SettingGroup({
   children: ReactNode;
 }) {
   return (
-    <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
-      <CardHeader className="border-b border-border/70 bg-card px-5 py-4">
-        <CardTitle className="text-base font-semibold tracking-tight">{title}</CardTitle>
+    <section className="border-b border-border pb-2">
+      <header className="border-b border-border/70 py-4">
+        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
         {description && (
           <p className="mt-1 max-w-[62ch] text-xs leading-relaxed text-muted-foreground">
             {description}
           </p>
         )}
-      </CardHeader>
-      <CardContent className="p-0">{children}</CardContent>
-    </Card>
+      </header>
+      <div>{children}</div>
+    </section>
   );
 }
 function SettingsListEmptyState({

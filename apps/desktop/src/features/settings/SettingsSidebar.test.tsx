@@ -6,11 +6,11 @@ import { initializeI18n } from "@/core/i18n";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
 import { SettingsSidebar } from "./SettingsSidebar";
 
-describe("SettingsSidebar shortcut hints", () => {
+describe("SettingsSidebar v8 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("does not render inline shortcut hints while keeping accessibility metadata", () => {
+  it("shows only the back entry and five settings sections", () => {
     const { container } = render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <SettingsSidebar
@@ -25,11 +25,9 @@ describe("SettingsSidebar shortcut hints", () => {
     );
 
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Keyboard shortcuts" }).getAttribute("aria-keyshortcuts")).toBe(
-      "Control+/",
-    );
-    expect(container.querySelector('button[aria-label="Settings"]')?.getAttribute("title")).toBe(
-      "Settings",
-    );
+    expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Settings Back" })).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(7);
   });
 });

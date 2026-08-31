@@ -12,6 +12,7 @@ export type ShortcutId =
   | "add-workspace"
   | "add-scan-root"
   | "toggle-sidebar"
+  | "open-search"
   | "open-help";
 
 export type ShortcutGroup = "navigation" | "actions";
@@ -83,6 +84,12 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     id: "toggle-sidebar",
     key: "b",
     labelKey: "shortcuts.toggleSidebar",
+    group: "actions",
+  },
+  {
+    id: "open-search",
+    key: "k",
+    labelKey: "search.open",
     group: "actions",
   },
   {

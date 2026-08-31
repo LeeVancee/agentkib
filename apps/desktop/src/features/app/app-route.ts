@@ -1,6 +1,8 @@
 import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { AgentKind } from "@/core/types";
+import type { AgentFilter } from "@/components/AppSidebar";
 
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 export type GlobalPage = "home" | "workspaces" | "catalog" | "agents" | "quota" | "insights";
@@ -12,6 +14,8 @@ export type AppSearch = {
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;
   doctorVerification?: "applied";
+  agent?: AgentKind;
+  agentFilter?: AgentFilter;
 };
 
 export type ParsedRoute =

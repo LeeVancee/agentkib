@@ -3,11 +3,7 @@ import type { ReactNode } from "react";
 import { useLocation } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { WindowToolbar } from "@/components/WindowToolbar";
-import {
-  ariaShortcut,
-  currentAppPlatform,
-  getShortcutDefinition,
-} from "@/core/keyboard-shortcuts";
+import { ariaShortcut, currentAppPlatform, getShortcutDefinition } from "@/core/keyboard-shortcuts";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -17,7 +13,7 @@ import { useEffect, useRef } from "react";
 const mainClassName =
   "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
 
-export function AppShellHeader() {
+export function AppShellHeader({ children }: { children?: ReactNode }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const platform = currentAppPlatform();
@@ -47,6 +43,7 @@ export function AppShellHeader() {
           />
         </span>
       </Button>
+      {children}
     </div>
   );
 }
@@ -54,10 +51,12 @@ export function AppShellHeader() {
 export function AppShell({
   sidebar,
   children,
+  toolbar,
   mainClassName: additionalMainClassName,
 }: {
   sidebar: ReactNode;
   children: ReactNode;
+  toolbar?: ReactNode;
   mainClassName?: string;
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
@@ -78,7 +77,7 @@ export function AppShell({
       )}
     >
       <WindowToolbar />
-      <AppShellHeader />
+      <AppShellHeader>{toolbar}</AppShellHeader>
       {sidebar}
       <main className={cn(mainClassName, additionalMainClassName)}>
         <div ref={scrollContainerRef} className="page-scroll-container min-h-0 flex-1">

@@ -5,16 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useState } from "react";
-import {
-  ArrowLeft,
-  ChevronRight,
-  CircleAlert,
-  FileCode2,
-  FolderGit2,
-  PlugZap,
-  Search,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronRight, CircleAlert, FileCode2, FolderGit2, PlugZap, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatRelativeTime, tr } from "@/core/i18n";
 import type {
@@ -26,6 +18,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import type { AgentFilter } from "@/components/AppSidebar";
 
 type AgentDetailSection = "overview" | "assets" | "workspaces" | "usage";
 
@@ -53,6 +46,9 @@ export function AgentsPage({
   remoteGateways,
   insightsStatus,
   onOpen,
+  filter,
+  selectedAgent,
+  onSelectedAgentChange,
 }: {
   installations: AgentInstallation[];
   assets: CatalogAsset[];
@@ -60,10 +56,14 @@ export function AgentsPage({
   remoteGateways: RemoteGatewaySummary[];
   insightsStatus?: InsightsStatus;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
+  filter: AgentFilter;
+  selectedAgent?: AgentKind;
+  onSelectedAgentChange: (agent: AgentKind) => void;
 }) {
-  const [selected, setSelected] = useState<AgentKind>("codex");
-  const [view, setView] = useState<"management" | "detail">("management");
+  const [selected, setSelected] = useState<AgentKind>(selectedAgent ?? "codex");
   const [section, setSection] = useState<AgentDetailSection>("overview");
+  const [agentQuery, setAgentQuery] = useState("");
+  const [agentSort, setAgentSort] = useState<"name" | "status">("status");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetKind, setAssetKind] = useState("all");
   const installation = installations.find((item) => item.agent === selected);
@@ -94,38 +94,74 @@ export function AgentsPage({
     (total, gateway) => total + gateway.workspaces.length,
     0,
   );
-  const openDetail = (agent: AgentKind) => {
-    setSelected(agent);
-    setSection("overview");
-    setView("detail");
-  };
+  const visibleAgentKinds = agentKinds
+    .filter((agent) => {
+      const item = installations.find((installation) => installation.agent === agent);
+      if (!agentLabels[agent].toLowerCase().includes(agentQuery.trim().toLowerCase())) return false;
+      if (filter === "enabled") return Boolean(item?.installed);
+      if (filter === "available") return Boolean(item?.configured && !item.installed);
+      if (filter === "updates")
+        return Boolean(item?.warnings.some((warning) => warning.toLowerCase().includes("update")));
+      return true;
+    })
+    .sort((left, right) => {
+      if (agentSort === "name") return agentLabels[left].localeCompare(agentLabels[right]);
+      const leftInstalled = installations.find((item) => item.agent === left)?.installed ? 1 : 0;
+      const rightInstalled = installations.find((item) => item.agent === right)?.installed ? 1 : 0;
+      return rightInstalled - leftInstalled;
+    });
 
-  if (view === "management") {
-    return (
-      <AgentManagementView
-        installations={installations}
-        workspaces={workspaces}
-        remoteGateways={remoteGateways}
-        onOpenAgent={openDetail}
-      />
-    );
-  }
+  useEffect(() => {
+    if (selectedAgent && selectedAgent !== selected) {
+      setSelected(selectedAgent);
+      setSection("overview");
+    }
+  }, [selected, selectedAgent]);
+
+  useEffect(() => {
+    if (visibleAgentKinds.length > 0 && !visibleAgentKinds.includes(selected)) {
+      const next = visibleAgentKinds[0];
+      setSelected(next);
+      setSection("overview");
+      onSelectedAgentChange(next);
+    }
+  }, [onSelectedAgentChange, selected, visibleAgentKinds]);
 
   return (
     <div className="grid gap-3 pb-8">
-      <Button
-        variant="link"
-        className="w-fit px-0 text-xs text-muted-foreground"
-        onClick={() => setView("management")}
-      >
-        <ArrowLeft size={14} />
-        {tr("common.back")}
-      </Button>
-      <div className="relative grid items-start gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <section className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">{tr("agents.managementTitle")}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {tr("agents.enabled")} · {tr("agents.available")}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="flex h-9 min-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3">
+            <Search size={14} className="text-muted-foreground" />
+            <Input
+              className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
+              value={agentQuery}
+              onChange={(event) => setAgentQuery(event.target.value)}
+              placeholder={tr("common.search")}
+            />
+          </label>
+          <SelectControl
+            className="h-9 rounded-lg border border-border bg-background px-3"
+            value={agentSort}
+            onChange={(event) => setAgentSort(event.target.value as typeof agentSort)}
+            aria-label={tr("agents.status")}
+          >
+            <option value="status">{tr("agents.status")}</option>
+            <option value="name">{tr("agents.name")}</option>
+          </SelectControl>
+        </div>
+      </section>
+      <div className="relative grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
         <div className="grid gap-4">
           <Card className="overflow-hidden rounded-2xl border-border shadow-sm">
             <CardContent className="grid gap-2 p-3">
-              {agentKinds.map((agent) => {
+              {visibleAgentKinds.map((agent) => {
                 const item = installations.find((value) => value.agent === agent);
                 const remoteCount = remoteGateways
                   .filter((gateway) => gateway.kind === agent)
@@ -150,6 +186,7 @@ export function AgentsPage({
                     onClick={() => {
                       setSelected(agent);
                       setSection("overview");
+                      onSelectedAgentChange(agent);
                     }}
                   >
                     <AgentIcon agent={agent} />
@@ -175,6 +212,11 @@ export function AgentsPage({
                   </Button>
                 );
               })}
+              {visibleAgentKinds.length === 0 && (
+                <p className="px-3 py-10 text-center text-sm text-muted-foreground">
+                  {tr("agents.noAgents")}
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -445,109 +487,6 @@ export function AgentsPage({
           )}
         </Card>
       </div>
-    </div>
-  );
-}
-
-function AgentManagementView({
-  installations,
-  workspaces,
-  remoteGateways,
-  onOpenAgent,
-}: {
-  installations: AgentInstallation[];
-  workspaces: WorkspaceSummary[];
-  remoteGateways: RemoteGatewaySummary[];
-  onOpenAgent: (agent: AgentKind) => void;
-}) {
-  const rows = agentKinds.map((agent) => {
-    const installation = installations.find((item) => item.agent === agent);
-    const workspaceCount =
-      workspaces.filter((workspace) => workspace.sources.some((source) => source.agent === agent))
-        .length +
-      remoteGateways
-        .filter((gateway) => gateway.kind === agent)
-        .reduce((total, gateway) => total + gateway.workspaces.length, 0);
-    return { agent, installation, workspaceCount };
-  });
-  const enabled = rows.filter(({ installation }) => installation?.installed);
-  const available = rows.filter(({ installation }) => !installation?.installed);
-
-  const agentTable = (items: typeof rows) => (
-    <div className="overflow-x-auto">
-      <div className="min-w-[620px]">
-        <div className="grid grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_80px] items-center gap-3 border-b border-border-subtle bg-muted/20 px-4 py-2.5 text-[11px] font-semibold tracking-[0.04em] text-muted-foreground">
-          <span>{tr("agents.name")}</span>
-          <span>{tr("agents.agentType")}</span>
-          <span className="text-center">{tr("agents.status")}</span>
-          <span className="text-center">{tr("nav.workspaces")}</span>
-          <span />
-        </div>
-        {items.map(({ agent, installation, workspaceCount }) => (
-          <div
-            className="grid min-h-[64px] grid-cols-[minmax(180px,1.5fr)_minmax(120px,1fr)_100px_112px_80px] items-center gap-3 border-b border-border-subtle px-4 py-2.5 last:border-b-0 hover:bg-muted/20"
-            key={agent}
-          >
-            <div className="flex min-w-0 items-center gap-3">
-              <AgentIcon agent={agent} />
-              <strong className="truncate text-sm">{agentLabels[agent]}</strong>
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {tr(
-                agent === "cursor"
-                  ? "agents.aiEditor"
-                  : agent === "codex"
-                    ? "agents.aiAssistant"
-                    : "agents.aiPlatform",
-              )}
-            </span>
-            <Badge
-              variant={installation?.installed ? "secondary" : "outline"}
-              className={cn(
-                "w-fit justify-self-center text-xs",
-                installation?.installed && "bg-emerald-500/10 text-emerald-700",
-              )}
-            >
-              {tr(installation?.installed ? "common.enabled" : "common.disabled")}
-            </Badge>
-            <span className="text-center text-sm tabular-nums">{workspaceCount}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 w-fit justify-self-end rounded-lg px-2.5"
-              onClick={() => onOpenAgent(agent)}
-            >
-              {tr(installation?.installed ? "agents.manage" : "agents.view")}
-            </Button>
-          </div>
-        ))}
-        {!items.length && (
-          <p className="px-4 py-6 text-sm text-muted-foreground">{tr("agents.noAgents")}</p>
-        )}
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="grid gap-5 pb-8">
-      <Card className="overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm">
-        <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
-          <h2 className="text-base font-semibold">
-            {tr("agents.enabled")}{" "}
-            <span className="font-normal text-muted-foreground">({enabled.length})</span>
-          </h2>
-        </CardHeader>
-        <CardContent className="p-0">{agentTable(enabled)}</CardContent>
-      </Card>
-      <Card className="overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm">
-        <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
-          <h2 className="text-base font-semibold">
-            {tr("agents.available")}{" "}
-            <span className="font-normal text-muted-foreground">({available.length})</span>
-          </h2>
-        </CardHeader>
-        <CardContent className="p-0">{agentTable(available)}</CardContent>
-      </Card>
     </div>
   );
 }

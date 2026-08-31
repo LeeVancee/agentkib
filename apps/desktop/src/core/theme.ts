@@ -15,7 +15,11 @@ export function applyTheme(theme: EffectiveTheme) {
 
 export function accentThemePreference(): AccentTheme {
   const value = window.localStorage.getItem(ACCENT_THEME_STORAGE_KEY);
-  return value === "black" || value === "sky" || value === "claude" || value === "violet" || value === "emerald"
+  return value === "black" ||
+    value === "sky" ||
+    value === "claude" ||
+    value === "violet" ||
+    value === "emerald"
     ? value
     : "sky";
 }

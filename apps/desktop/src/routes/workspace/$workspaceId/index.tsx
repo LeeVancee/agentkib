@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router"
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
-import { useAppStore } from "@/stores/app-store";
+import { useHomeDoctorReport } from "@/features/home/home-query";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,7 @@ function Overview({
   onOpenDoctor,
   onOpenChanges,
   pendingDoctorReview,
+  doctorSummary,
 }: {
   workspace: WorkspaceSummary;
   scan: WorkspaceScan;
@@ -37,8 +38,8 @@ function Overview({
   onOpenDoctor: () => void;
   onOpenChanges: () => void;
   pendingDoctorReview: boolean;
+  doctorSummary?: import("@/core/types").ContextDoctorSummary;
 }) {
-  const doctorSummary = useAppStore((state) => state.doctorSummaries[workspace.id]);
   const configuredAgents = scan.agents.filter(
     (agent) => agent.detected || agent.warnings.length > 0,
   );
@@ -185,6 +186,7 @@ function WorkspaceOverviewRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/" });
   const { selectedWorkspace, scan, manifest, changeSet, changeSetOrigin } = useWorkspaceStore();
+  const doctorReport = useHomeDoctorReport(workspaceId);
   if (!selectedWorkspace || !scan || !manifest) return <WorkspaceOverviewSkeleton />;
   const open = (page: "doctor" | "changes") =>
     void navigate({
@@ -197,6 +199,7 @@ function WorkspaceOverviewRoute() {
       scan={scan}
       manifest={manifest}
       pendingDoctorReview={Boolean(changeSet && changeSetOrigin === "doctor")}
+      doctorSummary={doctorReport.data?.summary}
       onOpenDoctor={() => open("doctor")}
       onOpenChanges={() => open("changes")}
     />

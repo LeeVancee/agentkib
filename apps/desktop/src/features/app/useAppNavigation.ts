@@ -268,19 +268,16 @@ export function useAppNavigation() {
       next();
     }
   };
-  const openSettings = useCallback(
-    (section: SettingsSection = "general") => {
-      if (useWorkspaceStore.getState().applyingChanges) {
-        void dialogs.notify(tr("dialog.quit.changesApplying"));
-        return;
-      }
-      void navigate({
-        to: "/settings",
-        search: (current) => ({ ...current, settingsSection: section }) as never,
-      });
-    },
-    [dialogs, navigate],
-  );
+  const openSettings = (section: SettingsSection = "general") => {
+    if (useWorkspaceStore.getState().applyingChanges) {
+      void dialogs.notify(tr("dialog.quit.changesApplying"));
+      return;
+    }
+    void navigate({
+      to: "/settings",
+      search: (current) => ({ ...current, settingsSection: section }) as never,
+    });
+  };
 
   useEffect(() => {
     if (!navigationRequest) return;
@@ -384,6 +381,8 @@ export function useAppNavigation() {
     navigation: createGlobalNavigation(
       globalMemories.filter((item) => item.status === "pending").length,
     ),
+    workspaces,
+    openWorkspace,
     navigateGlobal,
     openSettings,
     refreshCurrentView,

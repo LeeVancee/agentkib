@@ -59,7 +59,10 @@ describe("useAppNavigation guards", () => {
       sources: [],
     };
     const draft = {} as Manifest;
-    useWorkspaceStore.setState({ selectedWorkspace: workspace, workspaceDrafts: { [workspace.id]: draft } });
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      workspaceDrafts: { [workspace.id]: draft },
+    });
 
     const { result } = renderHook(() => useAppNavigation());
 

@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+
+for candidate in \
+  "$self_dir/linux/CodexBarCLI" \
+  "$self_dir/../lib/AgentKib/linux/CodexBarCLI" \
+  "$self_dir/../lib/agentkib/linux/CodexBarCLI" \
+  "$self_dir/../lib/agentkib-desktop/linux/CodexBarCLI" \
+  "${APPDIR:-}/usr/lib/AgentKib/linux/CodexBarCLI" \
+  "${APPDIR:-}/usr/lib/agentkib/linux/CodexBarCLI" \
+  "${APPDIR:-}/usr/lib/agentkib-desktop/linux/CodexBarCLI" \
+  "/usr/lib/AgentKib/linux/CodexBarCLI" \
+  "/usr/lib/agentkib/linux/CodexBarCLI" \
+  "/usr/lib/agentkib-desktop/linux/CodexBarCLI" \
+  "$self_dir/../../apps/desktop/resources/quota/resources/linux/CodexBarCLI"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+echo "AgentKib quota collector resource is missing; reinstall AgentKib" >&2
+exit 127

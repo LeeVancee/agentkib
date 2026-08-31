@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,13 +25,18 @@ import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../core/api";
-import { refreshGlobalState } from "../core/global-state";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { formatRelativeTime, localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
+import {
+  homeKeys,
+  useHomeCatalog,
+  useHomeRefreshJobs,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { ChevronRight, FolderGit2, MoreHorizontal, RefreshCw, Search, Trash2 } from "lucide-react";
-import type { AgentKind, Manifest, RefreshJobStatus, WorkspaceSummary } from "../core/types";
+import type { AgentKind, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 
 type WorkspaceView = "list" | "storage";
@@ -48,13 +53,12 @@ const agentLabels: Record<AgentKind, string> = {
 function WorkspacesRoute() {
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
+  const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as WorkspacesSearch;
   const view = search.workspaceView ?? "list";
-  const workspaces = useAppStore((state) => state.workspaces);
-  const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
-  const catalog = useAppStore((state) => state.catalog);
-  const refreshJobs = useAppStore((state) => state.refreshJobs);
-  const setRuntime = useAppStore((state) => state.setRuntime);
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
+  const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const openRequest = useRef(0);
   const {
     setProject,
@@ -91,40 +95,20 @@ function WorkspacesRoute() {
 
   const openWorkspace = async (workspace: WorkspaceSummary) => {
     const requestId = ++openRequest.current;
-    setBusy(true);
     setMessage("");
-    try {
-      const runtimePromise = useAppStore.getState().runtime
-        ? Promise.resolve(useAppStore.getState().runtime)
-        : api.runtime();
-      const [nextScan, nextRuntime] = await Promise.all([api.scan(workspace.path), runtimePromise]);
-      if (requestId !== openRequest.current) return;
-      let nextManifest: Manifest | undefined;
-      try {
-        nextManifest = await api.manifest(workspace.path);
-      } catch (error) {
-        if (requestId === openRequest.current) setMessage(localizeMessage(error));
-      }
-      if (requestId !== openRequest.current) return;
-      setChangeSet(undefined);
-      setChangeSetOrigin("standard");
-      setHandoffLaunchRequest(undefined);
-      setProject(workspace.path);
-      setScan(nextScan);
-      setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-      setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-      setRuntime(nextRuntime);
-      setSelectedWorkspace(workspace);
-      setBusy(false);
-      await navigate({
-        to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
-        params: { workspaceId: workspace.id },
-      });
-    } catch (error) {
-      if (requestId === openRequest.current) setMessage(localizeMessage(error));
-    } finally {
-      if (requestId === openRequest.current) setBusy(false);
-    }
+    if (requestId !== openRequest.current) return;
+    setChangeSet(undefined);
+    setChangeSetOrigin("standard");
+    setHandoffLaunchRequest(undefined);
+    setProject(workspace.path);
+    setScan(undefined);
+    setManifest(undefined);
+    setBaselineManifest("");
+    setSelectedWorkspace(workspace);
+    await navigate({
+      to: "/workspace/$workspaceId",
+      params: { workspaceId: workspace.id },
+    });
   };
 
   const addWorkspace = async () => {
@@ -132,11 +116,7 @@ function WorkspacesRoute() {
       await dialogs.notify(tr("dialog.quit.changesApplying"));
       return;
     }
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addWorkspace"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addWorkspace"));
     if (typeof selected !== "string") return;
     try {
       if (useWorkspaceStore.getState().applyingChanges) {
@@ -145,7 +125,7 @@ function WorkspacesRoute() {
       }
       setMessage("");
       const workspace = await api.addWorkspace(selected);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
       if (useWorkspaceStore.getState().applyingChanges) {
         await dialogs.notify(tr("dialog.quit.changesApplying"));
         return;
@@ -167,7 +147,7 @@ function WorkspacesRoute() {
   const refreshWorkspace = async (id: string) => {
     try {
       await api.refreshWorkspace(id);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
     } catch (error) {
       setMessage(localizeMessage(error));
     }
@@ -180,13 +160,13 @@ function WorkspacesRoute() {
       return;
     try {
       await api.excludeWorkspace(id);
-      await refreshGlobalState(useAppStore.getState().runtime);
+      await queryClient.invalidateQueries({ queryKey: homeKeys.all });
     } catch (error) {
       setMessage(localizeMessage(error));
     }
   };
 
-  if (!workspacesLoaded) return <WorkspacesSkeleton view={view} />;
+  if (workspacesPending || catalogPending) return <WorkspacesSkeleton view={view} />;
 
   return (
     <WorkspacesPage

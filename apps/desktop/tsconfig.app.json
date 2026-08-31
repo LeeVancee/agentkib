@@ -5,13 +5,16 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "allowJs": false,
     "skipLibCheck": true,
+    "types": ["node"],
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "paths": { "@/*": ["./src/*"] },
+    "paths": {
+      "@/*": ["./src/*"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

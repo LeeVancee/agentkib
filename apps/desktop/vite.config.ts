@@ -4,25 +4,28 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
-const runtime = globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } };
-const env = runtime.process?.env ?? {};
-
 const config = {
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
-  resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
+  resolve: {
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src"),
+    },
+  },
   clearScreen: false,
   server: { port: 1420, strictPort: true },
-  envPrefix: ["VITE_", "TAURI_ENV_"],
   test: { setupFiles: ["./src/test/test-setup.ts"] },
   build: {
-    target: env.TAURI_ENV_PLATFORM === "windows" ? "chrome111" : "safari16.4",
-    sourcemap: Boolean(env.TAURI_ENV_DEBUG),
+    target: "es2022",
     rollupOptions: {
       output: {
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (id.indexOf("/lucide-react/") >= 0) return "icons";
-          if (id.indexOf("/@tauri-apps/") >= 0) return "tauri";
-          if (["/react/", "/react-dom/", "/scheduler/", "/i18next/", "/react-i18next/"].some((dependency) => id.indexOf(dependency) >= 0)) return "framework";
+          if (
+            ["/react/", "/react-dom/", "/scheduler/", "/i18next/", "/react-i18next/"].some(
+              (dependency) => id.indexOf(dependency) >= 0,
+            )
+          )
+            return "framework";
           return undefined;
         },
       },

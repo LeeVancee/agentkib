@@ -15,10 +15,10 @@ inspect_tree() {
   local root=$1
   local package=$2
   local main sidecar collector bundle desktop
-  main=$(find "$root" -type f \( -name agentkib-desktop -o -name agentkib \) -perm -u+x -print -quit)
+  main=$(find "$root" -type f \( -name agentkib-desktop -o -name agentkib -o -name AgentKib \) -perm -u+x -print -quit)
   sidecar=$(find "$root" -type f -name agentkib-quota-sidecar -perm -u+x -print -quit)
-  collector=$(find "$root" -type f -path '*/linux/CodexBarCLI' -perm -u+x -print -quit)
-  bundle=$(find "$root" -type d -path '*/linux/CodexBar_CodexBarCore.bundle' -print -quit)
+  collector=$(find "$root" -type f \( -path '*/linux/CodexBarCLI' -o -path '*/CodexBarCLI' \) -perm -u+x -print -quit)
+  bundle=$(find "$root" -type d -name CodexBar_CodexBarCore.bundle -print -quit)
   desktop=$(find "$root" -type f -name '*.desktop' -print -quit)
   [[ -n "$main" ]] || { echo "$package: main executable is missing" >&2; return 1; }
   [[ -n "$sidecar" ]] || { echo "$package: quota launcher is missing" >&2; return 1; }

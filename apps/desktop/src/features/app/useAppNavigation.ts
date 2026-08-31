@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
-import { open } from "@tauri-apps/plugin-dialog";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
-import { refreshGlobalState } from "@/core/global-state";
 import { localizeMessage, tr } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
-import { createGlobalNavigation } from "./GlobalShell";
+import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
+import {
+  homeKeys,
+  useOptionalQueryClient,
+  useHomeMemories,
+  useHomeRefreshJobs,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
@@ -27,19 +32,20 @@ export function useAppNavigation() {
   const routeGlobalPage = route.kind === "global" ? route.page : "home";
   const globalPage = routeGlobalPage;
   const appMode = route.kind === "settings" ? "settings" : "main";
+  const queryClient = useOptionalQueryClient();
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: globalMemories = [] } = useHomeMemories();
+  const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const settingsSection = search.settingsSection ?? "general";
   const quotaProvider = search.quotaProvider;
   const quotaWindow = search.quotaWindow;
   const appStore = useAppStore();
   const workspaceStore = useWorkspaceStore();
   const {
-    workspaces,
-    globalMemories,
     navigationRequest,
     setNavigationRequest,
     menuCommand,
     setMenuCommand,
-    refreshJobs,
     setQuotaConfigureRequest,
   } = appStore;
   const {
@@ -116,7 +122,7 @@ export function useAppNavigation() {
   };
 
   const loadGlobal = async () => {
-    await refreshGlobalState(useAppStore.getState().runtime);
+    await queryClient.invalidateQueries({ queryKey: homeKeys.all });
   };
 
   const refreshDiscovery = async () => {
@@ -185,50 +191,18 @@ export function useAppNavigation() {
     async (workspace: WorkspaceSummary, initialPage: Page = "overview") => {
       const requestId = ++workspaceOpenRequest.current;
       persistWorkspaceDraft();
-      setBusy(true);
       setMessage("");
-      try {
-        const runtimePromise = useAppStore.getState().runtime
-          ? Promise.resolve(useAppStore.getState().runtime)
-          : api.runtime();
-        const [nextScan, nextRuntime] = await Promise.all([
-          api.scan(workspace.path),
-          runtimePromise,
-        ]);
-        if (requestId !== workspaceOpenRequest.current) return;
-        let nextManifest: Manifest | undefined;
-        try {
-          nextManifest = await api.manifest(workspace.path);
-        } catch (error) {
-          if (requestId === workspaceOpenRequest.current) setMessage(localizeMessage(error));
-        }
-        if (requestId !== workspaceOpenRequest.current) return;
-        setGitSubview(undefined);
-        setChangeSet(undefined);
-        setChangeSetOrigin("standard");
-        setHandoffLaunchRequest(undefined);
-        setProject(workspace.path);
-        setScan(nextScan);
-        setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-        setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-        useAppStore.getState().setRuntime(nextRuntime);
-        setSelectedWorkspace(workspace);
-        navigateWorkspacePageFor(workspace.id, nextManifest ? initialPage : "doctor");
-      } catch (error) {
-        if (requestId === workspaceOpenRequest.current) {
-          setSelectedWorkspace(workspace);
-          setProject("");
-          setScan(undefined);
-          setManifest(undefined);
-          setChangeSet(undefined);
-          setChangeSetOrigin("standard");
-          setHandoffLaunchRequest(undefined);
-          setBaselineManifest("");
-          setMessage(localizeMessage(error));
-        }
-      } finally {
-        if (requestId === workspaceOpenRequest.current) setBusy(false);
-      }
+      if (requestId !== workspaceOpenRequest.current) return;
+      setGitSubview(undefined);
+      setChangeSet(undefined);
+      setChangeSetOrigin("standard");
+      setHandoffLaunchRequest(undefined);
+      setProject(workspace.path);
+      setScan(undefined);
+      setManifest(undefined);
+      setBaselineManifest("");
+      setSelectedWorkspace(workspace);
+      navigateWorkspacePageFor(workspace.id, initialPage);
     },
     [
       navigateWorkspacePageFor,
@@ -255,7 +229,7 @@ export function useAppNavigation() {
     if (
       route.kind !== "workspace" ||
       selectedWorkspace?.id === workspaceRouteId ||
-      !useAppStore.getState().workspacesLoaded ||
+      workspacesPending ||
       !workspaceRouteId
     )
       return;
@@ -344,11 +318,7 @@ export function useAppNavigation() {
 
   const selectProject = async () => {
     if (!(await ensureWorkspaceChangeAllowed())) return;
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addWorkspace"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addWorkspace"));
     if (typeof selected === "string") {
       if (!(await ensureWorkspaceChangeAllowed())) return;
       const workspace = await api.addWorkspace(selected);
@@ -377,11 +347,7 @@ export function useAppNavigation() {
   };
 
   async function addScanRootFromDialog() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("dialog.addScanRoot"),
-    });
+    const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
     if (typeof selected === "string") {
       await api.addScanRoot(selected, 5);
       await loadGlobal();

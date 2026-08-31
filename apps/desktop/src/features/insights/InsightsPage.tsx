@@ -8,8 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useMemo, useState, type ComponentType } from "react";
 import {
   Activity,
   Award,
@@ -33,7 +32,6 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { api } from "@/core/api";
 import {
   achievementReached,
   buildAchievementWallItems,
@@ -49,24 +47,18 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { isTauriRuntime } from "@/core/platform";
 import { buildHeatmapMonthMarkers } from "@/features/insights/insights";
 import type {
   Achievement,
   AgentKind,
-  AgentUsageBreakdown,
   HeatmapPoint,
   InsightsQuery,
   InsightsStatus,
-  InsightsSummary,
-  ModelUsageBreakdown,
-  RefreshJobStatus,
-  RepositoryCommitBreakdown,
   WorkspaceSummary,
-  WorkspaceUsageBreakdown,
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
+import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
 
 type HeatmapMetric = "tokens" | "my_commits" | "all_commits" | "attributed_commits" | "sessions";
 export type InsightsSection = "overview" | "tokens" | "commits" | "milestones" | "sources";
@@ -83,30 +75,15 @@ const agentLabels: Record<AgentKind, string> = {
 export function InsightsPage({
   section,
   workspaces,
-  onSummary,
 }: {
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
-  onSummary: (summary: InsightsSummary) => void;
 }) {
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
-  const [range, setRange] = useState<"52w" | "year">("52w");
+  const [range, setRange] = useState<"52w" | "year">("year");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
-  const [summary, setSummary] = useState<InsightsSummary>();
-  const [points, setPoints] = useState<HeatmapPoint[]>([]);
-  const [agents, setAgents] = useState<AgentUsageBreakdown[]>([]);
-  const [models, setModels] = useState<ModelUsageBreakdown[]>([]);
-  const [workspaceUsage, setWorkspaceUsage] = useState<WorkspaceUsageBreakdown[]>([]);
-  const [repositories, setRepositories] = useState<RepositoryCommitBreakdown[]>([]);
-  const [achievements, setAchievements] = useState<Achievement[]>([]);
-  const [status, setStatus] = useState<InsightsStatus>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [initializing, setInitializing] = useState(true);
-  const pendingRefresh = useRef(false);
-  const requestSequence = useRef(0);
   const query = useMemo<InsightsQuery>(() => {
     const today = new Date();
     const from =
@@ -123,67 +100,27 @@ export function InsightsPage({
       repository_group_id: commitView && repository !== "all" ? repository : undefined,
     };
   }, [agent, workspaceId, repository, range, section]);
-  const loadInsights = useCallback(async () => {
-    const sequence = ++requestSequence.current;
-    setError("");
-    try {
-      const view = await api.insightsView(query);
-      if (sequence !== requestSequence.current) return;
-      setSummary(view.summary);
-      setPoints(view.heatmap);
-      setAgents(view.agents);
-      setModels(view.models);
-      setWorkspaceUsage(view.workspaces);
-      setRepositories(view.repositories);
-      setAchievements(view.achievements);
-      setStatus(view.status);
-      setBusy(view.status.running);
-      onSummary(view.summary);
-    } catch (reason) {
-      if (sequence === requestSequence.current) setError(localizeMessage(reason));
-    } finally {
-      if (sequence === requestSequence.current) setInitializing(false);
-    }
-  }, [onSummary, query]);
-  useEffect(() => {
-    void loadInsights();
-  }, [loadInsights]);
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void listen<RefreshJobStatus>("agentkib:refresh-state", (event) => {
-      if (disposed) return;
-      if (event.payload.kind !== "insights") return;
-      if (event.payload.state === "queued" || event.payload.state === "running") setBusy(true);
-      if (event.payload.state === "succeeded") {
-        setBusy(false);
-        if (document.visibilityState === "visible") void loadInsights();
-        else pendingRefresh.current = true;
-      }
-      if (event.payload.state === "failed") {
-        setBusy(false);
-        setError(event.payload.error ?? tr("errors.generic"));
-      }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [loadInsights]);
-  useEffect(() => {
-    const refreshVisibleInsights = () => {
-      if (!pendingRefresh.current) return;
-      pendingRefresh.current = false;
-      void loadInsights();
-    };
-    window.addEventListener("focus", refreshVisibleInsights);
-    return () => window.removeEventListener("focus", refreshVisibleInsights);
-  }, [loadInsights]);
+  const viewQuery = useInsightsView(query);
+  const refreshJobQuery = useInsightsRefreshJob();
+  const view = viewQuery.data;
+  const summary = view?.summary;
+  const points = view?.heatmap ?? [];
+  const agents = view?.agents ?? [];
+  const models = view?.models ?? [];
+  const workspaceUsage = view?.workspaces ?? [];
+  const repositories = view?.repositories ?? [];
+  const achievements = view?.achievements ?? [];
+  const status = view?.status;
+  const refreshJob = refreshJobQuery.data;
+  const busy =
+    view?.status.running === true ||
+    refreshJob?.state === "queued" ||
+    refreshJob?.state === "running";
+  const error =
+    (viewQuery.error ? localizeMessage(viewQuery.error) : "") ||
+    (refreshJobQuery.error ? localizeMessage(refreshJobQuery.error) : "") ||
+    (refreshJob?.state === "failed" ? refreshJob.error : undefined) ||
+    "";
   const metricLabels: Record<HeatmapMetric, string> = {
     tokens: "Token",
     my_commits: tr("insights.myCommits"),
@@ -207,7 +144,7 @@ export function InsightsPage({
   const filterClass =
     "h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1";
 
-  if (initializing) return <InsightsSkeleton />;
+  if (!view) return <InsightsSkeleton section={section} />;
 
   return (
     <div className="relative grid gap-5">
@@ -810,9 +747,9 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
           </span>
         ))}
       </div>
-      <div className="overflow-hidden border-b border-border px-5 pb-4 pt-7">
+      <div className="overflow-x-auto overflow-y-hidden border-b border-border px-5 pb-4 pt-7">
         <ToggleGroup
-          className="segmented-control segmented-control-grid relative w-full min-w-0 gap-0 pb-2"
+          className="segmented-control segmented-control-grid relative w-full min-w-0 gap-0 pb-2 max-[760px]:min-w-[640px]"
           value={[selected.code]}
           onValueChange={(values) => {
             const next = track.milestones.find((milestone) => milestone.code === values[0]);
@@ -826,7 +763,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               category: tr(`milestones.category.${track.category}`),
             })}
             style={{ left: `${50 / milestoneCount}%`, right: `${50 / milestoneCount}%` }}
-            className="pointer-events-none absolute top-[11px] z-0 h-0.5 w-auto bg-border"
+            className="pointer-events-none absolute top-[35px] z-0 h-0.5 w-auto bg-border"
           />
           {track.milestones.map((milestone) => {
             const reached = achievementReached(milestone);
@@ -835,7 +772,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               <ToggleGroupItem
                 value={milestone.code}
                 className={cn(
-                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-start content-start justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
+                  "segmented-control-item relative z-1 grid h-auto min-h-[104px] min-w-0 items-center content-center justify-items-center gap-1.5 px-1 text-center focus-visible:ring-2 focus-visible:ring-ring",
                   reached && "text-foreground",
                   current && "text-[var(--blue)]",
                 )}

@@ -125,13 +125,13 @@ DeepSeek Harness 当前为 Beta 只读目标，不会被写入或配置 MCP。
 ## 五、构建 NSIS 安装包
 
 ```powershell
-pnpm tauri build --bundles nsis
+pnpm dist:electron
 ```
 
 构建成功后，安装包位于：
 
 ```text
-target\release\bundle\nsis\*.exe
+apps\desktop\release-electron\AgentKib_*_windows-*.exe
 ```
 
 双击安装包，完成后可从 Windows 开始菜单搜索并打开 **AgentKib**。当前内部测试包未做代码签名，Windows SmartScreen 可能显示未知发布者；请确认文件确实来自自己的本机构建后再选择继续。

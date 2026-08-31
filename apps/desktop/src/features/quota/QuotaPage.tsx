@@ -8,7 +8,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import {
   Check,
   ChevronDown,
@@ -20,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
 import { normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
@@ -35,15 +35,22 @@ import {
   quotaWindowKey,
 } from "@/features/quota/quota";
 import type {
-  QuotaCollectorStatus,
   QuotaPopoverPreferences,
   QuotaProvider,
   QuotaSnapshot,
   QuotaWindowSelector,
-  RefreshJobStatus,
 } from "@/core/types";
 import { ProviderIcon, QuotaWindowRow } from "./QuotaDisplay";
 import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
+import {
+  DEFAULT_QUOTA_PREFERENCES,
+  useQuotaPreferences,
+  useQuotaRefreshJob,
+  useQuotaRefreshMutation,
+  useQuotaSnapshot,
+  useQuotaStatus,
+  useSetQuotaPreferencesMutation,
+} from "./quota-query";
 
 type QuotaFilter = "all" | "healthy" | "warning" | "unavailable";
 
@@ -51,162 +58,65 @@ export function QuotaPage({
   initialProvider,
   initialWindow,
   configurePopoverRequest = 0,
-  popoverSupported = normalizePlatform(import.meta.env.TAURI_ENV_PLATFORM) === "macos",
+  popoverSupported = normalizePlatform(desktopApi().platform) === "macos",
 }: {
   initialProvider?: string;
   initialWindow?: QuotaWindowSelector;
   configurePopoverRequest?: number;
   popoverSupported?: boolean;
 }) {
-  const [snapshot, setSnapshot] = useState<QuotaSnapshot>();
-  const [status, setStatus] = useState<QuotaCollectorStatus>();
-  const [preferences, setPreferences] = useState<QuotaPopoverPreferences>({
-    hidden_providers: [],
-    hidden_windows: [],
-  });
+  const snapshotQuery = useQuotaSnapshot();
+  const statusQuery = useQuotaStatus();
+  const preferencesQuery = useQuotaPreferences();
+  const refreshJobQuery = useQuotaRefreshJob();
+  const refreshMutation = useQuotaRefreshMutation();
+  const snapshot = snapshotQuery.data;
+  const status = statusQuery.data;
+  const preferences = preferencesQuery.data ?? DEFAULT_QUOTA_PREFERENCES;
+  const refreshJob = refreshJobQuery.data;
   const [selectedId, setSelectedId] = useState(initialProvider ?? initialWindow?.provider_id ?? "");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<QuotaFilter>("all");
   const [showPreferences, setShowPreferences] = useState(
     popoverSupported && configurePopoverRequest > 0,
   );
-  const [refreshJob, setRefreshJob] = useState<RefreshJobStatus>();
   const [requestPending, setRequestPending] = useState(false);
-  const [error, setError] = useState("");
-  const [initializing, setInitializing] = useState(true);
+  const [manualError, setManualError] = useState("");
   const autoRefreshEnabled = useAppStore(
     (state) => state.runtime?.quota_auto_refresh_enabled === true,
   );
-  const promptSeen = useAppStore(
-    (state) => state.runtime?.quota_auto_refresh_prompt_seen === true,
-  );
+  const promptSeen = useAppStore((state) => state.runtime?.quota_auto_refresh_prompt_seen === true);
   const setRuntime = useAppStore((state) => state.setRuntime);
-  const pendingRefresh = useRef(false);
   const requestedInitialRefresh = useRef(false);
-
-  const load = async () => {
-    const [nextSnapshot, nextStatus, refreshJobs, nextPreferences] = await Promise.all([
-      api.quotaSnapshot(),
-      api.quotaCollectorStatus(),
-      api.refreshStatus(),
-      api.quotaPopoverPreferences(),
-    ]);
-    setSnapshot(nextSnapshot);
-    setStatus(nextStatus);
-    setPreferences(nextPreferences);
-    const nextJob = refreshJobs.find((job) => job.kind === "quota");
-    setRefreshJob(nextJob);
-    return { snapshot: nextSnapshot, job: nextJob };
-  };
+  const initializing = snapshotQuery.isPending;
+  const queryError =
+    snapshotQuery.error ?? statusQuery.error ?? preferencesQuery.error ?? refreshJobQuery.error;
+  const refreshError = refreshJob?.state === "failed" ? refreshJob.error : undefined;
+  const error =
+    manualError || (queryError ? localizeMessage(queryError) : "") || refreshError || "";
 
   useEffect(() => {
-    let disposed = false;
-    let unlistenQuota: (() => void) | undefined;
-    let unlistenRefresh: (() => void) | undefined;
-    let unlistenPreferences: (() => void) | undefined;
-    void (async () => {
-      [unlistenQuota, unlistenRefresh, unlistenPreferences] = await Promise.all([
-        listen<QuotaSnapshot>("agentkib:quota-updated", ({ payload }) => {
-          if (disposed) return;
-          setSnapshot(payload);
-          if (document.visibilityState === "visible")
-            void api.quotaCollectorStatus().then(setStatus);
-          else pendingRefresh.current = true;
-        }),
-        listen<RefreshJobStatus>("agentkib:refresh-state", ({ payload }) => {
-          if (disposed || payload.kind !== "quota") return;
-          setRefreshJob(payload);
-          if (payload.state === "succeeded") {
-            setError("");
-            if (document.visibilityState === "visible")
-              void load().catch((reason) => setError(localizeMessage(reason)));
-            else pendingRefresh.current = true;
-          }
-          if (payload.state === "failed") setError(payload.error ?? tr("errors.quotaUnavailable"));
-        }),
-        listen<QuotaPopoverPreferences>(
-          "agentkib:quota-popover-preferences-updated",
-          ({ payload }) => {
-            if (!disposed) setPreferences(payload);
-          },
-        ),
-      ]);
-      if (disposed) {
-        unlistenQuota();
-        unlistenRefresh();
-        unlistenPreferences();
-        return;
-      }
-      const { snapshot: initialSnapshot, job } = await load();
-      if (
-        disposed ||
-        !autoRefreshEnabled ||
-        requestedInitialRefresh.current ||
-        (job && ["queued", "running", "backoff"].includes(job.state))
-      ) {
-        if (!disposed) setInitializing(false);
-        return;
-      }
-      if (initialSnapshot?.freshness === "fresh") {
-        if (!disposed) setInitializing(false);
-        return;
-      }
-      requestedInitialRefresh.current = true;
-      const receipt = await api.requestRefresh("quota", false);
-      if (!disposed) {
-        setRefreshJob(receipt.status);
-        setInitializing(false);
-      }
-    })().catch((reason) => {
-      if (!disposed) {
-        setInitializing(false);
-        setError(localizeMessage(reason));
-      }
-    });
-    return () => {
-      disposed = true;
-      unlistenQuota?.();
-      unlistenRefresh?.();
-      unlistenPreferences?.();
-    };
-  }, [autoRefreshEnabled]);
+    if (
+      snapshotQuery.isPending ||
+      refreshJobQuery.isPending ||
+      !autoRefreshEnabled ||
+      requestedInitialRefresh.current ||
+      (refreshJob && ["queued", "running", "backoff"].includes(refreshJob.state)) ||
+      snapshot?.freshness === "fresh"
+    )
+      return;
+    requestedInitialRefresh.current = true;
+    void refreshMutation.mutateAsync().catch((reason) => setManualError(localizeMessage(reason)));
+  }, [
+    autoRefreshEnabled,
+    refreshJob,
+    refreshJobQuery.isPending,
+    refreshMutation,
+    snapshot,
+    snapshotQuery.isPending,
+  ]);
 
   const refreshActive = refreshJob?.state === "queued" || refreshJob?.state === "running";
-  useEffect(() => {
-    if (!refreshActive || document.visibilityState !== "visible") return;
-    let disposed = false;
-    const poll = async () => {
-      try {
-        const jobs = await api.refreshStatus();
-        if (disposed) return;
-        const nextJob = jobs.find((job) => job.kind === "quota");
-        if (!nextJob) return;
-        setRefreshJob(nextJob);
-        if (nextJob.state === "failed") setError(nextJob.error ?? tr("errors.quotaUnavailable"));
-        if (nextJob.state === "succeeded") {
-          setError("");
-          await load();
-        }
-      } catch (reason) {
-        if (!disposed) setError(localizeMessage(reason));
-      }
-    };
-    const timer = window.setInterval(() => void poll(), 1_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [refreshActive, refreshJob?.request_id]);
-
-  useEffect(() => {
-    const refreshVisibleQuota = () => {
-      if (!pendingRefresh.current) return;
-      pendingRefresh.current = false;
-      void load().catch((reason) => setError(localizeMessage(reason)));
-    };
-    window.addEventListener("focus", refreshVisibleQuota);
-    return () => window.removeEventListener("focus", refreshVisibleQuota);
-  }, []);
 
   useEffect(() => {
     if (initialProvider || initialWindow)
@@ -252,12 +162,11 @@ export function QuotaPage({
   const busy = requestPending || refreshActive;
   const refresh = async () => {
     setRequestPending(true);
-    setError("");
+    setManualError("");
     try {
-      const receipt = await api.refreshQuota();
-      setRefreshJob(receipt.status);
+      await refreshMutation.mutateAsync();
     } catch (reason) {
-      setError(localizeMessage(reason));
+      setManualError(localizeMessage(reason));
     } finally {
       setRequestPending(false);
     }
@@ -363,7 +272,6 @@ export function QuotaPage({
             <QuotaDisplaySettings
               snapshot={snapshot}
               preferences={preferences}
-              onChange={setPreferences}
               onClose={() => setShowPreferences(false)}
             />
           </CollapsibleContent>
@@ -371,10 +279,7 @@ export function QuotaPage({
       </Collapsible>
 
       {!autoRefreshEnabled && !promptSeen && (
-        <QuotaAutoRefreshPrompt
-          onEnableAutoRefresh={enableAutoRefresh}
-          onNotNow={markPromptSeen}
-        />
+        <QuotaAutoRefreshPrompt onEnableAutoRefresh={enableAutoRefresh} onNotNow={markPromptSeen} />
       )}
 
       {!snapshot && (
@@ -446,7 +351,7 @@ function ProviderTabs({
               key={provider.id}
               value={provider.id}
               className={cn(
-                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-primary data-active:!text-primary-foreground data-active:!shadow-sm",
+                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
                 unavailable && "opacity-60",
               )}
             >
@@ -456,7 +361,7 @@ function ProviderTabs({
                 <small
                   className={cn(
                     "truncate text-[11px] text-muted-foreground",
-                    isActive && "text-primary-foreground/80",
+                    isActive && "text-foreground/70",
                   )}
                 >
                   {provider.identity?.account_email ??
@@ -471,7 +376,7 @@ function ProviderTabs({
                   <em
                     className={cn(
                       "text-[13px] font-bold not-italic",
-                      isActive && "text-primary-foreground",
+                      isActive && "text-primary",
                       !isActive && severity === "healthy" && "text-green-600",
                       !isActive && severity === "warning" && "text-amber-600",
                       !isActive && severity === "danger" && "text-red-600",
@@ -482,13 +387,13 @@ function ProviderTabs({
                   <i
                     className={cn(
                       "absolute inset-x-3 bottom-2 h-1 overflow-hidden rounded-full bg-muted",
-                      isActive && "bg-primary-foreground/25",
+                      isActive && "bg-primary/20",
                     )}
                   >
                     <b
                       className={cn(
                         "block h-full rounded-full bg-primary",
-                        isActive && "bg-primary-foreground",
+                        isActive && "bg-primary",
                         !isActive && severity === "warning" && "bg-amber-500",
                         !isActive && severity === "danger" && "bg-red-500",
                       )}
@@ -640,10 +545,11 @@ function QuotaDisplaySettings({
 }: {
   snapshot: QuotaSnapshot;
   preferences: QuotaPopoverPreferences;
-  onChange: (preferences: QuotaPopoverPreferences) => void;
+  onChange?: (preferences: QuotaPopoverPreferences) => void;
   onClose: () => void;
 }) {
   const [saveError, setSaveError] = useState("");
+  const preferencesMutation = useSetQuotaPreferencesMutation();
   const currentPreferences = useRef(preferences);
   const saveSequence = useRef(0);
   useEffect(() => {
@@ -653,18 +559,18 @@ function QuotaDisplaySettings({
     const sequence = ++saveSequence.current;
     const previous = currentPreferences.current;
     currentPreferences.current = next;
-    onChange(next);
+    onChange?.(next);
     setSaveError("");
     try {
-      const stored = await api.setQuotaPopoverPreferences(next);
+      const stored = await preferencesMutation.mutateAsync(next);
       if (sequence === saveSequence.current) {
         currentPreferences.current = stored;
-        onChange(stored);
+        onChange?.(stored);
       }
     } catch (reason) {
       if (sequence === saveSequence.current) {
         currentPreferences.current = previous;
-        onChange(previous);
+        onChange?.(previous);
         setSaveError(localizeMessage(reason));
       }
     }

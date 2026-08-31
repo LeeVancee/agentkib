@@ -7,7 +7,6 @@ import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { hierarchy, treemap, treemapResquarify } from "d3-hierarchy";
 import {
   CircleAlert,
@@ -29,7 +28,6 @@ import type {
   WorkspaceStorage,
   WorkspaceSummary,
 } from "@/core/types";
-import { cn } from "@/lib/utils";
 
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -82,23 +80,12 @@ export function WorkspaceStoragePage({
   const [selected, setSelected] = useState<StorageSelection>();
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState("");
-  const active = job?.state === "queued" || job?.state === "running";
+  const [refreshPending, setRefreshPending] = useState(false);
+  const active = refreshPending || job?.state === "queued" || job?.state === "running";
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | undefined;
     void (async () => {
-      unlisten = await listen<StorageOverview>("agentkib:storage-updated", (event) => {
-        if (!disposed) {
-          setOverview(event.payload);
-          setTrail([]);
-          setSelected(undefined);
-        }
-      });
-      if (disposed) {
-        unlisten?.();
-        return;
-      }
       try {
         const cached = await api.storageOverview();
         if (!disposed) setOverview(cached);
@@ -110,7 +97,6 @@ export function WorkspaceStoragePage({
     })();
     return () => {
       disposed = true;
-      unlisten?.();
     };
   }, []);
 
@@ -150,7 +136,6 @@ export function WorkspaceStoragePage({
     [agent, overview, workspaceById],
   );
   const current = trail.at(-1);
-  const currentStorage = current ? storageById.get(current.workspaceId) : undefined;
   const displayed = current
     ? current.node.children.map((node) => ({ workspaceId: current.workspaceId, node }))
     : workspaceNodes;
@@ -185,10 +170,14 @@ export function WorkspaceStoragePage({
 
   const start = async () => {
     setError("");
+    setRefreshPending(true);
     try {
-      await api.requestRefresh("storage", true);
+      const receipt = await api.requestRefresh("storage", true);
+      if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
     } catch (reason) {
       setError(localizeMessage(reason));
+    } finally {
+      setRefreshPending(false);
     }
   };
   const stop = async () => {

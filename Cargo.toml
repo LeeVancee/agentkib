@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-  "apps/desktop/src-tauri",
+  "crates/agentkib-protocol",
+  "crates/agentkib-runtime",
   "crates/agentkib-platform",
   "crates/agentkib-core",
   "crates/agentkib-adapters",
@@ -18,11 +19,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+agentkib-protocol = { path = "crates/agentkib-protocol" }
 agentkib-platform = { path = "crates/agentkib-platform" }
 agentkib-core = { path = "crates/agentkib-core" }
 agentkib-adapters = { path = "crates/agentkib-adapters" }
@@ -62,3 +64,10 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 toml = "0.9"
 uuid = { version = "1.17", features = ["v4", "serde"] }
 walkdir = "2.5"
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

@@ -44,6 +44,16 @@ export function WorkspaceLayoutSkeleton() {
   );
 }
 
+export function WorkspaceSummaryStripSkeleton() {
+  return (
+    <div className="grid grid-cols-4 gap-3 max-[800px]:grid-cols-2">
+      {Array.from({ length: 4 }, (_, index) => (
+        <SkeletonMetricCard className="min-h-[76px] py-3" key={index} />
+      ))}
+    </div>
+  );
+}
+
 export function WorkspaceOverviewSkeleton() {
   return (
     <SkeletonPage label="Loading workspace overview">

@@ -41,8 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libssl-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+            libgtk-3-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -74,30 +73,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tauri_version=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/src-tauri/tauri.conf.json')).version")
           package_version=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/package.json')).version")
           cargo_version=$(cargo metadata --no-deps --format-version 1 | node -e '
             let input = "";
             process.stdin.setEncoding("utf8");
             process.stdin.on("data", (chunk) => input += chunk);
             process.stdin.on("end", () => {
-              const desktop = JSON.parse(input).packages.find(({ name }) => name === "agentkib-desktop");
-              if (!desktop) process.exit(1);
-              console.log(desktop.version);
+              const runtime = JSON.parse(input).packages.find(({ name }) => name === "agentkib-runtime");
+              if (!runtime) process.exit(1);
+              console.log(runtime.version);
             });
           ')
 
-          if [[ ! "$tauri_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid desktop version: $tauri_version" >&2
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid desktop version: $package_version" >&2
             exit 1
           fi
-          if [[ "$tauri_version" != "$package_version" || "$tauri_version" != "$cargo_version" ]]; then
-            echo "Desktop versions differ: tauri=$tauri_version package=$package_version cargo=$cargo_version" >&2
+          if [[ "$package_version" != "$cargo_version" ]]; then
+            echo "Desktop versions differ: package=$package_version cargo=$cargo_version" >&2
             exit 1
           fi
 
-          echo "Validated AgentKib desktop version $tauri_version"
-          echo "app_version=$tauri_version" >> "$GITHUB_OUTPUT"
+          echo "Validated AgentKib desktop version $package_version"
+          echo "app_version=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Validate release ref
         id: release
@@ -159,8 +157,6 @@ jobs:
           HAS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
           HAS_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
           HAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
-          HAS_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-          HAS_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
         run: |
           set -euo pipefail
           required=(
@@ -171,8 +167,6 @@ jobs:
             HAS_APPLE_CERTIFICATE_PASSWORD
             HAS_APPLE_SIGNING_IDENTITY
             HAS_APPLE_TEAM_ID
-            HAS_TAURI_SIGNING_PRIVATE_KEY
-            HAS_TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           )
           for name in "${required[@]}"; do
             if [[ "${!name}" != true ]]; then
@@ -212,54 +206,52 @@ jobs:
         include:
           - name: macOS
             arch: arm64
+            updater_channel: arm64
             os: macos-15
             artifact: macos-arm64
-            asset_suffix: macos-arm64
-            bundles: app,dmg
           - name: macOS
             arch: x64
+            updater_channel: x64
             os: macos-15-intel
             artifact: macos-x64
-            asset_suffix: macos-x64
-            bundles: app,dmg
           - name: Windows
             arch: x64
+            updater_channel: x64
             os: windows-2025
             artifact: windows-x64
-            asset_suffix: windows-x64
-            bundles: nsis
           - name: Windows
             arch: arm64-preview
+            updater_channel: arm64
             os: windows-11-arm
             artifact: windows-arm64-preview
-            asset_suffix: windows-arm64-preview
-            bundles: nsis
           - name: Ubuntu
             arch: x64
             os: ubuntu-22.04
             artifact: linux-ubuntu-x64
-            asset_suffix: linux-x64
-            bundles: deb,appimage
           - name: Ubuntu
             arch: arm64-preview
             os: ubuntu-24.04-arm
             artifact: linux-ubuntu-arm64-preview
-            asset_suffix: linux-arm64-preview
-            bundles: deb,appimage
 
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}
       CARGO_TERM_COLOR: always
       DESKTOP_RELEASE_DIR: dist/desktop-release
       SHOULD_PUBLISH: ${{ needs.preflight.outputs.should_publish }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
+
+      - name: Checkout Windows release helper scripts
+        if: runner.os == 'Windows'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-helpers
+          sparse-checkout: .github/scripts
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -269,8 +261,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get install -y --no-install-recommends \
             build-essential binutils curl file pkg-config patchelf libssl-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev libfuse2 libglib2.0-bin desktop-file-utils \
+            libgtk-3-dev libfuse2 libglib2.0-bin desktop-file-utils \
             xdg-utils dbus-x11 xvfb
 
       - name: Setup pnpm
@@ -297,9 +288,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Clean previous bundle outputs
+      - name: Clean previous Electron bundle outputs
         shell: bash
-        run: find target -type d -path '*/release/bundle' -prune -exec rm -rf '{}' + 2>/dev/null || true
+        run: |
+          rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
       - name: Prepare Apple notarization private key
         if: runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true'
@@ -315,56 +307,59 @@ jobs:
           test -s "$key_path"
           echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
 
-      - name: Build Linux bundles
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          args=(--bundles '${{ matrix.bundles }}')
-          if [[ "$SHOULD_PUBLISH" == true ]]; then
-            args+=(--config src-tauri/tauri.release.conf.json)
-          fi
-          apps/desktop/scripts/build-linux-bundles.sh "${args[@]}"
-
-      - name: Build unsigned macOS preview bundles
-        if: runner.os == 'macOS' && env.SHOULD_PUBLISH != 'true'
-        shell: bash
-        run: pnpm tauri build --bundles '${{ matrix.bundles }}'
-
-      - name: Build signed and notarized macOS release bundles
-        if: runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true'
+      - name: Build Electron bundles
         shell: bash
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          pnpm tauri build \
-            --bundles '${{ matrix.bundles }}' \
-            --config src-tauri/tauri.release.conf.json
+          set -euo pipefail
 
-      - name: Build Windows bundles
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          args=(--bundles '${{ matrix.bundles }}')
-          if [[ "$SHOULD_PUBLISH" == true ]]; then
-            args+=(--config src-tauri/tauri.release.conf.json)
+          cd apps/desktop
+          pnpm protocol:generate
+          pnpm runtime:build
+          pnpm quota:prepare
+          pnpm runtime:stage
+          pnpm build:web
+          pnpm electron:build
+
+          args=(--publish never)
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            args+=(--mac dmg zip)
+            if [[ "$SHOULD_PUBLISH" == true ]]; then
+              export CSC_LINK="$APPLE_CERTIFICATE"
+              export CSC_KEY_PASSWORD="$APPLE_CERTIFICATE_PASSWORD"
+              export CSC_NAME="${APPLE_SIGNING_IDENTITY#Developer ID Application: }"
+              export APPLE_API_KEY="$APPLE_API_KEY_PATH"
+              args+=(--config.mac.notarize=true)
+            fi
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            args+=(--win nsis)
+            if [[ "${{ matrix.arch }}" == arm64-preview ]]; then
+              args+=(--arm64)
+            else
+              args+=(--x64)
+            fi
+          else
+            args+=(--linux deb AppImage)
           fi
-          pnpm tauri build "${args[@]}"
+
+          pnpm exec electron-builder "${args[@]}"
 
       - name: Smoke test Linux bundles
         if: runner.os == 'Linux'
-        run: .github/scripts/smoke-test-linux-package.sh target
+        run: .github/scripts/smoke-test-linux-package.sh apps/desktop/release-electron
 
       - name: Smoke test installed Ubuntu package
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          package=$(find "$PWD/target" -type f -name '*.deb' -path '*/bundle/deb/*' -print -quit)
+          package=$(find "$PWD/apps/desktop/release-electron" -maxdepth 1 -type f -name '*.deb' -print -quit)
           test -n "$package"
           sudo apt-get install -y "$package"
           .github/scripts/smoke-test-linux-installed.sh
@@ -372,17 +367,24 @@ jobs:
       - name: Smoke test Windows x64 installer
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
-        run: ./.github/scripts/smoke-test-windows-installer.ps1 -SearchRoot target
+        run: ./.release-helpers/.github/scripts/smoke-test-windows-installer.ps1 -SearchRoot apps/desktop/release-electron
+
+      - name: Smoke test Windows ARM64 preview installer
+        if: runner.os == 'Windows' && matrix.arch == 'arm64-preview'
+        shell: pwsh
+        run: ./.release-helpers/.github/scripts/smoke-test-windows-installer.ps1 -SearchRoot apps/desktop/release-electron -SkipQuota
 
       - name: Verify macOS application bundle
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          app=$(find target -type d -path '*/bundle/macos/*.app' -print -quit)
+          app=$(find apps/desktop/release-electron -type d -name '*.app' -print -quit)
           test -n "$app"
           executable=$(find "$app/Contents/MacOS" -maxdepth 1 -type f -perm -u+x -print -quit)
           test -n "$executable"
+          test -s apps/desktop/release-electron/AgentKib_${APP_VERSION}_macos-${{ matrix.arch }}.dmg
+          test -s apps/desktop/release-electron/AgentKib_${APP_VERSION}_macos-${{ matrix.arch }}.zip
           echo "Verified macOS application executable: $executable"
 
       - name: Verify signed and notarized macOS release
@@ -393,7 +395,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          app=$(find target -type d -path '*/bundle/macos/*.app' -print -quit)
+          app=$(find apps/desktop/release-electron -type d -name '*.app' -print -quit)
           test -n "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           signing_details=$(codesign --display --verbose=4 "$app" 2>&1)
@@ -416,41 +418,41 @@ jobs:
           set -euo pipefail
           rm -rf "$DESKTOP_RELEASE_DIR"
           mkdir -p "$DESKTOP_RELEASE_DIR"
-          prefix="AgentKib_${APP_VERSION}_${{ matrix.asset_suffix }}"
+          electron_dir="apps/desktop/release-electron"
+          test -d "$electron_dir"
 
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            app=$(find target -type d -path '*/bundle/macos/*.app' -print -quit)
-            test -n "$app"
-            ditto -c -k --sequesterRsrc --keepParent "$app" "$DESKTOP_RELEASE_DIR/${prefix}.app.zip"
-            if [[ "$SHOULD_PUBLISH" == true ]]; then
-              updater=$(find target -type f -path '*/bundle/macos/*.app.tar.gz' -print -quit)
-              test -n "$updater"
-              test -s "$updater.sig"
-              cp "$updater" "$DESKTOP_RELEASE_DIR/${prefix}.app.tar.gz"
-              cp "$updater.sig" "$DESKTOP_RELEASE_DIR/${prefix}.app.tar.gz.sig"
-            fi
-          fi
-
-          while IFS= read -r artifact; do
-            case "$artifact" in
-              *.dmg) cp "$artifact" "$DESKTOP_RELEASE_DIR/${prefix}.dmg" ;;
-              *.exe) cp "$artifact" "$DESKTOP_RELEASE_DIR/${prefix}.exe" ;;
-              *.deb) cp "$artifact" "$DESKTOP_RELEASE_DIR/${prefix}.deb" ;;
-              *.AppImage) cp "$artifact" "$DESKTOP_RELEASE_DIR/${prefix}.AppImage" ;;
-            esac
-          done < <(find target -type f \
-            \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' \) \
-            -path '*/bundle/*' | sort)
-
-          if [[ "$SHOULD_PUBLISH" == true && "$RUNNER_OS" != macOS ]]; then
-            updater=$(find target -type f \( -name '*.AppImage.sig' -o -name '*.exe.sig' \) \
-              -path '*/bundle/*' -print -quit)
-            test -n "$updater"
-            case "$updater" in
-              *.AppImage.sig) cp "$updater" "$DESKTOP_RELEASE_DIR/${prefix}.AppImage.sig" ;;
-              *.exe.sig) cp "$updater" "$DESKTOP_RELEASE_DIR/${prefix}.exe.sig" ;;
-            esac
-          fi
+          case "$RUNNER_OS" in
+            macOS)
+              for artifact in "$electron_dir"/*.dmg "$electron_dir"/*.zip "$electron_dir"/*.blockmap; do
+                [[ -f "$artifact" ]] && cp "$artifact" "$DESKTOP_RELEASE_DIR/"
+              done
+              metadata="$electron_dir/latest-mac.yml"
+              test -s "$metadata"
+              cp "$metadata" "$DESKTOP_RELEASE_DIR/${{ matrix.updater_channel }}-mac.yml"
+              ;;
+            Windows)
+              for artifact in "$electron_dir"/*.exe "$electron_dir"/*.blockmap; do
+                [[ -f "$artifact" ]] && cp "$artifact" "$DESKTOP_RELEASE_DIR/"
+              done
+              metadata="$electron_dir/latest.yml"
+              test -s "$metadata"
+              cp "$metadata" "$DESKTOP_RELEASE_DIR/${{ matrix.updater_channel }}.yml"
+              ;;
+            Linux)
+              for artifact in "$electron_dir"/*.deb "$electron_dir"/*.AppImage "$electron_dir"/*.blockmap; do
+                [[ -f "$artifact" ]] && cp "$artifact" "$DESKTOP_RELEASE_DIR/"
+              done
+              if [[ "${{ matrix.arch }}" == x64 ]]; then
+                metadata="$electron_dir/latest-linux.yml"
+                destination="latest-linux.yml"
+              else
+                metadata="$electron_dir/latest-linux-arm64.yml"
+                destination="latest-linux-arm64.yml"
+              fi
+              test -s "$metadata"
+              cp "$metadata" "$DESKTOP_RELEASE_DIR/$destination"
+              ;;
+          esac
 
           count=$(find "$DESKTOP_RELEASE_DIR" -type f | wc -l | tr -d ' ')
           test "$count" -gt 0
@@ -462,7 +464,10 @@ jobs:
           set -euo pipefail
           cd "$DESKTOP_RELEASE_DIR"
           for artifact in *; do
-            [[ "$artifact" == *.sha256 || "$artifact" == *.sig ]] && continue
+            case "$artifact" in
+              *.dmg|*.zip|*.exe|*.deb|*.rpm|*.AppImage|*.blockmap) ;;
+              *) continue ;;
+            esac
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "$artifact" > "$artifact.sha256"
             else
@@ -492,9 +497,8 @@ jobs:
         run: |
           dnf install -y \
             git curl tar gzip xz file findutils which binutils \
-            gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
-            gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel \
-            librsvg2-devel libxdo-devel rpm-build rpmdevtools cpio \
+            gcc gcc-c++ make libatomic openssl-devel pkgconf-pkg-config patchelf \
+            gtk3-devel libxcrypt-compat rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - name: Checkout selected revision
@@ -502,17 +506,18 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          run_install: false
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
+          npm install --global "pnpm@$pnpm_version"
+          pnpm --version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -526,21 +531,31 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Clean previous bundle outputs
+      - name: Clean previous Electron bundle outputs
         shell: bash
-        run: find target -type d -path '*/release/bundle' -prune -exec rm -rf '{}' + 2>/dev/null || true
+        run: rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
-      - name: Build RPM
-        run: apps/desktop/scripts/build-linux-bundles.sh --bundles rpm
+      - name: Build Electron RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/desktop
+          pnpm protocol:generate
+          pnpm runtime:build
+          pnpm quota:prepare
+          pnpm runtime:stage
+          pnpm build:web
+          pnpm electron:build
+          pnpm exec electron-builder --linux rpm --publish never
 
       - name: Smoke test RPM
-        run: .github/scripts/smoke-test-linux-package.sh target rpm
+        run: .github/scripts/smoke-test-linux-package.sh apps/desktop/release-electron rpm
 
       - name: Smoke test installed RPM
         shell: bash
         run: |
           set -euo pipefail
-          package=$(find target -type f -name '*.rpm' -path '*/bundle/rpm/*' -print -quit)
+          package=$(find "$PWD/apps/desktop/release-electron" -maxdepth 1 -type f -name '*.rpm' -print -quit)
           test -n "$package"
           dnf install -y "$package"
           .github/scripts/smoke-test-linux-installed.sh
@@ -551,10 +566,10 @@ jobs:
           set -euo pipefail
           rm -rf "$DESKTOP_RELEASE_DIR"
           mkdir -p "$DESKTOP_RELEASE_DIR"
-          source=$(find target -type f -name '*.rpm' -path '*/bundle/rpm/*' -print -quit)
+          source=$(find apps/desktop/release-electron -maxdepth 1 -type f -name '*.rpm' -print -quit)
           test -n "$source"
-          destination="$DESKTOP_RELEASE_DIR/AgentKib_${APP_VERSION}_linux-x64.rpm"
-          cp "$source" "$destination"
+          cp "$source" "$DESKTOP_RELEASE_DIR/"
+          destination="$DESKTOP_RELEASE_DIR/$(basename "$source")"
           (
             cd "$DESKTOP_RELEASE_DIR"
             artifact=$(basename "$destination")
@@ -628,51 +643,58 @@ jobs:
             cp "$source" "$destination"
           done < <(find "$WORKFLOW_ARTIFACTS_DIR" -type f -print0)
 
-          cat > "$RUNNER_TEMP/expected-release-assets.txt" <<EOF
-          ${prefix}_linux-arm64-preview.AppImage
-          ${prefix}_linux-arm64-preview.AppImage.sha256
-          ${prefix}_linux-arm64-preview.AppImage.sig
-          ${prefix}_linux-arm64-preview.deb
-          ${prefix}_linux-arm64-preview.deb.sha256
-          ${prefix}_linux-x64.AppImage
-          ${prefix}_linux-x64.AppImage.sha256
-          ${prefix}_linux-x64.AppImage.sig
-          ${prefix}_linux-x64.deb
-          ${prefix}_linux-x64.deb.sha256
-          ${prefix}_linux-x64.rpm
-          ${prefix}_linux-x64.rpm.sha256
-          ${prefix}_macos-arm64.app.zip
-          ${prefix}_macos-arm64.app.zip.sha256
-          ${prefix}_macos-arm64.app.tar.gz
-          ${prefix}_macos-arm64.app.tar.gz.sha256
-          ${prefix}_macos-arm64.app.tar.gz.sig
+          cat > "$RUNNER_TEMP/required-release-assets.txt" <<EOF
+          ${prefix}_linux-arm64.AppImage
+          ${prefix}_linux-arm64.AppImage.sha256
+          ${prefix}_linux-arm64.deb
+          ${prefix}_linux-arm64.deb.sha256
+          ${prefix}_linux-x86_64.AppImage
+          ${prefix}_linux-x86_64.AppImage.sha256
+          ${prefix}_linux-amd64.deb
+          ${prefix}_linux-amd64.deb.sha256
+          ${prefix}_linux-x86_64.rpm
+          ${prefix}_linux-x86_64.rpm.sha256
           ${prefix}_macos-arm64.dmg
           ${prefix}_macos-arm64.dmg.sha256
-          ${prefix}_macos-x64.app.zip
-          ${prefix}_macos-x64.app.zip.sha256
-          ${prefix}_macos-x64.app.tar.gz
-          ${prefix}_macos-x64.app.tar.gz.sha256
-          ${prefix}_macos-x64.app.tar.gz.sig
+          ${prefix}_macos-arm64.zip
+          ${prefix}_macos-arm64.zip.sha256
           ${prefix}_macos-x64.dmg
           ${prefix}_macos-x64.dmg.sha256
-          ${prefix}_windows-arm64-preview.exe
-          ${prefix}_windows-arm64-preview.exe.sha256
-          ${prefix}_windows-arm64-preview.exe.sig
+          ${prefix}_macos-x64.zip
+          ${prefix}_macos-x64.zip.sha256
+          ${prefix}_windows-arm64.exe
+          ${prefix}_windows-arm64.exe.sha256
           ${prefix}_windows-x64.exe
           ${prefix}_windows-x64.exe.sha256
-          ${prefix}_windows-x64.exe.sig
+          latest-linux-arm64.yml
+          latest-linux.yml
+          arm64-mac.yml
+          x64-mac.yml
+          arm64.yml
+          x64.yml
           EOF
 
           find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -exec basename {} \; \
             | LC_ALL=C sort > "$RUNNER_TEMP/actual-release-assets.txt"
-          LC_ALL=C sort -o "$RUNNER_TEMP/expected-release-assets.txt" \
-            "$RUNNER_TEMP/expected-release-assets.txt"
 
-          if ! diff -u "$RUNNER_TEMP/expected-release-assets.txt" \
-            "$RUNNER_TEMP/actual-release-assets.txt"; then
-            echo "Release artifact set does not match the expected manifest" >&2
-            exit 1
-          fi
+          missing_required_asset=false
+          while IFS= read -r required; do
+            if [[ ! -s "$RELEASE_ASSETS_DIR/$required" ]]; then
+              echo "Missing required release artifact: $required" >&2
+              missing_required_asset=true
+            fi
+          done < "$RUNNER_TEMP/required-release-assets.txt"
+          [[ "$missing_required_asset" == false ]]
+
+          while IFS= read -r actual; do
+            case "$actual" in
+              *.blockmap|*.blockmap.sha256) ;;
+              *) grep -Fx "$actual" "$RUNNER_TEMP/required-release-assets.txt" >/dev/null || {
+                echo "Unexpected release artifact: $actual" >&2
+                exit 1
+              } ;;
+            esac
+          done < "$RUNNER_TEMP/actual-release-assets.txt"
 
           while IFS= read -r artifact; do
             test -s "$artifact"
@@ -685,23 +707,17 @@ jobs:
             )
           done < <(find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -name '*.sha256' | LC_ALL=C sort)
 
-      - name: Generate updater manifest
+      - name: Validate Electron updater metadata
         shell: bash
         run: |
           set -euo pipefail
-          published_at=$(git show -s --format=%cI "$RELEASE_SHA")
-          notes_file="$RUNNER_TEMP/updater-release-notes.md"
-          gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$RELEASE_TAG" \
-            -f target_commitish="$RELEASE_SHA" \
-            --jq '.body' > "$notes_file"
-          node "$RELEASE_WORKFLOW_SCRIPTS_DIR/build-updater-manifest.mjs" \
-            "$RELEASE_ASSETS_DIR" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$APP_VERSION" \
-            "$published_at" "$notes_file"
-          test -s "$RELEASE_ASSETS_DIR/latest.json"
-          jq -e --arg version "$APP_VERSION" \
-            '.version == $version and (.platforms | length) == 6' \
-            "$RELEASE_ASSETS_DIR/latest.json" >/dev/null
+          for metadata in latest-linux.yml latest-linux-arm64.yml arm64-mac.yml x64-mac.yml arm64.yml x64.yml; do
+            file="$RELEASE_ASSETS_DIR/$metadata"
+            test -s "$file"
+            grep -Eq "^version: ${APP_VERSION//./\\.}$" "$file"
+            grep -q '^files:' "$file"
+            grep -q 'sha512:' "$file"
+          done
 
       - name: Prepare draft release
         shell: bash
@@ -720,21 +736,12 @@ jobs:
           if [[ -n "$release_json" ]]; then
             echo "Resuming existing draft release $RELEASE_TAG"
           else
-            release_notes=$(
-              cat <<'EOF'
-          > [!NOTE]
-          > macOS 安装包已使用 AgentKib 的 Developer ID Application 证书签名并通过 Apple 公证，可直接拖入“应用程序”后打开。
-          >
-          > The macOS packages are signed with AgentKib's Developer ID Application certificate and notarized by Apple. Drag AgentKib into Applications and open it normally.
-          EOF
-            )
             create_args=(
               release create "$RELEASE_TAG"
               --repo "$GITHUB_REPOSITORY"
               --target "$RELEASE_SHA"
               --title "AgentKib $RELEASE_TAG"
               --generate-notes
-              --notes "$release_notes"
               --verify-tag
               --draft
             )

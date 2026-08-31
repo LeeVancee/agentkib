@@ -7,8 +7,8 @@ This guide is for maintainers and testers validating a release candidate. AgentK
 Run the artifact-only desktop workflow against the release commit and use its
 packages for the checks in this section. These candidate artifacts validate the
 application behavior and packaging shape, but they are not the final release
-artifacts: macOS candidates are unsigned, and updater signatures and
-`latest.json` are not generated until the tagged release run.
+artifacts: macOS candidates are unsigned, and release notarization is not
+performed until the tagged release run.
 
 ### Five-minute core path
 
@@ -31,8 +31,8 @@ Applying a ChangeSet is optional. A tester may reject it or close the getting-st
 ## After publishing: release-asset checks
 
 Create the immutable version tag only after the candidate checks pass. The
-tagged workflow builds a different set of release artifacts with updater
-signatures and signed/notarized macOS packages. Complete every check below
+tagged workflow builds a different set of release artifacts with Electron
+updater metadata and signed/notarized macOS packages. Complete every check below
 against the assets attached to the published GitHub Release, not against the
 artifact-only candidate run.
 
@@ -60,7 +60,7 @@ artifact-only candidate run.
 
 - [ ] Start from the latest supported stable version and use Settings → General → Check for updates.
 - [ ] Confirm the displayed version and release notes match the target GitHub Release.
-- [ ] For macOS, Windows, and Linux AppImage, complete download, signature verification, installation, and restart.
+- [ ] For macOS, Windows, and Linux AppImage, complete download, updater checksum verification, installation, and restart.
 - [ ] For DEB/RPM, confirm AgentKib opens the matching Release page instead of replacing the system package.
 - [ ] After restart, confirm workspaces, preferences, local indexes, and the getting-started acknowledgement remain intact.
 

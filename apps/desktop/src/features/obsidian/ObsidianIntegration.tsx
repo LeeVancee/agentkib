@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useEffect, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
@@ -58,11 +57,7 @@ export function ObsidianSettingsCard() {
   };
 
   const addVault = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: tr("obsidian.addVaultDialog"),
-    });
+    const selected = await api.pickDirectory(tr("obsidian.addVaultDialog"));
     if (typeof selected !== "string") return;
     try {
       setError("");

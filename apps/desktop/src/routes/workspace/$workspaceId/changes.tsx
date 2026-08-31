@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../../../core/api";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
@@ -7,7 +8,7 @@ import {
   hasActiveChangesFlow,
   type WorkspaceFlowPage,
 } from "@/features/workspace/workspace-flow";
-import { refreshGlobalState } from "../../../core/global-state";
+import { homeKeys } from "@/features/home/home-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { localizeMessage, tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
@@ -351,6 +352,7 @@ function Changes({
 
 function WorkspaceChangesRoute() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/changes" });
   const {
     project,
@@ -455,7 +457,7 @@ function WorkspaceChangesRoute() {
         }
         try {
           const runtime = await reload();
-          if (runtime) await refreshGlobalState(runtime);
+          if (runtime) await queryClient.invalidateQueries({ queryKey: homeKeys.all });
         } catch (error) {
           if (
             useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&

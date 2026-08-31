@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useEffect, useId, useState, type ComponentType } from "react";
-import { Keyboard, Menu, PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
+import { Keyboard, Menu, Settings } from "lucide-react";
 import { tr } from "../core/i18n";
 import { cn } from "@/lib/utils";
 import { SidebarBrand } from "./SidebarBrand";
@@ -20,23 +20,16 @@ export interface SidebarEntry<T extends string> {
   shortcut?: ShortcutId;
 }
 
-export function AppSidebar<T extends string>({
-  active,
-  entries,
-  onNavigate,
-  onSettings,
-  onBrandClick,
-  collapsed,
-  onCollapsedChange,
-}: {
+export function AppSidebar<T extends string>(props: {
   active: T;
   entries: SidebarEntry<T>[];
   onNavigate: (page: T) => void;
   onSettings: () => void;
   onBrandClick: () => void;
   collapsed: boolean;
-  onCollapsedChange: (collapsed: boolean) => void;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
+  const { active, entries, onNavigate, onSettings, onBrandClick, collapsed } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarId = useId();
   const { openShortcutHelp } = useShortcutHelp();
@@ -54,11 +47,6 @@ export function AppSidebar<T extends string>({
   const navigate = (page: T) => {
     setMobileOpen(false);
     onNavigate(page);
-  };
-
-  const toggleCollapsed = () => {
-    const next = !collapsed;
-    onCollapsedChange(next);
   };
 
   return (
@@ -85,31 +73,6 @@ export function AppSidebar<T extends string>({
           onClick={() => setMobileOpen(false)}
         />
       )}
-      <div className="app-shell-header">
-        <Button
-          variant="bare"
-          size="content"
-          className="app-sidebar-collapse-button"
-          type="button"
-          aria-label={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-          aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
-          aria-expanded={!collapsed}
-          data-collapsed={collapsed}
-          title={tr(collapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-          onClick={toggleCollapsed}
-        >
-          <span className="app-sidebar-collapse-icon" aria-hidden="true">
-            <PanelLeftClose
-              className={cn("app-sidebar-collapse-icon-close", collapsed && "is-hidden")}
-              size={17}
-            />
-            <PanelLeftOpen
-              className={cn("app-sidebar-collapse-icon-open", !collapsed && "is-hidden")}
-              size={17}
-            />
-          </span>
-        </Button>
-      </div>
       <aside
         id={sidebarId}
         className={cn(

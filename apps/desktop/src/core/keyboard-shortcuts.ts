@@ -110,7 +110,9 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement;
   if (element.isContentEditable) return true;
   if (["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)) return true;
-  return typeof element.closest === "function" && Boolean(element.closest('[contenteditable="true"]'));
+  return (
+    typeof element.closest === "function" && Boolean(element.closest('[contenteditable="true"]'))
+  );
 }
 
 export function matchesShortcut(
@@ -144,7 +146,7 @@ export function ariaShortcut(
 
 export function currentAppPlatform(): AppPlatform {
   const rootPlatform = document.documentElement.dataset.platform;
-  return normalizePlatform(rootPlatform ?? import.meta.env.TAURI_ENV_PLATFORM);
+  return normalizePlatform(rootPlatform);
 }
 
 export function shouldHandleInFrontend(

@@ -1,207 +1,154 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { desktopApi } from "./desktop";
 import type {
-  Achievement,
-  ActivityRecord,
-  AgentInstallation,
   AgentKind,
-  AgentUsageBreakdown,
   AppIconPreference,
-  AppUpdateInfo,
   AppUpdateProgress,
-  CatalogAsset,
   ChangeSet,
   CloseBehavior,
-  ContextDoctorReport,
   ContextDoctorSummary,
-  ContextPreview,
-  ConversationEventPage,
-  ConversationIndexStatus,
-  ConversationSessionSummary,
-  ExcludedWorkspace,
-  GitCommitPage,
-  GitDiff,
   GitDiffRequest,
-  GitFileChange,
   GitHistoryQuery,
-  GitIdentitySummary,
-  GitWorkspaceSummary,
-  HandoffContinuationResult,
   HandoffFormat,
-  HandoffLaunchReceipt,
-  HeatmapPoint,
   InsightsQuery,
-  InsightsStatus,
-  InsightsSummary,
-  InsightsView,
   LocalePreference,
   Manifest,
-  McpHubStatus,
-  McpInstallation,
-  McpInstallResult,
-  McpMigrationCandidate,
   McpNetworkSettings,
-  McpOAuthStart,
   McpRegistryEntry,
-  McpRuntimeStatus,
   McpServerConfig,
-  McpToolDescriptor,
-  MemoryRecord,
   MemoryStatus,
   MemoryType,
-  ModelUsageBreakdown,
-  ObsidianIntegration,
-  ObsidianWorkspaceLink,
   OnboardingEvent,
-  PlannedSessionHandoff,
-  QuotaCollectorStatus,
   QuotaPopoverPreferences,
-  QuotaSnapshot,
   QuotaWindowSelector,
-  RefreshJobStatus,
   RefreshKind,
-  RefreshReceipt,
   RemoteGatewayInput,
-  RemoteGatewaySummary,
-  RepositoryCommitBreakdown,
-  RuntimeInfo,
-  ScanRoot,
-  SessionHandoffDraft,
   SessionHandoffLaunchRequest,
-  SessionHandoffPreparation,
   SessionHandoffRequest,
-  StorageNode,
-  StorageOverview,
   ThemePreference,
-  WorkspaceOpener,
-  WorkspaceScan,
-  WorkspaceSummary,
-  WorkspaceUsageBreakdown,
 } from "./types";
-
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
 export const api = {
-  scan: (project: string) => invoke<WorkspaceScan>("scan_workspace", { project }),
+  scan: (project: string) => desktopApi().workspace.scan(project),
   manifest: async (project: string) => {
-    const manifest = await invoke<Manifest>("prepare_manifest", { project });
+    const manifest = await desktopApi().workspace.prepareManifest(project);
     // Empty legacy connections are omitted from manifest serialization.
     // Keep the React model total at the IPC boundary without writing the field back to disk.
     return { ...manifest, connections: manifest.connections ?? [] };
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>
-    invoke<ChangeSet>("plan_changes", { project, manifest, includeHome }),
+    desktopApi().changes.plan(project, manifest, includeHome),
   apply: (changeSet: ChangeSet, approveHome: boolean) =>
-    invoke("apply_changes", { changeSet, approveHome }),
+    desktopApi().changes.apply(changeSet, approveHome),
   context: (project: string, cwd: string, agent: AgentKind) =>
-    invoke<ContextPreview>("resolve_context", { project, cwd, agent }),
-  memories: (project: string, status?: MemoryStatus) =>
-    invoke<MemoryRecord[]>("list_memories", { project, status }),
+    desktopApi().workspace.resolveContext(project, cwd, agent),
+  pickDirectory: async (title?: string) => {
+    const selected = await desktopApi().shell.openDirectory(title);
+    return typeof selected === "string" ? selected : undefined;
+  },
+  memories: (project: string, status?: MemoryStatus) => desktopApi().memories.list(project, status),
   searchMemories: (project: string, query: string, limit = 50) =>
-    invoke<MemoryRecord[]>("search_memories", { project, query, limit }),
+    desktopApi().memories.search(project, query, limit),
   proposeMemory: (project: string, content: string, memoryType: MemoryType) =>
-    invoke<MemoryRecord>("propose_memory", {
-      project,
-      proposal: {
-        project_id: "",
-        memory_type: memoryType,
-        content,
-        source_agent: "agentkib-desktop",
-      },
+    desktopApi().memories.propose(project, {
+      project_id: "",
+      memory_type: memoryType,
+      content,
+      source_agent: "agentkib-desktop",
     }),
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
-    invoke<MemoryRecord>("review_memory", { id, status, editedContent }),
-  runtime: () => invoke<RuntimeInfo>("runtime_info"),
-  updateOnboarding: (event: OnboardingEvent) => invoke<RuntimeInfo>("update_onboarding", { event }),
-  openFilesAndFoldersSettings: () => invoke<void>("open_files_and_folders_settings"),
-  quitApp: () => invoke<void>("quit_app"),
-  setCloseBehavior: (behavior?: CloseBehavior) =>
-    invoke<void>("set_close_behavior", { behavior: behavior ?? null }),
-  setLocale: (preference: LocalePreference) => invoke<RuntimeInfo>("set_locale", { preference }),
+    desktopApi().memories.review(id, status, editedContent),
+  runtime: () => desktopApi().home.runtime(),
+  updateOnboarding: (event: OnboardingEvent) => desktopApi().home.updateOnboarding(event),
+  openFilesAndFoldersSettings: () => desktopApi().shell.openFilesAndFoldersSettings(),
+  openExternal: (url: string) => desktopApi().shell.openExternal(url),
+  quitApp: () => desktopApi().shell.quit(),
+  setCloseBehavior: (behavior?: CloseBehavior) => desktopApi().settings.setCloseBehavior(behavior),
+  setLocale: (preference: LocalePreference) => desktopApi().settings.setLocale(preference),
   setThemePreference: (preference: ThemePreference) =>
-    invoke<RuntimeInfo>("set_theme_preference", { preference }),
+    desktopApi().settings.setThemePreference(preference),
   setAppIconPreference: (preference: AppIconPreference) =>
-    invoke<RuntimeInfo>("set_app_icon_preference", { preference }),
-  checkAppUpdate: () => invoke<AppUpdateInfo | undefined>("check_app_update"),
-  installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) => {
-    const channel = new Channel<AppUpdateProgress>();
-    channel.onmessage = onEvent;
-    return invoke<void>("install_app_update", { version, onEvent: channel });
-  },
-  mcpHubStatus: () => invoke<McpHubStatus>("get_mcp_hub_status"),
-  updateMcpNetwork: (settings: McpNetworkSettings) =>
-    invoke<McpHubStatus>("update_mcp_network_settings", { settings }),
-  mcpServers: (project?: string) => invoke<McpServerConfig[]>("list_mcp_servers", { project }),
-  mcpServer: (serverId: string, project?: string) =>
-    invoke<McpServerConfig | undefined>("get_mcp_server", { serverId, project }),
+    desktopApi().settings.setAppIconPreference(preference),
+  checkAppUpdate: () => desktopApi().updates.check(),
+  installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) =>
+    desktopApi().updates.install(version, onEvent),
+  mcpHubStatus: () => desktopApi().mcp.hubStatus(),
+  updateMcpNetwork: (settings: McpNetworkSettings) => desktopApi().mcp.updateNetwork(settings),
+  mcpServers: (project?: string) => desktopApi().mcp.listServers(project),
+  mcpServer: (serverId: string, project?: string) => desktopApi().mcp.getServer(serverId, project),
   saveMcpServer: (server: McpServerConfig, project?: string) =>
-    invoke<McpServerConfig>("save_mcp_server", { server, project }),
+    desktopApi().mcp.saveServer(server, project),
   saveMcpLocalValues: (
     serverId: string,
     env: Record<string, string>,
     headers: Record<string, string>,
     project?: string,
-  ) => invoke<void>("save_mcp_local_values", { serverId, env, headers, project }),
+  ) => desktopApi().mcp.saveLocalValues(serverId, env, headers, project),
   removeMcpServer: (serverId: string, project?: string) =>
-    invoke<void>("remove_mcp_server", { serverId, project }),
+    desktopApi().mcp.removeServer(serverId, project),
   probeMcpRuntime: (serverId: string, project?: string) =>
-    invoke<McpToolDescriptor[]>("probe_mcp_runtime", { serverId, project }),
+    desktopApi().mcp.probeRuntime(serverId, project),
   startMcpOAuth: (serverId: string, project?: string) =>
-    invoke<McpOAuthStart>("start_mcp_oauth", { serverId, project }),
-  mcpRuntimes: () => invoke<McpRuntimeStatus[]>("list_mcp_runtimes"),
+    desktopApi().mcp.startOAuth(serverId, project),
+  mcpRuntimes: () => desktopApi().mcp.runtimes(),
   restartMcpRuntime: (serverId: string, project?: string) =>
-    invoke<McpToolDescriptor[]>("restart_mcp_runtime", { serverId, project }),
-  stopMcpRuntime: (serverId?: string) => invoke<void>("stop_mcp_runtime", { serverId }),
-  searchMcpRegistry: (query: string) =>
-    invoke<McpRegistryEntry[]>("search_mcp_registry", { query }),
-  refreshMcpRegistry: (query: string) =>
-    invoke<McpRegistryEntry[]>("refresh_mcp_registry", { query }),
+    desktopApi().mcp.restartRuntime(serverId, project),
+  stopMcpRuntime: (serverId?: string) => desktopApi().mcp.stopRuntime(serverId),
+  searchMcpRegistry: (query: string) => desktopApi().mcp.searchRegistry(query),
+  refreshMcpRegistry: (query: string) => desktopApi().mcp.refreshRegistry(query),
   installMcp: (entry: McpRegistryEntry, project?: string) =>
-    invoke<McpInstallResult>("install_mcp", { entry, project, confirmed: true }),
+    desktopApi().mcp.install(entry, project),
   updateMcp: (installationId: string, entry: McpRegistryEntry, project?: string) =>
-    invoke<McpInstallResult>("update_mcp", { installationId, entry, project, confirmed: true }),
-  mcpInstallations: () => invoke<McpInstallation[]>("list_mcp_installations"),
-  uninstallMcp: (installationId: string) =>
-    invoke<void>("uninstall_mcp", { installationId, confirmed: true }),
-  nativeMcpCandidates: (project?: string) =>
-    invoke<McpMigrationCandidate[]>("scan_native_mcp_candidates", { project }),
+    desktopApi().mcp.update(installationId, entry, project),
+  mcpInstallations: () => desktopApi().mcp.installations(),
+  uninstallMcp: (installationId: string) => desktopApi().mcp.uninstall(installationId),
+  nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
-    invoke<ChangeSet>("plan_mcp_migration", { project, candidateIds }),
-  requestRefresh: (kind: RefreshKind, force = false) =>
-    invoke<RefreshReceipt>("request_refresh", { kind, force }),
-  refreshStatus: () => invoke<RefreshJobStatus[]>("get_refresh_status"),
-  storageOverview: () => invoke<StorageOverview>("get_storage_overview"),
+    desktopApi().mcp.planMigration(project, candidateIds),
+  requestRefresh: (kind: RefreshKind, force = false) => {
+    const desktop = desktopApi();
+    if (kind === "discovery") return desktop.home.refreshDiscovery(force);
+    if (kind === "insights") return desktop.home.refreshInsights(force);
+    if (kind === "gateways") return desktop.home.refreshGateways(force);
+    if (kind === "quota") return desktop.home.refreshQuota(force);
+    if (kind === "storage") return desktop.home.refreshStorage(force);
+    return Promise.reject(new Error(`Unsupported Electron refresh kind: ${kind}`));
+  },
+  refreshStatus: () => desktopApi().home.refreshStatus(),
+  storageOverview: () => desktopApi().home.storageOverview(),
   workspaceStorageChildren: (workspaceId: string, relativePath: string) =>
-    invoke<StorageNode>("get_workspace_storage_children", { workspaceId, relativePath }),
+    desktopApi().home.storageChildren(workspaceId, relativePath),
   openWorkspaceStoragePath: (workspaceId: string, relativePath: string) =>
-    invoke<void>("open_workspace_storage_path", { workspaceId, relativePath }),
-  cancelStorageScan: () => invoke<boolean>("cancel_storage_scan"),
-  discoverWorkspaces: () => invoke<RefreshReceipt>("discover_workspaces"),
-  workspaces: () => invoke<WorkspaceSummary[]>("list_workspaces"),
-  workspace: (id: string) => invoke<WorkspaceSummary | undefined>("get_workspace", { id }),
-  workspaceGitSummary: (workspaceId: string) =>
-    invoke<GitWorkspaceSummary | undefined>("get_workspace_git_summary", { workspaceId }),
+    desktopApi().home.openStoragePath(workspaceId, relativePath),
+  cancelStorageScan: () => desktopApi().home.cancelStorage(),
+  discoverWorkspaces: () => desktopApi().home.refreshDiscovery(),
+  discoveryReport: () => desktopApi().home.discoveryReport(),
+  workspaces: () => desktopApi().home.workspaces(),
+  workspace: async (id: string) => {
+    const workspaces = await desktopApi().home.workspaces();
+    return workspaces.find((workspace) => workspace.id === id);
+  },
+  workspaceGitSummary: (workspaceId: string) => desktopApi().workspace.gitSummary(workspaceId),
   workspaceGitHistory: (workspaceId: string, query: GitHistoryQuery = {}) =>
-    invoke<GitCommitPage | undefined>("list_workspace_git_history", { workspaceId, query }),
+    desktopApi().workspace.gitHistory(workspaceId, query),
   gitCommitFiles: (workspaceId: string, oid: string) =>
-    invoke<GitFileChange[] | undefined>("list_git_commit_files", { workspaceId, oid }),
+    desktopApi().workspace.gitCommitFiles(workspaceId, oid),
   gitDiff: (workspaceId: string, request: GitDiffRequest) =>
-    invoke<GitDiff | undefined>("get_git_diff", { workspaceId, request }),
-  workspaceOpeners: (workspaceId: string) =>
-    invoke<WorkspaceOpener[]>("list_workspace_openers", { workspaceId }),
+    desktopApi().workspace.gitDiff(workspaceId, request),
+  workspaceOpeners: (workspaceId: string) => desktopApi().workspace.openers(workspaceId),
   openWorkspaceWithApp: (workspaceId: string, openerId?: string) =>
-    invoke<void>("open_workspace_with_app", { workspaceId, openerId }),
-  workspaceSessions: (workspaceId: string) =>
-    invoke<ConversationSessionSummary[]>("list_workspace_sessions", { workspaceId }),
+    desktopApi().workspace.open(workspaceId, openerId),
+  workspaceSessions: (workspaceId: string) => desktopApi().workspace.sessions(workspaceId),
   refreshWorkspaceSessions: (workspaceId: string, force = false) =>
-    invoke<ConversationSessionSummary[]>("refresh_workspace_sessions", { workspaceId, force }),
+    desktopApi().workspace.refreshSessions(workspaceId, force),
   sessionEvents: (sessionId: string, cursor?: string, limit = 100) =>
-    invoke<ConversationEventPage>("read_session_events", { sessionId, cursor, limit }),
+    desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
-    invoke<SessionHandoffPreparation>("prepare_session_handoff", { request }),
+    desktopApi().workspace.prepareHandoff(request),
   summarizeSessionHandoff: (request: SessionHandoffRequest) =>
-    invoke<SessionHandoffDraft>("summarize_session_handoff", { request }),
+    desktopApi().workspace.summarizeHandoff(request),
   sanitizeSessionHandoff: (format: HandoffFormat, editedContent: string) =>
-    invoke<string>("sanitize_session_handoff", { format, editedContent }),
+    desktopApi().workspace.sanitizeHandoff(format, editedContent),
   planSessionHandoff: (
     workspaceId: string,
     filename: string,
@@ -209,100 +156,79 @@ export const api = {
     editedContent: string,
     targetAgent: AgentKind,
   ) =>
-    invoke<PlannedSessionHandoff>("plan_session_handoff", {
-      workspaceId,
-      filename,
-      format,
-      editedContent,
-      targetAgent,
-    }),
+    desktopApi().workspace.planHandoff(workspaceId, filename, format, editedContent, targetAgent),
   continueSessionHandoff: (changeSet: ChangeSet, launchRequest: SessionHandoffLaunchRequest) =>
-    invoke<HandoffContinuationResult>("continue_session_handoff", { changeSet, launchRequest }),
+    desktopApi().workspace.continueHandoff(changeSet, launchRequest),
   launchSessionHandoff: (launchRequest: SessionHandoffLaunchRequest) =>
-    invoke<HandoffLaunchReceipt>("launch_session_handoff", { launchRequest }),
+    desktopApi().workspace.launchHandoff(launchRequest),
   workspaceSessionStatus: (workspaceId: string) =>
-    invoke<ConversationIndexStatus[]>("get_workspace_session_status", { workspaceId }),
-  clearSessionIndex: (workspaceId?: string) => invoke<void>("clear_session_index", { workspaceId }),
-  setSessionIndexEnabled: (enabled: boolean) =>
-    invoke<RuntimeInfo>("set_session_index_enabled", { enabled }),
-  setQuotaAutoRefreshEnabled: (enabled: boolean) =>
-    invoke<RuntimeInfo>("set_quota_auto_refresh_enabled", { enabled }),
-  setQuotaAutoRefreshPromptSeen: (seen: boolean) =>
-    invoke<RuntimeInfo>("set_quota_auto_refresh_prompt_seen", { seen }),
-  addWorkspace: (path: string) => invoke<WorkspaceSummary>("add_workspace", { path }),
-  refreshWorkspace: (id: string) => invoke<WorkspaceSummary>("refresh_workspace", { id }),
-  excludeWorkspace: (id: string) => invoke<void>("exclude_workspace", { id }),
-  excludedWorkspaces: () => invoke<ExcludedWorkspace[]>("list_excluded_workspaces"),
-  restoreExcludedWorkspace: (path: string) => invoke<void>("restore_excluded_workspace", { path }),
-  obsidianIntegration: () => invoke<ObsidianIntegration>("get_obsidian_integration"),
-  addObsidianVault: (path: string) => invoke<ObsidianIntegration>("add_obsidian_vault", { path }),
+    desktopApi().workspace.sessionStatus(workspaceId),
+  clearSessionIndex: (workspaceId?: string) => desktopApi().sessions.clearIndex(workspaceId),
+  setSessionIndexEnabled: (enabled: boolean) => desktopApi().sessions.setIndexEnabled(enabled),
+  setQuotaAutoRefreshEnabled: (enabled: boolean) => desktopApi().home.setQuotaAutoRefresh(enabled),
+  setQuotaAutoRefreshPromptSeen: (seen: boolean) => desktopApi().home.setQuotaPromptSeen(seen),
+  addWorkspace: (path: string) => desktopApi().workspace.add(path),
+  refreshWorkspace: (id: string) => desktopApi().workspace.refresh(id),
+  excludeWorkspace: (id: string) => desktopApi().workspace.exclude(id),
+  excludedWorkspaces: () => desktopApi().home.excludedWorkspaces(),
+  restoreExcludedWorkspace: (path: string) => desktopApi().workspace.restoreExcluded(path),
+  obsidianIntegration: () => desktopApi().home.obsidianIntegration(),
+  addObsidianVault: (path: string) => desktopApi().home.addObsidianVault(path),
   linkWorkspaceToObsidian: (workspaceId: string, vaultPath: string, relativeTarget?: string) =>
-    invoke<ObsidianWorkspaceLink>("link_workspace_to_obsidian", {
-      workspaceId,
-      vaultPath,
-      relativeTarget: relativeTarget?.trim() || null,
-    }),
+    desktopApi().home.linkWorkspaceToObsidian(workspaceId, vaultPath, relativeTarget),
   unlinkWorkspaceFromObsidian: (workspaceId: string) =>
-    invoke<void>("unlink_workspace_from_obsidian", { workspaceId }),
-  openObsidian: () => invoke<void>("open_obsidian"),
+    desktopApi().home.unlinkWorkspaceFromObsidian(workspaceId),
+  openObsidian: () => desktopApi().home.openObsidian(),
   openWorkspaceInObsidian: (workspaceId: string) =>
-    invoke<void>("open_workspace_in_obsidian", { workspaceId }),
-  remoteGateways: () => invoke<RemoteGatewaySummary[]>("list_remote_gateways"),
-  saveRemoteGateway: (input: RemoteGatewayInput) =>
-    invoke<RemoteGatewaySummary>("save_remote_gateway", { input }),
-  refreshRemoteGateway: (id: string) =>
-    invoke<RemoteGatewaySummary>("refresh_remote_gateway", { id }),
-  removeRemoteGateway: (id: string) => invoke<void>("remove_remote_gateway", { id }),
-  scanRoots: () => invoke<ScanRoot[]>("list_scan_roots"),
-  addScanRoot: (path: string, maxDepth = 5) =>
-    invoke<ScanRoot>("add_scan_root", { path, maxDepth }),
-  removeScanRoot: (id: string) => invoke<void>("remove_scan_root", { id }),
-  agentInstallations: () => invoke<AgentInstallation[]>("list_agent_installations"),
-  workspaceDoctorReport: (workspaceId: string) =>
-    invoke<ContextDoctorReport>("get_workspace_doctor_report", { workspaceId }),
+    desktopApi().home.openWorkspaceInObsidian(workspaceId),
+  remoteGateways: () => desktopApi().home.remoteGateways(),
+  saveRemoteGateway: (input: RemoteGatewayInput) => desktopApi().home.saveRemoteGateway(input),
+  refreshRemoteGateway: (id: string) => desktopApi().home.refreshRemoteGateway(id),
+  removeRemoteGateway: (id: string) => desktopApi().home.removeRemoteGateway(id),
+  scanRoots: () => desktopApi().home.scanRoots(),
+  addScanRoot: (path: string, maxDepth = 5) => desktopApi().home.addScanRoot(path, maxDepth),
+  removeScanRoot: (id: string) => desktopApi().home.removeScanRoot(id),
+  agentInstallations: () => desktopApi().home.agentInstallations(),
+  workspaceDoctorReport: (workspaceId: string) => desktopApi().workspace.doctorReport(workspaceId),
   workspaceDoctorSummaries: async (workspaceIds: string[]) => {
     const summaries: ContextDoctorSummary[] = [];
     for (let offset = 0; offset < workspaceIds.length; offset += DOCTOR_SUMMARY_BATCH_LIMIT) {
-      summaries.push(
-        ...(await invoke<ContextDoctorSummary[]>("get_workspace_doctor_summaries", {
-          workspaceIds: workspaceIds.slice(offset, offset + DOCTOR_SUMMARY_BATCH_LIMIT),
-        })),
-      );
+      const batch = workspaceIds.slice(offset, offset + DOCTOR_SUMMARY_BATCH_LIMIT);
+      summaries.push(...(await desktopApi().workspace.doctorSummaries(batch)));
     }
     return summaries;
   },
   catalogAssets: (query = "", agent?: AgentKind, workspaceId?: string, limit = 500) =>
-    invoke<CatalogAsset[]>("search_catalog_assets", { query, agent, workspaceId, limit }),
-  globalMemories: (status?: MemoryStatus) =>
-    invoke<MemoryRecord[]>("list_global_memories", { status }),
-  activity: (limit = 200) => invoke<ActivityRecord[]>("list_activity", { limit }),
-  refreshInsights: () => invoke<RefreshReceipt>("refresh_insights"),
-  insightsView: (query: InsightsQuery = {}) => invoke<InsightsView>("get_insights_view", { query }),
-  insightsSummary: (query: InsightsQuery = {}) =>
-    invoke<InsightsSummary>("get_insights_summary", { query }),
-  insightsHeatmap: (query: InsightsQuery = {}) =>
-    invoke<HeatmapPoint[]>("get_insights_heatmap", { query }),
-  agentUsageBreakdown: (query: InsightsQuery = {}) =>
-    invoke<AgentUsageBreakdown[]>("get_agent_usage_breakdown", { query }),
-  modelUsageBreakdown: (query: InsightsQuery = {}) =>
-    invoke<ModelUsageBreakdown[]>("get_model_usage_breakdown", { query }),
+    desktopApi().home.catalogAssets({ query, agent, workspaceId, limit }),
+  globalMemories: (status?: MemoryStatus) => desktopApi().home.globalMemories(status),
+  activity: (limit = 200) => desktopApi().home.activity(limit),
+  refreshInsights: () => desktopApi().home.refreshInsights(),
+  insightsView: (query: InsightsQuery = {}) => desktopApi().home.insightsView(query),
+  insightsSummary: (query: InsightsQuery = {}) => desktopApi().home.insightsSummary(query),
+  insightsHeatmap: (query: InsightsQuery = {}) => desktopApi().insights.heatmap(query),
+  agentUsageBreakdown: (query: InsightsQuery = {}) => desktopApi().insights.agentUsage(query),
+  modelUsageBreakdown: (query: InsightsQuery = {}) => desktopApi().insights.modelUsage(query),
   workspaceUsageBreakdown: (query: InsightsQuery = {}) =>
-    invoke<WorkspaceUsageBreakdown[]>("get_workspace_usage_breakdown", { query }),
+    desktopApi().insights.workspaceUsage(query),
   repositoryCommitBreakdown: (query: InsightsQuery = {}) =>
-    invoke<RepositoryCommitBreakdown[]>("get_repository_commit_breakdown", { query }),
-  achievements: () => invoke<Achievement[]>("list_achievements"),
-  insightsStatus: () => invoke<InsightsStatus>("get_insights_status"),
-  gitIdentities: () => invoke<GitIdentitySummary[]>("list_git_identities"),
-  addGitIdentityAlias: (email: string) =>
-    invoke<GitIdentitySummary>("add_git_identity_alias", { email }),
+    desktopApi().insights.repositoryCommits(query),
+  achievements: () => desktopApi().insights.achievements(),
+  insightsStatus: () => desktopApi().home.insightsStatus(),
+  gitIdentities: () => desktopApi().insights.gitIdentities(),
+  addGitIdentityAlias: (email: string) => desktopApi().insights.addGitIdentityAlias(email),
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
-    invoke<void>("set_git_identity_enabled", { id, enabled }),
-  quotaSnapshot: () => invoke<QuotaSnapshot | undefined>("get_quota_snapshot"),
-  refreshQuota: () => invoke<RefreshReceipt>("refresh_quota"),
-  quotaCollectorStatus: () => invoke<QuotaCollectorStatus>("get_quota_collector_status"),
-  quotaPopoverPreferences: () => invoke<QuotaPopoverPreferences>("get_quota_popover_preferences"),
+    desktopApi().insights.setGitIdentityEnabled(id, enabled),
+  quotaSnapshot: () => desktopApi().home.quotaSnapshot(),
+  refreshQuota: () => desktopApi().home.refreshQuota(),
+  quotaCollectorStatus: () => desktopApi().home.quotaCollectorStatus(),
+  quotaPopoverPreferences: () => desktopApi().home.quotaPreferences(),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>
-    invoke<QuotaPopoverPreferences>("set_quota_popover_preferences", { preferences }),
+    desktopApi().home.setQuotaPreferences(preferences),
   openQuotaDashboard: (provider?: string, window?: QuotaWindowSelector, configurePopover = false) =>
-    invoke<void>("open_quota_dashboard", { provider, window, configurePopover }),
+    desktopApi().shell.openQuotaDashboard({
+      page: "quota",
+      provider,
+      window,
+      configure_popover: configurePopover,
+    }),
 };

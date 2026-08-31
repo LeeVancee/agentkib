@@ -15,7 +15,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -29,6 +28,7 @@ import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
 import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
 import { api } from "@/core/api";
+import { desktopApi } from "@/core/desktop";
 import { changeLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import {
   accentThemePreference,
@@ -65,7 +65,7 @@ import {
   getShortcutDefinition,
 } from "@/core/keyboard-shortcuts";
 
-const buildPlatform = import.meta.env.TAURI_ENV_PLATFORM;
+const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
 const hasFileAccessSettings = ["macos", "windows"].includes(appPlatform);
 const settingsControlClass =
@@ -374,7 +374,7 @@ export function AppUpdateSetting({
     if (!update || busy) return;
     if (update.install_mode === "manual") {
       try {
-        await openUrl(update.release_url);
+        await api.openExternal(update.release_url);
       } catch (reason) {
         setError(localizeMessage(reason));
         setStatus("failed");
@@ -448,11 +448,7 @@ export function AppUpdateSetting({
             )}
           </Button>
         ) : (
-          <Button
-            type="button"
-            disabled={busy || !updatesEnabled}
-            onClick={() => void check()}
-          >
+          <Button type="button" disabled={busy || !updatesEnabled} onClick={() => void check()}>
             <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
             {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
           </Button>

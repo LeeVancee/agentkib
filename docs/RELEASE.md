@@ -38,7 +38,7 @@ tags such as `v0.1.0` become the latest release. Tags containing a prerelease
 suffix, such as `v0.2.0-beta.1`, are published as prereleases.
 
 The workflow refuses to publish when the tag does not exactly match the
-desktop version, the three version sources differ, or the tagged commit is not
+desktop version, the two version sources differ, or the tagged commit is not
 contained in `origin/main`. Every build job checks out the same resolved commit.
 
 ## Retry a failed release

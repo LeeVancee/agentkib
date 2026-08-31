@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentkib-adapters"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-adapters",
  "agentkib-core",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-conversations"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-discovery"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-gateways"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-git"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-insights"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-platform"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "hex",
  "libc",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-quota"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-runtime"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-adapters",
  "agentkib-conversations",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-storage"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-platform",
  "chrono",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agentkib-conversations",
  "agentkib-core",

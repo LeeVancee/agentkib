@@ -123,7 +123,7 @@ export function GlobalSettings({
       <div className="grid gap-5">
         <SettingGroup title={tr("settings.interface")}>
           <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
-          <AccentThemeSetting />
+          <AccentThemeSetting effectiveTheme={runtime?.effective_theme} />
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
           <LanguageSetting runtime={runtime} onChanged={onLocaleChanged} />
           <SettingsRow>
@@ -901,13 +901,24 @@ function ThemeSetting({
   );
 }
 
-function AccentThemeSetting() {
+export function AccentThemeSetting({
+  effectiveTheme,
+}: {
+  effectiveTheme?: RuntimeInfo["effective_theme"];
+}) {
   const [selected, setSelected] = useState<AccentTheme>(() => accentThemePreference());
 
   return (
     <SettingsRow>
       <SettingsCopy>
         <strong>{tr("settings.accentTheme")}</strong>
+        <small>
+          {tr(
+            effectiveTheme === "dark"
+              ? "settings.accentTheme.darkHint"
+              : "settings.accentTheme.description",
+          )}
+        </small>
       </SettingsCopy>
       <SelectControl
         aria-label={tr("settings.accentTheme")}

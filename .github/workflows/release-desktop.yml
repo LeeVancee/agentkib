@@ -489,7 +489,7 @@ jobs:
         run: |
           dnf install -y \
             git curl tar gzip xz file findutils which binutils \
-            gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
+            gcc gcc-c++ make libatomic openssl-devel pkgconf-pkg-config patchelf \
             gtk3-devel libxcrypt-compat rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 

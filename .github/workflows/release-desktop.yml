@@ -498,17 +498,18 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          run_install: false
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
+          npm install --global "pnpm@$pnpm_version"
+          pnpm --version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

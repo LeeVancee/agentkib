@@ -2,7 +2,13 @@ import { lazy, Suspense, useMemo } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton";
 import { useNavigate } from "@tanstack/react-router";
-import { useAppStore } from "../stores/app-store";
+import {
+  useHomeCatalog,
+  useHomeInsightsStatus,
+  useHomeInstallations,
+  useHomeRemoteGateways,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 import type { WorkspaceSummary } from "../core/types";
 
 const AgentsPageLazy = lazy(() =>
@@ -11,18 +17,24 @@ const AgentsPageLazy = lazy(() =>
 
 function AgentsRoute() {
   const navigate = useNavigate();
-  const installations = useAppStore((state) => state.installations);
-  const catalog = useAppStore((state) => state.catalog);
+  const { data: installations = [], isPending: installationsPending } = useHomeInstallations();
+  const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
   const assets = useMemo(() => catalog.filter((asset) => asset.scope === "agent-home"), [catalog]);
-  const workspaces = useAppStore((state) => state.workspaces);
-  const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
-  const remoteGateways = useAppStore((state) => state.remoteGateways);
-  const insightsStatus = useAppStore((state) => state.insightsStatus);
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: remoteGateways = [], isPending: gatewaysPending } = useHomeRemoteGateways();
+  const { data: insightsStatus, isPending: insightsPending } = useHomeInsightsStatus();
   const openWorkspace = async (workspace: WorkspaceSummary) => {
     await navigate({ to: "/workspace/$workspaceId", params: { workspaceId: workspace.id } });
   };
 
-  if (!workspacesLoaded) return <AgentsSkeleton />;
+  if (
+    workspacesPending ||
+    installationsPending ||
+    catalogPending ||
+    gatewaysPending ||
+    insightsPending
+  )
+    return <AgentsSkeleton />;
 
   return (
     <Suspense fallback={<AgentsSkeleton />}>

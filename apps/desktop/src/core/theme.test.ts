@@ -8,7 +8,7 @@ describe("theme runtime", () => {
     document.documentElement.style.colorScheme = "";
   });
 
-  it("uses the browser system appearance outside Tauri", () => {
+  it("uses the browser system appearance when no saved preference exists", () => {
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       value: vi.fn().mockReturnValue({ matches: true }),

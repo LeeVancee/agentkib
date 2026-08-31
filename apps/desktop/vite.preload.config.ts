@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: "dist-electron",
     emptyOutDir: false,
     lib: {
-      entry: path.resolve(import.meta.dirname, "electron/preload.ts"),
+      entry: path.resolve(import.meta.dirname, "electron/preload/index.ts"),
       formats: ["cjs"],
       fileName: () => "preload.cjs",
     },

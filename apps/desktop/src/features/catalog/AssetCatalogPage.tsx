@@ -1,6 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SelectControl } from "@/components/ui/select-control";
 import {
@@ -289,36 +296,30 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
         </CardContent>
       </Card>
 
-      {selected ? (
-        <Card className="h-fit overflow-hidden rounded-2xl border-border/80 bg-card shadow-sm">
-          <CardHeader className="flex-row items-start justify-between gap-3 border-b border-border/80 px-4 py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <AssetIcon />
-              <div className="min-w-0">
-                <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                  {tr("catalog.asset")}
-                </p>
-                <h2
-                  className="truncate text-base font-semibold text-foreground"
-                  title={selected.name}
-                >
-                  {selected.name}
-                </h2>
+      <Dialog
+        open={Boolean(selected)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedId(undefined);
+        }}
+      >
+        {selected && (
+          <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] w-[min(640px,calc(100%-2rem))] max-w-[min(640px,calc(100%-2rem))] overflow-y-auto">
+            <DialogHeader className="pr-8">
+              <div className="flex min-w-0 items-center gap-3">
+                <AssetIcon />
+                <div className="min-w-0">
+                  <span className="block text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                    {tr("catalog.asset")}
+                  </span>
+                  <DialogTitle className="truncate text-lg" title={selected.name}>
+                    {selected.name}
+                  </DialogTitle>
+                </div>
               </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={tr("common.close")}
-              onClick={() => setSelectedId(undefined)}
-            >
-              <X size={16} />
-            </Button>
-          </CardHeader>
-          <CardContent className="grid gap-4 p-4">
-            {selected.summary && (
-              <p className="text-sm leading-6 text-muted-foreground">{selected.summary}</p>
-            )}
+              {selected.summary && (
+                <DialogDescription className="leading-6">{selected.summary}</DialogDescription>
+              )}
+            </DialogHeader>
             <dl className="grid gap-3">
               <div className="grid gap-1 border-b border-border/70 pb-3">
                 <dt className="text-xs font-medium uppercase tracking-[0.1em] text-muted-foreground">
@@ -358,15 +359,18 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
             {selected.workspace_id && (
               <Button
                 className="w-full justify-between"
-                onClick={() => onOpen(selected.workspace_id!)}
+                onClick={() => {
+                  setSelectedId(undefined);
+                  onOpen(selected.workspace_id!);
+                }}
               >
                 {tr("catalog.openWorkspace")}
                 <ChevronRight size={15} />
               </Button>
             )}
-          </CardContent>
-        </Card>
-      ) : null}
+          </DialogContent>
+        )}
+      </Dialog>
     </div>
   );
 }

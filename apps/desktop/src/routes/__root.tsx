@@ -49,19 +49,15 @@ function RootLayout() {
   return (
     <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
       <AppRuntimeBridge />
-      {route.kind === "workspace" ? (
-        <Outlet />
-      ) : (
-        <AppShellRouter
-          route={route}
-          active={globalPage}
-          entries={navigation}
-          message={message}
-          refreshJobs={refreshJobs}
-          onNavigate={navigateGlobal}
-          onSettings={openSettings}
-        />
-      )}
+      <AppShellRouter
+        route={route}
+        active={globalPage}
+        entries={navigation}
+        message={message}
+        refreshJobs={refreshJobs}
+        onNavigate={navigateGlobal}
+        onSettings={openSettings}
+      />
       <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
     </ShortcutHelpProvider>
   );
@@ -76,7 +72,7 @@ function AppShellRouter({
   onNavigate,
   onSettings,
 }: {
-  route: Exclude<ParsedRoute, { kind: "workspace" }>;
+  route: ParsedRoute;
   active: GlobalPage;
   entries: SidebarEntry<GlobalPage>[];
   message: string;
@@ -89,6 +85,7 @@ function AppShellRouter({
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const settingsSection = search.settingsSection ?? "general";
   const isSettings = route.kind === "settings";
+  const isWorkspace = route.kind === "workspace";
   const discoveryFailure = refreshJobs.find(
     (job) => job.kind === "discovery" && job.state === "failed",
   );
@@ -110,7 +107,7 @@ function AppShellRouter({
     />
   ) : (
     <AppSidebar
-      active={active}
+      active={isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
       onNavigate={onNavigate}
@@ -139,7 +136,9 @@ function AppShellRouter({
         className={cn(
           isSettings
             ? "mx-auto grid w-full max-w-[1180px] gap-5 px-7 pb-10 pt-[22px] max-[900px]:px-[18px]"
-            : "content mx-auto max-w-[1540px] px-7 pb-10 pt-[14px] max-[900px]:px-[18px]",
+            : isWorkspace
+              ? "content mx-auto max-w-[1540px] px-7 pb-10 pt-[22px] max-[900px]:px-[18px]"
+              : "content mx-auto max-w-[1540px] px-7 pb-10 pt-[14px] max-[900px]:px-[18px]",
           isSettings && settingsSection === "general" && "pt-4",
         )}
       >

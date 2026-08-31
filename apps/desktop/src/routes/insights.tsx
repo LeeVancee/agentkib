@@ -4,10 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { useAppStore } from "../stores/app-store";
-import { api } from "../core/api";
 import { localizeMessage, tr } from "../core/i18n";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
+import { useHomeWorkspaces } from "@/features/home/home-query";
+import {
+  useInsightsRefreshJob,
+  useInsightsRefreshMutation,
+} from "@/features/insights/insights-query";
 
 const InsightsPageLazy = lazy(() =>
   import("@/features/insights/InsightsPage").then(({ InsightsPage }) => ({
@@ -21,17 +24,14 @@ function InsightsRoute() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as InsightsSearch;
   const section = search.insightsSection ?? "overview";
-  const workspaces = useAppStore((state) => state.workspaces);
-  const refreshJobs = useAppStore((state) => state.refreshJobs);
-  const setInsightsSummary = useAppStore((state) => state.setInsightsSummary);
+  const workspacesQuery = useHomeWorkspaces();
+  const refreshJobQuery = useInsightsRefreshJob();
+  const refreshMutation = useInsightsRefreshMutation();
   const [refreshError, setRefreshError] = useState("");
-  const [refreshPending, setRefreshPending] = useState(false);
-  const [refreshRevision, setRefreshRevision] = useState(0);
+  const workspaces = workspacesQuery.data ?? [];
+  const refreshJob = refreshJobQuery.data;
   const refreshing =
-    refreshPending ||
-    refreshJobs.some(
-      (job) => job.kind === "insights" && (job.state === "queued" || job.state === "running"),
-    );
+    refreshMutation.isPending || refreshJob?.state === "queued" || refreshJob?.state === "running";
 
   const setSection = (nextSection: InsightsSection) => {
     void navigate({
@@ -42,16 +42,10 @@ function InsightsRoute() {
 
   const refresh = async () => {
     setRefreshError("");
-    setRefreshPending(true);
     try {
-      const receipt = await api.requestRefresh("insights", true);
-      if (receipt.status.state === "succeeded") {
-        setRefreshRevision((value) => value + 1);
-      }
+      await refreshMutation.mutateAsync();
     } catch (error) {
       setRefreshError(localizeMessage(error));
-    } finally {
-      setRefreshPending(false);
     }
   };
 
@@ -99,13 +93,8 @@ function InsightsRoute() {
           {refreshError}
         </div>
       )}
-      <Suspense fallback={<InsightsSkeleton />}>
-        <InsightsPageLazy
-          section={section}
-          workspaces={workspaces}
-          onSummary={setInsightsSummary}
-          refreshRevision={refreshRevision}
-        />
+      <Suspense fallback={<InsightsSkeleton section={section} />}>
+        <InsightsPageLazy section={section} workspaces={workspaces} />
       </Suspense>
     </div>
   );

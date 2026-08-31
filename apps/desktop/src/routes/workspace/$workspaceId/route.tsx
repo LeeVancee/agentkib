@@ -7,19 +7,15 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import {
-  Award,
   Bot,
   Boxes,
   Clock3,
   Code2,
   FolderGit2,
-  Gauge,
   GitBranch,
   GitCommitHorizontal,
   GitCompareArrows,
-  Home,
   LayoutDashboard,
-  Library,
   MessageSquareText,
   ShieldCheck,
 } from "lucide-react";
@@ -35,12 +31,11 @@ import {
   WorkspaceLayoutSkeleton,
   WorkspaceOverviewSkeleton,
   WorkspaceSessionsSkeleton,
+  WorkspaceSummaryStripSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
-import { AppSidebar, type SidebarEntry } from "@/components/AppSidebar";
-import { AppShellHeader } from "@/features/app/AppShell";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { WindowToolbar } from "@/components/WindowToolbar";
 import { useAppStore } from "../../../stores/app-store";
+import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { formatRelativeTime, localizeMessage, tr } from "../../../core/i18n";
@@ -166,7 +161,6 @@ function WorkspaceSummaryStrip({
   );
 }
 
-type GlobalPage = "home" | "workspaces" | "catalog" | "agents" | "quota" | "insights";
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 const workspaceTabs = [
   ["overview", "nav.overview", LayoutDashboard],
@@ -177,29 +171,15 @@ const workspaceTabs = [
   ["doctor", "nav.doctor", ShieldCheck],
   ["changes", "nav.changes", GitCompareArrows],
 ] as const;
-const globalNav: SidebarEntry<GlobalPage>[] = [
-  { id: "home", label: "nav.home", icon: Home, shortcut: "navigate-home" },
-  {
-    id: "workspaces",
-    label: "nav.workspaces",
-    icon: FolderGit2,
-    shortcut: "navigate-workspaces",
-  },
-  { id: "catalog", label: "nav.assets", icon: Library, shortcut: "navigate-catalog" },
-  { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
-  { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },
-  { id: "insights", label: "nav.insights", icon: Award, shortcut: "navigate-insights" },
-];
-
 function WorkspaceLayout() {
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
-  const app = useAppStore();
+  const setRuntime = useAppStore((state) => state.setRuntime);
   const workspaceState = useWorkspaceStore();
-  const workspace = app.workspaces.find((item) => item.id === workspaceId);
-  const { setRuntime, globalMemories, workspacesLoaded } = app;
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const workspace = workspaces.find((item) => item.id === workspaceId);
   const {
     project,
     selectedWorkspace,
@@ -208,29 +188,28 @@ function WorkspaceLayout() {
     changeSet,
     baselineManifest,
     busy,
-    message,
     setScan,
     setManifest,
     setChangeSet,
     setChangeSetOrigin,
     setHandoffLaunchRequest,
     setBaselineManifest,
-    setWorkspaceDrafts,
+    workspaceDrafts,
     setBusy,
     setMessage,
-    resetWorkspace,
   } = workspaceState;
   const currentPage = getPage(location.pathname);
   const activeWorkspace =
-    workspace ??
-    (!workspacesLoaded && selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
+    workspace ?? (selectedWorkspace?.id === workspaceId ? selectedWorkspace : undefined);
   const hasUnsavedDraft = Boolean(
     manifest && baselineManifest && JSON.stringify(manifest) !== baselineManifest,
   );
   const operationRequest = useRef(0);
+  const loadStartedWorkspace = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     operationRequest.current += 1;
+    loadStartedWorkspace.current = undefined;
     return () => {
       operationRequest.current += 1;
     };
@@ -247,22 +226,47 @@ function WorkspaceLayout() {
     setBusy(true);
     setMessage("");
     try {
-      const [nextScan, nextManifest, nextRuntime] = await Promise.all([
+      const [scanResult, manifestResult, runtimeResult] = await Promise.allSettled([
         api.scan(targetProject),
         api.manifest(targetProject),
         api.runtime(),
       ]);
       if (!isCurrentRequest()) return;
+      if (scanResult.status === "rejected") throw scanResult.reason;
+      if (runtimeResult.status === "rejected") throw runtimeResult.reason;
+      const nextScan = scanResult.value;
+      const nextManifest = manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
+      const resolvedManifest = draft ?? nextManifest;
+      if (manifestResult.status === "rejected") setMessage(localizeMessage(manifestResult.reason));
       setScan(nextScan);
-      setManifest(draft ?? nextManifest);
-      setBaselineManifest(JSON.stringify(nextManifest));
-      setRuntime(nextRuntime);
+      setManifest(resolvedManifest);
+      setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+      setRuntime(runtimeResult.value);
+      if (!resolvedManifest && currentPage !== "doctor") {
+        void navigate({
+          to: "/workspace/$workspaceId/doctor",
+          params: { workspaceId },
+        });
+      }
     } catch (error) {
       if (isCurrentRequest()) setMessage(localizeMessage(error));
     } finally {
       if (isCurrentRequest()) setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      !activeWorkspace ||
+      !project ||
+      project !== activeWorkspace.path ||
+      (scan && manifest) ||
+      loadStartedWorkspace.current === workspaceId
+    )
+      return;
+    loadStartedWorkspace.current = workspaceId;
+    void loadWorkspace(workspaceDrafts[workspaceId]);
+  }, [activeWorkspace, manifest, project, scan, workspaceDrafts, workspaceId]);
 
   const plan = async (includeHome = false) => {
     if (!project || !manifest) return;
@@ -289,36 +293,6 @@ function WorkspaceLayout() {
     }
   };
 
-  const leaveWorkspace = async (next: () => void) => {
-    if (useWorkspaceStore.getState().applyingChanges) {
-      await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
-    }
-    if (
-      hasUnsavedDraft &&
-      !(await dialogs.confirm({
-        description: tr("workspace.leaveDraftConfirm"),
-        tone: "destructive",
-      }))
-    )
-      return;
-    if (useWorkspaceStore.getState().applyingChanges) {
-      await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
-    }
-    setWorkspaceDrafts((drafts) => {
-      const nextDrafts = { ...drafts };
-      delete nextDrafts[workspaceId];
-      return nextDrafts;
-    });
-    resetWorkspace();
-    next();
-  };
-
-  const navigateGlobal = (page: GlobalPage) => {
-    void leaveWorkspace(() => navigate({ to: (page === "home" ? "/" : `/${page}`) as never }));
-  };
-
   const navigateWorkspace = (page: Page) => {
     if (useWorkspaceStore.getState().applyingChanges) {
       void dialogs.notify(tr("dialog.quit.changesApplying"));
@@ -334,23 +308,8 @@ function WorkspaceLayout() {
     });
   };
 
-  const navigation = globalNav.map((entry) =>
-    entry.id === "catalog"
-      ? { ...entry, badge: globalMemories.filter((item) => item.status === "pending").length }
-      : entry,
-  );
-  const sidebarCollapsed = app.sidebarCollapsed;
-  const shellClass = cn(
-    "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
-    sidebarCollapsed && "app-shell-sidebar-collapsed",
-  );
-  const mainClass =
-    "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
-  const contentClass =
-    "content !mx-auto !max-w-[1540px] !px-7 !pb-10 !pt-[22px] max-[900px]:!px-[18px]";
-
   if (!activeWorkspace) {
-    return workspacesLoaded ? (
+    return !workspacesPending ? (
       <div className="grid h-full min-h-[240px] place-items-center p-8 text-sm text-muted-foreground">
         {tr("common.notFound")}
       </div>
@@ -359,96 +318,66 @@ function WorkspaceLayout() {
     );
   }
   return (
-    <div className={shellClass}>
-      <WindowToolbar />
-      <AppShellHeader />
-      <AppSidebar
-        active="workspaces"
-        collapsed={sidebarCollapsed}
-        entries={navigation}
-        onNavigate={navigateGlobal}
-        onSettings={() => {
-          if (useWorkspaceStore.getState().applyingChanges) {
-            void dialogs.notify(tr("dialog.quit.changesApplying"));
-            return;
-          }
-          void navigate({
-            to: "/settings",
-            search: (current) => ({ ...current, settingsSection: "general" }) as never,
-          });
-        }}
-        onBrandClick={() => navigateGlobal("home")}
-      />
-      <main className={mainClass}>
-        <div className="page-scroll-container min-h-0 flex-1">
-          {message && (
-            <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {message}
+    <div className="grid gap-4 pt-5">
+      <section className="flex min-h-[86px] flex-col gap-4 rounded-2xl border border-border/70 bg-card px-5 py-4 shadow-sm md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-foreground text-background">
+            <FolderGit2 size={21} />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
+                {activeWorkspace.name}
+              </h1>
+              <Badge variant={activeWorkspace.status === "attention" ? "destructive" : "secondary"}>
+                {workspaceStatusLabel(activeWorkspace.status)}
+              </Badge>
             </div>
-          )}
-          <div className={cn(contentClass, "grid gap-4 pt-5")}>
-            <section className="flex flex-col gap-4 rounded-2xl border border-border/70 bg-card px-5 py-4 shadow-sm md:flex-row md:items-center md:justify-between">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-foreground text-background">
-                  <FolderGit2 size={21} />
-                </span>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
-                      {activeWorkspace.name}
-                    </h1>
-                    <Badge
-                      variant={activeWorkspace.status === "attention" ? "destructive" : "secondary"}
-                    >
-                      {workspaceStatusLabel(activeWorkspace.status)}
-                    </Badge>
-                  </div>
-                  <code className="mt-1 block truncate text-xs text-muted-foreground">
-                    {activeWorkspace.path}
-                  </code>
-                </div>
-              </div>
-              <WorkspaceActions
-                workspace={activeWorkspace}
-                onError={setMessage}
-                onScan={() => loadWorkspace(manifest)}
-                busy={busy}
-                onReview={() => plan(false)}
-                reviewDisabled={busy || !hasUnsavedDraft}
-              />
-            </section>
-            {scan && <WorkspaceSummaryStrip workspace={activeWorkspace} scan={scan} />}
-            <nav aria-label={activeWorkspace.name}>
-              <Tabs value={currentPage} onValueChange={(value) => navigateWorkspace(value as Page)}>
-                <TabsList className="segmented-control w-full justify-start" variant="default">
-                  {workspaceTabs.map(([id, label, Icon]) => (
-                    <TabsTrigger
-                      className="segmented-control-item h-9 min-h-9 flex-none px-3 text-xs sm:text-sm"
-                      key={id}
-                      value={id}
-                    >
-                      <Icon size={15} />
-                      {tr(label)}
-                      {id === "changes" && changeSet?.changes.length ? (
-                        <em>{changeSet.changes.length}</em>
-                      ) : null}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </nav>
-            <section
-              className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-170px)]")}
-            >
-              {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
-                <WorkspacePageSkeleton page={currentPage} />
-              ) : (
-                <Outlet />
-              )}
-            </section>
+            <code className="mt-1 block truncate text-xs text-muted-foreground">
+              {activeWorkspace.path}
+            </code>
           </div>
         </div>
-      </main>
+        <WorkspaceActions
+          workspace={activeWorkspace}
+          onError={setMessage}
+          onScan={() => loadWorkspace(manifest)}
+          busy={busy}
+          onReview={() => plan(false)}
+          reviewDisabled={busy || !hasUnsavedDraft}
+        />
+      </section>
+      {scan ? (
+        <WorkspaceSummaryStrip workspace={activeWorkspace} scan={scan} />
+      ) : (
+        <WorkspaceSummaryStripSkeleton />
+      )}
+      <nav aria-label={activeWorkspace.name}>
+        <Tabs value={currentPage} onValueChange={(value) => navigateWorkspace(value as Page)}>
+          <TabsList className="segmented-control w-full justify-start" variant="default">
+            {workspaceTabs.map(([id, label, Icon]) => (
+              <TabsTrigger
+                className="segmented-control-item h-9 min-h-9 flex-none px-3 text-xs sm:text-sm"
+                key={id}
+                value={id}
+              >
+                <Icon size={15} />
+                {tr(label)}
+                {id === "changes" && changeSet?.changes.length ? (
+                  <em>{changeSet.changes.length}</em>
+                ) : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </nav>
+      <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-170px)]")}>
+        {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
+          <WorkspacePageSkeleton page={currentPage} />
+        ) : (
+          <Outlet />
+        )}
+      </section>
     </div>
   );
 }

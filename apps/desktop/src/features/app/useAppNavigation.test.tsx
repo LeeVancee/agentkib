@@ -22,8 +22,6 @@ vi.mock("@tanstack/react-router", () => ({
   useSearch: () => ({}),
 }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: testDoubles.open }));
-
 vi.mock("@/components/AppDialogProvider", () => ({
   useAppDialogs: () => ({
     notify: testDoubles.notify,
@@ -36,6 +34,10 @@ describe("useAppNavigation guards", () => {
   beforeAll(async () => initializeI18n("en-US"));
 
   beforeEach(() => {
+    Object.defineProperty(window, "agentkibDesktop", {
+      configurable: true,
+      value: { shell: { openDirectory: testDoubles.open } },
+    });
     useAppStore.getState().reset();
     useWorkspaceStore.getState().resetWorkspace();
     testDoubles.navigate.mockReset();

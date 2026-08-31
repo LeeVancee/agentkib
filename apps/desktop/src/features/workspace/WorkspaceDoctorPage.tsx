@@ -2,9 +2,8 @@ import { Button } from "@/components/ui/button";
 import { WorkspaceDoctorSkeleton } from "./WorkspaceSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
-import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type {
   ContextDoctorReport,
@@ -14,6 +13,7 @@ import type {
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
+import { useHomeDoctorReport } from "@/features/home/home-query";
 
 export function WorkspaceDoctorPage({
   workspace,
@@ -26,46 +26,25 @@ export function WorkspaceDoctorPage({
   verification?: "applied";
   onDiagnosed: (summary: ContextDoctorSummary) => void | Promise<void>;
 }) {
-  const [report, setReport] = useState<ContextDoctorReport>();
-  const [loading, setLoading] = useState(true);
+  const {
+    data: report,
+    isPending: loading,
+    isFetching,
+    error,
+    refetch,
+  } = useHomeDoctorReport(workspace.id);
   const [repairing, setRepairing] = useState(false);
-  const [error, setError] = useState("");
-  const requestIdRef = useRef(0);
-
-  const load = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
-    setError("");
-    setReport(undefined);
-    try {
-      const nextReport = await api.workspaceDoctorReport(workspace.id);
-      if (requestId === requestIdRef.current && nextReport.summary.workspace_id === workspace.id) {
-        setReport(nextReport);
-        await onDiagnosed(nextReport.summary);
-      }
-    } catch (reason) {
-      if (requestId === requestIdRef.current) setError(localizeMessage(reason));
-    } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
-    }
-  }, [onDiagnosed, workspace.id]);
 
   useEffect(() => {
-    void load();
-    return () => {
-      requestIdRef.current += 1;
-    };
-  }, [load]);
+    if (report?.summary.workspace_id === workspace.id) void onDiagnosed(report.summary);
+  }, [onDiagnosed, report, workspace.id]);
 
   const activeReport = report?.summary.workspace_id === workspace.id ? report : undefined;
 
   const repair = async () => {
     setRepairing(true);
-    setError("");
     try {
       await onRepair();
-    } catch (reason) {
-      setError(localizeMessage(reason));
     } finally {
       setRepairing(false);
     }
@@ -113,8 +92,8 @@ export function WorkspaceDoctorPage({
           </Badge>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={loading ? "animate-spin" : ""} size={14} />
+          <Button variant="outline" onClick={() => void refetch()} disabled={isFetching}>
+            <RefreshCw className={isFetching ? "animate-spin" : ""} size={14} />
             {tr("common.refresh")}
           </Button>
           <Button
@@ -129,7 +108,7 @@ export function WorkspaceDoctorPage({
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <CircleAlert size={16} />
-          {error}
+          {localizeMessage(error)}
         </div>
       )}
       {activeReport && (

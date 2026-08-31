@@ -1,33 +1,42 @@
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { useAppStore } from "../stores/app-store";
+import {
+  homeKeys,
+  useHomeActivity,
+  useHomeDiscovery,
+  useHomeExcluded,
+  useHomeInsightsStatus,
+  useHomeRemoteGateways,
+  useHomeScanRoots,
+  useHomeWorkspaces,
+} from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
+import { useQuotaStatus } from "@/features/quota/quota-query";
 import type { CloseBehavior, RuntimeInfo } from "../core/types";
 
 type SettingsSearch = { settingsSection?: SettingsSection };
 
 function SettingsRoute() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
   const runtime = useAppStore((state) => state.runtime);
-  const workspacesLoaded = useAppStore((state) => state.workspacesLoaded);
   const setRuntime = useAppStore((state) => state.setRuntime);
-  const workspaces = useAppStore((state) => state.workspaces);
-  const discovery = useAppStore((state) => state.discovery);
-  const insightsStatus = useAppStore((state) => state.insightsStatus);
-  const quotaStatus = useAppStore((state) => state.quotaStatus);
-  const remoteGateways = useAppStore((state) => state.remoteGateways);
-  const setRemoteGateways = useAppStore((state) => state.setRemoteGateways);
-  const scanRoots = useAppStore((state) => state.scanRoots);
-  const setScanRoots = useAppStore((state) => state.setScanRoots);
-  const excluded = useAppStore((state) => state.excluded);
-  const setExcluded = useAppStore((state) => state.setExcluded);
-  const activity = useAppStore((state) => state.activity);
+  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: discovery } = useHomeDiscovery();
+  const { data: insightsStatus } = useHomeInsightsStatus();
+  const { data: quotaStatus } = useQuotaStatus();
+  const { data: remoteGateways = [] } = useHomeRemoteGateways();
+  const { data: scanRoots = [] } = useHomeScanRoots();
+  const { data: excluded = [] } = useHomeExcluded();
+  const { data: activity = [] } = useHomeActivity();
   const { message, setMessage } = useWorkspaceStore();
 
   const setSection = (nextSection: SettingsSection) => {
@@ -51,21 +60,21 @@ function SettingsRoute() {
       const selected = await api.pickDirectory(tr("dialog.addScanRoot"));
       if (typeof selected !== "string") return;
       await api.addScanRoot(selected, 5);
-      setScanRoots(await api.scanRoots());
+      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
       await api.requestRefresh("discovery", true);
     });
 
   const removeRoot = (id: string) =>
     run(async () => {
       await api.removeScanRoot(id);
-      setScanRoots(await api.scanRoots());
+      await queryClient.invalidateQueries({ queryKey: homeKeys.scanRoots() });
       await api.requestRefresh("discovery", true);
     });
 
   const restoreExcluded = (path: string) =>
     run(async () => {
       await api.restoreExcludedWorkspace(path);
-      setExcluded(await api.excludedWorkspaces());
+      await queryClient.invalidateQueries({ queryKey: homeKeys.excluded() });
       await api.requestRefresh("discovery", true);
     });
 
@@ -77,7 +86,7 @@ function SettingsRoute() {
 
   const refreshRemoteGateways = () =>
     run(async () => {
-      setRemoteGateways(await api.remoteGateways());
+      await queryClient.invalidateQueries({ queryKey: homeKeys.remoteGateways() });
     });
 
   const changeRuntime = (nextRuntime: RuntimeInfo) => setRuntime(nextRuntime);
@@ -88,7 +97,7 @@ function SettingsRoute() {
 
   return (
     <>
-      {!runtime && !workspacesLoaded ? (
+      {!runtime && workspacesPending ? (
         <SettingsContentSkeleton />
       ) : (
         <GlobalSettings

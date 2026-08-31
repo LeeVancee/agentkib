@@ -41,8 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libssl-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+            libgtk-3-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -80,9 +79,9 @@ jobs:
             process.stdin.setEncoding("utf8");
             process.stdin.on("data", (chunk) => input += chunk);
             process.stdin.on("end", () => {
-              const desktop = JSON.parse(input).packages.find(({ name }) => name === "agentkib-desktop");
-              if (!desktop) process.exit(1);
-              console.log(desktop.version);
+              const runtime = JSON.parse(input).packages.find(({ name }) => name === "agentkib-runtime");
+              if (!runtime) process.exit(1);
+              console.log(runtime.version);
             });
           ')
 
@@ -210,41 +209,29 @@ jobs:
             updater_channel: arm64
             os: macos-15
             artifact: macos-arm64
-            asset_suffix: macos-arm64
-            bundles: app,dmg
           - name: macOS
             arch: x64
             updater_channel: x64
             os: macos-15-intel
             artifact: macos-x64
-            asset_suffix: macos-x64
-            bundles: app,dmg
           - name: Windows
             arch: x64
             updater_channel: x64
             os: windows-2025
             artifact: windows-x64
-            asset_suffix: windows-x64
-            bundles: nsis
           - name: Windows
             arch: arm64-preview
             updater_channel: arm64
             os: windows-11-arm
             artifact: windows-arm64-preview
-            asset_suffix: windows-arm64-preview
-            bundles: nsis
           - name: Ubuntu
             arch: x64
             os: ubuntu-22.04
             artifact: linux-ubuntu-x64
-            asset_suffix: linux-x64
-            bundles: deb,appimage
           - name: Ubuntu
             arch: arm64-preview
             os: ubuntu-24.04-arm
             artifact: linux-ubuntu-arm64-preview
-            asset_suffix: linux-arm64-preview
-            bundles: deb,appimage
 
     env:
       APP_VERSION: ${{ needs.preflight.outputs.app_version }}
@@ -266,8 +253,7 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get install -y --no-install-recommends \
             build-essential binutils curl file pkg-config patchelf libssl-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev libfuse2 libglib2.0-bin desktop-file-utils \
+            libgtk-3-dev libfuse2 libglib2.0-bin desktop-file-utils \
             xdg-utils dbus-x11 xvfb
 
       - name: Setup pnpm
@@ -503,9 +489,8 @@ jobs:
         run: |
           dnf install -y \
             git curl tar gzip xz file findutils which binutils \
-            gcc gcc-c++ make openssl-devel pkgconf-pkg-config patchelf \
-            gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel \
-            librsvg2-devel libxdo-devel libxcrypt-compat rpm-build rpmdevtools cpio \
+            gcc gcc-c++ make libatomic openssl-devel pkgconf-pkg-config patchelf \
+            gtk3-devel libxcrypt-compat rpm-build rpmdevtools cpio \
             desktop-file-utils xdg-utils dbus-daemon xorg-x11-server-Xvfb util-linux
 
       - name: Checkout selected revision
@@ -513,17 +498,18 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.release_sha }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          run_install: false
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
+          npm install --global "pnpm@$pnpm_version"
+          pnpm --version
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

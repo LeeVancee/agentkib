@@ -1,22 +1,10 @@
-export type AppPlatform = "macos" | "windows" | "linux" | "web";
-
-type TauriWindow = Window & {
-  __TAURI_INTERNALS__?: unknown;
-};
-
-export function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && Boolean((window as TauriWindow).__TAURI_INTERNALS__);
-}
-
-export function isElectronRuntime(): boolean {
-  return typeof window !== "undefined" && Boolean(window.agentkibDesktop);
-}
+export type AppPlatform = "macos" | "windows" | "linux";
 
 export function normalizePlatform(platform?: string): AppPlatform {
   if (platform === "darwin" || platform === "macos") return "macos";
   if (platform === "windows" || platform === "win32") return "windows";
   if (platform === "linux") return platform;
-  return "web";
+  throw new Error(`Unsupported Electron platform: ${platform ?? "unknown"}`);
 }
 
 export function applyPlatformAttribute(platform?: string): void {

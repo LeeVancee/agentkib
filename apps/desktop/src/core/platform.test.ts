@@ -17,7 +17,6 @@ describe("desktop platform marker", () => {
     ["darwin", "macos"],
     ["macos", "macos"],
     ["linux", "linux"],
-    [undefined, "web"],
   ] as const)("normalizes %s to %s", (input, expected) => {
     expect(normalizePlatform(input)).toBe(expected);
   });

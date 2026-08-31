@@ -14,7 +14,6 @@ function WorkspaceDoctorRoute() {
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
   const verification = useRef(search.doctorVerification).current;
   const setRuntime = useAppStore((state) => state.setRuntime);
-  const setDoctorSummaries = useAppStore((state) => state.setDoctorSummaries);
   const {
     project,
     selectedWorkspace,
@@ -49,7 +48,6 @@ function WorkspaceDoctorRoute() {
     async (summary: ContextDoctorSummary) => {
       const signature = `${summary.workspace_id}:${summary.error_count}:${summary.warning_count}:${summary.repairable_count}`;
       if (diagnosisSignature.current === signature) return;
-      setDoctorSummaries((current) => ({ ...current, [summary.workspace_id]: summary }));
       const onboarding = useAppStore.getState().runtime?.onboarding;
       if (onboarding && onboarding.acknowledged_version >= onboarding.version) {
         diagnosisSignature.current = signature;
@@ -63,7 +61,7 @@ function WorkspaceDoctorRoute() {
       diagnosisSignature.current = signature;
       setRuntime(runtime);
     },
-    [setDoctorSummaries, setRuntime],
+    [setRuntime],
   );
   if (!selectedWorkspace) return <WorkspaceDoctorSkeleton />;
   const planRepairs = async () => {

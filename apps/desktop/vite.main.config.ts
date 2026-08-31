@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: "dist-electron",
     emptyOutDir: true,
     lib: {
-      entry: path.resolve(import.meta.dirname, "electron/main.ts"),
+      entry: path.resolve(import.meta.dirname, "electron/main/index.ts"),
       formats: ["cjs"],
       fileName: () => "main.cjs",
     },

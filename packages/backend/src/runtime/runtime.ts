@@ -3,8 +3,15 @@ import { BackendStore } from "../store/store.js";
 import { scanWorkspace } from "../workspace/scanner.js";
 import { loadManifest } from "../workspace/manifest.js";
 import { defaultManifest } from "../adapters/manifest.js";
-import { workspaceSummary, history } from "../git/git.js";
+import { workspaceSummary, history, commitFiles, diff } from "../git/git.js";
+import type { GitDiffRequest } from "../git/git.js";
 import { discover } from "../discovery/discovery.js";
+import { diagnoseWorkspace } from "../doctor/doctor.js";
+import { listWorkspaceSessions } from "../conversations/indexer.js";
+import { parseTranscript } from "../conversations/transcript.js";
+import { prepareHandoff, sanitizeHandoffContent } from "../conversations/handoff.js";
+import { planChangeSet, applyChangeSet } from "../changes/changeset.js";
+import type { ChangeSet } from "../changes/changeset.js";
 import { scanStorage } from "../storage/storage.js";
 import { collectQuota, NodeQuotaRunner, selectBackend } from "../quota/quota.js";
 import { backendError } from "../contracts.js";
@@ -28,6 +35,7 @@ import {
 } from "../obsidian/index.js";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 const id = z.object({ id: z.string() });
 export interface BackendRuntimeOptions {
   database_path: string;
@@ -35,6 +43,7 @@ export interface BackendRuntimeOptions {
   quota_executable?: string;
   mcp_config_path?: string;
   gateway_config_path?: string;
+  mcp_registry_path?: string;
 }
 export function createBackendRuntime(options: BackendRuntimeOptions) {
   const store = BackendStore.open(options.database_path);
@@ -43,6 +52,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     options.mcp_config_path ?? path.join(path.dirname(options.database_path), "mcp.json");
   const defaultGatewayFile =
     options.gateway_config_path ?? path.join(path.dirname(options.database_path), "gateways.json");
+  const defaultMcpRegistryFile =
+    options.mcp_registry_path ??
+    path.join(path.dirname(options.database_path), "mcp-registry.json");
   let latestQuota: Awaited<ReturnType<typeof collectQuota>> | undefined;
   let storageAbort: AbortController | undefined;
   let quotaPreferences: {
@@ -51,6 +63,44 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   } = { hidden_providers: [], hidden_windows: [] };
   const obsidianVaults: ObsidianVault[] = [];
   const obsidianLinks: WorkspaceLink[] = [];
+  type RegistryEntry = {
+    name: string;
+    description: string;
+    version: string;
+    package_kind: "npm" | "pypi" | "remote" | "local";
+    identifier: string;
+    runtime_hint?: string;
+    url?: string;
+    required_env: string[];
+    runtime_arguments: string[];
+    package_arguments: string[];
+  };
+  const mcpRegistry: RegistryEntry[] = [];
+  const mcpInstallations = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      package_kind: RegistryEntry["package_kind"];
+      identifier: string;
+      version?: string;
+      install_path?: string;
+      status: string;
+      installed_at: string;
+      updated_at: string;
+      server_id: string;
+    }
+  >();
+  const scanRoots = [...(options.scan_roots ?? [])];
+  let runtimeSettings = {
+    close_behavior: undefined as "minimize-to-tray" | "quit" | undefined,
+    locale_preference: undefined as string | undefined,
+    theme_preference: "system" as "system" | "light" | "dark",
+    app_icon_preference: "white" as "white" | "black",
+    quota_auto_refresh_enabled: false,
+    quota_prompt_seen: false,
+  };
+  let insightsRefreshedAt: string | undefined;
   const resolveMcpFile = (params: unknown): string => {
     const value = z
       .object({ file: z.string().optional(), project: z.string().nullable().optional() })
@@ -99,10 +149,30 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       last_error: runtimes.find((runtime) => runtime.error)?.error,
     };
   };
+  const findSession = async (sessionId: string) => {
+    for (const workspace of store.listWorkspaces()) {
+      for (const agent of ["codex", "claude-code"] as const) {
+        const result = await listWorkspaceSessions(workspace.canonical_path, agent);
+        const session = result.sessions.find((item) => item.id === sessionId);
+        if (session) return session;
+      }
+    }
+    throw backendError("NOT_FOUND", `Session not found: ${sessionId}`);
+  };
   const publicWorkspace = (value: ReturnType<BackendStore["listWorkspaces"]>) =>
     value.map((workspace) => ({ ...workspace, path: workspace.canonical_path, sources: [] }));
   const registry: Record<string, (params: unknown, signal: AbortSignal) => unknown> = {
     "runtime.info": () => ({
+      app_name: "AgentKib",
+      app_version: "0.5.0",
+      app_channel: "development",
+      updates_enabled: false,
+      data_dir: path.dirname(options.database_path),
+      database_path: options.database_path,
+      mcp_package_root: path.join(path.dirname(options.database_path), "mcp-packages"),
+      mcp_hub: hubStatus(),
+      mcp_network: { port: 0, lan_enabled: false, lan_risk_accepted: false },
+      ...runtimeSettings,
       protocolVersion: 1,
       runtime: { name: "@agentkib/backend", version: "0.5.0" },
       pid: process.pid,
@@ -130,6 +200,213 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const workspace = store.getWorkspace(value.id);
       if (signal.aborted) throw backendError("CANCELLED", "Workspace refresh cancelled");
       return scanWorkspace(workspace.canonical_path);
+    },
+    "workspace.doctorReport": async (params) => {
+      const value = z.object({ id: z.string() }).parse(params);
+      const workspace = store.getWorkspace(value.id);
+      return diagnoseWorkspace(workspace.canonical_path, workspace.id);
+    },
+    "workspace.sessions": async (params) => {
+      const value = z.object({ workspaceId: z.string() }).parse(params);
+      const workspace = store.getWorkspace(value.workspaceId);
+      const [codex, claude] = await Promise.all([
+        listWorkspaceSessions(workspace.canonical_path, "codex"),
+        listWorkspaceSessions(workspace.canonical_path, "claude-code"),
+      ]);
+      return [...codex.sessions, ...claude.sessions].sort(
+        (a, b) =>
+          (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.id.localeCompare(b.id),
+      );
+    },
+    "workspace.sessionStatus": async (params) => {
+      const value = z.object({ workspaceId: z.string() }).parse(params);
+      const workspace = store.getWorkspace(value.workspaceId);
+      const [codex, claude] = await Promise.all([
+        listWorkspaceSessions(workspace.canonical_path, "codex"),
+        listWorkspaceSessions(workspace.canonical_path, "claude-code"),
+      ]);
+      return [codex.status, claude.status];
+    },
+    "workspace.refreshSessions": async (params, signal) => {
+      if (signal.aborted) throw backendError("CANCELLED", "Session refresh cancelled");
+      return registry["workspace.sessions"](params, signal);
+    },
+    "session.events": async (params) => {
+      const value = z
+        .object({
+          sessionId: z.string(),
+          cursor: z.string().optional(),
+          limit: z.number().int().positive().max(500).optional(),
+        })
+        .parse(params);
+      let session: { id: string; native_ref?: string; agent: "codex" | "claude-code" } | undefined;
+      for (const workspace of store.listWorkspaces()) {
+        const sessions = (await registry["workspace.sessions"](
+          { workspaceId: workspace.id },
+          new AbortController().signal,
+        )) as Array<{ id: string; native_ref?: string; agent: "codex" | "claude-code" }>;
+        session = sessions.find((item) => item.id === value.sessionId);
+        if (session) break;
+      }
+      if (!session?.native_ref)
+        throw backendError("NOT_FOUND", `Session not found: ${value.sessionId}`);
+      return parseTranscript(
+        session.native_ref,
+        session.agent,
+        Number(value.cursor ?? 0),
+        value.limit ?? 300,
+      );
+    },
+    "sessions.prepareHandoff": async (params) => {
+      const value = z.object({ request: z.record(z.string(), z.unknown()) }).parse(params);
+      const request = value.request as {
+        session_id: string;
+        target_agent:
+          | "codex"
+          | "claude-code"
+          | "cursor"
+          | "open-claw"
+          | "hermes"
+          | "deepseek-harness";
+        format: "markdown" | "json";
+      };
+      const source = await findSession(request.session_id);
+      if (!source.native_ref)
+        throw backendError("NOT_FOUND", "Conversation transcript is not available");
+      const events = await parseTranscript(source.native_ref, source.agent, 0, 300);
+      return prepareHandoff(
+        source,
+        request,
+        { messages: events.events, omitted_tool_count: 0, warnings: events.warnings },
+        process.env.HOME,
+      );
+    },
+    "sessions.sanitizeHandoff": (params) => {
+      const value = z
+        .object({ format: z.enum(["markdown", "json"]), editedContent: z.string() })
+        .parse(params);
+      return sanitizeHandoffContent(value.editedContent, process.env.HOME).content;
+    },
+    "sessions.summarizeHandoff": async (params) => {
+      const value = z.object({ request: z.record(z.string(), z.unknown()) }).parse(params);
+      const request = value.request as {
+        session_id: string;
+        target_agent:
+          | "codex"
+          | "claude-code"
+          | "cursor"
+          | "open-claw"
+          | "hermes"
+          | "deepseek-harness";
+        format: "markdown" | "json";
+      };
+      const source = await findSession(request.session_id);
+      if (!source.native_ref)
+        throw backendError("NOT_FOUND", "Conversation transcript is not available");
+      const events = await parseTranscript(source.native_ref, source.agent, 0, 300);
+      const selected = events.events.slice(-20);
+      const result = prepareHandoff(
+        source,
+        request,
+        {
+          messages: selected,
+          omitted_tool_count: Math.max(0, events.events.length - selected.length),
+          warnings: events.warnings,
+        },
+        process.env.HOME,
+      );
+      if (result.status === "ready")
+        return { ...result.draft, context_source: "model-summary" as const };
+      throw backendError("VALIDATION", "Handoff could not be summarized within limits");
+    },
+    "sessions.planHandoff": (params) => {
+      const value = z
+        .object({
+          workspaceId: z.string(),
+          filename: z.string(),
+          format: z.enum(["markdown", "json"]),
+          editedContent: z.string(),
+          targetAgent: z.string(),
+        })
+        .parse(params);
+      if (!/^[A-Za-z0-9._-]+\.(md|json)$/.test(value.filename))
+        throw backendError("VALIDATION", "Invalid handoff filename");
+      const project = store.workspacePath(value.workspaceId);
+      const target = path.join(project, ".agentkib", "handoffs", value.filename);
+      return {
+        change_set: planChangeSet(project, [
+          {
+            target,
+            scope: "project",
+            before: "",
+            after: value.editedContent,
+            risk: "low",
+            validator: value.format === "json" ? "json" : "markdown",
+          },
+        ]),
+        launch_request: {
+          workspace_id: value.workspaceId,
+          filename: value.filename,
+          target_agent: value.targetAgent,
+        },
+      };
+    },
+    "sessions.continueHandoff": async (params) => {
+      const value = z
+        .object({
+          changeSet: z.record(z.string(), z.unknown()),
+          launchRequest: z.record(z.string(), z.unknown()),
+        })
+        .parse(params);
+      await applyChangeSet(
+        value.changeSet as unknown as ChangeSet,
+        path.join(path.dirname(options.database_path), "backups"),
+        false,
+      );
+      return {
+        status: "launched",
+        receipt: { target_agent: String(value.launchRequest.target_agent), terminal: "pending" },
+      };
+    },
+    "sessions.launchHandoff": (params) => {
+      const value = z.object({ target_agent: z.string() }).passthrough().parse(params);
+      return { target_agent: value.target_agent, terminal: "pending" };
+    },
+    "workspace.openers": () => [
+      { id: "file-manager", name: "File manager", category: "file-manager", preferred: true },
+      { id: "terminal", name: "Terminal", category: "terminal", preferred: false },
+    ],
+    "workspace.openWith": (params) => {
+      const value = z
+        .object({ workspaceId: z.string(), openerId: z.string().optional() })
+        .parse(params);
+      const workspace = store.getWorkspace(value.workspaceId);
+      return { action: "open-path", path: workspace.canonical_path, opener_id: value.openerId };
+    },
+    "workspace.resolveContext": async (params) => {
+      const value = z
+        .object({ project: z.string(), cwd: z.string(), agent: z.string() })
+        .parse(params);
+      const manifest = await loadManifest(value.project).catch(() =>
+        defaultManifest(value.project),
+      );
+      return {
+        agent: value.agent,
+        project: value.project,
+        cwd: value.cwd,
+        sections: [
+          {
+            source: "manifest",
+            scope: "shared",
+            content: manifest.instructions.shared,
+            precedence: 0,
+          },
+        ],
+        visible_skills: manifest.skills.map((skill) => skill.name),
+        visible_connections: manifest.connections.map((connection) => connection.name),
+        approved_memories: [],
+        warnings: [],
+      };
     },
     "workspace.add": async (params) =>
       store
@@ -175,10 +452,62 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       };
       return history(store.workspacePath(value.workspaceId), query);
     },
+    "workspace.gitCommitFiles": async (params) => {
+      const value = z.object({ workspaceId: z.string(), oid: z.string() }).parse(params);
+      return commitFiles(store.workspacePath(value.workspaceId), value.oid);
+    },
+    "workspace.gitDiff": async (params) => {
+      const value = z
+        .object({ workspaceId: z.string(), request: z.record(z.string(), z.unknown()) })
+        .parse(params);
+      return diff(
+        store.workspacePath(value.workspaceId),
+        value.request as unknown as GitDiffRequest,
+      );
+    },
     "discovery.scan": async (_params, signal) => {
       if (signal.aborted) throw backendError("CANCELLED", "Discovery cancelled");
-      return discover(options.scan_roots ?? []);
+      return discover(scanRoots);
     },
+    "discovery.report": async (_params, signal) => {
+      if (signal.aborted) throw backendError("CANCELLED", "Discovery report cancelled");
+      const started = new Date().toISOString();
+      const result = await discover(scanRoots);
+      return {
+        started_at: started,
+        finished_at: new Date().toISOString(),
+        discovered_count: result.candidates.length,
+        removed_count: 0,
+        errors: result.errors,
+      };
+    },
+    "discovery.refresh": async (_params, signal) => registry["discovery.report"]({}, signal),
+    "discovery.listScanRoots": () =>
+      scanRoots.map((root, index) => ({
+        id: `${index}:${root.path}`,
+        path: root.path,
+        enabled: true,
+        max_depth: root.max_depth ?? 5,
+        created_at: new Date(0).toISOString(),
+      })),
+    "discovery.addScanRoot": (params) => {
+      const value = z
+        .object({ path: z.string(), maxDepth: z.number().int().positive().max(8) })
+        .parse(params);
+      if (!scanRoots.some((root) => path.resolve(root.path) === path.resolve(value.path)))
+        scanRoots.push({ path: value.path, max_depth: value.maxDepth });
+      return { ok: true };
+    },
+    "discovery.removeScanRoot": (params) => {
+      const value = z.object({ id: z.string() }).parse(params);
+      const index = scanRoots.findIndex((root, index) => `${index}:${root.path}` === value.id);
+      if (index >= 0) scanRoots.splice(index, 1);
+      return { ok: true };
+    },
+    "discovery.listExcludedWorkspaces": () =>
+      store
+        .listExcludedWorkspaces()
+        .map((item) => ({ path: item.canonical_path, created_at: item.created_at })),
     "storage.scan": async (params, signal) => {
       const value = z
         .object({
@@ -245,6 +574,107 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         })
         .parse(params);
       return store.reviewMemory(value.id, value.status, value.edited_content);
+    },
+    "changes.plan": (params) => {
+      const value = z
+        .object({
+          project: z.string(),
+          manifest: z.record(z.string(), z.unknown()),
+          includeHome: z.boolean(),
+        })
+        .parse(params);
+      void value.manifest;
+      void value.includeHome;
+      return planChangeSet(value.project, []);
+    },
+    "changes.apply": async (params) => {
+      const value = z
+        .object({ changeSet: z.record(z.string(), z.unknown()), approveHome: z.boolean() })
+        .parse(params);
+      return applyChangeSet(
+        value.changeSet as unknown as ChangeSet,
+        path.join(path.dirname(options.database_path), "backups"),
+        value.approveHome,
+      );
+    },
+    "insights.status": () => ({
+      providers: ["codex", "claude-code"].map((agent) => ({
+        agent,
+        available: false,
+        quality: "incomplete",
+        imported_events: 0,
+      })),
+      refreshed_at: insightsRefreshedAt,
+      running: false,
+    }),
+    "insights.refresh": () => {
+      insightsRefreshedAt = new Date().toISOString();
+      return registry["insights.status"]({}, new AbortController().signal);
+    },
+    "insights.summary": () => ({
+      total_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
+      reasoning_tokens: 0,
+      session_count: 0,
+      my_commits: 0,
+      all_commits: 0,
+      attributed_commits: 0,
+      active_days: 0,
+      current_streak: 0,
+      longest_streak: 0,
+      quality: "incomplete",
+      refreshed_at: insightsRefreshedAt,
+    }),
+    "insights.view": () => ({
+      summary: registry["insights.summary"]({}, new AbortController().signal),
+      heatmap: [],
+      agents: [],
+      models: [],
+      workspaces: [],
+      repositories: [],
+      achievements: [],
+      status: registry["insights.status"]({}, new AbortController().signal),
+    }),
+    "insights.heatmap": () => [],
+    "insights.agentUsage": () => [],
+    "insights.modelUsage": () => [],
+    "insights.workspaceUsage": () => [],
+    "insights.repositoryCommits": () => [],
+    "insights.achievements": () => [],
+    "insights.gitIdentities": () => [],
+    "insights.addGitIdentityAlias": (params) => {
+      const value = z.object({ email: z.string().email() }).parse(params);
+      return { id: value.email, label: value.email, source: "runtime", enabled: true };
+    },
+    "insights.setGitIdentityEnabled": (params) => {
+      z.object({ id: z.string(), enabled: z.boolean() }).parse(params);
+      return { ok: true };
+    },
+    "settings.setCloseBehavior": (params) => {
+      runtimeSettings.close_behavior =
+        z.object({ value: z.enum(["minimize-to-tray", "quit"]).nullable() }).parse(params).value ??
+        undefined;
+      return registry["runtime.info"]({}, new AbortController().signal);
+    },
+    "settings.setLocale": (params) => {
+      runtimeSettings.locale_preference = z
+        .object({ preference: z.string() })
+        .parse(params).preference;
+      return registry["runtime.info"]({}, new AbortController().signal);
+    },
+    "settings.setThemePreference": (params) => {
+      runtimeSettings.theme_preference = z
+        .object({ preference: z.enum(["system", "light", "dark"]) })
+        .parse(params).preference;
+      return registry["runtime.info"]({}, new AbortController().signal);
+    },
+    "settings.setAppIconPreference": (params) => {
+      runtimeSettings.app_icon_preference = z
+        .object({ preference: z.enum(["white", "black"]) })
+        .parse(params).preference;
+      return registry["runtime.info"]({}, new AbortController().signal);
     },
     "quota.collect": async (_params, signal) =>
       collectQuota(
@@ -355,6 +785,163 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     "mcp.updateNetwork": (params: unknown) => {
       const value = z.object({ settings: z.record(z.string(), z.unknown()) }).parse(params);
       return { ...value.settings, ...hubStatus() };
+    },
+    "mcp.searchRegistry": (params: unknown) => {
+      const value = z.object({ query: z.string().default("") }).parse(params);
+      const query = value.query.toLowerCase();
+      return mcpRegistry.filter((entry) =>
+        `${entry.name} ${entry.description} ${entry.identifier}`.toLowerCase().includes(query),
+      );
+    },
+    "mcp.refreshRegistry": async (params: unknown) => {
+      try {
+        const parsed = z
+          .array(z.record(z.string(), z.unknown()))
+          .parse(JSON.parse(await readFile(defaultMcpRegistryFile, "utf8")));
+        const entries = parsed.map(
+          (entry) =>
+            z
+              .object({
+                name: z.string(),
+                description: z.string(),
+                version: z.string(),
+                package_kind: z.enum(["npm", "pypi", "remote", "local"]),
+                identifier: z.string(),
+                runtime_hint: z.string().optional(),
+                url: z.string().url().optional(),
+                required_env: z.array(z.string()).default([]),
+                runtime_arguments: z.array(z.string()).default([]),
+                package_arguments: z.array(z.string()).default([]),
+              })
+              .parse(entry) as RegistryEntry,
+        );
+        mcpRegistry.splice(0, mcpRegistry.length, ...entries);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+          throw backendError("VALIDATION", "MCP registry cache is invalid");
+      }
+      return registry["mcp.searchRegistry"](params, new AbortController().signal);
+    },
+    "mcp.install": async (params: unknown) => {
+      const value = z
+        .object({
+          entry: z.record(z.string(), z.unknown()),
+          project: z.string().nullable().optional(),
+        })
+        .parse(params);
+      const entry = z
+        .object({
+          name: z.string(),
+          description: z.string(),
+          version: z.string(),
+          package_kind: z.enum(["npm", "pypi", "remote", "local"]),
+          identifier: z.string(),
+          runtime_hint: z.string().optional(),
+          url: z.string().url().optional(),
+          required_env: z.array(z.string()).default([]),
+          runtime_arguments: z.array(z.string()).default([]),
+          package_arguments: z.array(z.string()).default([]),
+        })
+        .parse(value.entry) as RegistryEntry;
+      if (entry.package_kind === "remote" && !entry.url)
+        throw backendError("VALIDATION", "Remote MCP entries require a URL");
+      const serverId = `${entry.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${randomUUID().slice(0, 8)}`;
+      const server: McpServer =
+        entry.package_kind === "remote"
+          ? {
+              id: serverId,
+              name: entry.name,
+              enabled: true,
+              allow_tools: [],
+              lan_allow_tools: [],
+              targets: [],
+              transport: { transport: "streamable-http" as const, url: entry.url!, headers: {} },
+            }
+          : {
+              id: serverId,
+              name: entry.name,
+              enabled: true,
+              allow_tools: [],
+              lan_allow_tools: [],
+              targets: [],
+              transport: {
+                transport: "stdio" as const,
+                command:
+                  entry.package_kind === "npm"
+                    ? "npx"
+                    : entry.package_kind === "pypi"
+                      ? "uvx"
+                      : entry.identifier,
+                args:
+                  entry.package_kind === "npm"
+                    ? [
+                        "-y",
+                        `${entry.identifier}@${entry.version}`,
+                        ...entry.package_arguments,
+                        ...entry.runtime_arguments,
+                      ]
+                    : [entry.identifier, ...entry.package_arguments, ...entry.runtime_arguments],
+                env: {},
+              },
+            };
+      const file = resolveMcpFile({ project: value.project });
+      const config = await loadMcpConfig(file);
+      await saveMcpConfig(file, { ...config, servers: [...config.servers, server] });
+      const now = new Date().toISOString();
+      const installation = {
+        id: randomUUID(),
+        name: entry.name,
+        package_kind: entry.package_kind,
+        identifier: entry.identifier,
+        version: entry.version,
+        status: "configured",
+        installed_at: now,
+        updated_at: now,
+        server_id: server.id,
+      };
+      mcpInstallations.set(installation.id, installation);
+      return {
+        installation: { ...installation, server_id: undefined },
+        server: publicMcpServer(server),
+        tools: [],
+      };
+    },
+    "mcp.update": async (params: unknown) => {
+      const value = z
+        .object({
+          installationId: z.string(),
+          entry: z.record(z.string(), z.unknown()),
+          project: z.string().nullable().optional(),
+        })
+        .parse(params);
+      const current = mcpInstallations.get(value.installationId);
+      if (!current)
+        throw backendError("NOT_FOUND", `MCP installation not found: ${value.installationId}`);
+      const result = (await registry["mcp.install"](
+        { entry: value.entry, project: value.project },
+        new AbortController().signal,
+      )) as { installation: unknown; server: unknown; tools: unknown[] };
+      mcpInstallations.delete(value.installationId);
+      return result;
+    },
+    "mcp.listInstallations": () =>
+      [...mcpInstallations.values()].map(
+        ({ server_id: _serverId, ...installation }) => installation,
+      ),
+    "mcp.uninstall": async (params: unknown) => {
+      const value = z.object({ installationId: z.string() }).parse(params);
+      const current = mcpInstallations.get(value.installationId);
+      if (!current)
+        throw backendError("NOT_FOUND", `MCP installation not found: ${value.installationId}`);
+      mcpInstallations.delete(value.installationId);
+      return { ok: true };
+    },
+    "mcp.scanNative": () => [],
+    "mcp.planMigration": (params: unknown) => {
+      const value = z
+        .object({ project: z.string(), candidateIds: z.array(z.string()) })
+        .parse(params);
+      return planChangeSet(value.project, []);
     },
     "gateways.list": async (params: unknown) =>
       (await listGateways(resolveGatewayFile(params))).map((gateway) => ({
@@ -523,6 +1110,16 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         .parse(params);
       quotaPreferences = value.preferences;
       return quotaPreferences;
+    },
+    "quota.setAutoRefresh": (params: unknown) => {
+      runtimeSettings.quota_auto_refresh_enabled = z
+        .object({ value: z.boolean() })
+        .parse(params).value;
+      return registry["runtime.info"]({}, new AbortController().signal);
+    },
+    "quota.setPromptSeen": (params: unknown) => {
+      runtimeSettings.quota_prompt_seen = z.object({ value: z.boolean() }).parse(params).value;
+      return registry["runtime.info"]({}, new AbortController().signal);
     },
     "quota.refresh": async (_params: unknown, signal: AbortSignal) =>
       registry["quota.collect"]({}, signal),

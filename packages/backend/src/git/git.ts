@@ -30,10 +30,27 @@ export interface GitCommitPage {
   next_cursor?: string;
   repository_fingerprint: string;
 }
+export interface GitFileChange {
+  status: string;
+  path: string;
+  old_path?: string;
+}
+export interface GitDiffRequest {
+  kind: "commit" | "worktree" | "staged";
+  path?: string;
+  oid?: string;
+}
+export interface GitDiff {
+  patch: string;
+  binary: boolean;
+  submodule: boolean;
+  encoding_lossy: boolean;
+  truncated: boolean;
+}
 
-async function git(cwd: string, args: string[]): Promise<string> {
+async function git(cwd: string, args: string[], maxBuffer = 16 * 1024 * 1024): Promise<string> {
   try {
-    return (await run("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout;
+    return (await run("git", args, { cwd, maxBuffer })).stdout;
   } catch (error) {
     const e = error as NodeJS.ErrnoException & { code?: string };
     if (e.code === "ENOENT") throw backendError("NOT_FOUND", "Git is not installed");
@@ -95,4 +112,45 @@ export async function history(
     return { oid, parents: parents ? parents.split(" ") : [], author_name, authored_at, subject };
   });
   return { commits, repository_fingerprint: summary.head_oid ?? "" };
+}
+export async function commitFiles(workspace: string, oid: string): Promise<GitFileChange[]> {
+  if (!/^[0-9a-f]{7,64}$/i.test(oid)) throw backendError("VALIDATION", "Invalid commit id");
+  const output = await git(workspace, [
+    "show",
+    "--format=",
+    "--name-status",
+    "--find-renames",
+    oid,
+  ]);
+  return output
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [status, first, second] = line.split("\t");
+      return { status, path: second ?? first, old_path: second ? first : undefined };
+    });
+}
+export async function diff(workspace: string, request: GitDiffRequest): Promise<GitDiff> {
+  const args =
+    request.kind === "commit"
+      ? ["show", "--format=", "--patch", "--binary", request.oid ?? ""]
+      : request.kind === "staged"
+        ? ["diff", "--cached", "--patch", "--binary"]
+        : ["diff", "--patch", "--binary"];
+  if (request.kind === "commit" && !request.oid)
+    throw backendError("VALIDATION", "Commit id is required");
+  if (request.path) {
+    if (request.path.includes("..") || request.path.startsWith("/"))
+      throw backendError("VALIDATION", "Git path must be relative");
+    args.push("--", request.path);
+  }
+  const output = await git(workspace, args, 4 * 1024 * 1024);
+  const truncated = output.length >= 4 * 1024 * 1024;
+  return {
+    patch: output.slice(0, 4 * 1024 * 1024),
+    binary: output.includes("Binary files"),
+    submodule: output.includes("Subproject commit"),
+    encoding_lossy: output.includes("\ufffd"),
+    truncated,
+  };
 }

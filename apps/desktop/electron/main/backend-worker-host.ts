@@ -11,6 +11,7 @@ export interface BackendWorkerHostOptions {
   quota_executable?: string;
   mcp_config_path?: string;
   gateway_config_path?: string;
+  mcp_registry_path?: string;
   timeoutMs?: number;
 }
 export function backendWorkerUrl(): string {
@@ -31,6 +32,7 @@ export class BackendWorkerHost extends EventEmitter {
         quota_executable: options.quota_executable,
         mcp_config_path: options.mcp_config_path,
         gateway_config_path: options.gateway_config_path,
+        mcp_registry_path: options.mcp_registry_path,
       },
     });
     const channel = new MessageChannel();

@@ -122,6 +122,7 @@ async function startApplication(): Promise<void> {
       quota_executable: resolveQuotaSidecar(),
       mcp_config_path: path.join(app.getPath("userData"), "mcp.json"),
       gateway_config_path: path.join(app.getPath("userData"), "gateways.json"),
+      mcp_registry_path: path.join(app.getPath("userData"), "mcp-registry.json"),
     });
   } else {
     runtimeHost = new DesktopRuntimeHost({

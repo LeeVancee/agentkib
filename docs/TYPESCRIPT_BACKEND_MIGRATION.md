@@ -219,7 +219,18 @@ Rust may be deleted only when all gates pass:
 - [x] Discovery and conversations ported.
 - [x] Insights, storage, and quota ported.
 - [x] MCP, gateways, and Obsidian foundational services implemented; OAuth, registry/install flows, and full remote parity remain.
-- [ ] Electron IPC bound to TypeScript backend (worker host adapter and opt-in `AGENTKIB_TS_BACKEND=1` startup path are ready; Rust remains the default).
+- [x] Electron IPC bound to TypeScript backend through the worker host adapter and opt-in `AGENTKIB_TS_BACKEND=1` startup path; Rust remains the default.
+- [x] High-priority workspace, doctor, sessions, Git, discovery, insights, settings, quota, storage, MCP, gateway, Obsidian, registry/install, and handoff calls are routed; full native parity remains under review.
 - [ ] Cross-platform packaging updated.
 - [ ] Parity and acceptance gates passed.
 - [ ] Rust and Cargo removed.
+
+## TypeScript package gate
+
+`pnpm --filter @agentkib/desktop build:typescript` builds the renderer, Electron main/preload, and the worker without requiring the Rust runtime. `verify:typescript-package` checks that all three JavaScript artifacts are present before `electron-builder` runs.
+
+The worker is platform-neutral JavaScript. The packaging matrix remains:
+
+- macOS arm64 and x64: DMG/ZIP, with the matching CodexBar quota sidecar.
+- Windows x64 and arm64 preview: NSIS; arm64 uses the supported x64/emulation sidecar path when no native collector is available.
+- Linux x64 and arm64 preview: AppImage/DEB/RPM, with logical storage measurement and the matching CodexBar sidecar.

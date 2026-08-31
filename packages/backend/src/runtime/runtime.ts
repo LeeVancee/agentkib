@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { BackendStore } from "../store/store.js";
 import { scanWorkspace } from "../workspace/scanner.js";
-import { loadManifest, manifestPath } from "../workspace/manifest.js";
+import { loadManifest } from "../workspace/manifest.js";
 import { defaultManifest } from "../adapters/manifest.js";
 import { workspaceSummary, history, commitFiles, diff } from "../git/git.js";
 import type { GitDiffRequest } from "../git/git.js";
 import { collectGit } from "../insights/git.js";
 import { collectUsage } from "../insights/usage.js";
+import { planWorkspaceChanges } from "../adapters/changes.js";
+import { removeNativeCandidates, scanNativeCandidates } from "../mcp/native.js";
 import { discover } from "../discovery/discovery.js";
 import { diagnoseWorkspace } from "../doctor/doctor.js";
 import { listWorkspaceSessions } from "../conversations/indexer.js";
@@ -43,10 +45,8 @@ import {
 } from "../obsidian/index.js";
 import path from "node:path";
 import { createHmac, randomUUID } from "node:crypto";
-import { readFile, rename, writeFile, lstat, rm } from "node:fs/promises";
+import { readFile, rename, writeFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { stringify as stringifyYaml } from "yaml";
-import { parse as parseToml } from "@iarna/toml";
 
 function buildAchievements(
   summary: {
@@ -1261,96 +1261,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           includeHome: z.boolean(),
         })
         .parse(params);
-      const manifest = value.manifest as unknown as import("../domain/types.js").Manifest;
-      const project = path.resolve(value.project);
-      const changes: Array<import("../changes/changeset.js").FileChange> = [];
-      const add = async (
-        target: string,
-        after: string,
-        scope: "project" | "agent-home" = "project",
-        risk: "low" | "medium" | "high" = "medium",
-        validator: "json" | "yaml" | "toml" | "markdown" | "text" = "text",
-      ) => {
-        const before = await readFile(target, "utf8").catch(() => "");
-        if (before === after) return;
-        const current = await readFile(target).catch(() => undefined);
-        changes.push({
-          target,
-          scope,
-          before,
-          after,
-          risk,
-          validator,
-          ...(current ? { original_hash: hashContent(current) } : {}),
-        });
-      };
-      await add(manifestPath(project), stringifyYaml(manifest), "project", "low", "yaml");
-      const managed = (existing: string, content: string) => {
-        const start = "<!-- agentkib:managed:start -->";
-        const end = "<!-- agentkib:managed:end -->";
-        const block = `${start}\n${content.trim()}\n${end}`;
-        const range = new RegExp(`${start}[\\s\\S]*?${end}`, "m");
-        return range.test(existing)
-          ? existing.replace(range, block)
-          : `${existing.trimEnd()}${existing.trim() ? "\\n\\n" : ""}${block}\\n`;
-      };
-      const enabled = (agent: import("../domain/types.js").AgentKind) =>
-        manifest.adapters?.[agent]?.enabled !== false;
-      if (
-        ["codex", "cursor", "open-claw", "hermes"].some((agent) =>
-          enabled(agent as import("../domain/types.js").AgentKind),
-        )
-      )
-        await add(
-          path.join(project, "AGENTS.md"),
-          managed(
-            await readFile(path.join(project, "AGENTS.md"), "utf8").catch(() => ""),
-            manifest.instructions.shared,
-          ),
-          "project",
-          "medium",
-          "markdown",
-        );
-      if (enabled("claude-code")) {
-        const override = manifest.instructions.platform_overrides["claude-code"]?.trim();
-        await add(
-          path.join(project, "CLAUDE.md"),
-          managed(
-            await readFile(path.join(project, "CLAUDE.md"), "utf8").catch(() => ""),
-            `@AGENTS.md${override ? `\n\n${override}` : ""}`,
-          ),
-          "project",
-          "medium",
-          "markdown",
-        );
-      }
-      const legacy = manifest.connections.filter((connection) => connection.name !== "agentkib");
-      if (legacy.length) {
-        const servers = Object.fromEntries(
-          legacy.map((connection) => [
-            connection.name,
-            connection.transport === "stdio"
-              ? { command: connection.command, args: connection.args ?? [], env: connection.env }
-              : { url: connection.url, headers: connection.env },
-          ]),
-        );
-        await add(
-          path.join(project, ".mcp.json"),
-          JSON.stringify({ mcpServers: servers }, null, 2) + "\n",
-          "project",
-          "medium",
-          "json",
-        );
-        await add(
-          path.join(project, ".cursor", "mcp.json"),
-          JSON.stringify({ mcpServers: servers }, null, 2) + "\n",
-          "project",
-          "medium",
-          "json",
-        );
-      }
-      if (!value.includeHome) return planChangeSet(project, changes);
-      return planChangeSet(project, changes);
+      return planWorkspaceChanges(
+        value.project,
+        value.manifest as unknown as import("../domain/types.js").Manifest,
+        value.includeHome,
+      );
     },
     "agents.listInstallations": () => store.listAgentInstallations(),
     "catalog.searchAssets": async (params) => {
@@ -1837,48 +1752,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     },
     "mcp.scanNative": async (params: unknown) => {
       const value = z.object({ project: z.string().optional() }).parse(params);
-      const project = value.project ?? store.listWorkspaces()[0]?.canonical_path;
-      if (!project) return [];
-      const files = [
-        ["claude-code", path.join(project, ".mcp.json")],
-        ["cursor", path.join(project, ".cursor", "mcp.json")],
-        ["codex", path.join(project, ".codex", "config.toml")],
-      ] as const;
-      const candidates: Array<Record<string, unknown>> = [];
-      for (const [agent, file] of files) {
-        if (!(await lstat(file).catch(() => undefined))) continue;
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = file.endsWith(".toml")
-            ? (parseToml(await readFile(file, "utf8")) as Record<string, unknown>)
-            : (JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>);
-        } catch {
-          continue;
-        }
-        const serversValue = file.endsWith(".toml") ? parsed.mcp_servers : parsed.mcpServers;
-        const servers =
-          serversValue && typeof serversValue === "object"
-            ? (serversValue as Record<string, unknown>)
-            : {};
-        for (const [name, raw] of Object.entries(servers)) {
-          const server = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-          candidates.push({
-            id: `${agent}:${file}:${name}`,
-            agent,
-            scope: "project",
-            name,
-            source_path: file,
-            transport: typeof server.url === "string" ? "http" : "stdio",
-            endpoint: String(server.url ?? server.command ?? ""),
-            has_secret_values: Object.keys((server.env ?? {}) as object).some((key) =>
-              /token|secret|key|password/i.test(key),
-            ),
-            supported: Boolean(server.url || server.command),
-            warnings: server.url || server.command ? [] : ["MCP entry has no URL or command"],
-          });
-        }
-      }
-      return candidates;
+      return scanNativeCandidates(value.project ?? store.listWorkspaces()[0]?.canonical_path);
     },
     "mcp.planMigration": async (params: unknown) => {
       const value = z
@@ -1942,25 +1816,31 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         ...new Set(selected.map((candidate) => String(candidate.source_path))),
       ]) {
         const sourceBefore = await readFile(source, "utf8").catch(() => "");
-        if (!sourceBefore || source.endsWith(".toml")) continue;
         try {
-          const sourceDoc = JSON.parse(sourceBefore) as Record<string, unknown>;
-          const sourceServers =
-            sourceDoc.mcpServers && typeof sourceDoc.mcpServers === "object"
-              ? (sourceDoc.mcpServers as Record<string, unknown>)
-              : {};
-          for (const candidate of selected.filter((item) => item.source_path === source))
-            delete sourceServers[String(candidate.name)];
-          const sourceAfter =
-            JSON.stringify({ ...sourceDoc, mcpServers: sourceServers }, null, 2) + "\n";
+          if (!sourceBefore) throw new Error("Native MCP source disappeared");
+          const sourceAfter = await removeNativeCandidates(
+            source,
+            selected.filter((item) => item.source_path === source) as unknown as Array<
+              import("../mcp/native.js").NativeMcpCandidate
+            >,
+          );
+          const projectRoot = path.resolve(value.project);
+          const sourceScope =
+            source === projectRoot || source.startsWith(`${projectRoot}${path.sep}`)
+              ? "project"
+              : "agent-home";
           changes.push({
             target: source,
-            scope: "project",
+            scope: sourceScope,
             before: sourceBefore,
             original_hash: hashContent(sourceBefore),
             after: sourceAfter,
-            risk: "medium",
-            validator: "json",
+            risk: sourceScope === "agent-home" ? "high" : "medium",
+            validator: source.endsWith(".toml")
+              ? "toml"
+              : source.endsWith(".yaml")
+                ? "yaml"
+                : "json",
           });
         } catch {
           throw backendError("VALIDATION", `Native MCP configuration is invalid: ${source}`);

@@ -312,16 +312,19 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     workspace_id?: string;
     repository_group_id?: string;
   };
-  const insightQuery = (params: unknown): InsightQuery =>
-    z
-      .object({
-        from: z.string().optional(),
-        to: z.string().optional(),
-        agent: z.string().optional(),
-        workspace_id: z.string().optional(),
-        repository_group_id: z.string().optional(),
-      })
-      .parse(params ?? {});
+  const insightQuery = (params: unknown): InsightQuery => {
+    const query = z.object({
+      from: z.string().optional(),
+      to: z.string().optional(),
+      agent: z.string().optional(),
+      workspace_id: z.string().optional(),
+      repository_group_id: z.string().optional(),
+    });
+    const envelope = z.object({ query: z.unknown().optional() }).safeParse(params);
+    return query.parse(
+      envelope.success && envelope.data.query !== undefined ? envelope.data.query : (params ?? {}),
+    );
+  };
   const buildInsightsView = (query: InsightQuery) => {
     const from = query.from ?? `${new Date().getFullYear()}-01-01`;
     const to = query.to ?? new Date().toISOString().slice(0, 10);

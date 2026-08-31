@@ -3,11 +3,13 @@ import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import type { AgentKind } from "../domain/types.js";
 import type { UsageQuality } from "./types.js";
+import { collectExtraUsage } from "./usage-extra.js";
 
 export interface UsageEventRecord {
   source_key: string;
-  surface_agent: "codex" | "claude-code";
+  surface_agent: AgentKind;
   workspace_path?: string;
   occurred_at?: string;
   day?: string;
@@ -35,7 +37,12 @@ export interface UsageBatch {
 }
 
 export async function collectUsage(home = homedir()): Promise<UsageBatch[]> {
-  return Promise.all([collectCodexUsage(home), collectClaudeUsage(home)]);
+  const [codex, claude, extra] = await Promise.all([
+    collectCodexUsage(home),
+    collectClaudeUsage(home),
+    collectExtraUsage(home),
+  ]);
+  return [codex, claude, ...extra];
 }
 
 async function collectCodexUsage(home: string): Promise<UsageBatch> {
@@ -43,7 +50,7 @@ async function collectCodexUsage(home: string): Promise<UsageBatch> {
   const files = await collectJsonl(path.join(codexHome, "sessions"));
   const databases = await stateDatabases(codexHome);
   const sourceFiles = [...files, ...databases];
-  const fingerprint = await fingerprintFiles(sourceFiles);
+  const fingerprint = `codex-models-v2:${await fingerprintFiles(sourceFiles)}`;
   const sessionModels = await codexSessionModels(codexHome, databases);
   const aggregates = new Map<string, UsageEventRecord>();
   const detailedSessions = new Set<string>();
@@ -70,7 +77,7 @@ async function collectCodexUsage(home: string): Promise<UsageBatch> {
       const total = numberValue(usage.total_tokens);
       if (!total) continue;
       const occurred = typeof value.timestamp === "string" ? value.timestamp : undefined;
-      const day = occurred?.slice(0, 10);
+      const day = localDay(occurred);
       const model =
         stringValue(asRecord(payload?.info)?.model) ??
         stringValue(payload?.model) ??
@@ -142,7 +149,7 @@ async function collectCodexUsage(home: string): Promise<UsageBatch> {
           surface_agent: "codex",
           workspace_path: stringValue(row.cwd),
           occurred_at: occurred,
-          day: occurred?.slice(0, 10),
+          day: localDay(occurred),
           model: stringValue(row.model),
           input_tokens: 0,
           output_tokens: 0,
@@ -372,6 +379,16 @@ function timestamp(value: unknown): string | undefined {
   return typeof value === "string" && !Number.isNaN(Date.parse(value))
     ? new Date(value).toISOString()
     : undefined;
+}
+function localDay(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 function latest(left: string | undefined, right: string | undefined): string | undefined {
   if (!left) return right;

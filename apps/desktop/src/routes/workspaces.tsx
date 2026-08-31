@@ -36,7 +36,7 @@ import {
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { ChevronRight, FolderGit2, MoreHorizontal, RefreshCw, Search, Trash2 } from "lucide-react";
-import type { AgentKind, Manifest, RefreshJobStatus, WorkspaceSummary } from "../core/types";
+import type { AgentKind, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 
 type WorkspaceView = "list" | "storage";
@@ -59,7 +59,6 @@ function WorkspacesRoute() {
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
   const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
-  const setRuntime = useAppStore((state) => state.setRuntime);
   const openRequest = useRef(0);
   const {
     setProject,
@@ -96,40 +95,20 @@ function WorkspacesRoute() {
 
   const openWorkspace = async (workspace: WorkspaceSummary) => {
     const requestId = ++openRequest.current;
-    setBusy(true);
     setMessage("");
-    try {
-      const runtimePromise = useAppStore.getState().runtime
-        ? Promise.resolve(useAppStore.getState().runtime)
-        : api.runtime();
-      const [nextScan, nextRuntime] = await Promise.all([api.scan(workspace.path), runtimePromise]);
-      if (requestId !== openRequest.current) return;
-      let nextManifest: Manifest | undefined;
-      try {
-        nextManifest = await api.manifest(workspace.path);
-      } catch (error) {
-        if (requestId === openRequest.current) setMessage(localizeMessage(error));
-      }
-      if (requestId !== openRequest.current) return;
-      setChangeSet(undefined);
-      setChangeSetOrigin("standard");
-      setHandoffLaunchRequest(undefined);
-      setProject(workspace.path);
-      setScan(nextScan);
-      setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-      setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-      setRuntime(nextRuntime);
-      setSelectedWorkspace(workspace);
-      setBusy(false);
-      await navigate({
-        to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
-        params: { workspaceId: workspace.id },
-      });
-    } catch (error) {
-      if (requestId === openRequest.current) setMessage(localizeMessage(error));
-    } finally {
-      if (requestId === openRequest.current) setBusy(false);
-    }
+    if (requestId !== openRequest.current) return;
+    setChangeSet(undefined);
+    setChangeSetOrigin("standard");
+    setHandoffLaunchRequest(undefined);
+    setProject(workspace.path);
+    setScan(undefined);
+    setManifest(undefined);
+    setBaselineManifest("");
+    setSelectedWorkspace(workspace);
+    await navigate({
+      to: "/workspace/$workspaceId",
+      params: { workspaceId: workspace.id },
+    });
   };
 
   const addWorkspace = async () => {

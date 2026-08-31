@@ -8,7 +8,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
-import { createGlobalNavigation } from "./GlobalShell";
+import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
 import {
   homeKeys,
@@ -191,50 +191,18 @@ export function useAppNavigation() {
     async (workspace: WorkspaceSummary, initialPage: Page = "overview") => {
       const requestId = ++workspaceOpenRequest.current;
       persistWorkspaceDraft();
-      setBusy(true);
       setMessage("");
-      try {
-        const runtimePromise = useAppStore.getState().runtime
-          ? Promise.resolve(useAppStore.getState().runtime)
-          : api.runtime();
-        const [nextScan, nextRuntime] = await Promise.all([
-          api.scan(workspace.path),
-          runtimePromise,
-        ]);
-        if (requestId !== workspaceOpenRequest.current) return;
-        let nextManifest: Manifest | undefined;
-        try {
-          nextManifest = await api.manifest(workspace.path);
-        } catch (error) {
-          if (requestId === workspaceOpenRequest.current) setMessage(localizeMessage(error));
-        }
-        if (requestId !== workspaceOpenRequest.current) return;
-        setGitSubview(undefined);
-        setChangeSet(undefined);
-        setChangeSetOrigin("standard");
-        setHandoffLaunchRequest(undefined);
-        setProject(workspace.path);
-        setScan(nextScan);
-        setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-        setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-        useAppStore.getState().setRuntime(nextRuntime);
-        setSelectedWorkspace(workspace);
-        navigateWorkspacePageFor(workspace.id, nextManifest ? initialPage : "doctor");
-      } catch (error) {
-        if (requestId === workspaceOpenRequest.current) {
-          setSelectedWorkspace(workspace);
-          setProject("");
-          setScan(undefined);
-          setManifest(undefined);
-          setChangeSet(undefined);
-          setChangeSetOrigin("standard");
-          setHandoffLaunchRequest(undefined);
-          setBaselineManifest("");
-          setMessage(localizeMessage(error));
-        }
-      } finally {
-        if (requestId === workspaceOpenRequest.current) setBusy(false);
-      }
+      if (requestId !== workspaceOpenRequest.current) return;
+      setGitSubview(undefined);
+      setChangeSet(undefined);
+      setChangeSetOrigin("standard");
+      setHandoffLaunchRequest(undefined);
+      setProject(workspace.path);
+      setScan(undefined);
+      setManifest(undefined);
+      setBaselineManifest("");
+      setSelectedWorkspace(workspace);
+      navigateWorkspacePageFor(workspace.id, initialPage);
     },
     [
       navigateWorkspacePageFor,

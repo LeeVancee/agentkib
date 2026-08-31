@@ -40,6 +40,25 @@ export function WorkspaceDoctorPage({
   }, [onDiagnosed, report, workspace.id]);
 
   const activeReport = report?.summary.workspace_id === workspace.id ? report : undefined;
+  const issueCount = activeReport
+    ? activeReport.summary.error_count + activeReport.summary.warning_count
+    : 0;
+  const repairableCount = activeReport?.summary.repairable_count ?? 0;
+  const manualIssueCount =
+    activeReport?.issues.filter((issue) => issue.severity !== "info" && !issue.repairable).length ??
+    0;
+  const conclusion = !activeReport
+    ? ""
+    : issueCount === 0
+      ? tr("doctor.conclusionHealthy")
+      : repairableCount > 0 && manualIssueCount > 0
+        ? tr("doctor.conclusionMixed", {
+            repairable: repairableCount,
+            manual: manualIssueCount,
+          })
+        : repairableCount > 0
+          ? tr("doctor.conclusionRepairable", { count: repairableCount })
+          : tr("doctor.conclusionManual", { count: issueCount });
 
   const repair = async () => {
     setRepairing(true);
@@ -57,12 +76,20 @@ export function WorkspaceDoctorPage({
   return (
     <div className="mx-auto grid max-w-[1120px] gap-4">
       {verification && activeReport && (
-        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700">
-          <Check size={16} />
-          {activeReport.summary.repairable_count === 0
-            ? tr("doctor.recheckSuccess")
-            : tr("doctor.recheckRemaining", {
-                count: activeReport.summary.repairable_count,
+        <div
+          className={cn(
+            "flex items-center gap-2 rounded-lg border px-3 py-2 text-sm",
+            issueCount === 0
+              ? "border-emerald-500/25 bg-emerald-500/5 text-emerald-700"
+              : "border-amber-500/25 bg-amber-500/5 text-amber-700",
+          )}
+        >
+          {issueCount === 0 ? <Check size={16} /> : <CircleAlert size={16} />}
+          {issueCount === 0
+            ? tr("doctor.recheckHealthy")
+            : tr("doctor.recheckResult", {
+                issues: issueCount,
+                repairable: repairableCount,
               })}
         </div>
       )}
@@ -72,6 +99,7 @@ export function WorkspaceDoctorPage({
             Context Doctor
           </span>
           <h2>{tr("doctor.title")}</h2>
+          {conclusion && <strong className="mt-1 block text-sm">{conclusion}</strong>}
           <p>{tr("doctor.description")}</p>
         </div>
         <div className="flex gap-2">
@@ -101,7 +129,9 @@ export function WorkspaceDoctorPage({
             disabled={loading || repairing || !activeReport?.summary.repairable_count}
           >
             <Wrench size={14} />
-            {tr(repairing ? "doctor.planning" : "doctor.reviewRepair")}
+            {repairing
+              ? tr("doctor.planning")
+              : tr("doctor.reviewRepairCount", { count: repairableCount })}
           </Button>
         </div>
       </Card>

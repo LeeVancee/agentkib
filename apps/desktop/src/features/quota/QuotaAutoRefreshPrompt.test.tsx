@@ -17,10 +17,7 @@ describe("QuotaAutoRefreshPrompt", () => {
     };
     const user = userEvent.setup();
     render(
-      <QuotaAutoRefreshPrompt
-        onEnableAutoRefresh={actions.enable}
-        onNotNow={actions.notNow}
-      />,
+      <QuotaAutoRefreshPrompt onEnableAutoRefresh={actions.enable} onNotNow={actions.notNow} />,
     );
 
     expect(screen.getByText("Automatically get quota?")).toBeTruthy();

@@ -16,9 +16,10 @@ describe("SidebarBrand", () => {
   it("uses the runtime application name", () => {
     useAppStore.getState().setRuntime({ app_name: "AgentKib Dev" } as RuntimeInfo);
 
-    render(<SidebarBrand onClick={() => undefined} />);
+    const { container } = render(<SidebarBrand onClick={() => undefined} />);
 
     expect(screen.getByRole("button", { name: "AgentKib Dev" })).toBeTruthy();
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it("keeps the sidebar usable when storage is unavailable", () => {

@@ -4,22 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { SelectControl } from "@/components/ui/select-control";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
@@ -27,7 +13,6 @@ import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { formatRelativeTime, localizeMessage, tr } from "../core/i18n";
-import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
   useHomeCatalog,
@@ -35,7 +20,7 @@ import {
   useHomeWorkspaces,
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { ChevronRight, FolderGit2, MoreHorizontal, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "lucide-react";
 import type { AgentKind, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 
@@ -69,9 +54,7 @@ function WorkspacesRoute() {
     setChangeSet,
     setChangeSetOrigin,
     setHandoffLaunchRequest,
-    setBusy,
     setMessage,
-    workspaceDrafts,
   } = useWorkspaceStore();
   const assetCounts = useMemo(() => workspaceAssetCounts(groupCatalogAssets(catalog)), [catalog]);
   const discoveryRefreshing = refreshJobs.some(
@@ -213,48 +196,55 @@ function WorkspacesPage({
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"all" | WorkspaceSummary["status"]>("all");
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
+  const [selectedId, setSelectedId] = useState(workspaces[0]?.id ?? "");
   const filtered = workspaces.filter(
     (item) =>
       `${item.name} ${item.path}`.toLowerCase().includes(query.toLowerCase()) &&
       (status === "all" || item.status === status) &&
       (agent === "all" || item.sources.some((source) => source.agent === agent)),
   );
+  const selectedWorkspace =
+    filtered.find((workspace) => workspace.id === selectedId) ?? filtered[0];
   const viewControls = (
-    <div className="flex flex-wrap items-center gap-2">
-      <ToggleGroup
-        spacing={0}
-        variant="default"
-        size="sm"
-        className="segmented-control shrink-0"
-        value={[view]}
-        onValueChange={(values) => {
-          const value = values[0];
-          if (value === "list" || value === "storage") onViewChange(value);
-        }}
-        aria-label={tr("workspace.viewLabel")}
+    <ToggleGroup
+      spacing={0}
+      variant="default"
+      size="sm"
+      className="segmented-control shrink-0"
+      value={[view]}
+      onValueChange={(values) => {
+        const value = values[0];
+        if (value === "list" || value === "storage") onViewChange(value);
+      }}
+      aria-label={tr("workspace.viewLabel")}
+    >
+      <ToggleGroupItem
+        value="list"
+        className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
       >
-        <ToggleGroupItem
-          value="list"
-          className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
-        >
-          {tr("workspace.view.list")}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="storage"
-          className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
-        >
-          {tr("workspace.view.storage")}
-        </ToggleGroupItem>
-      </ToggleGroup>
-      {view === "list" && (
-        <Button className="h-9 rounded-lg px-3.5" onClick={onAddWorkspace}>
-          <FolderGit2 size={15} />
-          {tr("workspace.addManually")}
-        </Button>
-      )}
-    </div>
+        {tr("workspace.view.list")}
+      </ToggleGroupItem>
+      <ToggleGroupItem
+        value="storage"
+        className="segmented-control-item h-9 min-h-9 min-w-[68px] font-semibold"
+      >
+        {tr("workspace.view.storage")}
+      </ToggleGroupItem>
+    </ToggleGroup>
   );
-  const pageIntro = <section className="flex justify-end">{viewControls}</section>;
+  const pageIntro = (
+    <section className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        {view === "list" && (
+          <Button className="h-9 rounded-lg px-3.5" onClick={onAddWorkspace}>
+            <FolderGit2 size={15} />
+            {tr("workspace.addManually")}
+          </Button>
+        )}
+      </div>
+      {viewControls}
+    </section>
+  );
   const filterBar = (
     <Card className="overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm">
       <CardContent className="grid gap-3 p-4 sm:p-5">
@@ -327,156 +317,133 @@ function WorkspacesPage({
     <div className="grid gap-4">
       {pageIntro}
       {filterBar}
-      <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
-        <CardContent className="p-0">
-          <Table className="min-w-[900px] border-separate border-spacing-0 [&_th]:h-[44px] [&_th]:bg-muted/25 [&_th]:text-[11px] [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-[.08em] [&_th]:text-muted-foreground [&_th]:whitespace-nowrap [&_th:first-child]:pl-5 [&_td]:h-[70px] [&_td]:text-sm [&_tr]:transition-colors">
-            <TableHeader>
-              <TableRow className="border-border-subtle hover:bg-transparent">
-                <TableHead className="w-[44%]">{tr("workspace.projectColumn")}</TableHead>
-                <TableHead>{tr("workspace.agentColumn")}</TableHead>
-                <TableHead>{tr("workspace.assetsColumn")}</TableHead>
-                <TableHead>{tr("workspace.activityColumn")}</TableHead>
-                <TableHead className="w-16" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((workspace) => (
-                <WorkspaceTableRow
+      <div className="grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
+        <section className="overflow-hidden rounded-xl border border-border bg-card">
+          <header className="border-b border-border px-4 py-3 text-xs font-medium text-muted-foreground">
+            {tr("workspace.resultCount", { count: filtered.length })}
+          </header>
+          <div className="max-h-[620px] overflow-y-auto p-2">
+            {filtered.map((workspace) => {
+              const sourceAgents = workspace.sources
+                .flatMap((source) => (source.agent ? [source.agent] : []))
+                .filter((value, index, values) => values.indexOf(value) === index);
+              return (
+                <Button
                   key={workspace.id}
-                  workspace={workspace}
-                  assetCount={assetCounts.get(workspace.id)}
-                  onOpen={onOpen}
-                  onRefresh={onRefreshWorkspace}
-                  onExclude={onExclude}
-                />
+                  variant="bare"
+                  size="content"
+                  className={cn(
+                    "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-left",
+                    selectedWorkspace?.id === workspace.id
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted/55 hover:text-foreground",
+                  )}
+                  onClick={() => setSelectedId(workspace.id)}
+                  onDoubleClick={() => void onOpen(workspace)}
+                >
+                  <span className="grid size-9 place-items-center rounded-lg border border-border bg-background">
+                    <FolderGit2 size={16} />
+                  </span>
+                  <span className="min-w-0">
+                    <strong className="block truncate text-sm text-foreground">
+                      {workspace.name}
+                    </strong>
+                    <small className="mt-1 block truncate text-xs" title={workspace.path}>
+                      {workspace.path}
+                    </small>
+                  </span>
+                  <span className="grid justify-items-end gap-1">
+                    {workspace.status === "attention" ? (
+                      <Badge variant="destructive">{workspaceStatusLabel("attention")}</Badge>
+                    ) : null}
+                    <small className="text-[11px]">
+                      {sourceAgents.length
+                        ? sourceAgents.map((value) => agentLabels[value]).join(" · ")
+                        : tr("workspace.source.manual")}
+                    </small>
+                  </span>
+                </Button>
+              );
+            })}
+            {!filtered.length && (
+              <WorkspaceEmptyState
+                title={tr("workspace.noMatch")}
+                text={tr("workspace.noMatchText")}
+              />
+            )}
+          </div>
+        </section>
+        {selectedWorkspace && (
+          <section className="overflow-hidden rounded-xl border border-border bg-card">
+            <header className="flex items-start justify-between gap-4 border-b border-border p-5">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold">{selectedWorkspace.name}</h2>
+                <code
+                  className="mt-1 block truncate text-xs text-muted-foreground"
+                  title={selectedWorkspace.path}
+                >
+                  {selectedWorkspace.path}
+                </code>
+              </div>
+              <Button className="shrink-0" onClick={() => void onOpen(selectedWorkspace)}>
+                {tr("common.details")}
+                <ChevronRight size={15} />
+              </Button>
+            </header>
+            <div className="grid grid-cols-3 divide-x divide-border border-b border-border">
+              {[
+                [tr("workspace.agentColumn"), selectedWorkspace.sources.length],
+                [
+                  tr("workspace.assetsColumn"),
+                  assetCounts.get(selectedWorkspace.id) ?? selectedWorkspace.asset_count,
+                ],
+                [
+                  tr("workspace.activityColumn"),
+                  selectedWorkspace.last_active_at
+                    ? relativeTime(selectedWorkspace.last_active_at)
+                    : tr("common.never"),
+                ],
+              ].map(([label, value]) => (
+                <div className="grid min-h-[84px] content-center gap-1 px-4" key={label}>
+                  <span className="text-xs text-muted-foreground">{label}</span>
+                  <strong className="truncate text-sm">{value}</strong>
+                </div>
               ))}
-            </TableBody>
-          </Table>
-          {!filtered.length && (
-            <WorkspaceEmptyState
-              title={tr("workspace.noMatch")}
-              text={tr("workspace.noMatchText")}
-            />
-          )}
-        </CardContent>
-      </Card>
+            </div>
+            <div className="grid gap-3 p-5">
+              <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/60 px-4 py-3">
+                <span className="text-sm text-muted-foreground">
+                  {tr("workspace.discoverySources")}
+                </span>
+                <strong className="text-sm">
+                  {selectedWorkspace.sources
+                    .flatMap((source) => (source.agent ? [agentLabels[source.agent]] : []))
+                    .filter((value, index, values) => values.indexOf(value) === index)
+                    .join(" · ") || tr("workspace.source.manual")}
+                </strong>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => void onRefreshWorkspace(selectedWorkspace.id)}
+                >
+                  <RefreshCw size={15} />
+                  {tr("common.scan")}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="text-destructive"
+                  onClick={() => void onExclude(selectedWorkspace.id)}
+                >
+                  <Trash2 size={15} />
+                  {tr("workspace.ignore")}
+                </Button>
+              </div>
+            </div>
+          </section>
+        )}
+      </div>
     </div>
-  );
-}
-
-function WorkspaceTableRow({
-  workspace,
-  assetCount,
-  onOpen,
-  onRefresh,
-  onExclude,
-}: {
-  workspace: WorkspaceSummary;
-  assetCount?: number;
-  onOpen: (workspace: WorkspaceSummary) => Promise<void>;
-  onRefresh: (id: string) => Promise<void>;
-  onExclude: (id: string) => Promise<void>;
-}) {
-  const sourceAgents = workspace.sources
-    .map((source) => source.agent)
-    .filter((value): value is AgentKind => Boolean(value))
-    .filter((value, index, values) => values.indexOf(value) === index);
-  const agents =
-    sourceAgents.map((value) => agentLabels[value]).join(" · ") ||
-    (workspace.sources.length ? tr("workspace.source.scan") : tr("workspace.source.manual"));
-  const count = assetCount ?? workspace.asset_count;
-  return (
-    <TableRow className="group transition-colors hover:bg-primary/[0.04] focus-within:bg-primary/[0.06]">
-      <TableCell className="pl-[22px]">
-        <Button
-          variant="bare"
-          size="content"
-          className="group/project grid w-full grid-cols-[auto_minmax(0,1fr)] items-center justify-items-start gap-2.5 text-left"
-          aria-label={`${workspace.name} · ${workspace.path}`}
-          onClick={() => void onOpen(workspace)}
-        >
-          <span
-            className="grid size-[34px] place-items-center rounded-[9px] border border-border/85 bg-primary/[0.07] text-muted-foreground transition-colors group-hover/project:border-primary/30 group-hover/project:bg-primary/[0.12] group-hover/project:text-foreground"
-            aria-hidden="true"
-          >
-            <FolderGit2 size={16} />
-          </span>
-          <span className="grid min-w-0 justify-items-start gap-1">
-            <strong className="text-[13px] font-semibold tracking-[-.01em] text-foreground">
-              {workspace.name}
-            </strong>
-            <small
-              className="block max-w-[min(520px,38vw)] truncate text-xs text-muted-foreground"
-              title={workspace.path}
-            >
-              {workspace.path}
-            </small>
-          </span>
-        </Button>
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center gap-1.5" aria-label={agents}>
-          {sourceAgents.length ? (
-            sourceAgents.map((value) => (
-              <Badge
-                className="rounded-[7px] border-0 bg-primary/[0.08] text-xs font-semibold text-foreground"
-                variant="secondary"
-                key={value}
-              >
-                {agentLabels[value]}
-              </Badge>
-            ))
-          ) : (
-            <Badge
-              className="rounded-[7px] border-0 bg-primary/[0.08] text-xs font-semibold text-foreground"
-              variant="secondary"
-            >
-              {agents}
-            </Badge>
-          )}
-        </div>
-      </TableCell>
-      <TableCell>
-        <strong className={cn("tabular-nums text-foreground", !count && "text-muted-foreground")}>
-          {count}
-        </strong>
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {workspace.last_active_at ? relativeTime(workspace.last_active_at) : tr("common.never")}
-      </TableCell>
-      <TableCell>
-        <div className="flex items-center justify-end gap-2">
-          {workspace.status === "attention" && (
-            <Badge className="mr-0.5" variant="destructive">
-              {workspaceStatusLabel("attention")}
-            </Badge>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              className="inline-flex size-9 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title={tr("common.moreActions")}
-              aria-label={`${workspace.name} · ${tr("common.moreActions")}`}
-            >
-              <MoreHorizontal size={15} />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => void onRefresh(workspace.id)}>
-                <RefreshCw size={13} />
-                {tr("common.scan")}
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onClick={() => void onExclude(workspace.id)}>
-                <Trash2 size={13} />
-                {tr("workspace.ignore")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <ChevronRight
-            className="text-muted-foreground opacity-55 transition-[opacity,transform] group-hover:translate-x-0.5 group-hover:opacity-100"
-            size={15}
-          />
-        </div>
-      </TableCell>
-    </TableRow>
   );
 }
 

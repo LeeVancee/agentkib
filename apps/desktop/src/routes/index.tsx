@@ -71,6 +71,12 @@ function HomeRoute() {
         void navigate({ to: "/catalog", search: { assetSection: section } as never })
       }
       onAddRoot={addScanRoot}
+      onRefresh={() => {
+        void Promise.all([
+          api.requestRefresh("discovery", true),
+          api.requestRefresh("insights", true),
+        ]);
+      }}
       runtime={runtime}
       onRuntimeChanged={setRuntime}
     />

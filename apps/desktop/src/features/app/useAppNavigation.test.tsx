@@ -7,6 +7,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, WorkspaceSummary } from "@/core/types";
 import { useAppNavigation } from "./useAppNavigation";
+import type { AppHistoryEntry } from "./useAppHistory";
 
 const testDoubles = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -15,6 +16,15 @@ const testDoubles = vi.hoisted(() => ({
   requestSecrets: vi.fn(),
   open: vi.fn(),
 }));
+
+const homeHistoryEntry: AppHistoryEntry = {
+  key: "home",
+  href: "/",
+  pathname: "/",
+  search: "",
+  hash: "",
+  browserIndex: 0,
+};
 
 vi.mock("@tanstack/react-router", () => ({
   useLocation: () => ({ pathname: "/" }),
@@ -59,7 +69,10 @@ describe("useAppNavigation guards", () => {
       sources: [],
     };
     const draft = {} as Manifest;
-    useWorkspaceStore.setState({ selectedWorkspace: workspace, workspaceDrafts: { [workspace.id]: draft } });
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      workspaceDrafts: { [workspace.id]: draft },
+    });
 
     const { result } = renderHook(() => useAppNavigation());
 
@@ -109,6 +122,33 @@ describe("useAppNavigation guards", () => {
     expect(testDoubles.notify).toHaveBeenCalledOnce();
   });
 
+  it("blocks direct workspace navigation while a ChangeSet is applying", async () => {
+    const currentWorkspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace-1",
+      name: "Current workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const nextWorkspace: WorkspaceSummary = {
+      ...currentWorkspace,
+      id: "workspace-2",
+      path: "C:/workspace-2",
+      name: "Next workspace",
+    };
+    useWorkspaceStore.setState({ applyingChanges: true, selectedWorkspace: currentWorkspace });
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => result.current.openWorkspace(nextWorkspace));
+
+    expect(testDoubles.navigate).not.toHaveBeenCalled();
+    expect(testDoubles.notify).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(currentWorkspace);
+    expect(useWorkspaceStore.getState().applyingChanges).toBe(true);
+  });
+
   it("rechecks the ChangeSet state after the directory picker", async () => {
     testDoubles.open.mockImplementation(async () => {
       useWorkspaceStore.setState({ applyingChanges: true });
@@ -120,5 +160,71 @@ describe("useAppNavigation guards", () => {
 
     expect(testDoubles.open).toHaveBeenCalledOnce();
     expect(testDoubles.notify).toHaveBeenCalledOnce();
+  });
+
+  it("blocks history navigation while a ChangeSet is applying", async () => {
+    useWorkspaceStore.setState({ applyingChanges: true });
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => {
+      expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(false);
+    });
+
+    expect(testDoubles.notify).toHaveBeenCalledOnce();
+  });
+
+  it("keeps history and workspace state when leaving a draft is cancelled", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest: {} as Manifest,
+      baselineManifest: '{"version":0}',
+    });
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => {
+      expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(false);
+    });
+
+    expect(testDoubles.confirm).toHaveBeenCalledOnce();
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
+    expect(testDoubles.navigate).not.toHaveBeenCalled();
+  });
+
+  it("clears workspace state after confirming protected history navigation", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    testDoubles.confirm.mockResolvedValue(true);
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest: {} as Manifest,
+      baselineManifest: '{"version":0}',
+    });
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => {
+      expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(true);
+    });
+
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBeUndefined();
+    expect(useWorkspaceStore.getState().project).toBe("");
+    expect(testDoubles.navigate).not.toHaveBeenCalled();
   });
 });

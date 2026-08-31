@@ -4,22 +4,13 @@ import {
   ArrowLeft,
   Database,
   FolderSearch,
-  Keyboard,
   Menu,
   PlugZap,
-  Settings,
   Settings2,
   Stethoscope,
 } from "lucide-react";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
-import { SidebarBrand } from "@/components/SidebarBrand";
-import {
-  ariaShortcut,
-  currentAppPlatform,
-  getShortcutDefinition,
-} from "@/core/keyboard-shortcuts";
-import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 
 export type SettingsSection = "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
 
@@ -39,15 +30,13 @@ export function SettingsSidebar(props: {
   active: SettingsSection;
   onSelect: (section: SettingsSection) => void;
   onBack: () => void;
-  onSettings: () => void;
+  onSettings?: () => void;
   collapsed: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { active, onSelect, onBack, onSettings, collapsed } = props;
+  const { active, onSelect, onBack, collapsed } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarId = useId();
-  const { openShortcutHelp } = useShortcutHelp();
-  const platform = currentAppPlatform();
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -97,16 +86,10 @@ export function SettingsSidebar(props: {
       >
         <div className="app-sidebar-content">
           <div className="app-sidebar-header">
-            <SidebarBrand
-              onClick={() => {
-                setMobileOpen(false);
-                onBack();
-              }}
-            />
             <Button
               variant="bare"
               size="content"
-              className="app-sidebar-item app-sidebar-back-item"
+              className="app-sidebar-item app-sidebar-back-item app-settings-back"
               type="button"
               title={tr("settings.backToApp")}
               onClick={() => {
@@ -142,48 +125,6 @@ export function SettingsSidebar(props: {
               </Button>
             ))}
           </nav>
-          <div className="app-sidebar-footer">
-            <Button
-              variant="bare"
-              size="content"
-              className="app-sidebar-item"
-              type="button"
-              title={tr("shortcuts.openHelp")}
-              aria-label={tr("shortcuts.openHelp")}
-              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-help"), platform)}
-              onClick={() => {
-                setMobileOpen(false);
-                openShortcutHelp();
-              }}
-            >
-              <span className="app-sidebar-item-icon">
-                <Keyboard size={18} />
-              </span>
-              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                {tr("shortcuts.openHelp")}
-              </span>
-            </Button>
-            <Button
-              variant="bare"
-              size="content"
-              className="app-sidebar-item"
-              type="button"
-              aria-label={tr("nav.settings")}
-              title={tr("nav.settings")}
-              aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
-              onClick={() => {
-                setMobileOpen(false);
-                onSettings();
-              }}
-            >
-              <span className="app-sidebar-item-icon">
-                <Settings size={18} />
-              </span>
-              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                {tr("nav.settings")}
-              </span>
-            </Button>
-          </div>
         </div>
       </aside>
     </>

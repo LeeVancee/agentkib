@@ -1,26 +1,21 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { AppSidebar } from "./AppSidebar";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
 
-describe("AppSidebar shortcut help", () => {
+describe("AppSidebar v8 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("opens the shared shortcut help from the sidebar", async () => {
-    const user = userEvent.setup();
-    let opened = false;
+  it("keeps settings as the only persistent footer action", () => {
     render(
-      <ShortcutHelpProvider openShortcutHelp={() => (opened = true)}>
+      <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <AppSidebar
           active="home"
-          entries={[
-            { id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" },
-          ]}
+          entries={[{ id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" }]}
           onNavigate={() => undefined}
           onSettings={() => undefined}
           onBrandClick={() => undefined}
@@ -30,10 +25,11 @@ describe("AppSidebar shortcut help", () => {
       </ShortcutHelpProvider>,
     );
 
-    const helpButton = screen.getByRole("button", { name: "Keyboard shortcuts" });
-    expect(helpButton.getAttribute("aria-keyshortcuts")).toBe("Control+/");
-    await user.click(helpButton);
-    expect(opened).toBe(true);
+    expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-keyshortcuts")).toBe(
+      "Control+,",
+    );
+    expect(screen.queryByText("General, discovery, and integrations")).toBeNull();
   });
 
   it("keeps shortcut semantics without rendering inline shortcut hints", () => {
@@ -41,9 +37,7 @@ describe("AppSidebar shortcut help", () => {
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <AppSidebar
           active="home"
-          entries={[
-            { id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" },
-          ]}
+          entries={[{ id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" }]}
           onNavigate={() => undefined}
           onSettings={() => undefined}
           onBrandClick={() => undefined}
@@ -54,9 +48,30 @@ describe("AppSidebar shortcut help", () => {
     );
 
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Home" }).getAttribute("aria-keyshortcuts")).toBe(
+    expect(screen.getByRole("button", { name: "Today" }).getAttribute("aria-keyshortcuts")).toBe(
       "Control+1",
     );
-    expect(screen.getByRole("button", { name: "Home" }).getAttribute("title")).toBe("Home");
+    expect(screen.getByRole("button", { name: "Today" }).getAttribute("title")).toBe("Today");
+  });
+
+  it("only exposes agent filters backed by installation metadata", () => {
+    render(
+      <ShortcutHelpProvider openShortcutHelp={() => undefined}>
+        <AppSidebar
+          active="agents"
+          entries={[{ id: "agents", label: "nav.agents", icon: () => null }]}
+          onNavigate={() => undefined}
+          onSettings={() => undefined}
+          onBrandClick={() => undefined}
+          collapsed={false}
+          context={{ kind: "agents", filter: "all", onFilterChange: () => undefined }}
+        />
+      </ShortcutHelpProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "All" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enabled" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Available" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Updates" })).toBeNull();
   });
 });

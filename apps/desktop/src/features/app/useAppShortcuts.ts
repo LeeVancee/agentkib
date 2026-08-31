@@ -16,6 +16,9 @@ export interface AppShortcutActions {
   onAddWorkspace: () => Promise<void>;
   onAddScanRoot: () => Promise<void>;
   onToggleSidebar: () => void;
+  onGoBack: () => void;
+  onGoForward: () => void;
+  onOpenSearch: () => void;
   onOpenHelp: () => void;
   helpOpen: boolean;
 }
@@ -36,6 +39,9 @@ export function useAppShortcuts({
   onAddWorkspace,
   onAddScanRoot,
   onToggleSidebar,
+  onGoBack,
+  onGoForward,
+  onOpenSearch,
   onOpenHelp,
   helpOpen,
 }: AppShortcutActions) {
@@ -46,6 +52,9 @@ export function useAppShortcuts({
     onAddWorkspace,
     onAddScanRoot,
     onToggleSidebar,
+    onGoBack,
+    onGoForward,
+    onOpenSearch,
     onOpenHelp,
     helpOpen,
   });
@@ -56,6 +65,9 @@ export function useAppShortcuts({
     onAddWorkspace,
     onAddScanRoot,
     onToggleSidebar,
+    onGoBack,
+    onGoForward,
+    onOpenSearch,
     onOpenHelp,
     helpOpen,
   };
@@ -68,7 +80,8 @@ export function useAppShortcuts({
       const platform = currentAppPlatform();
       const definition = shortcutDefinitions.find(
         (candidate) =>
-          shouldHandleInFrontend(candidate, platform) && matchesShortcut(event, candidate, platform),
+          shouldHandleInFrontend(candidate, platform) &&
+          matchesShortcut(event, candidate, platform),
       );
       if (!definition) return;
 
@@ -93,6 +106,15 @@ export function useAppShortcuts({
           break;
         case "toggle-sidebar":
           actions.onToggleSidebar();
+          break;
+        case "history-back":
+          actions.onGoBack();
+          break;
+        case "history-forward":
+          actions.onGoForward();
+          break;
+        case "open-search":
+          actions.onOpenSearch();
           break;
         case "open-help":
           actions.onOpenHelp();

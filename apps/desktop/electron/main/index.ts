@@ -718,7 +718,7 @@ async function createMainWindow(): Promise<void> {
     ...(process.platform === "darwin"
       ? {
           titleBarStyle: "hiddenInset" as const,
-          trafficLightPosition: { x: 15, y: 25 },
+          trafficLightPosition: { x: 15, y: 17 },
         }
       : {}),
     webPreferences: {

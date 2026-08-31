@@ -46,9 +46,9 @@ describe("i18n resources", () => {
 
   it("changes language immediately", async () => {
     await initializeI18n("en-US");
-    expect(tr("nav.home")).toBe("Home");
+    expect(tr("nav.home")).toBe("Today");
     await changeLocale("ja-JP");
-    expect(tr("nav.home")).toBe("ホーム");
+    expect(tr("nav.home")).toBe("今日のタスク");
     expect(document.documentElement.lang).toBe("ja-JP");
   });
 });

@@ -54,10 +54,7 @@ function ShortcutGroupSection({
       </h3>
       <div className="divide-y divide-border/60 rounded-lg border border-border/70">
         {shortcutsForGroup(group).map((definition) => (
-          <div
-            key={definition.id}
-            className="flex items-center justify-between gap-4 px-3 py-2.5"
-          >
+          <div key={definition.id} className="flex items-center justify-between gap-4 px-3 py-2.5">
             <span className="min-w-0 truncate">{tr(definition.labelKey)}</span>
             <kbd className="shrink-0 rounded border border-border bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
               {formatShortcut(definition, platform)}

@@ -6,22 +6,9 @@ import {
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
-import {
-  Bot,
-  Boxes,
-  Clock3,
-  Code2,
-  FolderGit2,
-  GitBranch,
-  GitCommitHorizontal,
-  GitCompareArrows,
-  LayoutDashboard,
-  MessageSquareText,
-  ShieldCheck,
-} from "lucide-react";
+import { FolderGit2, GitCompareArrows } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   WorkspaceAssetsSkeleton,
   WorkspaceChangesSkeleton,
@@ -31,16 +18,14 @@ import {
   WorkspaceLayoutSkeleton,
   WorkspaceOverviewSkeleton,
   WorkspaceSessionsSkeleton,
-  WorkspaceSummaryStripSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
-import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "../../../stores/app-store";
 import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
-import { formatRelativeTime, localizeMessage, tr } from "../../../core/i18n";
+import { localizeMessage, tr } from "../../../core/i18n";
 import { cn } from "@/lib/utils";
-import type { Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
+import type { Manifest, WorkspaceSummary } from "../../../core/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -114,65 +99,8 @@ function workspaceStatusLabel(status: WorkspaceSummary["status"]) {
   return tr(`status.workspace.${status}`);
 }
 
-function WorkspaceSummaryStrip({
-  workspace,
-  scan,
-}: {
-  workspace: WorkspaceSummary;
-  scan: WorkspaceScan;
-}) {
-  const metrics = [
-    { label: tr("common.assets"), value: workspace.asset_count, icon: Boxes },
-    {
-      label: tr("nav.agents"),
-      value: scan.agents.filter((agent) => agent.detected).length,
-      icon: Bot,
-    },
-    { label: tr("workspace.discoverySources"), value: workspace.sources.length, icon: GitBranch },
-    {
-      label: tr("workspace.lastScanLabel"),
-      value: workspace.last_active_at
-        ? formatRelativeTime(workspace.last_active_at)
-        : tr("common.never"),
-      icon: Clock3,
-    },
-  ];
-  return (
-    <div className="grid grid-cols-4 gap-3 max-[800px]:grid-cols-2">
-      {metrics.map(({ label, value, icon: Icon }) => (
-        <div
-          className="flex min-h-[76px] items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-[0_8px_24px_-20px_rgba(15,23,42,.45)]"
-          key={label}
-        >
-          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/8 text-primary">
-            <Icon size={17} />
-          </span>
-          <span className="min-w-0">
-            <span className="block truncate text-xs font-medium text-muted-foreground">
-              {label}
-            </span>
-            <strong className="mt-1 block truncate text-lg font-semibold tabular-nums tracking-[-.02em]">
-              {value}
-            </strong>
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
-const workspaceTabs = [
-  ["overview", "nav.overview", LayoutDashboard],
-  ["sessions", "nav.sessions", MessageSquareText],
-  ["git", "nav.git", GitCommitHorizontal],
-  ["assets", "nav.assets", Boxes],
-  ["context", "nav.context", Code2],
-  ["doctor", "nav.doctor", ShieldCheck],
-  ["changes", "nav.changes", GitCompareArrows],
-] as const;
 function WorkspaceLayout() {
-  const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const location = useLocation();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
@@ -185,7 +113,6 @@ function WorkspaceLayout() {
     selectedWorkspace,
     scan,
     manifest,
-    changeSet,
     baselineManifest,
     busy,
     setScan,
@@ -285,27 +212,15 @@ function WorkspaceLayout() {
       setChangeSet(nextChangeSet);
       setChangeSetOrigin("standard");
       setHandoffLaunchRequest(undefined);
-      navigateWorkspace("changes");
+      void navigate({
+        to: "/workspace/$workspaceId/changes",
+        params: { workspaceId },
+      });
     } catch (error) {
       if (isCurrentRequest()) setMessage(localizeMessage(error));
     } finally {
       if (isCurrentRequest()) setBusy(false);
     }
-  };
-
-  const navigateWorkspace = (page: Page) => {
-    if (useWorkspaceStore.getState().applyingChanges) {
-      void dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
-    }
-    const path =
-      page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
-    void navigate({
-      to: path as never,
-      params: { workspaceId } as never,
-      search: (current) =>
-        ({ ...current, ...(page === "git" ? {} : { gitSubview: undefined }) }) as never,
-    });
   };
 
   if (!activeWorkspace) {
@@ -318,11 +233,11 @@ function WorkspaceLayout() {
     );
   }
   return (
-    <div className="grid gap-4 pt-5">
-      <section className="flex min-h-[86px] flex-col gap-4 rounded-2xl border border-border/70 bg-card px-5 py-4 shadow-sm md:flex-row md:items-center md:justify-between">
+    <div className="grid gap-5">
+      <section className="flex min-h-[58px] flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-center md:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-foreground text-background">
-            <FolderGit2 size={21} />
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+            <FolderGit2 size={18} />
           </span>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -347,31 +262,7 @@ function WorkspaceLayout() {
           reviewDisabled={busy || !hasUnsavedDraft}
         />
       </section>
-      {scan ? (
-        <WorkspaceSummaryStrip workspace={activeWorkspace} scan={scan} />
-      ) : (
-        <WorkspaceSummaryStripSkeleton />
-      )}
-      <nav aria-label={activeWorkspace.name}>
-        <Tabs value={currentPage} onValueChange={(value) => navigateWorkspace(value as Page)}>
-          <TabsList className="segmented-control w-full justify-start" variant="default">
-            {workspaceTabs.map(([id, label, Icon]) => (
-              <TabsTrigger
-                className="segmented-control-item h-9 min-h-9 flex-none px-3 text-xs sm:text-sm"
-                key={id}
-                value={id}
-              >
-                <Icon size={15} />
-                {tr(label)}
-                {id === "changes" && changeSet?.changes.length ? (
-                  <em>{changeSet.changes.length}</em>
-                ) : null}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </nav>
-      <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-170px)]")}>
+      <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}>
         {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
           <WorkspacePageSkeleton page={currentPage} />
         ) : (

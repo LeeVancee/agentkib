@@ -1,6 +1,8 @@
 import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { AgentKind } from "@/core/types";
+import type { AgentFilter } from "@/components/AppSidebar";
 
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 export type GlobalPage = "home" | "workspaces" | "catalog" | "agents" | "quota" | "insights";
@@ -12,12 +14,18 @@ export type AppSearch = {
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;
   doctorVerification?: "applied";
+  agent?: AgentKind;
+  agentFilter?: AgentFilter;
 };
 
 export type ParsedRoute =
   | { kind: "settings" }
   | { kind: "global"; page: GlobalPage }
   | { kind: "workspace"; workspaceId: string; page: Page };
+
+export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
+  return page === "git" ? current : { ...current, gitSubview: undefined };
+}
 
 export function parseRoute(pathname: string): ParsedRoute {
   const segments = pathname.split("/").filter(Boolean);

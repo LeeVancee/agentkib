@@ -100,8 +100,6 @@ export function AgentsPage({
       if (!agentLabels[agent].toLowerCase().includes(agentQuery.trim().toLowerCase())) return false;
       if (filter === "enabled") return Boolean(item?.installed);
       if (filter === "available") return Boolean(item?.configured && !item.installed);
-      if (filter === "updates")
-        return Boolean(item?.warnings.some((warning) => warning.toLowerCase().includes("update")));
       return true;
     })
     .sort((left, right) => {

@@ -36,7 +36,7 @@ export interface SidebarEntry<T extends string> {
   shortcut?: ShortcutId;
 }
 
-export type AgentFilter = "all" | "enabled" | "available" | "updates";
+export type AgentFilter = "all" | "enabled" | "available";
 
 export type AppSidebarContext =
   | {
@@ -73,7 +73,6 @@ const agentFilters: Array<[AgentFilter, string]> = [
   ["all", "agents.filter.all"],
   ["enabled", "agents.filter.enabled"],
   ["available", "agents.filter.available"],
-  ["updates", "agents.filter.updates"],
 ];
 
 function SidebarSectionLabel({ children }: { children: string }) {

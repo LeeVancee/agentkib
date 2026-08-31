@@ -53,4 +53,25 @@ describe("AppSidebar v8 navigation", () => {
     );
     expect(screen.getByRole("button", { name: "Today" }).getAttribute("title")).toBe("Today");
   });
+
+  it("only exposes agent filters backed by installation metadata", () => {
+    render(
+      <ShortcutHelpProvider openShortcutHelp={() => undefined}>
+        <AppSidebar
+          active="agents"
+          entries={[{ id: "agents", label: "nav.agents", icon: () => null }]}
+          onNavigate={() => undefined}
+          onSettings={() => undefined}
+          onBrandClick={() => undefined}
+          collapsed={false}
+          context={{ kind: "agents", filter: "all", onFilterChange: () => undefined }}
+        />
+      </ShortcutHelpProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "All" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enabled" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Available" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Updates" })).toBeNull();
+  });
 });

@@ -7,7 +7,6 @@
   "agents.filter.all": "All",
   "agents.filter.enabled": "Enabled",
   "agents.filter.available": "Available",
-  "agents.filter.updates": "Updates",
   "search.open": "Search",
   "search.title": "Search AgentKib",
   "search.description": "Find a page or workspace",

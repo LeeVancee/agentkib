@@ -8,7 +8,12 @@ import type { InsightsSection } from "@/features/insights/InsightsPage";
 import type { AgentKind, RefreshJobStatus } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
 import { AppShell } from "../features/app/AppShell";
-import type { GlobalPage, ParsedRoute } from "../features/app/app-route";
+import {
+  workspaceSearchForPage,
+  type AppSearch,
+  type GlobalPage,
+  type ParsedRoute,
+} from "../features/app/app-route";
 import { cn } from "@/lib/utils";
 import { useAppNavigation } from "../features/app/useAppNavigation";
 import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
@@ -23,8 +28,6 @@ import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
 import { tr } from "@/core/i18n";
 import type { WorkspaceSummary } from "@/core/types";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-
-type RootSearch = { settingsSection?: SettingsSection; agentFilter?: AgentFilter };
 
 function RootLayout() {
   const {
@@ -132,7 +135,7 @@ function AppShellRouter({
 }) {
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
-  const search = useSearch({ strict: false }) as RootSearch;
+  const search = useSearch({ strict: false }) as AppSearch;
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const workspaceState = useWorkspaceStore();
   const settingsSection = search.settingsSection ?? "general";
@@ -165,7 +168,11 @@ function AppShellRouter({
     }
     const path =
       page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
-    void navigate({ to: path as never, params: { workspaceId: route.workspaceId } as never });
+    void navigate({
+      to: path as never,
+      params: { workspaceId: route.workspaceId } as never,
+      search: (current) => workspaceSearchForPage(current as AppSearch, page) as never,
+    });
   };
 
   const sidebar = isSettings ? (
@@ -308,7 +315,7 @@ const searchSchema = z.object({
   quotaWindow: quotaWindowSchema.optional().catch(undefined),
   gitSubview: gitSubviewSchema.optional().catch(undefined),
   agent: z.custom<AgentKind>().optional().catch(undefined),
-  agentFilter: z.enum(["all", "enabled", "available", "updates"]).optional().catch(undefined),
+  agentFilter: z.enum(["all", "enabled", "available"]).optional().catch(undefined),
   configure: z.boolean().optional().catch(undefined),
   doctorVerification: z.enum(["applied"]).optional().catch(undefined),
 });

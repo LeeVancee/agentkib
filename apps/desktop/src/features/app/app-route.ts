@@ -23,6 +23,10 @@ export type ParsedRoute =
   | { kind: "global"; page: GlobalPage }
   | { kind: "workspace"; workspaceId: string; page: Page };
 
+export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
+  return page === "git" ? current : { ...current, gitSubview: undefined };
+}
+
 export function parseRoute(pathname: string): ParsedRoute {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "settings") return { kind: "settings" };

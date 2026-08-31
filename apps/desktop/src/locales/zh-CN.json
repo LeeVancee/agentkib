@@ -7,7 +7,6 @@
   "agents.filter.all": "全部",
   "agents.filter.enabled": "已启用",
   "agents.filter.available": "可用",
-  "agents.filter.updates": "待更新",
   "search.open": "搜索",
   "search.title": "搜索 AgentKib",
   "search.description": "查找页面或工作区",

@@ -14,7 +14,7 @@ electronLanguages:
   - ja
   - zh-CN
   - zh-TW
-compression: maximum
+compression: normal
 extraResources:
   - from: build/runtime
     to: bin

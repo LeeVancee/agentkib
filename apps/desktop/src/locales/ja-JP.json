@@ -200,6 +200,8 @@
   "common.closeSidebar": "サイドバーを閉じる",
   "common.close": "閉じる",
   "shortcuts.toggleSidebar": "サイドバーを切り替える",
+  "shortcuts.back": "戻る",
+  "shortcuts.forward": "進む",
   "shortcuts.openHelp": "キーボードショートカット",
   "workspace.copyPath": "ワークスペースのパスをコピー",
   "assets.instructions": "Instructions",

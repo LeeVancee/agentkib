@@ -90,6 +90,37 @@ describe("keyboard shortcuts", () => {
     expect(ariaShortcut(addScanRoot, "macos")).toBe("Meta+Shift+O");
   });
 
+  it("uses platform-specific history shortcuts", () => {
+    const back = getShortcutDefinition("history-back");
+    const forward = getShortcutDefinition("history-forward");
+
+    expect(
+      matchesShortcut(
+        { key: "[", ctrlKey: false, metaKey: true, altKey: false, shiftKey: false },
+        back,
+        "macos",
+      ),
+    ).toBe(true);
+    expect(
+      matchesShortcut(
+        { key: "ArrowLeft", ctrlKey: false, metaKey: false, altKey: true, shiftKey: false },
+        back,
+        "windows",
+      ),
+    ).toBe(true);
+    expect(
+      matchesShortcut(
+        { key: "ArrowLeft", ctrlKey: true, metaKey: false, altKey: true, shiftKey: false },
+        back,
+        "windows",
+      ),
+    ).toBe(false);
+    expect(formatShortcut(back, "macos")).toBe("⌘[");
+    expect(formatShortcut(forward, "windows")).toBe("Alt+→");
+    expect(ariaShortcut(back, "macos")).toBe("Meta+[");
+    expect(ariaShortcut(forward, "windows")).toBe("Alt+ArrowRight");
+  });
+
   it("leaves existing macOS menu accelerators to the native menu", () => {
     expect(shouldHandleInFrontend(getShortcutDefinition("navigate-home"), "macos")).toBe(false);
     expect(shouldHandleInFrontend(getShortcutDefinition("refresh-current"), "macos")).toBe(false);

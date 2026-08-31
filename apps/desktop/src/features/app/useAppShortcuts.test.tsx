@@ -18,6 +18,8 @@ function createActions(overrides: Partial<AppShortcutActions> = {}): AppShortcut
     onAddWorkspace: vi.fn().mockResolvedValue(undefined),
     onAddScanRoot: vi.fn().mockResolvedValue(undefined),
     onToggleSidebar: vi.fn(),
+    onGoBack: vi.fn(),
+    onGoForward: vi.fn(),
     onOpenSearch: vi.fn(),
     onOpenHelp: vi.fn(),
     helpOpen: false,
@@ -41,12 +43,16 @@ describe("useAppShortcuts", () => {
     fireEvent.keyDown(window, { key: "b", ctrlKey: true });
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     fireEvent.keyDown(window, { key: "/", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "ArrowLeft", altKey: true });
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
 
     expect(actions.onNavigate).toHaveBeenCalledWith("home");
     expect(actions.onRefreshCurrent).toHaveBeenCalledOnce();
     expect(actions.onToggleSidebar).toHaveBeenCalledOnce();
     expect(actions.onOpenSearch).toHaveBeenCalledOnce();
     expect(actions.onOpenHelp).toHaveBeenCalledOnce();
+    expect(actions.onGoBack).toHaveBeenCalledOnce();
+    expect(actions.onGoForward).toHaveBeenCalledOnce();
   });
 
   it("routes settings and file action shortcuts", () => {
@@ -92,9 +98,13 @@ describe("useAppShortcuts", () => {
     fireEvent.keyDown(window, { key: "1", metaKey: true });
     fireEvent.keyDown(window, { key: "b", metaKey: true });
     fireEvent.keyDown(window, { key: "/", metaKey: true });
+    fireEvent.keyDown(window, { key: "[", metaKey: true });
+    fireEvent.keyDown(window, { key: "]", metaKey: true });
 
     expect(actions.onNavigate).not.toHaveBeenCalled();
     expect(actions.onToggleSidebar).toHaveBeenCalledOnce();
     expect(actions.onOpenHelp).toHaveBeenCalledOnce();
+    expect(actions.onGoBack).toHaveBeenCalledOnce();
+    expect(actions.onGoForward).toHaveBeenCalledOnce();
   });
 });

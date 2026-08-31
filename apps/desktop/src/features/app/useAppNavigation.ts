@@ -10,6 +10,7 @@ import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
+import type { AppHistoryEntry } from "./useAppHistory";
 import {
   homeKeys,
   useOptionalQueryClient,
@@ -151,10 +152,10 @@ export function useAppNavigation() {
       setWorkspaceDrafts((drafts) => ({ ...drafts, [selectedWorkspace.id]: manifest }));
   }, [hasUnsavedDraft, manifest, selectedWorkspace, setWorkspaceDrafts]);
 
-  const leaveWorkspace = async (next: () => void) => {
+  const leaveWorkspace = async (next: () => void, clearRouteSearch = true): Promise<boolean> => {
     if (useWorkspaceStore.getState().applyingChanges) {
       await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
+      return false;
     }
     if (
       hasUnsavedDraft &&
@@ -163,10 +164,10 @@ export function useAppNavigation() {
         tone: "destructive",
       }))
     )
-      return;
+      return false;
     if (useWorkspaceStore.getState().applyingChanges) {
       await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return;
+      return false;
     }
     workspaceOpenRequest.current += 1;
     if (selectedWorkspace)
@@ -175,7 +176,7 @@ export function useAppNavigation() {
         delete nextDrafts[selectedWorkspace.id];
         return nextDrafts;
       });
-    setGitSubview(undefined);
+    if (clearRouteSearch) setGitSubview(undefined);
     setSelectedWorkspace(undefined);
     setProject("");
     setScan(undefined);
@@ -185,6 +186,20 @@ export function useAppNavigation() {
     setHandoffLaunchRequest(undefined);
     setBaselineManifest("");
     next();
+    return true;
+  };
+
+  const prepareHistoryNavigation = async (target: AppHistoryEntry): Promise<boolean> => {
+    if (useWorkspaceStore.getState().applyingChanges) {
+      await dialogs.notify(tr("dialog.quit.changesApplying"));
+      return false;
+    }
+
+    const targetRoute = parseRoute(target.pathname);
+    if (selectedWorkspace && targetRoute.kind === "global") {
+      return leaveWorkspace(() => undefined, false);
+    }
+    return true;
   };
 
   const openWorkspace = useCallback(
@@ -385,6 +400,7 @@ export function useAppNavigation() {
     openWorkspace,
     navigateGlobal,
     openSettings,
+    prepareHistoryNavigation,
     refreshCurrentView,
     addWorkspace: selectProject,
     addScanRoot: addScanRootFromDialog,

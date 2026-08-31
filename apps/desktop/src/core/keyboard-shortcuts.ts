@@ -12,6 +12,8 @@ export type ShortcutId =
   | "add-workspace"
   | "add-scan-root"
   | "toggle-sidebar"
+  | "history-back"
+  | "history-forward"
   | "open-search"
   | "open-help";
 
@@ -24,6 +26,14 @@ export interface ShortcutDefinition {
   group: ShortcutGroup;
   shift?: boolean;
   nativeMac?: boolean;
+  platformBindings?: Partial<Record<AppPlatform, ShortcutBinding>>;
+}
+
+interface ShortcutBinding {
+  key: string;
+  primary?: boolean;
+  alt?: boolean;
+  shift?: boolean;
 }
 
 export const shortcutDefinitions: readonly ShortcutDefinition[] = [
@@ -87,6 +97,26 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     group: "actions",
   },
   {
+    id: "history-back",
+    key: "[",
+    labelKey: "shortcuts.back",
+    group: "navigation",
+    platformBindings: {
+      windows: { key: "ArrowLeft", primary: false, alt: true },
+      linux: { key: "ArrowLeft", primary: false, alt: true },
+    },
+  },
+  {
+    id: "history-forward",
+    key: "]",
+    labelKey: "shortcuts.forward",
+    group: "navigation",
+    platformBindings: {
+      windows: { key: "ArrowRight", primary: false, alt: true },
+      linux: { key: "ArrowRight", primary: false, alt: true },
+    },
+  },
+  {
     id: "open-search",
     key: "k",
     labelKey: "search.open",
@@ -127,28 +157,60 @@ export function matchesShortcut(
   definition: ShortcutDefinition,
   platform: AppPlatform = currentAppPlatform(),
 ): boolean {
+  const binding = shortcutBinding(definition, platform);
+  const expectsPrimary = binding.primary !== false;
   const primaryPressed =
     platform === "macos" ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-  if (!primaryPressed || event.altKey || event.shiftKey !== Boolean(definition.shift)) return false;
-  return event.key.toLowerCase() === definition.key.toLowerCase();
+  if (
+    primaryPressed !== expectsPrimary ||
+    event.altKey !== Boolean(binding.alt) ||
+    event.shiftKey !== Boolean(binding.shift)
+  )
+    return false;
+  if (!expectsPrimary && (event.ctrlKey || event.metaKey)) return false;
+  return event.key.toLowerCase() === binding.key.toLowerCase();
 }
 
 export function formatShortcut(
   definition: ShortcutDefinition,
   platform: AppPlatform = currentAppPlatform(),
 ): string {
-  const primary = platform === "macos" ? "⌘" : "Ctrl+";
-  const shift = definition.shift ? "Shift+" : "";
-  return `${primary}${shift}${definition.key.length === 1 ? definition.key.toUpperCase() : definition.key}`;
+  const binding = shortcutBinding(definition, platform);
+  const primary = binding.primary === false ? "" : platform === "macos" ? "⌘" : "Ctrl+";
+  const alt = binding.alt ? "Alt+" : "";
+  const shift = binding.shift ? "Shift+" : "";
+  return `${primary}${alt}${shift}${displayKey(binding.key)}`;
 }
 
 export function ariaShortcut(
   definition: ShortcutDefinition,
   platform: AppPlatform = currentAppPlatform(),
 ): string {
-  const primary = platform === "macos" ? "Meta" : "Control";
-  const shift = definition.shift ? "Shift+" : "";
-  return `${primary}+${shift}${definition.key.toUpperCase()}`;
+  const binding = shortcutBinding(definition, platform);
+  const modifiers = [
+    binding.primary === false ? undefined : platform === "macos" ? "Meta" : "Control",
+    binding.alt ? "Alt" : undefined,
+    binding.shift ? "Shift" : undefined,
+  ].filter(Boolean);
+  return [...modifiers, binding.key.length === 1 ? binding.key.toUpperCase() : binding.key].join(
+    "+",
+  );
+}
+
+function shortcutBinding(definition: ShortcutDefinition, platform: AppPlatform): ShortcutBinding {
+  return (
+    definition.platformBindings?.[platform] ?? {
+      key: definition.key,
+      primary: true,
+      shift: definition.shift,
+    }
+  );
+}
+
+function displayKey(key: string): string {
+  if (key === "ArrowLeft") return "←";
+  if (key === "ArrowRight") return "→";
+  return key.length === 1 ? key.toUpperCase() : key;
 }
 
 export function currentAppPlatform(): AppPlatform {

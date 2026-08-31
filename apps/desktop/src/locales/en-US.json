@@ -200,6 +200,8 @@
   "common.closeSidebar": "Close sidebar",
   "common.close": "Close",
   "shortcuts.toggleSidebar": "Toggle sidebar",
+  "shortcuts.back": "Back",
+  "shortcuts.forward": "Forward",
   "shortcuts.openHelp": "Keyboard shortcuts",
   "workspace.copyPath": "Copy workspace path",
   "assets.instructions": "Instructions",

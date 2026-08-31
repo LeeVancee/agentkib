@@ -7,19 +7,31 @@ import { ariaShortcut, currentAppPlatform, getShortcutDefinition } from "@/core/
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const mainClassName =
   "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
 
-export function AppShellHeader({ children }: { children?: ReactNode }) {
+export function WindowNavigationControls({
+  canGoBack = false,
+  canGoForward = false,
+  onBack,
+  onForward,
+}: {
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onBack?: () => void;
+  onForward?: () => void;
+}) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const platform = currentAppPlatform();
+  const backShortcut = getShortcutDefinition("history-back");
+  const forwardShortcut = getShortcutDefinition("history-forward");
 
   return (
-    <div className="app-shell-header">
+    <div className="app-window-navigation-controls">
       <Button
         variant="bare"
         size="content"
@@ -43,9 +55,38 @@ export function AppShellHeader({ children }: { children?: ReactNode }) {
           />
         </span>
       </Button>
-      {children}
+      <Button
+        variant="bare"
+        size="content"
+        className="app-history-button"
+        type="button"
+        disabled={!canGoBack}
+        aria-label={tr("shortcuts.back")}
+        aria-keyshortcuts={ariaShortcut(backShortcut, platform)}
+        title={tr("shortcuts.back")}
+        onClick={onBack}
+      >
+        <ArrowLeft size={17} aria-hidden="true" />
+      </Button>
+      <Button
+        variant="bare"
+        size="content"
+        className="app-history-button"
+        type="button"
+        disabled={!canGoForward}
+        aria-label={tr("shortcuts.forward")}
+        aria-keyshortcuts={ariaShortcut(forwardShortcut, platform)}
+        title={tr("shortcuts.forward")}
+        onClick={onForward}
+      >
+        <ArrowRight size={17} aria-hidden="true" />
+      </Button>
     </div>
   );
+}
+
+export function AppShellHeader({ children }: { children?: ReactNode }) {
+  return <div className="app-shell-header">{children}</div>;
 }
 
 export function AppShell({
@@ -54,12 +95,20 @@ export function AppShell({
   children,
   toolbar,
   mainClassName: additionalMainClassName,
+  canGoBack = false,
+  canGoForward = false,
+  onBack,
+  onForward,
 }: {
   sidebar: ReactNode;
   sidebarMode?: "primary" | "settings";
   children: ReactNode;
   toolbar?: ReactNode;
   mainClassName?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onBack?: () => void;
+  onForward?: () => void;
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const locationKey = useLocation({ select: (location) => location.href });
@@ -91,6 +140,12 @@ export function AppShell({
       )}
     >
       <WindowToolbar />
+      <WindowNavigationControls
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onBack={onBack}
+        onForward={onForward}
+      />
       <AppShellHeader>{toolbar}</AppShellHeader>
       {sidebar}
       <main className={cn(mainClassName, additionalMainClassName)}>

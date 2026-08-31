@@ -200,6 +200,8 @@
   "common.closeSidebar": "關閉側欄",
   "common.close": "關閉",
   "shortcuts.toggleSidebar": "展開/收合側欄",
+  "shortcuts.back": "返回",
+  "shortcuts.forward": "前進",
   "shortcuts.openHelp": "查看快速鍵",
   "workspace.copyPath": "複製工作區路徑",
   "assets.instructions": "Instructions",

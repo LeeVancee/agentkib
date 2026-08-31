@@ -14,6 +14,7 @@ import { useAppNavigation } from "../features/app/useAppNavigation";
 import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
 import { ShortcutHelpProvider } from "../features/app/ShortcutHelpContext";
 import { useAppShortcuts } from "../features/app/useAppShortcuts";
+import { useAppHistory } from "../features/app/useAppHistory";
 import { useAppStore } from "../stores/app-store";
 import { useState } from "react";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -36,6 +37,7 @@ function RootLayout() {
     openWorkspace,
     navigateGlobal,
     openSettings,
+    prepareHistoryNavigation,
     refreshCurrentView,
     addWorkspace,
     addScanRoot,
@@ -43,6 +45,7 @@ function RootLayout() {
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const appHistory = useAppHistory(prepareHistoryNavigation);
 
   useAppShortcuts({
     onNavigate: navigateGlobal,
@@ -51,6 +54,8 @@ function RootLayout() {
     onAddWorkspace: addWorkspace,
     onAddScanRoot: addScanRoot,
     onToggleSidebar: () => setSidebarCollapsed((value) => !value),
+    onGoBack: appHistory.goBack,
+    onGoForward: appHistory.goForward,
     onOpenSearch: () => setSearchOpen(true),
     onOpenHelp: () => setShortcutHelpOpen(true),
     helpOpen: shortcutHelpOpen,
@@ -72,6 +77,10 @@ function RootLayout() {
         onRefresh={() => void refreshCurrentView()}
         onOpenSearch={() => setSearchOpen(true)}
         onOpenHelp={() => setShortcutHelpOpen(true)}
+        canGoBack={appHistory.canGoBack}
+        canGoForward={appHistory.canGoForward}
+        onBack={appHistory.goBack}
+        onForward={appHistory.goForward}
       />
       <GlobalSearchDialog
         open={searchOpen}
@@ -99,6 +108,10 @@ function AppShellRouter({
   onRefresh,
   onOpenSearch,
   onOpenHelp,
+  canGoBack,
+  canGoForward,
+  onBack,
+  onForward,
 }: {
   route: ParsedRoute;
   active: GlobalPage;
@@ -112,6 +125,10 @@ function AppShellRouter({
   onRefresh: () => void;
   onOpenSearch: () => void;
   onOpenHelp: () => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onBack: () => void;
+  onForward: () => void;
 }) {
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
@@ -215,6 +232,10 @@ function AppShellRouter({
         />
       }
       mainClassName={isSettings ? `settings-section-${settingsSection}` : undefined}
+      canGoBack={canGoBack}
+      canGoForward={canGoForward}
+      onBack={onBack}
+      onForward={onForward}
     >
       {message && (
         <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

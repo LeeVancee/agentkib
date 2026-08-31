@@ -723,21 +723,12 @@ jobs:
           if [[ -n "$release_json" ]]; then
             echo "Resuming existing draft release $RELEASE_TAG"
           else
-            release_notes=$(
-              cat <<'EOF'
-          > [!NOTE]
-          > macOS 安装包已使用 AgentKib 的 Developer ID Application 证书签名并通过 Apple 公证，可直接拖入“应用程序”后打开。
-          >
-          > The macOS packages are signed with AgentKib's Developer ID Application certificate and notarized by Apple. Drag AgentKib into Applications and open it normally.
-          EOF
-            )
             create_args=(
               release create "$RELEASE_TAG"
               --repo "$GITHUB_REPOSITORY"
               --target "$RELEASE_SHA"
               --title "AgentKib $RELEASE_TAG"
               --generate-notes
-              --notes "$release_notes"
               --verify-tag
               --draft
             )

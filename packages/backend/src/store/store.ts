@@ -15,6 +15,7 @@ import type {
 } from "../domain/types.js";
 import type { WorkspaceScan } from "../domain/types.js";
 import type { GitRepositorySnapshot } from "../insights/types.js";
+import type { UsageBatch } from "../insights/usage.js";
 
 const optional = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
@@ -230,6 +231,75 @@ export class BackendStore {
           `git:${snapshot.repository_group_id}`,
           snapshot.fingerprint,
           snapshot.commits.length,
+          now,
+        );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw BackendError.from(error);
+    }
+  }
+  syncUsageBatch(batch: UsageBatch): void {
+    const now = new Date().toISOString();
+    let salt = (
+      this.database.prepare("SELECT value FROM schema_meta WHERE key = 'insights_salt'").get() as
+        | { value?: string }
+        | undefined
+    )?.value;
+    if (!salt) {
+      salt = `${randomUUID()}${randomUUID()}`;
+      this.database
+        .prepare("INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('insights_salt', ?)")
+        .run(salt);
+    }
+    const keyed = (value: string) => createHmac("sha256", salt!).update(value).digest("hex");
+    const workspaces = this.listWorkspaces();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      if (batch.available)
+        this.database.prepare("DELETE FROM usage_events WHERE surface_agent = ?").run(batch.agent);
+      const insert = this.database.prepare(
+        "INSERT INTO usage_events(source_key, surface_agent, workspace_id, occurred_at, day, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, total_tokens, session_hash, session_count, date_precision, quality) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const event of batch.events) {
+        const workspaceId = event.workspace_path
+          ? workspaces.find(
+              (workspace) =>
+                path.resolve(workspace.canonical_path) === path.resolve(event.workspace_path!),
+            )?.id
+          : undefined;
+        insert.run(
+          keyed(event.source_key),
+          event.surface_agent,
+          workspaceId ?? null,
+          event.occurred_at ?? null,
+          event.day ?? null,
+          event.model ?? null,
+          event.input_tokens,
+          event.output_tokens,
+          event.cache_read_tokens,
+          event.cache_write_tokens,
+          event.reasoning_tokens,
+          event.total_tokens,
+          event.session_key ? keyed(event.session_key) : null,
+          event.session_count,
+          event.date_precision,
+          event.quality,
+        );
+      }
+      this.database
+        .prepare(
+          "INSERT INTO insight_cursors(provider, cursor_json, available, quality, coverage_from, coverage_to, imported_events, error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider) DO UPDATE SET cursor_json = excluded.cursor_json, available = excluded.available, quality = excluded.quality, coverage_from = excluded.coverage_from, coverage_to = excluded.coverage_to, imported_events = excluded.imported_events, error = excluded.error, updated_at = excluded.updated_at",
+        )
+        .run(
+          batch.agent,
+          batch.fingerprint,
+          batch.available ? 1 : 0,
+          batch.quality,
+          batch.coverage_from ?? null,
+          batch.coverage_to ?? null,
+          batch.events.length,
+          batch.error ?? null,
           now,
         );
       this.database.exec("COMMIT");

@@ -13,6 +13,13 @@ export async function listWorkspaceSessions(
     errors: string[] = [];
   if (agent === "codex") await indexCodex(homeDir(), workspace);
   else if (agent === "claude-code") await indexClaude(homeDir(), workspace);
+  const unique = new Map<string, ConversationSessionSummary>();
+  for (const session of sessions) {
+    const key = `${session.agent}:${session.id}`;
+    const previous = unique.get(key);
+    if (!previous || (previous.availability !== "readable" && session.availability === "readable")) unique.set(key, session);
+  }
+  sessions.splice(0, sessions.length, ...unique.values());
   sessions.sort(
     (a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? "") || a.id.localeCompare(b.id),
   );
@@ -48,14 +55,20 @@ export async function listWorkspaceSessions(
   }
 
   async function indexCodex(home: string, project: string): Promise<void> {
-    const roots = [path.join(home, ".codex"), path.join(home, "Library", "Application Support", "Codex")];
-    const databases = new Set<string>();
-    for (const root of roots) {
-      for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
-        if (entry.isFile() && /^(state_.*|.*state.*)\.sqlite$/.test(entry.name)) databases.add(path.join(root, entry.name));
-      }
-    }
-    for (const databasePath of databases) {
+    const sessionCountBefore = sessions.length;
+    const codexHome = path.resolve(process.env.CODEX_HOME ?? path.join(home, ".codex"));
+    const roots = [codexHome, path.join(codexHome, "sqlite")];
+    const currentDatabases = await codexDatabasesIn(roots[0]);
+    const databases = currentDatabases.length ? currentDatabases : await codexDatabasesIn(roots[1]);
+    // The desktop Codex build has also used this Application Support location;
+    // include it as a compatibility source without reviving the legacy sqlite
+    // database when current databases are available.
+    if (!databases.length) databases.push(...await codexDatabasesIn(path.join(home, "Library", "Application Support", "Codex")));
+    // Older Codex integrations exposed project-local JSONL transcripts. Keep this
+    // read-only fallback so existing workspaces remain visible while native SQLite
+    // indexing is unavailable.
+    if (!databases.length || sessions.length === sessionCountBefore) await walk(path.join(project, ".codex"), 0);
+    for (const databasePath of new Set(databases)) {
       let database: DatabaseSync;
       try { database = new DatabaseSync(databasePath, { readOnly: true }); }
       catch (error) { errors.push(`Could not open Codex session database: ${databasePath}`); continue; }
@@ -67,7 +80,7 @@ export async function listWorkspaceSessions(
         for (const row of rows) {
           const cwd = String(row.cwd ?? "");
           if (!sameWorkspace(cwd, project)) continue;
-          const transcript = path.isAbsolute(String(row.rollout_path ?? "")) ? String(row.rollout_path) : path.join(home, String(row.rollout_path ?? ""));
+          const transcript = path.isAbsolute(String(row.rollout_path ?? "")) ? String(row.rollout_path) : path.join(codexHome, String(row.rollout_path ?? ""));
           sessions.push({
             id: String(row.id), native_ref: transcript, workspace_id: project, agent,
             title: typeof row.title === "string" ? row.title.slice(0, 200) : undefined,
@@ -82,10 +95,51 @@ export async function listWorkspaceSessions(
     }
   }
 
+  async function codexDatabasesIn(directory: string): Promise<string[]> {
+    return (await readdir(directory, { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isFile() && /^state_.*\.sqlite$/.test(entry.name))
+      .map((entry) => path.join(directory, entry.name));
+  }
+
   async function indexClaude(home: string, project: string): Promise<void> {
     const root = path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects");
     const files: string[] = [];
     await collectFiles(root, 3, files);
+    const indexed = new Map<string, ConversationSessionSummary>();
+    for (const file of files.filter((value) => path.basename(value) === "sessions-index.json")) {
+      try {
+        const parsed = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+        if (Number(parsed.version ?? 1) !== 1) continue;
+        const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+        for (const entry of entries) {
+          if (!entry || typeof entry !== "object") continue;
+          const value = entry as Record<string, unknown>;
+          const projectPath = String(value.projectPath ?? "");
+          if (!projectPath || !sameWorkspace(projectPath, project)) continue;
+          const id = String(value.sessionId ?? "");
+          if (!id) continue;
+          const transcript = typeof value.fullPath === "string"
+            ? value.fullPath
+            : path.join(path.dirname(file), `${id}.jsonl`);
+          indexed.set(id, {
+            id,
+            native_ref: transcript,
+            workspace_id: project,
+            agent,
+            title: typeof value.summary === "string" ? value.summary.replace(/\s+/g, " ").trim().slice(0, 200) : typeof value.firstPrompt === "string" ? value.firstPrompt.slice(0, 200) : undefined,
+            created_at: timestamp(value.created),
+            updated_at: timestamp(value.modified ?? value.fileMtime),
+            message_count: typeof value.messageCount === "number" ? value.messageCount : undefined,
+            git_branch: typeof value.gitBranch === "string" ? value.gitBranch : undefined,
+            archived: false,
+            sidechain: value.isSidechain === true,
+            availability: await lstat(transcript).then((info) => info.isFile() ? "readable" : "metadata-only").catch(() => "metadata-only"),
+          });
+        }
+      } catch {
+        errors.push(`Could not read Claude session index: ${file}`);
+      }
+    }
     for (const file of files.filter((value) => value.endsWith(".jsonl"))) {
       try {
         const content = (await readFile(file, "utf8")).slice(0, HEADER_LIMIT);
@@ -96,9 +150,36 @@ export async function listWorkspaceSessions(
         if (!projectPath && !file.includes(project.replaceAll(path.sep, "-"))) continue;
         const first = values[0] ?? {};
         const id = String(first.sessionId ?? first.session_id ?? first.id ?? path.basename(file, ".jsonl"));
-        sessions.push({ id, native_ref: file, workspace_id: project, agent, title: typeof first.summary === "string" ? first.summary.slice(0, 200) : typeof first.title === "string" ? first.title.slice(0, 200) : undefined, created_at: typeof first.timestamp === "string" ? first.timestamp : undefined, updated_at: typeof first.timestamp === "string" ? first.timestamp : undefined, message_count: lines.length, archived: false, sidechain: Boolean(first.isSidechain), availability: "readable" });
+        const existing = indexed.get(id);
+        indexed.set(id, {
+          id,
+          native_ref: file,
+          workspace_id: project,
+          agent,
+          title: existing?.title ?? (typeof first.summary === "string" ? first.summary.slice(0, 200) : typeof first.title === "string" ? first.title.slice(0, 200) : undefined),
+          created_at: existing?.created_at ?? timestamp(first.timestamp),
+          updated_at: latestTimestamp(existing?.updated_at, timestamp(first.timestamp)),
+          message_count: existing?.message_count ?? lines.length,
+          git_branch: existing?.git_branch ?? (typeof first.gitBranch === "string" ? first.gitBranch : undefined),
+          archived: existing?.archived ?? false,
+          sidechain: existing?.sidechain ?? Boolean(first.isSidechain),
+          availability: "readable",
+        });
       } catch { errors.push(`Could not read Claude transcript: ${file}`); }
     }
+    const historyFile = path.join(path.dirname(root), "history.jsonl");
+    for (const line of (await readFile(historyFile, "utf8").catch(() => "")).split(/\r?\n/).filter(Boolean)) {
+      try {
+        const value = JSON.parse(line) as Record<string, unknown>;
+        const id = typeof value.sessionId === "string" ? value.sessionId : undefined;
+        const session = id ? indexed.get(id) : undefined;
+        if (session) session.updated_at = latestTimestamp(session.updated_at, timestamp(value.timestamp));
+      } catch {
+        errors.push(`Could not parse Claude history: ${historyFile}`);
+        break;
+      }
+    }
+    sessions.push(...indexed.values());
   }
 
   async function collectFiles(directory: string, depth: number, output: string[]): Promise<void> {
@@ -166,7 +247,7 @@ export async function listWorkspaceSessions(
 function homeDir(): string { return homedir(); }
 function sameWorkspace(left: string, right: string): boolean {
   const a = path.resolve(left), b = path.resolve(right);
-  return a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`);
+  return a === b || a.startsWith(`${b}${path.sep}`);
 }
 function timestamp(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -175,4 +256,9 @@ function timestamp(value: unknown): string | undefined {
   }
   if (typeof value === "string") { const date = new Date(value); return Number.isNaN(date.getTime()) ? undefined : date.toISOString(); }
   return undefined;
+}
+function latestTimestamp(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
 }

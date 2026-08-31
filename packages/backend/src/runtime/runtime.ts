@@ -6,6 +6,7 @@ import { defaultManifest } from "../adapters/manifest.js";
 import { workspaceSummary, history, commitFiles, diff } from "../git/git.js";
 import type { GitDiffRequest } from "../git/git.js";
 import { collectGit } from "../insights/git.js";
+import { collectUsage } from "../insights/usage.js";
 import { discover } from "../discovery/discovery.js";
 import { diagnoseWorkspace } from "../doctor/doctor.js";
 import { listWorkspaceSessions } from "../conversations/indexer.js";
@@ -48,12 +49,25 @@ import { stringify as stringifyYaml } from "yaml";
 import { parse as parseToml } from "@iarna/toml";
 
 function buildAchievements(
-  summary: { total_tokens: number; session_count: number; my_commits: number; active_days: number; longest_streak: number },
+  summary: {
+    total_tokens: number;
+    session_count: number;
+    my_commits: number;
+    active_days: number;
+    longest_streak: number;
+  },
   workspaceCount: number,
   agentCount = 0,
 ) {
-  const tracks: Array<[string, number[] , number]> = [
-    ["token", [100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000, 1_000_000_000_000], summary.total_tokens],
+  const tracks: Array<[string, number[], number]> = [
+    [
+      "token",
+      [
+        100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000,
+        1_000_000_000_000,
+      ],
+      summary.total_tokens,
+    ],
     ["session", [10, 50, 100, 500, 1_000, 5_000, 10_000], summary.session_count],
     ["commit", [1, 10, 100, 1_000, 5_000, 10_000], summary.my_commits],
     ["active-days", [7, 30, 100, 365, 1_000], summary.active_days],
@@ -69,16 +83,18 @@ function buildAchievements(
       progress: Math.min(progress, threshold),
     })),
   );
-  return milestones.concat([
-    "special-first-changeset",
-    "special-first-memory",
-    "special-shared-workspace",
-    "special-exact-attribution",
-    "special-remote-handshake",
-    "special-night-owl",
-    "special-comeback",
-    "special-same-day-delivery",
-  ].map((code) => ({ code, category: "special", threshold: 1, progress: 0 })));
+  return milestones.concat(
+    [
+      "special-first-changeset",
+      "special-first-memory",
+      "special-shared-workspace",
+      "special-exact-attribution",
+      "special-remote-handshake",
+      "special-night-owl",
+      "special-comeback",
+      "special-same-day-delivery",
+    ].map((code) => ({ code, category: "special", threshold: 1, progress: 0 })),
+  );
 }
 
 const id = z.object({ id: z.string() });
@@ -117,10 +133,15 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
   } = { hidden_providers: [], hidden_windows: [] };
   const obsidianVaults: ObsidianVault[] = [];
   const obsidianLinks: WorkspaceLink[] = [];
-  const obsidianIntegrationFile = path.join(path.dirname(options.database_path), "obsidian-integration.json");
+  const obsidianIntegrationFile = path.join(
+    path.dirname(options.database_path),
+    "obsidian-integration.json",
+  );
   let storedObsidian: ObsidianStored = { manual_vaults: [], workspace_links: {} };
   try {
-    storedObsidian = ObsidianStored.parse(JSON.parse(readFileSync(obsidianIntegrationFile, "utf8")));
+    storedObsidian = ObsidianStored.parse(
+      JSON.parse(readFileSync(obsidianIntegrationFile, "utf8")),
+    );
   } catch {
     // First run or an unreadable optional integration file.
   }
@@ -330,23 +351,22 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         query.repository_group_id ?? null,
         query.repository_group_id ?? null,
       ) as Record<string, unknown>;
-    const heatmap = new Map<string, {
-      date: string;
-      tokens: number;
-      my_commits: number;
-      all_commits: number;
-      attributed_commits: number;
-      sessions: number;
-      quality: "exact" | "estimated" | "incomplete";
-    }>();
+    const heatmap = new Map<
+      string,
+      {
+        date: string;
+        tokens: number;
+        my_commits: number;
+        all_commits: number;
+        attributed_commits: number;
+        sessions: number;
+        quality: "exact" | "estimated" | "incomplete";
+      }
+    >();
     const firstDay = new Date(`${from}T00:00:00Z`);
     const lastDay = new Date(`${to}T00:00:00Z`);
     if (!Number.isNaN(firstDay.getTime()) && !Number.isNaN(lastDay.getTime())) {
-      for (
-        const day = new Date(firstDay);
-        day <= lastDay;
-        day.setUTCDate(day.getUTCDate() + 1)
-      ) {
+      for (const day = new Date(firstDay); day <= lastDay; day.setUTCDate(day.getUTCDate() + 1)) {
         const date = day.toISOString().slice(0, 10);
         heatmap.set(date, {
           date,
@@ -378,13 +398,25 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       if (!point) continue;
       point.tokens = Number(row.tokens);
       point.sessions = Number(row.sessions);
-      point.quality = Number(row.quality) === 2 ? "incomplete" : Number(row.quality) === 1 ? "estimated" : "exact";
+      point.quality =
+        Number(row.quality) === 2
+          ? "incomplete"
+          : Number(row.quality) === 1
+            ? "estimated"
+            : "exact";
     }
     const commitHeatRows = store.database
       .prepare(
         "SELECT day, COALESCE(SUM(is_mine),0) my_commits, COUNT(*) all_commits, COALESCE(SUM(EXISTS(SELECT 1 FROM commit_attributions a WHERE a.repository_group_id=git_commits.repository_group_id AND a.commit_hash=git_commits.commit_hash AND a.confidence='exact' AND (? IS NULL OR a.agent=?))),0) attributed_commits FROM git_commits WHERE day>=? AND day<=? AND (? IS NULL OR repository_group_id=?) GROUP BY day ORDER BY day",
       )
-      .all(query.agent ?? null, query.agent ?? null, from, to, query.repository_group_id ?? null, query.repository_group_id ?? null) as Array<Record<string, unknown>>;
+      .all(
+        query.agent ?? null,
+        query.agent ?? null,
+        from,
+        to,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      ) as Array<Record<string, unknown>>;
     for (const row of commitHeatRows) {
       const point = heatmap.get(String(row.day));
       if (!point) continue;
@@ -400,22 +432,56 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       .prepare(
         "SELECT c.repository_group_id, COALESCE(MIN(w.name),'Repository') name, COALESCE(SUM(c.is_mine),0) my_commits, COUNT(*) all_commits, COALESCE(SUM(EXISTS(SELECT 1 FROM commit_attributions a WHERE a.repository_group_id=c.repository_group_id AND a.commit_hash=c.commit_hash AND a.confidence='exact' AND (? IS NULL OR a.agent=?))),0) attributed_commits FROM git_commits c LEFT JOIN workspaces w ON w.repository_group_id=c.repository_group_id WHERE c.day>=? AND c.day<=? AND (? IS NULL OR c.repository_group_id=?) GROUP BY c.repository_group_id ORDER BY all_commits DESC",
       )
-      .all(query.agent ?? null, query.agent ?? null, from, to, query.repository_group_id ?? null, query.repository_group_id ?? null);
+      .all(
+        query.agent ?? null,
+        query.agent ?? null,
+        from,
+        to,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      );
     const agents = store.database
       .prepare(
-        "SELECT surface_agent agent, COALESCE(SUM(total_tokens),0) total_tokens, COALESCE(SUM(input_tokens),0) input_tokens, COALESCE(SUM(output_tokens),0) output_tokens, COALESCE(SUM(cache_read_tokens+cache_write_tokens),0) cache_tokens, COALESCE(SUM(reasoning_tokens),0) reasoning_tokens, COALESCE(SUM(session_count),0) session_count FROM usage_events WHERE day>=? AND day<=? GROUP BY surface_agent ORDER BY total_tokens DESC",
+        "SELECT u.surface_agent agent, COALESCE(SUM(u.total_tokens),0) total_tokens, COALESCE(SUM(u.input_tokens),0) input_tokens, COALESCE(SUM(u.output_tokens),0) output_tokens, COALESCE(SUM(u.cache_read_tokens+u.cache_write_tokens),0) cache_tokens, COALESCE(SUM(u.reasoning_tokens),0) reasoning_tokens, COALESCE(SUM(u.session_count),0) session_count FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? AND (? IS NULL OR u.surface_agent=?) AND (? IS NULL OR u.workspace_id=?) AND (? IS NULL OR w.repository_group_id=?) GROUP BY u.surface_agent ORDER BY total_tokens DESC",
       )
-      .all(from, to);
+      .all(
+        from,
+        to,
+        query.agent ?? null,
+        query.agent ?? null,
+        query.workspace_id ?? null,
+        query.workspace_id ?? null,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      );
     const models = store.database
       .prepare(
-        "SELECT COALESCE(NULLIF(model,''),'__unknown_model__') model, COALESCE(SUM(total_tokens),0) total_tokens, COALESCE(SUM(session_count),0) session_count FROM usage_events WHERE day>=? AND day<=? GROUP BY model ORDER BY total_tokens DESC LIMIT 20",
+        "SELECT COALESCE(NULLIF(u.model,''),'__unknown_model__') model, COALESCE(SUM(u.total_tokens),0) total_tokens, COALESCE(SUM(u.session_count),0) session_count FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? AND (? IS NULL OR u.surface_agent=?) AND (? IS NULL OR u.workspace_id=?) AND (? IS NULL OR w.repository_group_id=?) GROUP BY model ORDER BY total_tokens DESC LIMIT 20",
       )
-      .all(from, to);
+      .all(
+        from,
+        to,
+        query.agent ?? null,
+        query.agent ?? null,
+        query.workspace_id ?? null,
+        query.workspace_id ?? null,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      );
     const workspaces = store.database
       .prepare(
-        "SELECT u.workspace_id, COALESCE(w.name,'__unlinked_workspace__') name, COALESCE(SUM(u.total_tokens),0) total_tokens, COALESCE(SUM(u.session_count),0) session_count FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? GROUP BY u.workspace_id, w.name HAVING total_tokens>0 OR session_count>0 ORDER BY total_tokens DESC",
+        "SELECT u.workspace_id, COALESCE(w.name,'__unlinked_workspace__') name, COALESCE(SUM(u.total_tokens),0) total_tokens, COALESCE(SUM(u.session_count),0) session_count FROM usage_events u LEFT JOIN workspaces w ON w.id=u.workspace_id WHERE u.day>=? AND u.day<=? AND (? IS NULL OR u.surface_agent=?) AND (? IS NULL OR u.workspace_id=?) AND (? IS NULL OR w.repository_group_id=?) GROUP BY u.workspace_id, w.name HAVING total_tokens>0 OR session_count>0 ORDER BY total_tokens DESC",
       )
-      .all(from, to);
+      .all(
+        from,
+        to,
+        query.agent ?? null,
+        query.agent ?? null,
+        query.workspace_id ?? null,
+        query.workspace_id ?? null,
+        query.repository_group_id ?? null,
+        query.repository_group_id ?? null,
+      );
     const sortedActive = activeDates.slice().sort();
     let longestStreak = 0;
     let runningStreak = 0;
@@ -454,7 +520,12 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       active_days: activeDates.length,
       current_streak: currentStreak,
       longest_streak: longestStreak,
-      quality: Number(usage.quality) === 2 ? "incomplete" as const : Number(usage.quality) === 1 ? "estimated" as const : "exact" as const,
+      quality:
+        Number(usage.quality) === 2
+          ? ("incomplete" as const)
+          : Number(usage.quality) === 1
+            ? ("estimated" as const)
+            : ("exact" as const),
       coverage_from: activeDates[0],
       coverage_to: activeDates.at(-1),
       refreshed_at: insightsRefreshedAt,
@@ -468,11 +539,21 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       models,
       workspaces,
       repositories,
-      achievements: buildAchievements(summary, Number(workspaces.length), agents.filter((agent) => Number((agent as Record<string, unknown>).total_tokens) > 0 || Number((agent as Record<string, unknown>).session_count) > 0).length),
+      achievements: buildAchievements(
+        summary,
+        Number(workspaces.length),
+        agents.filter(
+          (agent) =>
+            Number((agent as Record<string, unknown>).total_tokens) > 0 ||
+            Number((agent as Record<string, unknown>).session_count) > 0,
+        ).length,
+      ),
       status: registry["insights.status"]({}, new AbortController().signal),
     };
   };
   const refreshInsights = async () => {
+    const usageBatches = await collectUsage();
+    for (const batch of usageBatches) store.syncUsageBatch(batch);
     for (const workspace of store.listWorkspaces()) {
       const snapshot = await collectGit(workspace.canonical_path);
       if (snapshot) store.syncGitSnapshot(snapshot);
@@ -630,7 +711,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           .filter((installation) => installation.installed)
           .map((installation) => installation.agent)
           .filter((agent): agent is import("../domain/types.js").AgentKind =>
-            ["codex", "claude-code", "cursor", "open-claw", "hermes", "deepseek-harness"].includes(agent as never),
+            ["codex", "claude-code", "cursor", "open-claw", "hermes", "deepseek-harness"].includes(
+              agent as never,
+            ),
           ),
       );
       return diagnoseWorkspace(workspace.canonical_path, workspace.id, { installedAgents });
@@ -661,6 +744,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     },
     "workspace.sessions": async (params) => {
       const value = z.object({ workspaceId: z.string() }).parse(params);
+      if (!sessionIndexEnabled) return [];
       const workspace = store.getWorkspace(value.workspaceId);
       const [codex, claude] = await Promise.all([
         listWorkspaceSessions(workspace.canonical_path, "codex"),
@@ -706,7 +790,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       return parseTranscript(
         session.native_ref,
         session.agent,
-        Number(value.cursor ?? 0),
+        value.cursor === undefined ? undefined : Number(value.cursor),
         value.limit ?? 300,
       );
     },
@@ -726,7 +810,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const source = await findSession(request.session_id);
       if (!source.native_ref)
         throw backendError("NOT_FOUND", "Conversation transcript is not available");
-      const events = await parseTranscript(source.native_ref, source.agent, 0, 300);
+      const events = await parseTranscript(source.native_ref, source.agent, undefined, 300);
       return prepareHandoff(
         source,
         request,
@@ -741,8 +825,19 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       return sanitizeHandoffContent(value.editedContent, process.env.HOME).content;
     },
     "sessions.clearIndex": async (params) => {
-      z.object({ workspaceId: z.string().optional() }).parse(params);
-      // The TypeScript index is derived from transcripts and has no separate cache to invalidate.
+      const value = z.object({ workspaceId: z.string().optional() }).parse(params);
+      if (value.workspaceId) {
+        store.database
+          .prepare("DELETE FROM conversation_sessions WHERE workspace_id = ?")
+          .run(value.workspaceId);
+        store.database
+          .prepare("DELETE FROM conversation_index_status WHERE workspace_id = ?")
+          .run(value.workspaceId);
+      } else {
+        store.database.exec(
+          "DELETE FROM conversation_sessions; DELETE FROM conversation_index_status;",
+        );
+      }
       return undefined;
     },
     "sessions.setIndexEnabled": async (params) => {
@@ -767,7 +862,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const source = await findSession(request.session_id);
       if (!source.native_ref)
         throw backendError("NOT_FOUND", "Conversation transcript is not available");
-      const events = await parseTranscript(source.native_ref, source.agent, 0, 300);
+      const events = await parseTranscript(source.native_ref, source.agent, undefined, 300);
       const selected = events.events.slice(-20);
       const result = prepareHandoff(
         source,
@@ -837,8 +932,14 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           command: targetAgent === "codex" ? "codex" : "claude",
           args:
             targetAgent === "codex"
-              ? ["-c", `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.'`]
-              : ["--append-system-prompt", `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.`],
+              ? [
+                  "-c",
+                  `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.'`,
+                ]
+              : [
+                  "--append-system-prompt",
+                  `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${String(value.launchRequest.filename)}.`,
+                ],
           cwd: path.resolve(store.workspacePath(String(value.launchRequest.workspace_id))),
         },
       };
@@ -866,8 +967,14 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           command: targetAgent === "codex" ? "codex" : "claude",
           args:
             targetAgent === "codex"
-              ? ["-c", `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.'`]
-              : ["--append-system-prompt", `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.`],
+              ? [
+                  "-c",
+                  `developer_instructions='This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.'`,
+                ]
+              : [
+                  "--append-system-prompt",
+                  `This is a fresh session continuing from a handoff. Before responding to the first user message, read the project-relative file .agentkib/handoffs/${value.filename}.`,
+                ],
           cwd: project,
         },
       };
@@ -1164,7 +1271,15 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         const before = await readFile(target, "utf8").catch(() => "");
         if (before === after) return;
         const current = await readFile(target).catch(() => undefined);
-        changes.push({ target, scope, before, after, risk, validator, ...(current ? { original_hash: hashContent(current) } : {}) });
+        changes.push({
+          target,
+          scope,
+          before,
+          after,
+          risk,
+          validator,
+          ...(current ? { original_hash: hashContent(current) } : {}),
+        });
       };
       await add(manifestPath(project), stringifyYaml(manifest), "project", "low", "yaml");
       const managed = (existing: string, content: string) => {
@@ -1172,20 +1287,64 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         const end = "<!-- agentkib:managed:end -->";
         const block = `${start}\n${content.trim()}\n${end}`;
         const range = new RegExp(`${start}[\\s\\S]*?${end}`, "m");
-        return range.test(existing) ? existing.replace(range, block) : `${existing.trimEnd()}${existing.trim() ? "\\n\\n" : ""}${block}\\n`;
+        return range.test(existing)
+          ? existing.replace(range, block)
+          : `${existing.trimEnd()}${existing.trim() ? "\\n\\n" : ""}${block}\\n`;
       };
-      const enabled = (agent: import("../domain/types.js").AgentKind) => manifest.adapters?.[agent]?.enabled !== false;
-      if (["codex", "cursor", "open-claw", "hermes"].some((agent) => enabled(agent as import("../domain/types.js").AgentKind)))
-        await add(path.join(project, "AGENTS.md"), managed(await readFile(path.join(project, "AGENTS.md"), "utf8").catch(() => ""), manifest.instructions.shared), "project", "medium", "markdown");
+      const enabled = (agent: import("../domain/types.js").AgentKind) =>
+        manifest.adapters?.[agent]?.enabled !== false;
+      if (
+        ["codex", "cursor", "open-claw", "hermes"].some((agent) =>
+          enabled(agent as import("../domain/types.js").AgentKind),
+        )
+      )
+        await add(
+          path.join(project, "AGENTS.md"),
+          managed(
+            await readFile(path.join(project, "AGENTS.md"), "utf8").catch(() => ""),
+            manifest.instructions.shared,
+          ),
+          "project",
+          "medium",
+          "markdown",
+        );
       if (enabled("claude-code")) {
         const override = manifest.instructions.platform_overrides["claude-code"]?.trim();
-        await add(path.join(project, "CLAUDE.md"), managed(await readFile(path.join(project, "CLAUDE.md"), "utf8").catch(() => ""), `@AGENTS.md${override ? `\n\n${override}` : ""}`), "project", "medium", "markdown");
+        await add(
+          path.join(project, "CLAUDE.md"),
+          managed(
+            await readFile(path.join(project, "CLAUDE.md"), "utf8").catch(() => ""),
+            `@AGENTS.md${override ? `\n\n${override}` : ""}`,
+          ),
+          "project",
+          "medium",
+          "markdown",
+        );
       }
       const legacy = manifest.connections.filter((connection) => connection.name !== "agentkib");
       if (legacy.length) {
-        const servers = Object.fromEntries(legacy.map((connection) => [connection.name, connection.transport === "stdio" ? { command: connection.command, args: connection.args ?? [], env: connection.env } : { url: connection.url, headers: connection.env }]));
-        await add(path.join(project, ".mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2) + "\n", "project", "medium", "json");
-        await add(path.join(project, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2) + "\n", "project", "medium", "json");
+        const servers = Object.fromEntries(
+          legacy.map((connection) => [
+            connection.name,
+            connection.transport === "stdio"
+              ? { command: connection.command, args: connection.args ?? [], env: connection.env }
+              : { url: connection.url, headers: connection.env },
+          ]),
+        );
+        await add(
+          path.join(project, ".mcp.json"),
+          JSON.stringify({ mcpServers: servers }, null, 2) + "\n",
+          "project",
+          "medium",
+          "json",
+        );
+        await add(
+          path.join(project, ".cursor", "mcp.json"),
+          JSON.stringify({ mcpServers: servers }, null, 2) + "\n",
+          "project",
+          "medium",
+          "json",
+        );
       }
       if (!value.includeHome) return planChangeSet(project, changes);
       return planChangeSet(project, changes);
@@ -1257,7 +1416,14 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         )
         .all() as Array<Record<string, unknown>>;
       const known = new Map(rows.map((row) => [String(row.provider), row]));
-      const providers = ["codex", "claude-code", "cursor", "open-claw", "hermes", "deepseek-harness"].map((agent) => {
+      const providers = [
+        "codex",
+        "claude-code",
+        "cursor",
+        "open-claw",
+        "hermes",
+        "deepseek-harness",
+      ].map((agent) => {
         const row = known.get(agent);
         return {
           agent,
@@ -1284,12 +1450,22 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const workspaceCount = store.database
         .prepare("SELECT COUNT(*) count FROM workspaces WHERE status != 'excluded'")
         .get() as { count: number };
-      return buildAchievements(view.summary, Number(workspaceCount.count), view.agents.filter((agent) => Number((agent as Record<string, unknown>).total_tokens) > 0 || Number((agent as Record<string, unknown>).session_count) > 0).length);
+      return buildAchievements(
+        view.summary,
+        Number(workspaceCount.count),
+        view.agents.filter(
+          (agent) =>
+            Number((agent as Record<string, unknown>).total_tokens) > 0 ||
+            Number((agent as Record<string, unknown>).session_count) > 0,
+        ).length,
+      );
     },
     "insights.gitIdentities": () =>
-      (store.database
-        .prepare("SELECT id, label, source, enabled FROM git_identities ORDER BY source, label")
-        .all() as Array<Record<string, unknown>>).map((row) => ({
+      (
+        store.database
+          .prepare("SELECT id, label, source, enabled FROM git_identities ORDER BY source, label")
+          .all() as Array<Record<string, unknown>>
+      ).map((row) => ({
         id: String(row.id),
         label: String(row.label),
         source: String(row.source),
@@ -1297,10 +1473,21 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       })),
     "insights.addGitIdentityAlias": (params) => {
       const value = z.object({ email: z.string().email() }).parse(params);
-      const salt = (store.database.prepare("SELECT value FROM schema_meta WHERE key = 'insights_salt'").get() as { value?: string } | undefined)?.value ?? randomUUID();
-      store.database.prepare("INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('insights_salt', ?)").run(salt);
+      const salt =
+        (
+          store.database
+            .prepare("SELECT value FROM schema_meta WHERE key = 'insights_salt'")
+            .get() as { value?: string } | undefined
+        )?.value ?? randomUUID();
+      store.database
+        .prepare("INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('insights_salt', ?)")
+        .run(salt);
       const id = createHmac("sha256", salt).update(value.email.trim().toLowerCase()).digest("hex");
-      store.database.prepare("INSERT INTO git_identities(id, identity_hash, source, label, enabled, created_at) VALUES (?, ?, 'manual', 'settings.gitIdentityAlias', 1, ?) ON CONFLICT(identity_hash) DO UPDATE SET enabled = 1").run(id, id, new Date().toISOString());
+      store.database
+        .prepare(
+          "INSERT INTO git_identities(id, identity_hash, source, label, enabled, created_at) VALUES (?, ?, 'manual', 'settings.gitIdentityAlias', 1, ?) ON CONFLICT(identity_hash) DO UPDATE SET enabled = 1",
+        )
+        .run(id, id, new Date().toISOString());
       return { id, label: "settings.gitIdentityAlias", source: "manual", enabled: true };
     },
     "insights.setGitIdentityEnabled": (params) => {
@@ -1387,7 +1574,12 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           headers: z.record(z.string(), z.string()),
         })
         .parse(params);
-      return saveMcpLocalValues(resolveMcpFile(params), value.serverId, value.env, value.headers).then(publicMcpServer);
+      return saveMcpLocalValues(
+        resolveMcpFile(params),
+        value.serverId,
+        value.env,
+        value.headers,
+      ).then(publicMcpServer);
     },
     "mcp.removeServer": async (params: unknown) => {
       const value = z
@@ -1485,12 +1677,33 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         throw backendError("VALIDATION", "Remote MCP entries require a URL");
       let installPath: string | undefined;
       if (entry.package_kind === "npm" || entry.package_kind === "pypi") {
-        installPath = path.join(path.dirname(options.database_path), "mcp-packages", `${entry.name.replace(/[^A-Za-z0-9._-]+/g, "-")}-${entry.version}`);
-        const packageSpec = `${entry.identifier}${entry.version ? entry.package_kind === "npm" ? `@${entry.version}` : `==${entry.version}` : ""}`;
-        const result = entry.package_kind === "npm"
-          ? await runManaged({ executable: "npm", args: ["install", "--ignore-scripts", "--no-package-lock", "--prefix", installPath, packageSpec], timeoutMs: 120_000 })
-          : await runManaged({ executable: "uv", args: ["pip", "install", "--target", installPath, packageSpec], timeoutMs: 120_000 });
-        if (result.code !== 0) throw backendError("IO", `${entry.package_kind} MCP package installation failed`);
+        installPath = path.join(
+          path.dirname(options.database_path),
+          "mcp-packages",
+          `${entry.name.replace(/[^A-Za-z0-9._-]+/g, "-")}-${entry.version}`,
+        );
+        const packageSpec = `${entry.identifier}${entry.version ? (entry.package_kind === "npm" ? `@${entry.version}` : `==${entry.version}`) : ""}`;
+        const result =
+          entry.package_kind === "npm"
+            ? await runManaged({
+                executable: "npm",
+                args: [
+                  "install",
+                  "--ignore-scripts",
+                  "--no-package-lock",
+                  "--prefix",
+                  installPath,
+                  packageSpec,
+                ],
+                timeoutMs: 120_000,
+              })
+            : await runManaged({
+                executable: "uv",
+                args: ["pip", "install", "--target", installPath, packageSpec],
+                timeoutMs: 120_000,
+              });
+        if (result.code !== 0)
+          throw backendError("IO", `${entry.package_kind} MCP package installation failed`);
       }
       const serverId = `${entry.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${randomUUID().slice(0, 8)}`;
       const server: McpServer =
@@ -1586,7 +1799,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         new AbortController().signal,
       )) as { installation: unknown; server: unknown; tools: unknown[] };
       if (current.server_id)
-        await removeMcpServer(resolveMcpFile({ project: value.project }), current.server_id).catch(() => undefined);
+        await removeMcpServer(resolveMcpFile({ project: value.project }), current.server_id).catch(
+          () => undefined,
+        );
       mcpInstallations.delete(value.installationId);
       store.database
         .prepare("DELETE FROM mcp_installations WHERE id = ?")
@@ -1605,7 +1820,10 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       if (current.server_id) {
         await removeMcpServer(defaultMcpFile, current.server_id).catch(() => undefined);
         for (const workspace of store.listWorkspaces())
-          await removeMcpServer(resolveMcpFile({ project: workspace.canonical_path }), current.server_id).catch(() => undefined);
+          await removeMcpServer(
+            resolveMcpFile({ project: workspace.canonical_path }),
+            current.server_id,
+          ).catch(() => undefined);
       }
       if (current.install_path) await rm(current.install_path, { recursive: true, force: true });
       mcpInstallations.delete(value.installationId);
@@ -1628,14 +1846,19 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         if (!(await lstat(file).catch(() => undefined))) continue;
         let parsed: Record<string, unknown>;
         try {
-          parsed = file.endsWith(".toml") ? parseToml(await readFile(file, "utf8")) as Record<string, unknown> : JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+          parsed = file.endsWith(".toml")
+            ? (parseToml(await readFile(file, "utf8")) as Record<string, unknown>)
+            : (JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>);
         } catch {
           continue;
         }
         const serversValue = file.endsWith(".toml") ? parsed.mcp_servers : parsed.mcpServers;
-        const servers = serversValue && typeof serversValue === "object" ? serversValue as Record<string, unknown> : {};
+        const servers =
+          serversValue && typeof serversValue === "object"
+            ? (serversValue as Record<string, unknown>)
+            : {};
         for (const [name, raw] of Object.entries(servers)) {
-          const server = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+          const server = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
           candidates.push({
             id: `${agent}:${file}:${name}`,
             agent,
@@ -1644,7 +1867,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
             source_path: file,
             transport: typeof server.url === "string" ? "http" : "stdio",
             endpoint: String(server.url ?? server.command ?? ""),
-            has_secret_values: Object.keys((server.env ?? {}) as object).some((key) => /token|secret|key|password/i.test(key)),
+            has_secret_values: Object.keys((server.env ?? {}) as object).some((key) =>
+              /token|secret|key|password/i.test(key),
+            ),
             supported: Boolean(server.url || server.command),
             warnings: server.url || server.command ? [] : ["MCP entry has no URL or command"],
           });
@@ -1656,30 +1881,84 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const value = z
         .object({ project: z.string(), candidateIds: z.array(z.string()) })
         .parse(params);
-      if (!value.candidateIds.length) throw backendError("VALIDATION", "Select at least one native MCP candidate");
-      const candidates = await registry["mcp.scanNative"]({ project: value.project }, new AbortController().signal) as Array<Record<string, unknown>>;
-      const selected = candidates.filter((candidate) => value.candidateIds.includes(String(candidate.id)) && candidate.supported);
-      if (selected.length !== value.candidateIds.length) throw backendError("CONFLICT", "Native MCP candidates changed; scan again");
+      if (!value.candidateIds.length)
+        throw backendError("VALIDATION", "Select at least one native MCP candidate");
+      const candidates = (await registry["mcp.scanNative"](
+        { project: value.project },
+        new AbortController().signal,
+      )) as Array<Record<string, unknown>>;
+      const selected = candidates.filter(
+        (candidate) => value.candidateIds.includes(String(candidate.id)) && candidate.supported,
+      );
+      if (selected.length !== value.candidateIds.length)
+        throw backendError("CONFLICT", "Native MCP candidates changed; scan again");
       const target = path.join(value.project, ".agentkib", "mcp.json");
-      const existing = await loadMcpConfig(target).catch(() => ({ schema_version: 1, servers: [] }));
-      const servers = selected.map((candidate) => ({
-        id: `${String(candidate.agent)}-${String(candidate.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-        name: String(candidate.name), enabled: true, allow_tools: [], lan_allow_tools: [], targets: [String(candidate.agent)],
-        transport: candidate.transport === "http" ? { transport: "streamable-http" as const, url: String(candidate.endpoint), headers: {} } : { transport: "stdio" as const, command: String(candidate.endpoint), args: [], env: {} },
+      const existing = await loadMcpConfig(target).catch(() => ({
+        schema_version: 1,
+        servers: [],
       }));
-      const merged = [...existing.servers.filter((server) => !servers.some((item) => item.name === server.name)), ...servers];
+      const servers = selected.map((candidate) => ({
+        id: `${String(candidate.agent)}-${String(candidate.name)
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")}`,
+        name: String(candidate.name),
+        enabled: true,
+        allow_tools: [],
+        lan_allow_tools: [],
+        targets: [String(candidate.agent)],
+        transport:
+          candidate.transport === "http"
+            ? {
+                transport: "streamable-http" as const,
+                url: String(candidate.endpoint),
+                headers: {},
+              }
+            : {
+                transport: "stdio" as const,
+                command: String(candidate.endpoint),
+                args: [],
+                env: {},
+              },
+      }));
+      const merged = [
+        ...existing.servers.filter((server) => !servers.some((item) => item.name === server.name)),
+        ...servers,
+      ];
       const changes: Array<import("../changes/changeset.js").FileChange> = [];
       const before = await readFile(target, "utf8").catch(() => "");
-      changes.push({ target, scope: "project", before, ...(before ? { original_hash: hashContent(before) } : {}), after: JSON.stringify({ schema_version: 1, servers: merged }, null, 2) + "\n", risk: "medium", validator: "json" });
-      for (const source of [...new Set(selected.map((candidate) => String(candidate.source_path)))]) {
+      changes.push({
+        target,
+        scope: "project",
+        before,
+        ...(before ? { original_hash: hashContent(before) } : {}),
+        after: JSON.stringify({ schema_version: 1, servers: merged }, null, 2) + "\n",
+        risk: "medium",
+        validator: "json",
+      });
+      for (const source of [
+        ...new Set(selected.map((candidate) => String(candidate.source_path))),
+      ]) {
         const sourceBefore = await readFile(source, "utf8").catch(() => "");
         if (!sourceBefore || source.endsWith(".toml")) continue;
         try {
           const sourceDoc = JSON.parse(sourceBefore) as Record<string, unknown>;
-          const sourceServers = sourceDoc.mcpServers && typeof sourceDoc.mcpServers === "object" ? sourceDoc.mcpServers as Record<string, unknown> : {};
-          for (const candidate of selected.filter((item) => item.source_path === source)) delete sourceServers[String(candidate.name)];
-          const sourceAfter = JSON.stringify({ ...sourceDoc, mcpServers: sourceServers }, null, 2) + "\n";
-          changes.push({ target: source, scope: "project", before: sourceBefore, original_hash: hashContent(sourceBefore), after: sourceAfter, risk: "medium", validator: "json" });
+          const sourceServers =
+            sourceDoc.mcpServers && typeof sourceDoc.mcpServers === "object"
+              ? (sourceDoc.mcpServers as Record<string, unknown>)
+              : {};
+          for (const candidate of selected.filter((item) => item.source_path === source))
+            delete sourceServers[String(candidate.name)];
+          const sourceAfter =
+            JSON.stringify({ ...sourceDoc, mcpServers: sourceServers }, null, 2) + "\n";
+          changes.push({
+            target: source,
+            scope: "project",
+            before: sourceBefore,
+            original_hash: hashContent(sourceBefore),
+            after: sourceAfter,
+            risk: "medium",
+            validator: "json",
+          });
         } catch {
           throw backendError("VALIDATION", `Native MCP configuration is invalid: ${source}`);
         }
@@ -1769,21 +2048,33 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const gateway = config.gateways.find((item) => item.id === value.id);
       if (!gateway) throw backendError("NOT_FOUND", `Gateway not found: ${value.id}`);
       try {
-        const response = await fetch(gateway.base_url, { headers: gateway.token ? { Authorization: `Bearer ${gateway.token}` } : {}, signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+        const response = await fetch(gateway.base_url, {
+          headers: gateway.token ? { Authorization: `Bearer ${gateway.token}` } : {},
+          signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+        const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
         Object.assign(gateway, {
           state: "connected",
           version: typeof body.version === "string" ? body.version : undefined,
-          capabilities: Array.isArray(body.capabilities) ? body.capabilities.filter((item): item is string => typeof item === "string") : [],
+          capabilities: Array.isArray(body.capabilities)
+            ? body.capabilities.filter((item): item is string => typeof item === "string")
+            : [],
           last_connected_at: new Date().toISOString(),
           last_error: undefined,
         });
       } catch (error) {
-        Object.assign(gateway, { state: "error", last_error: error instanceof Error ? error.message : "Gateway refresh failed" });
+        Object.assign(gateway, {
+          state: "error",
+          last_error: error instanceof Error ? error.message : "Gateway refresh failed",
+        });
       }
       await saveGatewayConfig(file, config);
-      return (await registry["gateways.list"](params, new AbortController().signal) as Array<Record<string, unknown>>).find((item) => item.id === value.id);
+      return (
+        (await registry["gateways.list"](params, new AbortController().signal)) as Array<
+          Record<string, unknown>
+        >
+      ).find((item) => item.id === value.id);
     },
     "obsidian.open": (params: unknown) => {
       const value = z
@@ -1827,8 +2118,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         name: path.basename(value.vaultPath),
         source: "manual",
       });
-      const knownVault = obsidianVaults.some((item) => path.resolve(item.path) === path.resolve(vault.path));
-      if (!knownVault) throw backendError("NOT_FOUND", "The Obsidian vault must be added before it can be linked");
+      const knownVault = obsidianVaults.some(
+        (item) => path.resolve(item.path) === path.resolve(vault.path),
+      );
+      if (!knownVault)
+        throw backendError("NOT_FOUND", "The Obsidian vault must be added before it can be linked");
       const link = await createWorkspaceLink(
         workspace.canonical_path,
         vault,

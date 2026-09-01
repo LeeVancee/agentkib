@@ -171,6 +171,8 @@ fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> 
     }
     let parent = target.parent().context("Target has no parent directory")?;
     let mut reached_root = false;
+    // Continue above the session root so a replaced Agent Home (or one of its parents)
+    // cannot redirect a write after the target was planned.
     for directory in parent.ancestors() {
         match fs::symlink_metadata(directory) {
             Ok(metadata) => {
@@ -191,7 +193,6 @@ fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> 
         }
         if directory == root {
             reached_root = true;
-            break;
         }
     }
     if !reached_root {
@@ -530,5 +531,45 @@ mod tests {
 
         assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
         assert!(!outside.join("2026/09/session.jsonl").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_agent_home_rejects_a_symlinked_agent_home() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let agent_home = dir.path().join("agent-home");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(outside.join("sessions")).unwrap();
+        symlink(&outside, &agent_home).unwrap();
+        let session_root = agent_home.join("sessions");
+        let target = session_root.join("2026/09/session.jsonl");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: true,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::AgentHome,
+                original_hash: None,
+                before: String::new(),
+                after: "{}\n".into(),
+                risk: RiskLevel::High,
+                validator: "jsonl".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_home_files: vec![target],
+            protected_home_roots: vec![session_root],
+            home_approval: true,
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("sessions/2026/09/session.jsonl").exists());
     }
 }

@@ -1603,8 +1603,8 @@ struct NativeSessionArtifact {
 
 fn native_import_capability(target: AgentKind) -> NativeImportCapability {
     let (command, expected_version) = match target {
-        AgentKind::Codex => ("codex", "0.146."),
-        AgentKind::ClaudeCode => ("claude", "2.1."),
+        AgentKind::Codex => ("codex", (0, 146)),
+        AgentKind::ClaudeCode => ("claude", (2, 1)),
         _ => {
             return NativeImportCapability {
                 supported: false,
@@ -1647,7 +1647,7 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
 const NATIVE_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_NATIVE_VERSION_OUTPUT_BYTES: u64 = 64 * 1024;
 
-fn cli_version_matches(executable: &Path, expected_version: &str, timeout: Duration) -> bool {
+fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout: Duration) -> bool {
     let mut command = Command::new(executable);
     command
         .arg("--version")
@@ -1697,7 +1697,25 @@ fn cli_version_matches(executable: &Path, expected_version: &str, timeout: Durat
     };
     success
         && output.len() as u64 <= MAX_NATIVE_VERSION_OUTPUT_BYTES
-        && String::from_utf8(output).is_ok_and(|version| version.contains(expected_version))
+        && String::from_utf8(output)
+            .ok()
+            .and_then(|version| parse_cli_major_minor(&version))
+            == Some(expected_version)
+}
+
+fn parse_cli_major_minor(output: &str) -> Option<(u64, u64)> {
+    output
+        .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .find_map(|candidate| {
+            let mut parts = candidate.split('.');
+            let major = parts.next()?.parse().ok()?;
+            let minor = parts.next()?.parse().ok()?;
+            parts.next()?.parse::<u64>().ok()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some((major, minor))
+        })
 }
 
 fn native_import_format_matches(version_matches: bool, schema_matches: Option<bool>) -> bool {
@@ -1748,16 +1766,20 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
         return false;
     }
     let mut cursor = Some(root);
+    let mut nearest_existing_writable = None;
+    // Writability comes from the nearest existing directory, but every existing ancestor
+    // must remain a real directory so a configured Agent Home cannot redirect the write.
     while let Some(path) = cursor {
         match fs::symlink_metadata(path) {
             Ok(metadata) => {
                 if platform_path::is_reparse_or_symlink(path).unwrap_or(true) {
                     return false;
                 }
-                if metadata.is_dir() {
-                    return !metadata.permissions().readonly();
+                if !metadata.is_dir() {
+                    return false;
                 }
-                return false;
+                nearest_existing_writable.get_or_insert_with(|| !metadata.permissions().readonly());
+                cursor = path.parent();
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 cursor = path.parent();
@@ -1765,7 +1787,7 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
             Err(_) => return false,
         }
     }
-    false
+    nearest_existing_writable.unwrap_or(false)
 }
 
 fn plan_native_session_artifact(
@@ -4110,6 +4132,18 @@ mod tests {
     }
 
     #[test]
+    fn native_version_match_uses_semantic_major_and_minor_components() {
+        assert_eq!(parse_cli_major_minor("codex-cli 0.146.1"), Some((0, 146)));
+        assert_eq!(
+            parse_cli_major_minor("claude 2.1.3 (Claude Code)"),
+            Some((2, 1))
+        );
+        assert_ne!(parse_cli_major_minor("codex-cli 10.146.1"), Some((0, 146)));
+        assert_ne!(parse_cli_major_minor("claude 12.1.3"), Some((2, 1)));
+        assert_eq!(parse_cli_major_minor("codex-cli unknown"), None);
+    }
+
+    #[test]
     fn full_continuation_does_not_require_an_mcp_probe() {
         assert!(
             !continuation_mcp_status(SessionWindowStrategy::Full, || {
@@ -4145,7 +4179,7 @@ mod tests {
 
         assert!(!cli_version_matches(
             &executable,
-            "0.146.",
+            (0, 146),
             Duration::from_millis(50)
         ));
         assert!(started.elapsed() < Duration::from_secs(2));

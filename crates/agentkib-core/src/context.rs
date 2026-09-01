@@ -934,16 +934,65 @@ fn opencode_config_registers_managed_instruction(path: &Path) -> bool {
 }
 
 fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
+    fn class_matches(pattern: &[u8], target: u8) -> Option<(bool, usize)> {
+        let mut index = 1;
+        let negated = matches!(pattern.get(index), Some(b'!' | b'^'));
+        if negated {
+            index += 1;
+        }
+        let mut matched = false;
+        let mut has_member = false;
+        while index < pattern.len() && pattern[index] != b']' {
+            let start = if pattern[index] == b'\\' {
+                index += 1;
+                *pattern.get(index)?
+            } else {
+                pattern[index]
+            };
+            index += 1;
+            has_member = true;
+            if pattern.get(index) == Some(&b'-')
+                && pattern.get(index + 1).is_some_and(|value| *value != b']')
+            {
+                index += 1;
+                let end = if pattern[index] == b'\\' {
+                    index += 1;
+                    *pattern.get(index)?
+                } else {
+                    pattern[index]
+                };
+                index += 1;
+                matched |= start <= target && target <= end;
+            } else {
+                matched |= start == target;
+            }
+        }
+        if !has_member || pattern.get(index) != Some(&b']') {
+            return None;
+        }
+        Some((if negated { !matched } else { matched }, index + 1))
+    }
+
     fn segment_matches(pattern: &[u8], target: &[u8]) -> bool {
         let (mut pattern_index, mut target_index) = (0, 0);
         let mut star = None;
         let mut star_target_index = 0;
         while target_index < target.len() {
-            if pattern_index < pattern.len()
-                && (pattern[pattern_index] == b'?'
-                    || pattern[pattern_index] == target[target_index])
-            {
-                pattern_index += 1;
+            let atom_end = match pattern.get(pattern_index) {
+                Some(b'?') => Some(pattern_index + 1),
+                Some(b'[') => class_matches(&pattern[pattern_index..], target[target_index])
+                    .and_then(|(matches, consumed)| matches.then_some(pattern_index + consumed)),
+                Some(b'\\') => pattern
+                    .get(pattern_index + 1)
+                    .filter(|value| **value == target[target_index])
+                    .map(|_| pattern_index + 2),
+                Some(value) if *value == target[target_index] && *value != b'*' => {
+                    Some(pattern_index + 1)
+                }
+                _ => None,
+            };
+            if let Some(next_pattern_index) = atom_end {
+                pattern_index = next_pattern_index;
                 target_index += 1;
             } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
                 star = Some(pattern_index);
@@ -1607,6 +1656,18 @@ mod tests {
         ));
         assert!(opencode_instruction_pattern_matches(
             "**/agentkib-*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.[m]d",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.[a-z][!x]",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.\\m\\d",
             OPENCODE_MANAGED_INSTRUCTION
         ));
         assert!(!opencode_instruction_pattern_matches(

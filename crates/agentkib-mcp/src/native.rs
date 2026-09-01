@@ -382,7 +382,11 @@ fn collect_json_servers(
             });
         let has_secret_values = ["env", "environment", "headers"]
             .into_iter()
-            .any(|key| secret_container_has_values(server.get(key)));
+            .any(|key| secret_container_has_values(server.get(key)))
+            || server
+                .get("oauth")
+                .filter(|value| value.is_object())
+                .is_some_and(|value| secret_container_has_values(Some(value)));
         let mut migration_candidate = candidate(
             path,
             agent,
@@ -392,7 +396,12 @@ fn collect_json_servers(
             endpoint,
             has_secret_values,
         );
-        if agent == AgentKind::OpenCode && server.get("timeout").is_some() {
+        let has_unsupported_opencode_fields = agent == AgentKind::OpenCode
+            && (server.get("timeout").is_some()
+                || server
+                    .get("oauth")
+                    .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false)));
+        if has_unsupported_opencode_fields {
             migration_candidate.supported = false;
             if !migration_candidate
                 .warnings
@@ -885,14 +894,16 @@ mod tests {
     }
 
     #[test]
-    fn opencode_scan_ignores_empty_secret_containers_and_rejects_timeout() {
+    fn opencode_scan_rejects_lossy_fields_and_ignores_empty_secret_containers() {
         let dir = tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".opencode")).unwrap();
         std::fs::write(
             dir.path().join(".opencode/opencode.json"),
             r#"{"mcp":{
                 "empty-secrets":{"type":"local","command":["node"],"environment":{},"headers":{}},
-                "timed":{"type":"remote","url":"https://example.com/mcp","timeout":30000}
+                "oauth-disabled":{"type":"remote","url":"https://example.com/no-oauth","oauth":false},
+                "oauth-custom":{"type":"remote","url":"https://example.com/oauth","oauth":{"clientId":"client","clientSecret":"secret","scope":"tools:read"}},
+                "timed":{"type":"remote","url":"https://example.com/timed","timeout":30000}
             }}"#,
         )
         .unwrap();
@@ -904,6 +915,20 @@ mod tests {
             .unwrap();
         assert!(!empty.has_secret_values);
         assert!(empty.supported);
+
+        let oauth_disabled = candidates
+            .iter()
+            .find(|candidate| candidate.name == "oauth-disabled")
+            .unwrap();
+        assert!(!oauth_disabled.has_secret_values);
+        assert!(oauth_disabled.supported);
+
+        let oauth_custom = candidates
+            .iter()
+            .find(|candidate| candidate.name == "oauth-custom")
+            .unwrap();
+        assert!(oauth_custom.has_secret_values);
+        assert!(!oauth_custom.supported);
 
         let timed = candidates
             .iter()

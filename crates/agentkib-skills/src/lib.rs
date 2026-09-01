@@ -1582,7 +1582,10 @@ fn validate_trash_id(id: &str) -> Result<()> {
 }
 
 fn source_kind(owner: &str, repository: &str, path: &str) -> SkillSourceKind {
-    if owner == "openai" && repository == "skills" && path.starts_with("skills/.curated/") {
+    if owner.eq_ignore_ascii_case("openai")
+        && repository.eq_ignore_ascii_case("skills")
+        && path.starts_with("skills/.curated/")
+    {
         SkillSourceKind::OpenaiCurated
     } else {
         SkillSourceKind::Github
@@ -1801,14 +1804,19 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
             entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
             "Skill package contains an unsupported file"
         );
-        let relative = entry.path().strip_prefix(root)?;
+        let relative = entry
+            .path()
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
         let metadata = fs::metadata(entry.path())?;
         total = total
             .checked_add(metadata.len())
             .context("Skill package size overflow")?;
-        hash.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
-        hash.update([0]);
+        hash.update((relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
         hash.update([u8::from(is_executable(&metadata))]);
+        hash.update(metadata.len().to_le_bytes());
         let mut file = fs::File::open(entry.path())?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -2045,6 +2053,18 @@ mod tests {
         let mut differently_cased_path = differently_cased_repository;
         differently_cased_path.path = "skills/Reviewer".into();
         assert!(!same_source(&original, &differently_cased_path));
+    }
+
+    #[test]
+    fn curated_source_classification_ignores_repository_case_only() {
+        assert_eq!(
+            source_kind("OpenAI", "Skills", "skills/.curated/reviewer"),
+            SkillSourceKind::OpenaiCurated
+        );
+        assert_eq!(
+            source_kind("OpenAI", "Skills", "Skills/.curated/reviewer"),
+            SkillSourceKind::Github
+        );
     }
 
     #[test]
@@ -2393,6 +2413,23 @@ mod tests {
             0
         );
         assert_ne!(package_hash(directory.path()).unwrap().0, before);
+    }
+
+    #[test]
+    fn package_hash_frames_file_paths_and_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let split = directory.path().join("split");
+        let combined = directory.path().join("combined");
+        write_skill(&split, "same");
+        write_skill(&combined, "same");
+        fs::write(split.join("a"), []).unwrap();
+        fs::write(split.join("b"), []).unwrap();
+        fs::write(combined.join("a"), b"b\0\0").unwrap();
+
+        assert_ne!(
+            package_hash(&split).unwrap().0,
+            package_hash(&combined).unwrap().0
+        );
     }
 
     #[test]

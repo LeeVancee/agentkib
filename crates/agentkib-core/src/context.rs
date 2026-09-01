@@ -934,6 +934,89 @@ fn opencode_config_registers_managed_instruction(path: &Path) -> bool {
 }
 
 fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
+    const MAX_BRACE_VARIANTS: usize = 128;
+
+    fn brace_variants(pattern: &str) -> Vec<String> {
+        fn split_choices(value: &str) -> Option<Vec<&str>> {
+            let mut depth = 0;
+            let mut escaped = false;
+            let mut start = 0;
+            let mut choices = Vec::new();
+            for (index, character) in value.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match character {
+                    '\\' => escaped = true,
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        choices.push(&value[start..index]);
+                        start = index + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if choices.is_empty() {
+                return None;
+            }
+            choices.push(&value[start..]);
+            Some(choices)
+        }
+
+        fn expand(pattern: &str, output: &mut Vec<String>) {
+            if output.len() >= MAX_BRACE_VARIANTS {
+                return;
+            }
+            let bytes = pattern.as_bytes();
+            let mut open = None;
+            let mut depth = 0;
+            let mut escaped = false;
+            for (index, byte) in bytes.iter().copied().enumerate() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match byte {
+                    b'\\' => escaped = true,
+                    b'{' => {
+                        if open.is_none() {
+                            open = Some(index);
+                        }
+                        depth += 1;
+                    }
+                    b'}' if depth > 0 => {
+                        depth -= 1;
+                        if depth != 0 {
+                            continue;
+                        }
+                        let start = open.expect("an open brace exists while depth is positive");
+                        let Some(choices) = split_choices(&pattern[start + 1..index]) else {
+                            open = None;
+                            continue;
+                        };
+                        for choice in choices {
+                            if output.len() >= MAX_BRACE_VARIANTS {
+                                break;
+                            }
+                            let expanded =
+                                format!("{}{}{}", &pattern[..start], choice, &pattern[index + 1..]);
+                            expand(&expanded, output);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            output.push(pattern.to_string());
+        }
+
+        let mut output = Vec::new();
+        expand(pattern, &mut output);
+        output
+    }
+
     fn class_matches(pattern: &[u8], target: u8) -> Option<(bool, usize)> {
         let mut index = 1;
         let negated = matches!(pattern.get(index), Some(b'!' | b'^'));
@@ -1044,9 +1127,11 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
         pattern_index == pattern.len()
     }
 
-    let pattern = pattern.split('/').collect::<Vec<_>>();
     let target = target.split('/').collect::<Vec<_>>();
-    path_matches(&pattern, &target)
+    brace_variants(pattern).into_iter().any(|pattern| {
+        let pattern = pattern.split('/').collect::<Vec<_>>();
+        path_matches(&pattern, &target)
+    })
 }
 
 fn cursor_rule_is_always(path: &Path) -> bool {
@@ -1668,6 +1753,14 @@ mod tests {
         ));
         assert!(opencode_instruction_pattern_matches(
             ".opencode/agentkib-instructions.\\m\\d",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.{md,txt}",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".{cursor,{open,closed}code}/agentkib-instructions.{txt,md}",
             OPENCODE_MANAGED_INSTRUCTION
         ));
         assert!(!opencode_instruction_pattern_matches(

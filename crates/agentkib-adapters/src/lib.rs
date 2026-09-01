@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, manifest_path, opencode_managed_instruction_is_registered,
+    hash_content, manifest_path, opencode_managed_config_path,
+    opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
 use anyhow::{Context, Result};
@@ -1206,15 +1207,6 @@ fn safe_key(value: &str) -> String {
 
 fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
-}
-
-fn opencode_managed_config_path(root: &Path) -> PathBuf {
-    let jsonc = root.join(".opencode/opencode.jsonc");
-    if jsonc.exists() {
-        jsonc
-    } else {
-        root.join(".opencode/opencode.json")
-    }
 }
 
 fn merge_opencode_config(

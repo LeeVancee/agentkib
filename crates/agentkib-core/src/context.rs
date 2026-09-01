@@ -911,6 +911,15 @@ pub fn opencode_managed_instruction_is_registered(project: &Path) -> bool {
         })
 }
 
+pub fn opencode_managed_config_path(project: &Path) -> PathBuf {
+    let jsonc = project.join(".opencode/opencode.jsonc");
+    if fs::symlink_metadata(&jsonc).is_ok() {
+        jsonc
+    } else {
+        project.join(".opencode/opencode.json")
+    }
+}
+
 fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
     let configs = [
         project.join("opencode.json"),
@@ -966,7 +975,7 @@ fn opencode_configured_instruction_sources(
         if raw_pattern.starts_with("http://") || raw_pattern.starts_with("https://") {
             continue;
         }
-        let pattern = raw_pattern.trim_start_matches("./").replace('\\', "/");
+        let pattern = raw_pattern.trim_start_matches("./").to_string();
         if pattern.is_empty() || Path::new(&pattern).is_absolute() || pattern.starts_with("~/") {
             warnings.push(format!(
                 "OpenCode instruction source is outside the project and was not read: {raw_pattern}"
@@ -1878,6 +1887,28 @@ mod tests {
     }
 
     #[test]
+    fn opencode_preserves_escaped_glob_literals() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team[prod].md"), "production").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/team\\[prod\\].md"]}"#,
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+
+        assert!(
+            preview
+                .sections
+                .iter()
+                .any(|section| equivalent(&section.source, &dir.path().join("docs/team[prod].md")))
+        );
+    }
+
+    #[test]
     fn opencode_includes_only_registered_managed_instructions() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join(".opencode")).unwrap();
@@ -1957,6 +1988,10 @@ mod tests {
         assert!(opencode_instruction_pattern_matches(
             "docs/[规约].md",
             "docs/规.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            r"docs/team\[prod\].md",
+            "docs/team[prod].md"
         ));
         assert!(!opencode_instruction_pattern_matches(
             "docs/*.md",

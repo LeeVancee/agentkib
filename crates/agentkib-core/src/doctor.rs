@@ -14,7 +14,8 @@ use crate::manifest::manifest_entry_exists;
 use crate::{
     AgentKind, AssetKind, ContextDoctorReport, ContextDoctorSummary, DoctorAgentRow,
     DoctorAssetStatus, DoctorEvidence, DoctorIssue, DoctorSeverity, DoctorStatus, Manifest,
-    hash_content, load_manifest, manifest_path, resolve_context, scan_workspace,
+    hash_content, load_manifest, manifest_path, opencode_managed_config_path, resolve_context,
+    scan_workspace,
 };
 
 const MAX_MANAGED_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -798,7 +799,7 @@ fn mcp_target_can_be_repaired(project: &Path, agent: AgentKind) -> bool {
         AgentKind::Codex => project.join(".codex/config.toml"),
         AgentKind::ClaudeCode => project.join(".mcp.json"),
         AgentKind::Cursor => project.join(".cursor/mcp.json"),
-        AgentKind::OpenCode => project.join(".opencode/opencode.json"),
+        AgentKind::OpenCode => opencode_managed_config_path(project),
         AgentKind::GrokBuild => project.join(".grok/config.toml"),
         AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::DeepSeekHarness => return false,
     };
@@ -2451,6 +2452,46 @@ mod tests {
                 issue.agent == Some(AgentKind::OpenCode) && issue.code == code && issue.repairable
             }));
         }
+    }
+
+    #[test]
+    fn opencode_mcp_repair_uses_the_effective_jsonc_target() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.connections.push(ConnectionDefinition {
+            name: "filesystem".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp".into(),
+            },
+            env: Default::default(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        fs::create_dir_all(dir.path().join(".agentkib")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/opencode.jsonc")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            opencode_managed_config_path(dir.path()),
+            dir.path().join(".opencode/opencode.jsonc")
+        );
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(report.issues.iter().any(|issue| {
+            issue.agent == Some(AgentKind::OpenCode)
+                && issue.code == "mcp.target-missing"
+                && !issue.repairable
+        }));
     }
 
     #[test]

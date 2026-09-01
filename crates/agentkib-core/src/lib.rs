@@ -7,7 +7,9 @@ mod path_policy;
 mod scanner;
 
 pub use changeset::{ApplyOptions, apply_changeset, hash_content};
-pub use context::{opencode_managed_instruction_is_registered, resolve_context};
+pub use context::{
+    opencode_managed_config_path, opencode_managed_instruction_is_registered, resolve_context,
+};
 pub use doctor::{diagnose_workspace, diagnose_workspace_with_mcp_error};
 pub use manifest::{load_manifest, manifest_path, validate_manifest};
 pub use model::*;

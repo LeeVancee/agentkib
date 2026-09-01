@@ -60,9 +60,15 @@ describe("i18n resources", () => {
     expect(document.documentElement.lang).toBe("ja-JP");
   });
 
-  it("caches the last effective locale for non-blocking startup", () => {
-    cacheEffectiveLocale("ja-JP");
+  it("caches the last explicit locale for non-blocking startup", () => {
+    cacheEffectiveLocale("ja-JP", "ja-JP");
 
     expect(cachedEffectiveLocale("en-US")).toBe("ja-JP");
+  });
+
+  it("uses the current system locale when the cached preference follows the system", () => {
+    cacheEffectiveLocale("ja-JP", "system");
+
+    expect(cachedEffectiveLocale("zh-CN")).toBe("zh-CN");
   });
 });

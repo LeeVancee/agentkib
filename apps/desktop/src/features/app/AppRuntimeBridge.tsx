@@ -40,15 +40,15 @@ export function AppRuntimeBridge() {
       if (disposed) return;
       setRuntime(nextRuntime);
       applyTheme(nextRuntime.effective_theme);
-      cacheEffectiveTheme(nextRuntime.effective_theme);
-      cacheEffectiveLocale(nextRuntime.effective_locale);
+      cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+      cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
       await changeLocale(nextRuntime.effective_locale);
     };
     const onThemeChanged = (theme: EffectiveTheme) => {
       setRuntime((current) => {
         if (!current || current.theme_preference !== "system") return current;
         applyTheme(theme);
-        cacheEffectiveTheme(theme);
+        cacheEffectiveTheme(theme, "system");
         return { ...current, effective_theme: theme };
       });
     };
@@ -102,8 +102,8 @@ export function AppRuntimeBridge() {
         .then(async (nextRuntime) => {
           setRuntime(nextRuntime);
           applyTheme(nextRuntime.effective_theme);
-          cacheEffectiveTheme(nextRuntime.effective_theme);
-          cacheEffectiveLocale(nextRuntime.effective_locale);
+          cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
           await changeLocale(nextRuntime.effective_locale);
         })
         .catch(() => undefined);

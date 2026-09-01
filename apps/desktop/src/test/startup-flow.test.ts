@@ -20,8 +20,12 @@ describe("desktop startup flow", () => {
       "utf8",
     );
 
-    expect(source).toContain("cacheEffectiveLocale(nextRuntime.effective_locale)");
-    expect(source).toContain("cacheEffectiveTheme(nextRuntime.effective_theme)");
+    expect(source).toContain(
+      "cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference)",
+    );
+    expect(source).toContain(
+      "cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference)",
+    );
   });
 
   it("registers IPC and starts the Runtime without blocking window creation", () => {

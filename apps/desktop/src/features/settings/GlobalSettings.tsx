@@ -833,7 +833,7 @@ function LanguageSetting({
 }) {
   const update = async (preference: LocalePreference) => {
     const nextRuntime = await api.setLocale(preference);
-    cacheEffectiveLocale(nextRuntime.effective_locale);
+    cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
     await changeLocale(nextRuntime.effective_locale);
     onChanged(nextRuntime);
   };
@@ -869,7 +869,7 @@ function ThemeSetting({
   const update = async (preference: ThemePreference) => {
     const nextRuntime = await api.setThemePreference(preference);
     applyTheme(nextRuntime.effective_theme);
-    cacheEffectiveTheme(nextRuntime.effective_theme);
+    cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
     onChanged(nextRuntime);
   };
   const selected = runtime?.theme_preference ?? "system";

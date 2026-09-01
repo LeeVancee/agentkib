@@ -48,9 +48,19 @@ describe("theme runtime", () => {
     expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("emerald");
   });
 
-  it("caches the last effective theme for non-blocking startup", () => {
-    cacheEffectiveTheme("dark");
+  it("caches the last explicit theme for non-blocking startup", () => {
+    cacheEffectiveTheme("dark", "dark");
 
     expect(cachedEffectiveTheme()).toBe("dark");
+  });
+
+  it("uses the current system theme when the cached preference follows the system", () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: true }),
+    });
+    cacheEffectiveTheme("dark", "system");
+
+    expect(cachedEffectiveTheme()).toBe("light");
   });
 });

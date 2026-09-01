@@ -1645,6 +1645,7 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
 }
 
 const NATIVE_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const NATIVE_VERSION_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_NATIVE_VERSION_OUTPUT_BYTES: u64 = 64 * 1024;
 
 fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout: Duration) -> bool {
@@ -1668,12 +1669,14 @@ fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout:
         let _ = child.wait();
         return false;
     };
-    let output_reader = std::thread::spawn(move || {
+    let (output_sender, output_receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
         let mut output = Vec::new();
-        stdout
+        let result = stdout
             .take(MAX_NATIVE_VERSION_OUTPUT_BYTES + 1)
             .read_to_end(&mut output)
-            .map(|_| output)
+            .map(|_| output);
+        let _ = output_sender.send(result);
     });
     let started = Instant::now();
     let success = loop {
@@ -1692,7 +1695,10 @@ fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout:
             }
         }
     };
-    let Ok(Ok(output)) = output_reader.join() else {
+    // A successful wrapper can exit while a descendant still owns stdout. Always terminate the
+    // process tree before draining the pipe, and never let an escaped descendant block this RPC.
+    let _ = tree.terminate();
+    let Ok(Ok(output)) = output_receiver.recv_timeout(NATIVE_VERSION_OUTPUT_DRAIN_TIMEOUT) else {
         return false;
     };
     success
@@ -1766,8 +1772,8 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
         return false;
     }
     let mut cursor = Some(root);
-    let mut nearest_existing_writable = None;
-    // Writability comes from the nearest existing directory, but every existing ancestor
+    let mut nearest_existing = None;
+    // Write access is probed in the nearest existing directory, but every existing ancestor
     // must remain a real directory so a configured Agent Home cannot redirect the write.
     while let Some(path) = cursor {
         match fs::symlink_metadata(path) {
@@ -1778,7 +1784,7 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
                 if !metadata.is_dir() {
                     return false;
                 }
-                nearest_existing_writable.get_or_insert_with(|| !metadata.permissions().readonly());
+                nearest_existing.get_or_insert_with(|| path.to_path_buf());
                 cursor = path.parent();
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -1787,7 +1793,20 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
             Err(_) => return false,
         }
     }
-    nearest_existing_writable.unwrap_or(false)
+    nearest_existing.is_some_and(|directory| directory_allows_file_creation(&directory))
+}
+
+fn directory_allows_file_creation(directory: &Path) -> bool {
+    let probe = directory.join(format!(".agentkib-write-probe-{}", uuid::Uuid::new_v4()));
+    let Ok(file) = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    else {
+        return false;
+    };
+    drop(file);
+    fs::remove_file(probe).is_ok()
 }
 
 fn plan_native_session_artifact(
@@ -4168,6 +4187,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn native_import_probes_effective_write_access() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir_in(env::current_dir().unwrap()).unwrap();
+        let agent_home = directory.path().join("agent-home");
+        fs::create_dir(&agent_home).unwrap();
+        fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o577)).unwrap();
+
+        assert!(!native_root_is_safe_and_writable(
+            &agent_home.join("sessions")
+        ));
+
+        fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(native_root_is_safe_and_writable(
+            &agent_home.join("sessions")
+        ));
+        assert_eq!(fs::read_dir(agent_home).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn native_version_probe_terminates_a_hung_process_tree() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -4181,6 +4221,29 @@ mod tests {
             &executable,
             (0, 146),
             Duration::from_millis(50)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_version_probe_terminates_descendants_after_wrapper_exits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("background-version-probe");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nsleep 5 &\nprintf 'codex-cli 0.146.1\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+
+        assert!(cli_version_matches(
+            &executable,
+            (0, 146),
+            Duration::from_secs(1)
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
     }

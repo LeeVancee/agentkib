@@ -556,6 +556,16 @@ pub fn read_claude_document(
                         .and_then(Value::as_str)
                         == Some("base64")
                     {
+                        let Some(data) = source
+                            .and_then(|value| value.get("data"))
+                            .and_then(Value::as_str)
+                            .filter(|data| !data.trim().is_empty())
+                        else {
+                            *loss_counts
+                                .entry(SessionLossCode::ExternalAttachment)
+                                .or_insert(0) += 1;
+                            continue;
+                        };
                         blocks.push(SessionBlock::Attachment {
                             kind: if kind == "document" {
                                 SessionAttachmentKind::Document
@@ -571,10 +581,7 @@ pub fn read_claude_document(
                                 .get("name")
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
-                            inline_base64: source
-                                .and_then(|value| value.get("data"))
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
+                            inline_base64: Some(data.to_string()),
                         });
                     } else {
                         *loss_counts
@@ -1706,6 +1713,39 @@ mod tests {
             !serde_json::to_string(&document)
                 .unwrap()
                 .contains("do not import summary")
+        );
+    }
+
+    #[test]
+    fn claude_document_reports_base64_attachments_without_payloads() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let record = serde_json::json!({
+            "type":"user",
+            "message":{
+                "role":"user",
+                "content":[
+                    {"type":"text","text":"continue"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png"}},
+                    {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":42}},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}
+                ]
+            }
+        });
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&record).unwrap()),
+        )
+        .unwrap();
+
+        let document =
+            read_claude_document(&source(AgentKind::ClaudeCode), &path, false, None).unwrap();
+
+        assert_eq!(stats(&document).attachment_count, 0);
+        assert!(
+            document.losses.iter().any(|loss| {
+                loss.code == SessionLossCode::ExternalAttachment && loss.count == 3
+            })
         );
     }
 

@@ -497,7 +497,7 @@ mod tests {
     fn protected_agent_home_rejects_a_symlinked_session_parent() {
         use std::os::unix::fs::symlink;
 
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let project = dir.path().join("project");
         let agent_home = dir.path().join("agent-home");
         let session_root = agent_home.join("sessions");
@@ -538,7 +538,7 @@ mod tests {
     fn protected_agent_home_rejects_a_symlinked_agent_home() {
         use std::os::unix::fs::symlink;
 
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let project = dir.path().join("project");
         let agent_home = dir.path().join("agent-home");
         let outside = dir.path().join("outside");

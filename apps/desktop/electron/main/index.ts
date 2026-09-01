@@ -20,6 +20,7 @@ import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell"
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
+import { normalizeReleaseNotes } from "./release-notes";
 import {
   optionalCloseBehavior,
   optionalPositiveInteger,
@@ -332,21 +333,11 @@ function registerUpdateIpc(): void {
       return undefined;
     }
     pendingUpdateVersion = update.version;
-    const releaseNotes = update.releaseNotes;
-    const notes =
-      typeof releaseNotes === "string"
-        ? releaseNotes
-        : Array.isArray(releaseNotes)
-          ? releaseNotes
-              .map((entry) => entry.note ?? "")
-              .filter(Boolean)
-              .join("\n\n") || undefined
-          : undefined;
     return {
       current_version: app.getVersion(),
       version: update.version,
       published_at: update.releaseDate || undefined,
-      notes,
+      notes: normalizeReleaseNotes(update.releaseNotes),
       release_url: `https://github.com/starroyhq/agentkib/releases/tag/v${update.version}`,
       install_mode: process.platform === "linux" && !process.env.APPIMAGE ? "manual" : "in-app",
     };

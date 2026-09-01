@@ -39,13 +39,7 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
             project.join(".opencode/opencode.json"),
             project.join(".opencode/opencode.jsonc"),
         ] {
-            scan_json5_servers(
-                &path,
-                AgentKind::OpenCode,
-                "project",
-                &["mcp"],
-                &mut candidates,
-            )?;
+            scan_opencode_servers(&path, "project", &mut candidates)?;
         }
     }
     if let Some(home) = dirs::home_dir() {
@@ -78,13 +72,7 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
         .map(|home| home.join("opencode"))
     {
         for name in ["opencode.json", "opencode.jsonc"] {
-            scan_json5_servers(
-                &config_home.join(name),
-                AgentKind::OpenCode,
-                "home",
-                &["mcp"],
-                &mut candidates,
-            )?;
+            scan_opencode_servers(&config_home.join(name), "home", &mut candidates)?;
         }
     }
     candidates.retain(|candidate| candidate.name != "agentkib");
@@ -296,6 +284,28 @@ fn scan_json5_servers(
     let value: Value = json5::from_str(&std::fs::read_to_string(path)?)?;
     collect_json_servers(path, agent, scope, pointer_value(&value, pointer), output);
     Ok(())
+}
+
+fn scan_opencode_servers(
+    path: &Path,
+    scope: &str,
+    output: &mut Vec<McpMigrationCandidate>,
+) -> Result<()> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let value = parse_opencode_config(path, &content)?;
+    collect_json_servers(path, AgentKind::OpenCode, scope, value.get("mcp"), output);
+    Ok(())
+}
+
+fn parse_opencode_config(path: &Path, content: &str) -> Result<Value> {
+    if path.extension().and_then(|value| value.to_str()) == Some("jsonc") {
+        Ok(json5::from_str(content)?)
+    } else {
+        Ok(serde_json::from_str(content)?)
+    }
 }
 
 fn collect_json_servers(
@@ -511,7 +521,7 @@ fn hermes_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
 
 fn opencode_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
     let content = std::fs::read_to_string(&candidate.source_path)?;
-    let value: Value = json5::from_str(&content)?;
+    let value = parse_opencode_config(&candidate.source_path, &content)?;
     let server = value
         .get("mcp")
         .and_then(Value::as_object)
@@ -629,7 +639,11 @@ fn remove_native_candidates(
             Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
         }
         AgentKind::OpenCode => {
-            let mut value: Value = json5::from_str(content)?;
+            let source = &candidates
+                .first()
+                .context("OpenCode MCP migration has no candidates")?
+                .source_path;
+            let mut value = parse_opencode_config(source, content)?;
             remove_json_names(&mut value, &["mcp"], &names)?;
             upsert_json_gateway(&mut value, &["mcp"], agent, gateway_url)?;
             Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
@@ -870,6 +884,31 @@ mod tests {
         assert_eq!(
             value["mcp"]["agentkib"]["url"],
             "http://127.0.0.1/mcp/opencode"
+        );
+    }
+
+    #[test]
+    fn opencode_json_stays_strict_across_scan_and_migration() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".opencode")).unwrap();
+        let path = dir.path().join(".opencode/opencode.json");
+        let content = r#"{"mcp":{"selected":{"type":"remote","url":"https://example.com"}},}"#;
+        std::fs::write(&path, content).unwrap();
+
+        assert!(scan_native_candidates(Some(dir.path())).is_err());
+        let candidate = candidate(
+            &path,
+            AgentKind::OpenCode,
+            "project",
+            "selected",
+            "remote",
+            "https://example.com",
+            false,
+        );
+        assert!(migration_server(&candidate).is_err());
+        assert!(
+            remove_native_candidates(content, &[&candidate], "http://127.0.0.1/mcp/{agent}")
+                .is_err()
         );
     }
 }

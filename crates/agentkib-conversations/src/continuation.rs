@@ -166,7 +166,7 @@ pub fn read_codex_document(
     let snapshot = read_snapshot(path)?;
     let mut turns = Vec::new();
     let mut fallback_messages = Vec::new();
-    let mut primary_messages = BTreeSet::new();
+    let mut primary_messages = BTreeMap::new();
     let mut known_calls = BTreeSet::new();
     let mut known_attachments = BTreeSet::new();
     let mut loss_counts = BTreeMap::new();
@@ -190,7 +190,7 @@ pub fn read_codex_document(
                     .and_then(Value::as_str)
                     .filter(|text| !text.trim().is_empty())
                 {
-                    primary_messages.insert(message_key(role, text));
+                    *primary_messages.entry(message_key(role, text)).or_insert(0) += 1;
                     blocks.push(SessionBlock::Text { text: text.into() });
                 }
                 blocks.extend(codex_attachment_blocks(
@@ -289,9 +289,14 @@ pub fn read_codex_document(
         }
     }
     for (line, role, timestamp, text) in fallback_messages {
-        if !primary_messages.contains(&message_key(role, &text)) {
-            turns.push(text_turn(line, role, timestamp, &text));
+        let remaining = primary_messages
+            .entry(message_key(role, &text))
+            .or_insert(0);
+        if *remaining > 0 {
+            *remaining -= 1;
+            continue;
         }
+        turns.push(text_turn(line, role, timestamp, &text));
     }
     finish_document(source, turns, loss_counts, home)
 }
@@ -1450,6 +1455,29 @@ mod tests {
                 .map(|loss| loss.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn codex_document_matches_duplicate_messages_by_occurrence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"continue"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+
+        assert_eq!(stats(&document).message_count, 2);
     }
 
     #[test]

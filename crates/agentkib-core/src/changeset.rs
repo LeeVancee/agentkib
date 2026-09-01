@@ -13,6 +13,7 @@ use crate::{ApplyReport, ChangeScope, ChangeSet, ensure_allowed_target};
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub approved_home_files: Vec<PathBuf>,
+    pub protected_home_roots: Vec<PathBuf>,
     pub approved_application_files: Vec<PathBuf>,
     pub home_approval: bool,
 }
@@ -53,6 +54,9 @@ pub fn apply_changeset(
         if matches!(change.scope, ChangeScope::ApplicationData) {
             ensure_application_data_parent_chain(&change.target)?;
         }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
         let current = fs::read(&change.target).unwrap_or_default();
         let current_hash = if change.target.exists() {
             Some(hash_content(&current))
@@ -75,9 +79,15 @@ pub fn apply_changeset(
         if matches!(change.scope, ChangeScope::ApplicationData) {
             ensure_application_data_parent_chain(&change.target)?;
         }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
         fs::create_dir_all(parent)?;
         if matches!(change.scope, ChangeScope::ApplicationData) {
             ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
         }
         if change.target.exists() {
             fs::copy(&change.target, backup_dir.join(format!("{index}.bak")))?;
@@ -85,6 +95,9 @@ pub fn apply_changeset(
         let mut temp = NamedTempFile::new_in(parent)?;
         if matches!(change.scope, ChangeScope::ApplicationData) {
             ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
         }
         use std::io::Write;
         temp.write_all(change.after.as_bytes())?;
@@ -99,6 +112,14 @@ pub fn apply_changeset(
     for (index, (change, temp)) in changeset.changes.iter().zip(prepared).enumerate() {
         if matches!(change.scope, ChangeScope::ApplicationData)
             && let Err(error) = ensure_application_data_parent_chain(&change.target)
+        {
+            if index > 0 {
+                rollback(changeset, &backup_dir, index - 1);
+            }
+            return Err(error);
+        }
+        if matches!(change.scope, ChangeScope::AgentHome)
+            && let Err(error) = ensure_protected_home_parent_chain(&change.target, options)
         {
             if index > 0 {
                 rollback(changeset, &backup_dir, index - 1);
@@ -129,6 +150,54 @@ pub fn apply_changeset(
         applied,
         backup_dir,
     })
+}
+
+fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> Result<()> {
+    let Some(root) = options
+        .protected_home_roots
+        .iter()
+        .find(|root| target.starts_with(root))
+    else {
+        return Ok(());
+    };
+    let relative = target
+        .strip_prefix(root)
+        .context("Protected Agent Home target is outside its root")?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("Protected Agent Home target contains an unsafe path component");
+    }
+    let parent = target.parent().context("Target has no parent directory")?;
+    let mut reached_root = false;
+    for directory in parent.ancestors() {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if agentkib_platform::path::is_reparse_or_symlink(directory)? || !metadata.is_dir()
+                {
+                    bail!("Protected Agent Home parent is not a regular directory")
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Protected Agent Home parent is unavailable: {}",
+                        directory.display()
+                    )
+                });
+            }
+        }
+        if directory == root {
+            reached_root = true;
+            break;
+        }
+    }
+    if !reached_root {
+        bail!("Protected Agent Home target is outside its root")
+    }
+    Ok(())
 }
 
 fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
@@ -419,5 +488,46 @@ mod tests {
 
         assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
         assert!(!outside.join("workspace/archive/document.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_agent_home_rejects_a_symlinked_session_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let agent_home = dir.path().join("agent-home");
+        let session_root = agent_home.join("sessions");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&agent_home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &session_root).unwrap();
+        let target = session_root.join("2026/09/session.jsonl");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: true,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::AgentHome,
+                original_hash: None,
+                before: String::new(),
+                after: "{}\n".into(),
+                risk: RiskLevel::High,
+                validator: "jsonl".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_home_files: vec![target],
+            protected_home_roots: vec![session_root],
+            home_approval: true,
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("2026/09/session.jsonl").exists());
     }
 }

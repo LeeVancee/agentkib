@@ -2385,6 +2385,7 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         .into_iter()
         .flatten()
         .collect();
+    let mut protected_home_roots = Vec::new();
     approved_home_files.extend(native_mcp_home_files());
     let approved_application_files = if let Some(workspace_id) = project_id.as_deref() {
         validate_application_data_changes(&request.change_set, workspace_id)?
@@ -2394,14 +2395,20 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
     for change in &request.change_set.changes {
         if matches!(change.scope, agentkib_core::ChangeScope::AgentHome)
             && change.validator == "jsonl"
-            && (validate_native_session_target(&change.target, AgentKind::Codex).is_ok()
-                || validate_native_session_target(&change.target, AgentKind::ClaudeCode).is_ok())
         {
-            approved_home_files.push(change.target.clone());
+            let root = [AgentKind::Codex, AgentKind::ClaudeCode]
+                .into_iter()
+                .find(|agent| validate_native_session_target(&change.target, *agent).is_ok())
+                .and_then(native_session_root);
+            if let Some(root) = root {
+                approved_home_files.push(change.target.clone());
+                protected_home_roots.push(root);
+            }
         }
     }
     let options = agentkib_core::ApplyOptions {
         approved_home_files,
+        protected_home_roots,
         approved_application_files,
         home_approval: request.approve_home,
     };

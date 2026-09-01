@@ -636,7 +636,6 @@ fn valid_chunk_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use agentkib_core::AgentKind;
-    use tempfile::tempdir;
 
     use super::*;
     use crate::SessionDocumentSource;
@@ -915,7 +914,7 @@ mod tests {
             build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
                 .unwrap();
         let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let outside = tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
         let outside_directory =
             archive_directory(outside.path(), "workspace", &archive_id).unwrap();
         std::fs::create_dir_all(&outside_directory).unwrap();

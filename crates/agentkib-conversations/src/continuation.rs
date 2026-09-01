@@ -191,11 +191,17 @@ pub fn read_codex_document(
                     .and_then(Value::as_str)
                     .filter(|text| !text.trim().is_empty())
                 {
-                    *primary_messages.entry(message_key(role, text)).or_insert(0) += 1;
+                    primary_messages
+                        .entry(message_key(role, text))
+                        .or_insert_with(Vec::new)
+                        .push(line);
                     blocks.push(SessionBlock::Text { text: text.into() });
                 }
                 for (identity, block) in codex_attachment_blocks(&value, &mut loss_counts) {
-                    *primary_attachments.entry(identity).or_insert(0) += 1;
+                    primary_attachments
+                        .entry(identity)
+                        .or_insert_with(Vec::new)
+                        .push(line);
                     blocks.push(block);
                 }
                 if !blocks.is_empty() {
@@ -285,27 +291,40 @@ pub fn read_codex_document(
             _ => {}
         }
     }
-    for (line, role, timestamp, text) in fallback_messages {
-        let remaining = primary_messages
-            .entry(message_key(role, &text))
-            .or_insert(0);
-        if *remaining > 0 {
-            *remaining -= 1;
+    let matched_messages = matched_fallback_occurrences(
+        &primary_messages,
+        fallback_messages
+            .iter()
+            .enumerate()
+            .map(|(index, (line, role, _, text))| (message_key(*role, text), *line, (index, 0))),
+    );
+    for (index, (line, role, timestamp, text)) in fallback_messages.into_iter().enumerate() {
+        if matched_messages.contains(&(index, 0)) {
             continue;
         }
         turns.push(text_turn(line, role, timestamp, &text));
     }
-    for (line, role, timestamp, attachments) in fallback_attachments {
+    let matched_attachments = matched_fallback_occurrences(
+        &primary_attachments,
+        fallback_attachments.iter().enumerate().flat_map(
+            |(turn_index, (line, _, _, attachments))| {
+                attachments
+                    .iter()
+                    .enumerate()
+                    .map(move |(block_index, (identity, _))| {
+                        (identity.clone(), *line, (turn_index, block_index))
+                    })
+            },
+        ),
+    );
+    for (turn_index, (line, role, timestamp, attachments)) in
+        fallback_attachments.into_iter().enumerate()
+    {
         let blocks = attachments
             .into_iter()
-            .filter_map(|(identity, block)| {
-                let remaining = primary_attachments.entry(identity).or_insert(0);
-                if *remaining > 0 {
-                    *remaining -= 1;
-                    None
-                } else {
-                    Some(block)
-                }
+            .enumerate()
+            .filter_map(|(block_index, (_, block))| {
+                (!matched_attachments.contains(&(turn_index, block_index))).then_some(block)
             })
             .collect::<Vec<_>>();
         if !blocks.is_empty() {
@@ -318,6 +337,37 @@ pub fn read_codex_document(
         }
     }
     finish_document(source, turns, loss_counts, home)
+}
+
+fn matched_fallback_occurrences(
+    primary: &BTreeMap<String, Vec<usize>>,
+    fallback: impl IntoIterator<Item = (String, usize, (usize, usize))>,
+) -> BTreeSet<(usize, usize)> {
+    let mut fallback_by_key = BTreeMap::<String, Vec<(usize, (usize, usize))>>::new();
+    for (key, line, id) in fallback {
+        fallback_by_key.entry(key).or_default().push((line, id));
+    }
+    let mut matched = BTreeSet::new();
+    for (key, primary_lines) in primary {
+        let Some(candidates) = fallback_by_key.get_mut(key) else {
+            continue;
+        };
+        for primary_line in primary_lines {
+            let Some((index, _)) =
+                candidates
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, (fallback_line, _))| {
+                        (primary_line.abs_diff(*fallback_line), *fallback_line)
+                    })
+            else {
+                break;
+            };
+            let (_, id) = candidates.remove(index);
+            matched.insert(id);
+        }
+    }
+    matched
 }
 
 fn codex_attachment_blocks(
@@ -1533,6 +1583,42 @@ mod tests {
         let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
 
         assert_eq!(stats(&document).message_count, 2);
+    }
+
+    #[test]
+    fn codex_document_matches_the_nearest_primary_message_occurrence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"continue"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second answer"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let user_turn_ids = document
+            .turns
+            .iter()
+            .filter(|turn| {
+                turn.role == SessionRole::User
+                    && turn.blocks.iter().any(
+                        |block| matches!(block, SessionBlock::Text { text } if text == "continue"),
+                    )
+            })
+            .map(|turn| turn.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(user_turn_ids, vec!["turn-1", "turn-4"]);
     }
 
     #[test]

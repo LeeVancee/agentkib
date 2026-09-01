@@ -207,7 +207,8 @@ fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
     for directory in parent.ancestors().take(3) {
         match fs::symlink_metadata(directory) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                if agentkib_platform::path::is_reparse_or_symlink(directory)? || !metadata.is_dir()
+                {
                     bail!("Application data parent is not a regular directory")
                 }
             }

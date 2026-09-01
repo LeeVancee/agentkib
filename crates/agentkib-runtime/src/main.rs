@@ -1618,13 +1618,8 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             reason: Some("cli-unavailable".into()),
         };
     };
-    let version_matches = Command::new(&executable)
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .is_some_and(|version| version.contains(expected_version));
+    let version_matches =
+        cli_version_matches(&executable, expected_version, NATIVE_VERSION_PROBE_TIMEOUT);
     let schema_matches = latest_native_session(target).as_ref().map(|path| {
         read_first_jsonl_value(path).is_some_and(|value| matches_native_schema(&value, target))
     });
@@ -1645,6 +1640,62 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             }
         }),
     }
+}
+
+const NATIVE_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_NATIVE_VERSION_OUTPUT_BYTES: u64 = 64 * 1024;
+
+fn cli_version_matches(executable: &Path, expected_version: &str, timeout: Duration) -> bool {
+    let mut command = Command::new(executable);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_process_group(&mut command);
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let Ok(tree) = ProcessTree::attach(&child) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = tree.terminate();
+        let _ = child.wait();
+        return false;
+    };
+    let output_reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        stdout
+            .take(MAX_NATIVE_VERSION_OUTPUT_BYTES + 1)
+            .read_to_end(&mut output)
+            .map(|_| output)
+    });
+    let started = Instant::now();
+    let success = loop {
+        if started.elapsed() >= timeout {
+            let _ = tree.terminate();
+            let _ = child.wait();
+            break false;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => {
+                let _ = tree.terminate();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let Ok(Ok(output)) = output_reader.join() else {
+        return false;
+    };
+    success
+        && output.len() as u64 <= MAX_NATIVE_VERSION_OUTPUT_BYTES
+        && String::from_utf8(output).is_ok_and(|version| version.contains(expected_version))
 }
 
 fn native_import_format_matches(version_matches: bool, schema_matches: Option<bool>) -> bool {
@@ -4038,6 +4089,25 @@ mod tests {
         assert!(!native_import_format_matches(true, Some(false)));
         assert!(native_import_format_matches(true, Some(true)));
         assert!(native_import_format_matches(true, None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_version_probe_terminates_a_hung_process_tree() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("hung-version-probe");
+        fs::write(&executable, "#!/bin/sh\nsleep 5\nprintf '0.146.1\\n'\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let started = Instant::now();
+
+        assert!(!cli_version_matches(
+            &executable,
+            "0.146.",
+            Duration::from_millis(50)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

@@ -12,7 +12,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -562,18 +568,30 @@ function McpHubPage({
           <div className="grid gap-1.5">
             <h2>{tr("mcp.scope")}</h2>
           </div>
-          <SelectControl
-            className="min-w-40"
-            value={scope}
-            onChange={(event) => setScope(event.target.value)}
+          <Select
+            value={scope || "__global_scope__"}
+            onValueChange={(value) => {
+              if (value !== null) {
+                const nextScope = String(value);
+                setScope(nextScope === "__global_scope__" ? "" : nextScope);
+              }
+            }}
           >
-            <option value="">{tr("mcp.globalScope")}</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.path}>
-                {workspace.name}
-              </option>
-            ))}
-          </SelectControl>
+            <SelectTrigger className="min-w-40" aria-label={tr("mcp.scope")}>
+              <SelectValue>
+                {workspaces.find((workspace) => workspace.path === scope)?.name ??
+                  tr("mcp.globalScope")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.id} value={workspace.path}>
+                  {workspace.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <McpServerEditor project={project} onSaved={load} />

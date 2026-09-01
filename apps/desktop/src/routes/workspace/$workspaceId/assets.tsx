@@ -9,7 +9,13 @@ import { tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
@@ -264,13 +270,20 @@ function Assets({
               onChange={(event) => setConnectionName(event.target.value)}
               placeholder={tr("assets.name")}
             />
-            <SelectControl
+            <Select
               value={transport}
-              onChange={(event) => setTransport(event.target.value as "stdio" | "http")}
+              onValueChange={(value) => {
+                if (value === "stdio" || value === "http") setTransport(value);
+              }}
             >
-              <option value="stdio">stdio</option>
-              <option value="http">HTTP</option>
-            </SelectControl>
+              <SelectTrigger>
+                <SelectValue>{transport === "stdio" ? "stdio" : "HTTP"}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stdio">stdio</SelectItem>
+                <SelectItem value="http">HTTP</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               value={endpoint}
               onChange={(event) => setEndpoint(event.target.value)}

@@ -1,5 +1,11 @@
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -143,15 +149,22 @@ export function AgentsPage({
               placeholder={tr("common.search")}
             />
           </label>
-          <SelectControl
-            className="h-9"
+          <Select
             value={agentSort}
-            onChange={(event) => setAgentSort(event.target.value as typeof agentSort)}
-            aria-label={tr("agents.status")}
+            onValueChange={(value) => {
+              if (value !== null) setAgentSort(String(value) as typeof agentSort);
+            }}
           >
-            <option value="status">{tr("agents.status")}</option>
-            <option value="name">{tr("agents.name")}</option>
-          </SelectControl>
+            <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
+              <SelectValue>
+                {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="status">{tr("agents.status")}</SelectItem>
+              <SelectItem value="name">{tr("agents.name")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </section>
       <div className="relative grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
@@ -389,19 +402,31 @@ export function AgentsPage({
                   />
                 </label>
                 {assetKinds.length > 1 && (
-                  <SelectControl
-                    aria-label={tr("catalog.allTypes")}
-                    className="h-9 w-full md:w-auto md:min-w-[150px]"
+                  <Select
                     value={assetKind}
-                    onChange={(event) => setAssetKind(event.target.value)}
+                    onValueChange={(value) => {
+                      if (value !== null) setAssetKind(String(value));
+                    }}
                   >
-                    <option value="all">{tr("catalog.allTypes")}</option>
-                    {assetKinds.map((value) => (
-                      <option key={value} value={value}>
-                        {tr(`status.asset.${value}`)}
-                      </option>
-                    ))}
-                  </SelectControl>
+                    <SelectTrigger
+                      aria-label={tr("catalog.allTypes")}
+                      className="h-9 w-full md:w-auto md:min-w-[150px]"
+                    >
+                      <SelectValue>
+                        {assetKind === "all"
+                          ? tr("catalog.allTypes")
+                          : tr(`status.asset.${assetKind}`)}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
+                      {assetKinds.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {tr(`status.asset.${value}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </div>
               <div className="grid gap-2">

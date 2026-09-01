@@ -1,5 +1,11 @@
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -649,35 +655,51 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                 placeholder={tr("git.searchPlaceholder")}
               />
             </div>
-            <SelectControl
-              className="h-8 min-w-0"
-              value={reference}
-              onChange={(event) => setReference(event.target.value)}
-              aria-label={tr("git.reference")}
+            <Select
+              value={reference || "__all_refs__"}
+              onValueChange={(value) => {
+                if (value !== null) {
+                  const nextReference = String(value);
+                  setReference(nextReference === "__all_refs__" ? "" : nextReference);
+                }
+              }}
             >
-              <option value="">{tr("git.allRefs")}</option>
-              {summary.refs
-                .filter(
-                  (ref) =>
-                    ref.kind === "local-branch" ||
-                    ref.kind === "remote-branch" ||
-                    ref.kind === "tag",
-                )
-                .map((ref) => (
-                  <option key={ref.full_name} value={ref.full_name}>
-                    {ref.name}
-                  </option>
-                ))}
-            </SelectControl>
-            <SelectControl
-              className="h-8 min-w-0"
+              <SelectTrigger className="h-8 min-w-0" aria-label={tr("git.reference")}>
+                <SelectValue>
+                  {summary.refs.find((ref) => ref.full_name === reference)?.name ??
+                    tr("git.allRefs")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all_refs__">{tr("git.allRefs")}</SelectItem>
+                {summary.refs
+                  .filter(
+                    (ref) =>
+                      ref.kind === "local-branch" ||
+                      ref.kind === "remote-branch" ||
+                      ref.kind === "tag",
+                  )
+                  .map((ref) => (
+                    <SelectItem key={ref.full_name} value={ref.full_name}>
+                      {ref.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <Select
               value={mergesOnly ? "merges" : "all"}
-              onChange={(event) => setMergesOnly(event.target.value === "merges")}
-              aria-label={tr("git.commitKind")}
+              onValueChange={(value) => setMergesOnly(value === "merges")}
             >
-              <option value="all">{tr("git.allCommits")}</option>
-              <option value="merges">{tr("git.mergesOnly")}</option>
-            </SelectControl>
+              <SelectTrigger className="h-8 min-w-0" aria-label={tr("git.commitKind")}>
+                <SelectValue>
+                  {mergesOnly ? tr("git.mergesOnly") : tr("git.allCommits")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("git.allCommits")}</SelectItem>
+                <SelectItem value="merges">{tr("git.mergesOnly")}</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               className="h-8 min-w-0 max-[760px]:hidden"
               value={author}

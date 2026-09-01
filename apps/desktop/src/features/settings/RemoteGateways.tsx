@@ -1,6 +1,12 @@
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -125,12 +131,11 @@ export function RemoteGatewaysSettings({
           >
             <Label className="grid gap-1.5 text-xs text-muted-foreground">
               <span>{tr("gateway.kind")}</span>
-              <SelectControl
-                aria-label={tr("gateway.kind")}
-                className={gatewayControlClass}
+              <Select
                 value={draft.kind}
-                onChange={(event) => {
-                  const kind = event.target.value as RemoteGatewayKind;
+                onValueChange={(value) => {
+                  if (value === null) return;
+                  const kind = String(value) as RemoteGatewayKind;
                   setDraft({
                     ...draft,
                     kind,
@@ -139,9 +144,14 @@ export function RemoteGatewaysSettings({
                   });
                 }}
               >
-                <option value="open-claw">OpenClaw</option>
-                <option value="hermes">Hermes</option>
-              </SelectControl>
+                <SelectTrigger className={gatewayControlClass} aria-label={tr("gateway.kind")}>
+                  <SelectValue>{draft.kind === "open-claw" ? "OpenClaw" : "Hermes"}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="open-claw">OpenClaw</SelectItem>
+                  <SelectItem value="hermes">Hermes</SelectItem>
+                </SelectContent>
+              </Select>
             </Label>
             <Label className="grid gap-1.5 text-xs text-muted-foreground">
               <span>{tr("gateway.name")}</span>
@@ -167,20 +177,24 @@ export function RemoteGatewaysSettings({
             </Label>
             <Label className="grid gap-1.5 text-xs text-muted-foreground">
               <span>{tr("gateway.auth")}</span>
-              <SelectControl
-                aria-label={tr("gateway.auth")}
-                className={gatewayControlClass}
+              <Select
                 value={draft.auth_kind}
-                onChange={(event) =>
-                  setDraft({ ...draft, auth_kind: event.target.value as RemoteGatewayAuthKind })
-                }
+                onValueChange={(value) => {
+                  if (value !== null)
+                    setDraft({ ...draft, auth_kind: String(value) as RemoteGatewayAuthKind });
+                }}
               >
-                {authKinds(draft.kind).map((kind) => (
-                  <option value={kind} key={kind}>
-                    {tr(`gateway.auth.${kind}`)}
-                  </option>
-                ))}
-              </SelectControl>
+                <SelectTrigger className={gatewayControlClass} aria-label={tr("gateway.auth")}>
+                  <SelectValue>{tr(`gateway.auth.${draft.auth_kind}`)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {authKinds(draft.kind).map((kind) => (
+                    <SelectItem value={kind} key={kind}>
+                      {tr(`gateway.auth.${kind}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Label>
             {draft.auth_kind === "basic" && (
               <Label className="grid gap-1.5 text-xs text-muted-foreground">

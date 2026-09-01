@@ -10,7 +10,13 @@ import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Bot,
   ChevronDown,
@@ -101,17 +107,23 @@ function ContextPage({
         <div className="grid gap-4 p-4">
           <div className="grid gap-1.5">
             <Label className="text-xs text-muted-foreground">Agent</Label>
-            <SelectControl
-              className="h-10 w-full"
+            <Select
               value={agent}
-              onChange={(event) => setAgent(event.target.value as AgentKind)}
+              onValueChange={(value) => {
+                if (value !== null) setAgent(String(value) as AgentKind);
+              }}
             >
-              {Object.entries(agentLabels).map(([value, label]) => (
-                <option value={value} key={value}>
-                  {label}
-                </option>
-              ))}
-            </SelectControl>
+              <SelectTrigger className="h-10 w-full" aria-label="Agent">
+                <SelectValue>{agentLabels[agent]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(agentLabels).map(([value, label]) => (
+                  <SelectItem value={value} key={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid gap-1.5">
             <Label className="text-xs text-muted-foreground">

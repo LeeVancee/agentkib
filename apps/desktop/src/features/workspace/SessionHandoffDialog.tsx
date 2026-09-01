@@ -1,6 +1,12 @@
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -287,31 +293,51 @@ export function SessionHandoffDialog({
             <div className="grid grid-cols-2 gap-3 max-[820px]:grid-cols-1">
               <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
                 {tr("handoff.target")}
-                <SelectControl
-                  aria-label={tr("handoff.target")}
+                <Select
                   value={targetAgent}
                   disabled={busy}
-                  onChange={(event) => setTargetAgent(event.target.value as AgentKind)}
+                  onValueChange={(value) => {
+                    if (value !== null) setTargetAgent(String(value) as AgentKind);
+                  }}
                 >
-                  {availableTargets.map(([value, label]) => (
-                    <option value={value} key={value}>
-                      {label}
-                    </option>
-                  ))}
-                </SelectControl>
+                  <SelectTrigger aria-label={tr("handoff.target")}>
+                    <SelectValue>
+                      {availableTargets.find(([value]) => value === targetAgent)?.[1]}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableTargets.map(([value, label]) => (
+                      <SelectItem value={value} key={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Label>
               <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
                 {tr("handoff.historyBudget")}
-                <SelectControl
-                  aria-label={tr("handoff.historyBudget")}
+                <Select
                   value={String(historyBudget)}
                   disabled={busy}
-                  onChange={(event) => setHistoryBudget(Number(event.target.value))}
+                  onValueChange={(value) => {
+                    if (value !== null) setHistoryBudget(Number(value));
+                  }}
                 >
-                  <option value="64000">64k</option>
-                  <option value="120000">120k · {tr("handoff.recommended")}</option>
-                  <option value="180000">180k</option>
-                </SelectControl>
+                  <SelectTrigger aria-label={tr("handoff.historyBudget")}>
+                    <SelectValue>
+                      {historyBudget === 64000
+                        ? "64k"
+                        : historyBudget === 120000
+                          ? `120k · ${tr("handoff.recommended")}`
+                          : "180k"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="64000">64k</SelectItem>
+                    <SelectItem value="120000">120k · {tr("handoff.recommended")}</SelectItem>
+                    <SelectItem value="180000">180k</SelectItem>
+                  </SelectContent>
+                </Select>
                 <span>{tr("handoff.historyBudgetDetail")}</span>
               </Label>
               <div className="col-span-full flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 p-3">
@@ -330,15 +356,21 @@ export function SessionHandoffDialog({
                 <CollapsibleContent className="pt-2.5">
                   <Label className="grid max-w-[280px] gap-1.5 text-xs text-muted-foreground">
                     {tr("handoff.format")}
-                    <SelectControl
-                      aria-label={tr("handoff.format")}
+                    <Select
                       value={format}
                       disabled={busy}
-                      onChange={(event) => setFormat(event.target.value as HandoffFormat)}
+                      onValueChange={(value) => {
+                        if (value === "markdown" || value === "json") setFormat(value);
+                      }}
                     >
-                      <option value="markdown">Markdown</option>
-                      <option value="json">JSON</option>
-                    </SelectControl>
+                      <SelectTrigger aria-label={tr("handoff.format")}>
+                        <SelectValue>{format === "markdown" ? "Markdown" : "JSON"}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="markdown">Markdown</SelectItem>
+                        <SelectItem value="json">JSON</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </Label>
                 </CollapsibleContent>
               </Collapsible>

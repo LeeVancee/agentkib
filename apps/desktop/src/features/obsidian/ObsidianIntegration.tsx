@@ -1,6 +1,12 @@
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -244,17 +250,25 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
         <div className="mx-5 grid grid-cols-[minmax(180px,.8fr)_minmax(240px,1.2fr)_auto] items-end gap-3 pt-4 max-[760px]:grid-cols-1">
           <Label>
             {tr("obsidian.chooseVault")}
-            <SelectControl
-              aria-label={tr("obsidian.chooseVault")}
+            <Select
               value={vaultPath}
-              onChange={(event) => setVaultPath(event.target.value)}
+              onValueChange={(value) => {
+                if (value !== null) setVaultPath(String(value));
+              }}
             >
-              {integration.vaults.map((vault) => (
-                <option key={vault.path} value={vault.path}>
-                  {vault.name}
-                </option>
-              ))}
-            </SelectControl>
+              <SelectTrigger aria-label={tr("obsidian.chooseVault")}>
+                <SelectValue>
+                  {integration.vaults.find((vault) => vault.path === vaultPath)?.name}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {integration.vaults.map((vault) => (
+                  <SelectItem key={vault.path} value={vault.path}>
+                    {vault.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Label>
           <Label>
             {tr("obsidian.relativeTarget")}

@@ -1,5 +1,11 @@
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -240,23 +246,29 @@ export function WorkspaceStoragePage({
               placeholder={tr("storage.searchPlaceholder")}
             />
           </label>
-          <SelectControl
-            aria-label={tr("workspace.allAgents")}
-            className="h-9 min-w-[150px]"
+          <Select
             value={agent}
-            onChange={(event) => {
-              setAgent(event.target.value as typeof agent);
+            onValueChange={(value) => {
+              if (value === null) return;
+              setAgent(String(value) as typeof agent);
               setTrail([]);
               setSelected(undefined);
             }}
           >
-            <option value="all">{tr("workspace.allAgents")}</option>
-            {Object.entries(agentLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </SelectControl>
+            <SelectTrigger aria-label={tr("workspace.allAgents")} className="h-9 min-w-[150px]">
+              <SelectValue>
+                {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+              {Object.entries(agentLabels).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <ToggleGroup
             spacing={0}
             variant="default"

@@ -19,7 +19,13 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useAppDialogs } from "@/components/AppDialogProvider";
@@ -817,18 +823,25 @@ function LanguageSetting({
       <SettingsCopy>
         <strong>{tr("settings.language")}</strong>
       </SettingsCopy>
-      <SelectControl
-        aria-label={tr("settings.language")}
-        className={settingsControlClass}
+      <Select
         value={runtime?.locale_preference ?? "system"}
-        onChange={(event) => void update(event.target.value as LocalePreference)}
+        onValueChange={(value) => {
+          if (value !== null) void update(String(value) as LocalePreference);
+        }}
       >
-        {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
-          <option key={locale} value={locale}>
-            {tr(`settings.language.${locale}`)}
-          </option>
-        ))}
-      </SelectControl>
+        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.language")}>
+          <SelectValue>
+            {tr(`settings.language.${runtime?.locale_preference ?? "system"}`)}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
+            <SelectItem key={locale} value={locale}>
+              {tr(`settings.language.${locale}`)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingsRow>
   );
 }
@@ -903,12 +916,11 @@ export function AccentThemeSetting({
           )}
         </small>
       </SettingsCopy>
-      <SelectControl
-        aria-label={tr("settings.accentTheme")}
-        className={settingsControlClass}
+      <Select
         value={selected}
-        onChange={(event) => {
-          const theme = event.target.value;
+        onValueChange={(value) => {
+          if (value === null) return;
+          const theme = String(value);
           if (
             theme !== "minimal-neutral" &&
             theme !== "vtron" &&
@@ -921,12 +933,17 @@ export function AccentThemeSetting({
           setSelected(theme);
         }}
       >
-        {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
-          <option key={theme} value={theme}>
-            {tr(`settings.accentTheme.${theme}`)}
-          </option>
-        ))}
-      </SelectControl>
+        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
+          <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
+            <SelectItem key={theme} value={theme}>
+              {tr(`settings.accentTheme.${theme}`)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingsRow>
   );
 }
@@ -993,23 +1010,34 @@ function CloseBehaviorSelect({
     : "settings.close.tray";
   const selected = value ?? "ask";
   return (
-    <SelectControl
-      aria-label={tr("settings.closeBehavior")}
-      className={settingsControlClass}
-      title={tr("settings.close.quitShortcut", { modifier })}
+    <Select
       value={selected}
-      onChange={(event) =>
-        void onChange(
-          event.target.value === "ask" ? undefined : (event.target.value as CloseBehavior),
-        )
-      }
+      onValueChange={(value) => {
+        if (value !== null)
+          void onChange(value === "ask" ? undefined : (String(value) as CloseBehavior));
+      }}
     >
-      <option value="ask">{tr("settings.close.ask")}</option>
-      <option value="minimize-to-tray" disabled={!trayAvailable}>
-        {tr(trayKey)}
-      </option>
-      <option value="quit">{tr("settings.close.quit")}</option>
-    </SelectControl>
+      <SelectTrigger
+        className={settingsControlClass}
+        aria-label={tr("settings.closeBehavior")}
+        title={tr("settings.close.quitShortcut", { modifier })}
+      >
+        <SelectValue>
+          {selected === "ask"
+            ? tr("settings.close.ask")
+            : selected === "quit"
+              ? tr("settings.close.quit")
+              : tr(trayKey)}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
+        <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
+          {tr(trayKey)}
+        </SelectItem>
+        <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 

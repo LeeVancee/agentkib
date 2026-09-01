@@ -85,7 +85,7 @@ function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
 }
-function Changes({
+export function Changes({
   changeSet,
   origin,
   launchRequest,
@@ -267,13 +267,13 @@ function Changes({
             >
               {tr("changes.includeHome")}
             </Button>
-            {changeSet.requires_home_approval && (
-              <Label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
-                {tr("changes.homeApproval")}
-              </Label>
-            )}
           </div>
+        )}
+        {changeSet.requires_home_approval && (
+          <Label className="flex items-center gap-2 border-t border-border p-4 text-xs text-muted-foreground">
+            <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
+            {tr("changes.homeApproval")}
+          </Label>
         )}
       </div>
       <div className="rounded-xl border border-border bg-card shadow-sm min-w-0">

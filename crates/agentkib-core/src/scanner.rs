@@ -92,7 +92,9 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
 
 fn validate_native_config(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let format = if name.ends_with(".json") || name.ends_with(".jsonc") {
+    let format = if name.ends_with(".jsonc") {
+        "JSONC"
+    } else if name.ends_with(".json") {
         "JSON"
     } else if name.ends_with(".toml") {
         "TOML"
@@ -127,8 +129,12 @@ fn validate_native_config(path: &Path) -> Option<String> {
             "{format} exceeds the 1 MiB validation limit"
         )));
     }
-    let error = if format == "JSON" {
+    let error = if format == "JSONC" {
         json5::from_str::<serde_json::Value>(&content)
+            .err()
+            .map(|error| error.to_string())
+    } else if format == "JSON" {
+        serde_json::from_str::<serde_json::Value>(&content)
             .err()
             .map(|error| error.to_string())
     } else {
@@ -387,6 +393,38 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn keeps_json_strict_while_accepting_jsonc_syntax() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".cursor/mcp.json"),
+            r#"{"mcpServers": {},}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ // supported comment\n mcp: {},\n}",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        let cursor = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::Cursor)
+            .unwrap();
+        let opencode = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert_eq!(cursor.warnings.len(), 1);
+        assert!(opencode.warnings.is_empty());
     }
 
     #[test]

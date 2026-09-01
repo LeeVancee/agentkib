@@ -1157,7 +1157,7 @@ fn merge_opencode_config(
             .or_insert_with(|| JsonValue::Array(Vec::new()))
             .as_array_mut()
             .context("OpenCode instructions must be an array")?;
-        let managed = JsonValue::String("./agentkib-instructions.md".into());
+        let managed = JsonValue::String(".opencode/agentkib-instructions.md".into());
         if !instructions.contains(&managed) {
             instructions.push(managed);
         }
@@ -1498,7 +1498,7 @@ mod tests {
         );
         assert_eq!(
             value["instructions"],
-            serde_json::json!(["./agentkib-instructions.md"])
+            serde_json::json!([".opencode/agentkib-instructions.md"])
         );
         let instruction = plan
             .changes

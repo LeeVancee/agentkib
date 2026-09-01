@@ -1311,7 +1311,15 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
 fn app_bundle_is_available(agent: AgentKind) -> bool {
     match agent {
         AgentKind::Cursor => command::cursor_app_is_available(),
-        AgentKind::OpenCode => command_is_available("ai.opencode.desktop"),
+        AgentKind::OpenCode => {
+            let search = command::search_directories();
+            command::desktop_application_executables(
+                &["ai.opencode.desktop", "opencode-desktop"],
+                &search,
+            )
+            .into_iter()
+            .any(|path| command::is_executable(&path))
+        }
         _ => false,
     }
 }

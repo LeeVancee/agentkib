@@ -428,14 +428,19 @@ pub fn plan_workspace_changes(
                 "markdown",
             )?;
         }
-        let config_path = root.join(".opencode/opencode.json");
+        let config_path = opencode_managed_config_path(&root);
+        let format = if config_path.extension() == Some(OsStr::new("jsonc")) {
+            "jsonc"
+        } else {
+            "json"
+        };
         push_change(
             &mut changes,
             config_path.clone(),
             merge_opencode_config(&config_path, &gateway_connections, manages_instruction)?,
             ChangeScope::Project,
             RiskLevel::Medium,
-            "json",
+            format,
         )?;
     }
     if adapter_enabled(manifest, AgentKind::OpenClaw) {
@@ -1203,6 +1208,15 @@ fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
 }
 
+fn opencode_managed_config_path(root: &Path) -> PathBuf {
+    let jsonc = root.join(".opencode/opencode.jsonc");
+    if jsonc.exists() {
+        jsonc
+    } else {
+        root.join(".opencode/opencode.json")
+    }
+}
+
 fn merge_opencode_config(
     path: &Path,
     connections: &[ConnectionDefinition],
@@ -1691,6 +1705,41 @@ mod tests {
             })
             .unwrap();
         assert!(instruction.after.contains("Use OpenCode tools."));
+    }
+
+    #[test]
+    fn opencode_plan_updates_the_effective_jsonc_config() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ theme: 'dark', instructions: ['docs/team.md'] }",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.jsonc"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(["docs/team.md", ".opencode/agentkib-instructions.md"])
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.ends_with(".opencode/opencode.json"))
+        );
     }
 
     #[test]

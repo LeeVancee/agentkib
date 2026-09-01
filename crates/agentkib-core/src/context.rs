@@ -889,10 +889,12 @@ fn opencode_sources_with_roots(
     let Some(root) = dirs.first() else {
         return result;
     };
-    let patterns = opencode_project_instruction_patterns(root);
-    result.extend(opencode_configured_instruction_sources(
-        root, dirs, &patterns, warnings,
-    ));
+    for base in dirs {
+        let patterns = opencode_project_instruction_patterns(base);
+        result.extend(opencode_configured_instruction_sources(
+            root, base, &patterns, warnings,
+        ));
+    }
     let mut seen = HashSet::new();
     result.retain(|path| canonicalize(path).is_ok_and(|path| seen.insert(path)));
     result
@@ -954,7 +956,7 @@ fn opencode_config_instruction_patterns(path: &Path) -> Option<Vec<String>> {
 
 fn opencode_configured_instruction_sources(
     root: &Path,
-    dirs: &[PathBuf],
+    base: &Path,
     patterns: &[String],
     warnings: &mut Vec<String>,
 ) -> Vec<PathBuf> {
@@ -974,38 +976,36 @@ fn opencode_configured_instruction_sources(
         let has_glob = pattern
             .bytes()
             .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b'{'));
-        for base in dirs.iter().rev() {
-            if has_glob {
-                let mut entries = 0;
-                for entry in WalkDir::new(base)
-                    .max_depth(16)
-                    .follow_links(false)
-                    .same_file_system(true)
-                    .into_iter()
-                    .filter_entry(|entry| agentkib_platform::path::is_safe_scan_entry(entry.path()))
-                    .filter_map(Result::ok)
-                {
-                    entries += 1;
-                    if entries > MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES {
-                        warnings.push(format!(
-                            "OpenCode instruction glob scan limit was reached: {raw_pattern}"
-                        ));
-                        break;
-                    }
-                    if !entry.file_type().is_file() {
-                        continue;
-                    }
-                    let Ok(relative) = entry.path().strip_prefix(base) else {
-                        continue;
-                    };
-                    let relative = relative.to_string_lossy().replace('\\', "/");
-                    if opencode_instruction_pattern_matches(&pattern, &relative) {
-                        push_safe_opencode_instruction(root, entry.path(), &mut seen, &mut output);
-                    }
+        if has_glob {
+            let mut entries = 0;
+            for entry in WalkDir::new(base)
+                .max_depth(16)
+                .follow_links(false)
+                .same_file_system(true)
+                .into_iter()
+                .filter_entry(|entry| agentkib_platform::path::is_safe_scan_entry(entry.path()))
+                .filter_map(Result::ok)
+            {
+                entries += 1;
+                if entries > MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES {
+                    warnings.push(format!(
+                        "OpenCode instruction glob scan limit was reached: {raw_pattern}"
+                    ));
+                    break;
                 }
-            } else {
-                push_safe_opencode_instruction(root, &base.join(&pattern), &mut seen, &mut output);
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let Ok(relative) = entry.path().strip_prefix(base) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if opencode_instruction_pattern_matches(&pattern, &relative) {
+                    push_safe_opencode_instruction(root, entry.path(), &mut seen, &mut output);
+                }
             }
+        } else {
+            push_safe_opencode_instruction(root, &base.join(&pattern), &mut seen, &mut output);
         }
     }
     output
@@ -1132,16 +1132,16 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
         output
     }
 
-    fn class_matches(pattern: &[u8], target: u8) -> Option<(bool, usize)> {
+    fn class_matches(pattern: &[char], target: char) -> Option<(bool, usize)> {
         let mut index = 1;
-        let negated = matches!(pattern.get(index), Some(b'!' | b'^'));
+        let negated = matches!(pattern.get(index), Some('!' | '^'));
         if negated {
             index += 1;
         }
         let mut matched = false;
         let mut has_member = false;
-        while index < pattern.len() && pattern[index] != b']' {
-            let start = if pattern[index] == b'\\' {
+        while index < pattern.len() && pattern[index] != ']' {
+            let start = if pattern[index] == '\\' {
                 index += 1;
                 *pattern.get(index)?
             } else {
@@ -1149,11 +1149,11 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
             };
             index += 1;
             has_member = true;
-            if pattern.get(index) == Some(&b'-')
-                && pattern.get(index + 1).is_some_and(|value| *value != b']')
+            if pattern.get(index) == Some(&'-')
+                && pattern.get(index + 1).is_some_and(|value| *value != ']')
             {
                 index += 1;
-                let end = if pattern[index] == b'\\' {
+                let end = if pattern[index] == '\\' {
                     index += 1;
                     *pattern.get(index)?
                 } else {
@@ -1165,26 +1165,28 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
                 matched |= start == target;
             }
         }
-        if !has_member || pattern.get(index) != Some(&b']') {
+        if !has_member || pattern.get(index) != Some(&']') {
             return None;
         }
         Some((if negated { !matched } else { matched }, index + 1))
     }
 
-    fn segment_matches(pattern: &[u8], target: &[u8]) -> bool {
+    fn segment_matches(pattern: &str, target: &str) -> bool {
+        let pattern = pattern.chars().collect::<Vec<_>>();
+        let target = target.chars().collect::<Vec<_>>();
         let (mut pattern_index, mut target_index) = (0, 0);
         let mut star = None;
         let mut star_target_index = 0;
         while target_index < target.len() {
             let atom_end = match pattern.get(pattern_index) {
-                Some(b'?') => Some(pattern_index + 1),
-                Some(b'[') => class_matches(&pattern[pattern_index..], target[target_index])
+                Some('?') => Some(pattern_index + 1),
+                Some('[') => class_matches(&pattern[pattern_index..], target[target_index])
                     .and_then(|(matches, consumed)| matches.then_some(pattern_index + consumed)),
-                Some(b'\\') => pattern
+                Some('\\') => pattern
                     .get(pattern_index + 1)
                     .filter(|value| **value == target[target_index])
                     .map(|_| pattern_index + 2),
-                Some(value) if *value == target[target_index] && *value != b'*' => {
+                Some(value) if *value == target[target_index] && *value != '*' => {
                     Some(pattern_index + 1)
                 }
                 _ => None,
@@ -1192,7 +1194,7 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
             if let Some(next_pattern_index) = atom_end {
                 pattern_index = next_pattern_index;
                 target_index += 1;
-            } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            } else if pattern_index < pattern.len() && pattern[pattern_index] == '*' {
                 star = Some(pattern_index);
                 star_target_index = target_index;
                 pattern_index += 1;
@@ -1204,7 +1206,7 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
                 return false;
             }
         }
-        while pattern.get(pattern_index) == Some(&b'*') {
+        while pattern.get(pattern_index) == Some(&'*') {
             pattern_index += 1;
         }
         pattern_index == pattern.len()
@@ -1217,10 +1219,7 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
         while target_index < target.len() {
             if pattern_index < pattern.len()
                 && pattern[pattern_index] != "**"
-                && segment_matches(
-                    pattern[pattern_index].as_bytes(),
-                    target[target_index].as_bytes(),
-                )
+                && segment_matches(pattern[pattern_index], target[target_index])
             {
                 pattern_index += 1;
                 target_index += 1;
@@ -1845,6 +1844,40 @@ mod tests {
     }
 
     #[test]
+    fn opencode_resolves_each_config_from_its_own_directory() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("packages/api");
+        fs::create_dir_all(nested.join(".opencode")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::create_dir_all(nested.join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team.md"), "root team").unwrap();
+        fs::write(nested.join("docs/team.md"), "nested shadow").unwrap();
+        fs::write(nested.join("docs/api.md"), "nested config").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/team.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            nested.join(".opencode/opencode.jsonc"),
+            "{ instructions: ['docs/api.md'] }",
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+        let sources = preview
+            .sections
+            .iter()
+            .map(|section| canonicalize(&section.source).unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&canonicalize(&dir.path().join("docs/team.md")).unwrap()));
+        assert!(sources.contains(&canonicalize(&nested.join("docs/api.md")).unwrap()));
+        assert!(!sources.contains(&canonicalize(&nested.join("docs/team.md")).unwrap()));
+    }
+
+    #[test]
     fn opencode_includes_only_registered_managed_instructions() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join(".opencode")).unwrap();
@@ -1916,6 +1949,14 @@ mod tests {
         assert!(opencode_instruction_pattern_matches(
             ".{cursor,{open,closed}code}/agentkib-instructions.{txt,md}",
             OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/?.md",
+            "docs/规.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/[规约].md",
+            "docs/规.md"
         ));
         assert!(!opencode_instruction_pattern_matches(
             "docs/*.md",

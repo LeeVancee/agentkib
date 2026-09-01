@@ -1121,7 +1121,12 @@ fn home_asset_kind(path: &Path) -> AssetKind {
         || text.contains("/.agent-presets/")
     {
         AssetKind::Agent
-    } else if text.contains("/workflows/") {
+    } else if path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|component| component.eq_ignore_ascii_case("workflows"))
+    }) {
         AssetKind::Configuration
     } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
         AssetKind::Instruction

@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 
 use agentkib_platform::path::{canonicalize, equivalent, starts_with as path_starts_with};
 use anyhow::{Context, Result, bail};
+use walkdir::WalkDir;
 
 use crate::{AgentKind, ContextPreview, ContextSection, Manifest, canonical_project};
 
@@ -18,6 +19,7 @@ const GROK_MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const DSH_MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const DSH_MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 const OPENCODE_MANAGED_INSTRUCTION: &str = ".opencode/agentkib-instructions.md";
+const MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES: usize = 8_192;
 
 pub fn resolve_context(
     project: &Path,
@@ -49,7 +51,7 @@ pub fn resolve_context(
         AgentKind::Codex => codex_sources(&dirs),
         AgentKind::ClaudeCode => claude_sources(&dirs),
         AgentKind::Cursor => cursor_sources(&dirs),
-        AgentKind::OpenCode => opencode_sources(&dirs),
+        AgentKind::OpenCode => opencode_sources(&dirs, &mut warnings),
         AgentKind::OpenClaw => openclaw_sources(&dirs),
         AgentKind::Hermes => hermes_sources(&dirs),
         AgentKind::GrokBuild => Vec::new(),
@@ -857,18 +859,19 @@ fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
     result
 }
 
-fn opencode_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
+fn opencode_sources(dirs: &[PathBuf], warnings: &mut Vec<String>) -> Vec<PathBuf> {
     let config_home = agentkib_platform::xdg::config_home()
         .or_else(|| user_home().map(|home| home.join(".config")))
         .map(|home| home.join("opencode"));
     let home = user_home();
-    opencode_sources_with_roots(dirs, config_home.as_deref(), home.as_deref())
+    opencode_sources_with_roots(dirs, config_home.as_deref(), home.as_deref(), warnings)
 }
 
 fn opencode_sources_with_roots(
     dirs: &[PathBuf],
     config_home: Option<&Path>,
     home: Option<&Path>,
+    warnings: &mut Vec<String>,
 ) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let global = config_home
@@ -886,51 +889,163 @@ fn opencode_sources_with_roots(
     let Some(root) = dirs.first() else {
         return result;
     };
-    let managed = root.join(OPENCODE_MANAGED_INSTRUCTION);
-    if opencode_managed_instruction_is_registered(root) && managed.is_file() {
-        result.push(managed);
-    }
+    let patterns = opencode_project_instruction_patterns(root);
+    result.extend(opencode_configured_instruction_sources(
+        root, dirs, &patterns, warnings,
+    ));
+    let mut seen = HashSet::new();
+    result.retain(|path| canonicalize(path).is_ok_and(|path| seen.insert(path)));
     result
 }
 
 pub fn opencode_managed_instruction_is_registered(project: &Path) -> bool {
-    [
+    opencode_project_instruction_patterns(project)
+        .iter()
+        .any(|value| {
+            opencode_instruction_pattern_matches(
+                value.trim_start_matches("./"),
+                OPENCODE_MANAGED_INSTRUCTION,
+            )
+        })
+}
+
+fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
+    let configs = [
         project.join("opencode.json"),
         project.join("opencode.jsonc"),
         project.join(".opencode/opencode.json"),
         project.join(".opencode/opencode.jsonc"),
-    ]
-    .iter()
-    .any(|config| opencode_config_registers_managed_instruction(config))
+    ];
+    let mut effective = None;
+    for config in configs {
+        if let Some(instructions) = opencode_config_instruction_patterns(&config) {
+            effective = Some(instructions);
+        }
+    }
+    effective.unwrap_or_default()
 }
 
-fn opencode_config_registers_managed_instruction(path: &Path) -> bool {
+fn opencode_config_instruction_patterns(path: &Path) -> Option<Vec<String>> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
-        return false;
+        return None;
     };
     if !metadata.is_file() || metadata.len() > DSH_MAX_SOURCE_BYTES {
-        return false;
+        return None;
     }
     let Ok(content) = read_utf8_file_with_limit(path, DSH_MAX_SOURCE_BYTES) else {
-        return false;
+        return None;
     };
     let value = if path.extension().and_then(|value| value.to_str()) == Some("jsonc") {
         json5::from_str::<serde_json::Value>(&content).ok()
     } else {
         serde_json::from_str::<serde_json::Value>(&content).ok()
     };
-    value
-        .and_then(|value| value.get("instructions")?.as_array().cloned())
-        .is_some_and(|instructions| {
-            instructions.iter().any(|instruction| {
-                instruction.as_str().is_some_and(|value| {
-                    opencode_instruction_pattern_matches(
-                        value.trim_start_matches("./"),
-                        OPENCODE_MANAGED_INSTRUCTION,
-                    )
-                })
-            })
-        })
+    value.and_then(|value| {
+        Some(
+            value
+                .get("instructions")?
+                .as_array()?
+                .iter()
+                .filter_map(|instruction| instruction.as_str().map(str::to_string))
+                .collect(),
+        )
+    })
+}
+
+fn opencode_configured_instruction_sources(
+    root: &Path,
+    dirs: &[PathBuf],
+    patterns: &[String],
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut output = Vec::new();
+    let mut seen = HashSet::new();
+    for raw_pattern in patterns {
+        if raw_pattern.starts_with("http://") || raw_pattern.starts_with("https://") {
+            continue;
+        }
+        let pattern = raw_pattern.trim_start_matches("./").replace('\\', "/");
+        if pattern.is_empty() || Path::new(&pattern).is_absolute() || pattern.starts_with("~/") {
+            warnings.push(format!(
+                "OpenCode instruction source is outside the project and was not read: {raw_pattern}"
+            ));
+            continue;
+        }
+        let has_glob = pattern
+            .bytes()
+            .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b'{'));
+        for base in dirs.iter().rev() {
+            if has_glob {
+                let mut entries = 0;
+                for entry in WalkDir::new(base)
+                    .max_depth(16)
+                    .follow_links(false)
+                    .same_file_system(true)
+                    .into_iter()
+                    .filter_entry(|entry| agentkib_platform::path::is_safe_scan_entry(entry.path()))
+                    .filter_map(Result::ok)
+                {
+                    entries += 1;
+                    if entries > MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES {
+                        warnings.push(format!(
+                            "OpenCode instruction glob scan limit was reached: {raw_pattern}"
+                        ));
+                        break;
+                    }
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let Ok(relative) = entry.path().strip_prefix(base) else {
+                        continue;
+                    };
+                    let relative = relative.to_string_lossy().replace('\\', "/");
+                    if opencode_instruction_pattern_matches(&pattern, &relative) {
+                        push_safe_opencode_instruction(root, entry.path(), &mut seen, &mut output);
+                    }
+                }
+            } else {
+                push_safe_opencode_instruction(root, &base.join(&pattern), &mut seen, &mut output);
+            }
+        }
+    }
+    output
+}
+
+fn push_safe_opencode_instruction(
+    root: &Path,
+    path: &Path,
+    seen: &mut HashSet<PathBuf>,
+    output: &mut Vec<PathBuf>,
+) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.file_type().is_file()
+        || metadata.len() > MAX_CONTEXT_BYTES_PER_FILE
+        || opencode_instruction_path_is_sensitive(path)
+    {
+        return;
+    }
+    let Ok(canonical) = canonicalize(path) else {
+        return;
+    };
+    if path_starts_with(&canonical, root) && seen.insert(canonical) {
+        output.push(path.to_path_buf());
+    }
+}
+
+fn opencode_instruction_path_is_sensitive(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name == ".env"
+        || name.contains("credential")
+        || name.contains("token")
+        || name.contains("secret")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
 }
 
 fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
@@ -1678,7 +1793,7 @@ mod tests {
         fs::write(nested.join("CLAUDE.md"), "nested").unwrap();
 
         let dirs = directory_chain(&project, &nested).unwrap();
-        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None);
+        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None, &mut Vec::new());
 
         assert_eq!(
             sources,
@@ -1687,6 +1802,45 @@ mod tests {
                 project.join("AGENTS.md"),
                 nested.join("CLAUDE.md"),
             ]
+        );
+    }
+
+    #[test]
+    fn opencode_includes_configured_project_instruction_paths_and_globs() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "project").unwrap();
+        fs::write(dir.path().join("docs/team.md"), "team").unwrap();
+        fs::write(dir.path().join("docs/review.md"), "review").unwrap();
+        fs::write(dir.path().join("docs/secret.env"), "secret").unwrap();
+        fs::write(
+            dir.path().join("opencode.jsonc"),
+            "{ instructions: ['docs/team.md', 'docs/*.{md,env}'] }",
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+        let canonical_root = canonicalize(dir.path()).unwrap();
+        let project_sources = preview
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .map(|section| section.source.strip_prefix(&canonical_root).unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(project_sources.contains(&Path::new("AGENTS.md")));
+        assert!(project_sources.contains(&Path::new("docs/team.md")));
+        assert!(project_sources.contains(&Path::new("docs/review.md")));
+        assert!(!project_sources.contains(&Path::new("docs/secret.env")));
+        assert_eq!(
+            project_sources
+                .iter()
+                .filter(|source| **source == Path::new("docs/team.md"))
+                .count(),
+            1
         );
     }
 

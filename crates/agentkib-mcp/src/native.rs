@@ -419,13 +419,7 @@ fn collect_json_servers(
 
 fn secret_container_has_values(value: Option<&Value>) -> bool {
     match value {
-        Some(Value::Object(values)) => values.values().any(|value| match value {
-            Value::Null => false,
-            Value::String(value) => !value.is_empty(),
-            Value::Array(value) => !value.is_empty(),
-            Value::Object(value) => !value.is_empty(),
-            Value::Bool(_) | Value::Number(_) => true,
-        }),
+        Some(Value::Object(values)) => !values.is_empty(),
         Some(Value::Array(values)) => !values.is_empty(),
         Some(Value::String(value)) => !value.is_empty(),
         Some(Value::Bool(_) | Value::Number(_)) => true,
@@ -901,6 +895,7 @@ mod tests {
             dir.path().join(".opencode/opencode.json"),
             r#"{"mcp":{
                 "empty-secrets":{"type":"local","command":["node"],"environment":{},"headers":{}},
+                "empty-value":{"type":"local","command":["node"],"environment":{"MODE":""}},
                 "oauth-disabled":{"type":"remote","url":"https://example.com/no-oauth","oauth":false},
                 "oauth-custom":{"type":"remote","url":"https://example.com/oauth","oauth":{"clientId":"client","clientSecret":"secret","scope":"tools:read"}},
                 "timed":{"type":"remote","url":"https://example.com/timed","timeout":30000}
@@ -915,6 +910,13 @@ mod tests {
             .unwrap();
         assert!(!empty.has_secret_values);
         assert!(empty.supported);
+
+        let empty_value = candidates
+            .iter()
+            .find(|candidate| candidate.name == "empty-value")
+            .unwrap();
+        assert!(empty_value.has_secret_values);
+        assert!(empty_value.supported);
 
         let oauth_disabled = candidates
             .iter()

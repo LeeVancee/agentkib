@@ -55,7 +55,7 @@ pub fn definitions() -> Vec<Tool> {
         ),
         tool(
             "session_search",
-            "Search or browse a private AgentKib continuation archive without model summarization",
+            "Search archive text or an exact block/turn locator; hits include bounded chunk ranges",
             json!({"type":"object","properties":{"archive_id":{"type":"string"},"query":{"type":"string","maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":20}},"required":["archive_id"]}),
         ),
         tool(

@@ -68,6 +68,8 @@ pub struct SessionArchiveBundle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionArchiveChunk {
     pub chunk_id: String,
+    #[serde(default)]
+    pub block_id: String,
     pub turn_id: String,
     pub role: SessionRole,
     pub timestamp: Option<DateTime<Utc>>,
@@ -80,10 +82,15 @@ pub struct SessionArchiveChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionArchiveSearchHit {
     pub chunk_id: String,
+    pub block_id: String,
     pub turn_id: String,
     pub role: SessionRole,
     pub timestamp: Option<DateTime<Utc>>,
     pub block_type: String,
+    pub part: usize,
+    pub parts: usize,
+    pub first_chunk_id: String,
+    pub last_chunk_id: String,
     pub snippet: String,
 }
 
@@ -138,11 +145,13 @@ pub fn plan_session_window(
     let total_tokens = estimate_document_tokens(document);
     let mut normalized = document.clone();
     let mut externalized_blocks = 0usize;
+    let mut block_number = 0usize;
     for turn in &mut normalized.turns {
         for (index, block) in turn.blocks.iter_mut().enumerate() {
+            block_number += 1;
             if estimate_block_tokens(block) > MAX_ACTIVE_BLOCK_TOKENS {
                 *block = SessionBlock::Text {
-                    text: archive_reference(archive_id, &turn.id, index),
+                    text: archive_reference(archive_id, &turn.id, index, &block_id(block_number)),
                 };
                 externalized_blocks += 1;
             }
@@ -333,7 +342,7 @@ fn validate_archive_directory_chain(directory: &Path) -> Result<()> {
     // The runtime derives this path itself, but an attacker with local filesystem access could
     // otherwise replace a continuation directory (or one of its parents) with a symlink between
     // creation and a later MCP read.
-    for path in directory.ancestors().take(3) {
+    for path in directory.ancestors() {
         let metadata = std::fs::symlink_metadata(path).with_context(|| {
             format!(
                 "Session archive directory is unavailable: {}",
@@ -364,15 +373,32 @@ pub fn search_session_archive(
     let mut hits = chunks
         .into_iter()
         .rev()
-        .filter(|chunk| needle.is_empty() || chunk.content.to_lowercase().contains(&needle))
+        .filter(|chunk| {
+            needle.is_empty()
+                || chunk.content.to_lowercase().contains(&needle)
+                || format!(
+                    "{} turn_id={} {}",
+                    chunk.block_id, chunk.turn_id, chunk.block_type
+                )
+                .to_lowercase()
+                .contains(&needle)
+        })
         .take(limit.clamp(1, 20))
-        .map(|chunk| SessionArchiveSearchHit {
-            chunk_id: chunk.chunk_id,
-            turn_id: chunk.turn_id,
-            role: chunk.role,
-            timestamp: chunk.timestamp,
-            block_type: chunk.block_type,
-            snippet: snippet(&chunk.content, &needle, 500),
+        .map(|chunk| {
+            let (first_chunk_id, last_chunk_id) = chunk_range_ids(&chunk);
+            SessionArchiveSearchHit {
+                chunk_id: chunk.chunk_id,
+                block_id: chunk.block_id,
+                turn_id: chunk.turn_id,
+                role: chunk.role,
+                timestamp: chunk.timestamp,
+                block_type: chunk.block_type,
+                part: chunk.part,
+                parts: chunk.parts,
+                first_chunk_id,
+                last_chunk_id,
+                snippet: snippet(&chunk.content, &needle, 500),
+            }
         })
         .collect::<Vec<_>>();
     hits.reverse();
@@ -469,22 +495,25 @@ fn conversation_groups(turns: &[SessionTurn]) -> Vec<Vec<SessionTurn>> {
     groups
 }
 
-fn archive_reference(archive_id: &str, turn_id: &str, block: usize) -> String {
+fn archive_reference(archive_id: &str, turn_id: &str, block: usize, block_id: &str) -> String {
     format!(
-        "[AgentKib archived an oversized block: archive_id={archive_id}, turn_id={turn_id}, block={block}. Use session_search, then session_read_chunk to retrieve it.]"
+        "[AgentKib archived an oversized block: archive_id={archive_id}, turn_id={turn_id}, block={block}, block_id={block_id}. Use session_search with query \"{block_id}\"; each hit includes the exact first/last chunk IDs for session_read_chunk.]"
     )
 }
 
 fn archive_chunks(document: &SessionDocument) -> Vec<SessionArchiveChunk> {
     let mut chunks = Vec::new();
+    let mut block_number = 0usize;
     for turn in &document.turns {
         for block in &turn.blocks {
+            block_number += 1;
             let (block_type, content) = archive_block(block);
             let fragments = split_chars(&content, ARCHIVE_FRAGMENT_CHARS);
             let parts = fragments.len();
             for (part, content) in fragments.into_iter().enumerate() {
                 chunks.push(SessionArchiveChunk {
                     chunk_id: format!("chunk-{:06}", chunks.len() + 1),
+                    block_id: block_id(block_number),
                     turn_id: turn.id.clone(),
                     role: turn.role,
                     timestamp: turn.timestamp,
@@ -497,6 +526,21 @@ fn archive_chunks(document: &SessionDocument) -> Vec<SessionArchiveChunk> {
         }
     }
     chunks
+}
+
+fn block_id(index: usize) -> String {
+    format!("block-{index:06}")
+}
+
+fn chunk_range_ids(chunk: &SessionArchiveChunk) -> (String, String) {
+    let current = chunk
+        .chunk_id
+        .strip_prefix("chunk-")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1);
+    let first = current.saturating_sub(chunk.part.saturating_sub(1)).max(1);
+    let last = first.saturating_add(chunk.parts.saturating_sub(1));
+    (format!("chunk-{first:06}"), format!("chunk-{last:06}"))
 }
 
 fn archive_block(block: &SessionBlock) -> (&'static str, String) {
@@ -762,6 +806,41 @@ mod tests {
     }
 
     #[test]
+    fn oversized_block_reference_resolves_to_its_exact_chunk_range() {
+        let source = document(vec![text_turn(
+            1,
+            SessionRole::User,
+            "archived evidence ".repeat(5_000),
+        )]);
+        let archive_id = Uuid::new_v4().to_string();
+        let plan = plan_session_window(&source, 64_000, &archive_id).unwrap();
+        let active = serde_json::to_string(&plan.active_document).unwrap();
+        assert!(active.contains("block-000001"));
+
+        let bundle =
+            build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
+                .unwrap();
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let directory = archive_directory(root.path(), "workspace", &archive_id).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("manifest.json"), bundle.manifest_content).unwrap();
+        std::fs::write(directory.join("document.json"), bundle.document_content).unwrap();
+        std::fs::write(directory.join("chunks.jsonl"), bundle.chunks_content).unwrap();
+
+        let result =
+            search_session_archive(root.path(), "workspace", &archive_id, "block-000001", 20)
+                .unwrap();
+        assert!(!result.hits.is_empty());
+        assert!(result.hits.iter().all(|hit| hit.block_id == "block-000001"));
+        assert_eq!(result.hits[0].first_chunk_id, "chunk-000001");
+        assert!(result.hits[0].parts > 1);
+        assert_eq!(
+            result.hits[0].last_chunk_id,
+            format!("chunk-{:06}", result.hits[0].parts)
+        );
+    }
+
+    #[test]
     fn archives_and_reads_scoped_chunks() {
         let source = document(vec![text_turn(
             1,
@@ -772,7 +851,7 @@ mod tests {
         let bundle =
             build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
                 .unwrap();
-        let root = tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let directory = archive_directory(root.path(), "workspace", &archive_id).unwrap();
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("manifest.json"), bundle.manifest_content).unwrap();
@@ -781,6 +860,9 @@ mod tests {
         let result =
             search_session_archive(root.path(), "workspace", &archive_id, "needle", 10).unwrap();
         assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].block_id, "block-000001");
+        assert_eq!(result.hits[0].first_chunk_id, "chunk-000001");
+        assert_eq!(result.hits[0].last_chunk_id, "chunk-000001");
         let chunk = read_session_archive_chunk(
             root.path(),
             "workspace",
@@ -803,7 +885,7 @@ mod tests {
         let bundle =
             build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
                 .unwrap();
-        let root = tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let directory = archive_directory(root.path(), "workspace", &archive_id).unwrap();
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("manifest.json"), bundle.manifest_content).unwrap();
@@ -832,7 +914,7 @@ mod tests {
         let bundle =
             build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
                 .unwrap();
-        let root = tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let outside = tempdir().unwrap();
         let outside_directory =
             archive_directory(outside.path(), "workspace", &archive_id).unwrap();

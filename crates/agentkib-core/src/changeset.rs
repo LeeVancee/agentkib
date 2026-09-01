@@ -203,9 +203,9 @@ fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> 
 
 fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
     let parent = target.parent().context("Target has no parent directory")?;
-    // ApplicationData currently stores continuation files under
-    // continuations/<workspace-hash>/<archive-id>; validate that entire private subtree.
-    for directory in parent.ancestors().take(3) {
+    // Validate through the data root and all existing ancestors so replacing the root itself
+    // cannot redirect a private archive write after planning.
+    for directory in parent.ancestors() {
         match fs::symlink_metadata(directory) {
             Ok(metadata) => {
                 if agentkib_platform::path::is_reparse_or_symlink(directory)? || !metadata.is_dir()
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn application_data_requires_exact_file_authorization() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let project = dir.path().join("project");
         fs::create_dir(&project).unwrap();
         let target = dir.path().join("private/archive/document.json");
@@ -457,7 +457,7 @@ mod tests {
     fn application_data_rejects_a_symlinked_private_parent() {
         use std::os::unix::fs::symlink;
 
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let project = dir.path().join("project");
         let outside = dir.path().join("outside");
         let continuation_root = dir.path().join("continuations");

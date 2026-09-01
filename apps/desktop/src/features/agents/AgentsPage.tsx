@@ -28,6 +28,7 @@ const agentKinds: AgentKind[] = [
   "cursor",
   "open-claw",
   "hermes",
+  "grok-build",
   "deepseek-harness",
 ];
 const agentLabels: Record<AgentKind, string> = {
@@ -36,6 +37,7 @@ const agentLabels: Record<AgentKind, string> = {
   cursor: "Cursor",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 
@@ -241,17 +243,18 @@ export function AgentsPage({
               variant="default"
               aria-label={agentLabels[selected]}
             >
-              {(["overview", "assets", "workspaces", "usage"] as AgentDetailSection[]).map(
-                (value) => (
-                  <TabsTrigger
-                    className="segmented-control-item h-9 min-h-9 flex-none px-3"
-                    value={value}
-                    key={value}
-                  >
-                    {tr(`agents.section.${value}`)}
-                  </TabsTrigger>
-                ),
-              )}
+              {(selected === "grok-build"
+                ? (["overview", "assets", "workspaces"] as AgentDetailSection[])
+                : (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
+              ).map((value) => (
+                <TabsTrigger
+                  className="segmented-control-item h-9 min-h-9 flex-none px-3"
+                  value={value}
+                  key={value}
+                >
+                  {tr(`agents.section.${value}`)}
+                </TabsTrigger>
+              ))}
             </TabsList>
           </Tabs>
 

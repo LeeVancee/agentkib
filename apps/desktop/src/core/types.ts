@@ -4,6 +4,7 @@ export type AgentKind =
   | "cursor"
   | "open-claw"
   | "hermes"
+  | "grok-build"
   | "deepseek-harness";
 export type MemoryStatus = "pending" | "approved" | "rejected" | "invalidated";
 export type MemoryType =

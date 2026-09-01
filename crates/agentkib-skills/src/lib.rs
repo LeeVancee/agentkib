@@ -31,6 +31,7 @@ const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_ENTRY_BYTES: u64 = 1024 * 1024;
 const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 const MAX_RETAINED_PREVIEWS: usize = 4;
+const MAX_REF_RESOLUTION_ATTEMPTS: usize = 8;
 const PREVIEW_TTL_MINUTES: i64 = 15;
 const CURATED_URL: &str = "https://github.com/openai/skills/tree/main/skills/.curated";
 
@@ -360,8 +361,9 @@ impl SkillHub {
         self.ensure_layout()?;
         let name = prepared.target_name.clone();
         let expected_package_sha256 = &prepared.lock.content_sha256;
+        let prepared_package = package_hash(&prepared.package)?;
         ensure!(
-            package_hash(&prepared.package)?.0 == *expected_package_sha256,
+            prepared_package.0 == *expected_package_sha256,
             "Prepared Skill package changed after preview"
         );
         let target = self.skills_dir().join(&name);
@@ -373,14 +375,12 @@ impl SkillHub {
             actual_existing_sha256 == prepared.expected_existing_sha256,
             "Installed Skill changed after preview; prepare the operation again"
         );
+        let installed = prepared_installed_skill(&prepared, &target, &prepared_package);
         match prepared.preview.operation {
             SkillOperationKind::Install => self.apply_install(prepared)?,
             SkillOperationKind::Update => self.apply_update(prepared)?,
         }
-        self.installed()?
-            .into_iter()
-            .find(|skill| skill.name == name)
-            .context("Installed Skill was not found after applying the operation")
+        Ok(installed)
     }
 
     pub fn rollback(&self, name: &str, confirmed: bool) -> Result<InstalledSkill> {
@@ -1517,7 +1517,7 @@ fn selector_reference_candidates(selector: &GitHubUrlSelector) -> Result<Vec<(St
         "GitHub tree or blob URL does not contain a valid ref"
     );
     (1..=selector.parts.len() - path_parts)
-        .rev()
+        .take(MAX_REF_RESOLUTION_ATTEMPTS)
         .map(|split| {
             Ok((
                 selector.parts[..split].join("/"),
@@ -2053,6 +2053,26 @@ fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> Install
     }
 }
 
+fn prepared_installed_skill(
+    prepared: &PreparedOperation,
+    target: &Path,
+    package: &(String, u64, Option<DateTime<Utc>>),
+) -> InstalledSkill {
+    InstalledSkill {
+        name: prepared.target_name.clone(),
+        display_name: prepared.preview.skill.name.clone(),
+        description: prepared.preview.skill.description.clone(),
+        path: target.to_path_buf(),
+        size: package.1,
+        modified_at: package.2,
+        status: InstalledSkillStatus::Current,
+        source: prepared.lock.source.clone(),
+        installed_at: Some(prepared.lock.installed_at),
+        updated_at: Some(prepared.lock.updated_at),
+        can_rollback: prepared.preview.operation == SkillOperationKind::Update,
+    }
+}
+
 #[cfg(unix)]
 fn set_executable(path: &Path, executable: bool) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -2308,12 +2328,22 @@ mod tests {
         assert_eq!(
             selector_reference_candidates(&slash_selector).unwrap(),
             [
-                ("feature/foo/skills/reviewer".into(), "".into()),
-                ("feature/foo/skills".into(), "reviewer".into()),
-                ("feature/foo".into(), "skills/reviewer".into()),
                 ("feature".into(), "foo/skills/reviewer".into()),
+                ("feature/foo".into(), "skills/reviewer".into()),
+                ("feature/foo/skills".into(), "reviewer".into()),
+                ("feature/foo/skills/reviewer".into(), "".into()),
             ]
         );
+
+        let deep_selector = GitHubUrlSelector {
+            kind: GitHubUrlKind::Tree,
+            parts: std::iter::once("main".to_string())
+                .chain((0..20).map(|index| format!("path-{index}")))
+                .collect(),
+        };
+        let candidates = selector_reference_candidates(&deep_selector).unwrap();
+        assert_eq!(candidates.len(), MAX_REF_RESOLUTION_ATTEMPTS);
+        assert_eq!(candidates[0].0, "main");
     }
 
     #[test]

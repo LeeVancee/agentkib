@@ -58,6 +58,8 @@ fn lock_schema_version() -> u32 {
 struct TrashRecord {
     id: String,
     name: String,
+    #[serde(default)]
+    display_name: String,
     removed_at: DateTime<Utc>,
     lock: Option<SkillLockEntry>,
     #[serde(default)]
@@ -66,6 +68,7 @@ struct TrashRecord {
 
 struct PreparedOperation {
     preview: SkillOperationPreview,
+    target_name: String,
     temp: TempDir,
     package: PathBuf,
     lock: SkillLockEntry,
@@ -78,6 +81,19 @@ struct ParsedGitHubUrl {
     repository: String,
     reference: Option<String>,
     path: String,
+    selector: Option<GitHubUrlSelector>,
+}
+
+#[derive(Debug, Clone)]
+struct GitHubUrlSelector {
+    kind: GitHubUrlKind,
+    parts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitHubUrlKind {
+    Tree,
+    Blob,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +119,7 @@ struct TreePointer {
 
 #[derive(Debug, Clone, Deserialize)]
 struct TreeResponse {
+    sha: String,
     #[serde(default)]
     tree: Vec<TreeEntry>,
     #[serde(default)]
@@ -119,6 +136,12 @@ struct TreeEntry {
     size: Option<u64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct MatchingRef {
+    #[serde(rename = "ref")]
+    name: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
     name: String,
@@ -133,6 +156,7 @@ struct ResolvedRepository {
     reference: String,
     commit: String,
     root_tree: String,
+    root_path: String,
     entries: Vec<TreeEntry>,
 }
 
@@ -201,7 +225,7 @@ impl SkillHub {
     pub async fn discover(&self, value: &str) -> Result<Vec<SkillCandidate>> {
         let parsed = parse_github_url(value)?;
         let resolved = self.resolve_repository(&parsed).await?;
-        let directories = candidate_directories(&resolved.entries, &parsed.path)?;
+        let directories = candidate_directories(&resolved.entries, &resolved.root_path)?;
         let mut candidates = Vec::new();
         for directory in directories {
             let skill_path = join_repo_path(&directory, "SKILL.md");
@@ -281,7 +305,7 @@ impl SkillHub {
     }
 
     pub async fn prepare_update(&self, name: &str) -> Result<SkillOperationPreview> {
-        validate_skill_name(name)?;
+        validate_library_id(name)?;
         let lock = load_lock(&self.root)?;
         let entry = lock
             .skills
@@ -323,7 +347,7 @@ impl SkillHub {
             .lock()
             .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
         self.ensure_layout()?;
-        let name = prepared.preview.skill.name.clone();
+        let name = prepared.target_name.clone();
         let expected_package_sha256 = &prepared.lock.content_sha256;
         ensure!(
             package_hash(&prepared.package)?.0 == *expected_package_sha256,
@@ -350,7 +374,7 @@ impl SkillHub {
 
     pub fn rollback(&self, name: &str, confirmed: bool) -> Result<InstalledSkill> {
         ensure!(confirmed, "Skill rollback requires explicit confirmation");
-        validate_skill_name(name)?;
+        validate_library_id(name)?;
         let _guard = self
             .lifecycle
             .lock()
@@ -390,7 +414,7 @@ impl SkillHub {
 
     pub fn uninstall(&self, name: &str, confirmed: bool) -> Result<RemovedSkill> {
         ensure!(confirmed, "Skill uninstall requires explicit confirmation");
-        validate_skill_name(name)?;
+        validate_library_id(name)?;
         let _guard = self
             .lifecycle
             .lock()
@@ -417,6 +441,7 @@ impl SkillHub {
         let record = TrashRecord {
             id: id.clone(),
             name: name.to_string(),
+            display_name: skill_display_name(&target, name),
             removed_at: Utc::now(),
             lock: lock.skills.remove(name),
             previous: lock.previous.remove(name),
@@ -448,6 +473,7 @@ impl SkillHub {
         Ok(RemovedSkill {
             id,
             name: name.to_string(),
+            display_name: record.display_name,
             removed_at: record.removed_at,
             path: package,
         })
@@ -474,14 +500,20 @@ impl SkillHub {
             let Ok(record) = read_json::<TrashRecord>(&record_path) else {
                 continue;
             };
+            let display_name = if record.display_name.is_empty() {
+                record.name.clone()
+            } else {
+                record.display_name
+            };
             output.push(RemovedSkill {
                 id: record.id,
                 name: record.name,
+                display_name,
                 removed_at: record.removed_at,
                 path: entry.path().join("package"),
             });
         }
-        output.sort_by(|left, right| right.removed_at.cmp(&left.removed_at));
+        output.sort_by_key(|entry| std::cmp::Reverse(entry.removed_at));
         Ok(output)
     }
 
@@ -508,7 +540,7 @@ impl SkillHub {
             "Removed Skill package is not a regular directory"
         );
         let record = read_json::<TrashRecord>(&record_path)?;
-        validate_skill_name(&record.name)?;
+        validate_library_id(&record.name)?;
         let target = self.skills_dir().join(&record.name);
         ensure!(!target.exists(), "A Skill with this name already exists");
         let backup = self.backups_dir().join(&record.name);
@@ -554,7 +586,7 @@ impl SkillHub {
     }
 
     pub fn read_file(&self, name: &str, relative: &str) -> Result<SkillFilePreview> {
-        validate_skill_name(name)?;
+        validate_library_id(name)?;
         let relative = safe_relative_path(relative)?;
         let root = platform_path::canonicalize(&self.skills_dir().join(name))?;
         let requested = self.skills_dir().join(name).join(&relative);
@@ -687,8 +719,18 @@ impl SkillHub {
             source: resolved_source,
         };
         validate_skill_name(&candidate.name)?;
+        if operation == SkillOperationKind::Install {
+            ensure!(
+                !self
+                    .installed()?
+                    .iter()
+                    .any(|skill| skill.display_name == candidate.name),
+                "A Skill with this name already exists"
+            );
+        }
         let (content_sha256, _, _) = package_hash(&package)?;
-        let existing = self.skills_dir().join(&candidate.name);
+        let target_name = installed_name.unwrap_or(&candidate.name).to_string();
+        let existing = self.skills_dir().join(&target_name);
         match operation {
             SkillOperationKind::Install => {
                 ensure!(!existing.exists(), "A Skill with this name already exists")
@@ -699,7 +741,7 @@ impl SkillHub {
         }
         let (added, modified, removed) = file_delta(&existing, &package)?;
         let lock = load_lock(&self.root)?;
-        let previous = lock.skills.get(&candidate.name);
+        let previous = lock.skills.get(&target_name);
         if operation == SkillOperationKind::Update {
             let previous_source = previous
                 .and_then(|entry| entry.source.as_ref())
@@ -746,6 +788,7 @@ impl SkillHub {
             token,
             PreparedOperation {
                 preview: preview.clone(),
+                target_name,
                 temp,
                 package,
                 lock: lock_entry,
@@ -756,7 +799,7 @@ impl SkillHub {
     }
 
     fn apply_install(&self, prepared: PreparedOperation) -> Result<()> {
-        let name = &prepared.preview.skill.name;
+        let name = &prepared.target_name;
         let target = self.skills_dir().join(name);
         ensure!(!target.exists(), "A Skill with this name already exists");
         let mut lock = load_lock(&self.root)?;
@@ -771,7 +814,7 @@ impl SkillHub {
     }
 
     fn apply_update(&self, prepared: PreparedOperation) -> Result<()> {
-        let name = &prepared.preview.skill.name;
+        let name = &prepared.target_name;
         let target = self.skills_dir().join(name);
         let backup = self.backups_dir().join(name);
         ensure!(
@@ -829,59 +872,138 @@ impl SkillHub {
     }
 
     async fn resolve_repository(&self, parsed: &ParsedGitHubUrl) -> Result<ResolvedRepository> {
-        let reference = match parsed.reference.clone() {
-            Some(reference) => reference,
-            None => {
-                let repository: RepositoryResponse = self
-                    .get_json(&github_api_url(&[
-                        "repos",
-                        &parsed.owner,
-                        &parsed.repository,
-                    ])?)
-                    .await?;
-                repository.default_branch
-            }
+        let (reference, root_path, commit) = self.resolve_reference(parsed).await?;
+        let tree_spec = if root_path.is_empty() {
+            commit.commit.tree.sha.clone()
+        } else {
+            format!("{}:{root_path}", commit.commit.tree.sha)
         };
-        let commit: CommitResponse = self
-            .get_json(&github_api_url(&[
-                "repos",
-                &parsed.owner,
-                &parsed.repository,
-                "commits",
-                &reference,
-            ])?)
+        let mut tree = self
+            .fetch_tree(&parsed.owner, &parsed.repository, &tree_spec, true)
             .await?;
-        let tree: TreeResponse = self
-            .get_json(
-                github_api_url(&[
-                    "repos",
-                    &parsed.owner,
-                    &parsed.repository,
-                    "git",
-                    "trees",
-                    &commit.commit.tree.sha,
-                ])?
-                .query_pairs_mut()
-                .append_pair("recursive", "1")
-                .finish(),
-            )
-            .await?;
+        let root_tree = tree.sha.clone();
         ensure!(
             !tree.truncated,
-            "GitHub repository tree is too large; provide a direct Skill directory URL"
+            "Selected GitHub location is too large; provide a direct Skill directory URL"
         );
         ensure!(
             tree.tree.len() <= MAX_TREE_ENTRIES,
-            "GitHub repository exceeds the 20,000 entry discovery limit"
+            "Selected GitHub location exceeds the 20,000 entry discovery limit"
         );
+        if !root_path.is_empty() {
+            for entry in &mut tree.tree {
+                entry.path = join_repo_path(&root_path, &entry.path);
+            }
+        }
         Ok(ResolvedRepository {
             owner: parsed.owner.clone(),
             repository: parsed.repository.clone(),
             reference,
             commit: commit.sha,
-            root_tree: commit.commit.tree.sha,
+            root_tree,
+            root_path,
             entries: tree.tree,
         })
+    }
+
+    async fn resolve_reference(
+        &self,
+        parsed: &ParsedGitHubUrl,
+    ) -> Result<(String, String, CommitResponse)> {
+        if let Some(reference) = parsed.reference.clone() {
+            let commit = self.get_commit(parsed, &reference).await?;
+            return Ok((reference, parsed.path.clone(), commit));
+        }
+        if let Some(selector) = &parsed.selector {
+            let first = selector
+                .parts
+                .first()
+                .context("GitHub tree URL is missing a ref")?;
+            let mut refs = self.matching_refs(parsed, "heads", first).await?;
+            refs.extend(self.matching_refs(parsed, "tags", first).await?);
+            if let Some((reference, path)) = select_reference(selector, refs.iter())? {
+                let commit = self.get_commit(parsed, &reference).await?;
+                return Ok((reference, path, commit));
+            }
+            if let Some(commit) = self.try_get_commit(parsed, first).await? {
+                let path = selector_path(selector, 1)?;
+                return Ok((first.clone(), path, commit));
+            }
+            bail!("GitHub tree or blob URL does not contain a resolvable ref");
+        }
+        let repository: RepositoryResponse = self
+            .get_json(&github_api_url(&[
+                "repos",
+                &parsed.owner,
+                &parsed.repository,
+            ])?)
+            .await?;
+        let commit = self.get_commit(parsed, &repository.default_branch).await?;
+        Ok((repository.default_branch, String::new(), commit))
+    }
+
+    async fn get_commit(
+        &self,
+        parsed: &ParsedGitHubUrl,
+        reference: &str,
+    ) -> Result<CommitResponse> {
+        self.get_json(&github_api_url(&[
+            "repos",
+            &parsed.owner,
+            &parsed.repository,
+            "commits",
+            reference,
+        ])?)
+        .await
+    }
+
+    async fn try_get_commit(
+        &self,
+        parsed: &ParsedGitHubUrl,
+        reference: &str,
+    ) -> Result<Option<CommitResponse>> {
+        self.try_get_json(&github_api_url(&[
+            "repos",
+            &parsed.owner,
+            &parsed.repository,
+            "commits",
+            reference,
+        ])?)
+        .await
+    }
+
+    async fn matching_refs(
+        &self,
+        parsed: &ParsedGitHubUrl,
+        namespace: &str,
+        prefix: &str,
+    ) -> Result<Vec<String>> {
+        let refs: Vec<MatchingRef> = self
+            .get_json(&github_api_url(&[
+                "repos",
+                &parsed.owner,
+                &parsed.repository,
+                "git",
+                "matching-refs",
+                namespace,
+                prefix,
+            ])?)
+            .await?;
+        Ok(refs.into_iter().map(|value| value.name).collect())
+    }
+
+    async fn fetch_tree(
+        &self,
+        owner: &str,
+        repository: &str,
+        tree: &str,
+        recursive: bool,
+    ) -> Result<TreeResponse> {
+        let mut url = github_api_url(&["repos", owner, repository, "git", "trees", tree])?;
+        if recursive {
+            url.query_pairs_mut().append_pair("recursive", "1");
+        }
+        self.get_json(&url).await
     }
 
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &Url) -> Result<T> {
@@ -892,6 +1014,19 @@ impl SkillHub {
             "GitHub request failed with HTTP {status}"
         );
         Ok(response.json().await?)
+    }
+
+    async fn try_get_json<T: for<'de> Deserialize<'de>>(&self, url: &Url) -> Result<Option<T>> {
+        let response = self.client.get(url.clone()).send().await?;
+        let status = response.status();
+        if matches!(status.as_u16(), 404 | 422) {
+            return Ok(None);
+        }
+        ensure!(
+            status.is_success(),
+            "GitHub request failed with HTTP {status}"
+        );
+        Ok(Some(response.json().await?))
     }
 
     async fn download_raw(
@@ -927,7 +1062,7 @@ impl SkillHub {
         let installed = self
             .installed()?
             .into_iter()
-            .map(|skill| skill.name)
+            .map(|skill| skill.display_name)
             .collect::<std::collections::BTreeSet<_>>();
         for entry in &mut snapshot.entries {
             entry.installed = installed.contains(&entry.candidate.name);
@@ -1054,34 +1189,81 @@ fn parse_github_url(value: &str) -> Result<ParsedGitHubUrl> {
     let repository = parts[1].trim_end_matches(".git").to_string();
     validate_repo_segment(&owner)?;
     validate_repo_segment(&repository)?;
-    let mut reference = None;
-    let mut path = String::new();
+    let mut selector = None;
     if parts.len() > 2 {
         ensure!(
             matches!(parts[2].as_str(), "tree" | "blob"),
             "GitHub URL must point to a repository, tree, or SKILL.md blob"
         );
         ensure!(parts.len() >= 4, "GitHub tree URL is missing a ref");
-        reference = Some(parts[3].clone());
-        path = parts[4..].join("/");
-        if parts[2] == "blob" {
-            ensure!(
-                path.ends_with("SKILL.md"),
-                "GitHub blob URL must point to SKILL.md"
-            );
-            path = path
-                .trim_end_matches("SKILL.md")
-                .trim_end_matches('/')
-                .to_string();
-        }
+        selector = Some(GitHubUrlSelector {
+            kind: if parts[2] == "blob" {
+                GitHubUrlKind::Blob
+            } else {
+                GitHubUrlKind::Tree
+            },
+            parts: parts[3..].to_vec(),
+        });
     }
-    let path = safe_repo_path(&path)?;
     Ok(ParsedGitHubUrl {
         owner,
         repository,
-        reference,
-        path,
+        reference: None,
+        path: String::new(),
+        selector,
     })
+}
+
+fn select_reference<'a>(
+    selector: &GitHubUrlSelector,
+    refs: impl Iterator<Item = &'a String>,
+) -> Result<Option<(String, String)>> {
+    let mut selected: Option<(usize, String)> = None;
+    for value in refs {
+        let reference = value
+            .strip_prefix("refs/heads/")
+            .or_else(|| value.strip_prefix("refs/tags/"))
+            .unwrap_or(value);
+        let components = reference.split('/').collect::<Vec<_>>();
+        let path_count = selector.parts.len().saturating_sub(components.len());
+        let can_match = components.len() <= selector.parts.len()
+            && selector
+                .parts
+                .iter()
+                .zip(&components)
+                .all(|(left, right)| left == right)
+            && (selector.kind == GitHubUrlKind::Tree || path_count > 0);
+        if can_match
+            && selected
+                .as_ref()
+                .is_none_or(|(length, _)| components.len() > *length)
+        {
+            selected = Some((components.len(), reference.to_string()));
+        }
+    }
+    selected
+        .map(|(length, reference)| Ok((reference, selector_path(selector, length)?)))
+        .transpose()
+}
+
+fn selector_path(selector: &GitHubUrlSelector, split: usize) -> Result<String> {
+    ensure!(
+        split > 0 && split <= selector.parts.len(),
+        "GitHub tree or blob URL does not contain a valid ref"
+    );
+    let mut path = selector.parts[split..].join("/");
+    if selector.kind == GitHubUrlKind::Blob {
+        ensure!(
+            selector.parts.last().map(String::as_str) == Some("SKILL.md"),
+            "GitHub blob URL must point to SKILL.md"
+        );
+        path = path
+            .strip_suffix("SKILL.md")
+            .unwrap_or(&path)
+            .trim_end_matches('/')
+            .to_string();
+    }
+    safe_repo_path(&path)
 }
 
 fn validate_raw_url_path(value: &str) -> Result<()> {
@@ -1154,6 +1336,7 @@ fn parsed_source(source: &SkillSource) -> Result<ParsedGitHubUrl> {
         repository: repository.to_string(),
         reference: Some(source.reference.clone()),
         path: safe_repo_path(&source.path)?,
+        selector: None,
     })
 }
 
@@ -1259,7 +1442,7 @@ fn package_entries<'a>(entries: &'a [TreeEntry], path: &str) -> Result<Vec<&'a T
 }
 
 fn directory_tree_sha(resolved: &ResolvedRepository, directory: &str) -> Result<String> {
-    if directory.is_empty() {
+    if directory == resolved.root_path {
         return Ok(resolved.root_tree.clone());
     }
     resolved
@@ -1321,6 +1504,20 @@ fn validate_skill_name(name: &str) -> Result<()> {
                 .is_some_and(u8::is_ascii_alphanumeric)
             && !name.contains("--"),
         "Skill name must use lowercase letters, numbers, and single hyphens"
+    );
+    Ok(())
+}
+
+fn validate_library_id(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty() && name.len() <= 255 && !name.chars().any(char::is_control),
+        "Skill library identifier is invalid"
+    );
+    let path = Path::new(name);
+    ensure!(
+        path.components().count() == 1
+            && matches!(path.components().next(), Some(Component::Normal(_))),
+        "Skill library identifier must be one safe path component"
     );
     Ok(())
 }
@@ -1439,11 +1636,13 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
             continue;
         };
         let metadata = parse_skill_frontmatter(&content).ok();
-        let name = metadata
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let display_name = metadata
             .as_ref()
             .map(|value| value.name.clone())
-            .or_else(|| entry.file_name().to_str().map(str::to_string))
-            .unwrap_or_else(|| "skill".into());
+            .unwrap_or_else(|| name.clone());
         let (hash, size, modified_at) = package_hash(&entry.path())?;
         let record = lock.skills.get(&name);
         let status = match record {
@@ -1453,6 +1652,7 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
         };
         output.push(InstalledSkill {
             name: name.clone(),
+            display_name,
             description: metadata.map(|value| value.description).unwrap_or_default(),
             path: entry.path(),
             size,
@@ -1467,6 +1667,14 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
     }
     output.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(output)
+}
+
+fn skill_display_name(root: &Path, fallback: &str) -> String {
+    fs::read_to_string(root.join("SKILL.md"))
+        .ok()
+        .and_then(|content| parse_skill_frontmatter(&content).ok())
+        .map(|metadata| metadata.name)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
@@ -1616,6 +1824,7 @@ mod tests {
                 local_modified: false,
                 expires_at,
             },
+            target_name: "reviewer".into(),
             lock: SkillLockEntry {
                 source: Some(resolved_source),
                 content_sha256: package_hash(&package).unwrap().0,
@@ -1639,14 +1848,40 @@ mod tests {
             "https://github.com/openai/skills/tree/main/skills/.curated/openai-docs",
         )
         .unwrap();
-        assert_eq!(tree.reference.as_deref(), Some("main"));
-        assert_eq!(tree.path, "skills/.curated/openai-docs");
+        let tree_selector = tree.selector.unwrap();
+        assert_eq!(tree_selector.kind, GitHubUrlKind::Tree);
+        assert_eq!(
+            tree_selector.parts,
+            ["main", "skills", ".curated", "openai-docs"]
+        );
 
         let blob = parse_github_url(
             "https://github.com/openai/skills/blob/main/skills/.curated/openai-docs/SKILL.md",
         )
         .unwrap();
-        assert_eq!(blob.path, "skills/.curated/openai-docs");
+        let blob_selector = blob.selector.unwrap();
+        assert_eq!(blob_selector.kind, GitHubUrlKind::Blob);
+        assert_eq!(
+            blob_selector.parts,
+            ["main", "skills", ".curated", "openai-docs", "SKILL.md"]
+        );
+
+        let slash_ref =
+            parse_github_url("https://github.com/example/skills/tree/feature/foo/skills/reviewer")
+                .unwrap();
+        let slash_selector = slash_ref.selector.unwrap();
+        assert_eq!(
+            slash_selector.parts,
+            ["feature", "foo", "skills", "reviewer"]
+        );
+        let refs = [
+            "refs/heads/feature".to_string(),
+            "refs/heads/feature/foo".to_string(),
+        ];
+        assert_eq!(
+            select_reference(&slash_selector, refs.iter()).unwrap(),
+            Some(("feature/foo".into(), "skills/reviewer".into()))
+        );
     }
 
     #[test]
@@ -1665,8 +1900,10 @@ mod tests {
                 "https://github.com/openai/skills/tree/main/skills/%E7%A4%BA%E4%BE%8B"
             )
             .unwrap()
-            .path,
-            "skills/示例"
+            .selector
+            .unwrap()
+            .parts,
+            ["main", "skills", "示例"]
         );
     }
 
@@ -1711,7 +1948,7 @@ mod tests {
     #[test]
     fn unmanaged_packages_are_listed_without_a_lockfile() {
         let directory = tempfile::tempdir().unwrap();
-        let skill = directory.path().join("skills/reviewer");
+        let skill = directory.path().join("skills/folder-name");
         fs::create_dir_all(&skill).unwrap();
         fs::write(
             skill.join("SKILL.md"),
@@ -1720,7 +1957,18 @@ mod tests {
         .unwrap();
         let installed = list_installed(directory.path()).unwrap();
         assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].name, "folder-name");
+        assert_eq!(installed[0].display_name, "reviewer");
         assert_eq!(installed[0].status, InstalledSkillStatus::Unmanaged);
+
+        let hub = SkillHub::new(
+            directory.path().to_path_buf(),
+            directory.path().join("cache"),
+        )
+        .unwrap();
+        let removed = hub.uninstall("folder-name", true).unwrap();
+        assert_eq!(removed.name, "folder-name");
+        assert_eq!(removed.display_name, "reviewer");
     }
 
     #[test]
@@ -1787,6 +2035,7 @@ mod tests {
                 local_modified: false,
                 expires_at: now + Duration::minutes(15),
             },
+            target_name: "reviewer".into(),
             temp,
             package,
             lock: incoming_lock,
@@ -1892,7 +2141,7 @@ mod tests {
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].scope, CatalogScope::AgentkibHome);
         assert_eq!(assets[0].name, "reviewer");
-        assert_eq!(assets[0].path, skill);
+        assert_eq!(assets[0].path, platform_path::canonicalize(&skill).unwrap());
         assert!(assets[0].size > 5);
     }
 

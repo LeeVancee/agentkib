@@ -387,6 +387,7 @@ export interface SkillCatalogSnapshot {
 export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
 export interface InstalledSkill {
   name: string;
+  display_name: string;
   description: string;
   path: string;
   size: number;
@@ -417,6 +418,7 @@ export interface SkillOperationPreview {
 export interface RemovedSkill {
   id: string;
   name: string;
+  display_name: string;
   removed_at: string;
   path: string;
 }

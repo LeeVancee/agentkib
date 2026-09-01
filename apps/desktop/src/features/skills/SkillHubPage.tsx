@@ -182,7 +182,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     if (
       !(await dialogs.confirm({
         title: tr("skills.rollback"),
-        description: tr("skills.rollbackConfirm", { name: skill.name }),
+        description: tr("skills.rollbackConfirm", { name: skill.display_name }),
         tone: "warning",
       }))
     )
@@ -197,7 +197,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     if (
       !(await dialogs.confirm({
         title: tr("skills.moveToTrash"),
-        description: tr("skills.uninstallConfirm", { name: skill.name }),
+        description: tr("skills.uninstallConfirm", { name: skill.display_name }),
         tone: "destructive",
       }))
     )
@@ -288,7 +288,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                   <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="truncate font-semibold">{skill.name}</h3>
+                        <h3 className="truncate font-semibold">{skill.display_name}</h3>
                         <Badge variant="outline" className={statusClass(skill.status)}>
                           {statusLabel(skill.status)}
                         </Badge>
@@ -355,7 +355,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                 {removed.map((skill) => (
                   <div key={skill.id} className="flex items-center justify-between gap-3 px-4 py-3">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{skill.name}</p>
+                      <p className="truncate text-sm font-medium">{skill.display_name}</p>
                       <p className="text-xs text-muted-foreground">
                         {formatDateTime(skill.removed_at)}
                       </p>
@@ -449,7 +449,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
               {availableEntries.map((candidate) => {
-                const existing = installed.find((skill) => skill.name === candidate.name);
+                const existing = installed.find((skill) => skill.display_name === candidate.name);
                 const sameSource = Boolean(
                   existing?.source &&
                   existing.source.repository === candidate.source.repository &&

@@ -63,6 +63,7 @@ describe("SkillHubPage", () => {
     mocks.installedSkills.mockResolvedValue([
       {
         name: "local-reviewer",
+        display_name: "local-reviewer",
         description: "Review local changes",
         path: "/tmp/.agentkib/skills/local-reviewer",
         size: 256,
@@ -95,6 +96,7 @@ describe("SkillHubPage", () => {
     mocks.prepareSkillInstall.mockResolvedValue(preview);
     mocks.applySkillOperation.mockResolvedValue({
       name: candidate.name,
+      display_name: candidate.name,
       description: candidate.description,
       path: "/tmp/.agentkib/skills/skill-installer",
       size: 128,

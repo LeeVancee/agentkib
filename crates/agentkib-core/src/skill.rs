@@ -41,18 +41,21 @@ pub fn inspect_skill_entrypoint(entrypoint: &Path) -> Result<SkillPackage> {
     if agentkib_platform::path::is_reparse_or_symlink(&root)? {
         bail!("Skill root must be a regular directory");
     }
+    let root = agentkib_platform::path::canonicalize(&root)
+        .with_context(|| format!("Could not resolve Skill root {}", root.display()))?;
+    let entrypoint = root.join("SKILL.md");
     let fallback_name = root
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("skill")
         .to_string();
-    let name = read_skill_name(entrypoint).unwrap_or(fallback_name);
+    let name = read_skill_name(&entrypoint).unwrap_or(fallback_name);
     let (size, modified_at) = package_metadata(&root);
     Ok(SkillPackage {
         name,
         root,
-        entrypoint: entrypoint.to_path_buf(),
+        entrypoint,
         size,
         modified_at,
     })
@@ -217,7 +220,10 @@ mod tests {
         let package = inspect_skill_entrypoint(&root.join("SKILL.md")).unwrap();
 
         assert_eq!(package.name, "skill-installer");
-        assert_eq!(package.root, root);
+        assert_eq!(
+            package.root,
+            agentkib_platform::path::canonicalize(&root).unwrap()
+        );
         assert_eq!(package.size, (entrypoint.len() + guide.len()) as u64);
         let expected_modified = [root.join("SKILL.md"), root.join("references/guide.md")]
             .into_iter()

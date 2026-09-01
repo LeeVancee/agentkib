@@ -566,7 +566,10 @@ pub enum InstalledSkillStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledSkill {
+    /// Stable lifecycle identifier derived from the library directory name.
     pub name: String,
+    /// User-facing package name read from SKILL.md frontmatter.
+    pub display_name: String,
     pub description: String,
     pub path: PathBuf,
     pub size: u64,
@@ -602,7 +605,10 @@ pub struct SkillOperationPreview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemovedSkill {
     pub id: String,
+    /// Stable lifecycle identifier derived from the former library directory name.
     pub name: String,
+    /// User-facing package name captured when the package was removed.
+    pub display_name: String,
     pub removed_at: DateTime<Utc>,
     pub path: PathBuf,
 }

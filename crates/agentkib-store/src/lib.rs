@@ -3750,7 +3750,7 @@ mod tests {
         assert_eq!(registered.asset_count, 1);
         assert_eq!(assets.len(), 5);
         assert!(assets.iter().all(|asset| asset.name == "logical-name"));
-        let skill = skill.canonicalize().unwrap();
+        let skill = platform_path::canonicalize(&skill).unwrap();
         assert!(assets.iter().all(|asset| asset.path == skill));
         assert!(
             assets
@@ -3794,7 +3794,7 @@ mod tests {
 
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].name, "manifest-name");
-        assert_eq!(assets[0].path, skill.canonicalize().unwrap());
+        assert_eq!(assets[0].path, platform_path::canonicalize(&skill).unwrap());
         assert!(assets[0].size > 0);
     }
 

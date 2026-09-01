@@ -1273,6 +1273,7 @@ fn repository_group_id(path: &Path) -> Option<String> {
 }
 
 fn scan_known_home(agent: AgentKind, home: &Path, names: &[&str]) -> Result<Vec<CatalogAsset>> {
+    let home = platform_path::canonicalize(home)?;
     let allowed: BTreeSet<_> = names.iter().copied().collect();
     let mut output = Vec::new();
     for name in names {
@@ -1315,7 +1316,7 @@ fn scan_known_home(agent: AgentKind, home: &Path, names: &[&str]) -> Result<Vec<
     output.retain(|asset| {
         asset
             .path
-            .strip_prefix(home)
+            .strip_prefix(&home)
             .ok()
             .and_then(|path| path.components().next())
             .and_then(|part| part.as_os_str().to_str())
@@ -1845,7 +1846,10 @@ mod tests {
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].agent, Some(AgentKind::OpenCode));
         assert_eq!(assets[0].kind, AssetKind::Configuration);
-        assert_eq!(assets[0].path, config_home.join("tools/custom.ts"));
+        assert_eq!(
+            assets[0].path,
+            platform_path::canonicalize(&config_home.join("tools/custom.ts")).unwrap()
+        );
     }
 
     #[test]
@@ -2379,7 +2383,10 @@ mod tests {
             .find(|value| value.kind == AssetKind::Skill)
             .unwrap();
         assert_eq!(skill.name, "logical-skill");
-        assert_eq!(skill.path, dir.path().join("skills/example"));
+        assert_eq!(
+            skill.path,
+            platform_path::canonicalize(&dir.path().join("skills/example")).unwrap()
+        );
         assert_eq!(
             skill.size,
             (skill_entrypoint.len() + 5 + "print('noise')".len()) as u64

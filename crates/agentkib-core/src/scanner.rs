@@ -89,7 +89,7 @@ fn is_asset(agent: AgentKind, candidate: &str, path: &Path) -> bool {
                 || name.ends_with(".md")
                 || name.ends_with(".mdc")
                 || agent == AgentKind::OpenCode
-                    && candidate == ".opencode/plugins"
+                    && matches!(candidate, ".opencode/plugins" | ".opencode/tools")
                     && (name.ends_with(".js") || name.ends_with(".ts"))
         })
 }
@@ -264,6 +264,11 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 ".opencode/plugins",
                 AssetKind::Configuration,
                 "OpenCode plugins",
+            ),
+            (
+                ".opencode/tools",
+                AssetKind::Configuration,
+                "OpenCode custom tools",
             ),
         ],
         AgentKind::OpenClaw => vec![
@@ -500,9 +505,10 @@ mod tests {
     }
 
     #[test]
-    fn scans_opencode_javascript_and_typescript_plugins() {
+    fn scans_opencode_javascript_and_typescript_plugins_and_tools() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".opencode/plugins")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/tools")).unwrap();
         fs::write(
             dir.path().join(".opencode/plugins/javascript.js"),
             "export default {}",
@@ -510,6 +516,11 @@ mod tests {
         .unwrap();
         fs::write(
             dir.path().join(".opencode/plugins/typescript.ts"),
+            "export default {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/tools/custom.ts"),
             "export default {}",
         )
         .unwrap();
@@ -522,7 +533,12 @@ mod tests {
             .unwrap();
 
         assert!(opencode.detected);
-        assert_eq!(opencode.asset_count, 2);
+        assert_eq!(opencode.asset_count, 3);
+        assert!(
+            scan.assets
+                .iter()
+                .any(|asset| asset.path.ends_with(".opencode/tools/custom.ts"))
+        );
         assert!(scan.assets.iter().all(|asset| {
             asset.agent != AgentKind::OpenCode
                 || asset.path.extension().and_then(|value| value.to_str()) == Some("js")

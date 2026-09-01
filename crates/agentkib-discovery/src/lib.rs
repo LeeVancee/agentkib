@@ -521,6 +521,7 @@ impl WorkspaceDiscoveryProvider for OpenCodeProvider {
                         "agents",
                         "commands",
                         "plugins",
+                        "tools",
                     ],
                 )
             })
@@ -1556,6 +1557,26 @@ mod tests {
         let debug = format!("{candidates:?}");
         assert!(!debug.contains("private session title"));
         assert!(!debug.contains("session-private-id"));
+    }
+
+    #[test]
+    fn opencode_home_catalog_includes_custom_tools() {
+        let dir = tempdir().unwrap();
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(config_home.join("tools")).unwrap();
+        fs::write(config_home.join("tools/custom.ts"), "export default {}").unwrap();
+
+        let assets = OpenCodeProvider {
+            config_home: Some(config_home.clone()),
+            data_home: None,
+        }
+        .scan_home_assets()
+        .unwrap();
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].agent, Some(AgentKind::OpenCode));
+        assert_eq!(assets[0].kind, AssetKind::Configuration);
+        assert_eq!(assets[0].path, config_home.join("tools/custom.ts"));
     }
 
     #[test]

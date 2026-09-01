@@ -155,27 +155,42 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
     prepareHandoff: (request: unknown) =>
       ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
-    summarizeHandoff: (request: unknown) =>
-      ipcRenderer.invoke("agentkib:session:summarize-handoff", request),
     sanitizeHandoff: (format: string, editedContent: string) =>
       ipcRenderer.invoke("agentkib:session:sanitize-handoff", format, editedContent),
     planHandoff: (
+      sessionId: string,
       workspaceId: string,
       filename: string,
       format: string,
-      editedContent: string,
+      editedContent: string | undefined,
       targetAgent: string,
+      mode: string,
+      sourceFingerprint: string,
+      acceptLosses: boolean,
+      historyBudgetTokens: number,
+      archiveId: string | undefined,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
+        sessionId,
         workspaceId,
         filename,
         format,
         editedContent,
         targetAgent,
+        mode,
+        sourceFingerprint,
+        acceptLosses,
+        historyBudgetTokens,
+        archiveId,
       ),
-    continueHandoff: (changeSet: unknown, launchRequest: unknown) =>
-      ipcRenderer.invoke("agentkib:session:continue-handoff", changeSet, launchRequest),
+    continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
+      ipcRenderer.invoke(
+        "agentkib:session:continue-handoff",
+        changeSet,
+        launchRequest,
+        approveHome,
+      ),
     launchHandoff: (launchRequest: unknown) =>
       ipcRenderer.invoke("agentkib:session:launch-handoff", launchRequest),
     openers: (id: string) => ipcRenderer.invoke("agentkib:workspace:openers", id),

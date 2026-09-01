@@ -303,6 +303,9 @@ function CatalogPage({
             </TabsTrigger>
           </TabsList>
         </Tabs>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          {tr("catalog.portabilityDescription")}
+        </p>
       </section>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />

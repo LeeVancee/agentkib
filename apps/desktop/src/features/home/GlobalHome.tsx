@@ -27,6 +27,11 @@ import type {
 import { GettingStartedCard } from "./GettingStartedCard";
 
 export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
+export interface RecentContinuation {
+  workspace: WorkspaceSummary;
+  sessionCount: number;
+  agents: AgentKind[];
+}
 
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -51,6 +56,8 @@ export function GlobalHome({
   onShowInsights,
   onShowWorkspaces,
   onShowAgents,
+  recentContinuations = [],
+  onContinue,
   onOpen,
   onOpenDoctor,
   onOpenAssets,
@@ -71,6 +78,8 @@ export function GlobalHome({
   onShowInsights: () => void;
   onShowWorkspaces: () => void;
   onShowAgents: () => void;
+  recentContinuations?: RecentContinuation[];
+  onContinue?: (workspace: WorkspaceSummary) => Promise<void>;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenAssets: (section: AssetSection) => void;
@@ -170,6 +179,46 @@ export function GlobalHome({
       ) : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="grid gap-6">
+            <Card className="overflow-hidden rounded-xl border-border bg-card shadow-none">
+              <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
+                <div>
+                  <h2 className="text-base font-semibold">{tr("home.continueWork")}</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {tr("home.continueWorkDetail")}
+                  </p>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                {recentContinuations.length ? (
+                  recentContinuations.map((item) => (
+                    <Button
+                      key={item.workspace.id}
+                      variant="bare"
+                      size="content"
+                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-5 py-4 text-left last:border-b-0 hover:bg-muted/40"
+                      onClick={() => void (onContinue ?? onOpen)(item.workspace)}
+                    >
+                      <span className="min-w-0">
+                        <strong className="block truncate text-sm">{item.workspace.name}</strong>
+                        <span className="mt-1 block text-xs text-muted-foreground">
+                          {tr("home.continueWorkMeta", {
+                            count: item.sessionCount,
+                            agents: item.agents.map((agent) => agentLabels[agent]).join(" · "),
+                          })}
+                        </span>
+                      </span>
+                      <span className="text-xs font-medium text-blue-600">
+                        {tr("home.continue")}
+                      </span>
+                    </Button>
+                  ))
+                ) : (
+                  <div className="px-5 py-6 text-sm text-muted-foreground">
+                    {tr("home.noContinuations")}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
             <Card className="overflow-hidden rounded-xl border-border bg-card shadow-none">
               <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
                 <h2 className="text-base font-semibold">{tr("home.pendingTasks")}</h2>

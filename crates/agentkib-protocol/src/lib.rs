@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
 pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
@@ -55,7 +55,6 @@ pub const SEARCH_MEMORIES_METHOD: &str = "memories.search";
 pub const PROPOSE_MEMORY_METHOD: &str = "memories.propose";
 pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
-pub const SUMMARIZE_SESSION_HANDOFF_METHOD: &str = "sessions.summarizeHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
 pub const CONTINUE_SESSION_HANDOFF_METHOD: &str = "sessions.continueHandoff";
@@ -241,7 +240,6 @@ export const RUNTIME_METHODS = {{
   proposeMemory: "{PROPOSE_MEMORY_METHOD}",
   reviewMemory: "{REVIEW_MEMORY_METHOD}",
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
-  summarizeSessionHandoff: "{SUMMARIZE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",
   continueSessionHandoff: "{CONTINUE_SESSION_HANDOFF_METHOD}",

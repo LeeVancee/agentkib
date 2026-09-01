@@ -19,6 +19,7 @@ pub fn ensure_allowed_target(
     project: &Path,
     target: &Path,
     approved_home_files: &[PathBuf],
+    approved_application_files: &[PathBuf],
 ) -> Result<()> {
     let project = canonical_project(project)?;
     let candidate = canonicalize_allow_missing(target)?;
@@ -26,6 +27,13 @@ pub fn ensure_allowed_target(
         return Ok(());
     }
     if approved_home_files
+        .iter()
+        .filter_map(|path| canonicalize_allow_missing(path).ok())
+        .any(|path| equivalent(&path, &candidate))
+    {
+        return Ok(());
+    }
+    if approved_application_files
         .iter()
         .filter_map(|path| canonicalize_allow_missing(path).ok())
         .any(|path| equivalent(&path, &candidate))
@@ -101,7 +109,7 @@ mod tests {
         let project = directory.path().join("project");
         std::fs::create_dir(&project).unwrap();
         let target = project.join("missing/../../outside/config.json");
-        assert!(ensure_allowed_target(&project, &target, &[]).is_err());
+        assert!(ensure_allowed_target(&project, &target, &[], &[]).is_err());
     }
 
     #[cfg(unix)]

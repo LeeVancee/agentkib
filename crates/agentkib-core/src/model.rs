@@ -659,6 +659,7 @@ pub struct ContextDoctorReport {
 pub enum ChangeScope {
     Project,
     AgentHome,
+    ApplicationData,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

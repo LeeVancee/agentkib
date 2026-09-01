@@ -2,10 +2,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { SelectControl } from "@/components/ui/select-control";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, Copy, FileOutput, ShieldCheck, Sparkles, X } from "lucide-react";
+import { CircleAlert, Copy, FileOutput, ShieldCheck, X } from "lucide-react";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -14,7 +15,6 @@ import type {
   HandoffFormat,
   PlannedSessionHandoff,
   SessionHandoffDraft,
-  SessionHandoffPreparation,
   SessionHandoffRequest,
   WorkspaceSummary,
 } from "@/core/types";
@@ -46,18 +46,20 @@ export function SessionHandoffDialog({
     session.agent;
   const [targetAgent, setTargetAgent] = useState<AgentKind>(defaultTarget);
   const [format, setFormat] = useState<HandoffFormat>("markdown");
+  const [historyBudget, setHistoryBudget] = useState(120_000);
   const [draft, setDraft] = useState<SessionHandoffDraft>();
-  const [summaryRequired, setSummaryRequired] =
-    useState<Extract<SessionHandoffPreparation, { status: "summary-required" }>>();
   const [content, setContent] = useState("");
+  const [acceptLosses, setAcceptLosses] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [summarizing, setSummarizing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const activeRef = useRef(true);
   const requestGenerationRef = useRef(0);
   const identityRef = useRef({ workspaceId: workspace.id, sessionId: session.id });
-  identityRef.current = { workspaceId: workspace.id, sessionId: session.id };
+
+  useEffect(() => {
+    identityRef.current = { workspaceId: workspace.id, sessionId: session.id };
+  }, [session.id, workspace.id]);
 
   useEffect(() => {
     activeRef.current = true;
@@ -83,12 +85,13 @@ export function SessionHandoffDialog({
     session_id: session.id,
     target_agent: targetAgent,
     format,
+    history_budget_tokens: historyBudget,
   });
 
   const showDraft = (nextDraft: SessionHandoffDraft) => {
-    setSummaryRequired(undefined);
     setDraft(nextDraft);
     setContent(nextDraft.content);
+    setAcceptLosses(nextDraft.losses.length === 0);
   };
 
   const prepare = async () => {
@@ -98,30 +101,11 @@ export function SessionHandoffDialog({
     try {
       const preparation = await api.prepareSessionHandoff(request());
       if (!isCurrent(identity)) return;
-      if (preparation.status === "ready") showDraft(preparation.draft);
-      else setSummaryRequired(preparation);
+      showDraft(preparation.draft);
     } catch (reason) {
       if (isCurrent(identity)) setError(localizeMessage(reason));
     } finally {
       if (isLatest(identity)) setBusy(false);
-    }
-  };
-
-  const summarize = async () => {
-    const identity = captureIdentity();
-    setBusy(true);
-    setSummarizing(true);
-    setError("");
-    try {
-      const nextDraft = await api.summarizeSessionHandoff(request());
-      if (isCurrent(identity)) showDraft(nextDraft);
-    } catch (reason) {
-      if (isCurrent(identity)) setError(localizeMessage(reason));
-    } finally {
-      if (isLatest(identity)) {
-        setBusy(false);
-        setSummarizing(false);
-      }
     }
   };
 
@@ -132,11 +116,17 @@ export function SessionHandoffDialog({
     setError("");
     try {
       const planned = await api.planSessionHandoff(
+        session.id,
         workspace.id,
         draft.filename,
         draft.format,
-        content,
+        draft.mode === "handoff-file" && draft.window_strategy === "full" ? content : undefined,
         targetAgent,
+        draft.mode,
+        draft.source_fingerprint,
+        acceptLosses,
+        draft.history_budget_tokens,
+        draft.archive_id,
       );
       if (isCurrent(identity)) onPlanned(planned);
     } catch (reason) {
@@ -169,11 +159,10 @@ export function SessionHandoffDialog({
   const reset = () => {
     requestGenerationRef.current += 1;
     setDraft(undefined);
-    setSummaryRequired(undefined);
+    setAcceptLosses(false);
     setError("");
   };
 
-  const sourceAgentName = agentName(summaryRequired?.source_agent ?? session.agent);
   const close = () => {
     activeRef.current = false;
     requestGenerationRef.current += 1;
@@ -194,7 +183,7 @@ export function SessionHandoffDialog({
         <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-[18px]">
           <div>
             <span className="mb-2 block text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
-              Session Handoff
+              Session Continuation
             </span>
             <DialogTitle className="mt-0 text-xl">{tr("handoff.title")}</DialogTitle>
             <p className="m-0 mt-1 text-xs text-muted-foreground">{tr("handoff.description")}</p>
@@ -216,47 +205,83 @@ export function SessionHandoffDialog({
               <span>{tr("handoff.redacted", { count: draft.redaction_count })}</span>
               <code className="ml-auto max-w-[55%] truncate font-mono">{draft.filename}</code>
             </div>
-            <div className="text-xs text-muted-foreground">
-              {tr(`handoff.context.${draft.context_source}`, {
-                count: draft.included_message_count,
-                tools: draft.omitted_tool_count,
-              })}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>{tr(`handoff.mode.${draft.mode}`)}</span>
+              <span>
+                {tr("handoff.stats", {
+                  turns: draft.stats.turn_count,
+                  tools: draft.stats.tool_call_count,
+                  attachments: draft.stats.attachment_count,
+                })}
+              </span>
             </div>
-            {draft.warnings.map((warning) => (
+            <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs max-[620px]:grid-cols-1">
+              <div>
+                <span className="block text-muted-foreground">{tr("handoff.window.total")}</span>
+                <strong>{formatEstimatedTokens(draft.window_stats.estimated_total_tokens)}</strong>
+              </div>
+              <div>
+                <span className="block text-muted-foreground">{tr("handoff.window.active")}</span>
+                <strong>{formatEstimatedTokens(draft.window_stats.estimated_active_tokens)}</strong>
+              </div>
+              <div>
+                <span className="block text-muted-foreground">{tr("handoff.window.deferred")}</span>
+                <strong>
+                  {formatEstimatedTokens(draft.window_stats.estimated_deferred_tokens)}
+                </strong>
+              </div>
+            </div>
+            {draft.window_strategy === "windowed" && (
+              <div
+                className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                  draft.mcp_available
+                    ? "border-blue-500/25 bg-blue-500/5 text-foreground"
+                    : "border-destructive/30 bg-destructive/5 text-destructive"
+                }`}
+              >
+                <CircleAlert className="mt-0.5 shrink-0" size={14} />
+                {tr(
+                  draft.mcp_available
+                    ? "handoff.window.archiveReady"
+                    : "handoff.window.mcpRequired",
+                  {
+                    turns: draft.window_stats.deferred_turn_count,
+                    blocks: draft.window_stats.deferred_block_count,
+                  },
+                )}
+              </div>
+            )}
+            {draft.native_capability.reason && (
+              <p className="m-0 text-xs text-muted-foreground">
+                {tr(`handoff.capabilityReason.${draft.native_capability.reason}`)}
+              </p>
+            )}
+            {draft.losses.map((loss) => (
               <div
                 className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700"
-                key={warning}
+                key={loss.code}
               >
                 <CircleAlert size={14} />
-                {tr(`handoff.warning.${warning}`)}
+                {tr(`handoff.loss.${loss.code}`, { count: loss.count })}
               </div>
             ))}
+            {draft.losses.length > 0 && (
+              <Label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+                <Checkbox
+                  checked={acceptLosses}
+                  onCheckedChange={(checked) => setAcceptLosses(checked === true)}
+                />
+                {tr("handoff.acceptLosses")}
+              </Label>
+            )}
             <Textarea
               className="min-h-[320px] flex-1 resize-none font-mono text-xs leading-relaxed"
               aria-label={tr("handoff.preview")}
               value={content}
               onChange={(event) => setContent(event.target.value)}
+              readOnly={draft.mode === "native-session" || draft.window_strategy === "windowed"}
               spellCheck={false}
             />
-          </div>
-        ) : summaryRequired ? (
-          <div className="grid min-h-[280px] flex-1 grid-cols-[auto_1fr] content-center gap-3.5 px-6 py-7">
-            <div className="grid size-[42px] place-items-center rounded-xl border border-border bg-muted text-primary">
-              <Sparkles size={22} />
-            </div>
-            <div>
-              <h3 className="m-0 text-base font-semibold">{tr("handoff.summaryRequired")}</h3>
-              <p className="m-0 mt-1 text-sm leading-relaxed text-muted-foreground">
-                {tr("handoff.summaryReason", {
-                  count: summaryRequired.message_count,
-                  size: formatBytes(summaryRequired.estimated_bytes),
-                })}
-              </p>
-            </div>
-            <div className="col-span-full mt-2 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
-              <CircleAlert size={14} />
-              {tr("handoff.summaryConsent", { agent: sourceAgentName })}
-            </div>
           </div>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
@@ -276,12 +301,26 @@ export function SessionHandoffDialog({
                   ))}
                 </SelectControl>
               </Label>
+              <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
+                {tr("handoff.historyBudget")}
+                <SelectControl
+                  aria-label={tr("handoff.historyBudget")}
+                  value={String(historyBudget)}
+                  disabled={busy}
+                  onChange={(event) => setHistoryBudget(Number(event.target.value))}
+                >
+                  <option value="64000">64k</option>
+                  <option value="120000">120k · {tr("handoff.recommended")}</option>
+                  <option value="180000">180k</option>
+                </SelectControl>
+                <span>{tr("handoff.historyBudgetDetail")}</span>
+              </Label>
               <div className="col-span-full flex items-start gap-2.5 rounded-lg border border-border bg-muted/40 p-3">
                 <ShieldCheck className="mt-0.5 shrink-0 text-green-600" size={16} />
                 <div className="grid gap-1">
-                  <strong className="text-sm">{tr("handoff.autoContext")}</strong>
+                  <strong className="text-sm">{tr("handoff.localParser")}</strong>
                   <span className="text-xs text-muted-foreground">
-                    {tr("handoff.autoContextDetail")}
+                    {tr("handoff.localParserDetail")}
                   </span>
                 </div>
               </div>
@@ -317,25 +356,16 @@ export function SessionHandoffDialog({
                 <Copy size={14} />
                 {tr(copied ? "handoff.copied" : "handoff.copy")}
               </Button>
-              <Button disabled={busy} onClick={() => void plan()}>
+              <Button
+                disabled={
+                  busy ||
+                  !acceptLosses ||
+                  (draft.window_strategy === "windowed" && !draft.mcp_available)
+                }
+                onClick={() => void plan()}
+              >
                 <FileOutput size={14} />
                 {tr("handoff.reviewSave")}
-              </Button>
-            </>
-          ) : summaryRequired ? (
-            <>
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() => setSummaryRequired(undefined)}
-              >
-                {tr("common.cancel")}
-              </Button>
-              <Button disabled={busy} onClick={() => void summarize()}>
-                <Sparkles size={14} />
-                {tr(summarizing ? "handoff.summarizing" : "handoff.summarizeWith", {
-                  agent: sourceAgentName,
-                })}
               </Button>
             </>
           ) : (
@@ -348,6 +378,10 @@ export function SessionHandoffDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function formatEstimatedTokens(value: number) {
+  return `≈${Math.round(value / 1000)}k Token`;
 }
 
 function agentName(agent: AgentKind) {

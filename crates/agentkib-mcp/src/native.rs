@@ -111,6 +111,53 @@ fn scan_native_candidates_with_grok_home(
     Ok(candidates)
 }
 
+pub fn has_agentkib_gateway(
+    project: &Path,
+    agent: AgentKind,
+    workspace_id: &str,
+    port: u16,
+) -> Result<bool> {
+    let endpoint = match agent {
+        AgentKind::Codex => {
+            let path = project.join(".codex/config.toml");
+            if !path.is_file() {
+                return Ok(false);
+            }
+            let value: toml::Value = toml::from_str(&std::fs::read_to_string(path)?)?;
+            value
+                .get("mcp_servers")
+                .and_then(toml::Value::as_table)
+                .and_then(|servers| servers.get("agentkib"))
+                .and_then(|server| server.get("url"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        }
+        AgentKind::ClaudeCode => {
+            let path = project.join(".mcp.json");
+            if !path.is_file() {
+                return Ok(false);
+            }
+            let value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+            value
+                .pointer("/mcpServers/agentkib/url")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }
+        _ => return Ok(false),
+    };
+    let Some(endpoint) = endpoint else {
+        return Ok(false);
+    };
+    let slug = match agent {
+        AgentKind::Codex => "codex",
+        AgentKind::ClaudeCode => "claude-code",
+        _ => unreachable!(),
+    };
+    let route = format!("/mcp/v1/workspaces/{workspace_id}/agents/{slug}");
+    Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
+        || endpoint == format!("http://localhost:{port}{route}"))
+}
+
 pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
     if !candidate.supported {
         bail!("Unsupported native MCP candidate cannot be migrated automatically");
@@ -925,6 +972,28 @@ mod tests {
                 .unwrap()
                 .contains("do-not-return")
         );
+    }
+
+    #[test]
+    fn gateway_detection_is_scoped_to_workspace_and_agent() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        std::fs::write(
+            dir.path().join(".codex/config.toml"),
+            "[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/codex\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://localhost:47653/mcp/v1/workspaces/ws/agents/claude-code"}}}"#,
+        )
+        .unwrap();
+
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47654).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "other", 47653).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Cursor, "ws", 47653).unwrap());
     }
 
     #[test]

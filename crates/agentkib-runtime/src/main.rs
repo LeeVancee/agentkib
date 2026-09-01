@@ -952,14 +952,28 @@ fn ensure_session_workspace(
     Ok(())
 }
 
+fn continuation_workspace_id(store: &Store, database_workspace_id: &str) -> anyhow::Result<String> {
+    let workspace = store
+        .get_workspace(database_workspace_id)?
+        .context("Workspace does not exist")?;
+    Ok(workspace.manifest_workspace_id.unwrap_or(workspace.id))
+}
+
+fn use_continuation_workspace_id(document: &mut SessionDocument, workspace_id: &str) {
+    document.source.workspace_id = workspace_id.to_owned();
+}
+
 fn prepare_session_handoff(
     envelope: HandoffRequestEnvelope,
 ) -> anyhow::Result<SessionHandoffPreparationV2> {
-    let (source, document) = load_session_document(&envelope.request.session_id)?;
+    let (source, mut document) = load_session_document(&envelope.request.session_id)?;
     anyhow::ensure!(
         source.id == envelope.request.session_id,
         "Conversation session does not match the continuation request"
     );
+    let store = Store::open_default()?;
+    let continuation_workspace_id = continuation_workspace_id(&store, &source.workspace_id)?;
+    use_continuation_workspace_id(&mut document, &continuation_workspace_id);
     validate_history_budget(envelope.request.history_budget_tokens)?;
     let generated_at = Utc::now();
     let native_capability = native_import_capability(envelope.request.target_agent);
@@ -1019,7 +1033,7 @@ fn prepare_session_handoff(
             window_stats: window.stats,
             archive_id,
             mcp_available: continuation_mcp_available(
-                &source.workspace_id,
+                &continuation_workspace_id,
                 envelope.request.target_agent,
             )?,
             losses: document.losses.clone(),
@@ -1064,12 +1078,14 @@ fn plan_session_handoff(
 ) -> anyhow::Result<PlannedSessionHandoff> {
     let store = Store::open_default()?;
     let project = store.workspace_path(&request.workspace_id)?;
-    let (source, document) = load_session_document(&request.session_id)?;
+    let (source, mut document) = load_session_document(&request.session_id)?;
     ensure_session_workspace(
         &source.workspace_id,
         &document.source.workspace_id,
         &request.workspace_id,
     )?;
+    let continuation_workspace_id = continuation_workspace_id(&store, &request.workspace_id)?;
+    use_continuation_workspace_id(&mut document, &continuation_workspace_id);
     anyhow::ensure!(
         fingerprint(&document)? == request.source_fingerprint,
         "Conversation changed after the continuation preview was prepared"
@@ -1096,7 +1112,7 @@ fn plan_session_handoff(
     );
     if archive_id.is_some() {
         anyhow::ensure!(
-            continuation_mcp_available(&request.workspace_id, request.target_agent)?,
+            continuation_mcp_available(&continuation_workspace_id, request.target_agent)?,
             "AgentKib MCP must be connected before a windowed continuation can be applied"
         );
     }
@@ -1113,7 +1129,7 @@ fn plan_session_handoff(
     let archive = if let Some(archive_id) = archive_id.as_deref() {
         Some(build_session_archive(
             &document,
-            &request.workspace_id,
+            &continuation_workspace_id,
             archive_id,
             &request.source_fingerprint,
             Utc::now(),
@@ -1141,7 +1157,7 @@ fn plan_session_handoff(
         return Ok(PlannedSessionHandoff {
             change_set,
             launch_request: SessionHandoffLaunchRequest::NativeSession {
-                workspace_id: request.workspace_id,
+                workspace_id: continuation_workspace_id,
                 target_agent: request.target_agent,
                 target_session_id: artifact.session_id,
                 target_path: artifact.path,
@@ -1189,7 +1205,7 @@ fn plan_session_handoff(
     Ok(PlannedSessionHandoff {
         change_set,
         launch_request: SessionHandoffLaunchRequest::HandoffFile {
-            workspace_id: request.workspace_id,
+            workspace_id: continuation_workspace_id,
             filename: request.filename,
             target_agent: request.target_agent,
             archive_id: archive
@@ -1877,6 +1893,13 @@ fn validate_native_session_target(path: &Path, target: AgentKind) -> anyhow::Res
     let root =
         native_session_root(target).context("Target Agent does not support native sessions")?;
     anyhow::ensure!(path.is_absolute(), "Native session path is not absolute");
+    anyhow::ensure!(
+        !path.components().any(|component| matches!(
+            component,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )),
+        "Native session path contains an unsafe component"
+    );
     anyhow::ensure!(
         path.starts_with(&root),
         "Native session escapes the target Agent Home"
@@ -4015,6 +4038,36 @@ mod tests {
         assert!(ensure_session_workspace("workspace", "workspace", "workspace").is_ok());
         assert!(ensure_session_workspace("other", "workspace", "workspace").is_err());
         assert!(ensure_session_workspace("workspace", "other", "workspace").is_err());
+    }
+
+    #[test]
+    fn continuation_document_uses_the_mcp_workspace_namespace() {
+        let mut document = SessionDocument {
+            schema_version: 1,
+            source: agentkib_conversations::SessionDocumentSource {
+                agent: AgentKind::Codex,
+                workspace_id: "database-workspace".into(),
+                title: None,
+                created_at: None,
+                updated_at: None,
+                git_branch: None,
+            },
+            turns: Vec::new(),
+            losses: Vec::new(),
+            redaction_count: 0,
+        };
+
+        use_continuation_workspace_id(&mut document, "manifest-workspace");
+
+        assert_eq!(document.source.workspace_id, "manifest-workspace");
+    }
+
+    #[test]
+    fn native_session_target_rejects_parent_components() {
+        let root = native_session_root(AgentKind::Codex).unwrap();
+        let target = root.join("../../.ssh/new.jsonl");
+
+        assert!(validate_native_session_target(&target, AgentKind::Codex).is_err());
     }
 
     #[test]

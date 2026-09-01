@@ -354,6 +354,7 @@ pub fn read_claude_document(
     home: Option<&Path>,
 ) -> Result<SessionDocument> {
     let snapshot = read_snapshot(path)?;
+    let active_chain = claude_active_chain(&snapshot.records, include_sidechain);
     let mut turns = Vec::new();
     let mut loss_counts = BTreeMap::new();
     let mut known_calls = BTreeSet::new();
@@ -361,6 +362,14 @@ pub fn read_claude_document(
         loss_counts.insert(SessionLossCode::DamagedRecord, snapshot.damaged_records);
     }
     for (line, value) in snapshot.records {
+        if active_chain.as_ref().is_some_and(|chain| {
+            value
+                .get("uuid")
+                .and_then(Value::as_str)
+                .is_none_or(|uuid| !chain.contains(uuid))
+        }) {
+            continue;
+        }
         if !include_sidechain
             && value
                 .get("isSidechain")
@@ -491,6 +500,57 @@ pub fn read_claude_document(
         }
     }
     finish_document(source, turns, loss_counts, home)
+}
+
+fn claude_active_chain(
+    records: &[(usize, Value)],
+    include_sidechain: bool,
+) -> Option<BTreeSet<String>> {
+    let mut parents = BTreeMap::new();
+    let mut sidechains = BTreeMap::new();
+    let mut message_leaves = Vec::new();
+    for (_, value) in records {
+        let Some(uuid) = value.get("uuid").and_then(Value::as_str) else {
+            continue;
+        };
+        let is_sidechain = value
+            .get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        parents.insert(
+            uuid.to_string(),
+            value
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        );
+        sidechains.insert(uuid.to_string(), is_sidechain);
+        if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("user" | "assistant")
+        ) && (include_sidechain || !is_sidechain)
+        {
+            message_leaves.push(uuid.to_string());
+        }
+    }
+    let explicit_leaf = records.iter().rev().find_map(|(_, value)| {
+        let leaf = value.get("leafUuid").and_then(Value::as_str)?;
+        (parents.contains_key(leaf)
+            && (include_sidechain || !sidechains.get(leaf).copied().unwrap_or(false)))
+        .then(|| leaf.to_string())
+    });
+    let mut current = explicit_leaf.or_else(|| message_leaves.pop())?;
+    let mut chain = BTreeSet::new();
+    loop {
+        if !chain.insert(current.clone()) {
+            break;
+        }
+        let Some(Some(parent)) = parents.get(&current) else {
+            break;
+        };
+        current = parent.clone();
+    }
+    Some(chain)
 }
 
 pub fn fingerprint(document: &SessionDocument) -> Result<String> {
@@ -1367,6 +1427,35 @@ mod tests {
                 .unwrap()
                 .contains("do not import summary")
         );
+    }
+
+    #[test]
+    fn claude_document_follows_the_explicit_active_parent_chain() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"user","uuid":"root","parentUuid":null,"message":{"role":"user","content":"root task"}}),
+            serde_json::json!({"type":"assistant","uuid":"active","parentUuid":"root","message":{"role":"assistant","content":[{"type":"text","text":"active answer"}]}}),
+            serde_json::json!({"type":"user","uuid":"abandoned","parentUuid":"root","message":{"role":"user","content":"abandoned task"}}),
+            serde_json::json!({"type":"assistant","uuid":"abandoned-leaf","parentUuid":"abandoned","message":{"role":"assistant","content":[{"type":"text","text":"abandoned answer"}]}}),
+            serde_json::json!({"type":"last-prompt","leafUuid":"active"}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document =
+            read_claude_document(&source(AgentKind::ClaudeCode), &path, false, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(encoded.contains("root task"));
+        assert!(encoded.contains("active answer"));
+        assert!(!encoded.contains("abandoned task"));
+        assert!(!encoded.contains("abandoned answer"));
     }
 
     #[test]

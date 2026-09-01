@@ -230,9 +230,7 @@ pub fn build_session_archive(
         bail!("Archive workspace does not match the session document")
     }
     let document_content = format!("{}\n", serde_json::to_string_pretty(document)?);
-    if document_content.len() as u64 > MAX_ARCHIVE_BYTES {
-        bail!("Session archive exceeds the 256 MiB limit")
-    }
+    validate_archive_size(document_content.len() as u64, "document")?;
     let chunks = archive_chunks(document);
     let mut chunks_content = String::new();
     for chunk in &chunks {
@@ -242,6 +240,7 @@ pub fn build_session_archive(
         }
         chunks_content.push_str(&line);
         chunks_content.push('\n');
+        validate_archive_size(chunks_content.len() as u64, "chunks")?;
     }
     let document_sha256 = hex::encode(Sha256::digest(document_content.as_bytes()));
     let chunks_sha256 = hex::encode(Sha256::digest(chunks_content.as_bytes()));
@@ -262,6 +261,13 @@ pub fn build_session_archive(
         document_content,
         chunks_content,
     })
+}
+
+fn validate_archive_size(bytes: u64, content: &str) -> Result<()> {
+    if bytes > MAX_ARCHIVE_BYTES {
+        bail!("Session archive {content} content exceeds the 256 MiB limit")
+    }
+    Ok(())
 }
 
 pub fn archive_workspace_root(data_root: &Path, workspace_id: &str) -> PathBuf {
@@ -674,6 +680,12 @@ mod tests {
             plan.active_document.turns.first().unwrap().role,
             SessionRole::User
         );
+    }
+
+    #[test]
+    fn archive_size_limit_applies_to_aggregate_content() {
+        assert!(validate_archive_size(MAX_ARCHIVE_BYTES, "chunks").is_ok());
+        assert!(validate_archive_size(MAX_ARCHIVE_BYTES + 1, "chunks").is_err());
     }
 
     #[test]

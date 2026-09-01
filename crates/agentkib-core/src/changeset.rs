@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, atomic_write};
@@ -45,6 +46,9 @@ pub fn apply_changeset(
         {
             bail!("Application data write is not authorized");
         }
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
         let current = fs::read(&change.target).unwrap_or_default();
         let current_hash = if change.target.exists() {
             Some(hash_content(&current))
@@ -64,11 +68,20 @@ pub fn apply_changeset(
             .target
             .parent()
             .context("Target has no parent directory")?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
         fs::create_dir_all(parent)?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
         if change.target.exists() {
             fs::copy(&change.target, backup_dir.join(format!("{index}.bak")))?;
         }
         let mut temp = NamedTempFile::new_in(parent)?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
         use std::io::Write;
         temp.write_all(change.after.as_bytes())?;
         if let Ok(metadata) = fs::metadata(&change.target) {
@@ -80,6 +93,14 @@ pub fn apply_changeset(
 
     let mut applied = Vec::new();
     for (index, (change, temp)) in changeset.changes.iter().zip(prepared).enumerate() {
+        if matches!(change.scope, ChangeScope::ApplicationData)
+            && let Err(error) = ensure_application_data_parent_chain(&change.target)
+        {
+            if index > 0 {
+                rollback(changeset, &backup_dir, index - 1);
+            }
+            return Err(error);
+        }
         let expected = change
             .original_hash
             .as_deref()
@@ -104,6 +125,31 @@ pub fn apply_changeset(
         applied,
         backup_dir,
     })
+}
+
+fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
+    let parent = target.parent().context("Target has no parent directory")?;
+    // ApplicationData currently stores continuation files under
+    // continuations/<workspace-hash>/<archive-id>; validate that entire private subtree.
+    for directory in parent.ancestors().take(3) {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    bail!("Application data parent is not a regular directory")
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Application data parent is unavailable: {}",
+                        directory.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn rollback(changeset: &ChangeSet, backup_dir: &Path, last_index: usize) {
@@ -267,5 +313,45 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_rejects_a_symlinked_private_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        let continuation_root = dir.path().join("continuations");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &continuation_root).unwrap();
+        let target = continuation_root
+            .join("workspace")
+            .join("archive")
+            .join("document.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::ApplicationData,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Medium,
+                validator: "json".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_application_files: vec![target],
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("workspace/archive/document.json").exists());
     }
 }

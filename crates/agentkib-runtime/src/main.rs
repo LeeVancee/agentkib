@@ -1897,10 +1897,13 @@ fn append_archive_changes(
 }
 
 fn continuation_mcp_available(workspace_id: &str, target: AgentKind) -> anyhow::Result<bool> {
+    let hub_status = mcp_hub()?.status();
+    if !hub_status.running {
+        return Ok(false);
+    }
     let store = Store::open_default()?;
     let workspace = store.workspace_path(workspace_id)?;
-    let configured = agentkib_mcp::native::has_agentkib_gateway(&workspace, target, workspace_id)?;
-    Ok(configured && mcp_hub().is_ok_and(|hub| hub.status().running))
+    agentkib_mcp::native::has_agentkib_gateway(&workspace, target, workspace_id, hub_status.port)
 }
 
 fn continuation_mcp_status(

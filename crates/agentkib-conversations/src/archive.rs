@@ -305,7 +305,7 @@ fn read_validated_session_archive(
     for path in [&manifest_path, &document_path, &chunks_path] {
         let metadata = std::fs::symlink_metadata(path)
             .with_context(|| format!("Session archive file is unavailable: {}", path.display()))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if agentkib_platform::path::is_reparse_or_symlink(path)? || !metadata.is_file() {
             bail!("Session archive contains an invalid file")
         }
     }
@@ -340,7 +340,7 @@ fn validate_archive_directory_chain(directory: &Path) -> Result<()> {
                 path.display()
             )
         })?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        if agentkib_platform::path::is_reparse_or_symlink(path)? || !metadata.is_dir() {
             bail!("Session archive contains an invalid directory")
         }
     }

@@ -111,7 +111,12 @@ fn scan_native_candidates_with_grok_home(
     Ok(candidates)
 }
 
-pub fn has_agentkib_gateway(project: &Path, agent: AgentKind, workspace_id: &str) -> Result<bool> {
+pub fn has_agentkib_gateway(
+    project: &Path,
+    agent: AgentKind,
+    workspace_id: &str,
+    port: u16,
+) -> Result<bool> {
     let endpoint = match agent {
         AgentKind::Codex => {
             let path = project.join(".codex/config.toml");
@@ -149,10 +154,8 @@ pub fn has_agentkib_gateway(project: &Path, agent: AgentKind, workspace_id: &str
         _ => unreachable!(),
     };
     let route = format!("/mcp/v1/workspaces/{workspace_id}/agents/{slug}");
-    Ok(
-        (endpoint.starts_with("http://127.0.0.1:") || endpoint.starts_with("http://localhost:"))
-            && endpoint.ends_with(&route),
-    )
+    Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
+        || endpoint == format!("http://localhost:{port}{route}"))
 }
 
 pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
@@ -986,10 +989,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws").unwrap());
-        assert!(has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws").unwrap());
-        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "other").unwrap());
-        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Cursor, "ws").unwrap());
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47654).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "other", 47653).unwrap());
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Cursor, "ws", 47653).unwrap());
     }
 
     #[test]

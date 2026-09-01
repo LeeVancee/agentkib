@@ -597,12 +597,16 @@ impl Store {
             .filter_map(|installation| installation.home.as_deref())
             .map(platform_path::identity)
             .collect();
+        let mut managed_homes = agent_homes;
+        if let Ok(home) = agentkib_skills::default_home_dir() {
+            managed_homes.insert(platform_path::identity(&home));
+        }
         let mut grouped: BTreeMap<String, (PathBuf, Vec<&DiscoveryCandidate>)> = BTreeMap::new();
         for candidate in candidates {
             let identity = platform_path::identity(&candidate.path);
             if candidate.path.is_dir()
                 && !platform_path::is_known_agent_probe_workspace(&candidate.path)
-                && !agent_homes.contains(&identity)
+                && !managed_homes.contains(&identity)
                 && !excluded.contains(&identity)
             {
                 grouped
@@ -637,7 +641,7 @@ impl Store {
                 // 仅清理失效路径、稳定探针目录和只应出现在全局资产目录的 Agent Home。
                 if !path.is_dir()
                     || platform_path::is_known_agent_probe_workspace(&path)
-                    || agent_homes.contains(&platform_path::identity(&path))
+                    || managed_homes.contains(&platform_path::identity(&path))
                 {
                     stale.push(id);
                 }
@@ -647,7 +651,10 @@ impl Store {
             transaction.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
         }
 
-        transaction.execute("DELETE FROM catalog_assets WHERE scope = 'agent-home'", [])?;
+        transaction.execute(
+            "DELETE FROM catalog_assets WHERE scope IN ('agent-home', 'agentkib-home')",
+            [],
+        )?;
         for asset in home_assets {
             insert_catalog_asset(&transaction, asset)?;
         }
@@ -910,6 +917,13 @@ impl Store {
             bail!("Workspace must be a directory");
         }
         let path_identity = platform_path::identity(&path);
+        if agentkib_skills::default_home_dir()
+            .is_ok_and(|home| platform_path::identity(&home) == path_identity)
+        {
+            bail!(
+                "AgentKib Home cannot be added as a workspace; manage its files in the global asset catalog"
+            );
+        }
         if known_agent_home_identities(&self.connection)?.contains(&path_identity) {
             bail!(
                 "Agent Home cannot be added as a workspace; manage its files in the global asset catalog"

@@ -1,0 +1,1978 @@
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+
+use agentkib_core::{
+    CatalogAsset, CatalogScope, InstalledSkill, InstalledSkillStatus, RemovedSkill, SkillCandidate,
+    SkillCatalogEntry, SkillCatalogSnapshot, SkillFileEntry, SkillFilePreview, SkillOperationKind,
+    SkillOperationPreview, SkillSource, SkillSourceKind, inspect_skill_entrypoint,
+    is_readable_skill_file,
+};
+use agentkib_platform::fs::{atomic_write, move_path};
+use agentkib_platform::path as platform_path;
+use anyhow::{Context, Result, bail, ensure};
+use chrono::{DateTime, Duration, Utc};
+use reqwest::{Client, Url};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+use uuid::Uuid;
+use walkdir::WalkDir;
+
+const MAX_TREE_ENTRIES: usize = 20_000;
+const MAX_CANDIDATES: usize = 200;
+const MAX_DISCOVERY_DEPTH: usize = 8;
+const MAX_SKILL_FILES: usize = 512;
+const MAX_SKILL_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SKILL_ENTRY_BYTES: u64 = 1024 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+const PREVIEW_TTL_MINUTES: i64 = 15;
+const CURATED_URL: &str = "https://github.com/openai/skills/tree/main/skills/.curated";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillLockEntry {
+    source: Option<SkillSource>,
+    content_sha256: String,
+    installed_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SkillLockFile {
+    #[serde(default = "lock_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    skills: BTreeMap<String, SkillLockEntry>,
+    #[serde(default)]
+    previous: BTreeMap<String, SkillLockEntry>,
+}
+
+fn lock_schema_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TrashRecord {
+    id: String,
+    name: String,
+    removed_at: DateTime<Utc>,
+    lock: Option<SkillLockEntry>,
+    #[serde(default)]
+    previous: Option<SkillLockEntry>,
+}
+
+struct PreparedOperation {
+    preview: SkillOperationPreview,
+    temp: TempDir,
+    package: PathBuf,
+    lock: SkillLockEntry,
+    expected_existing_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedGitHubUrl {
+    owner: String,
+    repository: String,
+    reference: Option<String>,
+    path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RepositoryResponse {
+    default_branch: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CommitResponse {
+    sha: String,
+    commit: CommitDetail,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CommitDetail {
+    tree: TreePointer,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TreePointer {
+    sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TreeResponse {
+    #[serde(default)]
+    tree: Vec<TreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TreeEntry {
+    path: String,
+    mode: String,
+    #[serde(rename = "type")]
+    kind: String,
+    sha: String,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    license: Option<String>,
+    compatibility: Option<String>,
+}
+
+struct ResolvedRepository {
+    owner: String,
+    repository: String,
+    reference: String,
+    commit: String,
+    root_tree: String,
+    entries: Vec<TreeEntry>,
+}
+
+pub struct SkillHub {
+    root: PathBuf,
+    cache_dir: PathBuf,
+    client: Client,
+    previews: Mutex<HashMap<String, PreparedOperation>>,
+    lifecycle: Mutex<()>,
+}
+
+impl SkillHub {
+    pub fn new(root: PathBuf, cache_dir: PathBuf) -> Result<Self> {
+        let client = Client::builder()
+            .user_agent("agentkib-skill-hub")
+            .redirect(reqwest::redirect::Policy::limited(4))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        Ok(Self {
+            root,
+            cache_dir,
+            client,
+            previews: Mutex::new(HashMap::new()),
+            lifecycle: Mutex::new(()),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub async fn curated(&self, force: bool) -> Result<SkillCatalogSnapshot> {
+        let cache = self.cache_dir.join("curated-skills.json");
+        if !force
+            && let Ok(snapshot) = read_json::<SkillCatalogSnapshot>(&cache)
+            && Utc::now() - snapshot.cached_at < Duration::hours(6)
+        {
+            return self.annotate_installed(snapshot);
+        }
+        match self.discover(CURATED_URL).await {
+            Ok(candidates) => {
+                let snapshot = SkillCatalogSnapshot {
+                    entries: candidates
+                        .into_iter()
+                        .map(|candidate| SkillCatalogEntry {
+                            candidate,
+                            installed: false,
+                        })
+                        .collect(),
+                    cached_at: Utc::now(),
+                    stale: false,
+                };
+                write_json(&cache, &snapshot)?;
+                self.annotate_installed(snapshot)
+            }
+            Err(error) => {
+                let mut snapshot = read_json::<SkillCatalogSnapshot>(&cache)
+                    .with_context(|| format!("Could not refresh curated Skills: {error}"))?;
+                snapshot.stale = true;
+                self.annotate_installed(snapshot)
+            }
+        }
+    }
+
+    pub async fn discover(&self, value: &str) -> Result<Vec<SkillCandidate>> {
+        let parsed = parse_github_url(value)?;
+        let resolved = self.resolve_repository(&parsed).await?;
+        let directories = candidate_directories(&resolved.entries, &parsed.path)?;
+        let mut candidates = Vec::new();
+        for directory in directories {
+            let skill_path = join_repo_path(&directory, "SKILL.md");
+            let content = self
+                .download_raw(
+                    &resolved.owner,
+                    &resolved.repository,
+                    &resolved.commit,
+                    &skill_path,
+                    MAX_SKILL_ENTRY_BYTES,
+                )
+                .await?;
+            let content = String::from_utf8(content).context("SKILL.md must be UTF-8")?;
+            let metadata = parse_skill_frontmatter(&content)?;
+            let tree_sha = directory_tree_sha(&resolved, &directory)?;
+            candidates.push(SkillCandidate {
+                name: metadata.name,
+                description: metadata.description,
+                license: metadata.license,
+                compatibility: metadata.compatibility,
+                source: SkillSource {
+                    kind: source_kind(&resolved.owner, &resolved.repository, &directory),
+                    repository: format!("{}/{}", resolved.owner, resolved.repository),
+                    reference: resolved.reference.clone(),
+                    path: directory,
+                    resolved_commit: resolved.commit.clone(),
+                    tree_sha,
+                },
+            });
+        }
+        candidates.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(candidates)
+    }
+
+    pub fn installed(&self) -> Result<Vec<InstalledSkill>> {
+        list_installed(&self.root)
+    }
+
+    pub async fn check_updates(&self) -> Result<Vec<InstalledSkill>> {
+        let mut installed = list_installed(&self.root)?;
+        for skill in &mut installed {
+            let Some(source) = skill.source.clone() else {
+                continue;
+            };
+            let parsed = parsed_source(&source)?;
+            if let Ok(resolved) = self.resolve_repository(&parsed).await
+                && let Ok(tree_sha) = directory_tree_sha(&resolved, &source.path)
+                && tree_sha != source.tree_sha
+            {
+                skill.status = InstalledSkillStatus::UpdateAvailable;
+            }
+        }
+        Ok(installed)
+    }
+
+    pub async fn prepare_install(&self, source: SkillSource) -> Result<SkillOperationPreview> {
+        let existing = load_lock(&self.root)?
+            .skills
+            .into_iter()
+            .find_map(|(name, entry)| {
+                entry
+                    .source
+                    .as_ref()
+                    .is_some_and(|current| same_source(current, &source))
+                    .then_some(name)
+            });
+        match existing {
+            Some(name) => {
+                self.prepare(source, SkillOperationKind::Update, Some(&name))
+                    .await
+            }
+            None => {
+                self.prepare(source, SkillOperationKind::Install, None)
+                    .await
+            }
+        }
+    }
+
+    pub async fn prepare_update(&self, name: &str) -> Result<SkillOperationPreview> {
+        validate_skill_name(name)?;
+        let lock = load_lock(&self.root)?;
+        let entry = lock
+            .skills
+            .get(name)
+            .context("Unmanaged Skills cannot be updated")?;
+        let source = entry
+            .source
+            .clone()
+            .context("This Skill has no update source")?;
+        self.prepare(source, SkillOperationKind::Update, Some(name))
+            .await
+    }
+
+    pub fn apply(
+        &self,
+        token: &str,
+        confirmed: bool,
+        allow_modified: bool,
+    ) -> Result<InstalledSkill> {
+        ensure!(
+            confirmed,
+            "Skill installation requires explicit confirmation"
+        );
+        let prepared = self
+            .previews
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill preview lock is unavailable"))?
+            .remove(token)
+            .context("Skill preview expired or does not exist")?;
+        ensure!(
+            prepared.preview.expires_at > Utc::now(),
+            "Skill preview expired"
+        );
+        if prepared.preview.local_modified && !allow_modified {
+            bail!("The installed Skill was modified locally; replacement requires confirmation");
+        }
+        let _guard = self
+            .lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
+        self.ensure_layout()?;
+        let name = prepared.preview.skill.name.clone();
+        let expected_package_sha256 = &prepared.lock.content_sha256;
+        ensure!(
+            package_hash(&prepared.package)?.0 == *expected_package_sha256,
+            "Prepared Skill package changed after preview"
+        );
+        let target = self.skills_dir().join(&name);
+        let actual_existing_sha256 = target
+            .is_dir()
+            .then(|| package_hash(&target).map(|value| value.0))
+            .transpose()?;
+        ensure!(
+            actual_existing_sha256 == prepared.expected_existing_sha256,
+            "Installed Skill changed after preview; prepare the operation again"
+        );
+        match prepared.preview.operation {
+            SkillOperationKind::Install => self.apply_install(prepared)?,
+            SkillOperationKind::Update => self.apply_update(prepared)?,
+        }
+        self.installed()?
+            .into_iter()
+            .find(|skill| skill.name == name)
+            .context("Installed Skill was not found after applying the operation")
+    }
+
+    pub fn rollback(&self, name: &str, confirmed: bool) -> Result<InstalledSkill> {
+        ensure!(confirmed, "Skill rollback requires explicit confirmation");
+        validate_skill_name(name)?;
+        let _guard = self
+            .lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
+        let target = self.skills_dir().join(name);
+        let backup = self.backups_dir().join(name);
+        ensure!(
+            target.is_dir() && backup.is_dir(),
+            "No rollback version is available"
+        );
+        ensure!(
+            !platform_path::is_reparse_or_symlink(&target)?
+                && !platform_path::is_reparse_or_symlink(&backup)?,
+            "Rollback paths must be regular directories"
+        );
+        let mut lock = load_lock(&self.root)?;
+        let current = lock
+            .skills
+            .remove(name)
+            .context("Installed Skill is unmanaged")?;
+        let previous = lock
+            .previous
+            .remove(name)
+            .context("Rollback metadata is missing")?;
+        lock.skills.insert(name.to_string(), previous);
+        lock.previous.insert(name.to_string(), current);
+        swap_directories(&self.root, &target, &backup)?;
+        if let Err(error) = save_lock(&self.root, &lock) {
+            let _ = swap_directories(&self.root, &target, &backup);
+            return Err(error);
+        }
+        self.installed()?
+            .into_iter()
+            .find(|skill| skill.name == name)
+            .context("Rolled back Skill was not found")
+    }
+
+    pub fn uninstall(&self, name: &str, confirmed: bool) -> Result<RemovedSkill> {
+        ensure!(confirmed, "Skill uninstall requires explicit confirmation");
+        validate_skill_name(name)?;
+        let _guard = self
+            .lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
+        self.ensure_layout()?;
+        let target = self.skills_dir().join(name);
+        ensure!(target.is_dir(), "Installed Skill does not exist");
+        ensure!(
+            !platform_path::is_reparse_or_symlink(&target)?,
+            "Symbolic Skill packages cannot be removed"
+        );
+        let backup = self.backups_dir().join(name);
+        if backup.exists() {
+            ensure!(
+                backup.is_dir() && !platform_path::is_reparse_or_symlink(&backup)?,
+                "Rollback Skill must be a regular directory"
+            );
+        }
+        let id = format!("{}-{}", name, Uuid::new_v4());
+        let trash_root = self.trash_dir().join(&id);
+        fs::create_dir_all(&trash_root)?;
+        let package = trash_root.join("package");
+        let mut lock = load_lock(&self.root)?;
+        let record = TrashRecord {
+            id: id.clone(),
+            name: name.to_string(),
+            removed_at: Utc::now(),
+            lock: lock.skills.remove(name),
+            previous: lock.previous.remove(name),
+        };
+        if let Err(error) = write_json(&trash_root.join("record.json"), &record) {
+            let _ = fs::remove_dir_all(&trash_root);
+            return Err(error);
+        }
+        if let Err(error) = move_path(&target, &package) {
+            let _ = fs::remove_dir_all(&trash_root);
+            return Err(error.into());
+        }
+        let trashed_backup = trash_root.join("backup");
+        if backup.is_dir()
+            && let Err(error) = move_path(&backup, &trashed_backup)
+        {
+            let _ = move_path(&package, &target);
+            let _ = fs::remove_dir_all(&trash_root);
+            return Err(error.into());
+        }
+        if let Err(error) = save_lock(&self.root, &lock) {
+            if trashed_backup.is_dir() {
+                let _ = move_path(&trashed_backup, &backup);
+            }
+            let _ = move_path(&package, &target);
+            let _ = fs::remove_dir_all(&trash_root);
+            return Err(error);
+        }
+        Ok(RemovedSkill {
+            id,
+            name: name.to_string(),
+            removed_at: record.removed_at,
+            path: package,
+        })
+    }
+
+    pub fn removed(&self) -> Result<Vec<RemovedSkill>> {
+        let mut output = Vec::new();
+        let directory = self.trash_dir();
+        let Ok(entries) = fs::read_dir(directory) else {
+            return Ok(output);
+        };
+        for entry in entries.filter_map(Result::ok) {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir())
+                || platform_path::is_reparse_or_symlink(&entry.path()).unwrap_or(true)
+            {
+                continue;
+            }
+            let record_path = entry.path().join("record.json");
+            if !record_path.is_file()
+                || platform_path::is_reparse_or_symlink(&record_path).unwrap_or(true)
+            {
+                continue;
+            }
+            let Ok(record) = read_json::<TrashRecord>(&record_path) else {
+                continue;
+            };
+            output.push(RemovedSkill {
+                id: record.id,
+                name: record.name,
+                removed_at: record.removed_at,
+                path: entry.path().join("package"),
+            });
+        }
+        output.sort_by(|left, right| right.removed_at.cmp(&left.removed_at));
+        Ok(output)
+    }
+
+    pub fn restore(&self, id: &str, confirmed: bool) -> Result<InstalledSkill> {
+        ensure!(confirmed, "Skill restore requires explicit confirmation");
+        validate_trash_id(id)?;
+        let _guard = self
+            .lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
+        let trash_root = self.trash_dir().join(id);
+        ensure!(
+            trash_root.is_dir() && !platform_path::is_reparse_or_symlink(&trash_root)?,
+            "Removed Skill record is not a regular directory"
+        );
+        let record_path = trash_root.join("record.json");
+        ensure!(
+            record_path.is_file() && !platform_path::is_reparse_or_symlink(&record_path)?,
+            "Removed Skill metadata is not a regular file"
+        );
+        let package = trash_root.join("package");
+        ensure!(
+            package.is_dir() && !platform_path::is_reparse_or_symlink(&package)?,
+            "Removed Skill package is not a regular directory"
+        );
+        let record = read_json::<TrashRecord>(&record_path)?;
+        validate_skill_name(&record.name)?;
+        let target = self.skills_dir().join(&record.name);
+        ensure!(!target.exists(), "A Skill with this name already exists");
+        let backup = self.backups_dir().join(&record.name);
+        let trashed_backup = trash_root.join("backup");
+        if trashed_backup.exists() {
+            ensure!(
+                trashed_backup.is_dir() && !platform_path::is_reparse_or_symlink(&trashed_backup)?,
+                "Removed rollback package is not a regular directory"
+            );
+            ensure!(
+                !backup.exists(),
+                "A rollback Skill with this name already exists"
+            );
+        }
+        let mut lock = load_lock(&self.root)?;
+        self.ensure_layout()?;
+        move_path(&package, &target)?;
+        if trashed_backup.is_dir()
+            && let Err(error) = move_path(&trashed_backup, &backup)
+        {
+            let _ = move_path(&target, &package);
+            return Err(error.into());
+        }
+        if let Some(entry) = record.lock.clone() {
+            lock.skills.insert(record.name.clone(), entry);
+        }
+        if let Some(entry) = record.previous.clone() {
+            lock.previous.insert(record.name.clone(), entry);
+        }
+        if let Err(error) = save_lock(&self.root, &lock) {
+            if backup.is_dir() {
+                let _ = move_path(&backup, &trashed_backup);
+            }
+            let _ = move_path(&target, &package);
+            return Err(error);
+        }
+        fs::remove_file(trash_root.join("record.json"))?;
+        fs::remove_dir(trash_root)?;
+        self.installed()?
+            .into_iter()
+            .find(|skill| skill.name == record.name)
+            .context("Restored Skill was not found")
+    }
+
+    pub fn read_file(&self, name: &str, relative: &str) -> Result<SkillFilePreview> {
+        validate_skill_name(name)?;
+        let relative = safe_relative_path(relative)?;
+        let root = platform_path::canonicalize(&self.skills_dir().join(name))?;
+        let requested = self.skills_dir().join(name).join(&relative);
+        ensure!(
+            is_readable_skill_file(&root.join("SKILL.md"), &requested),
+            "Skill resource is private, unsafe, or outside the package"
+        );
+        let metadata = fs::symlink_metadata(&requested)?;
+        ensure!(
+            metadata.file_type().is_file(),
+            "Skill resource is not a regular file"
+        );
+        ensure!(
+            !platform_path::is_reparse_or_symlink(&requested)?,
+            "Symbolic Skill resources cannot be read"
+        );
+        ensure!(
+            metadata.len() <= MAX_PREVIEW_BYTES,
+            "Skill resource exceeds the preview limit"
+        );
+        let requested = platform_path::canonicalize(&requested)?;
+        ensure!(
+            platform_path::starts_with(&requested, &root),
+            "Skill resource is outside the package"
+        );
+        let content = fs::read_to_string(&requested).context("Skill resource is not UTF-8 text")?;
+        Ok(SkillFilePreview {
+            path: relative.to_string_lossy().replace('\\', "/"),
+            content,
+        })
+    }
+
+    async fn prepare(
+        &self,
+        source: SkillSource,
+        operation: SkillOperationKind,
+        installed_name: Option<&str>,
+    ) -> Result<SkillOperationPreview> {
+        let parsed = parsed_source(&source)?;
+        let resolved = self.resolve_repository(&parsed).await?;
+        let direct = candidate_directories(&resolved.entries, &source.path)?;
+        ensure!(
+            direct.iter().any(|path| path == &source.path),
+            "Selected Skill path no longer contains SKILL.md"
+        );
+        let entries = package_entries(&resolved.entries, &source.path)?;
+        let staging = self.root.join(".staging");
+        fs::create_dir_all(&staging)?;
+        let temp = tempfile::Builder::new()
+            .prefix("skill-")
+            .tempdir_in(staging)?;
+        let package = temp.path().join("package");
+        fs::create_dir(&package)?;
+        let mut total_size = 0_u64;
+        let mut files = Vec::new();
+        for entry in entries {
+            let size = entry.size.unwrap_or_default();
+            ensure!(
+                size <= MAX_SKILL_FILE_BYTES,
+                "Skill file exceeds the 8 MiB limit: {}",
+                entry.path
+            );
+            total_size = total_size
+                .checked_add(size)
+                .context("Skill package size overflow")?;
+            ensure!(
+                total_size <= MAX_SKILL_TOTAL_BYTES,
+                "Skill package exceeds the 32 MiB limit"
+            );
+            let relative = entry
+                .path
+                .strip_prefix(&source.path)
+                .unwrap_or(&entry.path)
+                .trim_start_matches('/');
+            let relative = safe_relative_path(relative)?;
+            let bytes = self
+                .download_raw(
+                    &resolved.owner,
+                    &resolved.repository,
+                    &resolved.commit,
+                    &entry.path,
+                    MAX_SKILL_FILE_BYTES,
+                )
+                .await?;
+            ensure!(
+                bytes.len() as u64 == size,
+                "GitHub file size changed during download: {}",
+                entry.path
+            );
+            let target = package.join(&relative);
+            fs::create_dir_all(target.parent().context("Skill file has no parent")?)?;
+            fs::write(&target, &bytes)?;
+            files.push(SkillFileEntry {
+                path: relative.to_string_lossy().replace('\\', "/"),
+                size,
+                executable: entry.mode == "100755",
+            });
+        }
+        ensure!(
+            files.len() <= MAX_SKILL_FILES,
+            "Skill package exceeds the 512 file limit"
+        );
+        let entrypoint = package.join("SKILL.md");
+        let entry_content = fs::read_to_string(&entrypoint).context("SKILL.md must be UTF-8")?;
+        ensure!(
+            entry_content.len() as u64 <= MAX_SKILL_ENTRY_BYTES,
+            "SKILL.md exceeds the 1 MiB limit"
+        );
+        let metadata = parse_skill_frontmatter(&entry_content)?;
+        if let Some(installed_name) = installed_name {
+            ensure!(
+                metadata.name == installed_name,
+                "Skill update changed the package name"
+            );
+        }
+        let tree_sha = directory_tree_sha(&resolved, &source.path)?;
+        let resolved_source = SkillSource {
+            kind: source_kind(&resolved.owner, &resolved.repository, &source.path),
+            repository: format!("{}/{}", resolved.owner, resolved.repository),
+            reference: resolved.reference,
+            path: source.path.clone(),
+            resolved_commit: resolved.commit,
+            tree_sha,
+        };
+        let candidate = SkillCandidate {
+            name: metadata.name,
+            description: metadata.description,
+            license: metadata.license,
+            compatibility: metadata.compatibility,
+            source: resolved_source,
+        };
+        validate_skill_name(&candidate.name)?;
+        let (content_sha256, _, _) = package_hash(&package)?;
+        let existing = self.skills_dir().join(&candidate.name);
+        match operation {
+            SkillOperationKind::Install => {
+                ensure!(!existing.exists(), "A Skill with this name already exists")
+            }
+            SkillOperationKind::Update => {
+                ensure!(existing.is_dir(), "Installed Skill does not exist")
+            }
+        }
+        let (added, modified, removed) = file_delta(&existing, &package)?;
+        let lock = load_lock(&self.root)?;
+        let previous = lock.skills.get(&candidate.name);
+        if operation == SkillOperationKind::Update {
+            let previous_source = previous
+                .and_then(|entry| entry.source.as_ref())
+                .context("Unmanaged Skills cannot be updated")?;
+            ensure!(
+                same_source(previous_source, &candidate.source),
+                "Skill update source changed"
+            );
+        }
+        let expected_existing_sha256 = existing
+            .is_dir()
+            .then(|| package_hash(&existing).map(|value| value.0))
+            .transpose()?;
+        let local_modified = previous
+            .zip(expected_existing_sha256.as_ref())
+            .is_some_and(|(entry, actual)| actual != &entry.content_sha256);
+        let token = Uuid::new_v4().to_string();
+        let expires_at = Utc::now() + Duration::minutes(PREVIEW_TTL_MINUTES);
+        let preview = SkillOperationPreview {
+            token: token.clone(),
+            operation,
+            skill: candidate,
+            files,
+            added,
+            modified,
+            removed,
+            total_size,
+            local_modified,
+            expires_at,
+        };
+        let now = Utc::now();
+        let lock_entry = SkillLockEntry {
+            source: Some(preview.skill.source.clone()),
+            content_sha256,
+            installed_at: previous.map_or(now, |entry| entry.installed_at),
+            updated_at: now,
+        };
+        let mut previews = self
+            .previews
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill preview lock is unavailable"))?;
+        previews.retain(|_, value| value.preview.expires_at > Utc::now());
+        previews.insert(
+            token,
+            PreparedOperation {
+                preview: preview.clone(),
+                temp,
+                package,
+                lock: lock_entry,
+                expected_existing_sha256,
+            },
+        );
+        Ok(preview)
+    }
+
+    fn apply_install(&self, prepared: PreparedOperation) -> Result<()> {
+        let name = &prepared.preview.skill.name;
+        let target = self.skills_dir().join(name);
+        ensure!(!target.exists(), "A Skill with this name already exists");
+        let mut lock = load_lock(&self.root)?;
+        move_path(&prepared.package, &target)?;
+        lock.skills.insert(name.clone(), prepared.lock);
+        if let Err(error) = save_lock(&self.root, &lock) {
+            let _ = move_path(&target, &prepared.package);
+            return Err(error);
+        }
+        drop(prepared.temp);
+        Ok(())
+    }
+
+    fn apply_update(&self, prepared: PreparedOperation) -> Result<()> {
+        let name = &prepared.preview.skill.name;
+        let target = self.skills_dir().join(name);
+        let backup = self.backups_dir().join(name);
+        ensure!(
+            !platform_path::is_reparse_or_symlink(&target)?,
+            "Installed Skill must be a regular directory"
+        );
+        if backup.exists() {
+            ensure!(
+                backup.is_dir() && !platform_path::is_reparse_or_symlink(&backup)?,
+                "Rollback Skill must be a regular directory"
+            );
+        }
+        fs::create_dir_all(self.backups_dir())?;
+        let prior_backup = self
+            .root
+            .join(".staging")
+            .join(format!("prior-backup-{}", Uuid::new_v4()));
+        if backup.exists() {
+            move_path(&backup, &prior_backup)?;
+        }
+        let mut lock = load_lock(&self.root)?;
+        let mut previous = lock
+            .skills
+            .remove(name)
+            .context("Installed Skill is unmanaged")?;
+        previous.content_sha256 = package_hash(&target)?.0;
+        if let Err(error) = move_path(&target, &backup) {
+            if prior_backup.is_dir() {
+                let _ = move_path(&prior_backup, &backup);
+            }
+            return Err(error.into());
+        }
+        if let Err(error) = move_path(&prepared.package, &target) {
+            let _ = move_path(&backup, &target);
+            if prior_backup.is_dir() {
+                let _ = move_path(&prior_backup, &backup);
+            }
+            return Err(error.into());
+        }
+        lock.previous.insert(name.clone(), previous);
+        lock.skills.insert(name.clone(), prepared.lock);
+        if let Err(error) = save_lock(&self.root, &lock) {
+            let _ = move_path(&target, &prepared.package);
+            let _ = move_path(&backup, &target);
+            if prior_backup.is_dir() {
+                let _ = move_path(&prior_backup, &backup);
+            }
+            return Err(error);
+        }
+        if prior_backup.is_dir() {
+            let _ = fs::remove_dir_all(prior_backup);
+        }
+        drop(prepared.temp);
+        Ok(())
+    }
+
+    async fn resolve_repository(&self, parsed: &ParsedGitHubUrl) -> Result<ResolvedRepository> {
+        let reference = match parsed.reference.clone() {
+            Some(reference) => reference,
+            None => {
+                let repository: RepositoryResponse = self
+                    .get_json(&github_api_url(&[
+                        "repos",
+                        &parsed.owner,
+                        &parsed.repository,
+                    ])?)
+                    .await?;
+                repository.default_branch
+            }
+        };
+        let commit: CommitResponse = self
+            .get_json(&github_api_url(&[
+                "repos",
+                &parsed.owner,
+                &parsed.repository,
+                "commits",
+                &reference,
+            ])?)
+            .await?;
+        let tree: TreeResponse = self
+            .get_json(
+                github_api_url(&[
+                    "repos",
+                    &parsed.owner,
+                    &parsed.repository,
+                    "git",
+                    "trees",
+                    &commit.commit.tree.sha,
+                ])?
+                .query_pairs_mut()
+                .append_pair("recursive", "1")
+                .finish(),
+            )
+            .await?;
+        ensure!(
+            !tree.truncated,
+            "GitHub repository tree is too large; provide a direct Skill directory URL"
+        );
+        ensure!(
+            tree.tree.len() <= MAX_TREE_ENTRIES,
+            "GitHub repository exceeds the 20,000 entry discovery limit"
+        );
+        Ok(ResolvedRepository {
+            owner: parsed.owner.clone(),
+            repository: parsed.repository.clone(),
+            reference,
+            commit: commit.sha,
+            root_tree: commit.commit.tree.sha,
+            entries: tree.tree,
+        })
+    }
+
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, url: &Url) -> Result<T> {
+        let response = self.client.get(url.clone()).send().await?;
+        let status = response.status();
+        ensure!(
+            status.is_success(),
+            "GitHub request failed with HTTP {status}"
+        );
+        Ok(response.json().await?)
+    }
+
+    async fn download_raw(
+        &self,
+        owner: &str,
+        repository: &str,
+        commit: &str,
+        path: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>> {
+        let url = raw_url(owner, repository, commit, path)?;
+        let response = self.client.get(url).send().await?;
+        let status = response.status();
+        ensure!(
+            status.is_success(),
+            "GitHub file download failed with HTTP {status}"
+        );
+        if let Some(length) = response.content_length() {
+            ensure!(length <= limit, "GitHub file exceeds the download limit");
+        }
+        let bytes = response.bytes().await?;
+        ensure!(
+            bytes.len() as u64 <= limit,
+            "GitHub file exceeds the download limit"
+        );
+        Ok(bytes.to_vec())
+    }
+
+    fn annotate_installed(
+        &self,
+        mut snapshot: SkillCatalogSnapshot,
+    ) -> Result<SkillCatalogSnapshot> {
+        let installed = self
+            .installed()?
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for entry in &mut snapshot.entries {
+            entry.installed = installed.contains(&entry.candidate.name);
+        }
+        Ok(snapshot)
+    }
+
+    fn ensure_layout(&self) -> Result<()> {
+        for directory in [
+            self.skills_dir(),
+            self.backups_dir(),
+            self.trash_dir(),
+            self.root.join(".staging"),
+        ] {
+            fs::create_dir_all(directory)?;
+        }
+        Ok(())
+    }
+
+    fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups/skills")
+    }
+
+    fn trash_dir(&self) -> PathBuf {
+        self.root.join("trash/skills")
+    }
+}
+
+fn swap_directories(root: &Path, left: &Path, right: &Path) -> Result<()> {
+    let swap = root
+        .join(".staging")
+        .join(format!("swap-{}", Uuid::new_v4()));
+    fs::create_dir_all(swap.parent().context("Swap path has no parent")?)?;
+    move_path(left, &swap)?;
+    if let Err(error) = move_path(right, left) {
+        let _ = move_path(&swap, left);
+        return Err(error.into());
+    }
+    if let Err(error) = move_path(&swap, right) {
+        let _ = move_path(left, &swap);
+        let _ = move_path(right, left);
+        let _ = move_path(&swap, right);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+pub fn default_home_dir() -> Result<PathBuf> {
+    if let Some(value) = std::env::var_os("AGENTKIB_HOME") {
+        let path = PathBuf::from(value);
+        ensure!(path.is_absolute(), "AGENTKIB_HOME must be an absolute path");
+        return Ok(path);
+    }
+    let home = dirs::home_dir().context("User home directory is unavailable")?;
+    let development = std::env::var("AGENTKIB_APP_FLAVOR").as_deref() == Ok("ai.agentkib.dev");
+    Ok(home.join(if development {
+        ".agentkib-dev"
+    } else {
+        ".agentkib"
+    }))
+}
+
+pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
+    let directory = root.join("skills");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(Vec::new());
+    };
+    let mut output = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || platform_path::is_reparse_or_symlink(&entry.path())? {
+            continue;
+        }
+        let Ok(package) = inspect_skill_entrypoint(&entry.path().join("SKILL.md")) else {
+            continue;
+        };
+        output.push(CatalogAsset {
+            id: format!("agentkib-home:skill:{}", package.name),
+            scope: CatalogScope::AgentkibHome,
+            workspace_id: None,
+            agent: None,
+            kind: agentkib_core::AssetKind::Skill,
+            name: package.name,
+            path: package.root,
+            summary: "AgentKib Skill library".into(),
+            summary_key: Some("assets.summary.agentkibSkill".into()),
+            summary_params: BTreeMap::new(),
+            size: package.size,
+            modified_at: package.modified_at,
+        });
+    }
+    output.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(output)
+}
+
+fn parse_github_url(value: &str) -> Result<ParsedGitHubUrl> {
+    let value = value.trim();
+    validate_raw_url_path(value)?;
+    let url = Url::parse(value).context("Enter a valid GitHub URL")?;
+    ensure!(
+        url.scheme() == "https",
+        "Only HTTPS GitHub URLs are supported"
+    );
+    ensure!(
+        matches!(url.host_str(), Some("github.com" | "www.github.com")),
+        "Only public github.com URLs are supported"
+    );
+    let parts = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .map(decode_url_segment)
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        parts.len() >= 2,
+        "GitHub URL must include an owner and repository"
+    );
+    let owner = parts[0].clone();
+    let repository = parts[1].trim_end_matches(".git").to_string();
+    validate_repo_segment(&owner)?;
+    validate_repo_segment(&repository)?;
+    let mut reference = None;
+    let mut path = String::new();
+    if parts.len() > 2 {
+        ensure!(
+            matches!(parts[2].as_str(), "tree" | "blob"),
+            "GitHub URL must point to a repository, tree, or SKILL.md blob"
+        );
+        ensure!(parts.len() >= 4, "GitHub tree URL is missing a ref");
+        reference = Some(parts[3].clone());
+        path = parts[4..].join("/");
+        if parts[2] == "blob" {
+            ensure!(
+                path.ends_with("SKILL.md"),
+                "GitHub blob URL must point to SKILL.md"
+            );
+            path = path
+                .trim_end_matches("SKILL.md")
+                .trim_end_matches('/')
+                .to_string();
+        }
+    }
+    let path = safe_repo_path(&path)?;
+    Ok(ParsedGitHubUrl {
+        owner,
+        repository,
+        reference,
+        path,
+    })
+}
+
+fn validate_raw_url_path(value: &str) -> Result<()> {
+    let path = value
+        .split_once("://")
+        .map(|(_, suffix)| suffix)
+        .unwrap_or(value)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default();
+    for segment in path.split('/') {
+        decode_url_segment(segment)?;
+    }
+    Ok(())
+}
+
+fn decode_url_segment(segment: &str) -> Result<String> {
+    let mut decoded = Vec::with_capacity(segment.len());
+    let bytes = segment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            ensure!(
+                index + 2 < bytes.len(),
+                "GitHub URL contains invalid percent encoding"
+            );
+            let high = hex_value(bytes[index + 1])
+                .context("GitHub URL contains invalid percent encoding")?;
+            let low = hex_value(bytes[index + 2])
+                .context("GitHub URL contains invalid percent encoding")?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    ensure!(
+        decoded.as_slice() != b"."
+            && decoded.as_slice() != b".."
+            && !decoded.contains(&b'/')
+            && !decoded.contains(&b'\\'),
+        "GitHub URL contains an unsafe path component"
+    );
+    String::from_utf8(decoded).context("GitHub URL path is not valid UTF-8")
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parsed_source(source: &SkillSource) -> Result<ParsedGitHubUrl> {
+    let (owner, repository) = source
+        .repository
+        .split_once('/')
+        .context("Skill source repository is invalid")?;
+    validate_repo_segment(owner)?;
+    validate_repo_segment(repository)?;
+    ensure!(
+        !source.reference.trim().is_empty(),
+        "Skill source ref is empty"
+    );
+    Ok(ParsedGitHubUrl {
+        owner: owner.to_string(),
+        repository: repository.to_string(),
+        reference: Some(source.reference.clone()),
+        path: safe_repo_path(&source.path)?,
+    })
+}
+
+fn validate_repo_segment(value: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 100
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "GitHub owner or repository is invalid"
+    );
+    Ok(())
+}
+
+fn safe_repo_path(value: &str) -> Result<String> {
+    let path = safe_relative_path(value)?;
+    Ok(path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string())
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf> {
+    let path = Path::new(value);
+    ensure!(!path.is_absolute(), "Skill path must be relative");
+    for component in path.components() {
+        ensure!(
+            matches!(component, Component::Normal(_)),
+            "Skill path contains an unsafe component"
+        );
+    }
+    Ok(path.to_path_buf())
+}
+
+fn candidate_directories(entries: &[TreeEntry], selected: &str) -> Result<Vec<String>> {
+    let direct = join_repo_path(selected, "SKILL.md");
+    if entries
+        .iter()
+        .any(|entry| entry.kind == "blob" && entry.path == direct)
+    {
+        return Ok(vec![selected.to_string()]);
+    }
+    let prefix = if selected.is_empty() {
+        String::new()
+    } else {
+        format!("{selected}/")
+    };
+    let mut directories = entries
+        .iter()
+        .filter(|entry| entry.kind == "blob" && entry.path.ends_with("/SKILL.md"))
+        .filter_map(|entry| entry.path.strip_suffix("/SKILL.md"))
+        .filter(|directory| selected.is_empty() || directory.starts_with(&prefix))
+        .filter(|directory| {
+            let relative = directory.strip_prefix(&prefix).unwrap_or(directory);
+            relative.split('/').filter(|part| !part.is_empty()).count() <= MAX_DISCOVERY_DEPTH
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    directories.sort();
+    directories.dedup();
+    ensure!(
+        !directories.is_empty(),
+        "No Skill package with SKILL.md was found at this GitHub location"
+    );
+    ensure!(
+        directories.len() <= MAX_CANDIDATES,
+        "GitHub location contains more than 200 Skill candidates"
+    );
+    Ok(directories)
+}
+
+fn package_entries<'a>(entries: &'a [TreeEntry], path: &str) -> Result<Vec<&'a TreeEntry>> {
+    let prefix = if path.is_empty() {
+        String::new()
+    } else {
+        format!("{path}/")
+    };
+    let mut output = entries
+        .iter()
+        .filter(|entry| entry.path.starts_with(&prefix) && entry.kind != "tree")
+        .collect::<Vec<_>>();
+    ensure!(!output.is_empty(), "Skill package is empty");
+    ensure!(
+        output.len() <= MAX_SKILL_FILES,
+        "Skill package exceeds the 512 file limit"
+    );
+    for entry in &output {
+        ensure!(
+            entry.kind == "blob",
+            "Skill package contains an unsupported Git object: {}",
+            entry.path
+        );
+        ensure!(
+            matches!(entry.mode.as_str(), "100644" | "100755"),
+            "Skill package contains a symbolic link, submodule, or special file: {}",
+            entry.path
+        );
+    }
+    output.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(output)
+}
+
+fn directory_tree_sha(resolved: &ResolvedRepository, directory: &str) -> Result<String> {
+    if directory.is_empty() {
+        return Ok(resolved.root_tree.clone());
+    }
+    resolved
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "tree" && entry.path == directory)
+        .map(|entry| entry.sha.clone())
+        .context("Skill directory tree was not found")
+}
+
+fn parse_skill_frontmatter(content: &str) -> Result<SkillFrontmatter> {
+    let content = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))
+        .context("SKILL.md must begin with YAML frontmatter")?;
+    let mut offset = 0;
+    let mut end = None;
+    for line in content.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            end = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let end = end.context("SKILL.md frontmatter is not closed")?;
+    let metadata: SkillFrontmatter = serde_yaml::from_str(&content[..end])?;
+    validate_skill_name(&metadata.name)?;
+    ensure!(
+        !metadata.description.trim().is_empty(),
+        "Skill description is required"
+    );
+    ensure!(
+        metadata.description.len() <= 1024,
+        "Skill description exceeds 1024 characters"
+    );
+    if let Some(compatibility) = metadata.compatibility.as_deref() {
+        ensure!(
+            compatibility.len() <= 500,
+            "Skill compatibility exceeds 500 characters"
+        );
+    }
+    Ok(metadata)
+}
+
+fn validate_skill_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|value| value.is_ascii_lowercase() || value.is_ascii_digit() || value == b'-')
+            && name
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && name
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && !name.contains("--"),
+        "Skill name must use lowercase letters, numbers, and single hyphens"
+    );
+    Ok(())
+}
+
+fn validate_trash_id(id: &str) -> Result<()> {
+    ensure!(
+        !id.is_empty()
+            && id.len() <= 160
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+        "Removed Skill id is invalid"
+    );
+    Ok(())
+}
+
+fn source_kind(owner: &str, repository: &str, path: &str) -> SkillSourceKind {
+    if owner == "openai" && repository == "skills" && path.starts_with("skills/.curated/") {
+        SkillSourceKind::OpenaiCurated
+    } else {
+        SkillSourceKind::Github
+    }
+}
+
+fn same_source(left: &SkillSource, right: &SkillSource) -> bool {
+    left.repository == right.repository
+        && left.reference == right.reference
+        && left.path == right.path
+}
+
+fn join_repo_path(left: &str, right: &str) -> String {
+    if left.is_empty() {
+        right.to_string()
+    } else {
+        format!(
+            "{}/{}",
+            left.trim_end_matches('/'),
+            right.trim_start_matches('/')
+        )
+    }
+}
+
+fn github_api_url(parts: &[&str]) -> Result<Url> {
+    let mut url = Url::parse("https://api.github.com/")?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("GitHub API URL cannot accept path segments"))?
+        .extend(parts.iter().copied());
+    Ok(url)
+}
+
+fn raw_url(owner: &str, repository: &str, commit: &str, path: &str) -> Result<Url> {
+    let mut url = Url::parse("https://raw.githubusercontent.com/")?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("GitHub raw URL cannot accept path segments"))?
+        .extend([owner, repository, commit])
+        .extend(path.split('/'));
+    Ok(url)
+}
+
+fn lock_path(root: &Path) -> PathBuf {
+    root.join("skills.lock.json")
+}
+
+fn load_lock(root: &Path) -> Result<SkillLockFile> {
+    let path = lock_path(root);
+    if !path.exists() {
+        return Ok(SkillLockFile {
+            schema_version: 1,
+            ..Default::default()
+        });
+    }
+    let lock: SkillLockFile = read_json(&path)?;
+    ensure!(
+        lock.schema_version == 1,
+        "Unsupported Skill lock schema version"
+    );
+    Ok(lock)
+}
+
+fn save_lock(root: &Path, lock: &SkillLockFile) -> Result<()> {
+    fs::create_dir_all(root)?;
+    let mut content = serde_json::to_vec_pretty(lock)?;
+    content.push(b'\n');
+    atomic_write(&lock_path(root), &content)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut content = serde_json::to_vec_pretty(value)?;
+    content.push(b'\n');
+    atomic_write(path, &content)?;
+    Ok(())
+}
+
+fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
+    let directory = root.join("skills");
+    let lock = load_lock(root)?;
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Ok(Vec::new());
+    };
+    let mut output = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || platform_path::is_reparse_or_symlink(&entry.path())? {
+            continue;
+        }
+        let entrypoint = entry.path().join("SKILL.md");
+        let Ok(content) = fs::read_to_string(&entrypoint) else {
+            continue;
+        };
+        let metadata = parse_skill_frontmatter(&content).ok();
+        let name = metadata
+            .as_ref()
+            .map(|value| value.name.clone())
+            .or_else(|| entry.file_name().to_str().map(str::to_string))
+            .unwrap_or_else(|| "skill".into());
+        let (hash, size, modified_at) = package_hash(&entry.path())?;
+        let record = lock.skills.get(&name);
+        let status = match record {
+            Some(record) if record.content_sha256 != hash => InstalledSkillStatus::Modified,
+            Some(_) => InstalledSkillStatus::Current,
+            None => InstalledSkillStatus::Unmanaged,
+        };
+        output.push(InstalledSkill {
+            name: name.clone(),
+            description: metadata.map(|value| value.description).unwrap_or_default(),
+            path: entry.path(),
+            size,
+            modified_at,
+            status,
+            source: record.and_then(|entry| entry.source.clone()),
+            installed_at: record.map(|entry| entry.installed_at),
+            updated_at: record.map(|entry| entry.updated_at),
+            can_rollback: lock.previous.contains_key(&name)
+                && root.join("backups/skills").join(&name).is_dir(),
+        });
+    }
+    output.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(output)
+}
+
+fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
+    let mut paths = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    paths.sort_by(|left, right| left.path().cmp(right.path()));
+    let mut hash = Sha256::new();
+    let mut total = 0_u64;
+    let mut modified_at = None;
+    for entry in paths {
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        ensure!(
+            entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
+            "Skill package contains an unsupported file"
+        );
+        let relative = entry.path().strip_prefix(root)?;
+        let metadata = fs::metadata(entry.path())?;
+        total = total
+            .checked_add(metadata.len())
+            .context("Skill package size overflow")?;
+        hash.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        hash.update([0]);
+        let mut file = fs::File::open(entry.path())?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&buffer[..read]);
+        }
+        if let Ok(modified) = metadata.modified() {
+            let modified = DateTime::<Utc>::from(modified);
+            modified_at =
+                Some(modified_at.map_or(modified, |current: DateTime<Utc>| current.max(modified)));
+        }
+    }
+    Ok((format!("{:x}", hash.finalize()), total, modified_at))
+}
+
+fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
+    if !root.is_dir() {
+        return Ok(BTreeMap::new());
+    }
+    let mut output = BTreeMap::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        ensure!(
+            entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
+            "Skill package contains an unsupported file"
+        );
+        let relative = entry
+            .path()
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        output.insert(
+            relative,
+            format!("{:x}", Sha256::digest(fs::read(entry.path())?)),
+        );
+    }
+    Ok(output)
+}
+
+fn file_delta(existing: &Path, incoming: &Path) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+    let before = package_file_hashes(existing)?;
+    let after = package_file_hashes(incoming)?;
+    let added = after
+        .keys()
+        .filter(|path| !before.contains_key(*path))
+        .cloned()
+        .collect();
+    let modified = after
+        .iter()
+        .filter(|(path, hash)| before.get(*path).is_some_and(|before| before != *hash))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let removed = before
+        .keys()
+        .filter(|path| !after.contains_key(*path))
+        .cloned()
+        .collect();
+    Ok((added, modified, removed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(commit: &str, tree: &str) -> SkillSource {
+        SkillSource {
+            kind: SkillSourceKind::Github,
+            repository: "owner/repository".into(),
+            reference: "main".into(),
+            path: "skills/reviewer".into(),
+            resolved_commit: commit.into(),
+            tree_sha: tree.into(),
+        }
+    }
+
+    fn write_skill(root: &Path, body: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            format!("---\nname: reviewer\ndescription: Review changes\n---\n{body}"),
+        )
+        .unwrap();
+    }
+
+    fn prepared_operation(
+        root: &Path,
+        operation: SkillOperationKind,
+        expected_existing_sha256: Option<String>,
+        expires_at: DateTime<Utc>,
+    ) -> PreparedOperation {
+        fs::create_dir_all(root.join(".staging")).unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("skill-")
+            .tempdir_in(root.join(".staging"))
+            .unwrap();
+        let package = temp.path().join("package");
+        write_skill(&package, "incoming");
+        let resolved_source = source("commit-incoming", "tree-incoming");
+        PreparedOperation {
+            preview: SkillOperationPreview {
+                token: "preview".into(),
+                operation,
+                skill: SkillCandidate {
+                    name: "reviewer".into(),
+                    description: "Review changes".into(),
+                    license: None,
+                    compatibility: None,
+                    source: resolved_source.clone(),
+                },
+                files: Vec::new(),
+                added: vec!["SKILL.md".into()],
+                modified: Vec::new(),
+                removed: Vec::new(),
+                total_size: 0,
+                local_modified: false,
+                expires_at,
+            },
+            lock: SkillLockEntry {
+                source: Some(resolved_source),
+                content_sha256: package_hash(&package).unwrap().0,
+                installed_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            temp,
+            package,
+            expected_existing_sha256,
+        }
+    }
+
+    #[test]
+    fn parses_repository_tree_and_blob_urls() {
+        let root = parse_github_url("https://github.com/openai/skills").unwrap();
+        assert_eq!(root.owner, "openai");
+        assert_eq!(root.repository, "skills");
+        assert!(root.reference.is_none());
+
+        let tree = parse_github_url(
+            "https://github.com/openai/skills/tree/main/skills/.curated/openai-docs",
+        )
+        .unwrap();
+        assert_eq!(tree.reference.as_deref(), Some("main"));
+        assert_eq!(tree.path, "skills/.curated/openai-docs");
+
+        let blob = parse_github_url(
+            "https://github.com/openai/skills/blob/main/skills/.curated/openai-docs/SKILL.md",
+        )
+        .unwrap();
+        assert_eq!(blob.path, "skills/.curated/openai-docs");
+    }
+
+    #[test]
+    fn rejects_non_github_and_unsafe_urls() {
+        assert!(parse_github_url("https://example.com/openai/skills").is_err());
+        assert!(parse_github_url("http://github.com/openai/skills").is_err());
+        assert!(parse_github_url("https://github.com/openai/skills/tree/main/../secret").is_err());
+        assert!(
+            parse_github_url("https://github.com/openai/skills/tree/main/%2e%2e/secret").is_err()
+        );
+        assert!(
+            parse_github_url("https://github.com/openai/skills/tree/main/path%2Fsecret").is_err()
+        );
+        assert_eq!(
+            parse_github_url(
+                "https://github.com/openai/skills/tree/main/skills/%E7%A4%BA%E4%BE%8B"
+            )
+            .unwrap()
+            .path,
+            "skills/示例"
+        );
+    }
+
+    #[test]
+    fn strict_frontmatter_requires_standard_fields() {
+        let metadata = parse_skill_frontmatter(
+            "---\nname: reviewer\ndescription: Review changes\nlicense: MIT\n---\nBody",
+        )
+        .unwrap();
+        assert_eq!(metadata.name, "reviewer");
+        assert!(parse_skill_frontmatter("# Missing metadata").is_err());
+        assert!(parse_skill_frontmatter("---\nname: Bad Name\ndescription: x\n---\n").is_err());
+        assert!(
+            parse_skill_frontmatter("---\nname: reviewer\ndescription: x\n---invalid\n").is_err()
+        );
+    }
+
+    #[test]
+    fn candidate_discovery_prefers_direct_skill_directory() {
+        let entries = vec![
+            TreeEntry {
+                path: "skills/a/SKILL.md".into(),
+                mode: "100644".into(),
+                kind: "blob".into(),
+                sha: "a".into(),
+                size: Some(1),
+            },
+            TreeEntry {
+                path: "skills/a/references/guide.md".into(),
+                mode: "100644".into(),
+                kind: "blob".into(),
+                sha: "b".into(),
+                size: Some(1),
+            },
+        ];
+        assert_eq!(
+            candidate_directories(&entries, "skills/a").unwrap(),
+            ["skills/a"]
+        );
+    }
+
+    #[test]
+    fn unmanaged_packages_are_listed_without_a_lockfile() {
+        let directory = tempfile::tempdir().unwrap();
+        let skill = directory.path().join("skills/reviewer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: reviewer\ndescription: Review changes\n---\nBody",
+        )
+        .unwrap();
+        let installed = list_installed(directory.path()).unwrap();
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].status, InstalledSkillStatus::Unmanaged);
+    }
+
+    #[test]
+    fn managed_update_rollback_uninstall_and_restore_preserve_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let current = root.join("skills/reviewer");
+        let old_backup = root.join("backups/skills/reviewer");
+        write_skill(&current, "current");
+        write_skill(&old_backup, "old backup");
+        let now = Utc::now();
+        let current_entry = SkillLockEntry {
+            source: Some(source("commit-current", "tree-current")),
+            content_sha256: package_hash(&current).unwrap().0,
+            installed_at: now,
+            updated_at: now,
+        };
+        let old_entry = SkillLockEntry {
+            source: Some(source("commit-old", "tree-old")),
+            content_sha256: package_hash(&old_backup).unwrap().0,
+            installed_at: now,
+            updated_at: now,
+        };
+        save_lock(
+            root,
+            &SkillLockFile {
+                schema_version: 1,
+                skills: BTreeMap::from([("reviewer".into(), current_entry)]),
+                previous: BTreeMap::from([("reviewer".into(), old_entry)]),
+            },
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join(".staging")).unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("skill-")
+            .tempdir_in(root.join(".staging"))
+            .unwrap();
+        let package = temp.path().join("package");
+        write_skill(&package, "incoming");
+        let incoming_source = source("commit-incoming", "tree-incoming");
+        let incoming_lock = SkillLockEntry {
+            source: Some(incoming_source.clone()),
+            content_sha256: package_hash(&package).unwrap().0,
+            installed_at: now,
+            updated_at: now,
+        };
+        let prepared = PreparedOperation {
+            preview: SkillOperationPreview {
+                token: "preview".into(),
+                operation: SkillOperationKind::Update,
+                skill: SkillCandidate {
+                    name: "reviewer".into(),
+                    description: "Review changes".into(),
+                    license: None,
+                    compatibility: None,
+                    source: incoming_source,
+                },
+                files: Vec::new(),
+                added: Vec::new(),
+                modified: vec!["SKILL.md".into()],
+                removed: Vec::new(),
+                total_size: 0,
+                local_modified: false,
+                expires_at: now + Duration::minutes(15),
+            },
+            temp,
+            package,
+            lock: incoming_lock,
+            expected_existing_sha256: Some(package_hash(&current).unwrap().0),
+        };
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+
+        hub.previews
+            .lock()
+            .unwrap()
+            .insert("preview".into(), prepared);
+        hub.apply("preview", true, false).unwrap();
+        assert!(
+            fs::read_to_string(current.join("SKILL.md"))
+                .unwrap()
+                .ends_with("incoming")
+        );
+        assert!(
+            fs::read_to_string(old_backup.join("SKILL.md"))
+                .unwrap()
+                .ends_with("current")
+        );
+
+        hub.rollback("reviewer", true).unwrap();
+        assert!(
+            fs::read_to_string(current.join("SKILL.md"))
+                .unwrap()
+                .ends_with("current")
+        );
+        assert!(
+            fs::read_to_string(old_backup.join("SKILL.md"))
+                .unwrap()
+                .ends_with("incoming")
+        );
+
+        let removed = hub.uninstall("reviewer", true).unwrap();
+        assert!(!current.exists());
+        assert!(!old_backup.exists());
+        assert_eq!(hub.removed().unwrap().len(), 1);
+
+        let restored = hub.restore(&removed.id, true).unwrap();
+        assert_eq!(restored.name, "reviewer");
+        assert!(current.is_dir());
+        assert!(old_backup.is_dir());
+        assert!(restored.can_rollback);
+        assert!(hub.removed().unwrap().is_empty());
+    }
+
+    #[test]
+    fn file_preview_rejects_private_and_traversal_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let skill = root.join("skills/reviewer");
+        write_skill(&skill, "body");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("references/guide.md"), "guide").unwrap();
+        fs::write(skill.join("access-token.txt"), "private").unwrap();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+
+        assert_eq!(
+            hub.read_file("reviewer", "references/guide.md")
+                .unwrap()
+                .content,
+            "guide"
+        );
+        assert!(hub.read_file("reviewer", "access-token.txt").is_err());
+        assert!(hub.read_file("reviewer", "../outside.md").is_err());
+    }
+
+    #[test]
+    fn package_rejects_links_gitlinks_and_too_many_candidates() {
+        let unsupported = vec![TreeEntry {
+            path: "skills/a/link".into(),
+            mode: "120000".into(),
+            kind: "blob".into(),
+            sha: "a".into(),
+            size: Some(1),
+        }];
+        assert!(package_entries(&unsupported, "skills/a").is_err());
+
+        let candidates = (0..=MAX_CANDIDATES)
+            .map(|index| TreeEntry {
+                path: format!("skills/{index}/SKILL.md"),
+                mode: "100644".into(),
+                kind: "blob".into(),
+                sha: index.to_string(),
+                size: Some(1),
+            })
+            .collect::<Vec<_>>();
+        assert!(candidate_directories(&candidates, "").is_err());
+    }
+
+    #[test]
+    fn library_scan_emits_one_logical_agentkib_home_asset() {
+        let directory = tempfile::tempdir().unwrap();
+        let skill = directory.path().join("skills/folder-name");
+        write_skill(&skill, "body");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("references/guide.md"), "guide").unwrap();
+
+        let assets = scan_library_assets(directory.path()).unwrap();
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].scope, CatalogScope::AgentkibHome);
+        assert_eq!(assets[0].name, "reviewer");
+        assert_eq!(assets[0].path, skill);
+        assert!(assets[0].size > 5);
+    }
+
+    #[test]
+    fn expired_or_tampered_previews_cannot_be_applied() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+
+        let expired = prepared_operation(
+            root,
+            SkillOperationKind::Install,
+            None,
+            Utc::now() - Duration::seconds(1),
+        );
+        let expired_path = expired.temp.path().to_path_buf();
+        hub.previews
+            .lock()
+            .unwrap()
+            .insert("expired".into(), expired);
+        assert!(hub.apply("expired", true, false).is_err());
+        assert!(!expired_path.exists());
+
+        let tampered = prepared_operation(
+            root,
+            SkillOperationKind::Install,
+            None,
+            Utc::now() + Duration::minutes(15),
+        );
+        fs::write(tampered.package.join("extra.txt"), "changed after preview").unwrap();
+        hub.previews
+            .lock()
+            .unwrap()
+            .insert("tampered".into(), tampered);
+        let error = hub.apply("tampered", true, false).unwrap_err().to_string();
+        assert!(error.contains("changed after preview"));
+        assert!(!root.join("skills/reviewer").exists());
+    }
+
+    #[tokio::test]
+    async fn curated_catalog_falls_back_to_a_timestamped_cache_when_offline() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("home");
+        let cache_dir = directory.path().join("cache");
+        let cached_at = Utc::now() - Duration::days(1);
+        write_json(
+            &cache_dir.join("curated-skills.json"),
+            &SkillCatalogSnapshot {
+                entries: vec![SkillCatalogEntry {
+                    candidate: SkillCandidate {
+                        name: "reviewer".into(),
+                        description: "Review changes".into(),
+                        license: None,
+                        compatibility: None,
+                        source: source("commit", "tree"),
+                    },
+                    installed: false,
+                }],
+                cached_at,
+                stale: false,
+            },
+        )
+        .unwrap();
+        let client = Client::builder()
+            .proxy(reqwest::Proxy::all("http://127.0.0.1:1").unwrap())
+            .connect_timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap();
+        let hub = SkillHub {
+            root,
+            cache_dir,
+            client,
+            previews: Mutex::new(HashMap::new()),
+            lifecycle: Mutex::new(()),
+        };
+
+        let catalog = hub.curated(true).await.unwrap();
+
+        assert!(catalog.stale);
+        assert_eq!(catalog.cached_at, cached_at);
+        assert_eq!(catalog.entries[0].candidate.name, "reviewer");
+    }
+}

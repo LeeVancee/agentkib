@@ -504,6 +504,113 @@ pub struct AgentInstallation {
 pub enum CatalogScope {
     Workspace,
     AgentHome,
+    AgentkibHome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillSourceKind {
+    OpenaiCurated,
+    Github,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillSource {
+    pub kind: SkillSourceKind,
+    pub repository: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub path: String,
+    pub resolved_commit: String,
+    pub tree_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillFileEntry {
+    pub path: String,
+    pub size: u64,
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCandidate {
+    pub name: String,
+    pub description: String,
+    pub license: Option<String>,
+    pub compatibility: Option<String>,
+    pub source: SkillSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCatalogEntry {
+    #[serde(flatten)]
+    pub candidate: SkillCandidate,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCatalogSnapshot {
+    pub entries: Vec<SkillCatalogEntry>,
+    pub cached_at: DateTime<Utc>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstalledSkillStatus {
+    Current,
+    UpdateAvailable,
+    Modified,
+    Unmanaged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledSkill {
+    pub name: String,
+    pub description: String,
+    pub path: PathBuf,
+    pub size: u64,
+    pub modified_at: Option<DateTime<Utc>>,
+    pub status: InstalledSkillStatus,
+    pub source: Option<SkillSource>,
+    pub installed_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub can_rollback: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillOperationKind {
+    Install,
+    Update,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillOperationPreview {
+    pub token: String,
+    pub operation: SkillOperationKind,
+    pub skill: SkillCandidate,
+    pub files: Vec<SkillFileEntry>,
+    pub added: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+    pub total_size: u64,
+    pub local_modified: bool,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovedSkill {
+    pub id: String,
+    pub name: String,
+    pub removed_at: DateTime<Utc>,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillFilePreview {
+    pub path: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

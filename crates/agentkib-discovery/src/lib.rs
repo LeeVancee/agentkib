@@ -53,6 +53,9 @@ pub fn known_agent_homes() -> Vec<PathBuf> {
             homes.entry(platform_path::identity(&home)).or_insert(home);
         }
     }
+    if let Ok(home) = agentkib_skills::default_home_dir() {
+        homes.entry(platform_path::identity(&home)).or_insert(home);
+    }
     homes.into_values().collect()
 }
 
@@ -86,6 +89,12 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         candidates.extend(discovered);
         home_assets.extend(assets);
         errors.extend(provider_errors);
+    }
+    match agentkib_skills::default_home_dir()
+        .and_then(|home| agentkib_skills::scan_library_assets(&home))
+    {
+        Ok(assets) => home_assets.extend(assets),
+        Err(error) => errors.push(format!("AgentKib Skill library scan failed: {error}")),
     }
     for (root, result) in scan_results {
         match result {
@@ -1203,7 +1212,12 @@ fn exclude_agent_home_candidates(
         .filter_map(|installation| installation.home.as_deref())
         .map(platform_path::identity)
         .collect();
-    candidates.retain(|candidate| !agent_homes.contains(&platform_path::identity(&candidate.path)));
+    let mut managed_homes = agent_homes;
+    if let Ok(home) = agentkib_skills::default_home_dir() {
+        managed_homes.insert(platform_path::identity(&home));
+    }
+    candidates
+        .retain(|candidate| !managed_homes.contains(&platform_path::identity(&candidate.path)));
 }
 
 fn normalize_workspace(path: &Path, explicit: bool) -> Option<PathBuf> {

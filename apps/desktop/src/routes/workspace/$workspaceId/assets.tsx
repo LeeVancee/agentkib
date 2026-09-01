@@ -142,32 +142,24 @@ function Assets({
               <span className="text-sm font-medium text-foreground">
                 {tr("assets.sharedInstructions")}
               </span>
-              <div
-                className="segmented-control"
-                role="tablist"
-                aria-label={tr("assets.sharedInstructions")}
+              <Tabs
+                className="min-w-0"
+                value={instructionsMode}
+                onValueChange={(value) => setInstructionsMode(value as "preview" | "edit")}
               >
-                <button
-                  className="segmented-control-item h-8 px-3 text-xs"
-                  type="button"
-                  role="tab"
-                  aria-selected={instructionsMode === "preview"}
-                  data-active={instructionsMode === "preview" ? "" : undefined}
-                  onClick={() => setInstructionsMode("preview")}
+                <TabsList
+                  className="segmented-control w-fit justify-start"
+                  variant="default"
+                  aria-label={tr("assets.sharedInstructions")}
                 >
-                  {tr("assets.preview")}
-                </button>
-                <button
-                  className="segmented-control-item h-8 px-3 text-xs"
-                  type="button"
-                  role="tab"
-                  aria-selected={instructionsMode === "edit"}
-                  data-active={instructionsMode === "edit" ? "" : undefined}
-                  onClick={() => setInstructionsMode("edit")}
-                >
-                  {tr("common.edit")}
-                </button>
-              </div>
+                  <TabsTrigger className="segmented-control-item h-8 px-3 text-xs" value="preview">
+                    {tr("assets.preview")}
+                  </TabsTrigger>
+                  <TabsTrigger className="segmented-control-item h-8 px-3 text-xs" value="edit">
+                    {tr("common.edit")}
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
             {instructionsMode === "preview" ? (
               <MarkdownContent

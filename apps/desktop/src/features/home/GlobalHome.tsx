@@ -337,7 +337,7 @@ export function GlobalHome({
                 {tr("home.viewAll")}
               </Button>
             </CardHeader>
-            <CardContent className="p-0">
+            <CardContent className="divide-y divide-border p-0">
               {workspaces.slice(0, 3).map((workspace) => (
                 <WorkspaceRow
                   key={workspace.id}
@@ -346,7 +346,7 @@ export function GlobalHome({
                   onOpen={onOpen}
                 />
               ))}
-              <div className="border-t border-border px-5 py-4">
+              <div className="px-5 py-4">
                 <Button size="sm" className="gap-1.5" onClick={() => void onAddRoot()}>
                   <Plus size={14} />
                   {tr("home.createWorkspace")}
@@ -381,7 +381,7 @@ function WorkspaceRow({
     <Button
       variant="bare"
       size="content"
-      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-5 py-4 text-left last:border-b-0 hover:bg-muted/40"
+      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
       onClick={() => void onOpen(workspace)}
     >
       <div className="grid size-9 place-items-center rounded-lg text-emerald-700">

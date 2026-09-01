@@ -1,6 +1,11 @@
 import { lstat, readFile } from "node:fs/promises";
 import { backendError } from "../contracts.js";
-import type { AgentKind, ConversationEvent, ConversationEventPage } from "./types.js";
+import type {
+  AgentKind,
+  ConversationEvent,
+  ConversationEventPage,
+  HandoffContext,
+} from "./types.js";
 const MAX = 256 * 1024 * 1024;
 export async function parseTranscript(
   file: string,
@@ -8,6 +13,28 @@ export async function parseTranscript(
   cursor: number | undefined = undefined,
   limit = 300,
 ): Promise<ConversationEventPage> {
+  const parsed = await parseTranscriptRecords(file, agent);
+  const boundary = Math.min(parsed.events.length, cursor ?? parsed.events.length);
+  const start = Math.max(0, boundary - Math.min(500, Math.max(1, limit)));
+  return {
+    events: parsed.events.slice(start, boundary).map((value) => value.event),
+    next_cursor: start > 0 ? String(start) : undefined,
+    warnings: parsed.warnings,
+  };
+}
+
+type IndexedEvent = { line: number; event: ConversationEvent };
+type ParsedTranscript = {
+  events: IndexedEvent[];
+  compact_summary?: { line: number; content: string };
+  warnings: string[];
+};
+
+async function parseTranscriptRecords(
+  file: string,
+  agent: AgentKind,
+  includeSidechain = true,
+): Promise<ParsedTranscript> {
   let metadata;
   try {
     metadata = await lstat(file);
@@ -22,12 +49,13 @@ export async function parseTranscript(
   if (metadata.size > MAX)
     throw backendError("VALIDATION", "Conversation transcript exceeds the 256 MiB read limit");
   const lines = (await readFile(file, "utf8")).split(/\r?\n/).filter(Boolean),
-    events: ConversationEvent[] = [],
     warnings: string[] = [];
-  const ordered: Array<{ line: number; event: ConversationEvent }> = [];
+  const ordered: IndexedEvent[] = [];
   const primaryMessages = new Set<string>();
-  const fallbackMessages: Array<{ line: number; event: ConversationEvent }> = [];
-  const tools = new Map<string, { line: number; event: ConversationEvent }>();
+  const fallbackMessages: IndexedEvent[] = [];
+  const tools = new Map<string, IndexedEvent>();
+  let compact_summary: ParsedTranscript["compact_summary"];
+  let malformedCompact = false;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     if (Buffer.byteLength(line) > 4 * 1024 * 1024) {
@@ -37,6 +65,18 @@ export async function parseTranscript(
     try {
       const value = JSON.parse(line) as Record<string, unknown>;
       if (agent === "codex") {
+        if (value.type === "compacted") {
+          const payload = asRecord(value.payload);
+          const content = typeof payload?.message === "string" ? payload.message.trim() : "";
+          if (content) {
+            compact_summary = { line: index, content };
+            malformedCompact = false;
+          } else {
+            compact_summary = undefined;
+            malformedCompact = true;
+          }
+          continue;
+        }
         const parsed = parseCodexEvent(
           value,
           index,
@@ -71,6 +111,22 @@ export async function parseTranscript(
         }
         continue;
       }
+      if (agent === "claude-code" && !includeSidechain && value.isSidechain === true) continue;
+      if (
+        (value.type === "user" || value.type === "assistant") &&
+        value.isCompactSummary === true
+      ) {
+        const message = asRecord(value.message);
+        const content = contentText(message?.content ?? value.content)?.trim() ?? "";
+        if (content) {
+          compact_summary = { line: index, content };
+          malformedCompact = false;
+        } else {
+          compact_summary = undefined;
+          malformedCompact = true;
+        }
+        continue;
+      }
       const parsed = parseClaudeEvent(value, index);
       const legacyRole =
         typeof value.role === "string"
@@ -86,7 +142,7 @@ export async function parseTranscript(
             : undefined;
       const compatible =
         parsed ??
-        (legacyContent || legacyRole
+        (legacyContent
           ? messageEvent(
               String(value.id ?? index),
               legacyRole.includes("user")
@@ -111,14 +167,43 @@ export async function parseTranscript(
   }
   for (const tool of tools.values()) ordered.push(tool);
   ordered.sort((a, b) => a.line - b.line);
-  events.push(...ordered.map((value) => value.event));
-  const boundary = Math.min(events.length, cursor ?? events.length);
-  const start = Math.max(0, boundary - Math.min(500, Math.max(1, limit)));
+  if (malformedCompact) warnings.push("Native compact summary could not be parsed");
+  return { events: ordered, compact_summary, warnings };
+}
+
+export async function readHandoffContext(
+  file: string,
+  agent: AgentKind,
+  includeSidechain = true,
+): Promise<HandoffContext> {
+  const parsed = await parseTranscriptRecords(file, agent, includeSidechain);
+  const boundary = parsed.compact_summary?.line;
+  let omitted_tool_count = 0;
+  const messages = parsed.events
+    .filter((value) => boundary === undefined || value.line > boundary)
+    .filter((value) => {
+      if (value.event.kind === "tool-summary") {
+        omitted_tool_count++;
+        return false;
+      }
+      return true;
+    })
+    .map((value) => value.event);
   return {
-    events: events.slice(start, boundary),
-    next_cursor: start > 0 ? String(start) : undefined,
-    warnings,
+    compact_summary: parsed.compact_summary?.content,
+    messages,
+    omitted_tool_count,
+    warnings: handoffWarnings(parsed.warnings),
   };
+}
+
+function handoffWarnings(warnings: string[]): string[] {
+  const output: string[] = [];
+  if (warnings.some((warning) => warning.includes("compact summary")))
+    output.push("compact-fallback");
+  if (warnings.some((warning) => warning.includes("damaged") || warning.includes("oversized")))
+    output.push("damaged-transcript");
+  return output;
 }
 
 function parseCodexEvent(
@@ -243,7 +328,7 @@ function messageKey(kind: ConversationEvent["kind"], content: string): string {
 }
 
 function upsertTool(
-  tools: Map<string, { line: number; event: ConversationEvent }>,
+  tools: Map<string, IndexedEvent>,
   key: string,
   line: number,
   id: string,
@@ -287,12 +372,22 @@ function parseClaudeEvent(
   const toolResult = blocks.some((block) => asRecord(block)?.type === "tool_result");
   if (toolResult) return toolEvent(String(value.id ?? index), timestamp, "tool", "completed");
   if (!content) return undefined;
+  if (isClaudeCommandEcho(content)) return undefined;
   return messageEvent(
     String(value.id ?? index),
     type === "user" ? "user-message" : "agent-message",
     timestamp,
     content,
     0,
+  );
+}
+
+function isClaudeCommandEcho(content: string): boolean {
+  const value = content.trimStart();
+  return (
+    value.startsWith("<local-command-") ||
+    value.startsWith("<command-name>") ||
+    value.startsWith("<command-message>")
   );
 }
 

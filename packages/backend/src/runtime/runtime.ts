@@ -13,7 +13,7 @@ import { removeNativeCandidates, scanNativeCandidates } from "../mcp/native.js";
 import { discover } from "../discovery/discovery.js";
 import { diagnoseWorkspace } from "../doctor/doctor.js";
 import { listWorkspaceSessions } from "../conversations/indexer.js";
-import { parseTranscript } from "../conversations/transcript.js";
+import { parseTranscript, readHandoffContext } from "../conversations/transcript.js";
 import { prepareHandoff, sanitizeHandoffContent } from "../conversations/handoff.js";
 import { planChangeSet, applyChangeSet, hashContent } from "../changes/changeset.js";
 import type { ChangeSet } from "../changes/changeset.js";
@@ -1026,13 +1026,8 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const source = await findSession(request.session_id);
       if (!source.native_ref)
         throw backendError("NOT_FOUND", "Conversation transcript is not available");
-      const events = await parseTranscript(source.native_ref, source.agent, undefined, 300);
-      return prepareHandoff(
-        source,
-        request,
-        { messages: events.events, omitted_tool_count: 0, warnings: events.warnings },
-        process.env.HOME,
-      );
+      const handoff = await readHandoffContext(source.native_ref, source.agent, source.sidechain);
+      return prepareHandoff(source, request, handoff, process.env.HOME);
     },
     "sessions.sanitizeHandoff": (params) => {
       const value = z
@@ -1078,15 +1073,16 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const source = await findSession(request.session_id);
       if (!source.native_ref)
         throw backendError("NOT_FOUND", "Conversation transcript is not available");
-      const events = await parseTranscript(source.native_ref, source.agent, undefined, 300);
-      const selected = events.events;
+      const handoff = await readHandoffContext(source.native_ref, source.agent, source.sidechain);
+      const selected = handoff.messages;
       const result = prepareHandoff(
         source,
         request,
         {
           messages: selected,
-          omitted_tool_count: 0,
-          warnings: events.warnings,
+          omitted_tool_count: handoff.omitted_tool_count,
+          warnings: handoff.warnings,
+          compact_summary: handoff.compact_summary,
         },
         process.env.HOME,
       );
@@ -1137,9 +1133,9 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         content,
         redaction_count: safeSummary.redaction_count,
         included_message_count: selected.length,
-        omitted_tool_count: 0,
+        omitted_tool_count: handoff.omitted_tool_count,
         context_source: "model-summary" as const,
-        warnings: events.warnings,
+        warnings: handoff.warnings,
       };
     },
     "sessions.planHandoff": (params) => {
@@ -1326,12 +1322,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       const manifest = await loadManifest(value.project).catch(() =>
         defaultManifest(value.project),
       );
-      return resolveWorkspaceContext(
-        value.project,
-        value.cwd,
-        value.agent,
-        manifest,
-      );
+      return resolveWorkspaceContext(value.project, value.cwd, value.agent, manifest);
     },
     "workspace.add": async (params) => {
       const workspace = await store.addWorkspace(

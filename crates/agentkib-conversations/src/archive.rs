@@ -471,12 +471,7 @@ fn conversation_groups(turns: &[SessionTurn]) -> Vec<Vec<SessionTurn>> {
             .blocks
             .iter()
             .any(|block| matches!(block, SessionBlock::ToolResult { .. }));
-        let starts_exchange = turn.role == SessionRole::User
-            && !contains_tool_result
-            && turn
-                .blocks
-                .iter()
-                .any(|block| matches!(block, SessionBlock::Text { .. }));
+        let starts_exchange = turn.role == SessionRole::User && !contains_tool_result;
         if starts_exchange || groups.is_empty() {
             groups.push(Vec::new());
         }
@@ -802,6 +797,42 @@ mod tests {
         let plan = plan_session_window(&source, 64_000, &Uuid::new_v4().to_string()).unwrap();
         let encoded = serde_json::to_string(&plan.active_document).unwrap();
         assert!(!encoded.contains("tool-result") || encoded.contains("tool-call"));
+    }
+
+    #[test]
+    fn attachment_only_user_turn_starts_a_recent_exchange() {
+        let mut turns = vec![text_turn(1, SessionRole::User, "old task".into())];
+        turns.extend((2..7).map(|id| {
+            text_turn(
+                id,
+                SessionRole::Assistant,
+                format!("old-{id} {}", "x".repeat(40_000)),
+            )
+        }));
+        turns.push(SessionTurn {
+            id: "turn-7".into(),
+            role: SessionRole::User,
+            timestamp: None,
+            blocks: vec![SessionBlock::Attachment {
+                kind: crate::SessionAttachmentKind::Image,
+                media_type: "image/png".into(),
+                filename: None,
+                inline_base64: Some("YWJj".into()),
+            }],
+        });
+        turns.push(text_turn(
+            8,
+            SessionRole::Assistant,
+            "recent image response".into(),
+        ));
+
+        let plan =
+            plan_session_window(&document(turns), 64_000, &Uuid::new_v4().to_string()).unwrap();
+        let encoded = serde_json::to_string(&plan.active_document).unwrap();
+
+        assert!(encoded.contains("YWJj"));
+        assert!(encoded.contains("recent image response"));
+        assert!(!encoded.contains("old task"));
     }
 
     #[test]

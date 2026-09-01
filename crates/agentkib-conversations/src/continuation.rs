@@ -156,6 +156,7 @@ pub enum SessionHandoffPreparationV2 {
 struct Snapshot {
     records: Vec<(usize, Value)>,
     damaged_records: usize,
+    truncated_records: usize,
 }
 
 pub fn read_codex_document(
@@ -173,6 +174,12 @@ pub fn read_codex_document(
     let mut loss_counts = BTreeMap::new();
     if snapshot.damaged_records > 0 {
         loss_counts.insert(SessionLossCode::DamagedRecord, snapshot.damaged_records);
+    }
+    if snapshot.truncated_records > 0 {
+        loss_counts.insert(
+            SessionLossCode::SourceContentTruncated,
+            snapshot.truncated_records,
+        );
     }
     for (line, value) in snapshot.records {
         let timestamp = value.get("timestamp").and_then(super::parse_json_timestamp);
@@ -460,6 +467,12 @@ pub fn read_claude_document(
     let mut known_calls = BTreeSet::new();
     if snapshot.damaged_records > 0 {
         loss_counts.insert(SessionLossCode::DamagedRecord, snapshot.damaged_records);
+    }
+    if snapshot.truncated_records > 0 {
+        loss_counts.insert(
+            SessionLossCode::SourceContentTruncated,
+            snapshot.truncated_records,
+        );
     }
     for (line, value) in snapshot.records {
         if active_chain.as_ref().is_some_and(|chain| {
@@ -1443,6 +1456,7 @@ fn read_snapshot(path: &Path) -> Result<Snapshot> {
     let mut reader = BufReader::new(file.take(length));
     let mut records = Vec::new();
     let mut damaged_records = 0;
+    let mut truncated_records = 0;
     let mut buffer = Vec::new();
     let mut line = 0;
     loop {
@@ -1453,7 +1467,8 @@ fn read_snapshot(path: &Path) -> Result<Snapshot> {
         }
         line += 1;
         if buffer.len() > MAX_LINE_BYTES {
-            bail!("Transcript record {line} exceeds the 4 MiB read limit");
+            truncated_records += 1;
+            continue;
         }
         match serde_json::from_slice::<Value>(&buffer) {
             Ok(value) => records.push((line, value)),
@@ -1463,6 +1478,7 @@ fn read_snapshot(path: &Path) -> Result<Snapshot> {
     Ok(Snapshot {
         records,
         damaged_records,
+        truncated_records,
     })
 }
 
@@ -1585,6 +1601,44 @@ mod tests {
                 .map(|loss| loss.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn oversized_transcript_record_is_reported_without_aborting_later_records() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let oversized = serde_json::json!({
+            "type":"response_item",
+            "payload":{
+                "type":"message",
+                "role":"user",
+                "content":[{"type":"input_text","text":"x".repeat(MAX_LINE_BYTES)}]
+            }
+        });
+        let readable = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"user_message","message":"continue after attachment"}
+        });
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&oversized).unwrap(),
+                serde_json::to_string(&readable).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+
+        assert!(
+            serde_json::to_string(&document)
+                .unwrap()
+                .contains("continue after attachment")
+        );
+        assert!(document.losses.iter().any(|loss| {
+            loss.code == SessionLossCode::SourceContentTruncated && loss.count == 1
+        }));
     }
 
     #[test]

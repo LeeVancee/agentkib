@@ -390,10 +390,8 @@ fn candidate(
 ) -> McpMigrationCandidate {
     let source_path = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let digest = Sha256::digest(format!("{}:{name}", source_path.display()));
-    let supported = matches!(
-        transport,
-        "stdio" | "http" | "streamable-http" | "sse" | "local" | "remote"
-    );
+    let supported = matches!(transport, "stdio" | "http" | "streamable-http" | "sse")
+        || (agent == AgentKind::OpenCode && matches!(transport, "local" | "remote"));
     McpMigrationCandidate {
         id: hex::encode(&digest[..12]),
         agent,
@@ -764,6 +762,33 @@ mod tests {
                 .unwrap()
                 .contains("do-not-return")
         );
+    }
+
+    #[test]
+    fn scan_rejects_opencode_transports_in_other_agent_configs() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{
+                "local-shape":{"type":"local","command":["node","server.js"]},
+                "remote-shape":{"type":"remote","url":"https://example.com/mcp"}
+            }}"#,
+        )
+        .unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        for name in ["local-shape", "remote-shape"] {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| candidate.name == name)
+                .unwrap();
+            assert_eq!(candidate.agent, AgentKind::ClaudeCode);
+            assert!(!candidate.supported);
+            assert_eq!(
+                candidate.warnings,
+                ["Unsupported native MCP fields or transport"]
+            );
+        }
     }
 
     #[test]

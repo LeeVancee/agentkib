@@ -32,19 +32,7 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
                 {
                     if entry.file_type().is_file() {
                         let entry_path = entry.into_path();
-                        let is_asset =
-                            entry_path
-                                .file_name()
-                                .and_then(|v| v.to_str())
-                                .is_some_and(|name| {
-                                    name == "SKILL.md"
-                                        || name.ends_with(".toml")
-                                        || name.ends_with(".json")
-                                        || name.ends_with(".jsonc")
-                                        || name.ends_with(".md")
-                                        || name.ends_with(".mdc")
-                                });
-                        if is_asset {
+                        if is_asset(agent, path, &entry_path) {
                             assets.push(record(agent, kind, entry_path, summary)?);
                         }
                     }
@@ -88,6 +76,22 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
         assets,
         warnings,
     })
+}
+
+fn is_asset(agent: AgentKind, candidate: &str, path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| {
+            name == "SKILL.md"
+                || name.ends_with(".toml")
+                || name.ends_with(".json")
+                || name.ends_with(".jsonc")
+                || name.ends_with(".md")
+                || name.ends_with(".mdc")
+                || agent == AgentKind::OpenCode
+                    && candidate == ".opencode/plugins"
+                    && (name.ends_with(".js") || name.ends_with(".ts"))
+        })
 }
 
 fn validate_native_config(path: &Path) -> Option<String> {
@@ -492,6 +496,37 @@ mod tests {
             asset.agent == AgentKind::Cursor
                 && asset.kind == AssetKind::Skill
                 && asset.path.ends_with(".agents/skills/reviewer/SKILL.md")
+        }));
+    }
+
+    #[test]
+    fn scans_opencode_javascript_and_typescript_plugins() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/plugins")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/plugins/javascript.js"),
+            "export default {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/plugins/typescript.ts"),
+            "export default {}",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let opencode = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::OpenCode)
+            .unwrap();
+
+        assert!(opencode.detected);
+        assert_eq!(opencode.asset_count, 2);
+        assert!(scan.assets.iter().all(|asset| {
+            asset.agent != AgentKind::OpenCode
+                || asset.path.extension().and_then(|value| value.to_str()) == Some("js")
+                || asset.path.extension().and_then(|value| value.to_str()) == Some("ts")
         }));
     }
 }

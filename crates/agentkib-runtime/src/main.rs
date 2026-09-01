@@ -1691,11 +1691,20 @@ fn native_mcp_home_files() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
+    let opencode_config_home = agentkib_platform::xdg::config_home()
+        .unwrap_or_else(|| home.join(".config"))
+        .join("opencode");
+    native_mcp_home_files_for(&home, &opencode_config_home)
+}
+
+fn native_mcp_home_files_for(home: &Path, opencode_config_home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".codex/config.toml"),
         home.join(".claude.json"),
         home.join(".openclaw/openclaw.json"),
         home.join(".hermes/config.yaml"),
+        opencode_config_home.join("opencode.json"),
+        opencode_config_home.join("opencode.jsonc"),
     ]
 }
 
@@ -3184,6 +3193,7 @@ fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn handshake_does_not_require_the_mcp_hub() {
@@ -3203,5 +3213,31 @@ mod tests {
         assert!(response.error.is_none());
         assert!(!should_shutdown);
         assert!(MCP_HUB.get().is_none());
+    }
+
+    #[test]
+    fn opencode_home_mcp_configs_are_approved_changeset_targets() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let home = dir.path().join("home");
+        let config_home = dir.path().join("xdg-config/opencode");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let approved = native_mcp_home_files_for(&home, &config_home);
+
+        for name in ["opencode.json", "opencode.jsonc"] {
+            assert!(
+                agentkib_core::ensure_allowed_target(&project, &config_home.join(name), &approved,)
+                    .is_ok()
+            );
+        }
+        assert!(
+            agentkib_core::ensure_allowed_target(
+                &project,
+                &config_home.join("unmanaged.json"),
+                &approved,
+            )
+            .is_err()
+        );
     }
 }

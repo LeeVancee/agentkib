@@ -146,7 +146,11 @@ function Changes({
         <div>
           <h2>{tr("handoff.savedLaunchFailed")}</h2>
           <p>{error || appliedLaunchFailure}</p>
-          <code>.agentkib/handoffs/{launchRequest.filename}</code>
+          <code>
+            {launchRequest.mode === "native-session"
+              ? shortPath(launchRequest.target_path)
+              : `.agentkib/handoffs/${launchRequest.filename}`}
+          </code>
         </div>
         <Button
           className="bg-primary text-primary-foreground hover:bg-primary/90"
@@ -183,7 +187,7 @@ function Changes({
   const applyAndContinue = async () => {
     if (!launchRequest || !launchSupported) return;
     await runLocked(async () => {
-      const result = await api.continueSessionHandoff(changeSet, launchRequest);
+      const result = await api.continueSessionHandoff(changeSet, launchRequest, homeApproved);
       if (!active.current) return;
       if (result.status === "launched") {
         await onApplied(false);

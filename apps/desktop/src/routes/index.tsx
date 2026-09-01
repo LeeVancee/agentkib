@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { GlobalHome } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import { api } from "../core/api";
@@ -24,7 +25,36 @@ function HomeRoute() {
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const workspacesQuery = useHomeWorkspaces();
-  const workspaces = workspacesQuery.data ?? [];
+  const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
+  const continuationWorkspaces = useMemo(
+    () =>
+      [...workspaces]
+        .sort((left, right) =>
+          (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
+        )
+        .slice(0, 3),
+    [workspaces],
+  );
+  const continuationQueries = useQueries({
+    queries: continuationWorkspaces.map((workspace) => ({
+      queryKey: ["home", "continuations", workspace.id],
+      queryFn: () => api.workspaceSessions(workspace.id),
+      staleTime: 60_000,
+    })),
+  });
+  const recentContinuations = continuationWorkspaces.flatMap((workspace, index) => {
+    const sessions =
+      continuationQueries[index]?.data?.filter((session) => session.availability === "readable") ??
+      [];
+    if (!sessions.length) return [];
+    return [
+      {
+        workspace,
+        sessionCount: sessions.length,
+        agents: [...new Set(sessions.map((session) => session.agent))],
+      },
+    ];
+  });
   const doctorSummariesQuery = useHomeDoctorSummaries(workspaces.map((workspace) => workspace.id));
   const installationsQuery = useHomeInstallations();
   const memoriesQuery = useHomeMemories();
@@ -99,6 +129,8 @@ function HomeRoute() {
       onShowInsights={() => void navigate({ to: "/insights" })}
       onShowWorkspaces={() => void navigate({ to: "/workspaces" })}
       onShowAgents={() => void navigate({ to: "/agents" })}
+      recentContinuations={recentContinuations}
+      onContinue={(workspace) => openWorkspace(workspace, "sessions")}
       onOpen={openWorkspace}
       onOpenDoctor={(workspace) => openWorkspace(workspace, "doctor")}
       onOpenAssets={(section) =>

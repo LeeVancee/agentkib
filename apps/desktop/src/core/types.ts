@@ -135,7 +135,7 @@ export interface ContextDoctorReport {
 }
 export interface FileChange {
   target: string;
-  scope: "project" | "agent-home";
+  scope: "project" | "agent-home" | "application-data";
   original_hash?: string;
   before: string;
   after: string;
@@ -849,37 +849,81 @@ export interface ConversationEventPage {
   warnings: string[];
 }
 export type HandoffFormat = "markdown" | "json";
-export type HandoffContextSource = "native-compaction" | "full-transcript" | "model-summary";
-export type HandoffLimitReason = "message-limit" | "byte-limit";
+export type SessionContinuationMode = "native-session" | "handoff-file";
+export type SessionWindowStrategy = "full" | "windowed";
+export type SessionLossCode =
+  | "damaged-record"
+  | "orphan-tool-result"
+  | "unsupported-attachment"
+  | "external-attachment"
+  | "reasoning-excluded"
+  | "source-content-truncated";
+export interface SessionLoss {
+  code: SessionLossCode;
+  count: number;
+}
+export interface NativeImportCapability {
+  supported: boolean;
+  beta: boolean;
+  reason?: string;
+}
+export interface SessionImportStats {
+  turn_count: number;
+  message_count: number;
+  tool_call_count: number;
+  tool_result_count: number;
+  attachment_count: number;
+}
+export interface SessionWindowStats {
+  estimated_total_tokens: number;
+  estimated_active_tokens: number;
+  estimated_deferred_tokens: number;
+  active: SessionImportStats;
+  deferred_turn_count: number;
+  deferred_block_count: number;
+  estimate_quality: "conservative";
+}
 export interface SessionHandoffRequest {
   session_id: string;
   target_agent: AgentKind;
   format: HandoffFormat;
+  history_budget_tokens: number;
 }
 export interface SessionHandoffDraft {
   filename: string;
   format: HandoffFormat;
   content: string;
   redaction_count: number;
-  included_message_count: number;
-  omitted_tool_count: number;
-  context_source: HandoffContextSource;
-  warnings: string[];
+  source_fingerprint: string;
+  mode: SessionContinuationMode;
+  native_capability: NativeImportCapability;
+  stats: SessionImportStats;
+  history_budget_tokens: number;
+  window_strategy: SessionWindowStrategy;
+  window_stats: SessionWindowStats;
+  archive_id?: string;
+  mcp_available: boolean;
+  losses: SessionLoss[];
 }
-export type SessionHandoffPreparation =
-  | { status: "ready"; draft: SessionHandoffDraft }
+export type SessionHandoffPreparation = { status: "ready"; draft: SessionHandoffDraft };
+export type SessionHandoffLaunchRequest =
   | {
-      status: "summary-required";
-      source_agent: AgentKind;
-      message_count: number;
-      estimated_bytes: number;
-      reason: HandoffLimitReason;
+      mode: "native-session";
+      workspace_id: string;
+      target_agent: AgentKind;
+      target_session_id: string;
+      target_path: string;
+      archive_id?: string;
+      archive_hash?: string;
+    }
+  | {
+      mode: "handoff-file";
+      workspace_id: string;
+      filename: string;
+      target_agent: AgentKind;
+      archive_id?: string;
+      archive_hash?: string;
     };
-export interface SessionHandoffLaunchRequest {
-  workspace_id: string;
-  filename: string;
-  target_agent: AgentKind;
-}
 export interface PlannedSessionHandoff {
   change_set: ChangeSet;
   launch_request: SessionHandoffLaunchRequest;

@@ -609,8 +609,8 @@ pub fn plan_handoff_export(project: &Path, filename: &str, content: &str) -> Res
     {
         anyhow::bail!("Handoff filename must be a Markdown or JSON basename");
     }
-    if content.len() > 512 * 1024 {
-        anyhow::bail!("Handoff content exceeds 512 KiB");
+    if content.len() > 256 * 1024 * 1024 {
+        anyhow::bail!("Handoff content exceeds 256 MiB");
     }
     let root = agentkib_core::canonical_project(project)?;
     let mut changes = Vec::new();

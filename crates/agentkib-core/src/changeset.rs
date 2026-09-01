@@ -11,6 +11,7 @@ use crate::{ApplyReport, ChangeScope, ChangeSet, ensure_allowed_target};
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub approved_home_files: Vec<PathBuf>,
+    pub approved_application_files: Vec<PathBuf>,
     pub home_approval: bool,
 }
 
@@ -31,9 +32,18 @@ pub fn apply_changeset(
             &changeset.project_root,
             &change.target,
             &options.approved_home_files,
+            &options.approved_application_files,
         )?;
         if matches!(change.scope, ChangeScope::AgentHome) && !options.home_approval {
             bail!("Agent Home write is not authorized");
+        }
+        if matches!(change.scope, ChangeScope::ApplicationData)
+            && !options
+                .approved_application_files
+                .iter()
+                .any(|path| path == &change.target)
+        {
+            bail!("Application data write is not authorized");
         }
         let current = fs::read(&change.target).unwrap_or_default();
         let current_hash = if change.target.exists() {
@@ -118,6 +128,14 @@ fn validate_written(validator: &str, content: &str) -> Result<()> {
         "json" => {
             let _: serde_json::Value = serde_json::from_str(content)?;
         }
+        "jsonl" => {
+            for (index, line) in content.lines().enumerate() {
+                if !line.trim().is_empty() {
+                    let _: serde_json::Value = serde_json::from_str(line)
+                        .with_context(|| format!("Invalid JSONL record {}", index + 1))?;
+                }
+            }
+        }
         "toml" => {
             let _: toml::Value = toml::from_str(content)?;
         }
@@ -198,5 +216,56 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "original");
         assert_eq!(fs::read_to_string(second).unwrap(), "{}");
+    }
+
+    #[test]
+    fn validates_each_jsonl_record() {
+        assert!(validate_written("jsonl", "{\"type\":\"one\"}\n{\"type\":\"two\"}\n").is_ok());
+        assert!(validate_written("jsonl", "{\"type\":\"one\"}\nnot-json\n").is_err());
+    }
+
+    #[test]
+    fn application_data_requires_exact_file_authorization() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let target = dir.path().join("private/archive/document.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::ApplicationData,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Medium,
+                validator: "json".into(),
+            }],
+        };
+        assert!(
+            apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).is_err()
+        );
+
+        apply_changeset(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions {
+                approved_application_files: vec![target.clone()],
+                ..ApplyOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

@@ -264,13 +264,19 @@ export function AgentsPage({
                 </div>
               )}
 
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {[
                   [tr("agents.linkedWorkspaces"), linkedWorkspaces.length + remoteWorkspaceCount],
                   [tr("agents.homeAssets"), homeAssets.length],
                   [
                     tr("agents.provider"),
                     provider?.available ? tr("quota.available") : tr("insights.noData"),
+                  ],
+                  [
+                    tr("agents.continuationCapability"),
+                    installation?.installed && (selected === "codex" || selected === "claude-code")
+                      ? tr("agents.nativeImportBeta")
+                      : tr("agents.handoffOnly"),
                   ],
                 ].map(([label, value]) => (
                   <div

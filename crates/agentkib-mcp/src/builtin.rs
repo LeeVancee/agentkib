@@ -10,13 +10,15 @@ use anyhow::{Context, Result, bail};
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{Value, json};
 
-pub const BUILTIN_TOOL_NAMES: [&str; 6] = [
+pub const BUILTIN_TOOL_NAMES: [&str; 8] = [
     "workspace_get_context",
     "asset_list",
     "asset_get",
     "skill_list",
     "memory_search",
     "memory_propose",
+    "session_search",
+    "session_read_chunk",
 ];
 
 pub fn definitions() -> Vec<Tool> {
@@ -50,6 +52,16 @@ pub fn definitions() -> Vec<Tool> {
             "memory_propose",
             "Propose a memory for user review; this never approves it",
             json!({"type":"object","properties":{"type":{"type":"string","enum":["user_preference","project_fact","decision","constraint","failed_attempt","open_loop","task_state","agent_observation"]},"content":{"type":"string"},"source_thread":{"type":"string"},"source_reference":{"type":"string"}},"required":["type","content"]}),
+        ),
+        tool(
+            "session_search",
+            "Search or browse a private AgentKib continuation archive without model summarization",
+            json!({"type":"object","properties":{"archive_id":{"type":"string"},"query":{"type":"string","maxLength":256},"limit":{"type":"integer","minimum":1,"maximum":20}},"required":["archive_id"]}),
+        ),
+        tool(
+            "session_read_chunk",
+            "Read one bounded chunk from a private AgentKib continuation archive",
+            json!({"type":"object","properties":{"archive_id":{"type":"string"},"chunk_id":{"type":"string","pattern":"^chunk-[0-9]{6}$"}},"required":["archive_id","chunk_id"]}),
         ),
     ]
 }
@@ -131,6 +143,41 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
                     .map(str::to_string),
             })?;
             serde_json::to_value(record)?
+        }
+        "session_search" => {
+            let archive_id = args
+                .get("archive_id")
+                .and_then(Value::as_str)
+                .context("Missing archive ID")?;
+            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(10)
+                .clamp(1, 20) as usize;
+            serde_json::to_value(agentkib_conversations::search_session_archive(
+                &agentkib_store::default_data_dir()?,
+                &manifest.workspace.id,
+                archive_id,
+                query,
+                limit,
+            )?)?
+        }
+        "session_read_chunk" => {
+            let archive_id = args
+                .get("archive_id")
+                .and_then(Value::as_str)
+                .context("Missing archive ID")?;
+            let chunk_id = args
+                .get("chunk_id")
+                .and_then(Value::as_str)
+                .context("Missing chunk ID")?;
+            serde_json::to_value(agentkib_conversations::read_session_archive_chunk(
+                &agentkib_store::default_data_dir()?,
+                &manifest.workspace.id,
+                archive_id,
+                chunk_id,
+            )?)?
         }
         _ => bail!("Unknown built-in tool: {name}"),
     };

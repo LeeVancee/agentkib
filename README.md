@@ -4,7 +4,7 @@
 
 <h1 align="center">AgentKib</h1>
 
-<p align="center"><strong>在一个本地桌面应用里，检查、同步和交接多个 Coding Agent 的项目上下文。</strong></p>
+<p align="center"><strong>跨 Coding Agent 延续本地工作：保留会话证据，统一项目上下文，安全切换执行环境。</strong></p>
 
 <p align="center">
   <a href="#简体中文">简体中文</a> · <a href="#english">English</a>
@@ -30,7 +30,7 @@ AgentKib 会读取本机已有的工作区和配置，让你在一个界面里�
 
 - **看清楚**：查看每个 Agent 在当前目录实际能读到哪些 Instructions、Skills 和 MCP。
 - **安全同步**：先生成 ChangeSet 和完整 Diff，确认后再把公共配置写给不同 Agent。
-- **继续工作**：把 Codex 或 Claude Code 的有效会话上下文脱敏后生成交接包；目标也是 Codex 或 Claude Code 时，还能打开一个不自动发消息的新会话。
+- **继续工作**：在本机确定性解析 Codex 或 Claude Code 历史，保留消息与工具证据；格式兼容时直接导入目标 Agent，否则生成可审查的交接文件。
 
 基础的发现、诊断和同步不需要 AgentKib 账号、云端数据库或模型 API。**KIB** 代表 **Knowledge & Instruction Base（知识与指令底座）**。
 
@@ -84,7 +84,7 @@ pnpm dev
 2. 打开工作区的“诊断”，检查不同 Agent 的 Instructions、Skills 和 MCP 状态。
 3. 在“指令上下文”中确认某个 Agent 在指定目录实际可见的内容。
 4. 需要统一配置时生成 ChangeSet，检查完整 Diff 后再应用。
-5. 需要换 Agent 继续时，从 Codex 或 Claude Code 会话详情创建交接。
+5. 需要换 Agent 继续时，从“继续工作”选择目标 Agent，检查损失报告和 ChangeSet 后导入。
 
 自动发现只读取已知 Agent 的本地配置和历史元数据，不会默认扫描整块磁盘。
 
@@ -92,7 +92,7 @@ pnpm dev
 
 - **工作区与上下文**：发现已有项目，集中查看不同 Agent 的规则、Skills、MCP 和有效加载顺序。
 - **诊断与同步**：找出缺失、漂移、无效或完全重复的配置，并在写入前展示 ChangeSet 和完整 Diff。
-- **会话交接**：复用 Codex 或 Claude Code 的原生压缩上下文，排除工具与推理记录，生成脱敏、可编辑的 Markdown 或 JSON。
+- **跨 Agent 续接**：本地解析原始会话，保留用户/助手消息与工具调用证据；不读取 reasoning，也不调用模型总结。
 - **其他本地工具**：管理 MCP Server，只读浏览 Git，并查看额度、Token、活动热力图和成就；应用可在系统托盘继续运行，并可在设置中手动检查更新。
 
 界面支持简体中文、繁體中文、日本語和 English，并提供浅色、深色与跟随系统主题。
@@ -114,9 +114,10 @@ AgentKib 会区分“已安装”和“只发现了卸载后留下的本地数�
 
 - 不需要登录，也不提供 AgentKib 云同步；普通发现、诊断和交接不会调用模型或上传项目资产。
 - 自动发现只保存路径、来源、数量和时间等聚合元数据，不保存 Prompt、消息正文、对话标题或原始 Session ID。
-- 创建交接时按需读取本地会话，排除工具和推理内容并按内置规则遮盖常见敏感值；正文不写入 SQLite、日志或审计详情。
-- 交接文件保存在项目的 `.agentkib/handoffs/`，该目录默认加入 `.gitignore`；保存前仍应检查完整 Diff。
-- 只有交接内容超过安全上限且你明确确认时，才会把脱敏内容交给本机来源 Agent CLI 总结；这可能调用模型并消耗额度。
+- 创建续接时按需读取本地原始会话，保留工具记录、排除 reasoning，并按内置规则遮盖常见敏感值；正文不写入 SQLite、日志或审计详情。
+- 当来源历史超过目标上下文预算时，AgentKib 默认直接导入约 120k Token 的最近历史，并将完整原文保存在应用私有目录；目标 Agent 可通过本机只读 MCP 工具按需检索较早证据，不进行模型总结或静默截断。
+- Codex 与 Claude Code 原生导入目前为 Beta，需要单独授权目标 Agent Home；未知版本或格式会自动回退，不猜测私有结构。
+- 回退交接文件保存在项目的 `.agentkib/handoffs/`，该目录默认加入 `.gitignore`；保存前仍应检查完整 Diff。
 - 所有文件写入都检查路径边界和原始哈希，并经过 Diff、备份与写后验证。Agent Home 写入使用单独的高风险确认流程。
 
 凭据、Cookie、Token、`.env`、私钥和消息数据库不会被收录为资产或写入日志。Git 统计不保存提交说明、Diff、文件内容或明文邮箱；额度快照只保存在本机。Agent 提议的记忆只有在用户批准后才会被其他 Agent 检索。
@@ -155,7 +156,7 @@ AgentKib is a local desktop app that helps you:
 
 - **See clearly** what Instructions, Skills, and MCP connections each agent can actually load.
 - **Synchronize safely** by reviewing a complete ChangeSet and diff before shared configuration is written.
-- **Keep working** by turning redacted Codex or Claude Code context into a handoff package. When the target is also Codex or Claude Code, AgentKib can open a new session without sending an automatic first message.
+- **Keep working** by parsing Codex or Claude Code history locally, preserving messages and tool evidence, and importing native target history when the detected format is compatible.
 
 Core discovery, diagnostics, and synchronization do not require an AgentKib account, cloud database, or model API. **KIB** stands for **Knowledge & Instruction Base**.
 
@@ -209,7 +210,7 @@ After launch:
 2. Open a workspace's Doctor page to check Instructions, Skills, and MCP across agents.
 3. Use Instruction Context to confirm what an agent can actually see in a directory.
 4. When configuration needs to be shared, generate a ChangeSet and review the complete diff before applying it.
-5. To switch agents, create a handoff from a Codex or Claude Code session.
+5. To switch agents, open **Continue work**, select a target, review losses and the ChangeSet, then import.
 
 Discovery reads known agent configuration and history metadata; it does not scan the entire disk by default.
 
@@ -217,7 +218,7 @@ Discovery reads known agent configuration and history metadata; it does not scan
 
 - **Workspaces and context**: discover existing projects and see each agent's rules, Skills, MCP connections, and effective load order in one place.
 - **Diagnostics and synchronization**: find missing, drifted, invalid, or exactly duplicated configuration, then review a ChangeSet and complete diff before writing.
-- **Session handoff**: reuse native compacted Codex or Claude Code context, exclude tool and reasoning records, and produce redacted, editable Markdown or JSON.
+- **Cross-agent continuation**: parse original sessions locally, preserve user/assistant messages and tool evidence, exclude reasoning, and never invoke a model to summarize.
 - **Other local tools**: manage MCP servers, browse Git read-only, and view quota, Token usage, heatmaps, and achievements while the app can continue from the system tray and manually check for updates in Settings.
 
 The UI supports Simplified Chinese, Traditional Chinese, Japanese, and English, with light, dark, and system themes.
@@ -239,9 +240,10 @@ AgentKib distinguishes an installed app or CLI from leftover local data. Agent H
 
 - No login or AgentKib cloud sync is required. Ordinary discovery, diagnostics, and handoffs do not invoke a model or upload project assets.
 - Discovery stores aggregate metadata such as paths, sources, counts, and timestamps—not prompts, message bodies, conversation titles, or raw session IDs.
-- Handoff creation reads local transcripts on demand, excludes tool and reasoning records, and uses built-in rules to redact common sensitive values. The body is not stored in SQLite, logs, or audit details.
-- Handoff files are written to `.agentkib/handoffs/` and ignored by Git by default; always review the complete diff before applying.
-- Only when a handoff exceeds the safety limit and you explicitly confirm does AgentKib send redacted content to the local source-agent CLI for summarization, which may invoke a model and consume quota.
+- Continuation reads local transcripts on demand, preserves tool records, excludes reasoning, and uses built-in rules to redact common sensitive values. The body is not stored in SQLite, logs, or audit details.
+- When source history exceeds the target context budget, AgentKib loads about 120k estimated tokens of recent history by default and keeps the complete source in private application data. The target Agent can retrieve older evidence through local read-only MCP tools without model summarization or silent truncation.
+- Native Codex and Claude Code import is Beta and requires separate Agent Home authorization. Unknown versions or schemas fall back safely instead of being guessed.
+- Fallback handoff files are written to `.agentkib/handoffs/` and ignored by Git by default; always review the complete diff before applying.
 - Every generated file change checks path boundaries and original hashes, shows a diff, creates a backup, and validates the result after writing. Agent Home changes use a separate high-risk confirmation flow.
 
 Credentials, cookies, tokens, environment files, private keys, and message databases are not cataloged as assets or written to logs. Git analytics do not retain commit subjects, diffs, file contents, or plaintext email addresses. Agent-proposed memory is not shared until you approve it.

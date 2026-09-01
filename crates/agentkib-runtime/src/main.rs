@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::future::Future;
@@ -13,9 +14,13 @@ use std::time::{Duration, Instant};
 mod obsidian;
 
 use agentkib_conversations::{
-    HandoffFormat, HandoffSummary, HandoffSummaryRunner, SessionHandoffPreparation,
-    SessionHandoffRequest, prepare_handoff, provider, providers, sanitize_handoff_export,
-    summarize_handoff,
+    HandoffFormat, NativeImportCapability, SessionContinuationMode, SessionDocument,
+    SessionHandoffDraftV2, SessionHandoffPreparationV2, SessionHandoffRequest,
+    SessionWindowStrategy, archive_directory, build_session_archive, fingerprint,
+    plan_session_window, provider, providers, render_claude_native_session_with_notice,
+    render_codex_native_session_with_notice, render_handoff_with_notice, sanitize_handoff_export,
+    stats, validate_history_budget, validate_native_jsonl, validate_native_roundtrip,
+    validate_session_archive, windowed_import_notice,
 };
 use agentkib_core::{AgentKind, McpNetworkSettings};
 use agentkib_discovery::discover as discover_local_workspaces;
@@ -58,9 +63,9 @@ use agentkib_protocol::{
     SET_LOCALE_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD,
     SET_QUOTA_PROMPT_SEEN_METHOD, SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD,
     SHUTDOWN_METHOD, START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
-    STORAGE_OVERVIEW_METHOD, SUMMARIZE_SESSION_HANDOFF_METHOD, UNINSTALL_MCP_METHOD,
-    UNLINK_OBSIDIAN_WORKSPACE_METHOD, UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD,
-    UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    STORAGE_OVERVIEW_METHOD, UNINSTALL_MCP_METHOD, UNLINK_OBSIDIAN_WORKSPACE_METHOD,
+    UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD, UPDATE_ONBOARDING_METHOD,
+    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
     WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
     WORKSPACE_SESSIONS_METHOD, WORKSPACE_USAGE_BREAKDOWN_METHOD,
 };
@@ -347,7 +352,6 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         OPEN_WORKSPACE_WITH_APP_METHOD => command_response(request, open_workspace_with_app),
         SESSION_EVENTS_METHOD => command_response(request, session_events),
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
-        SUMMARIZE_SESSION_HANDOFF_METHOD => command_response(request, summarize_session_handoff),
         SANITIZE_SESSION_HANDOFF_METHOD => command_response(request, sanitize_session_handoff),
         PLAN_SESSION_HANDOFF_METHOD => command_response(request, plan_session_handoff),
         CONTINUE_SESSION_HANDOFF_METHOD => command_response(request, continue_session_handoff),
@@ -837,10 +841,56 @@ struct HandoffRequestEnvelope {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct SessionHandoffLaunchRequest {
-    workspace_id: String,
-    filename: String,
-    target_agent: AgentKind,
+#[serde(tag = "mode", rename_all = "kebab-case")]
+enum SessionHandoffLaunchRequest {
+    NativeSession {
+        workspace_id: String,
+        target_agent: AgentKind,
+        target_session_id: String,
+        target_path: PathBuf,
+        archive_id: Option<String>,
+        archive_hash: Option<String>,
+    },
+    HandoffFile {
+        workspace_id: String,
+        filename: String,
+        target_agent: AgentKind,
+        archive_id: Option<String>,
+        archive_hash: Option<String>,
+    },
+}
+
+impl SessionHandoffLaunchRequest {
+    fn workspace_id(&self) -> &str {
+        match self {
+            Self::NativeSession { workspace_id, .. } | Self::HandoffFile { workspace_id, .. } => {
+                workspace_id
+            }
+        }
+    }
+
+    fn target_agent(&self) -> AgentKind {
+        match self {
+            Self::NativeSession { target_agent, .. } | Self::HandoffFile { target_agent, .. } => {
+                *target_agent
+            }
+        }
+    }
+
+    fn archive(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::NativeSession {
+                archive_id,
+                archive_hash,
+                ..
+            }
+            | Self::HandoffFile {
+                archive_id,
+                archive_hash,
+                ..
+            } => archive_id.as_deref().zip(archive_hash.as_deref()),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -862,11 +912,11 @@ enum HandoffContinuationResult {
     AppliedLaunchFailed { error: Value },
 }
 
-fn load_session_handoff_context(
+fn load_session_document(
     session_id: &str,
 ) -> anyhow::Result<(
     agentkib_conversations::ConversationSessionSummary,
-    agentkib_conversations::HandoffContext,
+    SessionDocument,
 )> {
     let store = Store::open_default()?;
     let session = store
@@ -884,34 +934,84 @@ fn load_session_handoff_context(
                 .is_ok_and(|id| id == session_id)
         })
         .ok_or_else(|| anyhow::anyhow!("Conversation transcript is no longer available"))?;
-    let context = source.read_handoff_context(&native.native_ref)?;
-    Ok((session, context))
+    let document =
+        source.read_session_document(&session, &native.native_ref, dirs::home_dir().as_deref())?;
+    Ok((session, document))
 }
 
 fn prepare_session_handoff(
     envelope: HandoffRequestEnvelope,
-) -> anyhow::Result<SessionHandoffPreparation> {
-    let (source, context) = load_session_handoff_context(&envelope.request.session_id)?;
-    prepare_handoff(
-        &source,
-        &envelope.request,
-        &context,
-        dirs::home_dir().as_deref(),
-    )
-}
-
-fn summarize_session_handoff(
-    envelope: HandoffRequestEnvelope,
-) -> anyhow::Result<agentkib_conversations::SessionHandoffDraft> {
-    let (source, context) = load_session_handoff_context(&envelope.request.session_id)?;
-    let runner = RuntimeHandoffSummaryRunner;
-    summarize_handoff(
-        &source,
-        &envelope.request,
-        &context,
-        dirs::home_dir().as_deref(),
-        &runner,
-    )
+) -> anyhow::Result<SessionHandoffPreparationV2> {
+    let (source, document) = load_session_document(&envelope.request.session_id)?;
+    anyhow::ensure!(
+        source.id == envelope.request.session_id,
+        "Conversation session does not match the continuation request"
+    );
+    validate_history_budget(envelope.request.history_budget_tokens)?;
+    let generated_at = Utc::now();
+    let native_capability = native_import_capability(envelope.request.target_agent);
+    let mode = if native_capability.supported {
+        SessionContinuationMode::NativeSession
+    } else {
+        SessionContinuationMode::HandoffFile
+    };
+    let candidate_archive_id = uuid::Uuid::new_v4().to_string();
+    let window = plan_session_window(
+        &document,
+        envelope.request.history_budget_tokens,
+        &candidate_archive_id,
+    )?;
+    let archive_id =
+        (window.strategy == SessionWindowStrategy::Windowed).then_some(candidate_archive_id);
+    let notice = archive_id
+        .as_deref()
+        .map(|archive_id| {
+            windowed_import_notice(
+                archive_id,
+                window.stats.estimated_active_tokens,
+                window.stats.estimated_deferred_tokens,
+            )
+        })
+        .unwrap_or_else(|| agentkib_conversations::import_notice().into());
+    let content = render_handoff_with_notice(
+        &window.active_document,
+        envelope.request.target_agent,
+        envelope.request.format,
+        generated_at,
+        &notice,
+    )?;
+    let extension = match envelope.request.format {
+        HandoffFormat::Markdown => "md",
+        HandoffFormat::Json => "json",
+    };
+    let filename = format!(
+        "{}-{}-to-{}.{}",
+        generated_at.format("%Y%m%d-%H%M%S%3f"),
+        source.agent.as_str(),
+        envelope.request.target_agent.as_str(),
+        extension
+    );
+    Ok(SessionHandoffPreparationV2::Ready {
+        draft: SessionHandoffDraftV2 {
+            filename,
+            format: envelope.request.format,
+            content,
+            redaction_count: document.redaction_count,
+            source_fingerprint: fingerprint(&document)?,
+            mode,
+            native_capability,
+            stats: stats(&document),
+            history_budget_tokens: envelope.request.history_budget_tokens,
+            window_strategy: window.strategy,
+            window_stats: window.stats,
+            archive_id,
+            mcp_available: continuation_mcp_available(
+                &source.workspace_id,
+                envelope.request.target_agent,
+            )?,
+            losses: document.losses.clone(),
+        },
+    })
 }
 
 #[derive(Deserialize)]
@@ -933,11 +1033,17 @@ fn sanitize_session_handoff(request: SanitizeHandoffRequest) -> anyhow::Result<S
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanSessionHandoffRequest {
+    session_id: String,
     workspace_id: String,
     filename: String,
     format: HandoffFormat,
-    edited_content: String,
+    edited_content: Option<String>,
     target_agent: AgentKind,
+    mode: SessionContinuationMode,
+    source_fingerprint: String,
+    accept_losses: bool,
+    history_budget_tokens: usize,
+    archive_id: Option<String>,
 }
 
 fn plan_session_handoff(
@@ -945,6 +1051,91 @@ fn plan_session_handoff(
 ) -> anyhow::Result<PlannedSessionHandoff> {
     let store = Store::open_default()?;
     let project = store.workspace_path(&request.workspace_id)?;
+    let (_, document) = load_session_document(&request.session_id)?;
+    anyhow::ensure!(
+        fingerprint(&document)? == request.source_fingerprint,
+        "Conversation changed after the continuation preview was prepared"
+    );
+    anyhow::ensure!(
+        document.losses.is_empty() || request.accept_losses,
+        "Continuation losses must be acknowledged"
+    );
+    validate_history_budget(request.history_budget_tokens)?;
+    let planning_archive_id = request
+        .archive_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let window = plan_session_window(
+        &document,
+        request.history_budget_tokens,
+        &planning_archive_id,
+    )?;
+    let archive_id =
+        (window.strategy == SessionWindowStrategy::Windowed).then_some(planning_archive_id);
+    anyhow::ensure!(
+        archive_id == request.archive_id,
+        "Continuation window changed after the preview was prepared"
+    );
+    if archive_id.is_some() {
+        anyhow::ensure!(
+            continuation_mcp_available(&request.workspace_id, request.target_agent)?,
+            "AgentKib MCP must be connected before a windowed continuation can be applied"
+        );
+    }
+    let notice = archive_id
+        .as_deref()
+        .map(|archive_id| {
+            windowed_import_notice(
+                archive_id,
+                window.stats.estimated_active_tokens,
+                window.stats.estimated_deferred_tokens,
+            )
+        })
+        .unwrap_or_else(|| agentkib_conversations::import_notice().into());
+    let archive = if let Some(archive_id) = archive_id.as_deref() {
+        Some(build_session_archive(
+            &document,
+            &request.workspace_id,
+            archive_id,
+            &request.source_fingerprint,
+            Utc::now(),
+        )?)
+    } else {
+        None
+    };
+    if request.mode == SessionContinuationMode::NativeSession {
+        let capability = native_import_capability(request.target_agent);
+        anyhow::ensure!(
+            capability.supported,
+            "Native session import is no longer available"
+        );
+        let artifact = plan_native_session_artifact(
+            &project,
+            request.target_agent,
+            &window.active_document,
+            &notice,
+        )?;
+        let change_set = continuation_change_set(
+            &project,
+            Some((&artifact.path, &artifact.content)),
+            archive.as_ref(),
+        )?;
+        return Ok(PlannedSessionHandoff {
+            change_set,
+            launch_request: SessionHandoffLaunchRequest::NativeSession {
+                workspace_id: request.workspace_id,
+                target_agent: request.target_agent,
+                target_session_id: artifact.session_id,
+                target_path: artifact.path,
+                archive_id: archive
+                    .as_ref()
+                    .map(|value| value.manifest.archive_id.clone()),
+                archive_hash: archive
+                    .as_ref()
+                    .map(|value| value.manifest.document_sha256.clone()),
+            },
+        });
+    }
     let extension = match request.format {
         HandoffFormat::Markdown => ".md",
         HandoffFormat::Json => ".json",
@@ -953,20 +1144,42 @@ fn plan_session_handoff(
         request.filename.ends_with(extension),
         "handoff filename does not match the selected format"
     );
-    let (sanitized, _) = sanitize_handoff_export(
-        &request.edited_content,
-        request.format,
-        dirs::home_dir().as_deref(),
-    )?;
+    let handoff_content = if window.strategy == SessionWindowStrategy::Windowed {
+        anyhow::ensure!(
+            request.edited_content.is_none(),
+            "Windowed handoff content is read-only"
+        );
+        render_handoff_with_notice(
+            &window.active_document,
+            request.target_agent,
+            request.format,
+            Utc::now(),
+            &notice,
+        )?
+    } else {
+        sanitize_handoff_export(
+            request.edited_content.as_deref().unwrap_or_default(),
+            request.format,
+            dirs::home_dir().as_deref(),
+        )?
+        .0
+    };
     validate_handoff_destination(&project, &request.filename)?;
-    let change_set =
-        agentkib_adapters::plan_handoff_export(&project, &request.filename, &sanitized)?;
+    let mut change_set =
+        agentkib_adapters::plan_handoff_export(&project, &request.filename, &handoff_content)?;
+    append_archive_changes(&mut change_set, archive.as_ref())?;
     Ok(PlannedSessionHandoff {
         change_set,
-        launch_request: SessionHandoffLaunchRequest {
+        launch_request: SessionHandoffLaunchRequest::HandoffFile {
             workspace_id: request.workspace_id,
             filename: request.filename,
             target_agent: request.target_agent,
+            archive_id: archive
+                .as_ref()
+                .map(|value| value.manifest.archive_id.clone()),
+            archive_hash: archive
+                .as_ref()
+                .map(|value| value.manifest.document_sha256.clone()),
         },
     })
 }
@@ -976,26 +1189,27 @@ fn plan_session_handoff(
 struct ContinueSessionHandoffRequest {
     change_set: agentkib_core::ChangeSet,
     launch_request: SessionHandoffLaunchRequest,
+    approve_home: bool,
 }
 
 fn continue_session_handoff(
     request: ContinueSessionHandoffRequest,
 ) -> anyhow::Result<HandoffContinuationResult> {
     let store = Store::open_default()?;
-    let workspace = store.workspace_path(&request.launch_request.workspace_id)?;
+    let workspace = store.workspace_path(request.launch_request.workspace_id())?;
     validate_handoff_change_set(&request.change_set, &request.launch_request, &workspace)?;
     let command = prepare_handoff_interactive_command(&request.launch_request, false)?;
     apply_changes(ApplyChangesRequest {
         change_set: request.change_set,
-        approve_home: false,
+        approve_home: request.approve_home,
     })?;
-    match validate_handoff_file(&workspace, &request.launch_request.filename).and_then(|_| {
+    match validate_applied_continuation(&workspace, &request.launch_request).and_then(|_| {
         agentkib_platform::terminal::launch_interactive_command(&command)
             .map_err(anyhow::Error::from)
     }) {
         Ok(receipt) => Ok(HandoffContinuationResult::Launched {
             receipt: HandoffLaunchReceipt {
-                target_agent: request.launch_request.target_agent,
+                target_agent: request.launch_request.target_agent(),
                 terminal: receipt.terminal,
             },
         }),
@@ -1013,12 +1227,12 @@ fn launch_session_handoff(
     request: SessionHandoffLaunchRequest,
 ) -> anyhow::Result<HandoffLaunchReceipt> {
     let store = Store::open_default()?;
-    let workspace = store.workspace_path(&request.workspace_id)?;
-    validate_handoff_file(&workspace, &request.filename)?;
+    let workspace = store.workspace_path(request.workspace_id())?;
+    validate_applied_continuation(&workspace, &request)?;
     let command = prepare_handoff_interactive_command(&request, true)?;
     let receipt = agentkib_platform::terminal::launch_interactive_command(&command)?;
     Ok(HandoffLaunchReceipt {
-        target_agent: request.target_agent,
+        target_agent: request.target_agent(),
         terminal: receipt.terminal,
     })
 }
@@ -1098,14 +1312,65 @@ fn validate_handoff_change_set(
         change_root == workspace,
         "handoff workspace does not match ChangeSet"
     );
+    if let SessionHandoffLaunchRequest::NativeSession {
+        target_path,
+        target_agent,
+        ..
+    } = request
+    {
+        anyhow::ensure!(
+            change_set.requires_home_approval,
+            "Native session requires Agent Home approval"
+        );
+        let change = change_set
+            .changes
+            .iter()
+            .find(|change| matches!(change.scope, agentkib_core::ChangeScope::AgentHome))
+            .context("Native session ChangeSet is missing its target file")?;
+        anyhow::ensure!(
+            change_set.changes.iter().all(|candidate| {
+                matches!(candidate.scope, agentkib_core::ChangeScope::ApplicationData)
+                    || (matches!(candidate.scope, agentkib_core::ChangeScope::AgentHome)
+                        && candidate.target == *target_path)
+            }),
+            "Native session ChangeSet contains an unexpected file"
+        );
+        anyhow::ensure!(
+            change_set
+                .changes
+                .iter()
+                .filter(|candidate| {
+                    matches!(candidate.scope, agentkib_core::ChangeScope::AgentHome)
+                })
+                .count()
+                == 1,
+            "Native session ChangeSet must contain one Agent Home file"
+        );
+        anyhow::ensure!(
+            change.target == *target_path
+                && matches!(change.scope, agentkib_core::ChangeScope::AgentHome)
+                && change.validator == "jsonl",
+            "Native session ChangeSet contains an unexpected target"
+        );
+        validate_native_session_target(target_path, *target_agent)?;
+        validate_native_jsonl(&change.after, *target_agent)?;
+        validate_planned_archive_changes(change_set, request)?;
+        return Ok(());
+    }
+    let SessionHandoffLaunchRequest::HandoffFile { filename, .. } = request else {
+        unreachable!();
+    };
     anyhow::ensure!(
         !change_set.requires_home_approval,
-        "handoff ChangeSet may not modify Agent Home"
+        "Handoff file may not modify Agent Home"
     );
-    let handoff_target = workspace.join(".agentkib/handoffs").join(&request.filename);
+    let handoff_target = workspace.join(".agentkib/handoffs").join(filename);
     let ignore_target = workspace.join(".gitignore");
     let mut includes_handoff = false;
     for change in &change_set.changes {
+        if matches!(change.scope, agentkib_core::ChangeScope::ApplicationData) {
+            continue;
+        }
         anyhow::ensure!(
             matches!(change.scope, agentkib_core::ChangeScope::Project),
             "handoff ChangeSet may only contain project changes"
@@ -1123,6 +1388,89 @@ fn validate_handoff_change_set(
         includes_handoff,
         "handoff ChangeSet is missing its export file"
     );
+    validate_planned_archive_changes(change_set, request)?;
+    Ok(())
+}
+
+fn validate_planned_archive_changes(
+    change_set: &agentkib_core::ChangeSet,
+    request: &SessionHandoffLaunchRequest,
+) -> anyhow::Result<()> {
+    let archive_changes = change_set
+        .changes
+        .iter()
+        .filter(|change| matches!(change.scope, agentkib_core::ChangeScope::ApplicationData))
+        .collect::<Vec<_>>();
+    let Some((archive_id, archive_hash)) = request.archive() else {
+        anyhow::ensure!(
+            archive_changes.is_empty(),
+            "Unexpected session archive changes"
+        );
+        return Ok(());
+    };
+    anyhow::ensure!(
+        archive_changes.len() == 3,
+        "Session archive must contain three files"
+    );
+    let directory = archive_directory(
+        &agentkib_store::default_data_dir()?,
+        request.workspace_id(),
+        archive_id,
+    )?;
+    for (name, validator) in [
+        ("manifest.json", "json"),
+        ("document.json", "json"),
+        ("chunks.jsonl", "jsonl"),
+    ] {
+        let change = archive_changes
+            .iter()
+            .find(|change| change.target == directory.join(name))
+            .with_context(|| format!("Session archive is missing {name}"))?;
+        anyhow::ensure!(
+            change.validator == validator && change.original_hash.is_none(),
+            "Session archive change is invalid"
+        );
+    }
+    let manifest_change = archive_changes
+        .iter()
+        .find(|change| change.target.ends_with("manifest.json"))
+        .context("Session archive manifest is missing")?;
+    let manifest: agentkib_conversations::SessionArchiveManifest =
+        serde_json::from_str(&manifest_change.after)?;
+    anyhow::ensure!(
+        manifest.archive_id == archive_id
+            && manifest.workspace_id == request.workspace_id()
+            && manifest.document_sha256 == archive_hash,
+        "Session archive manifest does not match its launch request"
+    );
+    let document_change = archive_changes
+        .iter()
+        .find(|change| change.target.ends_with("document.json"))
+        .context("Session archive document is missing")?;
+    anyhow::ensure!(
+        agentkib_core::hash_content(document_change.after.as_bytes()) == manifest.document_sha256,
+        "Session archive document hash does not match its manifest"
+    );
+    let document: SessionDocument = serde_json::from_str(&document_change.after)?;
+    anyhow::ensure!(
+        document.source.workspace_id == request.workspace_id(),
+        "Session archive document belongs to another workspace"
+    );
+    let chunks_change = archive_changes
+        .iter()
+        .find(|change| change.target.ends_with("chunks.jsonl"))
+        .context("Session archive chunks are missing")?;
+    let chunk_count = chunks_change
+        .after
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<agentkib_conversations::SessionArchiveChunk>)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .len();
+    anyhow::ensure!(
+        chunk_count == manifest.chunk_count,
+        "Session archive chunk count does not match its manifest"
+    );
     Ok(())
 }
 
@@ -1130,35 +1478,66 @@ fn prepare_handoff_interactive_command(
     request: &SessionHandoffLaunchRequest,
     require_file: bool,
 ) -> anyhow::Result<agentkib_platform::terminal::InteractiveCommand> {
-    validate_handoff_launch_filename(&request.filename)?;
-    let bootstrap = handoff_bootstrap(&request.filename);
-    let (command_name, arguments): (&str, Vec<OsString>) = match request.target_agent {
-        AgentKind::Codex => (
-            "codex",
-            vec![
-                OsString::from("-c"),
-                OsString::from(format!("developer_instructions='{}'", bootstrap)),
-            ],
-        ),
-        AgentKind::ClaudeCode => (
-            "claude",
-            vec![
-                OsString::from("--append-system-prompt"),
-                OsString::from(bootstrap.clone()),
-            ],
-        ),
-        _ => anyhow::bail!("target Agent does not support interactive continuation"),
-    };
-    anyhow::ensure!(
-        request.target_agent == AgentKind::ClaudeCode || !bootstrap.contains('\''),
-        "handoff bootstrap is not TOML-safe"
-    );
     agentkib_platform::terminal::preflight_system_terminal()?;
     let store = Store::open_default()?;
     let workspace =
-        agentkib_core::canonical_project(&store.workspace_path(&request.workspace_id)?)?;
+        agentkib_core::canonical_project(&store.workspace_path(request.workspace_id())?)?;
+    let (command_name, arguments): (&str, Vec<OsString>) = match request {
+        SessionHandoffLaunchRequest::NativeSession {
+            target_agent: AgentKind::Codex,
+            target_session_id,
+            ..
+        } => (
+            "codex",
+            vec![
+                OsString::from("resume"),
+                OsString::from(target_session_id),
+                OsString::from("-C"),
+                workspace.as_os_str().to_os_string(),
+            ],
+        ),
+        SessionHandoffLaunchRequest::NativeSession {
+            target_agent: AgentKind::ClaudeCode,
+            target_session_id,
+            ..
+        } => (
+            "claude",
+            vec![
+                OsString::from("--resume"),
+                OsString::from(target_session_id),
+            ],
+        ),
+        SessionHandoffLaunchRequest::NativeSession { .. } => {
+            anyhow::bail!("target Agent does not support native continuation")
+        }
+        SessionHandoffLaunchRequest::HandoffFile {
+            filename,
+            target_agent,
+            ..
+        } => {
+            validate_handoff_launch_filename(filename)?;
+            let bootstrap = handoff_bootstrap(filename);
+            match target_agent {
+                AgentKind::Codex => (
+                    "codex",
+                    vec![
+                        OsString::from("-c"),
+                        OsString::from(format!("developer_instructions='{}'", bootstrap)),
+                    ],
+                ),
+                AgentKind::ClaudeCode => (
+                    "claude",
+                    vec![
+                        OsString::from("--append-system-prompt"),
+                        OsString::from(bootstrap),
+                    ],
+                ),
+                _ => anyhow::bail!("target Agent does not support interactive continuation"),
+            }
+        }
+    };
     if require_file {
-        validate_handoff_file(&workspace, &request.filename)?;
+        validate_applied_continuation(&workspace, request)?;
     }
     let executable = agentkib_platform::command::resolve(command_name)
         .ok_or_else(|| anyhow::anyhow!("{command_name} CLI is not available"))?;
@@ -1176,193 +1555,395 @@ fn handoff_bootstrap(filename: &str) -> String {
     )
 }
 
-const HANDOFF_SUMMARY_TIMEOUT: Duration = Duration::from_secs(120);
-const HANDOFF_SUMMARY_OUTPUT_LIMIT: usize = 512 * 1024;
-const HANDOFF_SUMMARY_ERROR_LIMIT: usize = 64 * 1024;
-const CODEX_HANDOFF_DISABLED_FEATURES: &[&str] =
-    &["shell_tool", "unified_exec", "code_mode", "code_mode_only"];
+struct NativeSessionArtifact {
+    session_id: String,
+    path: PathBuf,
+    content: String,
+}
 
-struct RuntimeHandoffSummaryRunner;
-
-impl HandoffSummaryRunner for RuntimeHandoffSummaryRunner {
-    fn summarize(&self, source_agent: AgentKind, input: &str) -> anyhow::Result<HandoffSummary> {
-        let temporary = RuntimeSummaryTemporaryDirectory::create()?;
-        let schema = handoff_summary_schema();
-        match source_agent {
-            AgentKind::Codex => {
-                let executable = agentkib_platform::command::resolve("codex")
-                    .ok_or_else(|| anyhow::anyhow!("Codex CLI is not available"))?;
-                let schema_path = temporary.path.join("summary-schema.json");
-                let output_path = temporary.path.join("summary-output.json");
-                fs::write(&schema_path, serde_json::to_vec(&schema)?)?;
-                let mut command = Command::new(executable);
-                command
-                    .args(["exec", "--ephemeral", "--sandbox", "read-only"])
-                    .args([
-                        "--skip-git-repo-check",
-                        "--ignore-user-config",
-                        "--ignore-rules",
-                    ]);
-                for feature in CODEX_HANDOFF_DISABLED_FEATURES {
-                    command.args(["--disable", feature]);
-                }
-                command
-                    .args(["--color", "never"])
-                    .arg("--output-schema")
-                    .arg(&schema_path)
-                    .arg("--output-last-message")
-                    .arg(&output_path)
-                    .arg("-")
-                    .current_dir(&temporary.path);
-                run_handoff_summary_command(command, input)?;
-                let output = read_bounded_summary_output(
-                    fs::File::open(output_path)
-                        .context("Codex did not return a handoff summary")?,
-                    HANDOFF_SUMMARY_OUTPUT_LIMIT,
-                )?;
-                serde_json::from_slice(&output).context("Codex returned an invalid handoff summary")
-            }
-            AgentKind::ClaudeCode => {
-                let executable = agentkib_platform::command::resolve("claude")
-                    .ok_or_else(|| anyhow::anyhow!("Claude Code CLI is not available"))?;
-                let mut command = Command::new(executable);
-                command
-                    .arg("-p")
-                    .arg("--no-session-persistence")
-                    .arg("--safe-mode")
-                    .args(["--tools", ""])
-                    .args(["--output-format", "json"])
-                    .arg("--json-schema")
-                    .arg(serde_json::to_string(&schema)?)
-                    .current_dir(&temporary.path);
-                let output = run_handoff_summary_command(command, input)?;
-                let envelope: Value = serde_json::from_slice(&output)
-                    .context("Claude Code returned an invalid response")?;
-                serde_json::from_value(
-                    envelope
-                        .get("structured_output")
-                        .cloned()
-                        .context("Claude Code did not return a structured handoff summary")?,
-                )
-                .context("Claude Code returned an invalid handoff summary")
-            }
-            _ => anyhow::bail!("The source Agent does not support handoff summarization"),
+fn native_import_capability(target: AgentKind) -> NativeImportCapability {
+    let (command, expected_version) = match target {
+        AgentKind::Codex => ("codex", "0.146."),
+        AgentKind::ClaudeCode => ("claude", "2.1."),
+        _ => {
+            return NativeImportCapability {
+                supported: false,
+                beta: false,
+                reason: Some("target-not-supported".into()),
+            };
         }
+    };
+    let Some(executable) = agentkib_platform::command::resolve(command) else {
+        return NativeImportCapability {
+            supported: false,
+            beta: true,
+            reason: Some("cli-unavailable".into()),
+        };
+    };
+    let version_matches = Command::new(&executable)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|version| version.contains(expected_version));
+    let schema_path = latest_native_session(target);
+    let format_matches = schema_path.as_ref().map_or(version_matches, |path| {
+        read_first_jsonl_value(path).is_some_and(|value| matches_native_schema(&value, target))
+    });
+    let target_root = native_session_root(target);
+    let home_writable = target_root
+        .as_deref()
+        .is_some_and(native_root_is_safe_and_writable);
+    let supported = format_matches && home_writable;
+    NativeImportCapability {
+        supported,
+        beta: true,
+        reason: (!supported).then(|| {
+            if !format_matches {
+                "unsupported-version-or-schema".into()
+            } else {
+                "agent-home-not-writable".into()
+            }
+        }),
     }
 }
 
-fn handoff_summary_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "objective": { "type": "string" },
-            "completed_work": { "type": "array", "items": { "type": "string" } },
-            "decisions": { "type": "array", "items": { "type": "string" } },
-            "current_state": { "type": "string" },
-            "risks": { "type": "array", "items": { "type": "string" } },
-            "next_steps": { "type": "array", "items": { "type": "string" } }
-        },
-        "required": ["objective", "completed_work", "decisions", "current_state", "risks", "next_steps"]
+const MAX_NATIVE_SCHEMA_RECORD_BYTES: usize = 4 * 1024 * 1024;
+
+fn read_first_jsonl_value(path: &Path) -> Option<Value> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = io::BufReader::new(file.take((MAX_NATIVE_SCHEMA_RECORD_BYTES + 1) as u64));
+    let mut buffer = Vec::new();
+    reader.read_until(b'\n', &mut buffer).ok()?;
+    if buffer.len() > MAX_NATIVE_SCHEMA_RECORD_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&buffer).ok()
+}
+
+fn matches_native_schema(value: &Value, target: AgentKind) -> bool {
+    match target {
+        AgentKind::Codex => {
+            value.get("type").and_then(Value::as_str) == Some("session_meta")
+                && value
+                    .pointer("/payload/id")
+                    .and_then(Value::as_str)
+                    .is_some()
+        }
+        AgentKind::ClaudeCode => {
+            let record_type = value.get("type").and_then(Value::as_str);
+            let has_session_id = value.get("sessionId").and_then(Value::as_str).is_some();
+            (matches!(record_type, Some("user" | "assistant"))
+                && has_session_id
+                && value.get("uuid").and_then(Value::as_str).is_some())
+                || (record_type == Some("queue-operation")
+                    && has_session_id
+                    && value
+                        .get("operation")
+                        .and_then(Value::as_str)
+                        .is_some_and(|operation| !operation.is_empty()))
+        }
+        _ => false,
+    }
+}
+
+fn native_root_is_safe_and_writable(root: &Path) -> bool {
+    let mut cursor = Some(root);
+    while let Some(path) = cursor {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return false;
+                }
+                if metadata.is_dir() {
+                    return !metadata.permissions().readonly();
+                }
+                return false;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                cursor = path.parent();
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+fn plan_native_session_artifact(
+    workspace: &Path,
+    target: AgentKind,
+    document: &SessionDocument,
+    notice: &str,
+) -> anyhow::Result<NativeSessionArtifact> {
+    let workspace = agentkib_core::canonical_project(workspace)?;
+    let generated_at = Utc::now();
+    let session_id = uuid::Uuid::new_v4();
+    let (path, content) = match target {
+        AgentKind::Codex => {
+            let root = codex_home()
+                .join("sessions")
+                .join(generated_at.format("%Y/%m/%d").to_string());
+            let filename = format!(
+                "rollout-{}-{}.jsonl",
+                generated_at.format("%Y-%m-%dT%H-%M-%S-%3fZ"),
+                session_id
+            );
+            (
+                root.join(filename),
+                render_codex_native_session_with_notice(
+                    document,
+                    session_id,
+                    &workspace,
+                    generated_at,
+                    notice,
+                )?,
+            )
+        }
+        AgentKind::ClaudeCode => {
+            let project_key = workspace
+                .to_string_lossy()
+                .chars()
+                .map(|character| {
+                    if matches!(character, '/' | '\\' | ':') {
+                        '-'
+                    } else {
+                        character
+                    }
+                })
+                .collect::<String>();
+            (
+                claude_home()
+                    .join("projects")
+                    .join(project_key)
+                    .join(format!("{session_id}.jsonl")),
+                render_claude_native_session_with_notice(
+                    document,
+                    session_id,
+                    &workspace,
+                    generated_at,
+                    notice,
+                )?,
+            )
+        }
+        _ => anyhow::bail!("Target Agent does not support native sessions"),
+    };
+    validate_native_session_target(&path, target)?;
+    validate_native_roundtrip(&content, target, document)?;
+    Ok(NativeSessionArtifact {
+        session_id: session_id.to_string(),
+        path,
+        content,
     })
 }
 
-fn run_handoff_summary_command(mut command: Command, input: &str) -> anyhow::Result<Vec<u8>> {
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_process_group(&mut command);
-    let mut child = command
-        .spawn()
-        .context("Could not start the source Agent CLI")?;
-    let process_tree = ProcessTree::attach(&child).inspect_err(|_| {
-        let _ = child.kill();
-        let _ = child.wait();
-    })?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("Source Agent stdout is unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .context("Source Agent stderr is unavailable")?;
-    let stdout_reader = std::thread::spawn(move || {
-        read_bounded_summary_output(stdout, HANDOFF_SUMMARY_OUTPUT_LIMIT)
-    });
-    let stderr_reader = std::thread::spawn(move || {
-        read_bounded_summary_output(stderr, HANDOFF_SUMMARY_ERROR_LIMIT)
-    });
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("Source Agent stdin is unavailable")?;
-    let input = input.as_bytes().to_vec();
-    let stdin_writer = std::thread::spawn(move || stdin.write_all(&input));
-    let started = Instant::now();
-    let status = loop {
-        if started.elapsed() >= HANDOFF_SUMMARY_TIMEOUT {
-            let _ = process_tree.terminate();
-            let _ = child.wait();
-            anyhow::bail!("Source Agent handoff summarization timed out");
-        }
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+fn continuation_change_set(
+    project: &Path,
+    native: Option<(&Path, &str)>,
+    archive: Option<&agentkib_conversations::SessionArchiveBundle>,
+) -> anyhow::Result<agentkib_core::ChangeSet> {
+    let mut change_set = agentkib_core::ChangeSet {
+        id: uuid::Uuid::new_v4().to_string(),
+        project_root: agentkib_core::canonical_project(project)?,
+        created_at: Utc::now(),
+        changes: Vec::new(),
+        requires_home_approval: native.is_some(),
     };
-    stdin_writer
-        .join()
-        .map_err(|_| anyhow::anyhow!("Source Agent stdin writer panicked"))??;
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("Source Agent stdout reader panicked"))??;
-    let _ = stderr_reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("Source Agent stderr reader panicked"))??;
-    anyhow::ensure!(
-        status.success(),
-        "Source Agent handoff summarization failed; verify its login and configuration"
-    );
-    Ok(stdout)
+    if let Some((target, content)) = native {
+        anyhow::ensure!(!target.exists(), "Native target session already exists");
+        change_set.changes.push(agentkib_core::FileChange {
+            target: target.to_path_buf(),
+            scope: agentkib_core::ChangeScope::AgentHome,
+            original_hash: None,
+            before: String::new(),
+            after: content.to_string(),
+            risk: agentkib_core::RiskLevel::High,
+            validator: "jsonl".into(),
+        });
+    }
+    append_archive_changes(&mut change_set, archive)?;
+    Ok(change_set)
 }
 
-fn read_bounded_summary_output(mut reader: impl Read, limit: usize) -> anyhow::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    reader
-        .by_ref()
-        .take(limit as u64 + 1)
-        .read_to_end(&mut output)?;
-    anyhow::ensure!(
-        output.len() <= limit,
-        "Source Agent output exceeded the size limit"
-    );
-    Ok(output)
+fn append_archive_changes(
+    change_set: &mut agentkib_core::ChangeSet,
+    archive: Option<&agentkib_conversations::SessionArchiveBundle>,
+) -> anyhow::Result<()> {
+    let Some(archive) = archive else {
+        return Ok(());
+    };
+    let data_root = agentkib_store::default_data_dir()?;
+    let directory = archive_directory(
+        &data_root,
+        &archive.manifest.workspace_id,
+        &archive.manifest.archive_id,
+    )?;
+    for (name, content, validator) in [
+        ("manifest.json", &archive.manifest_content, "json"),
+        ("document.json", &archive.document_content, "json"),
+        ("chunks.jsonl", &archive.chunks_content, "jsonl"),
+    ] {
+        let target = directory.join(name);
+        anyhow::ensure!(!target.exists(), "Session archive target already exists");
+        change_set.changes.push(agentkib_core::FileChange {
+            target,
+            scope: agentkib_core::ChangeScope::ApplicationData,
+            original_hash: None,
+            before: String::new(),
+            after: content.clone(),
+            risk: agentkib_core::RiskLevel::Medium,
+            validator: validator.into(),
+        });
+    }
+    Ok(())
 }
 
-struct RuntimeSummaryTemporaryDirectory {
-    path: PathBuf,
+fn continuation_mcp_available(workspace_id: &str, target: AgentKind) -> anyhow::Result<bool> {
+    let store = Store::open_default()?;
+    let workspace = store.workspace_path(workspace_id)?;
+    let configured = agentkib_mcp::native::has_agentkib_gateway(&workspace, target, workspace_id)?;
+    Ok(configured && mcp_hub().is_ok_and(|hub| hub.status().running))
 }
 
-impl RuntimeSummaryTemporaryDirectory {
-    fn create() -> anyhow::Result<Self> {
-        let suffix = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-        let path =
-            std::env::temp_dir().join(format!("agentkib-handoff-{}-{suffix}", std::process::id()));
-        fs::create_dir(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+fn validate_applied_continuation(
+    workspace: &Path,
+    request: &SessionHandoffLaunchRequest,
+) -> anyhow::Result<()> {
+    match request {
+        SessionHandoffLaunchRequest::HandoffFile { filename, .. } => {
+            validate_handoff_file(workspace, filename)?;
         }
-        Ok(Self { path })
+        SessionHandoffLaunchRequest::NativeSession {
+            target_path,
+            target_agent,
+            target_session_id,
+            ..
+        } => {
+            validate_native_session_target(target_path, *target_agent)?;
+            anyhow::ensure!(
+                target_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.contains(target_session_id)),
+                "Native session ID does not match its file"
+            );
+            let content =
+                fs::read_to_string(target_path).context("Native session is unavailable")?;
+            validate_native_jsonl(&content, *target_agent)?;
+        }
+    }
+    if let Some((archive_id, archive_hash)) = request.archive() {
+        let directory = archive_directory(
+            &agentkib_store::default_data_dir()?,
+            request.workspace_id(),
+            archive_id,
+        )?;
+        let manifest = validate_session_archive(&directory, request.workspace_id(), archive_id)?;
+        anyhow::ensure!(
+            manifest.document_sha256 == archive_hash,
+            "Session archive hash does not match its launch request"
+        );
+    }
+    Ok(())
+}
+
+fn validate_native_session_target(path: &Path, target: AgentKind) -> anyhow::Result<()> {
+    let root =
+        native_session_root(target).context("Target Agent does not support native sessions")?;
+    anyhow::ensure!(path.is_absolute(), "Native session path is not absolute");
+    anyhow::ensure!(
+        path.starts_with(&root),
+        "Native session escapes the target Agent Home"
+    );
+    anyhow::ensure!(
+        path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
+        "Native session must be JSONL"
+    );
+    if let Ok(metadata) = fs::symlink_metadata(&root) {
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "Native session root is a symlink"
+        );
+    }
+    let mut cursor = path.parent();
+    while let Some(directory) = cursor {
+        if directory == root {
+            break;
+        }
+        if let Ok(metadata) = fs::symlink_metadata(directory) {
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink(),
+                "Native session directory is a symlink"
+            );
+        }
+        cursor = directory.parent();
+    }
+    anyhow::ensure!(
+        cursor == Some(root.as_path()),
+        "Native session parent is invalid"
+    );
+    Ok(())
+}
+
+fn native_session_root(target: AgentKind) -> Option<PathBuf> {
+    match target {
+        AgentKind::Codex => Some(codex_home().join("sessions")),
+        AgentKind::ClaudeCode => Some(claude_home().join("projects")),
+        _ => None,
     }
 }
 
-impl Drop for RuntimeSummaryTemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+fn codex_home() -> PathBuf {
+    env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .unwrap_or_default()
+}
+
+fn claude_home() -> PathBuf {
+    env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
+        .unwrap_or_default()
+}
+
+fn latest_native_session(target: AgentKind) -> Option<PathBuf> {
+    let root = native_session_root(target)?;
+    let mut latest: Option<(std::time::SystemTime, PathBuf)> = None;
+    collect_latest_jsonl(&root, 0, &mut latest);
+    latest.map(|(_, path)| path)
+}
+
+fn collect_latest_jsonl(
+    directory: &Path,
+    depth: usize,
+    latest: &mut Option<(std::time::SystemTime, PathBuf)>,
+) {
+    if depth > 5 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_latest_jsonl(&path, depth + 1, latest);
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+            && let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified())
+            && latest
+                .as_ref()
+                .is_none_or(|(current, _)| modified > *current)
+        {
+            *latest = Some((modified, path));
+        }
     }
 }
 
@@ -1739,8 +2320,23 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         .flatten()
         .collect();
     approved_home_files.extend(native_mcp_home_files());
+    let approved_application_files = if let Some(workspace_id) = project_id.as_deref() {
+        validate_application_data_changes(&request.change_set, workspace_id)?
+    } else {
+        Vec::new()
+    };
+    for change in &request.change_set.changes {
+        if matches!(change.scope, agentkib_core::ChangeScope::AgentHome)
+            && change.validator == "jsonl"
+            && (validate_native_session_target(&change.target, AgentKind::Codex).is_ok()
+                || validate_native_session_target(&change.target, AgentKind::ClaudeCode).is_ok())
+        {
+            approved_home_files.push(change.target.clone());
+        }
+    }
     let options = agentkib_core::ApplyOptions {
         approved_home_files,
+        approved_application_files,
         home_approval: request.approve_home,
     };
     let result = agentkib_core::apply_changeset(
@@ -1757,6 +2353,125 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         let _ = store.audit(project_id.as_deref(), action, &request.change_set.id);
     }
     result
+}
+
+fn validate_application_data_changes(
+    change_set: &agentkib_core::ChangeSet,
+    workspace_id: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let changes = change_set
+        .changes
+        .iter()
+        .filter(|change| matches!(change.scope, agentkib_core::ChangeScope::ApplicationData))
+        .collect::<Vec<_>>();
+    if changes.is_empty() {
+        return Ok(Vec::new());
+    }
+    anyhow::ensure!(
+        changes.len() == 3,
+        "Application continuation archive must contain three files"
+    );
+    for change in &changes {
+        validate_application_data_target(&change.target, workspace_id)?;
+        anyhow::ensure!(
+            change.original_hash.is_none() && !change.target.exists(),
+            "Application continuation archive may only create new files"
+        );
+    }
+    let parent = changes[0]
+        .target
+        .parent()
+        .context("Application continuation archive directory is missing")?;
+    anyhow::ensure!(
+        changes
+            .iter()
+            .all(|change| change.target.parent() == Some(parent)),
+        "Application continuation archive files do not share a directory"
+    );
+    let manifest_change = changes
+        .iter()
+        .find(|change| change.target.ends_with("manifest.json"))
+        .context("Application continuation manifest is missing")?;
+    let document_change = changes
+        .iter()
+        .find(|change| change.target.ends_with("document.json"))
+        .context("Application continuation document is missing")?;
+    let chunks_change = changes
+        .iter()
+        .find(|change| change.target.ends_with("chunks.jsonl"))
+        .context("Application continuation chunks are missing")?;
+    let manifest: agentkib_conversations::SessionArchiveManifest =
+        serde_json::from_str(&manifest_change.after)?;
+    anyhow::ensure!(
+        manifest.workspace_id == workspace_id
+            && agentkib_core::hash_content(document_change.after.as_bytes())
+                == manifest.document_sha256,
+        "Application continuation archive manifest is invalid"
+    );
+    let document: SessionDocument = serde_json::from_str(&document_change.after)?;
+    anyhow::ensure!(
+        document.source.workspace_id == workspace_id,
+        "Application continuation archive document belongs to another workspace"
+    );
+    let chunk_count = chunks_change
+        .after
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<agentkib_conversations::SessionArchiveChunk>)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .len();
+    anyhow::ensure!(
+        chunk_count == manifest.chunk_count,
+        "Application continuation archive chunks are invalid"
+    );
+    Ok(changes.iter().map(|change| change.target.clone()).collect())
+}
+
+fn validate_application_data_target(target: &Path, workspace_id: &str) -> anyhow::Result<()> {
+    let filename = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("Application data target filename is missing")?;
+    anyhow::ensure!(
+        matches!(filename, "manifest.json" | "document.json" | "chunks.jsonl"),
+        "Application data target is not a continuation archive file"
+    );
+    let archive_id = target
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+        .context("Application data archive ID is missing")?;
+    let expected = archive_directory(
+        &agentkib_store::default_data_dir()?,
+        workspace_id,
+        archive_id,
+    )?
+    .join(filename);
+    anyhow::ensure!(
+        target == expected,
+        "Application data target escapes its archive"
+    );
+    let continuation_root = agentkib_store::default_data_dir()?.join("continuations");
+    let mut cursor = target.parent();
+    let mut reached_root = false;
+    while let Some(directory) = cursor {
+        if let Ok(metadata) = fs::symlink_metadata(directory) {
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink(),
+                "Application data archive directory is a symlink"
+            );
+        }
+        if directory == continuation_root {
+            reached_root = true;
+            break;
+        }
+        cursor = directory.parent();
+    }
+    anyhow::ensure!(
+        reached_root,
+        "Application data target is outside continuations"
+    );
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -3183,6 +3898,10 @@ fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -3203,5 +3922,49 @@ mod tests {
         assert!(response.error.is_none());
         assert!(!should_shutdown);
         assert!(MCP_HUB.get().is_none());
+    }
+
+    #[test]
+    fn native_schema_probe_requires_verified_metadata() {
+        let codex = json!({"type":"session_meta","payload":{"id":"session"}});
+        let claude = json!({
+            "type":"user",
+            "sessionId":"session",
+            "uuid":"message",
+            "message":{"role":"user","content":[]}
+        });
+        assert!(matches_native_schema(&codex, AgentKind::Codex));
+        assert!(matches_native_schema(&claude, AgentKind::ClaudeCode));
+        assert!(matches_native_schema(
+            &json!({"type":"queue-operation","sessionId":"session","operation":"enqueue"}),
+            AgentKind::ClaudeCode
+        ));
+        assert!(!matches_native_schema(
+            &json!({"type":"queue-operation","sessionId":"session"}),
+            AgentKind::ClaudeCode
+        ));
+    }
+
+    #[test]
+    fn native_schema_probe_reads_only_a_bounded_first_record() {
+        let directory = tempdir().unwrap();
+        let valid = directory.path().join("valid.jsonl");
+        fs::write(
+            &valid,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session\"}}\nnot-json\n",
+        )
+        .unwrap();
+        assert!(read_first_jsonl_value(&valid).is_some());
+
+        let oversized = directory.path().join("oversized.jsonl");
+        fs::write(
+            &oversized,
+            format!(
+                "{{\"value\":\"{}\"}}\n",
+                "x".repeat(MAX_NATIVE_SCHEMA_RECORD_BYTES)
+            ),
+        )
+        .unwrap();
+        assert!(read_first_jsonl_value(&oversized).is_none());
     }
 }

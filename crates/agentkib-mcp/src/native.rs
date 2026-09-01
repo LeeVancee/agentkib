@@ -413,7 +413,7 @@ fn toml_server(candidate: &McpMigrationCandidate, label: &str) -> Result<McpServ
         .and_then(|servers| servers.get(&candidate.name))
         .with_context(|| format!("{label} MCP candidate no longer exists"))?;
     let url = server.get("url").and_then(toml::Value::as_str);
-    Ok(base_server(
+    let mut output = base_server(
         candidate,
         if let Some(url) = url {
             McpServerTransport::StreamableHttp { url: url.into() }
@@ -431,7 +431,9 @@ fn toml_server(candidate: &McpMigrationCandidate, label: &str) -> Result<McpServ
                     .map(PathBuf::from),
             }
         },
-    ))
+    );
+    output.allow_tools = toml_strings(server.get("enabled_tools"));
+    Ok(output)
 }
 
 fn toml_strings(value: Option<&toml::Value>) -> Vec<String> {
@@ -795,6 +797,7 @@ mod tests {
 command = "node"
 args = ["server.js"]
 cwd = "services/reviewer"
+enabled_tools = ["search", "read_file"]
 env = { API_TOKEN = "do-not-return" }
 
 [mcp_servers.other]
@@ -822,6 +825,7 @@ future = 42
             McpServerTransport::Stdio { cwd: Some(cwd), .. }
                 if cwd == Path::new("services/reviewer")
         ));
+        assert_eq!(server.allow_tools, ["search", "read_file"]);
         let plan = plan_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),

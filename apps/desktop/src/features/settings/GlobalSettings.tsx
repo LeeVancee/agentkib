@@ -76,7 +76,7 @@ const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
 const hasFileAccessSettings = ["macos", "windows"].includes(appPlatform);
 const settingsControlClass =
-  "h-10 min-w-[180px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[560px]:min-w-0 max-[560px]:flex-1";
+  "h-10 min-w-[180px] justify-self-end rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[560px]:min-w-0 max-[560px]:flex-1";
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -171,14 +171,14 @@ export function GlobalSettings({
   if (section === "discovery")
     return (
       <div className="grid gap-5">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+        <div className="grid gap-5 xl:grid-cols-2">
           <SettingGroup
             title={tr("settings.discovery")}
             description={tr("settings.discoveryDescription")}
           >
             <SettingsRow>
               <SettingsCopy>
-                <strong>{tr("settings.discoveryStatus")}</strong>
+                <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
               </SettingsCopy>
               <span
                 className={cn(
@@ -881,7 +881,7 @@ function ThemeSetting({
       <ToggleGroup
         spacing={0}
         variant="outline"
-        className="segmented-control shrink-0"
+        className="segmented-control shrink-0 justify-self-end"
         value={[selected]}
         onValueChange={(values) => {
           const theme = values[0];
@@ -976,7 +976,7 @@ function AppIconSetting({
       <ToggleGroup
         spacing={0}
         variant="outline"
-        className="segmented-control shrink-0"
+        className="segmented-control shrink-0 justify-self-end"
         value={[selected]}
         onValueChange={(values) => {
           const icon = values[0];

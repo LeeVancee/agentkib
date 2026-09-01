@@ -284,8 +284,8 @@ function WorkspacesPage({
               <option value="attention">{workspaceStatusLabel("attention")}</option>
             </SelectControl>
             <Badge
-              variant="secondary"
-              className="h-8 rounded-lg px-2.5 text-xs tabular-nums text-muted-foreground"
+              variant="outline"
+              className="h-8 rounded-lg border-border bg-muted px-2.5 text-xs tabular-nums text-muted-foreground"
             >
               {tr("workspace.resultCount", { count: filtered.length })}
             </Badge>

@@ -474,16 +474,15 @@ impl SkillHub {
         if backup.is_dir()
             && let Err(error) = move_path(&backup, &trashed_backup)
         {
-            let _ = move_path(&package, &target);
-            let _ = fs::remove_dir_all(&trash_root);
+            if recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
+                let _ = fs::remove_dir_all(&trash_root);
+            }
             return Err(error.into());
         }
         if let Err(error) = save_lock(&self.root, &lock) {
-            if trashed_backup.is_dir() {
-                let _ = move_path(&trashed_backup, &backup);
+            if recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
+                let _ = fs::remove_dir_all(&trash_root);
             }
-            let _ = move_path(&package, &target);
-            let _ = fs::remove_dir_all(&trash_root);
             return Err(error);
         }
         Ok(RemovedSkill {
@@ -1153,6 +1152,35 @@ impl SkillHub {
 
 fn swap_directories(root: &Path, left: &Path, right: &Path) -> Result<()> {
     swap_directories_with(root, left, right, move_path)
+}
+
+fn recover_uninstall_moves(
+    package: &Path,
+    target: &Path,
+    trashed_backup: &Path,
+    backup: &Path,
+) -> bool {
+    recover_uninstall_moves_with(package, target, trashed_backup, backup, move_path)
+}
+
+fn recover_uninstall_moves_with<F>(
+    package: &Path,
+    target: &Path,
+    trashed_backup: &Path,
+    backup: &Path,
+    mut move_dir: F,
+) -> bool
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    if move_dir(package, target).is_err() {
+        return false;
+    }
+    if trashed_backup.is_dir() && move_dir(trashed_backup, backup).is_err() {
+        let _ = move_dir(target, package);
+        return false;
+    }
+    true
 }
 
 fn swap_directories_with<F>(root: &Path, left: &Path, right: &Path, mut move_dir: F) -> Result<()>
@@ -2731,6 +2759,32 @@ mod tests {
                 .ends_with("right")
         );
         assert_eq!(fs::read_dir(root.join(".staging")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failed_uninstall_recovery_keeps_the_package_in_trash() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let package = root.join("trash/package");
+        let target = root.join("skills/reviewer");
+        let trashed_backup = root.join("trash/backup");
+        let backup = root.join("backups/skills/reviewer");
+        write_skill(&package, "current");
+        write_skill(&trashed_backup, "rollback");
+
+        let recovered =
+            recover_uninstall_moves_with(&package, &target, &trashed_backup, &backup, |_, _| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated transient file lock",
+                ))
+            });
+
+        assert!(!recovered);
+        assert!(package.is_dir());
+        assert!(trashed_backup.is_dir());
+        assert!(!target.exists());
+        assert!(!backup.exists());
     }
 
     #[tokio::test]

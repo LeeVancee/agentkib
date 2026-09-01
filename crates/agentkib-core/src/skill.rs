@@ -8,6 +8,9 @@ use serde::Deserialize;
 use walkdir::{DirEntry, WalkDir};
 
 const MAX_SKILL_ENTRY_BYTES: u64 = 1024 * 1024;
+const MAX_SKILL_METADATA_ENTRIES: usize = 4_096;
+const MAX_SKILL_METADATA_FILES: usize = 512;
+const MAX_SKILL_METADATA_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillPackage {
@@ -142,6 +145,7 @@ fn valid_skill_name(name: &str) -> bool {
 
 fn package_metadata(root: &Path) -> (u64, Option<DateTime<Utc>>) {
     let mut size = 0_u64;
+    let mut files = 0_usize;
     let mut modified_at: Option<DateTime<Utc>> = None;
     for entry in WalkDir::new(root)
         .follow_links(false)
@@ -149,6 +153,7 @@ fn package_metadata(root: &Path) -> (u64, Option<DateTime<Utc>>) {
         .into_iter()
         .filter_entry(allowed_skill_entry)
         .filter_map(Result::ok)
+        .take(MAX_SKILL_METADATA_ENTRIES)
     {
         if !entry.file_type().is_file()
             || entry
@@ -164,10 +169,19 @@ fn package_metadata(root: &Path) -> (u64, Option<DateTime<Utc>>) {
         if !metadata.file_type().is_file() {
             continue;
         }
-        size = size.saturating_add(metadata.len());
+        if files >= MAX_SKILL_METADATA_FILES {
+            break;
+        }
+        files += 1;
+        size = size
+            .saturating_add(metadata.len())
+            .min(MAX_SKILL_METADATA_BYTES);
         if let Ok(modified) = metadata.modified() {
             let modified = DateTime::<Utc>::from(modified);
             modified_at = Some(modified_at.map_or(modified, |current| current.max(modified)));
+        }
+        if size >= MAX_SKILL_METADATA_BYTES {
+            break;
         }
     }
     (size, modified_at)
@@ -263,6 +277,21 @@ mod tests {
 
         assert_eq!(package.size, 12);
         assert!(is_readable_skill_file(&entrypoint, &guide));
+    }
+
+    #[test]
+    fn package_metadata_stops_after_the_file_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skill");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("SKILL.md"), "x").unwrap();
+        for index in 0..MAX_SKILL_METADATA_FILES {
+            fs::write(root.join(format!("file-{index:03}")), "x").unwrap();
+        }
+
+        let package = inspect_skill_entrypoint(&root.join("SKILL.md")).unwrap();
+
+        assert_eq!(package.size, MAX_SKILL_METADATA_FILES as u64);
     }
 
     #[cfg(unix)]

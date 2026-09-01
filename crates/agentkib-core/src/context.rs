@@ -942,13 +942,17 @@ fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
         project.join(".opencode/opencode.json"),
         project.join(".opencode/opencode.jsonc"),
     ];
-    let mut effective = None;
+    let mut effective = Vec::new();
     for config in configs {
         if let Some(instructions) = opencode_config_instruction_patterns(&config) {
-            effective = Some(instructions);
+            for instruction in instructions {
+                if !effective.contains(&instruction) {
+                    effective.push(instruction);
+                }
+            }
         }
     }
-    effective.unwrap_or_default()
+    effective
 }
 
 fn opencode_global_instruction_patterns(config_home: &Path) -> Vec<String> {
@@ -979,12 +983,9 @@ fn opencode_config_instruction_patterns(path: &Path) -> Option<Vec<String>> {
     } else {
         serde_json::from_str::<serde_json::Value>(&content).ok()
     };
-    value.map(|value| {
-        value
-            .get("instructions")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
+    value?.get("instructions")?.as_array().map(|instructions| {
+        instructions
+            .iter()
             .filter_map(|instruction| instruction.as_str().map(str::to_string))
             .collect()
     })
@@ -2003,6 +2004,27 @@ mod tests {
     }
 
     #[test]
+    fn opencode_global_jsonc_without_instructions_preserves_json_instructions() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(project.join("docs")).unwrap();
+        fs::create_dir_all(config_home.join("rules")).unwrap();
+        fs::write(config_home.join("rules/global.md"), "global configured").unwrap();
+        fs::write(
+            config_home.join("opencode.json"),
+            r#"{"instructions":["rules/global.md"]}"#,
+        )
+        .unwrap();
+        fs::write(config_home.join("opencode.jsonc"), "{ theme: 'dark' }").unwrap();
+
+        let dirs = directory_chain(&project, &project).unwrap();
+        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None, &mut Vec::new());
+
+        assert!(sources.contains(&config_home.join("rules/global.md")));
+    }
+
+    #[test]
     fn opencode_includes_configured_project_instruction_paths_and_globs() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("src");
@@ -2124,12 +2146,17 @@ mod tests {
     }
 
     #[test]
-    fn opencode_effective_config_without_instructions_clears_registration() {
+    fn opencode_project_configs_merge_and_deduplicate_instructions() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join(".opencode")).unwrap();
         fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/root.md","docs/shared.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
             dir.path().join(".opencode/opencode.json"),
-            r#"{"instructions":[".opencode/agentkib-instructions.md"]}"#,
+            r#"{"instructions":["docs/shared.md",".opencode/agentkib-instructions.md"]}"#,
         )
         .unwrap();
         fs::write(
@@ -2138,7 +2165,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!opencode_managed_instruction_is_registered(dir.path()));
+        assert_eq!(
+            opencode_project_instruction_patterns(dir.path()),
+            [
+                "docs/root.md",
+                "docs/shared.md",
+                ".opencode/agentkib-instructions.md",
+            ]
+        );
+        assert!(opencode_managed_instruction_is_registered(dir.path()));
     }
 
     #[test]

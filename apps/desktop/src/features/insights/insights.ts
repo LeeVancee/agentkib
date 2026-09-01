@@ -9,6 +9,10 @@ export const insightsAgentKinds: AgentKind[] = [
   "deepseek-harness",
 ];
 
+export function agentSupportsInsights(agent: AgentKind) {
+  return insightsAgentKinds.includes(agent);
+}
+
 export interface HeatmapMonthMarker {
   key: string;
   label: string;

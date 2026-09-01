@@ -18,6 +18,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { agentSupportsInsights } from "@/features/insights/insights";
 import type { AgentFilter } from "@/components/AppSidebar";
 
 type AgentDetailSection = "overview" | "assets" | "workspaces" | "usage";
@@ -245,9 +246,9 @@ export function AgentsPage({
               variant="default"
               aria-label={agentLabels[selected]}
             >
-              {(selected === "grok-build"
-                ? (["overview", "assets", "workspaces"] as AgentDetailSection[])
-                : (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
+              {(agentSupportsInsights(selected)
+                ? (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
+                : (["overview", "assets", "workspaces"] as AgentDetailSection[])
               ).map((value) => (
                 <TabsTrigger
                   className="segmented-control-item h-9 min-h-9 flex-none px-3"

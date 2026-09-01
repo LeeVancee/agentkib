@@ -47,7 +47,11 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { buildHeatmapMonthMarkers, insightsAgentKinds } from "@/features/insights/insights";
+import {
+  agentSupportsInsights,
+  buildHeatmapMonthMarkers,
+  insightsAgentKinds,
+} from "@/features/insights/insights";
 import type {
   Achievement,
   AgentKind,
@@ -442,7 +446,7 @@ export function InsightsPage({
           <CardContent className="p-0">
             <div className="divide-y divide-border">
               {status?.providers
-                .filter((provider) => provider.agent !== "grok-build")
+                .filter((provider) => agentSupportsInsights(provider.agent))
                 .map((provider) => (
                   <ProviderRow key={provider.agent} provider={provider} />
                 ))}

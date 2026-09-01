@@ -766,10 +766,10 @@ fn read_handoff_gitignore(path: &Path) -> Result<Option<String>> {
 }
 
 fn adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
-    manifest
-        .adapters
-        .get(&agent)
-        .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
+    manifest.adapters.get(&agent).map_or(
+        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        |state| state.enabled,
+    )
 }
 
 fn skill_source_files(
@@ -1367,7 +1367,14 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
 }
 
 fn read_json_object(path: &Path) -> Result<JsonMap<String, JsonValue>> {
-    let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Could not read JSON configuration: {}", path.display()));
+        }
+    };
     let is_jsonc = path.extension().and_then(|value| value.to_str()) == Some("jsonc");
     let value: JsonValue = if is_jsonc {
         json5::from_str(&content).with_context(|| format!("Invalid JSONC: {}", path.display()))?
@@ -1454,6 +1461,21 @@ mod tests {
             plan.changes
                 .iter()
                 .all(|change| !change.target.to_string_lossy().contains(".grok"))
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_opencode_adapter_does_not_write_opencode_files() {
+        let dir = tempdir().unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.adapters.remove(&AgentKind::OpenCode);
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !has_path_component(&change.target, ".opencode"))
         );
     }
 

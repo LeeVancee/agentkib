@@ -539,19 +539,61 @@ fn discover_opencode_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
         return Ok(Vec::new());
     }
     let connection = open_read_only(path)?;
-    if !table_has_column(&connection, "project", "worktree")? {
+    let project_columns = table_columns(&connection, "project")?;
+    if !project_columns.contains("worktree") {
         return Ok(Vec::new());
     }
-    let has_sessions = table_has_column(&connection, "session", "project_id")?
-        && table_has_column(&connection, "session", "directory")?;
-    let sql = if has_sessions {
-        "SELECT p.worktree, COUNT(s.id), MAX(COALESCE(s.time_updated, s.time_created)) \
-         FROM project p LEFT JOIN session s ON s.project_id = p.id \
-         WHERE p.worktree IS NOT NULL AND p.worktree != '' GROUP BY p.id, p.worktree"
-    } else {
-        "SELECT worktree, 0, MAX(COALESCE(time_updated, time_created)) \
-         FROM project WHERE worktree IS NOT NULL AND worktree != '' GROUP BY id, worktree"
-    };
+    let mut output = Vec::new();
+    let project_time = opencode_timestamp_expression(&project_columns);
+    let project_sql = format!(
+        "SELECT worktree, 0, {project_time} FROM project \
+         WHERE worktree IS NOT NULL AND worktree != '' GROUP BY worktree"
+    );
+    append_opencode_database_candidates(&connection, &project_sql, &mut output)?;
+
+    let session_columns = table_columns(&connection, "session")?;
+    if session_columns.contains("directory") {
+        let session_time = opencode_timestamp_expression(&session_columns);
+        let session_sql = format!(
+            "SELECT directory, COUNT(*), {session_time} FROM session \
+             WHERE directory IS NOT NULL AND directory != '' GROUP BY directory"
+        );
+        append_opencode_database_candidates(&connection, &session_sql, &mut output)?;
+    }
+
+    let mut grouped = BTreeMap::<String, DiscoveryCandidate>::new();
+    for candidate in output {
+        let key = platform_path::identity(&candidate.path);
+        grouped
+            .entry(key)
+            .and_modify(|existing| {
+                existing.session_count = existing
+                    .session_count
+                    .saturating_add(candidate.session_count);
+                existing.last_active_at = latest(existing.last_active_at, candidate.last_active_at);
+            })
+            .or_insert(candidate);
+    }
+    Ok(grouped.into_values().collect())
+}
+
+fn opencode_timestamp_expression(columns: &BTreeSet<String>) -> &'static str {
+    match (
+        columns.contains("time_updated"),
+        columns.contains("time_created"),
+    ) {
+        (true, true) => "MAX(COALESCE(time_updated, time_created))",
+        (true, false) => "MAX(time_updated)",
+        (false, true) => "MAX(time_created)",
+        (false, false) => "NULL",
+    }
+}
+
+fn append_opencode_database_candidates(
+    connection: &Connection,
+    sql: &str,
+    output: &mut Vec<DiscoveryCandidate>,
+) -> Result<()> {
     let mut statement = connection.prepare(sql)?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -560,11 +602,10 @@ fn discover_opencode_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
             row.get::<_, Option<i64>>(2)?,
         ))
     })?;
-    let mut output = Vec::new();
     for row in rows {
-        let (worktree, count, updated) = row?;
+        let (directory, count, updated) = row?;
         output.push(candidate(
-            PathBuf::from(worktree),
+            PathBuf::from(directory),
             Some(AgentKind::OpenCode),
             DiscoveryEvidence::SessionCwd,
             updated.and_then(timestamp_from_integer),
@@ -572,7 +613,7 @@ fn discover_opencode_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
             false,
         ));
     }
-    Ok(output)
+    Ok(())
 }
 
 fn discover_legacy_opencode_projects(data_home: &Path) -> Result<Vec<DiscoveryCandidate>> {
@@ -1687,6 +1728,54 @@ mod tests {
         let debug = format!("{candidates:?}");
         assert!(!debug.contains("private session title"));
         assert!(!debug.contains("session-private-id"));
+    }
+
+    #[test]
+    fn opencode_discovers_distinct_session_directories_and_tolerates_missing_timestamps() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("opencode.db");
+        let project = dir.path().join("project");
+        let package = project.join("packages/api");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::create_dir_all(package.join(".opencode")).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE project (worktree TEXT);\
+                 CREATE TABLE session (directory TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project VALUES (?1)",
+                [project.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES (?1)",
+                [package.display().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let candidates = discover_opencode_database(&database).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.last_active_at.is_none())
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.path == package)
+                .unwrap()
+                .session_count,
+            1
+        );
+        let normalized = normalize_and_merge(candidates);
+        assert_eq!(normalized.len(), 2);
     }
 
     #[test]

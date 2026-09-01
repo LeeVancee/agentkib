@@ -133,13 +133,8 @@ pub fn diagnose_workspace_with_mcp_error(
         let installed = installed_agents.contains(&agent);
         let applicable = detected || installed;
         let writable = AgentKind::WRITABLE.contains(&agent);
-        let enabled = writable
-            && manifest.map_or(applicable, |value| {
-                value
-                    .adapters
-                    .get(&agent)
-                    .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
-            });
+        let enabled =
+            writable && manifest.map_or(applicable, |value| manifest_adapter_enabled(value, agent));
         let diagnostically_active = applicable && (enabled || agent == AgentKind::DeepSeekHarness);
         let expected_instruction_fragments = manifest
             .map(|value| {
@@ -731,12 +726,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::GrokBuild,
         ]
         .into_iter()
-        .any(|agent| {
-            manifest
-                .adapters
-                .get(&agent)
-                .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
-        });
+        .any(|agent| manifest_adapter_enabled(manifest, agent));
         if !shared_instructions_are_planned
             || !planned_instruction_file_is_safe(project, &cwd.join("AGENTS.md"))
         {
@@ -906,10 +896,7 @@ fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'s
     ]
     .into_iter()
     .any(|shared_agent| {
-        manifest
-            .adapters
-            .get(&shared_agent)
-            .is_none_or(|state| state.enabled)
+        manifest_adapter_enabled(manifest, shared_agent)
             && (skill.targets.is_empty() || skill.targets.contains(&shared_agent))
     });
     if shared_skill_enabled {
@@ -917,6 +904,13 @@ fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'s
     } else {
         ".cursor/skills"
     }
+}
+
+fn manifest_adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
+    manifest.adapters.get(&agent).map_or(
+        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        |state| state.enabled,
+    )
 }
 
 fn managed_skill_files(project: &Path, source: &Path) -> Option<BTreeMap<PathBuf, String>> {
@@ -2648,6 +2642,41 @@ mod tests {
                 .enabled
         );
         assert_eq!(report.summary.warning_count, 0);
+    }
+
+    #[test]
+    fn legacy_manifest_without_opencode_adapter_keeps_opencode_disabled() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.adapters.remove(&AgentKind::OpenCode);
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let row = report
+            .matrix
+            .iter()
+            .find(|row| row.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert!(!row.enabled);
+        assert_eq!(row.instructions.status, DoctorStatus::NotApplicable);
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.agent != Some(AgentKind::OpenCode))
+        );
     }
 
     #[test]

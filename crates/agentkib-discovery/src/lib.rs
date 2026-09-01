@@ -1044,6 +1044,9 @@ fn has_project_marker(path: &Path) -> bool {
         ".codex",
         ".claude",
         ".cursor",
+        ".opencode",
+        "opencode.json",
+        "opencode.jsonc",
         ".dsh",
     ]
     .into_iter()
@@ -1507,7 +1510,7 @@ mod tests {
         let data_home = dir.path().join("data/opencode");
         fs::create_dir_all(&data_home).unwrap();
         let workspace = dir.path().join("workspace");
-        fs::create_dir(&workspace).unwrap();
+        fs::create_dir_all(workspace.join(".opencode")).unwrap();
         let connection = Connection::open(data_home.join("opencode.db")).unwrap();
         connection
             .execute_batch(
@@ -1544,6 +1547,12 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, workspace);
         assert_eq!(candidates[0].session_count, 1);
+        let normalized = normalize_and_merge(candidates.clone());
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].path,
+            platform_path::canonicalize(&workspace).unwrap()
+        );
         let debug = format!("{candidates:?}");
         assert!(!debug.contains("private session title"));
         assert!(!debug.contains("session-private-id"));
@@ -1559,6 +1568,7 @@ mod tests {
         fs::create_dir_all(&session_store).unwrap();
         let workspace = dir.path().join("legacy-workspace");
         fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("opencode.jsonc"), "{}").unwrap();
         fs::write(
             project_store.join("project-private-id.json"),
             serde_json::json!({
@@ -1580,6 +1590,12 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].session_count, 1);
+        let normalized = normalize_and_merge(candidates.clone());
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].path,
+            platform_path::canonicalize(&workspace).unwrap()
+        );
         let debug = format!("{candidates:?}");
         assert!(!debug.contains("private project title"));
         assert!(!debug.contains("private session title"));

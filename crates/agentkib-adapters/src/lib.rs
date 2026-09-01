@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, manifest_path,
+    hash_content, manifest_path, opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
 use anyhow::{Context, Result};
@@ -66,7 +66,8 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
     {
         platform_overrides.insert(AgentKind::Cursor, override_text.to_string());
     }
-    if let Ok(content) = fs::read_to_string(project.join(".opencode/agentkib-instructions.md"))
+    if opencode_managed_instruction_is_registered(project)
+        && let Ok(content) = fs::read_to_string(project.join(".opencode/agentkib-instructions.md"))
         && let Some(override_text) = managed_content(&content)
         && !override_text.trim().is_empty()
     {
@@ -1409,6 +1410,36 @@ mod tests {
         assert_eq!(
             manifest.instructions.platform_overrides[&AgentKind::Hermes],
             "Hermes project rule."
+        );
+    }
+
+    #[test]
+    fn first_import_ignores_unregistered_opencode_override() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            managed_markdown("", "Use OpenCode tools."),
+        )
+        .unwrap();
+
+        let unregistered = default_manifest(dir.path()).unwrap();
+        assert!(
+            !unregistered
+                .instructions
+                .platform_overrides
+                .contains_key(&AgentKind::OpenCode)
+        );
+
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ instructions: ['.opencode/agentkib-instructions.md'] }",
+        )
+        .unwrap();
+        let registered = default_manifest(dir.path()).unwrap();
+        assert_eq!(
+            registered.instructions.platform_overrides[&AgentKind::OpenCode],
+            "Use OpenCode tools."
         );
     }
 

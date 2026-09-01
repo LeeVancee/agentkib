@@ -456,21 +456,24 @@ fn opencode_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
         return result;
     };
     let managed = root.join(OPENCODE_MANAGED_INSTRUCTION);
-    let registered = [
-        root.join("opencode.json"),
-        root.join("opencode.jsonc"),
-        root.join(".opencode/opencode.json"),
-        root.join(".opencode/opencode.jsonc"),
-    ]
-    .iter()
-    .any(|config| opencode_registers_managed_instruction(config));
-    if registered && managed.is_file() {
+    if opencode_managed_instruction_is_registered(root) && managed.is_file() {
         result.push(managed);
     }
     result
 }
 
-fn opencode_registers_managed_instruction(path: &Path) -> bool {
+pub fn opencode_managed_instruction_is_registered(project: &Path) -> bool {
+    [
+        project.join("opencode.json"),
+        project.join("opencode.jsonc"),
+        project.join(".opencode/opencode.json"),
+        project.join(".opencode/opencode.jsonc"),
+    ]
+    .iter()
+    .any(|config| opencode_config_registers_managed_instruction(config))
+}
+
+fn opencode_config_registers_managed_instruction(path: &Path) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return false;
     };

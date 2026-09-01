@@ -1601,7 +1601,9 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
             .as_ref()
             .map(|value| value.name.clone())
             .unwrap_or_else(|| name.clone());
-        let (hash, size, modified_at) = package_hash(&entry.path())?;
+        let Ok((hash, size, modified_at)) = package_hash(&entry.path()) else {
+            continue;
+        };
         let record = lock.skills.get(&name);
         let status = match record {
             Some(record) if record.content_sha256 != hash => InstalledSkillStatus::Modified,
@@ -2152,6 +2154,23 @@ mod tests {
         assert_eq!(assets[0].name, "reviewer");
         assert_eq!(assets[0].path, platform_path::canonicalize(&skill).unwrap());
         assert!(assets[0].size > 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_list_isolates_malformed_unmanaged_packages() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        write_skill(&directory.path().join("skills/valid"), "valid");
+        let malformed = directory.path().join("skills/malformed");
+        write_skill(&malformed, "malformed");
+        symlink("SKILL.md", malformed.join("nested-link")).unwrap();
+
+        let installed = list_installed(directory.path()).unwrap();
+
+        assert_eq!(installed.len(), 1);
+        assert_eq!(installed[0].name, "valid");
     }
 
     #[test]

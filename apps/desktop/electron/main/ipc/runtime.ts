@@ -14,6 +14,7 @@ const KNOWN_AGENTS = new Set([
   "codex",
   "claude-code",
   "cursor",
+  "opencode",
   "open-claw",
   "hermes",
   "deepseek-harness",

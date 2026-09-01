@@ -40,6 +40,28 @@ describe("WorkspaceDoctorPage", () => {
     expect(await screen.findByText("No deterministic configuration issues found")).toBeTruthy();
   });
 
+  it("renders OpenCode in the diagnostics matrix", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
+      ...report,
+      matrix: [
+        {
+          agent: "opencode",
+          detected: true,
+          installed: true,
+          enabled: true,
+          writable: true,
+          instructions: { status: "healthy", expected: 1, actual: 1 },
+          skills: { status: "healthy", expected: 1, actual: 1 },
+          mcp: { status: "healthy", expected: 1, actual: 1 },
+        },
+      ],
+    });
+
+    render(<WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={vi.fn()} />);
+
+    expect(await screen.findByText("OpenCode")).toBeTruthy();
+  });
+
   it("shows the one-time repair verification result", async () => {
     vi.mocked(api.workspaceDoctorReport).mockResolvedValue({
       ...report,

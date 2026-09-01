@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
+use crate::path_policy::ensure_project_target_has_safe_ancestors;
 use crate::{ApplyReport, ChangeScope, ChangeSet, ensure_allowed_target};
 
 #[derive(Debug, Clone, Default)]
@@ -32,6 +33,9 @@ pub fn apply_changeset(
             &change.target,
             &options.approved_home_files,
         )?;
+        if matches!(change.scope, ChangeScope::Project) {
+            ensure_project_target_has_safe_ancestors(&changeset.project_root, &change.target)?;
+        }
         if matches!(change.scope, ChangeScope::AgentHome) && !options.home_approval {
             bail!("Agent Home write is not authorized");
         }
@@ -118,6 +122,9 @@ fn validate_written(validator: &str, content: &str) -> Result<()> {
         "json" => {
             let _: serde_json::Value = serde_json::from_str(content)?;
         }
+        "jsonc" => {
+            let _: serde_json::Value = json5::from_str(content)?;
+        }
         "toml" => {
             let _: toml::Value = toml::from_str(content)?;
         }
@@ -158,6 +165,65 @@ mod tests {
         assert!(
             apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).is_err()
         );
+    }
+
+    #[test]
+    fn accepts_jsonc_validator_for_opencode_changes() {
+        validate_written("jsonc", "{ // comment\n instructions: [],\n}").unwrap();
+    }
+
+    #[test]
+    fn applies_an_opencode_jsonc_change() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join(".opencode/opencode.jsonc");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: dir.path().canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::Project,
+                original_hash: None,
+                before: String::new(),
+                after: "{ // comment\n instructions: [],\n}".into(),
+                risk: RiskLevel::Low,
+                validator: "jsonc".into(),
+            }],
+        };
+
+        apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).unwrap();
+        assert!(target.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_project_change_through_a_symlinked_directory() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real-opencode");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join(".opencode")).unwrap();
+        let target = dir.path().join(".opencode/opencode.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: dir.path().canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target,
+                scope: ChangeScope::Project,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Low,
+                validator: "json".into(),
+            }],
+        };
+
+        assert!(
+            apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).is_err()
+        );
+        assert!(!real.join("opencode.json").exists());
     }
 
     #[test]

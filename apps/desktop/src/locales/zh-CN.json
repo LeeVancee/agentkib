@@ -616,6 +616,7 @@
   "assets.summary.codexInstructions": "Codex 项目指令",
   "assets.summary.claudeInstructions": "Claude Code 项目指令",
   "assets.summary.cursorInstructions": "Cursor 项目指令",
+  "assets.summary.openCodeInstructions": "OpenCode 项目指令",
   "assets.summary.openClawInstructions": "OpenClaw 项目指令",
   "assets.summary.hermesInstructions": "Hermes 项目指令",
   "assets.summary.skillDirectory": "Agent Skill 目录",

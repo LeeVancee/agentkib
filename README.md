@@ -104,6 +104,7 @@ pnpm dev
 | Codex | 支持 | 支持 | 支持 |
 | Claude Code | 支持 | 支持 | 支持 |
 | Cursor | 支持 | 支持 | — |
+| OpenCode | 支持 | 支持 | — |
 | OpenClaw | 支持 | 支持 | — |
 | Hermes | 支持 | 支持 | — |
 | Grok Build | 支持 | 支持 | — |
@@ -230,6 +231,7 @@ The UI supports Simplified Chinese, Traditional Chinese, Japanese, and English, 
 | Codex | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes |
 | Cursor | Yes | Yes | — |
+| OpenCode | Yes | Yes | — |
 | OpenClaw | Yes | Yes | — |
 | Hermes | Yes | Yes | — |
 | Grok Build | Yes | Yes | — |

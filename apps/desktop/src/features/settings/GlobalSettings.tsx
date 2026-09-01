@@ -63,6 +63,7 @@ import type {
   ThemePreference,
   WorkspaceSummary,
 } from "@/core/types";
+import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 import {
@@ -81,6 +82,7 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
   "grok-build": "Grok Build",
@@ -323,7 +325,7 @@ export function GlobalSettings({
         </SettingGroup>
         <SettingGroup title={tr("settings.providerStatus")}>
           {insightsStatus?.providers
-            .filter((provider) => provider.agent !== "grok-build")
+            .filter((provider) => agentSupportsInsights(provider.agent))
             .map((provider) => (
               <SettingsRow key={provider.agent}>
                 <div className="flex items-center gap-3">

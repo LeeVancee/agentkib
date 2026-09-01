@@ -616,6 +616,7 @@
   "assets.summary.codexInstructions": "Codex 專案指令",
   "assets.summary.claudeInstructions": "Claude Code 專案指令",
   "assets.summary.cursorInstructions": "Cursor 專案指令",
+  "assets.summary.openCodeInstructions": "OpenCode 專案指令",
   "assets.summary.openClawInstructions": "OpenClaw 專案指令",
   "assets.summary.hermesInstructions": "Hermes 專案指令",
   "assets.summary.skillDirectory": "Agent Skill 資料夾",

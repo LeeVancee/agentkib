@@ -10,6 +10,8 @@ pub enum AgentKind {
     Codex,
     ClaudeCode,
     Cursor,
+    #[serde(rename = "opencode")]
+    OpenCode,
     OpenClaw,
     Hermes,
     GrokBuild,
@@ -18,10 +20,11 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
+        Self::OpenCode,
         Self::OpenClaw,
         Self::Hermes,
         Self::GrokBuild,
@@ -30,10 +33,11 @@ impl AgentKind {
 
     /// Agents whose native configuration AgentKib may generate today.
     /// DeepSeek Harness remains read-only while its persistence contracts are beta.
-    pub const WRITABLE: [Self; 6] = [
+    pub const WRITABLE: [Self; 7] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
+        Self::OpenCode,
         Self::OpenClaw,
         Self::Hermes,
         Self::GrokBuild,
@@ -44,6 +48,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
+            Self::OpenCode => "opencode",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
             Self::GrokBuild => "grok-build",
@@ -753,6 +758,20 @@ mod tests {
             AgentKind::DeepSeekHarness
         );
         assert!(!AgentKind::WRITABLE.contains(&AgentKind::DeepSeekHarness));
+    }
+
+    #[test]
+    fn opencode_is_a_stable_writable_agent() {
+        assert_eq!(
+            serde_json::to_string(&AgentKind::OpenCode).unwrap(),
+            "\"opencode\""
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentKind>("\"opencode\"").unwrap(),
+            AgentKind::OpenCode
+        );
+        assert!(AgentKind::ALL.contains(&AgentKind::OpenCode));
+        assert!(AgentKind::WRITABLE.contains(&AgentKind::OpenCode));
     }
 
     #[test]

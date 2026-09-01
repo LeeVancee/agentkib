@@ -14,7 +14,8 @@ use crate::manifest::manifest_entry_exists;
 use crate::{
     AgentKind, AssetKind, ContextDoctorReport, ContextDoctorSummary, DoctorAgentRow,
     DoctorAssetStatus, DoctorEvidence, DoctorIssue, DoctorSeverity, DoctorStatus, Manifest,
-    hash_content, load_manifest, manifest_path, resolve_context, scan_workspace,
+    hash_content, load_manifest, manifest_path, opencode_managed_config_path, resolve_context,
+    scan_workspace,
 };
 
 const MAX_MANAGED_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -132,13 +133,8 @@ pub fn diagnose_workspace_with_mcp_error(
         let installed = installed_agents.contains(&agent);
         let applicable = detected || installed;
         let writable = AgentKind::WRITABLE.contains(&agent);
-        let enabled = writable
-            && manifest.map_or(applicable, |value| {
-                value
-                    .adapters
-                    .get(&agent)
-                    .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
-            });
+        let enabled =
+            writable && manifest.map_or(applicable, |value| manifest_adapter_enabled(value, agent));
         let diagnostically_active = applicable && (enabled || agent == AgentKind::DeepSeekHarness);
         let expected_instruction_fragments = manifest
             .map(|value| {
@@ -224,13 +220,17 @@ pub fn diagnose_workspace_with_mcp_error(
                 match resolve_context(project, &cwd, agent, manifest, Vec::new()) {
                     Ok(preview) => {
                         let content_was_truncated = preview.warnings.iter().any(|warning| {
-                            warning.contains("truncated for preview")
-                                || warning.contains("instruction budget")
+                            !warning.starts_with("Agent home: ")
+                                && (warning.contains("truncated for preview")
+                                    || warning.contains("instruction budget"))
                         });
                         let current_sections = preview
                             .sections
                             .into_iter()
-                            .filter(|section| section.scope != "platform-override")
+                            .filter(|section| {
+                                section.scope != "platform-override"
+                                    && section.scope != "agent-home"
+                            })
                             .collect::<Vec<_>>();
                         let expected_here = expected_instruction_fragments
                             .iter()
@@ -254,6 +254,9 @@ pub fn diagnose_workspace_with_mcp_error(
                                 .extend(expected_here.iter().map(|(index, _)| *index));
                         }
                         for warning in preview.warnings {
+                            if warning.starts_with("Agent home: ") {
+                                continue;
+                            }
                             let missing_instruction = warning.contains("No project instruction");
                             // The resolver exposes this advisory for the preview UI, but Doctor
                             // only reports conditions that can be proven from files and parsed
@@ -717,17 +720,13 @@ fn instruction_fragment_can_be_repaired(
         let shared_instructions_are_planned = [
             AgentKind::Codex,
             AgentKind::Cursor,
+            AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
             AgentKind::GrokBuild,
         ]
         .into_iter()
-        .any(|agent| {
-            manifest
-                .adapters
-                .get(&agent)
-                .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
-        });
+        .any(|agent| manifest_adapter_enabled(manifest, agent));
         if !shared_instructions_are_planned
             || !planned_instruction_file_is_safe(project, &cwd.join("AGENTS.md"))
         {
@@ -740,6 +739,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::ClaudeCode => cwd.join("CLAUDE.md"),
             AgentKind::Codex => cwd.join("AGENTS.override.md"),
             AgentKind::Cursor => cwd.join(".cursor/rules/agentkib.mdc"),
+            AgentKind::OpenCode => cwd.join(".opencode/agentkib-instructions.md"),
             AgentKind::OpenClaw => cwd.join("TOOLS.md"),
             AgentKind::Hermes => cwd.join(".hermes.md"),
             AgentKind::GrokBuild => return false,
@@ -759,8 +759,10 @@ fn instruction_fragment_can_be_repaired(
                     cwd.join("AGENTS.md")
                 }
             }
-            AgentKind::Cursor | AgentKind::OpenClaw => cwd.join("AGENTS.md"),
-            AgentKind::GrokBuild => cwd.join("AGENTS.md"),
+            AgentKind::Cursor
+            | AgentKind::OpenCode
+            | AgentKind::OpenClaw
+            | AgentKind::GrokBuild => cwd.join("AGENTS.md"),
             AgentKind::Hermes => {
                 let private = cwd.join(".hermes.md");
                 let legacy = cwd.join("HERMES.md");
@@ -787,6 +789,7 @@ fn mcp_target_can_be_repaired(project: &Path, agent: AgentKind) -> bool {
         AgentKind::Codex => project.join(".codex/config.toml"),
         AgentKind::ClaudeCode => project.join(".mcp.json"),
         AgentKind::Cursor => project.join(".cursor/mcp.json"),
+        AgentKind::OpenCode => opencode_managed_config_path(project),
         AgentKind::GrokBuild => project.join(".grok/config.toml"),
         AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::DeepSeekHarness => return false,
     };
@@ -833,6 +836,7 @@ fn generated_skill_is_current(
     let roots: &[&str] = match agent {
         AgentKind::ClaudeCode => &[".claude/skills"],
         AgentKind::Cursor => &[".cursor/skills", ".agents/skills"],
+        AgentKind::OpenCode => &[".opencode/skills", ".claude/skills", ".agents/skills"],
         AgentKind::DeepSeekHarness => &[".dsh/skills", ".agents/skills"],
         AgentKind::OpenClaw => &["skills", ".agents/skills"],
         AgentKind::GrokBuild => &[
@@ -847,7 +851,10 @@ fn generated_skill_is_current(
     let Some(source_files) = managed_skill_files(project, &source) else {
         return false;
     };
-    if matches!(agent, AgentKind::Cursor | AgentKind::OpenClaw) {
+    if matches!(
+        agent,
+        AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw
+    ) {
         let expected_root = if agent == AgentKind::Cursor {
             cursor_skill_root(manifest, skill)
         } else {
@@ -881,20 +888,29 @@ fn generated_skill_is_current(
 }
 
 fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'static str {
-    let shared_skill_enabled = [AgentKind::Codex, AgentKind::OpenClaw, AgentKind::Hermes]
-        .into_iter()
-        .any(|shared_agent| {
-            manifest
-                .adapters
-                .get(&shared_agent)
-                .is_none_or(|state| state.enabled)
-                && (skill.targets.is_empty() || skill.targets.contains(&shared_agent))
-        });
+    let shared_skill_enabled = [
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::OpenClaw,
+        AgentKind::Hermes,
+    ]
+    .into_iter()
+    .any(|shared_agent| {
+        manifest_adapter_enabled(manifest, shared_agent)
+            && (skill.targets.is_empty() || skill.targets.contains(&shared_agent))
+    });
     if shared_skill_enabled {
         ".agents/skills"
     } else {
         ".cursor/skills"
     }
+}
+
+fn manifest_adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
+    manifest.adapters.get(&agent).map_or(
+        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        |state| state.enabled,
+    )
 }
 
 fn managed_skill_files(project: &Path, source: &Path) -> Option<BTreeMap<PathBuf, String>> {
@@ -985,14 +1001,21 @@ fn generated_skill_can_be_repaired(
     let relative_root = match agent {
         AgentKind::ClaudeCode => ".claude/skills",
         AgentKind::Cursor => cursor_skill_root(manifest, skill),
+        AgentKind::Codex | AgentKind::OpenCode | AgentKind::OpenClaw | AgentKind::Hermes => {
+            ".agents/skills"
+        }
         AgentKind::GrokBuild => ".grok/skills",
-        AgentKind::Codex | AgentKind::OpenClaw | AgentKind::Hermes => ".agents/skills",
         AgentKind::DeepSeekHarness => return false,
     };
     let target = project.join(relative_root).join(&skill.name);
-    if matches!(agent, AgentKind::Cursor | AgentKind::OpenClaw) {
+    if matches!(
+        agent,
+        AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw
+    ) {
         let roots: &[&str] = if agent == AgentKind::Cursor {
             &[".cursor/skills", ".agents/skills"]
+        } else if agent == AgentKind::OpenCode {
+            &[".opencode/skills", ".claude/skills", ".agents/skills"]
         } else {
             &["skills", ".agents/skills"]
         };
@@ -2201,6 +2224,7 @@ mod tests {
         for agent in [
             AgentKind::Codex,
             AgentKind::Cursor,
+            AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
         ] {
@@ -2375,6 +2399,147 @@ mod tests {
     }
 
     #[test]
+    fn opencode_missing_managed_assets_are_repairable_in_project_paths() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.skills.push(SkillDefinition {
+            name: "reviewer".into(),
+            path: "skill-sources/reviewer".into(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        value.connections.push(ConnectionDefinition {
+            name: "filesystem".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp".into(),
+            },
+            env: Default::default(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        fs::create_dir_all(dir.path().join("skill-sources/reviewer")).unwrap();
+        fs::write(
+            dir.path().join("skill-sources/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        for code in [
+            "instruction.missing",
+            "skill.target-missing",
+            "mcp.target-missing",
+        ] {
+            assert!(report.issues.iter().any(|issue| {
+                issue.agent == Some(AgentKind::OpenCode) && issue.code == code && issue.repairable
+            }));
+        }
+    }
+
+    #[test]
+    fn opencode_mcp_repair_uses_the_effective_jsonc_target() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.connections.push(ConnectionDefinition {
+            name: "filesystem".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp".into(),
+            },
+            env: Default::default(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        fs::create_dir_all(dir.path().join(".agentkib")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/opencode.jsonc")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            opencode_managed_config_path(dir.path()),
+            dir.path().join(".opencode/opencode.jsonc")
+        );
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(report.issues.iter().any(|issue| {
+            issue.agent == Some(AgentKind::OpenCode)
+                && issue.code == "mcp.target-missing"
+                && !issue.repairable
+        }));
+    }
+
+    #[test]
+    fn opencode_registered_override_satisfies_instruction_diagnostics() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "OpenCode override".into());
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "Shared rule").unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            "<!-- agentkib:managed:start -->\nOpenCode override\n<!-- agentkib:managed:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":[".opencode/agentkib-instructions.md"]}"#,
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let row = report
+            .matrix
+            .iter()
+            .find(|row| row.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert_eq!(row.instructions.expected, 2);
+        assert_eq!(row.instructions.actual, 2);
+        assert!(report.issues.iter().all(|issue| {
+            issue.agent != Some(AgentKind::OpenCode)
+                || !matches!(
+                    issue.code.as_str(),
+                    "instruction.missing" | "instruction.expected-content-missing"
+                )
+        }));
+    }
+
+    #[test]
     fn reports_mcp_configuration_failures_without_target_repairs() {
         let dir = tempdir().unwrap();
         let mut value = manifest(dir.path());
@@ -2477,6 +2642,41 @@ mod tests {
                 .enabled
         );
         assert_eq!(report.summary.warning_count, 0);
+    }
+
+    #[test]
+    fn legacy_manifest_without_opencode_adapter_keeps_opencode_disabled() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.adapters.remove(&AgentKind::OpenCode);
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let row = report
+            .matrix
+            .iter()
+            .find(|row| row.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert!(!row.enabled);
+        assert_eq!(row.instructions.status, DoctorStatus::NotApplicable);
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.agent != Some(AgentKind::OpenCode))
+        );
     }
 
     #[test]

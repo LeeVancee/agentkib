@@ -410,6 +410,7 @@ impl SkillHub {
             .previous
             .remove(name)
             .context("Rollback metadata is missing")?;
+        let rolled_back = managed_skill_result(name, &backup, &target, &previous, true)?;
         lock.skills.insert(name.to_string(), previous);
         lock.previous.insert(name.to_string(), current);
         swap_directories(&self.root, &target, &backup)?;
@@ -418,10 +419,7 @@ impl SkillHub {
                 swap_directories(&self.root, &target, &backup)
             }));
         }
-        self.installed()?
-            .into_iter()
-            .find(|skill| skill.name == name)
-            .context("Rolled back Skill was not found")
+        Ok(rolled_back)
     }
 
     pub fn uninstall(&self, name: &str, confirmed: bool) -> Result<RemovedSkill> {
@@ -1068,7 +1066,18 @@ impl SkillHub {
         if let Some(selector) = &parsed.selector {
             for (reference, path) in selector_reference_candidates(selector)? {
                 if let Some(commit) = self.try_get_commit(parsed, &reference).await? {
-                    return Ok((reference, path, commit));
+                    let tree_spec = if path.is_empty() {
+                        commit.commit.tree.sha.clone()
+                    } else {
+                        format!("{}:{path}", commit.commit.tree.sha)
+                    };
+                    if self
+                        .fetch_tree(&parsed.owner, &parsed.repository, &tree_spec, false)
+                        .await
+                        .is_ok()
+                    {
+                        return Ok((reference, path, commit));
+                    }
                 }
             }
             bail!("GitHub tree or blob URL does not contain a resolvable ref");
@@ -2051,6 +2060,35 @@ fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> Install
         updated_at: lock.map(|entry| entry.updated_at),
         can_rollback: record.previous.is_some() && backup.is_dir(),
     }
+}
+
+fn managed_skill_result(
+    name: &str,
+    package_root: &Path,
+    result_path: &Path,
+    lock: &SkillLockEntry,
+    can_rollback: bool,
+) -> Result<InstalledSkill> {
+    let content = fs::read_to_string(package_root.join("SKILL.md"))?;
+    let metadata = parse_skill_frontmatter(&content)?;
+    let package = package_hash(package_root)?;
+    Ok(InstalledSkill {
+        name: name.to_string(),
+        display_name: metadata.name,
+        description: metadata.description,
+        path: result_path.to_path_buf(),
+        size: package.1,
+        modified_at: package.2,
+        status: if package.0 == lock.content_sha256 {
+            InstalledSkillStatus::Current
+        } else {
+            InstalledSkillStatus::Modified
+        },
+        source: lock.source.clone(),
+        installed_at: Some(lock.installed_at),
+        updated_at: Some(lock.updated_at),
+        can_rollback,
+    })
 }
 
 fn prepared_installed_skill(

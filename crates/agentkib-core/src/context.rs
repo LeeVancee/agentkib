@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -455,9 +455,12 @@ fn collect_grok_root(
                         extension.eq_ignore_ascii_case("md")
                             || (*accepts_mdc && extension.eq_ignore_ascii_case("mdc"))
                     })
-                    && grok_source_is_safe(root, path, git_root)
+                    && grok_source_is_safe(root, path, None)
             })
             .collect::<Vec<_>>();
+        if let Some(git_root) = git_root {
+            retain_not_git_ignored(git_root, &mut files);
+        }
         files.sort();
         output.extend(files);
     }
@@ -487,6 +490,51 @@ fn git_path_is_ignored(git_root: &Path, path: &Path) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+fn retain_not_git_ignored(git_root: &Path, paths: &mut Vec<PathBuf>) {
+    let Some(ignored) = git_ignored_paths(git_root, paths) else {
+        paths.retain(|path| !git_path_is_ignored(git_root, path));
+        return;
+    };
+    paths.retain(|path| !ignored.contains(path));
+}
+
+fn git_ignored_paths(git_root: &Path, paths: &[PathBuf]) -> Option<HashSet<PathBuf>> {
+    if paths.is_empty() {
+        return Some(HashSet::new());
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.to_str()?.as_bytes());
+        input.push(0);
+    }
+
+    let mut child = Command::new("git")
+        .current_dir(git_root)
+        .args(["check-ignore", "--no-index", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    // Drain stdout while paths are still being written so large ignored sets cannot fill the pipe.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return None;
+    }
+
+    let output = String::from_utf8(output.stdout).ok()?;
+    Some(
+        output
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
 }
 
 fn read_grok_context_file(path: &Path) -> Result<(String, bool)> {
@@ -1029,7 +1077,13 @@ mod tests {
         )
         .unwrap();
         fs::write(project.join(".grok/rules/ignored.md"), "ignored-rule").unwrap();
-        fs::write(project.join(".gitignore"), ".grok/rules/ignored.md\n").unwrap();
+        fs::write(
+            project.join(".grok/rules/ignored-too.md"),
+            "ignored-rule-too",
+        )
+        .unwrap();
+        fs::write(project.join(".grok/rules/kept.md"), "kept-rule").unwrap();
+        fs::write(project.join(".gitignore"), ".grok/rules/ignored*.md\n").unwrap();
         fs::write(nested.join("AGENTS.md"), "nested-named").unwrap();
 
         let dirs = directory_chain(&project, &nested).unwrap();
@@ -1055,6 +1109,7 @@ mod tests {
                 "claude-compatible-home",
                 "cursor-compatible-home",
                 "project-named",
+                "kept-rule",
                 "project-rule",
                 "cursor-compatible-project",
                 "nested-named",

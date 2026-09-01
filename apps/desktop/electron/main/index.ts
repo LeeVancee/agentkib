@@ -19,6 +19,7 @@ import { registerRuntimeIpc } from "./ipc/runtime";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
+import { firstCloseDecision } from "./close-behavior";
 import {
   optionalCloseBehavior,
   optionalPositiveInteger,
@@ -187,7 +188,19 @@ function registerApplicationIpc(): void {
   });
   ipcMain.handle("agentkib:benchmark:mark", async (event, name: unknown) => {
     assertTrustedRenderer(event);
-    if (name !== "renderer-first-commit" && name !== "home-data-ready") return;
+    if (
+      name !== "renderer-first-commit" &&
+      name !== "home-data-ready" &&
+      name !== "home-data-failed"
+    )
+      return;
+    if (name === "home-data-failed") {
+      if (startupBenchmark.enabled) {
+        process.stderr.write("AgentKib benchmark failed because a required home query failed.\n");
+        app.exit(1);
+      }
+      return;
+    }
     startupBenchmark.mark(name);
     if (name === "renderer-first-commit" && mainWindow && !mainWindow.isDestroyed()) {
       startupBenchmark.mark("window-shown");
@@ -764,7 +777,8 @@ async function createMainWindow(): Promise<void> {
     if (shutdownStarted || quitApproved) return;
     event.preventDefault();
     if (closeBehavior === "minimize-to-tray") {
-      nativeShell?.hideMainWindow();
+      if (nativeShell?.trayAvailable) nativeShell.hideMainWindow();
+      else window.minimize();
       return;
     }
     if (closeBehavior === "quit") {
@@ -843,21 +857,27 @@ async function showFirstClosePrompt(window: BrowserWindow): Promise<void> {
       cancelId: 2,
       noLink: true,
     });
-    if (result.response === 0) {
-      await persistCloseBehavior("minimize-to-tray");
-      nativeShell?.hideMainWindow();
-    } else if (result.response === 1) {
-      await persistCloseBehavior("quit");
-      requestRendererQuitGuard();
-    }
+    const decision = firstCloseDecision(result.response, trayAvailable);
+    if (!decision) return;
+    persistCloseBehaviorBestEffort(decision.behavior);
+    if (decision.action === "hide") {
+      if (nativeShell?.trayAvailable) nativeShell.hideMainWindow();
+      else window.minimize();
+    } else if (decision.action === "minimize") window.minimize();
+    else requestRendererQuitGuard();
   } finally {
     closePromptOpen = false;
   }
 }
 
-async function persistCloseBehavior(value: "minimize-to-tray" | "quit"): Promise<void> {
-  await requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value });
+function persistCloseBehaviorBestEffort(value: "minimize-to-tray" | "quit"): void {
   closeBehavior = value;
+  if (!runtimeHost) return;
+  void runtimeHost
+    .request(RUNTIME_METHODS.setCloseBehavior, { value })
+    .catch((error: unknown) =>
+      process.stderr.write(`AgentKib could not persist close behavior: ${String(error)}\n`),
+    );
 }
 
 function rendererUrl(surface?: "quota-popover"): string {

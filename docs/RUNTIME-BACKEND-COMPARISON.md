@@ -39,22 +39,22 @@ node apps/desktop/scripts/benchmark-runtime.mjs \
 
 ## 性能结果
 
-采样环境为同一台 Apple M2 Max、Release 构建。每组包含 5 次干净 profile 和 10 次复用 profile；内存在启动条件满足后额外等待 1 秒再采集。“首次可交互”以主窗口完成 Renderer 首次提交并实际显示为准。
+采样环境为同一台 Apple M2 Max、Release 构建。每组包含 5 次干净 profile 和 10 次复用 profile；内存在启动条件满足后额外等待 1 秒再采集。“首次可交互”以主窗口完成 Renderer 首次提交并实际显示为准。最终两组数据均在严格模式下重新采样：所有必需首页查询必须成功，任一查询失败都会让该次基准非零退出，不能产出成功时间线。
 
 ### 启动与内存
 
 | 指标 | 优化 Rust | TS Worker | TS 相对 Rust |
 | --- | ---: | ---: | ---: |
-| 干净 profile 首次可交互 p50 | 251.87 ms | 467.44 ms | 慢 85.6% |
-| 干净 profile 首次可交互 p95 | 323.35 ms | 475.24 ms | 慢 47.0% |
-| 复用 profile 首次可交互 p50 | 247.01 ms | 480.81 ms | 慢 94.7% |
-| 复用 profile 首次可交互 p95 | 293.42 ms | 484.10 ms | 慢 65.0% |
-| 干净 profile 合计 RSS p50 | 570,368 KiB | 604,688 KiB | 多 6.0% |
-| 复用 profile 合计 RSS p50 | 567,536 KiB | 597,424 KiB | 多 5.3% |
-| 后端握手 p50（干净） | 181.06 ms | 107.10 ms | 快 40.8% |
-| 首页数据完成 p50（干净） | 430.62 ms | 363.03 ms | 快 15.7% |
+| 干净 profile 首次可交互 p50 | 283.11 ms | 466.66 ms | 慢 64.8% |
+| 干净 profile 首次可交互 p95 | 327.84 ms | 543.69 ms | 慢 65.8% |
+| 复用 profile 首次可交互 p50 | 231.84 ms | 471.56 ms | 慢 103.4% |
+| 复用 profile 首次可交互 p95 | 294.47 ms | 475.92 ms | 慢 61.6% |
+| 干净 profile 合计 RSS p50 | 572,432 KiB | 604,256 KiB | 多 5.6% |
+| 复用 profile 合计 RSS p50 | 569,968 KiB | 601,168 KiB | 多 5.5% |
+| 后端握手 p50（干净） | 215.06 ms | 105.89 ms | 快 50.8% |
+| 首页数据完成 p50（干净） | 465.62 ms | 360.76 ms | 快 22.5% |
 
-TS Worker 的握手确实更快，但该分支仍执行 `await runtimeHost.start()` 和 `runtimeInfo` 后才创建窗口；因此后端优势没有转化为首屏优势。即便忽略窗口 `ready-to-show` 延迟，只比较 Renderer 首次提交，TS 的 320.52 ms 仍慢于优化 Rust 的 251.87 ms。
+TS Worker 的握手确实更快，但该分支仍执行 `await runtimeHost.start()` 和 `runtimeInfo` 后才创建窗口；因此后端优势没有转化为首屏优势。即便忽略窗口 `ready-to-show` 延迟，只比较 Renderer 首次提交，TS 的 318.94 ms 仍慢于优化 Rust 的 283.10 ms。
 
 TS 分支比当前 main 落后 19 个提交，Renderer 和页面重量不完全相同，所以启动数值只作为方向性证据；但 TS 在较旧 UI 上仍明显更慢，结论不会因此反转。
 
@@ -62,15 +62,15 @@ TS 分支比当前 main 落后 19 个提交，Renderer 和页面重量不完全�
 
 | 指标 p50 | 优化 Rust | TS Worker | TS 相对 Rust |
 | --- | ---: | ---: | ---: |
-| 工作区扫描 | 0.14 ms | 1.55 ms | 慢约 10.1 倍 |
-| 会话索引 | 1.50 ms | 2.23 ms | 慢 48.7% |
-| 500 条会话事件解析 | 12.72 ms | 10.61 ms | 快 16.6% |
-| SQLite 工作区列表 | 1.82 ms | 1.34 ms | 快 26.4% |
-| SQLite 活动列表 | 0.62 ms | 0.22 ms | 快 64.5% |
+| 工作区扫描 | 0.16 ms | 1.32 ms | 慢约 8.3 倍 |
+| 会话索引 | 1.54 ms | 1.82 ms | 慢 18.2% |
+| 500 条会话事件解析 | 12.52 ms | 9.22 ms | 快 26.4% |
+| SQLite 工作区列表 | 1.89 ms | 1.33 ms | 快 29.6% |
+| SQLite 活动列表 | 0.75 ms | 0.17 ms | 快 77.3% |
 
 TS 在文本解析和 Node `node:sqlite` 小查询上有优势；Rust 在文件扫描和会话索引上明显更快。按照“任一关键负载不得恶化超过 10%”的预设规则，TS 不能通过性能门槛。
 
-工作负载中的 TS RSS 为独立 Node bridge + Worker 合计 159,056 KiB，Rust 子进程为 23,648 KiB。由于 TS 实际部署会复用 Electron main 的 Node 进程，这两个隔离后端数字不直接作为裁决依据；上表采用完整 Electron 进程树 RSS，TS 在该指标上多 5%–6%，仍在 10% 限制内。
+工作负载中的 TS RSS 为独立 Node bridge + Worker 合计 162,160 KiB，Rust 子进程为 23,664 KiB。由于 TS 实际部署会复用 Electron main 的 Node 进程，这两个隔离后端数字不直接作为裁决依据；上表采用完整 Electron 进程树 RSS，TS 在该指标上多约 5.5%，仍在 10% 限制内。
 
 原始结果：
 

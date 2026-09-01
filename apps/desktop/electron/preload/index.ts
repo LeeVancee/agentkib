@@ -38,7 +38,7 @@ const desktopApi = Object.freeze({
     retry: () => ipcRenderer.invoke("agentkib:runtime:retry"),
   }),
   benchmark: Object.freeze({
-    mark: (name: "renderer-first-commit" | "home-data-ready") =>
+    mark: (name: "renderer-first-commit" | "home-data-ready" | "home-data-failed") =>
       ipcRenderer.invoke("agentkib:benchmark:mark", name),
   }),
   updates: Object.freeze({

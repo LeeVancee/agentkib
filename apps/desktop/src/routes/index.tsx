@@ -6,6 +6,7 @@ import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "../stores/app-store";
 import { desktopApi } from "../core/desktop";
+import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
 import type { WorkspaceSummary } from "../core/types";
 import {
   useHomeActivity,
@@ -44,10 +45,12 @@ function HomeRoute() {
       insightsQuery,
       catalogQuery,
     ];
-    if (!runtime || queries.some((query) => query.isPending)) return;
+    if (!runtime) return;
+    const outcome = homeBenchmarkOutcome(queries);
+    if (outcome === "pending") return;
     benchmarkReported.current = true;
     void desktopApi()
-      .benchmark.mark("home-data-ready")
+      .benchmark.mark(outcome === "ready" ? "home-data-ready" : "home-data-failed")
       .catch(() => undefined);
   }, [
     activityQuery,

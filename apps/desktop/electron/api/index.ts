@@ -96,7 +96,7 @@ export interface DesktopApi {
     retry(): Promise<void>;
   };
   benchmark: {
-    mark(name: "renderer-first-commit" | "home-data-ready"): Promise<void>;
+    mark(name: "renderer-first-commit" | "home-data-ready" | "home-data-failed"): Promise<void>;
   };
   updates: {
     check(): Promise<AppUpdateInfo | undefined>;

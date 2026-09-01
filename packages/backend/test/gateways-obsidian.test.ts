@@ -22,7 +22,7 @@ test("persists gateway config with masked listing", async () => {
 test("validates Obsidian vault links and action plans", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agentkib-obsidian-"));
   const vault = path.join(root, "vault");
-  await mkdir(vault);
+  await mkdir(path.join(vault, ".obsidian"), { recursive: true });
   const link = await createWorkspaceLink(
     root,
     { path: vault, name: "Vault", source: "manual" },

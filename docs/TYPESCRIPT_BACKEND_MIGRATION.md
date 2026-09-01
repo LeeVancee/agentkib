@@ -242,7 +242,7 @@ Rust may be deleted only when all gates pass:
 - `pnpm --filter @agentkib/desktop test -- --run`: 69 tests passed.
 - `pnpm --filter @agentkib/desktop build:typescript`: passed; web, main, preload, and worker artifacts verified.
 - TypeScript worker handshake and MCP `/healthz` startup smoke: passed on macOS arm64.
-- Backend suite: 38/40 passed. Two existing fixtures still disagree with the current Rust-aligned behavior: the doctor test expects a missing manifest to be an error, and the Obsidian test creates a folder without the required `.obsidian` marker.
+- Backend suite: 40/40 passed. The Doctor fixture now creates a malformed manifest, and the Obsidian fixture now creates the required `.obsidian` marker.
 - Windows/Linux package and installed-app smoke scripts are ready but require their respective release hosts.
 - Latest parity round: Codex/Claude native compact summaries, post-compaction handoff boundaries, Claude sidechain filtering, and command-echo filtering are now handled by the TypeScript worker. DeepSeek Harness project-root, instruction-budget, global instruction, literal-import, and filesystem skill rules are also ported; workspace context paths are canonicalized before safety checks.
 

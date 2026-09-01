@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { applyChangeSet, hashContent, planChangeSet, diagnoseWorkspace } from "../src/index.js";
@@ -25,6 +25,8 @@ test("applies changes with hash precondition", async () => {
 });
 test("doctor returns structured manifest issue", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agentkib-doctor-"));
+  await mkdir(path.join(root, ".agentkib"));
+  await writeFile(path.join(root, ".agentkib", "manifest.yaml"), "schema_version: [\n");
   const report = await diagnoseWorkspace(root, "w");
   expect(report.summary.error_count).toBe(1);
   expect(report.issues[0]?.code).toBe("manifest.invalid");

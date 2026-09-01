@@ -1812,9 +1812,31 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
 }
 
 fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
+    let (files, total) = bounded_package_files(root)?;
+    let mut hash = Sha256::new();
+    let mut modified_at = None;
+    for (path, metadata) in files {
+        let relative = path
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        hash.update((relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
+        hash.update([u8::from(is_executable(&metadata))]);
+        hash.update(metadata.len().to_le_bytes());
+        hash_file_contents(&path, &mut hash)?;
+        if let Ok(modified) = metadata.modified() {
+            let modified = DateTime::<Utc>::from(modified);
+            modified_at =
+                Some(modified_at.map_or(modified, |current: DateTime<Utc>| current.max(modified)));
+        }
+    }
+    Ok((format!("{:x}", hash.finalize()), total, modified_at))
+}
+
+fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u64)> {
     let mut files = Vec::new();
     let mut total = 0_u64;
-    let mut modified_at = None;
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = entry?;
         if entry.file_type().is_dir() {
@@ -1843,33 +1865,20 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
         files.push((entry.into_path(), metadata));
     }
     files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok((files, total))
+}
 
-    let mut hash = Sha256::new();
-    for (path, metadata) in files {
-        let relative = path
-            .strip_prefix(root)?
-            .to_string_lossy()
-            .replace('\\', "/");
-        hash.update((relative.len() as u64).to_le_bytes());
-        hash.update(relative.as_bytes());
-        hash.update([u8::from(is_executable(&metadata))]);
-        hash.update(metadata.len().to_le_bytes());
-        let mut file = fs::File::open(path)?;
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hash.update(&buffer[..read]);
+fn hash_file_contents(path: &Path, hash: &mut Sha256) -> Result<()> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
         }
-        if let Ok(modified) = metadata.modified() {
-            let modified = DateTime::<Utc>::from(modified);
-            modified_at =
-                Some(modified_at.map_or(modified, |current: DateTime<Utc>| current.max(modified)));
-        }
+        hash.update(&buffer[..read]);
     }
-    Ok((format!("{:x}", hash.finalize()), total, modified_at))
+    Ok(())
 }
 
 fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
@@ -1877,24 +1886,15 @@ fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
         return Ok(BTreeMap::new());
     }
     let mut output = BTreeMap::new();
-    for entry in WalkDir::new(root).follow_links(false) {
-        let entry = entry?;
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        ensure!(
-            entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
-            "Skill package contains an unsupported file"
-        );
-        let relative = entry
-            .path()
+    for (path, metadata) in bounded_package_files(root)?.0 {
+        let relative = path
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        let metadata = fs::metadata(entry.path())?;
         let mut hash = Sha256::new();
         hash.update([u8::from(is_executable(&metadata))]);
-        hash.update(fs::read(entry.path())?);
+        hash.update(metadata.len().to_le_bytes());
+        hash_file_contents(&path, &mut hash)?;
         output.insert(relative, format!("{:x}", hash.finalize()));
     }
     Ok(output)
@@ -2494,14 +2494,21 @@ mod tests {
     }
 
     #[test]
-    fn package_hash_rejects_unbounded_local_file_trees() {
+    fn package_hash_and_file_deltas_reject_unbounded_local_file_trees() {
         let directory = tempfile::tempdir().unwrap();
+        let incoming = tempfile::tempdir().unwrap();
         for index in 0..=MAX_SKILL_FILES {
             fs::write(directory.path().join(format!("file-{index:03}")), []).unwrap();
         }
 
         assert!(
             package_hash(directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("more than 512 files")
+        );
+        assert!(
+            file_delta(directory.path(), incoming.path())
                 .unwrap_err()
                 .to_string()
                 .contains("more than 512 files")

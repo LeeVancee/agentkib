@@ -1105,34 +1105,37 @@ fn is_private_home_file(path: &Path) -> bool {
 }
 
 fn home_asset_kind(path: &Path) -> AssetKind {
-    let text = path.to_string_lossy().to_ascii_lowercase();
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if name.eq_ignore_ascii_case("SKILL.md") || text.contains("/skills/") {
+    if name.eq_ignore_ascii_case("SKILL.md") || has_path_component(path, "skills") {
         AssetKind::Skill
-    } else if name.eq_ignore_ascii_case("MEMORY.md") || text.contains("/memory/") {
+    } else if name.eq_ignore_ascii_case("MEMORY.md") || has_path_component(path, "memory") {
         AssetKind::Memory
-    } else if name.eq_ignore_ascii_case("hooks.json") || text.contains("/hooks/") {
+    } else if name.eq_ignore_ascii_case("hooks.json") || has_path_component(path, "hooks") {
         AssetKind::Hook
-    } else if text.contains("/agents/")
-        || text.contains("/profiles/")
-        || text.contains("/.agent-presets/")
+    } else if has_path_component(path, "agents")
+        || has_path_component(path, "profiles")
+        || has_path_component(path, ".agent-presets")
     {
         AssetKind::Agent
-    } else if path.components().any(|component| {
-        component
-            .as_os_str()
-            .to_str()
-            .is_some_and(|component| component.eq_ignore_ascii_case("workflows"))
-    }) {
+    } else if has_path_component(path, "workflows") {
         AssetKind::Configuration
     } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
         AssetKind::Instruction
     } else {
         AssetKind::Configuration
     }
+}
+
+fn has_path_component(path: &Path, expected: &str) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|component| component.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn home_asset(agent: AgentKind, path: &Path, kind: AssetKind) -> Result<CatalogAsset> {
@@ -1605,6 +1608,8 @@ mod tests {
         fs::write(home.join("skills/reviewer/SKILL.md"), "# Reviewer").unwrap();
         fs::create_dir_all(home.join("workflows")).unwrap();
         fs::write(home.join("workflows/review.md"), "# Review workflow").unwrap();
+        fs::create_dir_all(home.join("agents")).unwrap();
+        fs::write(home.join("agents/reviewer.md"), "# Reviewer agent").unwrap();
         fs::create_dir_all(home.join("memory")).unwrap();
         fs::write(home.join("memory/private.md"), "private").unwrap();
 
@@ -1619,6 +1624,9 @@ mod tests {
         );
         assert!(assets.iter().any(|asset| {
             asset.path.ends_with("workflows/review.md") && asset.kind == AssetKind::Configuration
+        }));
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("agents/reviewer.md") && asset.kind == AssetKind::Agent
         }));
         assert!(
             assets

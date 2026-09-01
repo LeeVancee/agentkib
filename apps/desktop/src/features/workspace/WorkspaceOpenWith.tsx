@@ -59,10 +59,10 @@ export function WorkspaceOpenWith({
 
   if (!preferred) return null;
   return (
-    <div className="inline-flex h-9 max-w-full items-stretch">
+    <div className="inline-flex h-9 max-w-full items-stretch overflow-hidden rounded-lg border border-border bg-background">
       <Button
-        variant="outline"
-        className="min-w-0 max-w-40 justify-start gap-2 rounded-r-none border-r-0 px-3"
+        variant="ghost"
+        className="min-w-0 max-w-40 justify-start gap-2 rounded-none border-0 px-3"
         disabled={opening}
         onClick={() => void openWorkspace()}
         title={tr("workspaceOpener.openWith", { app: preferred.name })}
@@ -72,7 +72,9 @@ export function WorkspaceOpenWith({
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger
-          render={<Button variant="outline" size="icon" className="h-9 w-8 rounded-l-none px-0" />}
+          render={
+            <Button variant="ghost" size="icon" className="h-9 w-8 rounded-none border-0 px-0" />
+          }
           aria-label={tr("workspaceOpener.choose")}
           title={tr("workspaceOpener.choose")}
         >

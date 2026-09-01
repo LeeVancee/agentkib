@@ -4,11 +4,11 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useMemo, useState } from "react";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { SelectControl } from "@/components/ui/select-control";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -52,6 +52,7 @@ function Assets({
   const [connectionName, setConnectionName] = useState("");
   const [transport, setTransport] = useState<"stdio" | "http">("stdio");
   const [endpoint, setEndpoint] = useState("");
+  const [instructionsMode, setInstructionsMode] = useState<"preview" | "edit">("preview");
   const nativeAssets = useMemo(() => groupWorkspaceAssets(scan.assets), [scan.assets]);
   const filtered = nativeAssets.filter((asset) =>
     `${asset.agents.join(" ")} ${asset.kind} ${asset.path}`
@@ -130,18 +131,55 @@ function Assets({
               <strong>{tr("assets.sharedLayerEmpty")}</strong>
             </div>
           )}
-          <Label className="grid gap-2 p-4">
-            {tr("assets.sharedInstructions")}
-            <Textarea
-              value={manifest.instructions.shared}
-              onChange={(event) =>
-                onChange({
-                  ...manifest,
-                  instructions: { ...manifest.instructions, shared: event.target.value },
-                })
-              }
-            />
-          </Label>
+          <div className="grid gap-2 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-foreground">
+                {tr("assets.sharedInstructions")}
+              </span>
+              <div
+                className="segmented-control"
+                role="tablist"
+                aria-label={tr("assets.sharedInstructions")}
+              >
+                <button
+                  className="segmented-control-item h-8 px-3 text-xs"
+                  type="button"
+                  role="tab"
+                  aria-selected={instructionsMode === "preview"}
+                  data-active={instructionsMode === "preview" ? "" : undefined}
+                  onClick={() => setInstructionsMode("preview")}
+                >
+                  {tr("assets.preview")}
+                </button>
+                <button
+                  className="segmented-control-item h-8 px-3 text-xs"
+                  type="button"
+                  role="tab"
+                  aria-selected={instructionsMode === "edit"}
+                  data-active={instructionsMode === "edit" ? "" : undefined}
+                  onClick={() => setInstructionsMode("edit")}
+                >
+                  {tr("common.edit")}
+                </button>
+              </div>
+            </div>
+            {instructionsMode === "preview" ? (
+              <MarkdownContent
+                content={manifest.instructions.shared || tr("assets.sharedLayerEmpty")}
+                className="min-h-48 rounded-xl border border-border bg-background px-4 py-3 text-sm [overflow-wrap:anywhere]"
+              />
+            ) : (
+              <Textarea
+                value={manifest.instructions.shared}
+                onChange={(event) =>
+                  onChange({
+                    ...manifest,
+                    instructions: { ...manifest.instructions, shared: event.target.value },
+                  })
+                }
+              />
+            )}
+          </div>
         </Card>
       )}
       {section === "skills" && (

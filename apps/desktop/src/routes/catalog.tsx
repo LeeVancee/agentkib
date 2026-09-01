@@ -303,9 +303,6 @@ function CatalogPage({
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          {tr("catalog.portabilityDescription")}
-        </p>
       </section>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
@@ -521,7 +518,6 @@ function McpHubPage({
             STREAMABLE HTTP MCP HUB
           </span>
           <h2>{tr("mcp.title")}</h2>
-          <p>{tr("mcp.description")}</p>
         </div>
         <div className="grid gap-1.5 text-right text-sm text-muted-foreground">
           <span

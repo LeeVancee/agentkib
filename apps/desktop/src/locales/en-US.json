@@ -779,6 +779,7 @@
   "assets.draft": "Public Asset Draft",
   "assets.draftDescription": "Edits stay in this session until you generate a ChangeSet and review the Diff",
   "assets.sharedInstructions": "Shared Project Instructions",
+  "assets.preview": "Preview",
   "assets.name": "Name",
   "assets.searchPlaceholder": "Search files, types, or Agents",
   "assets.asset": "Asset",

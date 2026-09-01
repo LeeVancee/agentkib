@@ -774,6 +774,7 @@
   "assets.draft": "公共アセット下書き",
   "assets.draftDescription": "編集は現在のセッションに保持され、ChangeSet 生成後に Diff を確認します",
   "assets.sharedInstructions": "共有プロジェクト指示",
+  "assets.preview": "プレビュー",
   "assets.name": "名前",
   "assets.searchPlaceholder": "ファイル、種類、Agent を検索",
   "assets.asset": "アセット",

@@ -132,13 +132,7 @@ export function AgentsPage({
 
   return (
     <div className="grid gap-3 pb-8">
-      <section className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{tr("agents.managementTitle")}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {tr("agents.enabled")} · {tr("agents.available")}
-          </p>
-        </div>
+      <section className="flex flex-wrap items-center justify-end gap-2 border-b border-border pb-4">
         <div className="flex items-center gap-2">
           <label className="flex h-9 min-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3">
             <Search size={14} className="text-muted-foreground" />

@@ -774,6 +774,7 @@
   "assets.draft": "公共資產草稿",
   "assets.draftDescription": "編輯只保留在目前工作階段，產生 ChangeSet 後統一檢視 Diff",
   "assets.sharedInstructions": "共用專案指令",
+  "assets.preview": "預覽",
   "assets.name": "名稱",
   "assets.searchPlaceholder": "搜尋檔案、類型或 Agent",
   "assets.asset": "資產",

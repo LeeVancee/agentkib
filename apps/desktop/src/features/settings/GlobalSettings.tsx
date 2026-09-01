@@ -66,6 +66,8 @@ import type {
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
+import appIconBlack from "../../../resources/icons/app-icon-black.png";
+import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import {
   ariaShortcut,
   currentAppPlatform,
@@ -78,6 +80,10 @@ const appPlatform = normalizePlatform(buildPlatform);
 const hasFileAccessSettings = ["macos", "windows"].includes(appPlatform);
 const settingsControlClass =
   "h-10 min-w-[180px] justify-self-end rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[560px]:min-w-0 max-[560px]:flex-1";
+const appIconAssets: Record<AppIconPreference, string> = {
+  white: appIconWhite,
+  black: appIconBlack,
+};
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -495,7 +501,6 @@ function ActivityPage({ records }: { records: ActivityRecord[] }) {
       <CardHeader className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 text-left">
         <div>
           <h2>{tr("activity.title")}</h2>
-          <p>{tr("activity.description")}</p>
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -596,7 +601,7 @@ function SettingGroup({
           </p>
         )}
       </header>
-      <div>{children}</div>
+      <div className="[&>*:last-child]:border-b-0">{children}</div>
     </section>
   );
 }
@@ -995,11 +1000,12 @@ function AppIconSetting({
             value={icon}
             className="segmented-control-item inline-flex h-9 min-h-9 min-w-[90px] items-center justify-center gap-1.5 px-3 text-sm"
           >
-            {icon === "white" ? (
-              <span className="size-4 rounded border border-border bg-white" aria-hidden="true" />
-            ) : (
-              <span className="size-4 rounded border border-border bg-black" aria-hidden="true" />
-            )}
+            <img
+              className="size-5 rounded-md object-cover"
+              src={appIconAssets[icon]}
+              alt=""
+              aria-hidden="true"
+            />
             {tr(`settings.appIcon.${icon}`)}
           </ToggleGroupItem>
         ))}

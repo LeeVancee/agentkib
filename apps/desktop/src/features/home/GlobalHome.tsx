@@ -128,43 +128,38 @@ export function GlobalHome({
         />
       )}
 
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[2rem] font-semibold tracking-[-.04em]">{tr("home.todayTitle")}</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{tr("home.todaySubtitle")}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
+          <Button
+            variant="bare"
+            className="h-auto gap-2 rounded-md px-2 py-1 font-semibold text-primary hover:bg-primary/10 hover:text-primary"
+            onClick={onShowWorkspaces}
+          >
+            <CircleAlert size={16} />
+            {tr("home.issueSummary", { count: issueCount })}
+          </Button>
+          {metrics.map(({ label, value, onClick }) => (
+            <Button
+              key={label}
+              variant="bare"
+              size="content"
+              className="h-auto gap-1.5 rounded-md px-2 py-1 text-sm hover:bg-primary/10 hover:text-primary"
+              onClick={onClick}
+            >
+              <strong className="tabular-nums">{value}</strong>
+              <span className="text-muted-foreground">{label}</span>
+            </Button>
+          ))}
+          <span className="ml-auto text-xs text-muted-foreground">
+            {discovery
+              ? tr("home.updated", { time: relativeTime(discovery.finished_at) })
+              : tr("home.discovering")}
+          </span>
         </div>
-        <Button className="gap-2" onClick={onRefresh}>
+        <Button className="shrink-0 gap-2" onClick={onRefresh}>
           <RefreshCw size={15} />
           {tr("common.refresh")}
         </Button>
-      </header>
-
-      <div className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
-        <Button
-          variant="link"
-          className="h-auto gap-2 p-0 font-semibold text-primary"
-          onClick={onShowWorkspaces}
-        >
-          <CircleAlert size={16} />
-          {tr("home.issueSummary", { count: issueCount })}
-        </Button>
-        {metrics.map(({ label, value, onClick }) => (
-          <Button
-            key={label}
-            variant="bare"
-            size="content"
-            className="h-auto gap-1.5 p-0 text-sm hover:text-foreground"
-            onClick={onClick}
-          >
-            <strong className="tabular-nums">{value}</strong>
-            <span className="text-muted-foreground">{label}</span>
-          </Button>
-        ))}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {discovery
-            ? tr("home.updated", { time: relativeTime(discovery.finished_at) })
-            : tr("home.discovering")}
-        </span>
       </div>
 
       {!workspaces.length ? (

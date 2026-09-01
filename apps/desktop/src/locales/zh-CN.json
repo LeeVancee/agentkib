@@ -774,6 +774,7 @@
   "assets.draft": "公共资产草稿",
   "assets.draftDescription": "编辑只保存在当前会话，生成 ChangeSet 后统一查看 Diff",
   "assets.sharedInstructions": "共享项目指令",
+  "assets.preview": "预览",
   "assets.name": "名称",
   "assets.searchPlaceholder": "搜索文件、类型或 Agent",
   "assets.asset": "资产",

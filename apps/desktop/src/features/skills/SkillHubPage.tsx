@@ -176,10 +176,12 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     });
   };
 
-  const discoverUrl = () =>
-    run("discover-url", async () => {
+  const discoverUrl = () => {
+    setCandidates([]);
+    return run("discover-url", async () => {
       setCandidates(await api.discoverSkills(url.trim()));
     });
+  };
 
   const checkUpdates = () =>
     run("check-updates", async () => {

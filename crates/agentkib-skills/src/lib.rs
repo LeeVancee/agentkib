@@ -221,38 +221,41 @@ impl SkillHub {
         let parsed = parse_github_url(value)?;
         let resolved = self.resolve_repository(&parsed).await?;
         let directories = candidate_directories(&resolved.entries, &resolved.root_path)?;
-        let mut candidates = Vec::new();
+        let mut results = Vec::with_capacity(directories.len());
         for directory in directories {
-            let skill_path = join_repo_path(&directory, "SKILL.md");
-            let content = self
-                .download_raw(
-                    &resolved.owner,
-                    &resolved.repository,
-                    &resolved.commit,
-                    &skill_path,
-                    MAX_SKILL_ENTRY_BYTES,
-                )
-                .await?;
-            let content = String::from_utf8(content).context("SKILL.md must be UTF-8")?;
-            let metadata = parse_skill_frontmatter(&content)?;
-            let tree_sha = directory_tree_sha(&resolved, &directory)?;
-            candidates.push(SkillCandidate {
-                name: metadata.name,
-                description: metadata.description,
-                license: metadata.license,
-                compatibility: metadata.compatibility,
-                source: SkillSource {
-                    kind: source_kind(&resolved.owner, &resolved.repository, &directory),
-                    repository: format!("{}/{}", resolved.owner, resolved.repository),
-                    reference: resolved.reference.clone(),
-                    path: directory,
-                    resolved_commit: resolved.commit.clone(),
-                    tree_sha,
-                },
-            });
+            let result: Result<SkillCandidate> = async {
+                let skill_path = join_repo_path(&directory, "SKILL.md");
+                let content = self
+                    .download_raw(
+                        &resolved.owner,
+                        &resolved.repository,
+                        &resolved.commit,
+                        &skill_path,
+                        MAX_SKILL_ENTRY_BYTES,
+                    )
+                    .await?;
+                let content = String::from_utf8(content).context("SKILL.md must be UTF-8")?;
+                let metadata = parse_skill_frontmatter(&content)?;
+                let tree_sha = directory_tree_sha(&resolved, &directory)?;
+                Ok(SkillCandidate {
+                    name: metadata.name,
+                    description: metadata.description,
+                    license: metadata.license,
+                    compatibility: metadata.compatibility,
+                    source: SkillSource {
+                        kind: source_kind(&resolved.owner, &resolved.repository, &directory),
+                        repository: format!("{}/{}", resolved.owner, resolved.repository),
+                        reference: resolved.reference.clone(),
+                        path: directory.clone(),
+                        resolved_commit: resolved.commit.clone(),
+                        tree_sha,
+                    },
+                })
+            }
+            .await;
+            results.push(result.with_context(|| format!("Could not inspect Skill at {directory}")));
         }
-        candidates.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(candidates)
+        valid_discovery_candidates(results)
     }
 
     pub fn installed(&self) -> Result<Vec<InstalledSkill>> {
@@ -1457,6 +1460,27 @@ fn candidate_directories(entries: &[TreeEntry], selected: &str) -> Result<Vec<St
     Ok(directories)
 }
 
+fn valid_discovery_candidates(
+    results: impl IntoIterator<Item = Result<SkillCandidate>>,
+) -> Result<Vec<SkillCandidate>> {
+    let mut candidates = Vec::new();
+    let mut first_error = None;
+    for result in results {
+        match result {
+            Ok(candidate) => candidates.push(candidate),
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    if candidates.is_empty()
+        && let Some(error) = first_error
+    {
+        return Err(error);
+    }
+    candidates.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(candidates)
+}
+
 fn package_entries<'a>(entries: &'a [TreeEntry], path: &str) -> Result<Vec<&'a TreeEntry>> {
     let prefix = if path.is_empty() {
         String::new()
@@ -2088,6 +2112,30 @@ mod tests {
         assert_eq!(
             candidate_directories(&entries, "skills/a").unwrap(),
             ["skills/a"]
+        );
+    }
+
+    #[test]
+    fn repository_discovery_keeps_valid_candidates_when_a_sibling_is_invalid() {
+        let valid = SkillCandidate {
+            name: "reviewer".into(),
+            description: "Review changes".into(),
+            license: None,
+            compatibility: None,
+            source: source("commit", "tree"),
+        };
+
+        let candidates = valid_discovery_candidates(vec![
+            Err(anyhow::anyhow!("invalid sibling")),
+            Ok(valid.clone()),
+        ])
+        .unwrap();
+        assert_eq!(candidates, [valid]);
+        assert!(
+            valid_discovery_candidates(vec![Err(anyhow::anyhow!("invalid only"))])
+                .unwrap_err()
+                .to_string()
+                .contains("invalid only")
         );
     }
 

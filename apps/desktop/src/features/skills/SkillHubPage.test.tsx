@@ -172,4 +172,40 @@ describe("SkillHubPage", () => {
 
     await waitFor(() => expect(mocks.prepareSkillInstall).toHaveBeenCalledWith(candidate.source));
   });
+
+  it("clears candidates before inspecting another GitHub URL", async () => {
+    mocks.installedSkills.mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
+    mocks.discoverSkills
+      .mockResolvedValueOnce([candidate])
+      .mockRejectedValueOnce(new Error("inspection failed"));
+    const user = userEvent.setup();
+
+    render(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    const input = screen.getByPlaceholderText(
+      "https://github.com/owner/repo/tree/main/path/to/skill",
+    );
+    await user.type(input, "https://github.com/owner/first");
+    await user.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(await screen.findByText("skill-installer")).toBeTruthy();
+
+    await user.clear(input);
+    await user.type(input, "https://github.com/owner/second");
+    await user.click(screen.getByRole("button", { name: "Inspect" }));
+
+    expect(await screen.findByText(/inspection failed/)).toBeTruthy();
+    expect(screen.queryByText("skill-installer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to library" })).toBeNull();
+  });
 });

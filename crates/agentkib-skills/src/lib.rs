@@ -136,12 +136,6 @@ struct TreeEntry {
     size: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct MatchingRef {
-    #[serde(rename = "ref")]
-    name: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
     name: String,
@@ -271,10 +265,13 @@ impl SkillHub {
                 continue;
             };
             let parsed = parsed_source(&source)?;
-            if let Ok(resolved) = self.resolve_repository(&parsed).await
-                && let Ok(tree_sha) = directory_tree_sha(&resolved, &source.path)
-                && tree_sha != source.tree_sha
-            {
+            let resolved = self
+                .resolve_repository(&parsed)
+                .await
+                .with_context(|| format!("Could not check updates for {}", skill.display_name))?;
+            let tree_sha = directory_tree_sha(&resolved, &source.path)
+                .with_context(|| format!("Could not check updates for {}", skill.display_name))?;
+            if tree_sha != source.tree_sha {
                 skill.status = InstalledSkillStatus::UpdateAvailable;
             }
         }
@@ -916,19 +913,10 @@ impl SkillHub {
             return Ok((reference, parsed.path.clone(), commit));
         }
         if let Some(selector) = &parsed.selector {
-            let first = selector
-                .parts
-                .first()
-                .context("GitHub tree URL is missing a ref")?;
-            let mut refs = self.matching_refs(parsed, "heads", first).await?;
-            refs.extend(self.matching_refs(parsed, "tags", first).await?);
-            if let Some((reference, path)) = select_reference(selector, refs.iter())? {
-                let commit = self.get_commit(parsed, &reference).await?;
-                return Ok((reference, path, commit));
-            }
-            if let Some(commit) = self.try_get_commit(parsed, first).await? {
-                let path = selector_path(selector, 1)?;
-                return Ok((first.clone(), path, commit));
+            for (reference, path) in selector_reference_candidates(selector)? {
+                if let Some(commit) = self.try_get_commit(parsed, &reference).await? {
+                    return Ok((reference, path, commit));
+                }
             }
             bail!("GitHub tree or blob URL does not contain a resolvable ref");
         }
@@ -971,26 +959,6 @@ impl SkillHub {
             reference,
         ])?)
         .await
-    }
-
-    async fn matching_refs(
-        &self,
-        parsed: &ParsedGitHubUrl,
-        namespace: &str,
-        prefix: &str,
-    ) -> Result<Vec<String>> {
-        let refs: Vec<MatchingRef> = self
-            .get_json(&github_api_url(&[
-                "repos",
-                &parsed.owner,
-                &parsed.repository,
-                "git",
-                "matching-refs",
-                namespace,
-                prefix,
-            ])?)
-            .await?;
-        Ok(refs.into_iter().map(|value| value.name).collect())
     }
 
     async fn fetch_tree(
@@ -1219,36 +1187,21 @@ fn parse_github_url(value: &str) -> Result<ParsedGitHubUrl> {
     })
 }
 
-fn select_reference<'a>(
-    selector: &GitHubUrlSelector,
-    refs: impl Iterator<Item = &'a String>,
-) -> Result<Option<(String, String)>> {
-    let mut selected: Option<(usize, String)> = None;
-    for value in refs {
-        let reference = value
-            .strip_prefix("refs/heads/")
-            .or_else(|| value.strip_prefix("refs/tags/"))
-            .unwrap_or(value);
-        let components = reference.split('/').collect::<Vec<_>>();
-        let path_count = selector.parts.len().saturating_sub(components.len());
-        let can_match = components.len() <= selector.parts.len()
-            && selector
-                .parts
-                .iter()
-                .zip(&components)
-                .all(|(left, right)| left == right)
-            && (selector.kind == GitHubUrlKind::Tree || path_count > 0);
-        if can_match
-            && selected
-                .as_ref()
-                .is_none_or(|(length, _)| components.len() > *length)
-        {
-            selected = Some((components.len(), reference.to_string()));
-        }
-    }
-    selected
-        .map(|(length, reference)| Ok((reference, selector_path(selector, length)?)))
-        .transpose()
+fn selector_reference_candidates(selector: &GitHubUrlSelector) -> Result<Vec<(String, String)>> {
+    let path_parts = usize::from(selector.kind == GitHubUrlKind::Blob);
+    ensure!(
+        selector.parts.len() > path_parts,
+        "GitHub tree or blob URL does not contain a valid ref"
+    );
+    (1..=selector.parts.len() - path_parts)
+        .rev()
+        .map(|split| {
+            Ok((
+                selector.parts[..split].join("/"),
+                selector_path(selector, split)?,
+            ))
+        })
+        .collect()
 }
 
 fn selector_path(selector: &GitHubUrlSelector, split: usize) -> Result<String> {
@@ -1910,13 +1863,14 @@ mod tests {
             slash_selector.parts,
             ["feature", "foo", "skills", "reviewer"]
         );
-        let refs = [
-            "refs/heads/feature".to_string(),
-            "refs/heads/feature/foo".to_string(),
-        ];
         assert_eq!(
-            select_reference(&slash_selector, refs.iter()).unwrap(),
-            Some(("feature/foo".into(), "skills/reviewer".into()))
+            selector_reference_candidates(&slash_selector).unwrap(),
+            [
+                ("feature/foo/skills/reviewer".into(), "".into()),
+                ("feature/foo/skills".into(), "reviewer".into()),
+                ("feature/foo".into(), "skills/reviewer".into()),
+                ("feature".into(), "foo/skills/reviewer".into()),
+            ]
         );
     }
 

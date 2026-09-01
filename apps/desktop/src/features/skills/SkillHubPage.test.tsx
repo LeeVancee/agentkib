@@ -124,4 +124,49 @@ describe("SkillHubPage", () => {
       expect(mocks.applySkillOperation).toHaveBeenCalledWith("preview-token", false),
     );
   });
+
+  it("matches an installed source before reporting a display-name conflict", async () => {
+    mocks.installedSkills.mockResolvedValue([
+      {
+        name: "local-skill-installer",
+        display_name: candidate.name,
+        description: "Local package with the same display name",
+        path: "/tmp/.agentkib/skills/local-skill-installer",
+        size: 64,
+        status: "unmanaged",
+        can_rollback: false,
+      },
+      {
+        name: "skill-installer",
+        display_name: candidate.name,
+        description: candidate.description,
+        path: "/tmp/.agentkib/skills/skill-installer",
+        size: 128,
+        status: "current",
+        source: candidate.source,
+        can_rollback: false,
+      },
+    ]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [{ ...candidate, installed: true }],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
+    mocks.prepareSkillInstall.mockResolvedValue({ ...preview, operation: "update" });
+    const user = userEvent.setup();
+
+    render(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    const updateButton = await screen.findByRole("button", { name: "Update" });
+    expect((updateButton as HTMLButtonElement).disabled).toBe(false);
+    await user.click(updateButton);
+
+    await waitFor(() => expect(mocks.prepareSkillInstall).toHaveBeenCalledWith(candidate.source));
+  });
 });

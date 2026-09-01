@@ -449,14 +449,17 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
               {availableEntries.map((candidate) => {
-                const existing = installed.find((skill) => skill.display_name === candidate.name);
-                const sameSource = Boolean(
-                  existing?.source &&
-                  existing.source.repository === candidate.source.repository &&
-                  existing.source.ref === candidate.source.ref &&
-                  existing.source.path === candidate.source.path,
+                const matchingName = installed.filter(
+                  (skill) => skill.display_name === candidate.name,
                 );
-                const nameConflict = Boolean(existing && !sameSource);
+                const existing = matchingName.find(
+                  (skill) =>
+                    skill.source?.repository === candidate.source.repository &&
+                    skill.source.ref === candidate.source.ref &&
+                    skill.source.path === candidate.source.path,
+                );
+                const sameSource = Boolean(existing);
+                const nameConflict = !sameSource && matchingName.length > 0;
                 return (
                   <Card
                     key={`${candidate.source.repository}:${candidate.source.path}`}

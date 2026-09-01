@@ -615,13 +615,11 @@ impl SkillHub {
             }
             return Err(error);
         }
+        let restored = restored_skill(&record, &target, &backup);
         // The package and lock are already restored; cleanup must not turn that durable mutation
         // into a reported failure or encourage a duplicate retry.
         let _ = fs::remove_dir_all(trash_root);
-        self.installed()?
-            .into_iter()
-            .find(|skill| skill.name == record.name)
-            .context("Restored Skill was not found")
+        Ok(restored)
     }
 
     pub fn read_file(&self, name: &str, relative: &str) -> Result<SkillFilePreview> {
@@ -1811,6 +1809,46 @@ fn skill_display_name(root: &Path, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> InstalledSkill {
+    let content = fs::read_to_string(target.join("SKILL.md")).ok();
+    let metadata = content
+        .as_deref()
+        .and_then(|content| parse_skill_frontmatter(content).ok());
+    let package = package_hash(target).ok();
+    let lock = record.lock.as_ref();
+    let status = match lock {
+        Some(lock)
+            if package
+                .as_ref()
+                .is_some_and(|(hash, _, _)| hash == &lock.content_sha256) =>
+        {
+            InstalledSkillStatus::Current
+        }
+        Some(_) => InstalledSkillStatus::Modified,
+        None => InstalledSkillStatus::Unmanaged,
+    };
+    InstalledSkill {
+        name: record.name.clone(),
+        display_name: if record.display_name.is_empty() {
+            metadata
+                .as_ref()
+                .map(|value| value.name.clone())
+                .unwrap_or_else(|| record.name.clone())
+        } else {
+            record.display_name.clone()
+        },
+        description: metadata.map(|value| value.description).unwrap_or_default(),
+        path: target.to_path_buf(),
+        size: package.as_ref().map_or(0, |(_, size, _)| *size),
+        modified_at: package.and_then(|(_, _, modified_at)| modified_at),
+        status,
+        source: lock.and_then(|entry| entry.source.clone()),
+        installed_at: lock.map(|entry| entry.installed_at),
+        updated_at: lock.map(|entry| entry.updated_at),
+        can_rollback: record.previous.is_some() && backup.is_dir(),
+    }
+}
+
 #[cfg(unix)]
 fn set_executable(path: &Path, executable: bool) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -2246,6 +2284,27 @@ mod tests {
         fs::remove_dir_all(removed.path).unwrap();
 
         assert!(hub.removed().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_reports_success_for_an_unmanaged_package_skipped_by_library_scan() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let skill = root.join("skills/reviewer");
+        write_skill(&skill, "body");
+        symlink("SKILL.md", skill.join("nested-link")).unwrap();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        let removed = hub.uninstall("reviewer", true).unwrap();
+
+        let restored = hub.restore(&removed.id, true).unwrap();
+
+        assert_eq!(restored.name, "reviewer");
+        assert_eq!(restored.status, InstalledSkillStatus::Unmanaged);
+        assert!(skill.is_dir());
+        assert!(!root.join("trash/skills").join(removed.id).exists());
     }
 
     #[test]

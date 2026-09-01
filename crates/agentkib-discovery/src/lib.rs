@@ -739,6 +739,7 @@ impl WorkspaceDiscoveryProvider for GrokBuildProvider {
                         "plugins",
                         "agents",
                         "hooks",
+                        "workflows",
                     ],
                 )
             })
@@ -1595,6 +1596,8 @@ mod tests {
             .unwrap();
         fs::create_dir_all(home.join("skills/reviewer")).unwrap();
         fs::write(home.join("skills/reviewer/SKILL.md"), "# Reviewer").unwrap();
+        fs::create_dir_all(home.join("workflows")).unwrap();
+        fs::write(home.join("workflows/review.md"), "# Review workflow").unwrap();
         fs::create_dir_all(home.join("memory")).unwrap();
         fs::write(home.join("memory/private.md"), "private").unwrap();
 
@@ -1602,6 +1605,11 @@ mod tests {
         assert!(provider.discover().unwrap().is_empty());
         let assets = provider.scan_home_assets().unwrap();
         assert!(assets.iter().any(|asset| asset.name == "reviewer"));
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.path.ends_with("workflows/review.md"))
+        );
         assert!(
             assets
                 .iter()

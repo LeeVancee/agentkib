@@ -900,6 +900,13 @@ impl SkillHub {
                 "Rollback Skill must be a regular directory"
             );
         }
+        let mut lock = load_lock(&self.root)?;
+        let mut previous = lock
+            .skills
+            .get(name)
+            .cloned()
+            .context("Installed Skill is unmanaged")?;
+        previous.content_sha256 = package_hash(&target)?.0;
         fs::create_dir_all(self.backups_dir())?;
         let prior_backup = self
             .root
@@ -908,12 +915,6 @@ impl SkillHub {
         if backup.exists() {
             move_path(&backup, &prior_backup)?;
         }
-        let mut lock = load_lock(&self.root)?;
-        let mut previous = lock
-            .skills
-            .remove(name)
-            .context("Installed Skill is unmanaged")?;
-        previous.content_sha256 = package_hash(&target)?.0;
         if let Err(error) = move_path(&target, &backup) {
             if prior_backup.is_dir() {
                 let _ = move_path(&prior_backup, &backup);
@@ -2295,6 +2296,36 @@ mod tests {
             "commit-incoming"
         );
         assert!(!installed.can_rollback);
+    }
+
+    #[test]
+    fn update_validation_failure_preserves_the_existing_rollback_package() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let current = root.join("skills/reviewer");
+        let backup = root.join("backups/skills/reviewer");
+        write_skill(&current, "current");
+        write_skill(&backup, "rollback");
+        fs::write(lock_path(root), b"not valid json").unwrap();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        let prepared = prepared_operation(
+            root,
+            SkillOperationKind::Update,
+            Some(package_hash(&current).unwrap().0),
+            Utc::now() + Duration::minutes(15),
+        );
+
+        assert!(hub.apply_update(prepared).is_err());
+        assert!(
+            fs::read_to_string(current.join("SKILL.md"))
+                .unwrap()
+                .ends_with("current")
+        );
+        assert!(
+            fs::read_to_string(backup.join("SKILL.md"))
+                .unwrap()
+                .ends_with("rollback")
+        );
     }
 
     #[test]

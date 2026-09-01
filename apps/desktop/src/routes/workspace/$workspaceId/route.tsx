@@ -244,7 +244,14 @@ function WorkspaceLayout() {
               <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
                 {activeWorkspace.name}
               </h1>
-              <Badge variant={activeWorkspace.status === "attention" ? "destructive" : "secondary"}>
+              <Badge
+                variant={activeWorkspace.status === "attention" ? "destructive" : "outline"}
+                className={
+                  activeWorkspace.status === "healthy"
+                    ? "border-transparent bg-muted text-muted-foreground"
+                    : undefined
+                }
+              >
                 {workspaceStatusLabel(activeWorkspace.status)}
               </Badge>
             </div>

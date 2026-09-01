@@ -1018,6 +1018,7 @@
   "conversations.indexDisabled": "Session indexing is disabled",
   "conversations.enable": "Enable",
   "conversations.settingsTitle": "Session history",
+  "conversations.listTitle": "Session list",
   "conversations.indexSetting": "Index session titles and metadata",
   "conversations.indexedWorkspaces": "{{count}} workspaces indexed",
   "conversations.clearIndex": "Clear index",

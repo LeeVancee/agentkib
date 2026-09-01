@@ -98,9 +98,13 @@ function Assets({
   ];
   return (
     <div className="grid gap-4">
-      <Tabs value={section} onValueChange={(value) => onSection(value as WorkspaceAssetSection)}>
+      <Tabs
+        className="min-w-0 max-w-full"
+        value={section}
+        onValueChange={(value) => onSection(value as WorkspaceAssetSection)}
+      >
         <TabsList
-          className="segmented-control w-full justify-start"
+          className="segmented-control w-fit max-w-full justify-start"
           variant="default"
           aria-label={tr("nav.assets")}
         >

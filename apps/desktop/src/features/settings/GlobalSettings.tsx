@@ -487,7 +487,7 @@ export function AppUpdateSetting({
 function ActivityPage({ records }: { records: ActivityRecord[] }) {
   return (
     <Card className="rounded-xl border border-border bg-card shadow-sm">
-      <CardHeader className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
+      <CardHeader className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 text-left">
         <div>
           <h2>{tr("activity.title")}</h2>
           <p>{tr("activity.description")}</p>
@@ -614,7 +614,7 @@ function StatusText({ active, children }: { active: boolean; children: ReactNode
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 text-xs font-medium",
+        "inline-flex items-center gap-1.5 justify-self-end text-xs font-medium",
         active ? "text-emerald-600" : "text-muted-foreground",
       )}
     >
@@ -641,7 +641,7 @@ function FileAccessSettingsRow() {
           <strong>{tr("settings.appDataAccess")}</strong>
         </SettingsCopy>
         <Button
-          className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+          className="justify-self-end border border-transparent bg-transparent text-foreground hover:bg-muted"
           type="button"
           onClick={() => void openSettings()}
         >
@@ -718,7 +718,7 @@ function QuotaAutoRefreshSetting({
           <strong>{tr("settings.quotaAutoRefresh")}</strong>
           <small>{tr("settings.quotaAutoRefreshHint")}</small>
         </SettingsCopy>
-        <Label className="inline-flex items-center">
+        <Label className="inline-flex items-center justify-self-end">
           <Switch
             checked={runtime?.quota_auto_refresh_enabled === true}
             disabled={busy || !runtime}
@@ -794,7 +794,7 @@ function ConversationPrivacySettings({
         <SettingsCopy>
           <strong>{tr("conversations.indexSetting")}</strong>
         </SettingsCopy>
-        <Label className="inline-flex items-center">
+        <Label className="inline-flex items-center justify-self-end">
           <Switch
             checked={runtime?.session_index_enabled !== false}
             disabled={busy}
@@ -807,7 +807,7 @@ function ConversationPrivacySettings({
           <strong>{tr("conversations.indexedWorkspaces", { count: indexedCount })}</strong>
         </SettingsCopy>
         <Button
-          className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+          className="justify-self-end border border-transparent bg-transparent text-foreground hover:bg-muted"
           disabled={busy || indexedCount === 0}
           onClick={() => void clear()}
         >

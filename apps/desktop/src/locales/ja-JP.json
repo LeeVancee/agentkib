@@ -1018,6 +1018,7 @@
   "conversations.indexDisabled": "セッション索引は無効です",
   "conversations.enable": "有効にする",
   "conversations.settingsTitle": "セッション履歴",
+  "conversations.listTitle": "セッション一覧",
   "conversations.indexSetting": "セッションタイトルとメタデータを索引化",
   "conversations.indexedWorkspaces": "{{count}} ワークスペースを索引化済み",
   "conversations.clearIndex": "索引を消去",

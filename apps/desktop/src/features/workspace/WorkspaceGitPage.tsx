@@ -561,14 +561,14 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="flex min-h-11 items-center gap-2.5 border-b border-border">
+      <div className="flex min-h-11 items-center gap-2.5 border-b border-border pb-1">
         <Tabs
-          className="min-w-0 flex-1"
+          className="min-w-0 max-w-full shrink-0"
           value={section}
           onValueChange={(value) => (value === "history" ? showHistory() : showWorktree())}
         >
           <TabsList
-            className="segmented-control w-full justify-start"
+            className="segmented-control w-fit max-w-full justify-start"
             variant="default"
             aria-label={tr("git.sectionLabel")}
           >

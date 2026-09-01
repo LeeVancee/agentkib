@@ -233,27 +233,30 @@ export function AgentsPage({
               )}
             </div>
             {selected === "deepseek-harness" && <Badge variant="outline">Beta</Badge>}
-          </CardHeader>
-
-          <Tabs value={section} onValueChange={(value) => setSection(value as AgentDetailSection)}>
-            <TabsList
-              className="segmented-control w-full justify-start px-4"
-              variant="default"
-              aria-label={agentLabels[selected]}
+            <Tabs
+              value={section}
+              onValueChange={(value) => setSection(value as AgentDetailSection)}
+              className="shrink-0"
             >
-              {(["overview", "assets", "workspaces", "usage"] as AgentDetailSection[]).map(
-                (value) => (
-                  <TabsTrigger
-                    className="segmented-control-item h-9 min-h-9 flex-none px-3"
-                    value={value}
-                    key={value}
-                  >
-                    {tr(`agents.section.${value}`)}
-                  </TabsTrigger>
-                ),
-              )}
-            </TabsList>
-          </Tabs>
+              <TabsList
+                className="segmented-control !h-auto w-fit justify-start"
+                variant="default"
+                aria-label={agentLabels[selected]}
+              >
+                {(["overview", "assets", "workspaces", "usage"] as AgentDetailSection[]).map(
+                  (value) => (
+                    <TabsTrigger
+                      className="segmented-control-item h-9 min-h-9 flex-none px-3"
+                      value={value}
+                      key={value}
+                    >
+                      {tr(`agents.section.${value}`)}
+                    </TabsTrigger>
+                  ),
+                )}
+              </TabsList>
+            </Tabs>
+          </CardHeader>
 
           {section === "overview" && (
             <div className="grid gap-5 p-5">

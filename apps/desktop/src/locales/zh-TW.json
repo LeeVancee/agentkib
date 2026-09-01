@@ -1018,6 +1018,7 @@
   "conversations.indexDisabled": "會話索引已關閉",
   "conversations.enable": "啟用",
   "conversations.settingsTitle": "會話歷史",
+  "conversations.listTitle": "會話清單",
   "conversations.indexSetting": "索引會話標題與中繼資料",
   "conversations.indexedWorkspaces": "已索引 {{count}} 個工作區",
   "conversations.clearIndex": "清除索引",

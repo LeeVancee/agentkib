@@ -297,7 +297,7 @@ fn grok_build_sections_with_roots(
     ];
     let mut sources = Vec::new();
     if let Some(home) = home.as_ref() {
-        collect_grok_root(home, GENERIC_NAMES, &["rules"], None, &mut sources);
+        collect_grok_root(home, GENERIC_NAMES, &[("rules", false)], None, &mut sources);
     }
     if let Some(user) = user_home.as_ref() {
         if compat.claude_agents || compat.claude_rules {
@@ -308,7 +308,11 @@ fn grok_build_sections_with_roots(
                 } else {
                     &[]
                 },
-                if compat.claude_rules { &["rules"] } else { &[] },
+                if compat.claude_rules {
+                    &[("rules", false)]
+                } else {
+                    &[]
+                },
                 None,
                 &mut sources,
             );
@@ -321,7 +325,11 @@ fn grok_build_sections_with_roots(
                 } else {
                     &[]
                 },
-                if compat.cursor_rules { &["rules"] } else { &[] },
+                if compat.cursor_rules {
+                    &[("rules", true)]
+                } else {
+                    &[]
+                },
                 None,
                 &mut sources,
             );
@@ -331,12 +339,12 @@ fn grok_build_sections_with_roots(
     if compat.claude_agents {
         project_names.extend([".claude/CLAUDE.md", ".claude/CLAUDE.local.md"]);
     }
-    let mut project_rules = vec![".grok/rules"];
+    let mut project_rules = vec![(".grok/rules", false)];
     if compat.claude_rules {
-        project_rules.push(".claude/rules");
+        project_rules.push((".claude/rules", false));
     }
     if compat.cursor_rules {
-        project_rules.push(".cursor/rules");
+        project_rules.push((".cursor/rules", true));
     }
     for dir in dirs {
         collect_grok_root(
@@ -411,7 +419,7 @@ fn grok_build_sections_with_roots(
 fn collect_grok_root(
     root: &Path,
     names: &[&str],
-    rule_dirs: &[&str],
+    rule_dirs: &[(&str, bool)],
     git_root: Option<&Path>,
     output: &mut Vec<PathBuf>,
 ) {
@@ -421,7 +429,7 @@ fn collect_grok_root(
             output.push(path);
         }
     }
-    for relative in rule_dirs {
+    for (relative, accepts_mdc) in rule_dirs {
         let rules = root.join(relative);
         let Ok(metadata) = fs::symlink_metadata(&rules) else {
             continue;
@@ -438,7 +446,10 @@ fn collect_grok_root(
             .filter(|path| {
                 path.extension()
                     .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("md")
+                            || (*accepts_mdc && extension.eq_ignore_ascii_case("mdc"))
+                    })
                     && grok_source_is_safe(root, path, git_root)
             })
             .collect::<Vec<_>>();
@@ -981,7 +992,9 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
         fs::create_dir_all(grok_home.join("rules")).unwrap();
         fs::create_dir_all(user_home.join(".claude/rules")).unwrap();
+        fs::create_dir_all(user_home.join(".cursor/rules")).unwrap();
         fs::create_dir_all(project.join(".grok/rules")).unwrap();
+        fs::create_dir_all(project.join(".cursor/rules")).unwrap();
         Command::new("git")
             .args(["init", "--quiet"])
             .current_dir(&project)
@@ -994,10 +1007,20 @@ mod tests {
             "claude-compatible-home",
         )
         .unwrap();
+        fs::write(
+            user_home.join(".cursor/rules/global.mdc"),
+            "---\ndescription: Global Cursor rule\n---\ncursor-compatible-home",
+        )
+        .unwrap();
         fs::write(project.join("Agents.md"), "project-named").unwrap();
         fs::write(
             project.join(".grok/rules/project.md"),
             "---\ndescription: Project rule\n---\nproject-rule",
+        )
+        .unwrap();
+        fs::write(
+            project.join(".cursor/rules/project.mdc"),
+            "---\ndescription: Project Cursor rule\n---\ncursor-compatible-project",
         )
         .unwrap();
         fs::write(project.join(".grok/rules/ignored.md"), "ignored-rule").unwrap();
@@ -1025,8 +1048,10 @@ mod tests {
                 "global-named",
                 "global-rule",
                 "claude-compatible-home",
+                "cursor-compatible-home",
                 "project-named",
                 "project-rule",
+                "cursor-compatible-project",
                 "nested-named",
             ]
         );

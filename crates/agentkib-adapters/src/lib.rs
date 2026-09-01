@@ -876,6 +876,12 @@ fn validator_for_skill_file(path: &Path) -> &'static str {
     }
 }
 
+fn has_path_component(path: &Path, name: &str) -> bool {
+    let name = OsStr::new(name);
+    path.components()
+        .any(|component| component.as_os_str() == name)
+}
+
 fn update_generated_hashes(
     root: &Path,
     manifest: &mut Manifest,
@@ -906,18 +912,24 @@ fn update_generated_hashes(
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let path = change.target.to_string_lossy();
-        let agents: &[AgentKind] = if path.contains(".openclaw") {
+        let scoped_path = change
+            .target
+            .strip_prefix(root)
+            .unwrap_or(change.target.as_path());
+        let agents: &[AgentKind] = if has_path_component(scoped_path, ".openclaw") {
             &[AgentKind::OpenClaw]
-        } else if path.contains(".hermes") {
+        } else if has_path_component(scoped_path, ".hermes") {
             &[AgentKind::Hermes]
-        } else if path.contains(".grok") {
+        } else if has_path_component(scoped_path, ".grok") {
             &[AgentKind::GrokBuild]
-        } else if path.contains(".codex") {
+        } else if has_path_component(scoped_path, ".codex") {
             &[AgentKind::Codex]
-        } else if path.contains(".cursor") {
+        } else if has_path_component(scoped_path, ".cursor") {
             &[AgentKind::Cursor]
-        } else if path.contains(".claude") || name == "CLAUDE.md" || name == ".mcp.json" {
+        } else if has_path_component(scoped_path, ".claude")
+            || name == "CLAUDE.md"
+            || name == ".mcp.json"
+        {
             &[AgentKind::ClaudeCode]
         } else {
             &[
@@ -1501,6 +1513,46 @@ mod tests {
             persisted.adapters[&AgentKind::Codex]
                 .generated_hashes
                 .contains_key("AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn grok_substring_in_workspace_parent_does_not_misclassify_generated_hashes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("my.grok-project/repo");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = default_manifest(&root).unwrap();
+
+        let plan = plan_workspace_changes(&root, &manifest, &HomeTargets::default()).unwrap();
+        let manifest_change = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/manifest.yaml"))
+            .unwrap();
+        let persisted: Manifest = serde_yaml::from_str(&manifest_change.after).unwrap();
+
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+        ] {
+            assert!(
+                persisted.adapters[&agent]
+                    .generated_hashes
+                    .contains_key("AGENTS.md")
+            );
+        }
+        assert!(
+            persisted.adapters[&AgentKind::Codex]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
+        );
+        assert!(
+            !persisted.adapters[&AgentKind::GrokBuild]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
         );
     }
 

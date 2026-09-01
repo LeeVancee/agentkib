@@ -549,7 +549,12 @@ fn opencode_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig>
             cwd: None,
         }
     };
-    Ok(base_server(candidate, transport))
+    let mut config = base_server(candidate, transport);
+    config.enabled = server
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    Ok(config)
 }
 
 fn json_strings(value: Option<&Value>) -> Vec<String> {
@@ -833,6 +838,7 @@ mod tests {
   "mcp": {
     "selected": {
       "type": "local",
+      "enabled": false,
       "command": ["node", "server.js"],
       "environment": { "API_TOKEN": "do-not-return" }
     },
@@ -862,6 +868,7 @@ mod tests {
             McpServerTransport::Stdio { ref command, ref args, .. }
                 if command == "node" && args == &["server.js"]
         ));
+        assert!(!server.enabled);
 
         let plan = plan_migration(
             dir.path(),
@@ -870,6 +877,20 @@ mod tests {
             "http://127.0.0.1/mcp/{agent}",
         )
         .unwrap();
+        let hub = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/mcp.json"))
+            .unwrap();
+        let document: McpConfigDocument = serde_json::from_str(&hub.after).unwrap();
+        assert!(
+            !document
+                .servers
+                .iter()
+                .find(|server| server.name == "selected")
+                .unwrap()
+                .enabled
+        );
         let native = plan
             .changes
             .iter()

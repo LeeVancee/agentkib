@@ -32,7 +32,7 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
                 {
                     if entry.file_type().is_file() {
                         let entry_path = entry.into_path();
-                        if is_asset(agent, path, &entry_path) {
+                        if is_asset(agent, kind, path, &entry_path) {
                             assets.push(record(agent, kind, entry_path, summary)?);
                         }
                     }
@@ -78,12 +78,14 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
     })
 }
 
-fn is_asset(agent: AgentKind, candidate: &str, path: &Path) -> bool {
+fn is_asset(agent: AgentKind, kind: AssetKind, candidate: &str, path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
         .is_some_and(|name| {
-            name == "SKILL.md"
-                || name.ends_with(".toml")
+            if kind == AssetKind::Skill {
+                return name == "SKILL.md";
+            }
+            name.ends_with(".toml")
                 || name.ends_with(".json")
                 || name.ends_with(".jsonc")
                 || name.ends_with(".md")
@@ -376,12 +378,17 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
 
 fn record(agent: AgentKind, kind: AssetKind, path: PathBuf, summary: &str) -> Result<AssetRecord> {
     let metadata = fs::metadata(&path)?;
+    let size = if kind == AssetKind::Skill {
+        crate::inspect_skill_entrypoint(&path)?.size
+    } else {
+        metadata.len()
+    };
     Ok(AssetRecord {
         agent,
         kind,
         path,
         exists: true,
-        size: metadata.len(),
+        size,
         summary: summary.into(),
         summary_key: summary_translation_key(summary).map(str::to_string),
         summary_params: Default::default(),
@@ -444,6 +451,59 @@ mod tests {
             asset.agent == AgentKind::GrokBuild
                 && asset.path.ends_with(".grok/skills/reviewer/SKILL.md")
         }));
+    }
+
+    #[test]
+    fn skill_package_only_creates_one_logical_asset_per_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::create_dir_all(skill.join("scripts")).unwrap();
+        let entrypoint = "---\nname: reviewer\n---\nBody";
+        let guide = "Guide";
+        let script = "Script docs";
+        fs::write(skill.join("SKILL.md"), entrypoint).unwrap();
+        fs::write(skill.join("references/guide.md"), guide).unwrap();
+        fs::write(skill.join("scripts/review.md"), script).unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let skill_assets: Vec<_> = scan
+            .assets
+            .iter()
+            .filter(|asset| asset.kind == AssetKind::Skill)
+            .collect();
+
+        assert_eq!(skill_assets.len(), 5);
+        assert!(
+            skill_assets
+                .iter()
+                .all(|asset| asset.path.ends_with("reviewer/SKILL.md"))
+        );
+        assert!(
+            skill_assets
+                .iter()
+                .all(|asset| asset.size == (entrypoint.len() + guide.len() + script.len()) as u64)
+        );
+        assert!(scan.assets.iter().all(|asset| {
+            !asset.path.ends_with("references/guide.md")
+                && !asset.path.ends_with("scripts/review.md")
+        }));
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::DeepSeekHarness,
+        ] {
+            assert_eq!(
+                scan.agents
+                    .iter()
+                    .find(|detection| detection.agent == agent)
+                    .unwrap()
+                    .asset_count,
+                1
+            );
+        }
     }
     use tempfile::tempdir;
 

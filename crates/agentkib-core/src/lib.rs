@@ -5,6 +5,7 @@ mod manifest;
 mod model;
 mod path_policy;
 mod scanner;
+mod skill;
 
 pub use changeset::{ApplyOptions, apply_changeset, hash_content};
 pub use context::{
@@ -15,6 +16,7 @@ pub use manifest::{load_manifest, manifest_path, validate_manifest};
 pub use model::*;
 pub use path_policy::{canonical_project, ensure_allowed_target};
 pub use scanner::scan_workspace;
+pub use skill::{SkillPackage, inspect_skill_entrypoint, is_readable_skill_file};
 
 pub fn validate_workspace(project: &std::path::Path) -> anyhow::Result<WorkspaceValidation> {
     let scan = scan_workspace(project)?;

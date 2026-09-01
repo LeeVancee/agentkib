@@ -559,7 +559,16 @@ struct WorkspaceIdRequest {
 }
 
 fn add_workspace(request: WorkspacePathRequest) -> anyhow::Result<agentkib_core::WorkspaceSummary> {
-    Store::open_default()?.add_workspace(Path::new(&request.path))
+    let path = Path::new(&request.path);
+    if agentkib_discovery::known_agent_homes()
+        .iter()
+        .any(|home| agentkib_platform::path::equivalent(home, path))
+    {
+        anyhow::bail!(
+            "Agent Home cannot be added as a workspace; manage its files in the global asset catalog"
+        );
+    }
+    Store::open_default()?.add_workspace(path)
 }
 
 fn refresh_workspace(

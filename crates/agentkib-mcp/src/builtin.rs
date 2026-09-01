@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use agentkib_core::{
-    AgentKind, AssetKind, MemoryProposal, MemoryStatus, MemoryType, load_manifest, resolve_context,
-    scan_workspace,
+    AgentKind, AssetKind, AssetRecord, MemoryProposal, MemoryStatus, MemoryType,
+    is_readable_skill_file, load_manifest, resolve_context, scan_workspace,
 };
 use agentkib_platform::path::{canonicalize, equivalent};
 use agentkib_store::Store;
@@ -91,16 +91,14 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
         }
         "asset_list" => serde_json::to_value(scan_workspace(project)?.assets)?,
         "asset_get" => {
-            let requested = project.join(
+            let requested_input = project.join(
                 args.get("path")
                     .and_then(Value::as_str)
                     .context("Missing asset path")?,
             );
-            let requested = canonicalize(&requested)?;
+            let requested = canonicalize(&requested_input)?;
             let scan = scan_workspace(project)?;
-            if !scan.assets.iter().any(|asset| {
-                equivalent(&asset.path, &requested) && !matches!(asset.kind, AssetKind::Memory)
-            }) {
+            if !is_readable_asset_path(&scan.assets, &requested_input, &requested) {
                 bail!("The requested path is not in the readable asset inventory");
             }
             let content = std::fs::read_to_string(&requested)?;
@@ -184,6 +182,19 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
     Ok(CallToolResult::structured(payload))
 }
 
+fn is_readable_asset_path(
+    assets: &[AssetRecord],
+    requested_input: &Path,
+    requested: &Path,
+) -> bool {
+    assets
+        .iter()
+        .any(|asset| equivalent(&asset.path, requested) && !matches!(asset.kind, AssetKind::Memory))
+        || assets.iter().any(|asset| {
+            asset.kind == AssetKind::Skill && is_readable_skill_file(&asset.path, requested_input)
+        })
+}
+
 fn tool(name: &str, description: &str, input_schema: Value) -> Tool {
     serde_json::from_value(json!({
         "name": name,
@@ -210,4 +221,68 @@ fn parse_memory_type(value: &str) -> Result<MemoryType> {
 
 pub fn error_result(error: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(error.to_string())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn asset_get_allows_skill_supporting_files_but_not_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let guide = skill.join("references/guide.md");
+        fs::write(&guide, "Guide").unwrap();
+        let outside = dir.path().join("notes.md");
+        fs::write(&outside, "Notes").unwrap();
+        let private = skill.join("secret.txt");
+        fs::write(&private, "Private").unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(is_readable_asset_path(
+            &scan.assets,
+            &guide,
+            &canonicalize(&guide).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &outside,
+            &canonicalize(&outside).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &private,
+            &canonicalize(&private).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &skill.join("references/../../../../notes.md"),
+            &canonicalize(&outside).unwrap()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asset_get_rejects_skill_supporting_file_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let actual = skill.join("references/actual.md");
+        fs::write(&actual, "Guide").unwrap();
+        let link = skill.join("references/link.md");
+        symlink(&actual, &link).unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &link,
+            &canonicalize(&link).unwrap()
+        ));
+    }
 }

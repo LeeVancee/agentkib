@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use agentkib_core::{
     AgentInstallation, AgentKind, AssetKind, CatalogAsset, CatalogScope, DiscoveryCandidate,
-    DiscoveryEvidence, hash_content,
+    DiscoveryEvidence, hash_content, inspect_skill_entrypoint,
 };
 use agentkib_platform::{command, path as platform_path};
 use anyhow::{Context, Result};
@@ -33,8 +33,8 @@ pub struct DiscoverySnapshot {
     pub errors: Vec<String>,
 }
 
-pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
-    let providers: Vec<Box<dyn WorkspaceDiscoveryProvider>> = vec![
+fn providers() -> Vec<Box<dyn WorkspaceDiscoveryProvider>> {
+    vec![
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(CursorProvider::default()),
@@ -43,7 +43,21 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
         Box::new(DeepSeekHarnessProvider::default()),
-    ];
+    ]
+}
+
+pub fn known_agent_homes() -> Vec<PathBuf> {
+    let mut homes: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for provider in providers() {
+        if let Some(home) = provider.installation().home {
+            homes.entry(platform_path::identity(&home)).or_insert(home);
+        }
+    }
+    homes.into_values().collect()
+}
+
+pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
+    let providers = providers();
     let provider_results = parallel_map_bounded(providers, 4, |provider| {
         let installation = provider.installation();
         let label = installation.agent.as_str();
@@ -84,8 +98,10 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
             Err(error) => errors.push(format!("Scan root {} failed: {error}", root.display())),
         }
     }
+    let mut candidates = normalize_and_merge(candidates);
+    exclude_agent_home_candidates(&mut candidates, &installations);
     DiscoverySnapshot {
-        candidates: normalize_and_merge(candidates),
+        candidates,
         installations,
         home_assets,
         errors,
@@ -1178,6 +1194,18 @@ fn normalize_and_merge(candidates: Vec<DiscoveryCandidate>) -> Vec<DiscoveryCand
     grouped.into_values().collect()
 }
 
+fn exclude_agent_home_candidates(
+    candidates: &mut Vec<DiscoveryCandidate>,
+    installations: &[AgentInstallation],
+) {
+    let agent_homes: BTreeSet<_> = installations
+        .iter()
+        .filter_map(|installation| installation.home.as_deref())
+        .map(platform_path::identity)
+        .collect();
+    candidates.retain(|candidate| !agent_homes.contains(&platform_path::identity(&candidate.path)));
+}
+
 fn normalize_workspace(path: &Path, explicit: bool) -> Option<PathBuf> {
     let canonical = platform_path::canonicalize(path).ok()?;
     if !canonical.is_dir() {
@@ -1357,33 +1385,41 @@ fn has_path_component(path: &Path, expected: &str) -> bool {
 
 fn home_asset(agent: AgentKind, path: &Path, kind: AssetKind) -> Result<CatalogAsset> {
     let metadata = fs::metadata(path)?;
-    let name = if matches!(kind, AssetKind::Skill)
-        && path.file_name().and_then(|value| value.to_str()) == Some("SKILL.md")
-    {
-        path.parent()
-            .and_then(Path::file_name)
-            .and_then(|value| value.to_str())
-            .unwrap_or("skill")
-    } else {
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("asset")
-    };
+    let skill = (kind == AssetKind::Skill
+        && path.file_name().and_then(|value| value.to_str()) == Some("SKILL.md"))
+    .then(|| inspect_skill_entrypoint(path))
+    .transpose()?;
+    let name = skill
+        .as_ref()
+        .map(|skill| skill.name.clone())
+        .unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("asset")
+                .to_string()
+        });
+    let asset_path = skill
+        .as_ref()
+        .map(|skill| skill.root.clone())
+        .unwrap_or_else(|| path.to_path_buf());
     Ok(CatalogAsset {
         id: String::new(),
         scope: CatalogScope::AgentHome,
         workspace_id: None,
         agent: Some(agent),
         kind,
-        name: name.to_string(),
-        path: path.to_path_buf(),
+        name,
+        path: asset_path,
         summary: format!("{} Home asset (read-only)", agent.as_str()),
         summary_key: Some("assets.summary.homeAsset".into()),
         summary_params: [("agent".into(), agent.as_str().into())]
             .into_iter()
             .collect(),
-        size: metadata.len(),
-        modified_at: metadata.modified().ok().map(DateTime::<Utc>::from),
+        size: skill.as_ref().map_or(metadata.len(), |skill| skill.size),
+        modified_at: skill
+            .as_ref()
+            .and_then(|skill| skill.modified_at)
+            .or_else(|| metadata.modified().ok().map(DateTime::<Utc>::from)),
     })
 }
 
@@ -2302,7 +2338,14 @@ mod tests {
         fs::write(dir.path().join("MEMORY.md"), "private memory body").unwrap();
         fs::write(dir.path().join("credentials.json"), "secret").unwrap();
         fs::create_dir_all(dir.path().join("skills/example/.git")).unwrap();
-        fs::write(dir.path().join("skills/example/SKILL.md"), "skill body").unwrap();
+        let skill_entrypoint = "---\nname: logical-skill\n---\nskill body";
+        fs::write(dir.path().join("skills/example/SKILL.md"), skill_entrypoint).unwrap();
+        fs::create_dir_all(dir.path().join("skills/example/references")).unwrap();
+        fs::write(
+            dir.path().join("skills/example/references/guide.md"),
+            "guide",
+        )
+        .unwrap();
         fs::write(
             dir.path().join("skills/example/script.py"),
             "print('noise')",
@@ -2317,6 +2360,55 @@ mod tests {
         .unwrap();
         assert_eq!(assets.len(), 2);
         assert!(assets.iter().any(|value| value.kind == AssetKind::Memory));
-        assert!(assets.iter().any(|value| value.name == "example"));
+        let skill = assets
+            .iter()
+            .find(|value| value.kind == AssetKind::Skill)
+            .unwrap();
+        assert_eq!(skill.name, "logical-skill");
+        assert_eq!(skill.path, dir.path().join("skills/example"));
+        assert_eq!(
+            skill.size,
+            (skill_entrypoint.len() + 5 + "print('noise')".len()) as u64
+        );
+        assert!(skill.modified_at.is_some());
+    }
+
+    #[test]
+    fn exact_agent_home_candidates_are_excluded_without_hiding_projects_below_them() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join(".codex");
+        let project = home.join("projects/app");
+        fs::create_dir_all(&project).unwrap();
+        let mut candidates = vec![
+            candidate(
+                home.clone(),
+                Some(AgentKind::Codex),
+                DiscoveryEvidence::SessionCwd,
+                None,
+                1,
+                true,
+            ),
+            candidate(
+                project.clone(),
+                Some(AgentKind::Codex),
+                DiscoveryEvidence::SessionCwd,
+                None,
+                1,
+                true,
+            ),
+        ];
+        let installations = vec![AgentInstallation {
+            agent: AgentKind::Codex,
+            installed: true,
+            configured: true,
+            version: None,
+            home: Some(home.clone()),
+            warnings: Vec::new(),
+        }];
+
+        exclude_agent_home_candidates(&mut candidates, &installations);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, project);
     }
 }

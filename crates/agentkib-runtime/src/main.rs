@@ -3349,8 +3349,7 @@ fn apply_skill_operation(
     request: ApplySkillOperationRequest,
 ) -> anyhow::Result<agentkib_core::InstalledSkill> {
     let skill = skill_hub()?.apply(&request.token, request.confirmed, request.allow_modified)?;
-    let _ = Store::open_default()?.audit(None, "skill.apply", &skill.name);
-    refresh_discovery(EmptyRequest {})?;
+    complete_skill_mutation("skill.apply", &skill.name);
     Ok(skill)
 }
 
@@ -3377,15 +3376,13 @@ struct ConfirmSkillRequest {
 
 fn rollback_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
     let skill = skill_hub()?.rollback(&request.name, request.confirmed)?;
-    let _ = Store::open_default()?.audit(None, "skill.rollback", &skill.name);
-    refresh_discovery(EmptyRequest {})?;
+    complete_skill_mutation("skill.rollback", &skill.name);
     Ok(skill)
 }
 
 fn uninstall_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::RemovedSkill> {
     let skill = skill_hub()?.uninstall(&request.name, request.confirmed)?;
-    let _ = Store::open_default()?.audit(None, "skill.uninstall", &skill.name);
-    refresh_discovery(EmptyRequest {})?;
+    complete_skill_mutation("skill.uninstall", &skill.name);
     Ok(skill)
 }
 
@@ -3401,9 +3398,17 @@ struct RestoreSkillRequest {
 
 fn restore_skill(request: RestoreSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
     let skill = skill_hub()?.restore(&request.id, request.confirmed)?;
-    let _ = Store::open_default()?.audit(None, "skill.restore", &skill.name);
-    refresh_discovery(EmptyRequest {})?;
+    complete_skill_mutation("skill.restore", &skill.name);
     Ok(skill)
+}
+
+fn complete_skill_mutation(action: &str, name: &str) {
+    // The filesystem mutation is already durable; follow-up bookkeeping must not turn it into a
+    // reported failure that encourages the user to repeat the operation.
+    if let Ok(store) = Store::open_default() {
+        let _ = store.audit(None, action, name);
+    }
+    let _ = refresh_discovery(EmptyRequest {});
 }
 
 #[derive(Deserialize)]

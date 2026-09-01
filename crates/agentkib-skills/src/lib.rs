@@ -1608,12 +1608,23 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
             .as_ref()
             .map(|value| value.name.clone())
             .unwrap_or_else(|| name.clone());
-        let Ok((hash, size, modified_at)) = package_hash(&entry.path()) else {
-            continue;
-        };
         let record = lock.skills.get(&name);
+        let (hash, size, modified_at) = match package_hash(&entry.path()) {
+            Ok((hash, size, modified_at)) => (Some(hash), size, modified_at),
+            Err(_) if record.is_none() => continue,
+            Err(_) => (
+                None,
+                0,
+                fs::metadata(entry.path())
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .map(DateTime::<Utc>::from),
+            ),
+        };
         let status = match record {
-            Some(record) if record.content_sha256 != hash => InstalledSkillStatus::Modified,
+            Some(record) if hash.as_deref() != Some(record.content_sha256.as_str()) => {
+                InstalledSkillStatus::Modified
+            }
             Some(_) => InstalledSkillStatus::Current,
             None => InstalledSkillStatus::Unmanaged,
         };
@@ -2201,14 +2212,36 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         write_skill(&directory.path().join("skills/valid"), "valid");
-        let malformed = directory.path().join("skills/malformed");
-        write_skill(&malformed, "malformed");
-        symlink("SKILL.md", malformed.join("nested-link")).unwrap();
+        let unmanaged = directory.path().join("skills/unmanaged-malformed");
+        write_skill(&unmanaged, "unmanaged");
+        symlink("SKILL.md", unmanaged.join("nested-link")).unwrap();
+        let managed = directory.path().join("skills/managed-malformed");
+        write_skill(&managed, "managed");
+        symlink("SKILL.md", managed.join("nested-link")).unwrap();
+        save_lock(
+            directory.path(),
+            &SkillLockFile {
+                schema_version: 1,
+                skills: BTreeMap::from([(
+                    "managed-malformed".into(),
+                    SkillLockEntry {
+                        source: Some(source("commit", "tree")),
+                        content_sha256: "prior-hash".into(),
+                        installed_at: Utc::now(),
+                        updated_at: Utc::now(),
+                    },
+                )]),
+                previous: BTreeMap::new(),
+            },
+        )
+        .unwrap();
 
         let installed = list_installed(directory.path()).unwrap();
 
-        assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].name, "valid");
+        assert_eq!(installed.len(), 2);
+        assert_eq!(installed[0].name, "managed-malformed");
+        assert_eq!(installed[0].status, InstalledSkillStatus::Modified);
+        assert_eq!(installed[1].name, "valid");
     }
 
     #[test]

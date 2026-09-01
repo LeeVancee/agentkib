@@ -16,7 +16,7 @@ export function sanitizeHandoffContent(
   let content = input;
   const patterns = [
     /\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]+)\b/g,
-    /(?i:password|token|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+/g,
+    /(?:password|token|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi,
   ];
   for (const pattern of patterns)
     content = content.replace(pattern, () => {

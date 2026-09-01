@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi } from "../api";
+import type { DesktopApi, DesktopRuntimeStatus } from "../api";
 import type {
   AppMenuCommandRequest,
   AppNavigationRequest,
@@ -29,9 +29,17 @@ const desktopApi = Object.freeze({
       subscribe("agentkib:navigate", listener),
     onMenuCommand: (listener: (request: AppMenuCommandRequest) => void) =>
       subscribe("agentkib:app-command", listener),
+    onRuntimeStatus: (listener: (status: DesktopRuntimeStatus) => void) =>
+      subscribe("agentkib:runtime:status", listener),
   }),
   runtime: Object.freeze({
     handshake: () => ipcRenderer.invoke("agentkib:runtime:handshake"),
+    status: () => ipcRenderer.invoke("agentkib:runtime:status"),
+    retry: () => ipcRenderer.invoke("agentkib:runtime:retry"),
+  }),
+  benchmark: Object.freeze({
+    mark: (name: "renderer-first-commit" | "home-data-ready") =>
+      ipcRenderer.invoke("agentkib:benchmark:mark", name),
   }),
   updates: Object.freeze({
     check: () => ipcRenderer.invoke("agentkib:updates:check"),

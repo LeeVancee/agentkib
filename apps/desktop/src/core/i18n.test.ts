@@ -4,7 +4,15 @@ import enUS from "../locales/en-US.json";
 import jaJP from "../locales/ja-JP.json";
 import zhCN from "../locales/zh-CN.json";
 import zhTW from "../locales/zh-TW.json";
-import { changeLocale, formatCompactNumber, initializeI18n, normalizeLocale, tr } from "./i18n";
+import {
+  cacheEffectiveLocale,
+  cachedEffectiveLocale,
+  changeLocale,
+  formatCompactNumber,
+  initializeI18n,
+  normalizeLocale,
+  tr,
+} from "./i18n";
 
 const dictionaries = { "en-US": enUS, "zh-CN": zhCN, "zh-TW": zhTW, "ja-JP": jaJP } as const;
 
@@ -50,5 +58,11 @@ describe("i18n resources", () => {
     await changeLocale("ja-JP");
     expect(tr("nav.home")).toBe("今日のタスク");
     expect(document.documentElement.lang).toBe("ja-JP");
+  });
+
+  it("caches the last effective locale for non-blocking startup", () => {
+    cacheEffectiveLocale("ja-JP");
+
+    expect(cachedEffectiveLocale("en-US")).toBe("ja-JP");
   });
 });

@@ -73,6 +73,12 @@ import type {
 
 export type DesktopEventUnsubscribe = () => void;
 
+export interface DesktopRuntimeStatus {
+  state: "starting" | "ready" | "restarting" | "failed" | "stopping";
+  restartCount: number;
+  error?: string;
+}
+
 export interface DesktopApi {
   platform: NodeJS.Platform;
   events: {
@@ -82,9 +88,15 @@ export interface DesktopApi {
     onQuotaUpdated(listener: (snapshot: QuotaSnapshot) => void): DesktopEventUnsubscribe;
     onNavigate(listener: (request: AppNavigationRequest) => void): DesktopEventUnsubscribe;
     onMenuCommand(listener: (request: AppMenuCommandRequest) => void): DesktopEventUnsubscribe;
+    onRuntimeStatus(listener: (status: DesktopRuntimeStatus) => void): DesktopEventUnsubscribe;
   };
   runtime: {
     handshake(): Promise<RuntimeHandshakeResult>;
+    status(): Promise<DesktopRuntimeStatus>;
+    retry(): Promise<void>;
+  };
+  benchmark: {
+    mark(name: "renderer-first-commit" | "home-data-ready"): Promise<void>;
   };
   updates: {
     check(): Promise<AppUpdateInfo | undefined>;

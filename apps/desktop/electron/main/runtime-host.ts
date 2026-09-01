@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createInterface } from "node:readline";
+import { createInterface, type Interface } from "node:readline";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
@@ -10,12 +10,27 @@ import {
 
 const HEALTHY_RUNTIME_RESET_MS = 30_000;
 
+export type RuntimeHostState = "starting" | "ready" | "restarting" | "failed" | "stopping";
+
+export interface RuntimeHostStatus {
+  state: RuntimeHostState;
+  restartCount: number;
+  error?: string;
+}
+
+type RuntimeProcessFactory = (
+  executablePath: string,
+  args: string[],
+  options: Parameters<typeof spawn>[2],
+) => ChildProcessWithoutNullStreams;
+
 interface RuntimeHostOptions {
   executablePath: string;
   clientVersion: string;
   environment?: NodeJS.ProcessEnv;
   maxRestarts?: number;
   shutdownTimeoutMs?: number;
+  spawnProcess?: RuntimeProcessFactory;
 }
 
 interface RpcResponse {
@@ -28,6 +43,13 @@ interface RpcResponse {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+  settled: boolean;
 }
 
 export class RuntimeRequestError extends Error {
@@ -50,34 +72,170 @@ export class RuntimeRequestError extends Error {
 }
 
 export class DesktopRuntimeHost extends EventEmitter {
-  readonly #options: Required<Pick<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs">> &
-    Omit<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs">;
+  readonly #options: Required<
+    Pick<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">
+  > &
+    Omit<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">;
   readonly #pending = new Map<number, PendingRequest>();
   #child?: ChildProcessWithoutNullStreams;
+  #lines?: Interface;
   #nextRequestId = 1;
   #restartCount = 0;
   #lastReadyAt = 0;
   #restartTimer?: NodeJS.Timeout;
-  #stopping = false;
+  #state: RuntimeHostState = "stopping";
+  #lastError?: Error;
+  #readiness = deferred<RuntimeHandshakeResult>();
+  #handshake?: RuntimeHandshakeResult;
 
   constructor(options: RuntimeHostOptions) {
     super();
     this.#options = {
       maxRestarts: 3,
       shutdownTimeoutMs: 2_000,
+      spawnProcess: spawn as RuntimeProcessFactory,
       ...options,
     };
   }
 
+  get status(): RuntimeHostStatus {
+    return {
+      state: this.#state,
+      restartCount: this.#restartCount,
+      ...(this.#lastError ? { error: this.#lastError.message } : {}),
+    };
+  }
+
   async start(): Promise<RuntimeHandshakeResult> {
-    if (this.#child) throw new Error("AgentKib runtime is already running");
-    this.#stopping = false;
+    if (this.#state !== "stopping" || this.#child) {
+      throw new Error("AgentKib runtime has already been started");
+    }
     this.#restartCount = 0;
     this.#lastReadyAt = 0;
-    return this.#spawnAndHandshake();
+    this.#lastError = undefined;
+    this.#handshake = undefined;
+    this.#readiness = deferred<RuntimeHandshakeResult>();
+    this.#setState("starting");
+    this.#startAttempt();
+    return this.#readiness.promise;
+  }
+
+  async retry(): Promise<RuntimeHandshakeResult> {
+    if (this.#state !== "failed") {
+      if (this.#state === "ready" && this.#handshake) return this.#handshake;
+      return this.#readiness.promise;
+    }
+    this.#restartCount = 0;
+    this.#lastReadyAt = 0;
+    this.#lastError = undefined;
+    this.#handshake = undefined;
+    this.#readiness = deferred<RuntimeHandshakeResult>();
+    this.#setState("starting");
+    this.#startAttempt();
+    return this.#readiness.promise;
   }
 
   async request<TResult>(method: string, params: unknown): Promise<TResult> {
+    while (this.#state === "starting" || this.#state === "restarting") {
+      await this.#readiness.promise;
+    }
+    if (this.#state === "failed") {
+      throw this.#lastError ?? new Error("AgentKib runtime failed to start");
+    }
+    if (this.#state !== "ready") throw new Error("AgentKib runtime is stopping");
+    return this.#requestNow<TResult>(method, params);
+  }
+
+  async stop(): Promise<void> {
+    if (this.#state === "stopping") return;
+    this.#setState("stopping");
+    if (this.#restartTimer) {
+      clearTimeout(this.#restartTimer);
+      this.#restartTimer = undefined;
+    }
+    const stoppingError = new Error("AgentKib runtime is stopping");
+    this.#rejectReadiness(stoppingError);
+
+    const child = this.#child;
+    if (!child || child.exitCode !== null) {
+      this.#rejectPending(stoppingError);
+      return;
+    }
+
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    try {
+      await this.#requestNow(RUNTIME_METHODS.shutdown, {});
+    } catch {
+      // An already-failed runtime still needs the bounded termination path below.
+    }
+
+    await Promise.race([exited, delay(this.#options.shutdownTimeoutMs)]);
+    if (child.exitCode === null) {
+      child.kill();
+      await Promise.race([exited, delay(500)]);
+    }
+  }
+
+  #startAttempt(): void {
+    void this.#spawnAndHandshake().catch((error: unknown) => {
+      this.emit("restart-error", error);
+    });
+  }
+
+  async #spawnAndHandshake(): Promise<void> {
+    const child = this.#options.spawnProcess(this.#options.executablePath, [], {
+      env: { ...process.env, ...this.#options.environment },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    this.#child = child;
+
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => process.stderr.write(`[agentkib-runtime] ${chunk}`));
+
+    const lines = createInterface({ input: child.stdout });
+    this.#lines = lines;
+    lines.on("line", (line) => this.#handleLine(line));
+    child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+
+      const handshake = await this.#requestNow<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
+        protocolVersion: PROTOCOL_VERSION,
+        client: { name: "agentkib-electron", version: this.#options.clientVersion },
+      });
+      if (handshake.protocolVersion !== PROTOCOL_VERSION) {
+        throw new Error(
+          `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
+        );
+      }
+      if (this.#child !== child || this.#state === "stopping") return;
+
+      this.#lastReadyAt = Date.now();
+      this.#lastError = undefined;
+      this.#handshake = handshake;
+      this.#setState("ready");
+      this.#resolveReadiness(handshake);
+      this.emit("ready", handshake);
+    } catch (error) {
+      const runtimeError = toError(error);
+      if (this.#child === child) {
+        this.#child = undefined;
+        this.#lines?.close();
+        this.#lines = undefined;
+        this.#rejectPending(runtimeError);
+        if (child.exitCode === null) child.kill();
+        this.#scheduleRestart(runtimeError);
+      }
+      throw runtimeError;
+    }
+  }
+
+  #requestNow<TResult>(method: string, params: unknown): Promise<TResult> {
     const child = this.#child;
     if (!child || child.exitCode !== null) throw new Error("AgentKib runtime is not running");
 
@@ -95,72 +253,6 @@ export class DesktopRuntimeHost extends EventEmitter {
         reject(error);
       });
     });
-  }
-
-  async stop(): Promise<void> {
-    this.#stopping = true;
-    if (this.#restartTimer) {
-      clearTimeout(this.#restartTimer);
-      this.#restartTimer = undefined;
-    }
-
-    const child = this.#child;
-    if (!child || child.exitCode !== null) return;
-
-    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    try {
-      await this.request(RUNTIME_METHODS.shutdown, {});
-    } catch {
-      // An already-failed runtime still needs the bounded termination path below.
-    }
-
-    await Promise.race([exited, delay(this.#options.shutdownTimeoutMs)]);
-    if (child.exitCode === null) {
-      child.kill();
-      await Promise.race([exited, delay(500)]);
-    }
-  }
-
-  async #spawnAndHandshake(): Promise<RuntimeHandshakeResult> {
-    const child = spawn(this.#options.executablePath, [], {
-      env: { ...process.env, ...this.#options.environment },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    this.#child = child;
-
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => process.stderr.write(`[agentkib-runtime] ${chunk}`));
-
-    const lines = createInterface({ input: child.stdout });
-    lines.on("line", (line) => this.#handleLine(line));
-    child.once("exit", (code, signal) => this.#handleExit(child, code, signal));
-    child.once("error", (error) => this.#handleSpawnError(child, error));
-
-    await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
-    });
-
-    let handshake: RuntimeHandshakeResult;
-    try {
-      handshake = await this.request<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
-        protocolVersion: PROTOCOL_VERSION,
-        client: { name: "agentkib-electron", version: this.#options.clientVersion },
-      });
-      if (handshake.protocolVersion !== PROTOCOL_VERSION) {
-        throw new Error(
-          `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
-        );
-      }
-    } catch (error) {
-      if (this.#child === child && child.exitCode === null) child.kill();
-      throw error;
-    }
-
-    this.#lastReadyAt = Date.now();
-    this.emit("ready", handshake);
-    return handshake;
   }
 
   #handleLine(line: string): void {
@@ -191,22 +283,20 @@ export class DesktopRuntimeHost extends EventEmitter {
   ): void {
     if (this.#child !== child) return;
     this.#child = undefined;
+    this.#lines?.close();
+    this.#lines = undefined;
     const error = new Error(
       `AgentKib runtime exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`,
     );
-    for (const pending of this.#pending.values()) pending.reject(error);
-    this.#pending.clear();
-    this.emit("exit", { code, signal, expected: this.#stopping });
+    this.#rejectPending(error);
+    const expected = this.#state === "stopping";
+    const wasReady = this.#state === "ready";
+    this.emit("exit", { code, signal, expected });
+    if (expected) return;
 
-    this.#scheduleRestart(error);
-  }
-
-  #handleSpawnError(child: ChildProcessWithoutNullStreams, error: Error): void {
-    if (this.#child !== child) return;
-    this.#child = undefined;
-    for (const pending of this.#pending.values()) pending.reject(error);
-    this.#pending.clear();
-    this.emit("exit", { code: null, signal: null, expected: this.#stopping });
+    this.#handshake = undefined;
+    if (wasReady) this.#readiness = deferred<RuntimeHandshakeResult>();
+    this.#setState("restarting", error);
     this.#scheduleRestart(error);
   }
 
@@ -215,22 +305,67 @@ export class DesktopRuntimeHost extends EventEmitter {
       this.#restartCount = 0;
     }
     this.#lastReadyAt = 0;
+    this.#lastError = error;
 
-    if (this.#stopping || this.#restartTimer) return;
+    if (this.#state === "stopping" || this.#restartTimer) return;
     if (this.#restartCount >= this.#options.maxRestarts) {
+      this.#setState("failed", error);
+      this.#rejectReadiness(error);
       this.emit("crash-loop", error);
       return;
     }
 
+    this.#setState("restarting", error);
     const backoffMs = 250 * 2 ** this.#restartCount;
     this.#restartCount += 1;
     this.#restartTimer = setTimeout(() => {
       this.#restartTimer = undefined;
-      void this.#spawnAndHandshake().catch((restartError: unknown) => {
-        this.emit("restart-error", restartError);
-      });
+      this.#startAttempt();
     }, backoffMs);
   }
+
+  #setState(state: RuntimeHostState, error?: Error): void {
+    this.#state = state;
+    if (error) this.#lastError = error;
+    this.emit("state", this.status);
+  }
+
+  #resolveReadiness(handshake: RuntimeHandshakeResult): void {
+    if (this.#readiness.settled) return;
+    this.#readiness.settled = true;
+    this.#readiness.resolve(handshake);
+  }
+
+  #rejectReadiness(error: Error): void {
+    if (this.#readiness.settled) return;
+    this.#readiness.settled = true;
+    this.#readiness.reject(error);
+  }
+
+  #rejectPending(error: Error): void {
+    for (const pending of this.#pending.values()) pending.reject(error);
+    this.#pending.clear();
+  }
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (error: Error) => void;
+  const value: Deferred<T> = {
+    promise: new Promise<T>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    }),
+    resolve: (result) => resolvePromise(result),
+    reject: (error) => rejectPromise(error),
+    settled: false,
+  };
+  void value.promise.catch(() => undefined);
+  return value;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function delay(milliseconds: number): Promise<void> {

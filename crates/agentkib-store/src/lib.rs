@@ -3083,6 +3083,9 @@ fn row_to_catalog_asset(row: &Row<'_>) -> rusqlite::Result<CatalogAsset> {
 }
 
 pub fn default_data_dir() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("AGENTKIB_BENCHMARK_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
     let base =
         dirs::data_local_dir().context("Could not determine the local app data directory")?;
     resolve_data_dir(&base)

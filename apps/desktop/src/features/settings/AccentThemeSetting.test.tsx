@@ -19,23 +19,25 @@ describe("AccentThemeSetting", () => {
     render(<AccentThemeSetting effectiveTheme="dark" />);
 
     expect(
-      screen.getByText("Dark mode is active. This will be used when you switch to light mode."),
+      screen.getByText(
+        "The selected theme's dark palette is active across actions, surfaces, and the sidebar.",
+      ),
     ).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Light mode accent" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Accent theme" })).toBeTruthy();
   });
 
   it("persists a selected accent for light mode", async () => {
     const user = userEvent.setup();
     render(<AccentThemeSetting effectiveTheme="light" />);
 
-    await user.click(screen.getByRole("combobox", { name: "Light mode accent" }));
+    await user.click(screen.getByRole("combobox", { name: "Accent theme" }));
     await user.click(await screen.findByRole("option", { name: "Sakura" }));
 
     expect(document.documentElement.dataset.accentTheme).toBe("sakura");
     expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("sakura");
     expect(
       screen.getByText(
-        "Used for primary actions, focus, and compact selection states in light mode.",
+        "Applies a coordinated palette to actions, focus, selections, surfaces, and the sidebar.",
       ),
     ).toBeTruthy();
   });

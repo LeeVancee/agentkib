@@ -1,6 +1,6 @@
 use std::collections::HashSet;
+use std::env;
 use std::path::{Path, PathBuf};
-use std::{env, fs};
 
 use agentkib_core::{
     AgentKind, ChangeScope, ChangeSet, FileChange, McpConfigDocument, McpMigrationCandidate,
@@ -670,7 +670,11 @@ fn grok_home() -> Option<PathBuf> {
     env::var_os("GROK_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".grok")))
-        .filter(|home| fs::symlink_metadata(home).is_ok_and(|metadata| metadata.is_dir()))
+        .and_then(canonical_grok_home)
+}
+
+fn canonical_grok_home(home: PathBuf) -> Option<PathBuf> {
+    canonicalize(&home).ok().filter(|home| home.is_dir())
 }
 
 fn remove_json_names(value: &mut Value, pointer: &[&str], names: &[&str]) -> Result<()> {
@@ -870,5 +874,32 @@ future = 42
 
         assert_eq!(matching.len(), 1);
         assert_eq!(matching[0].scope, "project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_grok_home_is_resolved_for_mcp_scans() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let actual_home = dir.path().join("actual-grok-home");
+        let linked_home = dir.path().join("linked-grok-home");
+        std::fs::create_dir(&actual_home).unwrap();
+        std::fs::write(
+            actual_home.join("config.toml"),
+            "[mcp_servers.home]\ncommand = \"server\"\n",
+        )
+        .unwrap();
+        symlink(&actual_home, &linked_home).unwrap();
+
+        let home = canonical_grok_home(linked_home).unwrap();
+        let candidates = scan_native_candidates_with_grok_home(None, Some(&home)).unwrap();
+        let matching: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.agent == AgentKind::GrokBuild && candidate.name == "home")
+            .collect();
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].scope, "home");
     }
 }

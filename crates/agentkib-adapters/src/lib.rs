@@ -1084,9 +1084,17 @@ fn merge_toml_mcp_config(
 ) -> Result<String> {
     let existing = fs::read_to_string(path).unwrap_or_default();
     if !existing.contains(TOML_START) {
+        let parsed = toml::from_str::<toml::Value>(&existing).ok();
+        let existing_servers = parsed
+            .as_ref()
+            .and_then(|value| value.get("mcp_servers"))
+            .and_then(toml::Value::as_table);
         for connection in connections.iter().filter(|value| targeted(value, agent)) {
-            let table = format!("[mcp_servers.{}]", safe_key(&connection.name));
-            if existing.lines().any(|line| line.trim() == table) {
+            let key = safe_key(&connection.name);
+            let table = format!("[mcp_servers.{key}]");
+            if existing_servers.is_some_and(|servers| servers.contains_key(&key))
+                || existing.lines().any(|line| line.trim() == table)
+            {
                 anyhow::bail!(
                     "{label} configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
                     connection.name
@@ -1381,7 +1389,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(
             &path,
-            "[mcp_servers.agentkib]\nurl = \"https://user.example/mcp\"\n",
+            "[mcp_servers.agentkib] # local gateway\nurl = \"https://user.example/mcp\"\n",
         )
         .unwrap();
         let connections = [ConnectionDefinition {

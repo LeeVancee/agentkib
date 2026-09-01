@@ -295,6 +295,11 @@ fn grok_build_sections_with_roots(
         "AGENT.md",
         "AGENTS.md",
     ];
+    // The configured Home directory itself is trusted and may be a symlink (for
+    // example to another volume). Canonicalize that root once, then keep applying
+    // the normal containment checks to every file discovered beneath it.
+    let home = home.and_then(|root| canonicalize(&root).ok());
+    let user_home = user_home.and_then(|root| canonicalize(&root).ok());
     let mut sources = Vec::new();
     if let Some(home) = home.as_ref() {
         collect_grok_root(home, GENERIC_NAMES, &[("rules", false)], None, &mut sources);
@@ -1096,6 +1101,37 @@ mod tests {
 
         assert_eq!(sections[0].content.chars().count(), 10_000);
         assert!(warnings.iter().any(|warning| warning.contains("10000")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_build_context_accepts_a_symlinked_home_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let actual_home = dir.path().join("actual-grok-home");
+        let linked_home = dir.path().join("linked-grok-home");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir_all(actual_home.join("rules")).unwrap();
+        fs::write(actual_home.join("AGENTS.md"), "global instructions").unwrap();
+        fs::write(actual_home.join("rules/global.md"), "global rule").unwrap();
+        symlink(&actual_home, &linked_home).unwrap();
+
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            std::slice::from_ref(&project),
+            Some(linked_home),
+            None,
+            GrokCompat::default(),
+            &mut warnings,
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].content, "global instructions");
+        assert_eq!(sections[1].content, "global rule");
+        assert!(warnings.is_empty());
     }
 
     #[cfg(unix)]

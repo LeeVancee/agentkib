@@ -166,9 +166,10 @@ pub fn read_codex_document(
     let snapshot = read_snapshot(path)?;
     let mut turns = Vec::new();
     let mut fallback_messages = Vec::new();
+    let mut fallback_attachments = Vec::new();
     let mut primary_messages = BTreeMap::new();
+    let mut primary_attachments = BTreeMap::new();
     let mut known_calls = BTreeSet::new();
-    let mut known_attachments = BTreeSet::new();
     let mut loss_counts = BTreeMap::new();
     if snapshot.damaged_records > 0 {
         loss_counts.insert(SessionLossCode::DamagedRecord, snapshot.damaged_records);
@@ -193,11 +194,10 @@ pub fn read_codex_document(
                     *primary_messages.entry(message_key(role, text)).or_insert(0) += 1;
                     blocks.push(SessionBlock::Text { text: text.into() });
                 }
-                blocks.extend(codex_attachment_blocks(
-                    &value,
-                    &mut known_attachments,
-                    &mut loss_counts,
-                ));
+                for (identity, block) in codex_attachment_blocks(&value, &mut loss_counts) {
+                    *primary_attachments.entry(identity).or_insert(0) += 1;
+                    blocks.push(block);
+                }
                 if !blocks.is_empty() {
                     turns.push(SessionTurn {
                         id: format!("turn-{line}"),
@@ -218,15 +218,9 @@ pub fn read_codex_document(
                 {
                     fallback_messages.push((line, role, timestamp, text));
                 }
-                let attachments =
-                    codex_attachment_blocks(&value, &mut known_attachments, &mut loss_counts);
+                let attachments = codex_attachment_blocks(&value, &mut loss_counts);
                 if !attachments.is_empty() {
-                    turns.push(SessionTurn {
-                        id: format!("turn-{line}-attachment"),
-                        role,
-                        timestamp,
-                        blocks: attachments,
-                    });
+                    fallback_attachments.push((line, role, timestamp, attachments));
                 }
             }
             (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
@@ -276,7 +270,10 @@ pub fn read_codex_document(
                     blocks: vec![SessionBlock::ToolResult {
                         call_id: call_id.into(),
                         output,
-                        is_error: false,
+                        is_error: value
+                            .pointer("/payload/is_error")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     }],
                 });
             }
@@ -298,25 +295,50 @@ pub fn read_codex_document(
         }
         turns.push(text_turn(line, role, timestamp, &text));
     }
+    for (line, role, timestamp, attachments) in fallback_attachments {
+        let blocks = attachments
+            .into_iter()
+            .filter_map(|(identity, block)| {
+                let remaining = primary_attachments.entry(identity).or_insert(0);
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    None
+                } else {
+                    Some(block)
+                }
+            })
+            .collect::<Vec<_>>();
+        if !blocks.is_empty() {
+            turns.push(SessionTurn {
+                id: format!("turn-{line}-attachment"),
+                role,
+                timestamp,
+                blocks,
+            });
+        }
+    }
     finish_document(source, turns, loss_counts, home)
 }
 
 fn codex_attachment_blocks(
     value: &Value,
-    known: &mut BTreeSet<String>,
     loss_counts: &mut BTreeMap<SessionLossCode, usize>,
-) -> Vec<SessionBlock> {
+) -> Vec<(String, SessionBlock)> {
     let mut blocks = Vec::new();
     let mut candidates = Vec::new();
     if let Some(images) = value.pointer("/payload/images").and_then(Value::as_array) {
-        candidates.extend(images.iter());
+        candidates.extend(
+            images
+                .iter()
+                .map(|image| (SessionAttachmentKind::Image, image, None)),
+        );
     }
     if let Some(content) = value.pointer("/payload/content").and_then(Value::as_array) {
         for block in content {
             match block.get("type").and_then(Value::as_str) {
                 Some("input_image" | "image") => {
                     if let Some(image) = block.get("image_url").or_else(|| block.get("url")) {
-                        candidates.push(image);
+                        candidates.push((SessionAttachmentKind::Image, image, None));
                     } else {
                         *loss_counts
                             .entry(SessionLossCode::UnsupportedAttachment)
@@ -324,15 +346,26 @@ fn codex_attachment_blocks(
                     }
                 }
                 Some("input_file" | "file") => {
-                    *loss_counts
-                        .entry(SessionLossCode::ExternalAttachment)
-                        .or_insert(0) += 1;
+                    if let Some(file) = block.get("file_data") {
+                        candidates.push((
+                            SessionAttachmentKind::Document,
+                            file,
+                            block
+                                .get("filename")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        ));
+                    } else {
+                        *loss_counts
+                            .entry(SessionLossCode::ExternalAttachment)
+                            .or_insert(0) += 1;
+                    }
                 }
                 _ => {}
             }
         }
     }
-    for candidate in candidates {
+    for (kind, candidate, filename) in candidates {
         let url = candidate
             .as_str()
             .or_else(|| candidate.get("url").and_then(Value::as_str));
@@ -342,15 +375,16 @@ fn codex_attachment_blocks(
                 .or_insert(0) += 1;
             continue;
         };
-        let identity = format!("{media_type}:{data}");
-        if known.insert(identity) {
-            blocks.push(SessionBlock::Attachment {
-                kind: SessionAttachmentKind::Image,
+        let identity = format!("{kind:?}:{media_type}:{data}");
+        blocks.push((
+            identity,
+            SessionBlock::Attachment {
+                kind,
                 media_type,
-                filename: None,
+                filename,
                 inline_base64: Some(data),
-            });
-        }
+            },
+        ));
     }
     if let Some(local_images) = value
         .pointer("/payload/local_images")
@@ -1422,9 +1456,9 @@ mod tests {
         let path = directory.path().join("session.jsonl");
         let records = [
             serde_json::json!({"type":"compacted","payload":{"message":"do not import summary"}}),
-            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect API_KEY=secret"},{"type":"input_image","image_url":"data:image/png;base64,YWJj"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect API_KEY=secret"},{"type":"input_image","image_url":"data:image/png;base64,YWJj"},{"type":"input_file","file_data":"data:application/pdf;base64,ZGVm","filename":"reference.pdf"}]}}),
             serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":"read","arguments":"{\"path\":\"/tmp/a\"}"}}),
-            serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"done"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"failed","is_error":true}}),
             serde_json::json!({"type":"response_item","payload":{"type":"reasoning","summary":[{"text":"private thought"}]}}),
             serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"finished"}]}}),
         ];
@@ -1446,7 +1480,28 @@ mod tests {
         assert!(encoded.contains("[REDACTED]"));
         assert_eq!(stats(&document).tool_call_count, 1);
         assert_eq!(stats(&document).tool_result_count, 1);
-        assert_eq!(stats(&document).attachment_count, 1);
+        assert_eq!(stats(&document).attachment_count, 2);
+        assert!(
+            document
+                .turns
+                .iter()
+                .flat_map(|turn| &turn.blocks)
+                .any(|block| matches!(
+                    block,
+                    SessionBlock::Attachment {
+                        kind: SessionAttachmentKind::Document,
+                        filename: Some(filename),
+                        ..
+                    } if filename == "reference.pdf"
+                ))
+        );
+        assert!(
+            document
+                .turns
+                .iter()
+                .flat_map(|turn| &turn.blocks)
+                .any(|block| matches!(block, SessionBlock::ToolResult { is_error: true, .. }))
+        );
         assert_eq!(
             document
                 .losses
@@ -1478,6 +1533,31 @@ mod tests {
         let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
 
         assert_eq!(stats(&document).message_count, 2);
+    }
+
+    #[test]
+    fn codex_document_matches_duplicate_attachments_by_occurrence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let image = "data:image/png;base64,YWJj";
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":image}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","images":[image]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":image}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","images":[image]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+
+        assert_eq!(stats(&document).attachment_count, 2);
     }
 
     #[test]

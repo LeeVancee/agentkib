@@ -131,7 +131,7 @@ export function GlobalHome({
       <div className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
         <Button
           variant="link"
-          className="h-auto gap-2 p-0 font-semibold text-blue-600"
+          className="h-auto gap-2 p-0 font-semibold text-primary"
           onClick={onShowWorkspaces}
         >
           <CircleAlert size={16} />
@@ -190,7 +190,7 @@ export function GlobalHome({
                           key={workspace.id}
                           onClick={() => void onOpenDoctor(workspace)}
                         >
-                          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-blue-500/10 text-blue-600">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
                             <CircleAlert size={16} />
                           </span>
                           <span className="min-w-0 flex-1">
@@ -260,7 +260,7 @@ export function GlobalHome({
                 <h2 className="text-base font-semibold">{tr("home.recentActivity")}</h2>
                 <Button
                   variant="link"
-                  className="h-auto p-0 text-xs text-blue-600"
+                  className="h-auto p-0 text-xs text-primary"
                   onClick={onShowInsights}
                 >
                   {tr("home.viewAll")}
@@ -291,7 +291,7 @@ export function GlobalHome({
               <h2 className="text-base font-semibold">{tr("home.recentWorkspaces")}</h2>
               <Button
                 variant="link"
-                className="h-auto p-0 text-xs text-blue-600"
+                className="h-auto p-0 text-xs text-primary"
                 onClick={onShowWorkspaces}
               >
                 {tr("home.viewAll")}
@@ -357,7 +357,7 @@ function WorkspaceRow({
         </span>
       </div>
       {workspace.status === "attention" ? (
-        <Badge variant="secondary" className="gap-1 bg-blue-500/10 text-blue-600">
+        <Badge variant="secondary" className="gap-1 bg-primary/10 text-primary">
           <CircleAlert size={13} />
           {workspaceStatusLabel("attention")}
         </Badge>

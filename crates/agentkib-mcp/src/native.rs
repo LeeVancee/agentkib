@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::env;
 use std::path::{Path, PathBuf};
 
 use agentkib_core::{
@@ -12,10 +14,24 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
+    let grok_home = grok_home();
+    scan_native_candidates_with_grok_home(project, grok_home.as_deref())
+}
+
+fn scan_native_candidates_with_grok_home(
+    project: Option<&Path>,
+    grok_home: Option<&Path>,
+) -> Result<Vec<McpMigrationCandidate>> {
     let mut candidates = Vec::new();
     if let Some(project) = project {
         scan_codex(
             &project.join(".codex/config.toml"),
+            "project",
+            &mut candidates,
+        )?;
+        scan_toml_servers(
+            &project.join(".grok/config.toml"),
+            AgentKind::GrokBuild,
             "project",
             &mut candidates,
         )?;
@@ -75,7 +91,17 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
             scan_opencode_servers(&config_home.join(name), "home", &mut candidates)?;
         }
     }
-    candidates.retain(|candidate| candidate.name != "agentkib");
+    if let Some(home) = grok_home {
+        scan_toml_servers(
+            &home.join("config.toml"),
+            AgentKind::GrokBuild,
+            "home",
+            &mut candidates,
+        )?;
+    }
+    let mut seen = HashSet::new();
+    candidates
+        .retain(|candidate| candidate.name != "agentkib" && seen.insert(candidate.id.clone()));
     candidates.sort_by(|left, right| {
         left.agent
             .cmp(&right.agent)
@@ -92,6 +118,7 @@ pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerCo
         AgentKind::OpenCode => opencode_server(candidate)?,
         AgentKind::OpenClaw => json_server(candidate, &["mcp", "servers"], true)?,
         AgentKind::Hermes => hermes_server(candidate)?,
+        AgentKind::GrokBuild => toml_server(candidate, "Grok Build")?,
         AgentKind::DeepSeekHarness => {
             bail!("DeepSeek Harness Beta native MCP migration is not supported")
         }
@@ -226,6 +253,15 @@ fn validator_for(path: &Path) -> &'static str {
 }
 
 fn scan_codex(path: &Path, scope: &str, output: &mut Vec<McpMigrationCandidate>) -> Result<()> {
+    scan_toml_servers(path, AgentKind::Codex, scope, output)
+}
+
+fn scan_toml_servers(
+    path: &Path,
+    agent: AgentKind,
+    scope: &str,
+    output: &mut Vec<McpMigrationCandidate>,
+) -> Result<()> {
     if !path.is_file() {
         return Ok(());
     }
@@ -241,7 +277,7 @@ fn scan_codex(path: &Path, scope: &str, output: &mut Vec<McpMigrationCandidate>)
             .unwrap_or("unavailable");
         output.push(candidate(
             path,
-            AgentKind::Codex,
+            agent,
             scope,
             name,
             if server.get("url").is_some() {
@@ -250,7 +286,9 @@ fn scan_codex(path: &Path, scope: &str, output: &mut Vec<McpMigrationCandidate>)
                 "stdio"
             },
             endpoint,
-            server.get("env").is_some() || server.get("http_headers").is_some(),
+            server.get("env").is_some()
+                || server.get("headers").is_some()
+                || server.get("http_headers").is_some(),
         ));
     }
     Ok(())
@@ -413,14 +451,18 @@ fn candidate(
 }
 
 fn codex_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
+    toml_server(candidate, "Codex")
+}
+
+fn toml_server(candidate: &McpMigrationCandidate, label: &str) -> Result<McpServerConfig> {
     let value: toml::Value = toml::from_str(&std::fs::read_to_string(&candidate.source_path)?)?;
     let server = value
         .get("mcp_servers")
         .and_then(toml::Value::as_table)
         .and_then(|servers| servers.get(&candidate.name))
-        .context("Codex MCP candidate no longer exists")?;
+        .with_context(|| format!("{label} MCP candidate no longer exists"))?;
     let url = server.get("url").and_then(toml::Value::as_str);
-    Ok(base_server(
+    let mut output = base_server(
         candidate,
         if let Some(url) = url {
             McpServerTransport::StreamableHttp { url: url.into() }
@@ -429,13 +471,18 @@ fn codex_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
                 command: server
                     .get("command")
                     .and_then(toml::Value::as_str)
-                    .context("Codex MCP command is missing")?
+                    .with_context(|| format!("{label} MCP command is missing"))?
                     .into(),
                 args: toml_strings(server.get("args")),
-                cwd: None,
+                cwd: server
+                    .get("cwd")
+                    .and_then(toml::Value::as_str)
+                    .map(PathBuf::from),
             }
         },
-    ))
+    );
+    output.allow_tools = toml_strings(server.get("enabled_tools"));
+    Ok(output)
 }
 
 fn toml_strings(value: Option<&toml::Value>) -> Vec<String> {
@@ -614,12 +661,12 @@ fn remove_native_candidates(
         .map(|candidate| candidate.name.as_str())
         .collect();
     match agent {
-        AgentKind::Codex => {
+        AgentKind::Codex | AgentKind::GrokBuild => {
             let mut value: toml::Value = toml::from_str(content)?;
             let servers = value
                 .get_mut("mcp_servers")
                 .and_then(toml::Value::as_table_mut)
-                .context("Codex mcp_servers table is missing")?;
+                .context("TOML mcp_servers table is missing")?;
             for name in names {
                 servers.remove(name);
             }
@@ -682,6 +729,7 @@ fn agent_gateway_url(template: &str, agent: AgentKind) -> String {
         AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
+        AgentKind::GrokBuild => "grok-build",
         AgentKind::DeepSeekHarness => "deepseek-harness",
     };
     template.replace("{agent}", slug)
@@ -715,10 +763,25 @@ fn upsert_json_gateway(
             gateway.insert("type".into(), "remote".into());
             gateway.insert("enabled".into(), true.into());
         }
-        AgentKind::Codex | AgentKind::Cursor | AgentKind::Hermes | AgentKind::DeepSeekHarness => {}
+        AgentKind::Codex
+        | AgentKind::Cursor
+        | AgentKind::Hermes
+        | AgentKind::GrokBuild
+        | AgentKind::DeepSeekHarness => {}
     }
     servers.insert("agentkib".into(), Value::Object(gateway));
     Ok(())
+}
+
+fn grok_home() -> Option<PathBuf> {
+    env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".grok")))
+        .and_then(canonical_grok_home)
+}
+
+fn canonical_grok_home(home: PathBuf) -> Option<PathBuf> {
+    canonicalize(&home).ok().filter(|home| home.is_dir())
 }
 
 fn remove_json_names(value: &mut Value, pointer: &[&str], names: &[&str]) -> Result<()> {
@@ -872,7 +935,6 @@ mod tests {
 }"#,
         )
         .unwrap();
-
         let candidates = scan_native_candidates(Some(dir.path())).unwrap();
         let selected = candidates
             .iter()
@@ -894,7 +956,6 @@ mod tests {
                 if command == "node" && args == &["server.js"]
         ));
         assert!(!server.enabled);
-
         let plan = plan_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),
@@ -956,5 +1017,137 @@ mod tests {
             remove_native_candidates(content, &[&candidate], "http://127.0.0.1/mcp/{agent}")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn grok_build_migration_preserves_unrelated_toml_and_redacts_secrets() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::create_dir(dir.path().join(".grok")).unwrap();
+        std::fs::write(
+            dir.path().join(".grok/config.toml"),
+            r#"model = "grok-code"
+
+[mcp_servers.selected]
+command = "node"
+args = ["server.js"]
+cwd = "services/reviewer"
+enabled_tools = ["search", "read_file"]
+env = { API_TOKEN = "do-not-return" }
+
+[mcp_servers.other]
+url = "https://example.com/mcp"
+future = 42
+"#,
+        )
+        .unwrap();
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let selected = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::GrokBuild && candidate.name == "selected"
+            })
+            .unwrap();
+        assert!(selected.has_secret_values);
+        assert!(
+            !serde_json::to_string(selected)
+                .unwrap()
+                .contains("do-not-return")
+        );
+        let server = migration_server(selected).unwrap();
+        assert!(matches!(
+            &server.transport,
+            McpServerTransport::Stdio { cwd: Some(cwd), .. }
+                if cwd == Path::new("services/reviewer")
+        ));
+        assert_eq!(server.allow_tools, ["search", "read_file"]);
+        let plan = plan_migration(
+            dir.path(),
+            std::slice::from_ref(&selected.id),
+            &[server],
+            "http://127.0.0.1/workspaces/ws/agents/{agent}",
+        )
+        .unwrap();
+        let native = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".grok/config.toml"))
+            .unwrap();
+        let managed_prefix = native
+            .after
+            .split("# agentkib:managed:start")
+            .next()
+            .unwrap();
+        let value: toml::Value = toml::from_str(managed_prefix).unwrap();
+        assert_eq!(
+            value.get("model").and_then(toml::Value::as_str),
+            Some("grok-code")
+        );
+        assert!(
+            value
+                .get("mcp_servers")
+                .and_then(|value| value.get("selected"))
+                .is_none()
+        );
+        assert_eq!(
+            value
+                .get("mcp_servers")
+                .and_then(|value| value.get("other"))
+                .and_then(|value| value.get("future"))
+                .and_then(toml::Value::as_integer),
+            Some(42)
+        );
+        assert!(native.after.contains("/agents/grok-build"));
+    }
+
+    #[test]
+    fn grok_home_matching_project_config_is_scanned_once() {
+        let dir = tempdir().unwrap();
+        let grok_home = dir.path().join(".grok");
+        std::fs::create_dir(&grok_home).unwrap();
+        std::fs::write(
+            grok_home.join("config.toml"),
+            "[mcp_servers.local]\ncommand = \"server\"\n",
+        )
+        .unwrap();
+
+        let candidates =
+            scan_native_candidates_with_grok_home(Some(dir.path()), Some(&grok_home)).unwrap();
+        let matching: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.agent == AgentKind::GrokBuild && candidate.name == "local"
+            })
+            .collect();
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].scope, "project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_grok_home_is_resolved_for_mcp_scans() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let actual_home = dir.path().join("actual-grok-home");
+        let linked_home = dir.path().join("linked-grok-home");
+        std::fs::create_dir(&actual_home).unwrap();
+        std::fs::write(
+            actual_home.join("config.toml"),
+            "[mcp_servers.home]\ncommand = \"server\"\n",
+        )
+        .unwrap();
+        symlink(&actual_home, &linked_home).unwrap();
+
+        let home = canonical_grok_home(linked_home).unwrap();
+        let candidates = scan_native_candidates_with_grok_home(None, Some(&home)).unwrap();
+        let matching: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.agent == AgentKind::GrokBuild && candidate.name == "home")
+            .collect();
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].scope, "home");
     }
 }

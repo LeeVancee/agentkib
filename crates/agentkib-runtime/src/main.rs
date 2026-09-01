@@ -1688,13 +1688,21 @@ fn default_home_targets() -> agentkib_adapters::HomeTargets {
 }
 
 fn native_mcp_home_files() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    let opencode_config_home = agentkib_platform::xdg::config_home()
-        .unwrap_or_else(|| home.join(".config"))
-        .join("opencode");
-    native_mcp_home_files_for(&home, &opencode_config_home)
+    let mut files = dirs::home_dir()
+        .map(|home| {
+            let opencode_config_home = agentkib_platform::xdg::config_home()
+                .unwrap_or_else(|| home.join(".config"))
+                .join("opencode");
+            native_mcp_home_files_for(&home, &opencode_config_home)
+        })
+        .unwrap_or_default();
+    let grok_home = std::env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".grok")));
+    if let Some(home) = grok_home {
+        files.push(home.join("config.toml"));
+    }
+    files
 }
 
 fn native_mcp_home_files_for(home: &Path, opencode_config_home: &Path) -> Vec<PathBuf> {

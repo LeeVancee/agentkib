@@ -5,6 +5,7 @@ export type AgentKind =
   | "opencode"
   | "open-claw"
   | "hermes"
+  | "grok-build"
   | "deepseek-harness";
 export type MemoryStatus = "pending" | "approved" | "rejected" | "invalidated";
 export type MemoryType =

@@ -32,6 +32,7 @@ const agentOrder: AgentKind[] = [
   "opencode",
   "open-claw",
   "hermes",
+  "grok-build",
   "deepseek-harness",
 ];
 

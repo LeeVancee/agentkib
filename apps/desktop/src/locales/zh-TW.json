@@ -18,6 +18,7 @@
   "agents.localDataFound": "發現本機資料",
   "agents.deepseekReadOnly": "唯讀 Beta：支援工作區發現、資產盤點、上下文預覽與累計 Token 用量；暫不支援共享寫入及 MCP 設定。",
   "assets.summary.deepseekHarnessInstructions": "DeepSeek Harness 專案指令",
+  "assets.summary.grokBuildInstructions": "Grok Build 專案指令",
   "context.deepseekCustomRules": "偵測到 DeepSeek Harness 自訂指令或 Skill 載入規則，目前預覽仍依公開預設規則模擬。",
   "context.deepseekClaudeImport": "DeepSeek Harness 會將 CLAUDE.md 中的 @AGENTS.md 視為一般文字，不會依 Claude Code 匯入語法處理。",
   "errors.deepseekWorkspaceVersion": "暫不支援目前版本的 DeepSeek Harness 工作區資料",

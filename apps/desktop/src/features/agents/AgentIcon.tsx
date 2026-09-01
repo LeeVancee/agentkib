@@ -3,6 +3,7 @@ import codexIcon from "@/assets/agent-icons/codex.svg";
 import cursorIcon from "@/assets/agent-icons/cursor.svg";
 import openCodeIcon from "@/assets/agent-icons/opencode.svg";
 import hermesIcon from "@/assets/agent-icons/hermes.svg";
+import grokBuildIcon from "@/assets/agent-icons/grok-build.svg";
 import openClawIcon from "@/assets/agent-icons/open-claw.svg";
 import deepSeekHarnessIcon from "@/assets/agent-icons/deepseek-harness.svg";
 import type { AgentKind } from "@/core/types";
@@ -15,6 +16,7 @@ const agentIcons: Record<AgentKind, string> = {
   opencode: openCodeIcon,
   "open-claw": openClawIcon,
   hermes: hermesIcon,
+  "grok-build": grokBuildIcon,
   "deepseek-harness": deepSeekHarnessIcon,
 };
 
@@ -30,6 +32,7 @@ export function AgentIcon({ agent }: { agent: AgentKind }) {
           agent === "cursor" && "rounded-md bg-[#1d1d1f] p-1",
           agent === "opencode" && "dark:invert",
           agent === "hermes" && "opacity-[0.92] invert",
+          agent === "grok-build" && "opacity-[0.92] dark:invert",
         )}
         src={agentIcons[agent]}
         alt=""

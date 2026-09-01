@@ -22,6 +22,7 @@ const agentLabels: Record<AgentKind, string> = {
   opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 function Pills({ values, empty }: { values: string[]; empty: string }) {

@@ -84,6 +84,7 @@ const agentLabels: Record<AgentKind, string> = {
   opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 
@@ -322,17 +323,19 @@ export function GlobalSettings({
           <QuotaDiagnostics status={quotaStatus} />
         </SettingGroup>
         <SettingGroup title={tr("settings.providerStatus")}>
-          {insightsStatus?.providers.map((provider) => (
-            <SettingsRow key={provider.agent}>
-              <div className="flex items-center gap-3">
-                <AgentIcon agent={provider.agent} />
-                <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
-              </div>
-              <StatusText active={provider.available}>
-                {tr(provider.available ? "quota.available" : "insights.noData")}
-              </StatusText>
-            </SettingsRow>
-          ))}
+          {insightsStatus?.providers
+            .filter((provider) => provider.agent !== "grok-build")
+            .map((provider) => (
+              <SettingsRow key={provider.agent}>
+                <div className="flex items-center gap-3">
+                  <AgentIcon agent={provider.agent} />
+                  <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
+                </div>
+                <StatusText active={provider.available}>
+                  {tr(provider.available ? "quota.available" : "insights.noData")}
+                </StatusText>
+              </SettingsRow>
+            ))}
           {!insightsStatus?.providers.length && (
             <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
           )}

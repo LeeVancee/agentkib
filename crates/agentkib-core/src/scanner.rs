@@ -312,6 +312,41 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 "Hermes Cursor-compatible rules",
             ),
         ],
+        AgentKind::GrokBuild => vec![
+            (
+                "AGENTS.md",
+                AssetKind::Instruction,
+                "Grok Build project instructions",
+            ),
+            (
+                ".grok/rules",
+                AssetKind::Instruction,
+                "Grok Build project rules",
+            ),
+            (".grok/skills", AssetKind::Skill, "Grok Build Skills"),
+            (".grok/agents", AssetKind::Agent, "Grok Build Agents"),
+            (
+                ".grok/plugins",
+                AssetKind::Configuration,
+                "Grok Build Plugins",
+            ),
+            (".grok/hooks", AssetKind::Hook, "Grok Build Hooks"),
+            (
+                ".grok/workflows",
+                AssetKind::Configuration,
+                "Grok Build Workflows",
+            ),
+            (
+                ".grok/config.toml",
+                AssetKind::Configuration,
+                "Grok Build project configuration",
+            ),
+            (
+                ".grok/lsp.json",
+                AssetKind::Configuration,
+                "Grok Build LSP configuration",
+            ),
+        ],
         AgentKind::DeepSeekHarness => vec![
             (
                 "AGENTS.md",
@@ -364,6 +399,8 @@ fn summary_translation_key(summary: &str) -> Option<&'static str> {
         Some("assets.summary.openClawInstructions")
     } else if summary.contains("Hermes") && summary.contains("instruction") {
         Some("assets.summary.hermesInstructions")
+    } else if summary.contains("Grok Build") && summary.contains("instruction") {
+        Some("assets.summary.grokBuildInstructions")
     } else if summary.contains("DeepSeek Harness") && summary.contains("instruction") {
         Some("assets.summary.deepseekHarnessInstructions")
     } else if summary.contains("Cursor") && summary.contains("instruction") {
@@ -380,6 +417,34 @@ fn summary_translation_key(summary: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_grok_build_native_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".grok/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".grok/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".grok/config.toml"),
+            "[mcp_servers.example]\nurl = \"https://example.com/mcp\"\n",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let grok = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::GrokBuild)
+            .unwrap();
+        assert!(grok.detected);
+        assert!(scan.assets.iter().any(|asset| {
+            asset.agent == AgentKind::GrokBuild
+                && asset.path.ends_with(".grok/skills/reviewer/SKILL.md")
+        }));
+    }
     use tempfile::tempdir;
 
     #[test]

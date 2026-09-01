@@ -1,8 +1,9 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use agentkib_platform::path::{canonicalize, equivalent, starts_with as path_starts_with};
 use anyhow::{Context, Result, bail};
@@ -12,6 +13,8 @@ use crate::{AgentKind, ContextPreview, ContextSection, Manifest, canonical_proje
 const MAX_CONTEXT_CHARS_PER_FILE: usize = 128 * 1024;
 const MAX_CONTEXT_BYTES_PER_FILE: u64 = MAX_CONTEXT_CHARS_PER_FILE as u64 * 4;
 const MAX_CONTEXT_CHARS_TOTAL: usize = 512 * 1024;
+const GROK_MAX_CONTEXT_CHARS_PER_FILE: usize = 10_000;
+const GROK_MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const DSH_MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const DSH_MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 const OPENCODE_MANAGED_INSTRUCTION: &str = ".opencode/agentkib-instructions.md";
@@ -49,10 +52,13 @@ pub fn resolve_context(
         AgentKind::OpenCode => opencode_sources(&dirs),
         AgentKind::OpenClaw => openclaw_sources(&dirs),
         AgentKind::Hermes => hermes_sources(&dirs),
+        AgentKind::GrokBuild => Vec::new(),
         AgentKind::DeepSeekHarness => Vec::new(),
     };
     let mut sections = if agent == AgentKind::DeepSeekHarness {
         deepseek_harness_sections(&context_root, &dirs, &mut warnings)
+    } else if agent == AgentKind::GrokBuild {
+        grok_build_sections(&root, &dirs, &mut warnings)
     } else {
         let mut sections = Vec::new();
         let mut remaining_context_chars = MAX_CONTEXT_CHARS_TOTAL;
@@ -184,6 +190,393 @@ fn user_home() -> Option<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GrokCompat {
+    claude_agents: bool,
+    claude_rules: bool,
+    cursor_agents: bool,
+    cursor_rules: bool,
+}
+
+impl Default for GrokCompat {
+    fn default() -> Self {
+        Self {
+            claude_agents: true,
+            claude_rules: true,
+            cursor_agents: true,
+            cursor_rules: true,
+        }
+    }
+}
+
+fn grok_home() -> Option<PathBuf> {
+    env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| user_home().map(|home| home.join(".grok")))
+}
+
+fn grok_compat(home: Option<&Path>, project: &Path) -> GrokCompat {
+    let home_value = home
+        .map(|home| home.join("config.toml"))
+        .and_then(|path| read_utf8_file_with_limit(&path, GROK_MAX_CONFIG_BYTES).ok())
+        .and_then(|content| toml::from_str::<toml::Value>(&content).ok());
+    let project_value =
+        read_utf8_file_with_limit(&project.join(".grok/config.toml"), GROK_MAX_CONFIG_BYTES)
+            .ok()
+            .and_then(|content| toml::from_str::<toml::Value>(&content).ok());
+    resolve_grok_compat_values(home_value.as_ref(), project_value.as_ref(), |env_name| {
+        env::var(env_name)
+            .ok()
+            .and_then(|value| parse_env_bool(&value))
+    })
+}
+
+fn resolve_grok_compat_values(
+    home_value: Option<&toml::Value>,
+    project_value: Option<&toml::Value>,
+    env_value: impl Fn(&str) -> Option<bool>,
+) -> GrokCompat {
+    let value_from = |value: &toml::Value, vendor: &str, surface: &str| {
+        value
+            .get("compat")
+            .and_then(|value| value.get(vendor))
+            .and_then(|value| value.get(surface))
+            .and_then(toml::Value::as_bool)
+    };
+    let config_value = |vendor: &str, surface: &str| {
+        project_value
+            .and_then(|value| value_from(value, vendor, surface))
+            .or_else(|| home_value.and_then(|value| value_from(value, vendor, surface)))
+    };
+    let resolved = |env_name: &str, vendor: &str, surface: &str| {
+        env_value(env_name)
+            .or_else(|| config_value(vendor, surface))
+            .unwrap_or(true)
+    };
+    GrokCompat {
+        claude_agents: resolved("GROK_CLAUDE_AGENTS_ENABLED", "claude", "agents"),
+        claude_rules: resolved("GROK_CLAUDE_RULES_ENABLED", "claude", "rules"),
+        cursor_agents: resolved("GROK_CURSOR_AGENTS_ENABLED", "cursor", "agents"),
+        cursor_rules: resolved("GROK_CURSOR_RULES_ENABLED", "cursor", "rules"),
+    }
+}
+
+fn parse_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn grok_build_sections(
+    project: &Path,
+    dirs: &[PathBuf],
+    warnings: &mut Vec<String>,
+) -> Vec<ContextSection> {
+    let home = grok_home();
+    let compat = grok_compat(home.as_deref(), project);
+    grok_build_sections_with_roots(project, dirs, home, user_home(), compat, warnings)
+}
+
+fn grok_build_sections_with_roots(
+    project: &Path,
+    dirs: &[PathBuf],
+    home: Option<PathBuf>,
+    user_home: Option<PathBuf>,
+    compat: GrokCompat,
+    warnings: &mut Vec<String>,
+) -> Vec<ContextSection> {
+    const GENERIC_NAMES: &[&str] = &[
+        "Agents.md",
+        "Claude.md",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        "AGENT.md",
+        "AGENTS.md",
+    ];
+    // The configured Home directory itself is trusted and may be a symlink (for
+    // example to another volume). Canonicalize that root once, then keep applying
+    // the normal containment checks to every file discovered beneath it.
+    let home = home.and_then(|root| canonicalize(&root).ok());
+    let user_home = user_home.and_then(|root| canonicalize(&root).ok());
+    let mut sources = Vec::new();
+    if let Some(home) = home.as_ref() {
+        collect_grok_root(home, GENERIC_NAMES, &[("rules", false)], None, &mut sources);
+    }
+    if let Some(user) = user_home.as_ref() {
+        if compat.claude_agents || compat.claude_rules {
+            collect_grok_root(
+                &user.join(".claude"),
+                if compat.claude_agents {
+                    GENERIC_NAMES
+                } else {
+                    &[]
+                },
+                if compat.claude_rules {
+                    &[("rules", false)]
+                } else {
+                    &[]
+                },
+                None,
+                &mut sources,
+            );
+        }
+        if compat.cursor_agents || compat.cursor_rules {
+            collect_grok_root(
+                &user.join(".cursor"),
+                if compat.cursor_agents {
+                    GENERIC_NAMES
+                } else {
+                    &[]
+                },
+                if compat.cursor_rules {
+                    &[("rules", true)]
+                } else {
+                    &[]
+                },
+                None,
+                &mut sources,
+            );
+        }
+    }
+    let mut project_names = GENERIC_NAMES.to_vec();
+    if compat.claude_agents {
+        project_names.extend([".claude/CLAUDE.md", ".claude/CLAUDE.local.md"]);
+    }
+    let mut project_rules = vec![(".grok/rules", false)];
+    if compat.claude_rules {
+        project_rules.push((".claude/rules", false));
+    }
+    if compat.cursor_rules {
+        project_rules.push((".cursor/rules", true));
+    }
+    for dir in dirs {
+        collect_grok_root(
+            dir,
+            &project_names,
+            &project_rules,
+            Some(project),
+            &mut sources,
+        );
+    }
+
+    let mut seen = HashSet::new();
+    let mut sections = Vec::new();
+    let mut remaining = MAX_CONTEXT_CHARS_TOTAL;
+    for source in sources {
+        if remaining == 0 {
+            push_context_budget_warning(warnings);
+            break;
+        }
+        let Ok(canonical) = canonicalize(&source) else {
+            continue;
+        };
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let allowed = path_starts_with(&canonical, project)
+            || home
+                .as_ref()
+                .is_some_and(|root| path_starts_with(&canonical, root))
+            || user_home.as_ref().is_some_and(|user| {
+                path_starts_with(&canonical, &user.join(".claude"))
+                    || path_starts_with(&canonical, &user.join(".cursor"))
+            });
+        if !allowed {
+            continue;
+        }
+        let Ok((content, truncated)) = read_grok_context_file(&canonical) else {
+            warnings.push(format!("Could not read {}", source.display()));
+            continue;
+        };
+        let content = if source
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("rules"))
+        {
+            grok_rule_body(&content)
+        } else {
+            content
+        };
+        if truncated {
+            warnings.push(format!(
+                "Grok Build instruction file exceeds {GROK_MAX_CONTEXT_CHARS_PER_FILE} characters and was truncated for preview: {}",
+                source.display()
+            ));
+        }
+        let mut output = String::new();
+        append_context_text(&mut output, &content, &mut remaining, warnings);
+        sections.push(ContextSection {
+            scope: source
+                .parent()
+                .and_then(|parent| parent.strip_prefix(project).ok())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "agent-home".into()),
+            source,
+            content: output,
+            precedence: sections.len(),
+        });
+    }
+    sections
+}
+
+fn collect_grok_root(
+    root: &Path,
+    names: &[&str],
+    rule_dirs: &[(&str, bool)],
+    git_root: Option<&Path>,
+    output: &mut Vec<PathBuf>,
+) {
+    for name in names {
+        let path = root.join(name);
+        if grok_source_is_safe(root, &path, git_root) {
+            output.push(path);
+        }
+    }
+    for (relative, accepts_mdc) in rule_dirs {
+        let rules = root.join(relative);
+        let Ok(metadata) = fs::symlink_metadata(&rules) else {
+            continue;
+        };
+        if !metadata.file_type().is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&rules) else {
+            continue;
+        };
+        let mut files = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("md")
+                            || (*accepts_mdc && extension.eq_ignore_ascii_case("mdc"))
+                    })
+                    && grok_source_is_safe(root, path, None)
+            })
+            .collect::<Vec<_>>();
+        if let Some(git_root) = git_root {
+            retain_not_git_ignored(git_root, &mut files);
+        }
+        files.sort();
+        output.extend(files);
+    }
+}
+
+fn grok_source_is_safe(root: &Path, path: &Path, git_root: Option<&Path>) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    let Ok(canonical) = canonicalize(path) else {
+        return false;
+    };
+    path_starts_with(&canonical, root)
+        && git_root.is_none_or(|git_root| !git_path_is_ignored(git_root, path))
+}
+
+fn git_path_is_ignored(git_root: &Path, path: &Path) -> bool {
+    Command::new("git")
+        .current_dir(git_root)
+        .args(["check-ignore", "--quiet", "--no-index", "--"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn retain_not_git_ignored(git_root: &Path, paths: &mut Vec<PathBuf>) {
+    let Some(ignored) = git_ignored_paths(git_root, paths) else {
+        paths.retain(|path| !git_path_is_ignored(git_root, path));
+        return;
+    };
+    paths.retain(|path| !ignored.contains(path));
+}
+
+fn git_ignored_paths(git_root: &Path, paths: &[PathBuf]) -> Option<HashSet<PathBuf>> {
+    if paths.is_empty() {
+        return Some(HashSet::new());
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.to_str()?.as_bytes());
+        input.push(0);
+    }
+
+    let mut child = Command::new("git")
+        .current_dir(git_root)
+        .args(["check-ignore", "--no-index", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    // Drain stdout while paths are still being written so large ignored sets cannot fill the pipe.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return None;
+    }
+
+    let output = String::from_utf8(output.stdout).ok()?;
+    Some(
+        output
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
+}
+
+fn read_grok_context_file(path: &Path) -> Result<(String, bool)> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        bail!("Grok Build instruction source must be a regular file");
+    }
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take((GROK_MAX_CONTEXT_CHARS_PER_FILE * 4 + 4) as u64)
+        .read_to_end(&mut bytes)?;
+    let raw = match String::from_utf8(bytes) {
+        Ok(value) => value,
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid_up_to = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid_up_to);
+            String::from_utf8(bytes).expect("the validated UTF-8 prefix must remain valid")
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let truncated = raw.chars().count() > GROK_MAX_CONTEXT_CHARS_PER_FILE;
+    let content = if truncated {
+        raw.chars().take(GROK_MAX_CONTEXT_CHARS_PER_FILE).collect()
+    } else {
+        raw
+    };
+    Ok((content, truncated))
+}
+
+fn grok_rule_body(content: &str) -> String {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return content.to_string();
+    }
+    let remaining = lines.collect::<Vec<_>>();
+    let Some(end) = remaining.iter().position(|line| line.trim() == "---") else {
+        return content.to_string();
+    };
+    remaining[end + 1..].join("\n")
 }
 
 fn deepseek_harness_sections(
@@ -765,6 +1158,184 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn grok_build_context_matches_home_compat_and_project_precedence() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let nested = project.join("src/module");
+        let grok_home = dir.path().join("grok-home");
+        let user_home = dir.path().join("user-home");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(grok_home.join("rules")).unwrap();
+        fs::create_dir_all(user_home.join(".claude/rules")).unwrap();
+        fs::create_dir_all(user_home.join(".cursor/rules")).unwrap();
+        fs::create_dir_all(project.join(".grok/rules")).unwrap();
+        fs::create_dir_all(project.join(".cursor/rules")).unwrap();
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .unwrap();
+        fs::write(grok_home.join("AGENTS.md"), "global-named").unwrap();
+        fs::write(grok_home.join("rules/global.md"), "global-rule").unwrap();
+        fs::write(
+            user_home.join(".claude/AGENTS.md"),
+            "claude-compatible-home",
+        )
+        .unwrap();
+        fs::write(
+            user_home.join(".cursor/rules/global.mdc"),
+            "---\ndescription: Global Cursor rule\n---\ncursor-compatible-home",
+        )
+        .unwrap();
+        fs::write(project.join("Agents.md"), "project-named").unwrap();
+        fs::write(
+            project.join(".grok/rules/project.md"),
+            "---\ndescription: Project rule\n---\nproject-rule",
+        )
+        .unwrap();
+        fs::write(
+            project.join(".cursor/rules/project.mdc"),
+            "---\ndescription: Project Cursor rule\n---\ncursor-compatible-project",
+        )
+        .unwrap();
+        fs::write(project.join(".grok/rules/ignored.md"), "ignored-rule").unwrap();
+        fs::write(
+            project.join(".grok/rules/ignored-too.md"),
+            "ignored-rule-too",
+        )
+        .unwrap();
+        fs::write(project.join(".grok/rules/kept.md"), "kept-rule").unwrap();
+        fs::write(project.join(".gitignore"), ".grok/rules/ignored*.md\n").unwrap();
+        fs::write(nested.join("AGENTS.md"), "nested-named").unwrap();
+
+        let dirs = directory_chain(&project, &nested).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            &dirs,
+            Some(grok_home),
+            Some(user_home),
+            GrokCompat::default(),
+            &mut warnings,
+        );
+        let contents = sections
+            .iter()
+            .map(|section| section.content.trim())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contents,
+            [
+                "global-named",
+                "global-rule",
+                "claude-compatible-home",
+                "cursor-compatible-home",
+                "project-named",
+                "kept-rule",
+                "project-rule",
+                "cursor-compatible-project",
+                "nested-named",
+            ]
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn grok_build_compat_uses_env_then_project_then_home_then_defaults() {
+        let home: toml::Value = toml::from_str(
+            "[compat.claude]\nagents = false\nrules = false\n\n[compat.cursor]\nagents = false\n",
+        )
+        .unwrap();
+        let project: toml::Value = toml::from_str("[compat.claude]\nagents = true\n").unwrap();
+        let compat = resolve_grok_compat_values(Some(&home), Some(&project), |name| {
+            (name == "GROK_CURSOR_AGENTS_ENABLED").then_some(true)
+        });
+
+        assert!(compat.claude_agents);
+        assert!(!compat.claude_rules);
+        assert!(compat.cursor_agents);
+        assert!(compat.cursor_rules);
+    }
+
+    #[test]
+    fn grok_build_context_caps_each_instruction_file() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "x".repeat(10_050)).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            dir.path(),
+            &[dir.path().to_path_buf()],
+            None,
+            None,
+            GrokCompat {
+                claude_agents: false,
+                claude_rules: false,
+                cursor_agents: false,
+                cursor_rules: false,
+            },
+            &mut warnings,
+        );
+
+        assert_eq!(sections[0].content.chars().count(), 10_000);
+        assert!(warnings.iter().any(|warning| warning.contains("10000")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_build_context_accepts_a_symlinked_home_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let actual_home = dir.path().join("actual-grok-home");
+        let linked_home = dir.path().join("linked-grok-home");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir_all(actual_home.join("rules")).unwrap();
+        fs::write(actual_home.join("AGENTS.md"), "global instructions").unwrap();
+        fs::write(actual_home.join("rules/global.md"), "global rule").unwrap();
+        symlink(&actual_home, &linked_home).unwrap();
+
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            std::slice::from_ref(&project),
+            Some(linked_home),
+            None,
+            GrokCompat::default(),
+            &mut warnings,
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].content, "global instructions");
+        assert_eq!(sections[1].content, "global rule");
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_build_context_rejects_rules_symlinked_outside_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir_all(project.join(".grok/rules")).unwrap();
+        let outside = dir.path().join("outside.md");
+        fs::write(&outside, "private").unwrap();
+        symlink(&outside, project.join(".grok/rules/private.md")).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            std::slice::from_ref(&project),
+            None,
+            None,
+            GrokCompat::default(),
+            &mut warnings,
+        );
+
+        assert!(sections.is_empty());
+    }
 
     #[test]
     fn codex_context_inherits_root_and_nested_rules_in_order() {

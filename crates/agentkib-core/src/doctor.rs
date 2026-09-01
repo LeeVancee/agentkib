@@ -134,7 +134,10 @@ pub fn diagnose_workspace_with_mcp_error(
         let writable = AgentKind::WRITABLE.contains(&agent);
         let enabled = writable
             && manifest.map_or(applicable, |value| {
-                value.adapters.get(&agent).is_none_or(|state| state.enabled)
+                value
+                    .adapters
+                    .get(&agent)
+                    .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
             });
         let diagnostically_active = applicable && (enabled || agent == AgentKind::DeepSeekHarness);
         let expected_instruction_fragments = manifest
@@ -717,13 +720,14 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
+            AgentKind::GrokBuild,
         ]
         .into_iter()
         .any(|agent| {
             manifest
                 .adapters
                 .get(&agent)
-                .is_none_or(|state| state.enabled)
+                .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
         });
         if !shared_instructions_are_planned
             || !planned_instruction_file_is_safe(project, &cwd.join("AGENTS.md"))
@@ -740,6 +744,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::OpenCode => cwd.join(".opencode/agentkib-instructions.md"),
             AgentKind::OpenClaw => cwd.join("TOOLS.md"),
             AgentKind::Hermes => cwd.join(".hermes.md"),
+            AgentKind::GrokBuild => return false,
             AgentKind::DeepSeekHarness => return false,
         }
     } else {
@@ -756,7 +761,10 @@ fn instruction_fragment_can_be_repaired(
                     cwd.join("AGENTS.md")
                 }
             }
-            AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw => cwd.join("AGENTS.md"),
+            AgentKind::Cursor
+            | AgentKind::OpenCode
+            | AgentKind::OpenClaw
+            | AgentKind::GrokBuild => cwd.join("AGENTS.md"),
             AgentKind::Hermes => {
                 let private = cwd.join(".hermes.md");
                 let legacy = cwd.join("HERMES.md");
@@ -784,6 +792,7 @@ fn mcp_target_can_be_repaired(project: &Path, agent: AgentKind) -> bool {
         AgentKind::ClaudeCode => project.join(".mcp.json"),
         AgentKind::Cursor => project.join(".cursor/mcp.json"),
         AgentKind::OpenCode => project.join(".opencode/opencode.json"),
+        AgentKind::GrokBuild => project.join(".grok/config.toml"),
         AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::DeepSeekHarness => return false,
     };
     planned_instruction_file_is_safe(project, &target)
@@ -832,6 +841,12 @@ fn generated_skill_is_current(
         AgentKind::OpenCode => &[".opencode/skills", ".claude/skills", ".agents/skills"],
         AgentKind::DeepSeekHarness => &[".dsh/skills", ".agents/skills"],
         AgentKind::OpenClaw => &["skills", ".agents/skills"],
+        AgentKind::GrokBuild => &[
+            ".grok/skills",
+            ".agents/skills",
+            ".claude/skills",
+            ".cursor/skills",
+        ],
         AgentKind::Codex | AgentKind::Hermes => &[".agents/skills"],
     };
     let source = project.join(&skill.path);
@@ -987,6 +1002,7 @@ fn generated_skill_can_be_repaired(
         AgentKind::Codex | AgentKind::OpenCode | AgentKind::OpenClaw | AgentKind::Hermes => {
             ".agents/skills"
         }
+        AgentKind::GrokBuild => ".grok/skills",
         AgentKind::DeepSeekHarness => return false,
     };
     let target = project.join(relative_root).join(&skill.name);
@@ -1192,7 +1208,7 @@ mod tests {
                     (
                         agent,
                         AdapterState {
-                            enabled: true,
+                            enabled: agent != AgentKind::GrokBuild,
                             generated_hashes: Default::default(),
                         },
                     )
@@ -1244,6 +1260,45 @@ mod tests {
                 .iter()
                 .all(|issue| issue.code != "managed.missing" && issue.code != "managed.drift")
         );
+    }
+
+    #[test]
+    fn grok_build_repairs_to_native_project_paths() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value
+            .adapters
+            .get_mut(&AgentKind::GrokBuild)
+            .unwrap()
+            .enabled = true;
+        fs::create_dir_all(dir.path().join(".agents/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".agents/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        let skill = SkillDefinition {
+            name: "reviewer".into(),
+            path: ".agents/skills/reviewer".into(),
+            targets: vec![AgentKind::GrokBuild],
+        };
+        value.skills.push(skill.clone());
+
+        assert!(instruction_fragment_can_be_repaired(
+            dir.path(),
+            dir.path(),
+            AgentKind::GrokBuild,
+            Some(&value),
+            "Shared rule",
+            false,
+        ));
+        assert!(mcp_target_can_be_repaired(dir.path(), AgentKind::GrokBuild));
+        assert!(generated_skill_can_be_repaired(
+            dir.path(),
+            &value,
+            AgentKind::GrokBuild,
+            &skill,
+        ));
     }
 
     #[cfg(unix)]

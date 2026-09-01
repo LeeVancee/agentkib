@@ -18,6 +18,7 @@
   "agents.localDataFound": "ローカルデータあり",
   "agents.deepseekReadOnly": "読み取り専用 Beta：ワークスペース検出、アセット、コンテキストプレビュー、累計 Token 使用量に対応しています。共有書き込みと MCP 設定には未対応です。",
   "assets.summary.deepseekHarnessInstructions": "DeepSeek Harness プロジェクト指示",
+  "assets.summary.grokBuildInstructions": "Grok Build プロジェクト指示",
   "context.deepseekCustomRules": "DeepSeek Harness のカスタム指示または Skill 読み込み規則を検出しました。このプレビューは公開されている既定規則を使用します。",
   "context.deepseekClaudeImport": "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md を Claude Code のインポートではなく通常のテキストとして扱います。",
   "errors.deepseekWorkspaceVersion": "このバージョンの DeepSeek Harness ワークスペースデータには対応していません",

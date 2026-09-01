@@ -14,30 +14,33 @@ pub enum AgentKind {
     OpenCode,
     OpenClaw,
     Hermes,
+    GrokBuild,
     #[serde(rename = "deepseek-harness")]
     DeepSeekHarness,
 }
 
 impl AgentKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
         Self::OpenClaw,
         Self::Hermes,
+        Self::GrokBuild,
         Self::DeepSeekHarness,
     ];
 
     /// Agents whose native configuration AgentKib may generate today.
     /// DeepSeek Harness remains read-only while its persistence contracts are beta.
-    pub const WRITABLE: [Self; 6] = [
+    pub const WRITABLE: [Self; 7] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
         Self::OpenCode,
         Self::OpenClaw,
         Self::Hermes,
+        Self::GrokBuild,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -48,6 +51,7 @@ impl AgentKind {
             Self::OpenCode => "opencode",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
+            Self::GrokBuild => "grok-build",
             Self::DeepSeekHarness => "deepseek-harness",
         }
     }
@@ -768,5 +772,18 @@ mod tests {
         );
         assert!(AgentKind::ALL.contains(&AgentKind::OpenCode));
         assert!(AgentKind::WRITABLE.contains(&AgentKind::OpenCode));
+    }
+
+    #[test]
+    fn grok_build_uses_the_public_stable_id_and_is_writable() {
+        assert_eq!(
+            serde_json::to_string(&AgentKind::GrokBuild).unwrap(),
+            "\"grok-build\""
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentKind>("\"grok-build\"").unwrap(),
+            AgentKind::GrokBuild
+        );
+        assert!(AgentKind::WRITABLE.contains(&AgentKind::GrokBuild));
     }
 }

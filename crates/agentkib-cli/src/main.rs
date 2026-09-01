@@ -89,12 +89,13 @@ fn parse_agent(value: &str) -> Result<AgentKind> {
         "opencode" => Ok(AgentKind::OpenCode),
         "openclaw" => Ok(AgentKind::OpenClaw),
         "hermes" => Ok(AgentKind::Hermes),
+        "grok" | "grok-build" => Ok(AgentKind::GrokBuild),
         "deepseek-harness" | "dsh" => Ok(AgentKind::DeepSeekHarness),
         _ => bail!("Unknown Agent: {value}"),
     }
 }
 fn print_help() {
     println!(
-        "agentkib scan <project>\nagentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|deepseek-harness> [cwd]\nagentkib plan <project>\nagentkib validate <project>\nagentkib manifest <project>"
+        "agentkib scan <project>\nagentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|grok-build|deepseek-harness> [cwd]\nagentkib plan <project>\nagentkib validate <project>\nagentkib manifest <project>"
     );
 }

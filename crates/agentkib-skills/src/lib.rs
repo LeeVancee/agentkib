@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
@@ -1148,19 +1148,25 @@ impl SkillHub {
 }
 
 fn swap_directories(root: &Path, left: &Path, right: &Path) -> Result<()> {
+    swap_directories_with(root, left, right, move_path)
+}
+
+fn swap_directories_with<F>(root: &Path, left: &Path, right: &Path, mut move_dir: F) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     let swap = root
         .join(".staging")
         .join(format!("swap-{}", Uuid::new_v4()));
     fs::create_dir_all(swap.parent().context("Swap path has no parent")?)?;
-    move_path(left, &swap)?;
-    if let Err(error) = move_path(right, left) {
-        let _ = move_path(&swap, left);
+    move_dir(left, &swap)?;
+    if let Err(error) = move_dir(right, left) {
+        let _ = move_dir(&swap, left);
         return Err(error.into());
     }
-    if let Err(error) = move_path(&swap, right) {
-        let _ = move_path(left, &swap);
-        let _ = move_path(right, left);
-        let _ = move_path(&swap, right);
+    if let Err(error) = move_dir(&swap, right) {
+        let _ = move_dir(left, right);
+        let _ = move_dir(&swap, left);
         return Err(error.into());
     }
     Ok(())
@@ -2537,6 +2543,43 @@ mod tests {
         assert_eq!(previews.len(), MAX_RETAINED_PREVIEWS);
         assert!(!previews.contains_key("preview-0"));
         assert!(!oldest_path.unwrap().exists());
+    }
+
+    #[test]
+    fn directory_swap_restores_both_sides_when_the_final_move_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let left = root.join("left");
+        let right = root.join("right");
+        write_skill(&left, "left");
+        write_skill(&right, "right");
+        let mut moves = 0;
+
+        let error = swap_directories_with(root, &left, &right, |source, target| {
+            moves += 1;
+            if moves == 3 {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated transient file lock",
+                ))
+            } else {
+                move_path(source, target)
+            }
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("simulated transient file lock"));
+        assert!(
+            fs::read_to_string(left.join("SKILL.md"))
+                .unwrap()
+                .ends_with("left")
+        );
+        assert!(
+            fs::read_to_string(right.join("SKILL.md"))
+                .unwrap()
+                .ends_with("right")
+        );
+        assert_eq!(fs::read_dir(root.join(".staging")).unwrap().count(), 0);
     }
 
     #[tokio::test]

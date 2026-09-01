@@ -260,13 +260,36 @@ impl SkillHub {
 
     pub async fn check_updates(&self) -> Result<Vec<InstalledSkill>> {
         let mut installed = list_installed(&self.root)?;
+        let mut commits = HashMap::<(String, String, String), CommitResponse>::new();
         for skill in &mut installed {
             let Some(source) = skill.source.clone() else {
                 continue;
             };
             let parsed = parsed_source(&source)?;
+            let key = (
+                parsed.owner.to_ascii_lowercase(),
+                parsed.repository.to_ascii_lowercase(),
+                source.reference.clone(),
+            );
+            let commit = if let Some(commit) = commits.get(&key) {
+                commit.clone()
+            } else {
+                let commit = self
+                    .get_commit(&parsed, &source.reference)
+                    .await
+                    .with_context(|| {
+                        format!("Could not check updates for {}", skill.display_name)
+                    })?;
+                commits.insert(key, commit.clone());
+                commit
+            };
             let resolved = self
-                .resolve_repository(&parsed)
+                .resolve_repository_at_commit(
+                    &parsed,
+                    source.reference.clone(),
+                    parsed.path.clone(),
+                    commit,
+                )
                 .await
                 .with_context(|| format!("Could not check updates for {}", skill.display_name))?;
             let tree_sha = directory_tree_sha(&resolved, &source.path)
@@ -566,8 +589,9 @@ impl SkillHub {
             let _ = move_path(&target, &package);
             return Err(error);
         }
-        fs::remove_file(trash_root.join("record.json"))?;
-        fs::remove_dir(trash_root)?;
+        // The package and lock are already restored; cleanup must not turn that durable mutation
+        // into a reported failure or encourage a duplicate retry.
+        let _ = fs::remove_dir_all(trash_root);
         self.installed()?
             .into_iter()
             .find(|skill| skill.name == record.name)
@@ -863,6 +887,17 @@ impl SkillHub {
 
     async fn resolve_repository(&self, parsed: &ParsedGitHubUrl) -> Result<ResolvedRepository> {
         let (reference, root_path, commit) = self.resolve_reference(parsed).await?;
+        self.resolve_repository_at_commit(parsed, reference, root_path, commit)
+            .await
+    }
+
+    async fn resolve_repository_at_commit(
+        &self,
+        parsed: &ParsedGitHubUrl,
+        reference: String,
+        root_path: String,
+        commit: CommitResponse,
+    ) -> Result<ResolvedRepository> {
         let tree_spec = if root_path.is_empty() {
             commit.commit.tree.sha.clone()
         } else {
@@ -1596,19 +1631,22 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
         if !entry.file_type()?.is_dir() || platform_path::is_reparse_or_symlink(&entry.path())? {
             continue;
         }
-        let entrypoint = entry.path().join("SKILL.md");
-        let Ok(content) = fs::read_to_string(&entrypoint) else {
-            continue;
-        };
-        let metadata = parse_skill_frontmatter(&content).ok();
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
+        let record = lock.skills.get(&name);
+        let entrypoint = entry.path().join("SKILL.md");
+        let content = fs::read_to_string(&entrypoint).ok();
+        if content.is_none() && record.is_none() {
+            continue;
+        }
+        let metadata = content
+            .as_deref()
+            .and_then(|content| parse_skill_frontmatter(content).ok());
         let display_name = metadata
             .as_ref()
             .map(|value| value.name.clone())
             .unwrap_or_else(|| name.clone());
-        let record = lock.skills.get(&name);
         let (hash, size, modified_at) = match package_hash(&entry.path()) {
             Ok((hash, size, modified_at)) => (Some(hash), size, modified_at),
             Err(_) if record.is_none() => continue,
@@ -2116,12 +2154,15 @@ mod tests {
         assert!(!current.exists());
         assert!(!old_backup.exists());
         assert_eq!(hub.removed().unwrap().len(), 1);
+        let trash_root = root.join("trash/skills").join(&removed.id);
+        fs::write(trash_root.join("unexpected"), "leftover").unwrap();
 
         let restored = hub.restore(&removed.id, true).unwrap();
         assert_eq!(restored.name, "reviewer");
         assert!(current.is_dir());
         assert!(old_backup.is_dir());
         assert!(restored.can_rollback);
+        assert!(!trash_root.exists());
         assert!(hub.removed().unwrap().is_empty());
     }
 
@@ -2218,19 +2259,31 @@ mod tests {
         let managed = directory.path().join("skills/managed-malformed");
         write_skill(&managed, "managed");
         symlink("SKILL.md", managed.join("nested-link")).unwrap();
+        fs::create_dir_all(directory.path().join("skills/managed-missing-entrypoint")).unwrap();
         save_lock(
             directory.path(),
             &SkillLockFile {
                 schema_version: 1,
-                skills: BTreeMap::from([(
-                    "managed-malformed".into(),
-                    SkillLockEntry {
-                        source: Some(source("commit", "tree")),
-                        content_sha256: "prior-hash".into(),
-                        installed_at: Utc::now(),
-                        updated_at: Utc::now(),
-                    },
-                )]),
+                skills: BTreeMap::from([
+                    (
+                        "managed-malformed".into(),
+                        SkillLockEntry {
+                            source: Some(source("commit", "tree")),
+                            content_sha256: "prior-hash".into(),
+                            installed_at: Utc::now(),
+                            updated_at: Utc::now(),
+                        },
+                    ),
+                    (
+                        "managed-missing-entrypoint".into(),
+                        SkillLockEntry {
+                            source: Some(source("commit", "tree")),
+                            content_sha256: "prior-hash".into(),
+                            installed_at: Utc::now(),
+                            updated_at: Utc::now(),
+                        },
+                    ),
+                ]),
                 previous: BTreeMap::new(),
             },
         )
@@ -2238,10 +2291,12 @@ mod tests {
 
         let installed = list_installed(directory.path()).unwrap();
 
-        assert_eq!(installed.len(), 2);
+        assert_eq!(installed.len(), 3);
         assert_eq!(installed[0].name, "managed-malformed");
         assert_eq!(installed[0].status, InstalledSkillStatus::Modified);
-        assert_eq!(installed[1].name, "valid");
+        assert_eq!(installed[1].name, "managed-missing-entrypoint");
+        assert_eq!(installed[1].status, InstalledSkillStatus::Modified);
+        assert_eq!(installed[2].name, "valid");
     }
 
     #[test]

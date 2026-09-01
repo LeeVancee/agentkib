@@ -63,6 +63,14 @@ function sourceLabel(candidate: SkillCandidate | InstalledSkill) {
     : candidate.source.repository;
 }
 
+function isSameSource(installed: InstalledSkill["source"], candidate: SkillCandidate["source"]) {
+  return (
+    installed?.repository.toLowerCase() === candidate.repository.toLowerCase() &&
+    installed.ref === candidate.ref &&
+    installed.path === candidate.path
+  );
+}
+
 function statusLabel(status: InstalledSkill["status"]) {
   return tr(`skills.status.${status}`);
 }
@@ -452,11 +460,8 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                 const matchingName = installed.filter(
                   (skill) => skill.display_name === candidate.name,
                 );
-                const existing = matchingName.find(
-                  (skill) =>
-                    skill.source?.repository === candidate.source.repository &&
-                    skill.source.ref === candidate.source.ref &&
-                    skill.source.path === candidate.source.path,
+                const existing = matchingName.find((skill) =>
+                  isSameSource(skill.source, candidate.source),
                 );
                 const sameSource = Boolean(existing);
                 const nameConflict = !sameSource && matchingName.length > 0;

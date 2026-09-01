@@ -513,6 +513,10 @@ impl SkillHub {
             let Ok(record) = read_json::<TrashRecord>(&record_path) else {
                 continue;
             };
+            let package = entry.path().join("package");
+            if !package.is_dir() || platform_path::is_reparse_or_symlink(&package).unwrap_or(true) {
+                continue;
+            }
             let display_name = if record.display_name.is_empty() {
                 record.name.clone()
             } else {
@@ -523,7 +527,7 @@ impl SkillHub {
                 name: record.name,
                 display_name,
                 removed_at: record.removed_at,
-                path: entry.path().join("package"),
+                path: package,
             });
         }
         output.sort_by_key(|entry| std::cmp::Reverse(entry.removed_at));
@@ -1580,7 +1584,7 @@ fn source_kind(owner: &str, repository: &str, path: &str) -> SkillSourceKind {
 }
 
 fn same_source(left: &SkillSource, right: &SkillSource) -> bool {
-    left.repository == right.repository
+    left.repository.eq_ignore_ascii_case(&right.repository)
         && left.reference == right.reference
         && left.path == right.path
 }
@@ -2022,6 +2026,22 @@ mod tests {
     }
 
     #[test]
+    fn github_sources_ignore_repository_case_but_preserve_ref_and_path_case() {
+        let original = source("commit", "tree");
+        let mut differently_cased_repository = original.clone();
+        differently_cased_repository.repository = "Owner/Repository".into();
+        assert!(same_source(&original, &differently_cased_repository));
+
+        let mut differently_cased_ref = differently_cased_repository.clone();
+        differently_cased_ref.reference = "Main".into();
+        assert!(!same_source(&original, &differently_cased_ref));
+
+        let mut differently_cased_path = differently_cased_repository;
+        differently_cased_path.path = "skills/Reviewer".into();
+        assert!(!same_source(&original, &differently_cased_path));
+    }
+
+    #[test]
     fn candidate_discovery_prefers_direct_skill_directory() {
         let entries = vec![
             TreeEntry {
@@ -2097,6 +2117,19 @@ mod tests {
         assert!(!lock.skills.contains_key("my_skill"));
         assert!(!lock.previous.contains_key("my_skill"));
         assert!(!conflicting_backup.exists());
+    }
+
+    #[test]
+    fn removed_skills_omit_records_without_a_restorable_package() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        write_skill(&root.join("skills/reviewer"), "body");
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        let removed = hub.uninstall("reviewer", true).unwrap();
+
+        fs::remove_dir_all(removed.path).unwrap();
+
+        assert!(hub.removed().unwrap().is_empty());
     }
 
     #[test]

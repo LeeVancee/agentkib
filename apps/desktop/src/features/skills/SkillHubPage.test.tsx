@@ -143,7 +143,10 @@ describe("SkillHubPage", () => {
         path: "/tmp/.agentkib/skills/skill-installer",
         size: 128,
         status: "current",
-        source: candidate.source,
+        source: {
+          ...candidate.source,
+          repository: "OpenAI/Skills",
+        },
         can_rollback: false,
       },
     ]);

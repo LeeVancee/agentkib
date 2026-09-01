@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
@@ -13,6 +14,14 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
+    let grok_home = grok_home();
+    scan_native_candidates_with_grok_home(project, grok_home.as_deref())
+}
+
+fn scan_native_candidates_with_grok_home(
+    project: Option<&Path>,
+    grok_home: Option<&Path>,
+) -> Result<Vec<McpMigrationCandidate>> {
     let mut candidates = Vec::new();
     if let Some(project) = project {
         scan_codex(
@@ -66,7 +75,7 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
         )?;
         scan_hermes(&home.join(".hermes/config.yaml"), "home", &mut candidates)?;
     }
-    if let Some(home) = grok_home() {
+    if let Some(home) = grok_home {
         scan_toml_servers(
             &home.join("config.toml"),
             AgentKind::GrokBuild,
@@ -74,7 +83,9 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
             &mut candidates,
         )?;
     }
-    candidates.retain(|candidate| candidate.name != "agentkib");
+    let mut seen = HashSet::new();
+    candidates
+        .retain(|candidate| candidate.name != "agentkib" && seen.insert(candidate.id.clone()));
     candidates.sort_by(|left, right| {
         left.agent
             .cmp(&right.agent)
@@ -835,5 +846,29 @@ future = 42
             Some(42)
         );
         assert!(native.after.contains("/agents/grok-build"));
+    }
+
+    #[test]
+    fn grok_home_matching_project_config_is_scanned_once() {
+        let dir = tempdir().unwrap();
+        let grok_home = dir.path().join(".grok");
+        std::fs::create_dir(&grok_home).unwrap();
+        std::fs::write(
+            grok_home.join("config.toml"),
+            "[mcp_servers.local]\ncommand = \"server\"\n",
+        )
+        .unwrap();
+
+        let candidates =
+            scan_native_candidates_with_grok_home(Some(dir.path()), Some(&grok_home)).unwrap();
+        let matching: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.agent == AgentKind::GrokBuild && candidate.name == "local"
+            })
+            .collect();
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].scope, "project");
     }
 }

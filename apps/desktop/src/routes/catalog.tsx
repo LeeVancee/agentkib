@@ -66,6 +66,7 @@ const agentLabels: Record<AgentKind, string> = {
   cursor: "Cursor",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 type CatalogSearch = { assetSection?: AssetSection };

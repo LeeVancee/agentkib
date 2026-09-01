@@ -18,6 +18,7 @@
   "agents.localDataFound": "Local data found",
   "agents.deepseekReadOnly": "Read-only Beta: workspace discovery, assets, context preview, and cumulative Token usage are supported. Shared writes and MCP setup are not.",
   "assets.summary.deepseekHarnessInstructions": "DeepSeek Harness project instructions",
+  "assets.summary.grokBuildInstructions": "Grok Build project instructions",
   "context.deepseekCustomRules": "Custom DeepSeek Harness instruction or Skill loading rules were detected. This preview uses the public default rules.",
   "context.deepseekClaudeImport": "DeepSeek Harness treats @AGENTS.md in CLAUDE.md as plain text, not as a Claude Code import.",
   "errors.deepseekWorkspaceVersion": "The DeepSeek Harness workspace data version is not supported",

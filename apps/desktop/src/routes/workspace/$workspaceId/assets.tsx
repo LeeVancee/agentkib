@@ -22,6 +22,7 @@ const agentLabels: Record<AgentKind, string> = {
   cursor: "Cursor",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 function shortPath(path: string) {

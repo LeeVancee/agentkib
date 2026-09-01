@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,6 +17,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value as JsonValue;
 use walkdir::{DirEntry, WalkDir};
+
+const MAX_GROK_SUMMARY_BYTES: u64 = 256 * 1024;
 
 pub trait WorkspaceDiscoveryProvider: Send {
     fn installation(&self) -> AgentInstallation;
@@ -37,6 +40,7 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         Box::new(CursorProvider::default()),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
+        Box::new(GrokBuildProvider::default()),
         Box::new(DeepSeekHarnessProvider::default()),
     ];
     let provider_results = parallel_map_bounded(providers, 4, |provider| {
@@ -647,6 +651,119 @@ impl WorkspaceDiscoveryProvider for HermesProvider {
 }
 
 #[derive(Default)]
+struct GrokBuildProvider {
+    home: Option<PathBuf>,
+}
+
+impl GrokBuildProvider {
+    fn home(&self) -> Option<PathBuf> {
+        self.home.clone().or_else(|| {
+            env::var_os("GROK_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|path| path.join(".grok")))
+        })
+    }
+}
+
+impl WorkspaceDiscoveryProvider for GrokBuildProvider {
+    fn installation(&self) -> AgentInstallation {
+        installation(
+            AgentKind::GrokBuild,
+            self.home(),
+            agent_is_installed(AgentKind::GrokBuild),
+        )
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
+        let Some(sessions) = self
+            .home()
+            .map(|home| home.join("sessions"))
+            .filter(|path| path.is_dir())
+        else {
+            return Ok(Vec::new());
+        };
+        let mut output = Vec::new();
+        for entry in WalkDir::new(sessions)
+            .min_depth(3)
+            .max_depth(3)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| platform_path::is_safe_scan_entry(entry.path()))
+        {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() || entry.file_name() != "summary.json" {
+                continue;
+            }
+            let Ok(value) = read_bounded_json(entry.path(), MAX_GROK_SUMMARY_BYTES) else {
+                continue;
+            };
+            let Some(cwd) = value.pointer("/info/cwd").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            if cwd.trim().is_empty() {
+                continue;
+            }
+            let timestamp = value
+                .get("updated_at")
+                .or_else(|| value.get("updatedAt"))
+                .or_else(|| value.get("created_at"))
+                .or_else(|| value.get("createdAt"))
+                .and_then(parse_json_timestamp);
+            output.push(candidate(
+                PathBuf::from(cwd),
+                Some(AgentKind::GrokBuild),
+                DiscoveryEvidence::SessionCwd,
+                timestamp,
+                1,
+                false,
+            ));
+        }
+        Ok(output)
+    }
+
+    fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
+        Ok(self
+            .home()
+            .filter(|path| path.is_dir())
+            .map(|home| {
+                scan_known_home(
+                    AgentKind::GrokBuild,
+                    &home,
+                    &[
+                        "config.toml",
+                        "managed_config.toml",
+                        "requirements.toml",
+                        "AGENTS.md",
+                        "rules",
+                        "skills",
+                        "plugins",
+                        "agents",
+                        "hooks",
+                        "workflows",
+                    ],
+                )
+            })
+            .transpose()?
+            .unwrap_or_default())
+    }
+}
+
+fn read_bounded_json(path: &Path, limit: u64) -> Result<JsonValue> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > limit {
+        anyhow::bail!("JSON file is not a bounded regular file");
+    }
+    let mut content = String::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > limit {
+        anyhow::bail!("JSON file exceeds the read limit");
+    }
+    Ok(serde_json::from_str(&content)?)
+}
+
+#[derive(Default)]
 struct DeepSeekHarnessProvider {
     home: Option<PathBuf>,
 }
@@ -872,6 +989,7 @@ fn has_project_marker(path: &Path) -> bool {
         ".codex",
         ".claude",
         ".cursor",
+        ".grok",
         ".dsh",
     ]
     .into_iter()
@@ -987,27 +1105,37 @@ fn is_private_home_file(path: &Path) -> bool {
 }
 
 fn home_asset_kind(path: &Path) -> AssetKind {
-    let text = path.to_string_lossy().to_ascii_lowercase();
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if name.eq_ignore_ascii_case("SKILL.md") || text.contains("/skills/") {
+    if name.eq_ignore_ascii_case("SKILL.md") || has_path_component(path, "skills") {
         AssetKind::Skill
-    } else if name.eq_ignore_ascii_case("MEMORY.md") || text.contains("/memory/") {
+    } else if name.eq_ignore_ascii_case("MEMORY.md") || has_path_component(path, "memory") {
         AssetKind::Memory
-    } else if name.eq_ignore_ascii_case("hooks.json") || text.contains("/hooks/") {
+    } else if name.eq_ignore_ascii_case("hooks.json") || has_path_component(path, "hooks") {
         AssetKind::Hook
-    } else if text.contains("/agents/")
-        || text.contains("/profiles/")
-        || text.contains("/.agent-presets/")
+    } else if has_path_component(path, "agents")
+        || has_path_component(path, "profiles")
+        || has_path_component(path, ".agent-presets")
     {
         AssetKind::Agent
+    } else if has_path_component(path, "workflows") {
+        AssetKind::Configuration
     } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
         AssetKind::Instruction
     } else {
         AssetKind::Configuration
     }
+}
+
+fn has_path_component(path: &Path, expected: &str) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|component| component.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn home_asset(agent: AgentKind, path: &Path, kind: AssetKind) -> Result<CatalogAsset> {
@@ -1082,6 +1210,7 @@ fn agent_is_installed(agent: AgentKind) -> bool {
         AgentKind::Cursor => "cursor",
         AgentKind::OpenClaw => "openclaw",
         AgentKind::Hermes => "hermes",
+        AgentKind::GrokBuild => "grok",
         AgentKind::DeepSeekHarness => "dsh",
     };
     command_is_available(command) || app_bundle_is_available(agent)
@@ -1104,6 +1233,7 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
         AgentKind::ClaudeCode
         | AgentKind::OpenClaw
         | AgentKind::Hermes
+        | AgentKind::GrokBuild
         | AgentKind::DeepSeekHarness => return false,
     };
     let mut candidates = vec![PathBuf::from("/Applications").join(bundle)];
@@ -1410,6 +1540,104 @@ mod tests {
         .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].session_count, 1);
+    }
+
+    #[test]
+    fn grok_build_discovers_only_bounded_session_summary_metadata() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let home = dir.path().join("grok");
+        let first = home.join("sessions/encoded/session-1");
+        let second = home.join("sessions/encoded/session-2");
+        let corrupt = home.join("sessions/encoded/session-3");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::create_dir_all(&corrupt).unwrap();
+        fs::write(
+            first.join("summary.json"),
+            serde_json::json!({
+                "info": { "cwd": workspace },
+                "title": "must-not-be-retained",
+                "updated_at": "2026-08-31T12:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            second.join("summary.json"),
+            serde_json::json!({
+                "info": { "cwd": workspace },
+                "created_at": "2026-08-30T12:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(corrupt.join("summary.json"), "{broken").unwrap();
+
+        let candidates = GrokBuildProvider { home: Some(home) }.discover().unwrap();
+        let candidates = normalize_and_merge(candidates);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source_agent, Some(AgentKind::GrokBuild));
+        assert_eq!(candidates[0].session_count, 2);
+        assert_eq!(candidates[0].display_name, None);
+        assert!(
+            !serde_json::to_string(&candidates[0])
+                .unwrap()
+                .contains("session-1")
+        );
+        assert!(
+            !serde_json::to_string(&candidates[0])
+                .unwrap()
+                .contains("must-not-be-retained")
+        );
+    }
+
+    #[test]
+    fn grok_build_skips_oversized_summaries_and_private_home_directories() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("grok");
+        let session = home.join("sessions/encoded/session-1");
+        fs::create_dir_all(&session).unwrap();
+        fs::File::create(session.join("summary.json"))
+            .unwrap()
+            .set_len(MAX_GROK_SUMMARY_BYTES + 1)
+            .unwrap();
+        fs::create_dir_all(home.join("skills/reviewer")).unwrap();
+        fs::write(home.join("skills/reviewer/SKILL.md"), "# Reviewer").unwrap();
+        fs::create_dir_all(home.join("workflows")).unwrap();
+        fs::write(home.join("workflows/review.md"), "# Review workflow").unwrap();
+        fs::create_dir_all(home.join("agents")).unwrap();
+        fs::write(home.join("agents/reviewer.md"), "# Reviewer agent").unwrap();
+        fs::create_dir_all(home.join("memory")).unwrap();
+        fs::write(home.join("memory/private.md"), "private").unwrap();
+
+        let provider = GrokBuildProvider { home: Some(home) };
+        assert!(provider.discover().unwrap().is_empty());
+        let assets = provider.scan_home_assets().unwrap();
+        assert!(assets.iter().any(|asset| asset.name == "reviewer"));
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.path.ends_with("workflows/review.md"))
+        );
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("workflows/review.md") && asset.kind == AssetKind::Configuration
+        }));
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("agents/reviewer.md") && asset.kind == AssetKind::Agent
+        }));
+        assert!(
+            assets
+                .iter()
+                .all(|asset| !asset.path.to_string_lossy().contains("memory"))
+        );
+        assert!(
+            assets
+                .iter()
+                .all(|asset| !asset.path.to_string_lossy().contains("sessions"))
+        );
     }
 
     #[test]

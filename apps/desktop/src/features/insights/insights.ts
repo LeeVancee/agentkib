@@ -1,4 +1,13 @@
-import type { HeatmapPoint } from "@/core/types";
+import type { AgentKind, HeatmapPoint } from "@/core/types";
+
+export const insightsAgentKinds: AgentKind[] = [
+  "codex",
+  "claude-code",
+  "cursor",
+  "open-claw",
+  "hermes",
+  "deepseek-harness",
+];
 
 export interface HeatmapMonthMarker {
   key: string;

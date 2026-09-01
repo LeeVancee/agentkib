@@ -102,6 +102,16 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     {
         bail!("DeepSeek Harness Beta is read-only and cannot be a manifest write target");
     }
+    if manifest
+        .instructions
+        .platform_overrides
+        .get(&AgentKind::GrokBuild)
+        .is_some_and(|content| !content.trim().is_empty())
+    {
+        bail!(
+            "Grok Build does not support a safe AgentKib-specific instruction override; use shared or scoped AGENTS.md instructions"
+        );
+    }
     Ok(())
 }
 
@@ -205,6 +215,21 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("read-only")
+        );
+    }
+
+    #[test]
+    fn rejects_grok_build_platform_override() {
+        let mut value = manifest();
+        value
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::GrokBuild, "Grok-only rule".into());
+        assert!(
+            validate_manifest(&value)
+                .unwrap_err()
+                .to_string()
+                .contains("does not support")
         );
     }
 

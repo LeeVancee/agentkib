@@ -18,15 +18,7 @@ import type {
   SessionHandoffRequest,
   WorkspaceSummary,
 } from "@/core/types";
-
-const targets: Array<[AgentKind, string]> = [
-  ["codex", "Codex"],
-  ["claude-code", "Claude Code"],
-  ["cursor", "Cursor"],
-  ["open-claw", "OpenClaw"],
-  ["hermes", "Hermes"],
-  ["deepseek-harness", "DeepSeek Harness"],
-];
+import { sessionHandoffTargets } from "./session-handoff-targets";
 
 export function SessionHandoffDialog({
   workspace,
@@ -42,7 +34,10 @@ export function SessionHandoffDialog({
   onPlanned: (handoff: PlannedSessionHandoff) => void;
 }) {
   const availableTargets = useMemo(
-    () => targets.filter(([agent]) => agent === session.agent || targetAgents.includes(agent)),
+    () =>
+      sessionHandoffTargets.filter(
+        ([agent]) => agent === session.agent || targetAgents.includes(agent),
+      ),
     [session.agent, targetAgents],
   );
   const defaultTarget =
@@ -356,7 +351,7 @@ export function SessionHandoffDialog({
 }
 
 function agentName(agent: AgentKind) {
-  return targets.find(([value]) => value === agent)?.[1] ?? agent;
+  return sessionHandoffTargets.find(([value]) => value === agent)?.[1] ?? agent;
 }
 
 function formatBytes(bytes: number) {

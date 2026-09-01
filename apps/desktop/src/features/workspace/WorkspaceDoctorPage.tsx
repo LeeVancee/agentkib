@@ -290,6 +290,7 @@ function agentLabel(agent: string) {
         cursor: "Cursor",
         "open-claw": "OpenClaw",
         hermes: "Hermes",
+        "grok-build": "Grok Build",
         "deepseek-harness": "DeepSeek Harness",
       } as Record<string, string>
     )[agent] ?? agent

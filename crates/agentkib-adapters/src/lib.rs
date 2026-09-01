@@ -259,6 +259,7 @@ pub fn plan_workspace_changes(
         AgentKind::Cursor,
         AgentKind::OpenClaw,
         AgentKind::Hermes,
+        AgentKind::GrokBuild,
     ]
     .into_iter()
     .any(|agent| adapter_enabled(manifest, agent));
@@ -342,6 +343,16 @@ pub fn plan_workspace_changes(
             &mut changes,
             root.join(".codex/config.toml"),
             merge_codex_config(&root.join(".codex/config.toml"), &gateway_connections)?,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            "toml",
+        )?;
+    }
+    if adapter_enabled(manifest, AgentKind::GrokBuild) {
+        push_change(
+            &mut changes,
+            root.join(".grok/config.toml"),
+            merge_grok_config(&root.join(".grok/config.toml"), &gateway_connections)?,
             ChangeScope::Project,
             RiskLevel::Medium,
             "toml",
@@ -523,7 +534,21 @@ pub fn plan_workspace_changes(
                     root.join(".claude/skills")
                         .join(&skill.name)
                         .join(&relative_path),
-                    content,
+                    content.clone(),
+                    ChangeScope::Project,
+                    RiskLevel::Low,
+                    validator_for_skill_file(&relative_path),
+                )?;
+            }
+            if adapter_enabled(manifest, AgentKind::GrokBuild)
+                && (skill.targets.is_empty() || skill.targets.contains(&AgentKind::GrokBuild))
+            {
+                push_change(
+                    &mut changes,
+                    root.join(".grok/skills")
+                        .join(&skill.name)
+                        .join(&relative_path),
+                    content.clone(),
                     ChangeScope::Project,
                     RiskLevel::Low,
                     validator_for_skill_file(&relative_path),
@@ -693,7 +718,7 @@ fn adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
     manifest
         .adapters
         .get(&agent)
-        .is_none_or(|state| state.enabled)
+        .map_or(agent != AgentKind::GrokBuild, |state| state.enabled)
 }
 
 fn skill_source_files(
@@ -851,6 +876,12 @@ fn validator_for_skill_file(path: &Path) -> &'static str {
     }
 }
 
+fn has_path_component(path: &Path, name: &str) -> bool {
+    let name = OsStr::new(name);
+    path.components()
+        .any(|component| component.as_os_str() == name)
+}
+
 fn update_generated_hashes(
     root: &Path,
     manifest: &mut Manifest,
@@ -881,16 +912,24 @@ fn update_generated_hashes(
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let path = change.target.to_string_lossy();
-        let agents: &[AgentKind] = if path.contains(".openclaw") {
+        let scoped_path = change
+            .target
+            .strip_prefix(root)
+            .unwrap_or(change.target.as_path());
+        let agents: &[AgentKind] = if has_path_component(scoped_path, ".openclaw") {
             &[AgentKind::OpenClaw]
-        } else if path.contains(".hermes") {
+        } else if has_path_component(scoped_path, ".hermes") {
             &[AgentKind::Hermes]
-        } else if path.contains(".codex") {
+        } else if has_path_component(scoped_path, ".grok") {
+            &[AgentKind::GrokBuild]
+        } else if has_path_component(scoped_path, ".codex") {
             &[AgentKind::Codex]
-        } else if path.contains(".cursor") {
+        } else if has_path_component(scoped_path, ".cursor") {
             &[AgentKind::Cursor]
-        } else if path.contains(".claude") || name == "CLAUDE.md" || name == ".mcp.json" {
+        } else if has_path_component(scoped_path, ".claude")
+            || name == "CLAUDE.md"
+            || name == ".mcp.json"
+        {
             &[AgentKind::ClaudeCode]
         } else {
             &[
@@ -898,6 +937,7 @@ fn update_generated_hashes(
                 AgentKind::Cursor,
                 AgentKind::OpenClaw,
                 AgentKind::Hermes,
+                AgentKind::GrokBuild,
             ]
         };
         for agent in agents {
@@ -1029,16 +1069,34 @@ fn legacy_connection_server(connection: &ConnectionDefinition) -> McpServerConfi
 }
 
 fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
+    merge_toml_mcp_config(path, connections, AgentKind::Codex, "Codex")
+}
+
+fn merge_grok_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
+    merge_toml_mcp_config(path, connections, AgentKind::GrokBuild, "Grok Build")
+}
+
+fn merge_toml_mcp_config(
+    path: &Path,
+    connections: &[ConnectionDefinition],
+    agent: AgentKind,
+    label: &str,
+) -> Result<String> {
     let existing = fs::read_to_string(path).unwrap_or_default();
     if !existing.contains(TOML_START) {
-        for connection in connections
-            .iter()
-            .filter(|value| targeted(value, AgentKind::Codex))
-        {
-            let table = format!("[mcp_servers.{}]", safe_key(&connection.name));
-            if existing.lines().any(|line| line.trim() == table) {
+        let parsed = toml::from_str::<toml::Value>(&existing).ok();
+        let existing_servers = parsed
+            .as_ref()
+            .and_then(|value| value.get("mcp_servers"))
+            .and_then(toml::Value::as_table);
+        for connection in connections.iter().filter(|value| targeted(value, agent)) {
+            let key = safe_key(&connection.name);
+            let table = format!("[mcp_servers.{key}]");
+            if existing_servers.is_some_and(|servers| servers.contains_key(&key))
+                || existing.lines().any(|line| line.trim() == table)
+            {
                 anyhow::bail!(
-                    "Codex configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
+                    "{label} configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
                     connection.name
                 );
             }
@@ -1047,10 +1105,7 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
     let mut block = String::new();
     block.push_str(TOML_START);
     block.push('\n');
-    for connection in connections
-        .iter()
-        .filter(|value| targeted(value, AgentKind::Codex))
-    {
+    for connection in connections.iter().filter(|value| targeted(value, agent)) {
         block.push_str(&format!("[mcp_servers.{}]\n", safe_key(&connection.name)));
         match &connection.transport {
             ConnectionTransport::Stdio { command, args } => {
@@ -1060,10 +1115,9 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
                     serde_json::to_string(args).unwrap_or_else(|_| "[]".into())
                 ));
             }
-            ConnectionTransport::Http { url } => block.push_str(&format!(
-                "url = {}\n",
-                toml_string(&agent_url(url, AgentKind::Codex))
-            )),
+            ConnectionTransport::Http { url } => {
+                block.push_str(&format!("url = {}\n", toml_string(&agent_url(url, agent))))
+            }
         }
         if !connection.allow_tools.is_empty() {
             block.push_str(&format!(
@@ -1172,6 +1226,7 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
                 AgentKind::Codex
                 | AgentKind::Cursor
                 | AgentKind::Hermes
+                | AgentKind::GrokBuild
                 | AgentKind::DeepSeekHarness => {}
             }
         }
@@ -1195,6 +1250,7 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
         AgentKind::Cursor => "cursor",
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
+        AgentKind::GrokBuild => "grok-build",
         AgentKind::DeepSeekHarness => "deepseek-harness",
     };
     url.replace("{agent}", slug)
@@ -1268,6 +1324,90 @@ mod tests {
 
         assert!(manifest.instructions.shared.is_empty());
         assert!(!agentkib_core::manifest_path(dir.path()).exists());
+        assert!(manifest.adapters[&AgentKind::GrokBuild].enabled);
+    }
+
+    #[test]
+    fn legacy_manifest_without_grok_adapter_does_not_write_grok_files() {
+        let dir = tempdir().unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.adapters.remove(&AgentKind::GrokBuild);
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.to_string_lossy().contains(".grok"))
+        );
+    }
+
+    #[test]
+    fn grok_build_writes_native_skills_and_preserves_unmanaged_toml() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".agents/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join(".grok")).unwrap();
+        fs::write(
+            dir.path().join(".grok/config.toml"),
+            "model = \"grok-code\"\n\n[mcp_servers.keep]\ncommand = \"keep\"\n",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/workspaces/ws/agents/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::GrokBuild],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(plan.changes.iter().any(|change| {
+            change.target.ends_with(".grok/skills/reviewer/SKILL.md")
+                && change.after == "# Reviewer"
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".grok/config.toml"))
+            .unwrap();
+        assert!(config.after.contains("model = \"grok-code\""));
+        assert!(config.after.contains("[mcp_servers.keep]"));
+        assert!(config.after.contains("/agents/grok-build"));
+    }
+
+    #[test]
+    fn grok_build_rejects_unmanaged_mcp_name_collision() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[mcp_servers.agentkib] # local gateway\nurl = \"https://user.example/mcp\"\n",
+        )
+        .unwrap();
+        let connections = [ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::GrokBuild],
+        }];
+
+        assert!(
+            merge_grok_config(&path, &connections)
+                .unwrap_err()
+                .to_string()
+                .contains("unmanaged MCP")
+        );
     }
 
     #[test]
@@ -1381,6 +1521,46 @@ mod tests {
             persisted.adapters[&AgentKind::Codex]
                 .generated_hashes
                 .contains_key("AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn grok_substring_in_workspace_parent_does_not_misclassify_generated_hashes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("my.grok-project/repo");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = default_manifest(&root).unwrap();
+
+        let plan = plan_workspace_changes(&root, &manifest, &HomeTargets::default()).unwrap();
+        let manifest_change = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/manifest.yaml"))
+            .unwrap();
+        let persisted: Manifest = serde_yaml::from_str(&manifest_change.after).unwrap();
+
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+        ] {
+            assert!(
+                persisted.adapters[&agent]
+                    .generated_hashes
+                    .contains_key("AGENTS.md")
+            );
+        }
+        assert!(
+            persisted.adapters[&AgentKind::Codex]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
+        );
+        assert!(
+            !persisted.adapters[&AgentKind::GrokBuild]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
         );
     }
 

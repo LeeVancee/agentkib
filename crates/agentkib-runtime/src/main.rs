@@ -1688,15 +1688,23 @@ fn default_home_targets() -> agentkib_adapters::HomeTargets {
 }
 
 fn native_mcp_home_files() -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
-    vec![
-        home.join(".codex/config.toml"),
-        home.join(".claude.json"),
-        home.join(".openclaw/openclaw.json"),
-        home.join(".hermes/config.yaml"),
-    ]
+    let mut files = dirs::home_dir()
+        .map(|home| {
+            vec![
+                home.join(".codex/config.toml"),
+                home.join(".claude.json"),
+                home.join(".openclaw/openclaw.json"),
+                home.join(".hermes/config.yaml"),
+            ]
+        })
+        .unwrap_or_default();
+    let grok_home = std::env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".grok")));
+    if let Some(home) = grok_home {
+        files.push(home.join("config.toml"));
+    }
+    files
 }
 
 #[derive(Deserialize)]

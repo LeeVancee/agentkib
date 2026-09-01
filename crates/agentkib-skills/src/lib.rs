@@ -470,16 +470,30 @@ impl SkillHub {
         if backup.is_dir()
             && let Err(error) = move_path(&backup, &trashed_backup)
         {
-            if recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
-                let _ = fs::remove_dir_all(&trash_root);
+            match recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
+                Ok(()) => {
+                    let _ = fs::remove_dir_all(&trash_root);
+                    return Err(error.into());
+                }
+                Err(recovery_error) => bail!(
+                    "Could not move the rollback package to trash ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {} and {}",
+                    trash_root.display(),
+                    target.display()
+                ),
             }
-            return Err(error.into());
         }
         if let Err(error) = save_lock(&self.root, &lock) {
-            if recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
-                let _ = fs::remove_dir_all(&trash_root);
+            match recover_uninstall_moves(&package, &target, &trashed_backup, &backup) {
+                Ok(()) => {
+                    let _ = fs::remove_dir_all(&trash_root);
+                    return Err(error);
+                }
+                Err(recovery_error) => bail!(
+                    "Could not save Skill removal metadata ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {} and {}",
+                    trash_root.display(),
+                    target.display()
+                ),
             }
-            return Err(error);
         }
         Ok(RemovedSkill {
             id,
@@ -579,17 +593,28 @@ impl SkillHub {
             move_path(&backup, &conflicting_backup)?;
         }
         if let Err(error) = move_path(&package, &target) {
-            if conflicting_backup.is_dir() {
-                let _ = move_path(&conflicting_backup, &backup);
+            if let Err(recovery_error) = recover_directory_moves(&[(&conflicting_backup, &backup)])
+            {
+                bail!(
+                    "Could not restore the Skill package ({error}); restoring the conflicting rollback package also failed ({recovery_error}). Package state is preserved under {} and {}",
+                    trash_root.display(),
+                    backup.display()
+                );
             }
             return Err(error.into());
         }
         if trashed_backup.is_dir()
             && let Err(error) = move_path(&trashed_backup, &backup)
         {
-            let _ = move_path(&target, &package);
-            if conflicting_backup.is_dir() {
-                let _ = move_path(&conflicting_backup, &backup);
+            if let Err(recovery_error) =
+                recover_directory_moves(&[(&target, &package), (&conflicting_backup, &backup)])
+            {
+                bail!(
+                    "Could not restore the rollback package ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {}, {}, and {}",
+                    trash_root.display(),
+                    target.display(),
+                    backup.display()
+                );
             }
             return Err(error.into());
         }
@@ -602,12 +627,17 @@ impl SkillHub {
             lock.previous.insert(record.name.clone(), entry);
         }
         if let Err(error) = save_lock(&self.root, &lock) {
-            if backup.is_dir() {
-                let _ = move_path(&backup, &trashed_backup);
-            }
-            let _ = move_path(&target, &package);
-            if conflicting_backup.is_dir() {
-                let _ = move_path(&conflicting_backup, &backup);
+            if let Err(recovery_error) = recover_directory_moves(&[
+                (&backup, &trashed_backup),
+                (&target, &package),
+                (&conflicting_backup, &backup),
+            ]) {
+                bail!(
+                    "Could not save restored Skill metadata ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {}, {}, and {}",
+                    trash_root.display(),
+                    target.display(),
+                    backup.display()
+                );
             }
             return Err(error);
         }
@@ -1196,7 +1226,7 @@ fn recover_uninstall_moves(
     target: &Path,
     trashed_backup: &Path,
     backup: &Path,
-) -> bool {
+) -> Result<()> {
     recover_uninstall_moves_with(package, target, trashed_backup, backup, move_path)
 }
 
@@ -1303,19 +1333,41 @@ fn recover_uninstall_moves_with<F>(
     target: &Path,
     trashed_backup: &Path,
     backup: &Path,
-    mut move_dir: F,
-) -> bool
+    move_dir: F,
+) -> Result<()>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    if move_dir(package, target).is_err() {
-        return false;
+    recover_directory_moves_with(&[(package, target), (trashed_backup, backup)], move_dir)
+}
+
+fn recover_directory_moves(steps: &[(&Path, &Path)]) -> Result<()> {
+    recover_directory_moves_with(steps, move_path)
+}
+
+fn recover_directory_moves_with<F>(steps: &[(&Path, &Path)], mut move_dir: F) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let mut failures = Vec::new();
+    for (source, target) in steps {
+        if !source.is_dir() {
+            continue;
+        }
+        if let Err(error) = move_dir(source, target) {
+            failures.push(format!(
+                "{} -> {}: {error}",
+                source.display(),
+                target.display()
+            ));
+        }
     }
-    if trashed_backup.is_dir() && move_dir(trashed_backup, backup).is_err() {
-        let _ = move_dir(target, package);
-        return false;
-    }
-    true
+    ensure!(
+        failures.is_empty(),
+        "automatic recovery is incomplete: {}",
+        failures.join("; ")
+    );
+    Ok(())
 }
 
 fn swap_directories_with<F>(root: &Path, left: &Path, right: &Path, mut move_dir: F) -> Result<()>
@@ -1328,12 +1380,27 @@ where
     fs::create_dir_all(swap.parent().context("Swap path has no parent")?)?;
     move_dir(left, &swap)?;
     if let Err(error) = move_dir(right, left) {
-        let _ = move_dir(&swap, left);
+        if let Err(recovery_error) = recover_directory_moves_with(&[(&swap, left)], &mut move_dir) {
+            bail!(
+                "Could not move {} into {} ({error}); restoring the live package also failed ({recovery_error}). The original package is preserved at {}",
+                right.display(),
+                left.display(),
+                swap.display()
+            );
+        }
         return Err(error.into());
     }
     if let Err(error) = move_dir(&swap, right) {
-        let _ = move_dir(left, right);
-        let _ = move_dir(&swap, left);
+        if let Err(recovery_error) =
+            recover_directory_moves_with(&[(left, right), (&swap, left)], &mut move_dir)
+        {
+            bail!(
+                "Could not complete the directory swap ({error}); restoring the original packages also failed ({recovery_error}). Package state is preserved under {}, {}, and {}",
+                left.display(),
+                right.display(),
+                swap.display()
+            );
+        }
         return Err(error.into());
     }
     Ok(())
@@ -2979,6 +3046,44 @@ mod tests {
     }
 
     #[test]
+    fn directory_swap_reports_the_staged_package_when_initial_recovery_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let left = root.join("left");
+        let right = root.join("right");
+        write_skill(&left, "left");
+        write_skill(&right, "right");
+        let mut moves = 0;
+
+        let error = swap_directories_with(root, &left, &right, |source, target| {
+            moves += 1;
+            if moves >= 2 {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated transient file lock",
+                ))
+            } else {
+                move_path(source, target)
+            }
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("simulated transient file lock"));
+        assert!(error.contains("The original package is preserved"));
+        assert!(!left.exists());
+        assert!(right.is_dir());
+        let staged = fs::read_dir(root.join(".staging"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(staged.is_dir());
+        assert!(error.contains(&staged.display().to_string()));
+    }
+
+    #[test]
     fn failed_uninstall_recovery_keeps_the_package_in_trash() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -2989,7 +3094,7 @@ mod tests {
         write_skill(&package, "current");
         write_skill(&trashed_backup, "rollback");
 
-        let recovered =
+        let recovery =
             recover_uninstall_moves_with(&package, &target, &trashed_backup, &backup, |_, _| {
                 Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -2997,11 +3102,49 @@ mod tests {
                 ))
             });
 
-        assert!(!recovered);
+        assert!(recovery.is_err());
         assert!(package.is_dir());
         assert!(trashed_backup.is_dir());
         assert!(!target.exists());
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn failed_restore_reversal_reports_the_live_package_and_restores_other_backups() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let target = root.join("skills/reviewer");
+        let package = root.join("trash/package");
+        let conflicting_backup = root.join("trash/conflicting-backup");
+        let backup = root.join("backups/skills/reviewer");
+        fs::create_dir_all(backup.parent().unwrap()).unwrap();
+        write_skill(&target, "restored package");
+        write_skill(&conflicting_backup, "conflicting backup");
+        let mut moves = 0;
+
+        let error = recover_directory_moves_with(
+            &[(&target, &package), (&conflicting_backup, &backup)],
+            |source, destination| {
+                moves += 1;
+                if moves == 1 {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "simulated transient file lock",
+                    ))
+                } else {
+                    move_path(source, destination)
+                }
+            },
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(&target.display().to_string()));
+        assert!(error.contains(&package.display().to_string()));
+        assert!(target.is_dir());
+        assert!(!package.exists());
+        assert!(!conflicting_backup.exists());
+        assert!(backup.is_dir());
     }
 
     #[test]

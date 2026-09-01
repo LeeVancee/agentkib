@@ -1154,7 +1154,7 @@ fn finish_document(
     loss_counts: BTreeMap<SessionLossCode, usize>,
     home: Option<&Path>,
 ) -> Result<SessionDocument> {
-    turns.sort_by(|left, right| numeric_turn_id(&left.id).cmp(&numeric_turn_id(&right.id)));
+    turns.sort_by_key(|turn| numeric_turn_id(&turn.id));
     let mut redaction_count = 0;
     for turn in &mut turns {
         for block in &mut turn.blocks {

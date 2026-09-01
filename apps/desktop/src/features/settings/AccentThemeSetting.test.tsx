@@ -29,10 +29,10 @@ describe("AccentThemeSetting", () => {
     render(<AccentThemeSetting effectiveTheme="light" />);
 
     await user.click(screen.getByRole("combobox", { name: "Light mode accent" }));
-    await user.click(await screen.findByRole("option", { name: "Violet" }));
+    await user.click(await screen.findByRole("option", { name: "Sakura" }));
 
-    expect(document.documentElement.dataset.accentTheme).toBe("violet");
-    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("violet");
+    expect(document.documentElement.dataset.accentTheme).toBe("sakura");
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("sakura");
     expect(
       screen.getByText(
         "Used for primary actions, focus, and compact selection states in light mode.",

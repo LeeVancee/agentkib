@@ -936,18 +936,18 @@ export function AccentThemeSetting({
         onChange={(event) => {
           const theme = event.target.value;
           if (
-            theme !== "black" &&
-            theme !== "sky" &&
+            theme !== "minimal-neutral" &&
+            theme !== "vtron" &&
             theme !== "claude" &&
-            theme !== "violet" &&
-            theme !== "emerald"
+            theme !== "sakura" &&
+            theme !== "ocean-breeze"
           )
             return;
           applyAccentTheme(theme);
           setSelected(theme);
         }}
       >
-        {(["black", "sky", "claude", "violet", "emerald"] as AccentTheme[]).map((theme) => (
+        {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
           <option key={theme} value={theme}>
             {tr(`settings.accentTheme.${theme}`)}
           </option>

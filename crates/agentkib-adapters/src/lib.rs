@@ -920,23 +920,33 @@ fn update_generated_hashes(
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| change.target.display().to_string());
         let hash = hash_content(change.after.as_bytes());
-        let name = change
-            .target
+        let relative = change.target.strip_prefix(root).ok();
+        let name = relative
+            .unwrap_or(&change.target)
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let path = change.target.to_string_lossy();
-        let agents: &[AgentKind] = if path.contains(".opencode") {
+        let project_directory = relative
+            .and_then(|path| path.iter().next())
+            .and_then(|value| value.to_str());
+        let agents: &[AgentKind] = if project_directory == Some(".opencode") {
             &[AgentKind::OpenCode]
-        } else if path.contains(".openclaw") {
+        } else if project_directory == Some(".openclaw")
+            || home.openclaw_config.as_ref() == Some(&change.target)
+            || name == "TOOLS.md"
+        {
             &[AgentKind::OpenClaw]
-        } else if path.contains(".hermes") {
+        } else if project_directory == Some(".hermes")
+            || home.hermes_config.as_ref() == Some(&change.target)
+            || name == ".hermes.md"
+        {
             &[AgentKind::Hermes]
-        } else if path.contains(".codex") {
+        } else if project_directory == Some(".codex") || name == "AGENTS.override.md" {
             &[AgentKind::Codex]
-        } else if path.contains(".cursor") {
+        } else if project_directory == Some(".cursor") {
             &[AgentKind::Cursor]
-        } else if path.contains(".claude") || name == "CLAUDE.md" || name == ".mcp.json" {
+        } else if project_directory == Some(".claude") || name == "CLAUDE.md" || name == ".mcp.json"
+        {
             &[AgentKind::ClaudeCode]
         } else {
             &[
@@ -1433,7 +1443,7 @@ mod tests {
 
         fs::write(
             dir.path().join(".opencode/opencode.jsonc"),
-            "{ instructions: ['.opencode/agentkib-instructions.md'] }",
+            "{ instructions: ['.opencode/*.md'] }",
         )
         .unwrap();
         let registered = default_manifest(dir.path()).unwrap();
@@ -1580,6 +1590,37 @@ mod tests {
                 .generated_hashes
                 .contains_key("AGENTS.md")
         );
+    }
+
+    #[test]
+    fn managed_hash_classification_ignores_parent_directory_names() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join(".opencode-demo/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("AGENTS.md"), "Shared rules").unwrap();
+        let manifest = default_manifest(&project).unwrap();
+
+        let plan = plan_workspace_changes(&project, &manifest, &HomeTargets::default()).unwrap();
+        let manifest_change = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/manifest.yaml"))
+            .unwrap();
+        let persisted: Manifest = serde_yaml::from_str(&manifest_change.after).unwrap();
+
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+        ] {
+            assert!(
+                persisted.adapters[&agent]
+                    .generated_hashes
+                    .contains_key("AGENTS.md")
+            );
+        }
     }
 
     #[test]

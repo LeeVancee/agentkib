@@ -493,10 +493,80 @@ fn opencode_config_registers_managed_instruction(path: &Path) -> bool {
         .is_some_and(|instructions| {
             instructions.iter().any(|instruction| {
                 instruction.as_str().is_some_and(|value| {
-                    value.trim_start_matches("./") == OPENCODE_MANAGED_INSTRUCTION
+                    opencode_instruction_pattern_matches(
+                        value.trim_start_matches("./"),
+                        OPENCODE_MANAGED_INSTRUCTION,
+                    )
                 })
             })
         })
+}
+
+fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
+    fn segment_matches(pattern: &[u8], target: &[u8]) -> bool {
+        let (mut pattern_index, mut target_index) = (0, 0);
+        let mut star = None;
+        let mut star_target_index = 0;
+        while target_index < target.len() {
+            if pattern_index < pattern.len()
+                && (pattern[pattern_index] == b'?'
+                    || pattern[pattern_index] == target[target_index])
+            {
+                pattern_index += 1;
+                target_index += 1;
+            } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+                star = Some(pattern_index);
+                star_target_index = target_index;
+                pattern_index += 1;
+            } else if let Some(star_index) = star {
+                star_target_index += 1;
+                target_index = star_target_index;
+                pattern_index = star_index + 1;
+            } else {
+                return false;
+            }
+        }
+        while pattern.get(pattern_index) == Some(&b'*') {
+            pattern_index += 1;
+        }
+        pattern_index == pattern.len()
+    }
+
+    fn path_matches(pattern: &[&str], target: &[&str]) -> bool {
+        let (mut pattern_index, mut target_index) = (0, 0);
+        let mut globstar = None;
+        let mut globstar_target_index = 0;
+        while target_index < target.len() {
+            if pattern_index < pattern.len()
+                && pattern[pattern_index] != "**"
+                && segment_matches(
+                    pattern[pattern_index].as_bytes(),
+                    target[target_index].as_bytes(),
+                )
+            {
+                pattern_index += 1;
+                target_index += 1;
+            } else if pattern.get(pattern_index) == Some(&"**") {
+                globstar = Some(pattern_index);
+                globstar_target_index = target_index;
+                pattern_index += 1;
+            } else if let Some(globstar_index) = globstar {
+                globstar_target_index += 1;
+                target_index = globstar_target_index;
+                pattern_index = globstar_index + 1;
+            } else {
+                return false;
+            }
+        }
+        while pattern.get(pattern_index) == Some(&"**") {
+            pattern_index += 1;
+        }
+        pattern_index == pattern.len()
+    }
+
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let target = target.split('/').collect::<Vec<_>>();
+    path_matches(&pattern, &target)
 }
 
 fn cursor_rule_is_always(path: &Path) -> bool {
@@ -864,7 +934,7 @@ mod tests {
 
         fs::write(
             dir.path().join(".opencode/opencode.jsonc"),
-            "{ // OpenCode accepts JSONC\n instructions: ['./.opencode/agentkib-instructions.md'],\n}",
+            "{ // OpenCode accepts JSONC\n instructions: ['.opencode/*.md'],\n}",
         )
         .unwrap();
         let registered =
@@ -876,6 +946,22 @@ mod tests {
             &dir.path().join(OPENCODE_MANAGED_INSTRUCTION)
         ));
         assert_eq!(registered.sections[1].content.trim(), "OpenCode override");
+    }
+
+    #[test]
+    fn opencode_registration_matches_component_and_recursive_globs() {
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "**/agentkib-*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(!opencode_instruction_pattern_matches(
+            "docs/*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
     }
 
     #[test]

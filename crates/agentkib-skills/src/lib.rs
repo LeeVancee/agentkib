@@ -419,8 +419,9 @@ impl SkillHub {
         lock.previous.insert(name.to_string(), current);
         swap_directories(&self.root, &target, &backup)?;
         if let Err(error) = save_lock(&self.root, &lock) {
-            let _ = swap_directories(&self.root, &target, &backup);
-            return Err(error);
+            return Err(rollback_lock_failure_with(error, &target, &backup, || {
+                swap_directories(&self.root, &target, &backup)
+            }));
         }
         self.installed()?
             .into_iter()
@@ -918,25 +919,46 @@ impl SkillHub {
             move_path(&backup, &prior_backup)?;
         }
         if let Err(error) = move_path(&target, &backup) {
-            if prior_backup.is_dir() {
-                let _ = move_path(&prior_backup, &backup);
+            if let Err(recovery_error) = recover_staged_backup(&prior_backup, &backup) {
+                bail!(
+                    "Could not stage the current Skill for update ({error}); restoring the prior rollback package also failed ({recovery_error}). The current Skill remains at {} and the prior rollback package is preserved at {}",
+                    target.display(),
+                    prior_backup.display()
+                );
             }
             return Err(error.into());
         }
         if let Err(error) = move_path(&prepared.package, &target) {
-            let _ = move_path(&backup, &target);
-            if prior_backup.is_dir() {
-                let _ = move_path(&prior_backup, &backup);
+            if let Err(recovery_error) = recover_update_moves(&backup, &target, &prior_backup) {
+                let preserved_preview = prepared.temp.keep();
+                bail!(
+                    "Could not activate the prepared Skill update ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {}, {}, and {} for recovery",
+                    target.display(),
+                    backup.display(),
+                    preserved_preview.display()
+                );
             }
             return Err(error.into());
         }
         lock.previous.insert(name.clone(), previous);
         lock.skills.insert(name.clone(), prepared.lock);
         if let Err(error) = save_lock(&self.root, &lock) {
-            let _ = move_path(&target, &prepared.package);
-            let _ = move_path(&backup, &target);
-            if prior_backup.is_dir() {
-                let _ = move_path(&prior_backup, &backup);
+            let recovery = move_path(&target, &prepared.package)
+                .with_context(|| {
+                    format!(
+                        "the incoming Skill remains at {} because it could not be returned to staging",
+                        target.display()
+                    )
+                })
+                .and_then(|_| recover_update_moves(&backup, &target, &prior_backup));
+            if let Err(recovery_error) = recovery {
+                let preserved_preview = prepared.temp.keep();
+                bail!(
+                    "Could not save Skill update metadata ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {}, {}, and {} for recovery",
+                    target.display(),
+                    backup.display(),
+                    preserved_preview.display()
+                );
             }
             return Err(error);
         }
@@ -1166,15 +1188,66 @@ fn recover_uninstall_moves(
     recover_uninstall_moves_with(package, target, trashed_backup, backup, move_path)
 }
 
-fn recover_staged_backup(staged_backup: &Path, backup: &Path) -> bool {
+fn recover_staged_backup(staged_backup: &Path, backup: &Path) -> Result<()> {
     recover_staged_backup_with(staged_backup, backup, move_path)
 }
 
-fn recover_staged_backup_with<F>(staged_backup: &Path, backup: &Path, mut move_dir: F) -> bool
+fn recover_staged_backup_with<F>(staged_backup: &Path, backup: &Path, mut move_dir: F) -> Result<()>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    !staged_backup.is_dir() || move_dir(staged_backup, backup).is_ok()
+    if staged_backup.is_dir() {
+        move_dir(staged_backup, backup).with_context(|| {
+            format!(
+                "the rollback package is preserved at {} because it could not be restored to {}",
+                staged_backup.display(),
+                backup.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn recover_update_moves(backup: &Path, target: &Path, prior_backup: &Path) -> Result<()> {
+    recover_update_moves_with(backup, target, prior_backup, move_path)
+}
+
+fn recover_update_moves_with<F>(
+    backup: &Path,
+    target: &Path,
+    prior_backup: &Path,
+    mut move_dir: F,
+) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    move_dir(backup, target).with_context(|| {
+        format!(
+            "the current Skill is preserved at {} because it could not be restored to {}",
+            backup.display(),
+            target.display()
+        )
+    })?;
+    recover_staged_backup_with(prior_backup, backup, move_dir)
+}
+
+fn rollback_lock_failure_with<F>(
+    lock_error: anyhow::Error,
+    target: &Path,
+    backup: &Path,
+    reverse_swap: F,
+) -> anyhow::Error
+where
+    F: FnOnce() -> Result<()>,
+{
+    match reverse_swap() {
+        Ok(()) => lock_error,
+        Err(recovery_error) => anyhow::anyhow!(
+            "Could not save rollback metadata ({lock_error}); reversing the package swap also failed ({recovery_error}). Package state is preserved at {} and {}; inspect it before retrying",
+            target.display(),
+            backup.display()
+        ),
+    }
 }
 
 fn recover_uninstall_moves_with<F>(
@@ -2875,7 +2948,7 @@ mod tests {
         let backup = root.join("backups/skills/reviewer");
         write_skill(&staged_backup, "previous package");
 
-        let recovered = recover_staged_backup_with(&staged_backup, &backup, |_, _| {
+        let recovery = recover_staged_backup_with(&staged_backup, &backup, |_, _| {
             Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "simulated transient file lock",
@@ -2883,9 +2956,55 @@ mod tests {
         });
         drop(preview);
 
-        assert!(!recovered);
+        assert!(recovery.is_err());
         assert!(staged_backup.is_dir());
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn failed_update_recovery_reports_where_the_current_package_is_preserved() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let backup = root.join("backups/skills/reviewer");
+        let target = root.join("skills/reviewer");
+        let prior_backup = root.join(".staging/prior-backup-test");
+        write_skill(&backup, "current");
+        write_skill(&prior_backup, "prior rollback");
+
+        let error = recover_update_moves_with(&backup, &target, &prior_backup, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "simulated transient file lock",
+            ))
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(&backup.display().to_string()));
+        assert!(error.contains(&target.display().to_string()));
+        assert!(backup.is_dir());
+        assert!(prior_backup.is_dir());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn failed_rollback_reversal_reports_both_failures_and_package_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("skills/reviewer");
+        let backup = directory.path().join("backups/skills/reviewer");
+
+        let error = rollback_lock_failure_with(
+            anyhow::anyhow!("simulated lock write failure"),
+            &target,
+            &backup,
+            || anyhow::bail!("simulated reverse swap failure"),
+        )
+        .to_string();
+
+        assert!(error.contains("simulated lock write failure"));
+        assert!(error.contains("simulated reverse swap failure"));
+        assert!(error.contains(&target.display().to_string()));
+        assert!(error.contains(&backup.display().to_string()));
     }
 
     #[tokio::test]

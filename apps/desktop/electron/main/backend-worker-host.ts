@@ -7,6 +7,7 @@ import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
 export interface BackendWorkerHostOptions {
   workerUrl: URL | string;
   database_path: string;
+  system_locale?: string;
   scan_roots?: Array<{ path: string; max_depth?: number }>;
   quota_executable?: string;
   quota_config_path?: string;
@@ -29,6 +30,7 @@ export class BackendWorkerHost extends EventEmitter {
     this.worker = new Worker(options.workerUrl, {
       workerData: {
         database_path: options.database_path,
+        system_locale: options.system_locale,
         scan_roots: options.scan_roots,
         quota_executable: options.quota_executable,
         quota_config_path: options.quota_config_path,

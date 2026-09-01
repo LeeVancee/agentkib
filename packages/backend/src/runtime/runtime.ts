@@ -214,9 +214,22 @@ async function summarizeWithAgent(
 }
 
 const id = z.object({ id: z.string() });
+type RuntimeLocale = "zh-CN" | "zh-TW" | "ja-JP" | "en-US";
+
+function resolveSystemLocale(locale?: string): RuntimeLocale {
+  const normalized = locale?.replaceAll("_", "-").toLowerCase() ?? "";
+  if (/^(zh|yue)-(hant|tw|hk|mo)(-|$)/.test(normalized)) return "zh-TW";
+  if (/^zh-(hans|cn|sg)(-|$)/.test(normalized) || normalized === "zh") return "zh-CN";
+  if (normalized === "ja" || normalized.startsWith("ja-")) return "ja-JP";
+  if (normalized === "en" || normalized.startsWith("en-")) return "en-US";
+  return "en-US";
+}
+
 export interface BackendRuntimeOptions {
   database_path: string;
   scan_roots?: Array<{ path: string; max_depth?: number }>;
+  /** Locale reported by the desktop host for the "follow system" preference. */
+  system_locale?: string;
   quota_executable?: string;
   quota_config_path?: string;
   mcp_config_path?: string;
@@ -883,7 +896,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
       effective_locale:
         (runtimeSettings.locale_preference && runtimeSettings.locale_preference !== "system"
           ? runtimeSettings.locale_preference
-          : undefined) ?? (process.env.LANG?.toLowerCase().includes("zh") ? "zh-TW" : "en-US"),
+          : undefined) ?? resolveSystemLocale(options.system_locale ?? process.env.LANG),
       effective_theme:
         runtimeSettings.theme_preference === "system" ? "light" : runtimeSettings.theme_preference,
       tray_available: true,

@@ -127,6 +127,7 @@ async function startApplication(): Promise<void> {
     runtimeHost = new BackendWorkerHost({
       workerUrl: backendWorkerUrl(),
       database_path: databasePath,
+      system_locale: normalizeSystemLocale(app.getLocale()),
       quota_executable: resolveQuotaSidecar(),
       quota_config_path: path.join(dataRoot, "quota", "codexbar-config.json"),
       mcp_config_path: path.join(dataRoot, "mcp.json"),

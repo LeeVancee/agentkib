@@ -5,6 +5,7 @@ if (!parentPort) throw new Error("Backend worker requires parentPort");
 const options = workerData as
   | {
       database_path?: string;
+      system_locale?: string;
       scan_roots?: Array<{ path: string; max_depth?: number }>;
       quota_executable?: string;
       quota_config_path?: string;
@@ -16,6 +17,7 @@ const options = workerData as
 const runtime = options?.database_path
   ? createBackendRuntime({
       database_path: options.database_path,
+      system_locale: options.system_locale,
       scan_roots: options.scan_roots,
       quota_executable: options.quota_executable,
       quota_config_path: options.quota_config_path,

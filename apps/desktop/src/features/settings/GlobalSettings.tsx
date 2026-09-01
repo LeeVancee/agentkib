@@ -29,11 +29,18 @@ import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import { changeLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
+import {
+  cacheEffectiveLocale,
+  changeLocale,
+  formatDateTime,
+  localizeMessage,
+  tr,
+} from "@/core/i18n";
 import {
   accentThemePreference,
   applyAccentTheme,
   applyTheme,
+  cacheEffectiveTheme,
   type AccentTheme,
 } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
@@ -826,6 +833,7 @@ function LanguageSetting({
 }) {
   const update = async (preference: LocalePreference) => {
     const nextRuntime = await api.setLocale(preference);
+    cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
     await changeLocale(nextRuntime.effective_locale);
     onChanged(nextRuntime);
   };
@@ -861,6 +869,7 @@ function ThemeSetting({
   const update = async (preference: ThemePreference) => {
     const nextRuntime = await api.setThemePreference(preference);
     applyTheme(nextRuntime.effective_theme);
+    cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
     onChanged(nextRuntime);
   };
   const selected = runtime?.theme_preference ?? "system";

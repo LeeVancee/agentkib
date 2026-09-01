@@ -14,10 +14,12 @@ import {
 import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
-import { DesktopRuntimeHost } from "./runtime-host";
+import { DesktopRuntimeHost, type RuntimeHostStatus } from "./runtime-host";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
+import { StartupBenchmark } from "./startup-benchmark";
+import { firstCloseDecision } from "./close-behavior";
 import {
   optionalCloseBehavior,
   optionalPositiveInteger,
@@ -39,7 +41,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const appFlavor = process.env.AGENTKIB_DEV === "1" ? "ai.agentkib.dev" : "ai.agentkib";
-const electronDataPath = path.join(app.getPath("appData"), appFlavor, "electron");
+const electronDataPath =
+  process.env.AGENTKIB_BENCHMARK_USER_DATA ??
+  path.join(app.getPath("appData"), appFlavor, "electron");
 app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
@@ -58,6 +62,8 @@ let applicationInitialization: Promise<void> | undefined;
 let startupFailureWindow: BrowserWindow | undefined;
 let ipcHandlersRegistered = false;
 let closePromptOpen = false;
+let benchmarkCompletionStarted = false;
+const startupBenchmark = new StartupBenchmark();
 
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
@@ -76,7 +82,7 @@ if (!hasSingleInstanceLock) {
     showMainWindow();
   });
 
-  app.whenReady().then(startApplication).catch(showStartupFailure);
+  app.whenReady().then(startApplication).catch(handleStartupFailure);
 }
 
 app.on("activate", () => {
@@ -108,6 +114,7 @@ nativeTheme.on("updated", () => {
 });
 
 async function startApplication(): Promise<void> {
+  startupBenchmark.mark("app-ready");
   if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
 
@@ -125,13 +132,15 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
+    startupBenchmark.setRuntimePid(handshake.pid);
+    startupBenchmark.mark("runtime-handshake");
     refreshCoordinator?.setRuntimeAvailable(true);
-    if (!applicationInitialized) {
-      void initializeApplication().catch(showStartupFailure);
-    } else if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
-      startupFailureWindow.close();
-      startupFailureWindow = undefined;
-    }
+    void initializeRuntimeServices().catch((error: unknown) => {
+      process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
+    });
+  });
+  runtimeHost.on("state", (status: RuntimeHostStatus) => {
+    sendRendererEvent("agentkib:runtime:status", status);
   });
   runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
@@ -140,13 +149,82 @@ async function startApplication(): Promise<void> {
   runtimeHost.on("restart-error", (error: unknown) => {
     process.stderr.write(`AgentKib runtime restart failed: ${String(error)}\n`);
   });
-  runtimeHost.on("crash-loop", (error: Error) => void showStartupFailure(error));
-  runtimeHandshake = await runtimeHost.start();
-  await initializeApplication();
+  runtimeHost.on("crash-loop", (error: Error) => {
+    process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
+  });
+
+  registerApplicationIpc();
+  refreshCoordinator = new ElectronRefreshCoordinator({
+    runtime: requireRuntime,
+    isMainWindowVisible: () =>
+      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+    onStatus: emitElectronRefreshState,
+    onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
+      sendRendererEvent("agentkib:quota-updated", snapshot),
+  });
+
+  startupBenchmark.mark("runtime-spawn");
+  void runtimeHost.start().catch((error: unknown) => {
+    if (!startupBenchmark.enabled) return;
+    process.stderr.write(`AgentKib benchmark runtime startup failed: ${String(error)}\n`);
+    app.exit(1);
+  });
+  await createMainWindow();
+  applicationInitialized = true;
 }
 
-async function initializeApplication(): Promise<void> {
-  if (applicationInitialized) return;
+function registerApplicationIpc(): void {
+  if (ipcHandlersRegistered) return;
+  ipcMain.handle("agentkib:runtime:handshake", (event) => {
+    assertTrustedRenderer(event);
+    if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
+    return runtimeHandshake;
+  });
+  ipcMain.handle("agentkib:runtime:status", (event) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().status;
+  });
+  ipcMain.handle("agentkib:runtime:retry", async (event) => {
+    assertTrustedRenderer(event);
+    await requireRuntime().retry();
+  });
+  ipcMain.handle("agentkib:benchmark:mark", async (event, name: unknown) => {
+    assertTrustedRenderer(event);
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+    if (
+      name !== "renderer-first-commit" &&
+      name !== "home-data-ready" &&
+      name !== "home-data-failed"
+    )
+      return;
+    if (name === "home-data-failed") {
+      if (startupBenchmark.enabled) {
+        process.stderr.write("AgentKib benchmark failed because a required home query failed.\n");
+        app.exit(1);
+      }
+      return;
+    }
+    startupBenchmark.mark(name);
+    if (name === "renderer-first-commit") {
+      startupBenchmark.mark("window-shown");
+      mainWindow.show();
+    }
+    if (name === "home-data-ready") {
+      await completeStartupBenchmarkWhenReady();
+    }
+  });
+  registerRuntimeIpc({
+    runtime: requireRuntime,
+    assertTrustedRenderer,
+    withRuntimeCapabilities: withElectronRuntimeCapabilities,
+  });
+  registerHomeIpc();
+  registerShellIpc();
+  registerUpdateIpc();
+  ipcHandlersRegistered = true;
+}
+
+async function initializeRuntimeServices(): Promise<void> {
   if (applicationInitialization) return applicationInitialization;
 
   applicationInitialization = (async () => {
@@ -154,39 +232,12 @@ async function initializeApplication(): Promise<void> {
       RUNTIME_METHODS.runtimeInfo,
       {},
     );
+    startupBenchmark.mark("runtime-info");
     closeBehavior = runtime.close_behavior;
     appIconPreference = runtime.app_icon_preference ?? "white";
     applyApplicationIcon(appIconPreference);
     if (runtime.theme_preference) nativeTheme.themeSource = runtime.theme_preference;
     else if (runtime.effective_theme) nativeTheme.themeSource = runtime.effective_theme;
-
-    if (!ipcHandlersRegistered) {
-      ipcMain.handle("agentkib:runtime:handshake", (event) => {
-        assertTrustedRenderer(event);
-        if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
-        return runtimeHandshake;
-      });
-      registerRuntimeIpc({
-        runtime: requireRuntime,
-        assertTrustedRenderer,
-        withRuntimeCapabilities: withElectronRuntimeCapabilities,
-      });
-      registerHomeIpc();
-      registerShellIpc();
-      registerUpdateIpc();
-      ipcHandlersRegistered = true;
-    }
-
-    if (!refreshCoordinator) {
-      refreshCoordinator = new ElectronRefreshCoordinator({
-        runtime: requireRuntime,
-        isMainWindowVisible: () =>
-          Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
-        onStatus: emitElectronRefreshState,
-        onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
-          sendRendererEvent("agentkib:quota-updated", snapshot),
-      });
-    }
 
     if (!nativeShell) {
       nativeShell = new ElectronNativeShell({
@@ -203,13 +254,7 @@ async function initializeApplication(): Promise<void> {
       });
       nativeShell.create();
     }
-    await createMainWindow();
-    applicationInitialized = true;
-    refreshCoordinator.start();
-    if (startupFailureWindow && !startupFailureWindow.isDestroyed()) {
-      startupFailureWindow.close();
-      startupFailureWindow = undefined;
-    }
+    refreshCoordinator?.start();
   })();
 
   try {
@@ -696,7 +741,7 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
 }
 
 function requireRuntime(): DesktopRuntimeHost {
-  if (!runtimeHost || !runtimeHandshake) throw new Error("AgentKib runtime is not ready");
+  if (!runtimeHost) throw new Error("AgentKib runtime host is not initialized");
   return runtimeHost;
 }
 
@@ -728,13 +773,15 @@ async function createMainWindow(): Promise<void> {
       sandbox: true,
     },
   });
+  startupBenchmark.mark("window-created");
   mainWindow = window;
 
   window.on("close", (event) => {
     if (shutdownStarted || quitApproved) return;
     event.preventDefault();
     if (closeBehavior === "minimize-to-tray") {
-      nativeShell?.hideMainWindow();
+      if (nativeShell?.trayAvailable) nativeShell.hideMainWindow();
+      else window.minimize();
       return;
     }
     if (closeBehavior === "quit") {
@@ -751,12 +798,33 @@ async function createMainWindow(): Promise<void> {
       : "app://bundle";
     if (new URL(targetUrl).origin !== allowedOrigin) event.preventDefault();
   });
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    startupBenchmark.mark("window-shown");
+    if (!window.isVisible()) window.show();
+    void completeStartupBenchmarkWhenReady();
+  });
   window.once("closed", () => {
     if (mainWindow === window) mainWindow = undefined;
   });
 
   await window.loadURL(rendererUrl());
+}
+
+async function completeStartupBenchmarkWhenReady(): Promise<void> {
+  if (
+    benchmarkCompletionStarted ||
+    !startupBenchmark.enabled ||
+    !startupBenchmark.hasMark("window-shown") ||
+    !startupBenchmark.hasMark("home-data-ready")
+  ) {
+    return;
+  }
+  benchmarkCompletionStarted = true;
+  await startupBenchmark.complete();
+  if (process.env.AGENTKIB_BENCHMARK_EXIT_AFTER_READY === "1") {
+    quitApproved = true;
+    app.quit();
+  }
 }
 
 async function showFirstClosePrompt(window: BrowserWindow): Promise<void> {
@@ -792,21 +860,27 @@ async function showFirstClosePrompt(window: BrowserWindow): Promise<void> {
       cancelId: 2,
       noLink: true,
     });
-    if (result.response === 0) {
-      await persistCloseBehavior("minimize-to-tray");
-      nativeShell?.hideMainWindow();
-    } else if (result.response === 1) {
-      await persistCloseBehavior("quit");
-      requestRendererQuitGuard();
-    }
+    const decision = firstCloseDecision(result.response, trayAvailable);
+    if (!decision) return;
+    persistCloseBehaviorBestEffort(decision.behavior);
+    if (decision.action === "hide") {
+      if (nativeShell?.trayAvailable) nativeShell.hideMainWindow();
+      else window.minimize();
+    } else if (decision.action === "minimize") window.minimize();
+    else requestRendererQuitGuard();
   } finally {
     closePromptOpen = false;
   }
 }
 
-async function persistCloseBehavior(value: "minimize-to-tray" | "quit"): Promise<void> {
-  await requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value });
+function persistCloseBehaviorBestEffort(value: "minimize-to-tray" | "quit"): void {
   closeBehavior = value;
+  if (!runtimeHost) return;
+  void runtimeHost
+    .request(RUNTIME_METHODS.setCloseBehavior, { value })
+    .catch((error: unknown) =>
+      process.stderr.write(`AgentKib could not persist close behavior: ${String(error)}\n`),
+    );
 }
 
 function rendererUrl(surface?: "quota-popover"): string {
@@ -915,6 +989,16 @@ async function showStartupFailure(error: unknown): Promise<void> {
   });
   const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The Rust runtime did not become ready.</p><code>${escapeHtml(message)}</code>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+async function handleStartupFailure(error: unknown): Promise<void> {
+  if (startupBenchmark.enabled) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`AgentKib benchmark startup failed: ${message}\n`);
+    app.exit(1);
+    return;
+  }
+  await showStartupFailure(error);
 }
 
 function isWithin(root: string, candidate: string): boolean {

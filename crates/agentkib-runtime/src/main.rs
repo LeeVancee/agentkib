@@ -99,9 +99,6 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let hub = agentkib_mcp::HubController::new(load_mcp_network_settings())?;
-    hub.start()?;
-    let _ = MCP_HUB.set(hub);
     let mut stdout = io::stdout().lock();
     let (events_tx, events_rx) = mpsc::channel();
     spawn_stdin_reader(events_tx.clone());
@@ -165,8 +162,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
+                let starts_hub = request.method == HANDSHAKE_METHOD;
                 let (response, should_shutdown) = handle_request(request);
+                let handshake_succeeded = starts_hub && response.error.is_none();
                 write_response(&mut stdout, response)?;
+                // Flush the handshake before binding the MCP listener. Electron can render its
+                // shell immediately while subsequent business requests remain queued on stdin.
+                if handshake_succeeded {
+                    initialize_mcp_hub()?;
+                }
                 if should_shutdown {
                     if let Some(scan) = storage_scan.take() {
                         scan.cancelled.store(true, Ordering::SeqCst);
@@ -200,6 +204,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn initialize_mcp_hub() -> anyhow::Result<()> {
+    if MCP_HUB.get().is_some() {
+        return Ok(());
+    }
+    let hub = agentkib_mcp::HubController::new(load_mcp_network_settings())?;
+    hub.start()?;
+    MCP_HUB
+        .set(hub)
+        .map_err(|_| anyhow::anyhow!("AgentKib MCP Hub was initialized more than once"))
 }
 
 enum RuntimeEvent {
@@ -3164,4 +3179,29 @@ fn handle_handshake(request: RpcRequest) -> (RpcResponse, bool) {
         ),
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handshake_does_not_require_the_mcp_hub() {
+        assert!(MCP_HUB.get().is_none());
+        let request = RpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: json!(1),
+            method: HANDSHAKE_METHOD.to_owned(),
+            params: json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "client": { "name": "runtime-test", "version": "0.0.0" }
+            }),
+        };
+
+        let (response, should_shutdown) = handle_handshake(request);
+
+        assert!(response.error.is_none());
+        assert!(!should_shutdown);
+        assert!(MCP_HUB.get().is_none());
+    }
 }

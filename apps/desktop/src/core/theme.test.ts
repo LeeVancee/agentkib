@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { accentThemePreference, applyAccentTheme, applyTheme, systemTheme } from "./theme";
+import {
+  accentThemePreference,
+  applyAccentTheme,
+  applyTheme,
+  cacheEffectiveTheme,
+  cachedEffectiveTheme,
+  systemTheme,
+} from "./theme";
 
 describe("theme runtime", () => {
   beforeEach(() => {
@@ -39,5 +46,21 @@ describe("theme runtime", () => {
 
     expect(document.documentElement.dataset.accentTheme).toBe("emerald");
     expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("emerald");
+  });
+
+  it("caches the last explicit theme for non-blocking startup", () => {
+    cacheEffectiveTheme("dark", "dark");
+
+    expect(cachedEffectiveTheme()).toBe("dark");
+  });
+
+  it("uses the current system theme when the cached preference follows the system", () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: true }),
+    });
+    cacheEffectiveTheme("dark", "system");
+
+    expect(cachedEffectiveTheme()).toBe("light");
   });
 });

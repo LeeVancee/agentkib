@@ -22,6 +22,7 @@
     "dist:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm quota:prepare && pnpm runtime:stage && pnpm build:web && pnpm electron:build && electron-builder",
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",
+    "benchmark:runtime": "node scripts/benchmark-runtime.mjs",
     "test": "pnpm runtime:build:dev && vitest run",
     "typecheck": "tsc -b --pretty false"
   },

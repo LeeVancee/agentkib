@@ -1,9 +1,12 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef } from "react";
 import { GlobalHome } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "../stores/app-store";
+import { desktopApi } from "../core/desktop";
+import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
 import type { WorkspaceSummary } from "../core/types";
 import {
   useHomeActivity,
@@ -29,6 +32,37 @@ function HomeRoute() {
   const activityQuery = useHomeActivity();
   const insightsQuery = useHomeInsightsSummary();
   const catalogQuery = useHomeCatalog();
+  const benchmarkReported = useRef(false);
+  useEffect(() => {
+    if (benchmarkReported.current) return;
+    const queries = [
+      workspacesQuery,
+      doctorSummariesQuery,
+      installationsQuery,
+      memoriesQuery,
+      discoveryQuery,
+      activityQuery,
+      insightsQuery,
+      catalogQuery,
+    ];
+    if (!runtime) return;
+    const outcome = homeBenchmarkOutcome(queries);
+    if (outcome === "pending") return;
+    benchmarkReported.current = true;
+    void desktopApi()
+      .benchmark.mark(outcome === "ready" ? "home-data-ready" : "home-data-failed")
+      .catch(() => undefined);
+  }, [
+    activityQuery,
+    catalogQuery,
+    discoveryQuery,
+    doctorSummariesQuery,
+    insightsQuery,
+    installationsQuery,
+    memoriesQuery,
+    runtime,
+    workspacesQuery,
+  ]);
   const doctorSummaries = doctorSummariesQuery.data ?? {};
   const installations = installationsQuery.data ?? [];
   const globalMemories = memoriesQuery.data ?? [];

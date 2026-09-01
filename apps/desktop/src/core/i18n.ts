@@ -9,6 +9,8 @@ import type { LocalizedMessage, SupportedLocale } from "./types";
 export type LocalePreference = "system" | SupportedLocale;
 
 export const supportedLocales: SupportedLocale[] = ["zh-CN", "zh-TW", "ja-JP", "en-US"];
+const EFFECTIVE_LOCALE_STORAGE_KEY = "agentkib.effective-locale";
+const LOCALE_PREFERENCE_STORAGE_KEY = "agentkib.cached-locale-preference";
 
 export function normalizeLocale(locale?: string | null): SupportedLocale {
   if (!locale) return "en-US";
@@ -18,6 +20,28 @@ export function normalizeLocale(locale?: string | null): SupportedLocale {
   if (normalized === "ja" || normalized.startsWith("ja-")) return "ja-JP";
   if (normalized === "en" || normalized.startsWith("en-")) return "en-US";
   return "en-US";
+}
+
+export function cachedEffectiveLocale(fallback?: string | null): SupportedLocale {
+  try {
+    if (window.localStorage.getItem(LOCALE_PREFERENCE_STORAGE_KEY) === "system") {
+      return normalizeLocale(fallback);
+    }
+    const value = window.localStorage.getItem(EFFECTIVE_LOCALE_STORAGE_KEY);
+    if (supportedLocales.includes(value as SupportedLocale)) return value as SupportedLocale;
+  } catch {
+    // The system locale remains a safe fallback in restricted webviews.
+  }
+  return normalizeLocale(fallback);
+}
+
+export function cacheEffectiveLocale(locale: SupportedLocale, preference?: LocalePreference) {
+  try {
+    window.localStorage.setItem(EFFECTIVE_LOCALE_STORAGE_KEY, locale);
+    if (preference) window.localStorage.setItem(LOCALE_PREFERENCE_STORAGE_KEY, preference);
+  } catch {
+    // Startup locale caching is best-effort.
+  }
 }
 
 export async function initializeI18n(locale: SupportedLocale) {

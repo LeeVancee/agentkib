@@ -1,8 +1,10 @@
-import type { EffectiveTheme } from "./types";
+import type { EffectiveTheme, ThemePreference } from "./types";
 
 export type AccentTheme = "black" | "sky" | "claude" | "violet" | "emerald";
 
 const ACCENT_THEME_STORAGE_KEY = "agentkib.accent-theme";
+const EFFECTIVE_THEME_STORAGE_KEY = "agentkib.effective-theme";
+const THEME_PREFERENCE_STORAGE_KEY = "agentkib.cached-theme-preference";
 
 export function systemTheme(): EffectiveTheme {
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -11,6 +13,28 @@ export function systemTheme(): EffectiveTheme {
 export function applyTheme(theme: EffectiveTheme) {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
+}
+
+export function cachedEffectiveTheme(): EffectiveTheme {
+  try {
+    if (window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY) === "system") {
+      return systemTheme();
+    }
+    const value = window.localStorage.getItem(EFFECTIVE_THEME_STORAGE_KEY);
+    if (value === "light" || value === "dark") return value;
+  } catch {
+    // The system theme remains a safe fallback in restricted webviews.
+  }
+  return systemTheme();
+}
+
+export function cacheEffectiveTheme(theme: EffectiveTheme, preference?: ThemePreference) {
+  try {
+    window.localStorage.setItem(EFFECTIVE_THEME_STORAGE_KEY, theme);
+    if (preference) window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, preference);
+  } catch {
+    // Startup appearance caching is best-effort.
+  }
 }
 
 export function accentThemePreference(): AccentTheme {

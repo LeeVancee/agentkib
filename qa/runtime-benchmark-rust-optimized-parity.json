@@ -1,0 +1,923 @@
+{
+  "schemaVersion": 1,
+  "label": "rust-optimized-parity",
+  "createdAt": "2026-09-01T04:39:13.429Z",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "release": "27.0.0",
+    "cpu": "Apple M2 Max",
+    "logicalCpuCount": 12,
+    "totalMemoryBytes": 68719476736
+  },
+  "build": {
+    "backend": "rust",
+    "runtimeArtifact": "agentkib-runtime",
+    "electronEntry": "dist-electron/main.cjs"
+  },
+  "configuration": {
+    "cleanRuns": 5,
+    "reuseRuns": 10
+  },
+  "startup": {
+    "clean": [
+      {
+        "run": 1,
+        "profileKind": "clean",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:47.336Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.03
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 83.09
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 113.28
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 226.61
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 327.84
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 327.84
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 455.39
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 456.01
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 539.59
+          }
+        ],
+        "memory": {
+          "electronRssKb": 560288,
+          "runtimeRssKb": 11584,
+          "combinedRssKb": 571872
+        }
+      },
+      {
+        "run": 2,
+        "profileKind": "clean",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:49.247Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 49.57
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 59.21
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 149.71
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 216.13
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 217.08
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 290.18
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 290.18
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 459.12
+          }
+        ],
+        "memory": {
+          "electronRssKb": 559744,
+          "runtimeRssKb": 12336,
+          "combinedRssKb": 572080
+        }
+      },
+      {
+        "run": 3,
+        "profileKind": "clean",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:51.128Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 52.16
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 61.96
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 149.24
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 215.06
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 215.98
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 283.1
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 283.11
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 466.48
+          }
+        ],
+        "memory": {
+          "electronRssKb": 560208,
+          "runtimeRssKb": 12224,
+          "combinedRssKb": 572432
+        }
+      },
+      {
+        "run": 4,
+        "profileKind": "clean",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:52.962Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 46.28
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 55.91
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 148.16
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 174.9
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 175.98
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 249.82
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 249.83
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 420.23
+          }
+        ],
+        "memory": {
+          "electronRssKb": 561040,
+          "runtimeRssKb": 12160,
+          "combinedRssKb": 573200
+        }
+      },
+      {
+        "run": 5,
+        "profileKind": "clean",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:54.841Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 48.76
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 58.44
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 144.87
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 212.51
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 213.36
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 277.35
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 277.35
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 465.62
+          }
+        ],
+        "memory": {
+          "electronRssKb": 560528,
+          "runtimeRssKb": 12224,
+          "combinedRssKb": 572752
+        }
+      }
+    ],
+    "reused": [
+      {
+        "run": 1,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:56.560Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 45.43
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 55.13
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 147.1
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 177.35
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 178.4
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 244.05
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 244.05
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 428.56
+          }
+        ],
+        "memory": {
+          "electronRssKb": 558416,
+          "runtimeRssKb": 12176,
+          "combinedRssKb": 570592
+        }
+      },
+      {
+        "run": 2,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:38:58.325Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 49.72
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 59.47
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 150.66
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 221.98
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 222.92
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 294.47
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 294.47
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 464.28
+          }
+        ],
+        "memory": {
+          "electronRssKb": 559040,
+          "runtimeRssKb": 11200,
+          "combinedRssKb": 570240
+        }
+      },
+      {
+        "run": 3,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:00.123Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 44.71
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 54.08
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 141.47
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 167.62
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 168.69
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 229.1
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 229.1
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 394.89
+          }
+        ],
+        "memory": {
+          "electronRssKb": 558752,
+          "runtimeRssKb": 11136,
+          "combinedRssKb": 569888
+        }
+      },
+      {
+        "run": 4,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:01.973Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 45.74
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 55.3
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 143.02
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 209.75
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 210.56
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 266.7
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 266.7
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 459.73
+          }
+        ],
+        "memory": {
+          "electronRssKb": 560128,
+          "runtimeRssKb": 11184,
+          "combinedRssKb": 571312
+        }
+      },
+      {
+        "run": 5,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:03.780Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 43.11
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 53.25
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 139.93
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 168.23
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 169.35
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 229.92
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 229.92
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 395.74
+          }
+        ],
+        "memory": {
+          "electronRssKb": 557360,
+          "runtimeRssKb": 11248,
+          "combinedRssKb": 568608
+        }
+      },
+      {
+        "run": 6,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:05.580Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 45.97
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 55.93
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 144.3
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 171.6
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 172.71
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 230.27
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 230.28
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 397.26
+          }
+        ],
+        "memory": {
+          "electronRssKb": 558032,
+          "runtimeRssKb": 11264,
+          "combinedRssKb": 569296
+        }
+      },
+      {
+        "run": 7,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:07.379Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 44.6
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 53.93
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 143.34
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 170.43
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 171.41
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 231.83
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 231.84
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 396.68
+          }
+        ],
+        "memory": {
+          "electronRssKb": 559184,
+          "runtimeRssKb": 11248,
+          "combinedRssKb": 570432
+        }
+      },
+      {
+        "run": 8,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:09.169Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 46.72
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 56.28
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 144.22
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 170.61
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 171.72
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 232.11
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 232.12
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 394.61
+          }
+        ],
+        "memory": {
+          "electronRssKb": 559344,
+          "runtimeRssKb": 11200,
+          "combinedRssKb": 570544
+        }
+      },
+      {
+        "run": 9,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:10.860Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 49.08
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 58.57
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 150.01
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 181.36
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 182.45
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 241.28
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 241.29
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 403.79
+          }
+        ],
+        "memory": {
+          "electronRssKb": 558752,
+          "runtimeRssKb": 11216,
+          "combinedRssKb": 569968
+        }
+      },
+      {
+        "run": 10,
+        "profileKind": "reused",
+        "schemaVersion": 1,
+        "createdAt": "2026-09-01T04:39:12.615Z",
+        "platform": "darwin",
+        "arch": "arm64",
+        "marks": [
+          {
+            "name": "electron-main-start",
+            "elapsedMs": 0.02
+          },
+          {
+            "name": "app-ready",
+            "elapsedMs": 43.98
+          },
+          {
+            "name": "runtime-spawn",
+            "elapsedMs": 53.68
+          },
+          {
+            "name": "window-created",
+            "elapsedMs": 139.63
+          },
+          {
+            "name": "runtime-handshake",
+            "elapsedMs": 164.64
+          },
+          {
+            "name": "runtime-info",
+            "elapsedMs": 165.61
+          },
+          {
+            "name": "renderer-first-commit",
+            "elapsedMs": 223.81
+          },
+          {
+            "name": "window-shown",
+            "elapsedMs": 223.81
+          },
+          {
+            "name": "home-data-ready",
+            "elapsedMs": 391.23
+          }
+        ],
+        "memory": {
+          "electronRssKb": 557232,
+          "runtimeRssKb": 11056,
+          "combinedRssKb": 568288
+        }
+      }
+    ]
+  },
+  "workloads": {
+    "fixture": {
+      "workspaceFiles": 401,
+      "transcriptLines": 5000,
+      "sqliteWorkspaceCount": 101
+    },
+    "runtimeRssKb": 23664,
+    "workspaceScan": {
+      "iterations": 10,
+      "p50Ms": 0.16,
+      "p95Ms": 0.45,
+      "minMs": 0.14,
+      "maxMs": 0.45
+    },
+    "sessionIndex": {
+      "iterations": 5,
+      "p50Ms": 1.54,
+      "p95Ms": 1.73,
+      "minMs": 1.45,
+      "maxMs": 1.73
+    },
+    "largeSessionParse": {
+      "iterations": 10,
+      "p50Ms": 12.52,
+      "p95Ms": 14.32,
+      "minMs": 11.96,
+      "maxMs": 14.32
+    },
+    "sqliteWorkspaceList": {
+      "iterations": 25,
+      "p50Ms": 1.89,
+      "p95Ms": 2.2,
+      "minMs": 1.7,
+      "maxMs": 2.25
+    },
+    "sqliteActivityList": {
+      "iterations": 25,
+      "p50Ms": 0.75,
+      "p95Ms": 0.81,
+      "minMs": 0.64,
+      "maxMs": 0.83
+    },
+    "rawMilliseconds": {
+      "workspaceScan": [
+        0.45,
+        0.24,
+        0.21,
+        0.16,
+        0.18,
+        0.14,
+        0.17,
+        0.14,
+        0.15,
+        0.15
+      ],
+      "sessionIndex": [
+        1.73,
+        1.59,
+        1.5,
+        1.45,
+        1.54
+      ],
+      "largeSessionParse": [
+        13.31,
+        12.48,
+        12.66,
+        14.32,
+        12.55,
+        12.52,
+        12.7,
+        12.37,
+        11.96,
+        12.48
+      ],
+      "sqliteWorkspaceList": [
+        2.16,
+        1.9,
+        1.8,
+        1.93,
+        1.93,
+        1.8,
+        1.9,
+        1.7,
+        2.2,
+        1.84,
+        1.89,
+        1.88,
+        1.83,
+        1.84,
+        1.73,
+        1.86,
+        1.89,
+        1.98,
+        1.82,
+        1.9,
+        2.25,
+        1.97,
+        1.85,
+        1.88,
+        1.9
+      ],
+      "sqliteActivityList": [
+        0.8,
+        0.73,
+        0.77,
+        0.72,
+        0.75,
+        0.75,
+        0.67,
+        0.76,
+        0.81,
+        0.66,
+        0.72,
+        0.78,
+        0.68,
+        0.75,
+        0.73,
+        0.8,
+        0.79,
+        0.64,
+        0.64,
+        0.67,
+        0.76,
+        0.72,
+        0.83,
+        0.8,
+        0.67
+      ]
+    }
+  }
+}

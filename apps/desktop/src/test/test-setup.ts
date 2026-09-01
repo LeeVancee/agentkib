@@ -27,6 +27,14 @@ if (typeof window !== "undefined") {
         onQuotaUpdated: () => unsubscribe,
         onNavigate: () => unsubscribe,
         onMenuCommand: () => unsubscribe,
+        onRuntimeStatus: () => unsubscribe,
+      },
+      runtime: {
+        status: async () => ({ state: "ready", restartCount: 0 }),
+        retry: async () => undefined,
+      },
+      benchmark: {
+        mark: async () => undefined,
       },
     },
   });

@@ -939,6 +939,19 @@ fn load_session_document(
     Ok((session, document))
 }
 
+fn ensure_session_workspace(
+    session_workspace_id: &str,
+    document_workspace_id: &str,
+    requested_workspace_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        session_workspace_id == requested_workspace_id
+            && document_workspace_id == requested_workspace_id,
+        "Conversation session belongs to another workspace"
+    );
+    Ok(())
+}
+
 fn prepare_session_handoff(
     envelope: HandoffRequestEnvelope,
 ) -> anyhow::Result<SessionHandoffPreparationV2> {
@@ -1051,7 +1064,12 @@ fn plan_session_handoff(
 ) -> anyhow::Result<PlannedSessionHandoff> {
     let store = Store::open_default()?;
     let project = store.workspace_path(&request.workspace_id)?;
-    let (_, document) = load_session_document(&request.session_id)?;
+    let (source, document) = load_session_document(&request.session_id)?;
+    ensure_session_workspace(
+        &source.workspace_id,
+        &document.source.workspace_id,
+        &request.workspace_id,
+    )?;
     anyhow::ensure!(
         fingerprint(&document)? == request.source_fingerprint,
         "Conversation changed after the continuation preview was prepared"
@@ -1460,6 +1478,10 @@ fn validate_planned_archive_changes(
         .iter()
         .find(|change| change.target.ends_with("chunks.jsonl"))
         .context("Session archive chunks are missing")?;
+    anyhow::ensure!(
+        agentkib_core::hash_content(chunks_change.after.as_bytes()) == manifest.chunks_sha256,
+        "Session archive chunks hash does not match its manifest"
+    );
     let chunk_count = chunks_change
         .after
         .lines()
@@ -1587,10 +1609,10 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .is_some_and(|version| version.contains(expected_version));
-    let schema_path = latest_native_session(target);
-    let format_matches = schema_path.as_ref().map_or(version_matches, |path| {
+    let schema_matches = latest_native_session(target).as_ref().map(|path| {
         read_first_jsonl_value(path).is_some_and(|value| matches_native_schema(&value, target))
     });
+    let format_matches = native_import_format_matches(version_matches, schema_matches);
     let target_root = native_session_root(target);
     let home_writable = target_root
         .as_deref()
@@ -1607,6 +1629,10 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             }
         }),
     }
+}
+
+fn native_import_format_matches(version_matches: bool, schema_matches: Option<bool>) -> bool {
+    version_matches && schema_matches.unwrap_or(true)
 }
 
 const MAX_NATIVE_SCHEMA_RECORD_BYTES: usize = 4 * 1024 * 1024;
@@ -2412,6 +2438,10 @@ fn validate_application_data_changes(
     anyhow::ensure!(
         document.source.workspace_id == workspace_id,
         "Application continuation archive document belongs to another workspace"
+    );
+    anyhow::ensure!(
+        agentkib_core::hash_content(chunks_change.after.as_bytes()) == manifest.chunks_sha256,
+        "Application continuation archive chunks hash does not match its manifest"
     );
     let chunk_count = chunks_change
         .after
@@ -3943,6 +3973,21 @@ mod tests {
             &json!({"type":"queue-operation","sessionId":"session"}),
             AgentKind::ClaudeCode
         ));
+    }
+
+    #[test]
+    fn native_schema_match_cannot_override_an_unsupported_version() {
+        assert!(!native_import_format_matches(false, Some(true)));
+        assert!(!native_import_format_matches(true, Some(false)));
+        assert!(native_import_format_matches(true, Some(true)));
+        assert!(native_import_format_matches(true, None));
+    }
+
+    #[test]
+    fn continuation_requires_the_session_and_document_workspace() {
+        assert!(ensure_session_workspace("workspace", "workspace", "workspace").is_ok());
+        assert!(ensure_session_workspace("other", "workspace", "workspace").is_err());
+        assert!(ensure_session_workspace("workspace", "other", "workspace").is_err());
     }
 
     #[test]

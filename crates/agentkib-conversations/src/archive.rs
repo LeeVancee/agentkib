@@ -52,6 +52,7 @@ pub struct SessionArchiveManifest {
     pub workspace_id: String,
     pub source_fingerprint: String,
     pub document_sha256: String,
+    pub chunks_sha256: String,
     pub chunk_count: usize,
     pub created_at: DateTime<Utc>,
 }
@@ -243,12 +244,14 @@ pub fn build_session_archive(
         chunks_content.push('\n');
     }
     let document_sha256 = hex::encode(Sha256::digest(document_content.as_bytes()));
+    let chunks_sha256 = hex::encode(Sha256::digest(chunks_content.as_bytes()));
     let manifest = SessionArchiveManifest {
         schema_version: SESSION_DOCUMENT_SCHEMA_VERSION,
         archive_id: archive_id.into(),
         workspace_id: workspace_id.into(),
         source_fingerprint: source_fingerprint.into(),
         document_sha256,
+        chunks_sha256,
         chunk_count: chunks.len(),
         created_at,
     };
@@ -280,6 +283,15 @@ pub fn validate_session_archive(
     workspace_id: &str,
     archive_id: &str,
 ) -> Result<SessionArchiveManifest> {
+    read_validated_session_archive(directory, workspace_id, archive_id)
+        .map(|(manifest, _)| manifest)
+}
+
+fn read_validated_session_archive(
+    directory: &Path,
+    workspace_id: &str,
+    archive_id: &str,
+) -> Result<(SessionArchiveManifest, Vec<u8>)> {
     validate_archive_directory_chain(directory)?;
     let manifest_path = directory.join("manifest.json");
     let document_path = directory.join("document.json");
@@ -300,11 +312,15 @@ pub fn validate_session_archive(
     if hex::encode(Sha256::digest(&document)) != manifest.document_sha256 {
         bail!("Session archive document hash does not match")
     }
+    let chunks = read_limited(&chunks_path, MAX_ARCHIVE_BYTES)?;
+    if hex::encode(Sha256::digest(&chunks)) != manifest.chunks_sha256 {
+        bail!("Session archive chunks hash does not match")
+    }
     let parsed: SessionDocument = serde_json::from_slice(&document)?;
     if parsed.source.workspace_id != workspace_id {
         bail!("Session archive document belongs to another workspace")
     }
-    Ok(manifest)
+    Ok((manifest, chunks))
 }
 
 fn validate_archive_directory_chain(directory: &Path) -> Result<()> {
@@ -336,8 +352,8 @@ pub fn search_session_archive(
         bail!("Session archive query exceeds 256 characters")
     }
     let directory = archive_directory(data_root, workspace_id, archive_id)?;
-    let manifest = validate_session_archive(&directory, workspace_id, archive_id)?;
-    let chunks = read_chunks(&directory.join("chunks.jsonl"))?;
+    let (manifest, chunks) = read_validated_session_archive(&directory, workspace_id, archive_id)?;
+    let chunks = parse_chunks(&chunks)?;
     let needle = query.to_lowercase();
     let mut hits = chunks
         .into_iter()
@@ -371,8 +387,8 @@ pub fn read_session_archive_chunk(
         bail!("Invalid session archive chunk ID")
     }
     let directory = archive_directory(data_root, workspace_id, archive_id)?;
-    validate_session_archive(&directory, workspace_id, archive_id)?;
-    read_chunks(&directory.join("chunks.jsonl"))?
+    let (_, chunks) = read_validated_session_archive(&directory, workspace_id, archive_id)?;
+    parse_chunks(&chunks)?
         .into_iter()
         .find(|chunk| chunk.chunk_id == chunk_id)
         .context("Session archive chunk was not found")
@@ -503,12 +519,8 @@ fn split_chars(value: &str, maximum: usize) -> Vec<String> {
     values
 }
 
-fn read_chunks(path: &Path) -> Result<Vec<SessionArchiveChunk>> {
-    let file = File::open(path)?;
-    if file.metadata()?.len() > MAX_ARCHIVE_BYTES {
-        bail!("Session archive chunks exceed the 256 MiB limit")
-    }
-    let reader = BufReader::new(file);
+fn parse_chunks(value: &[u8]) -> Result<Vec<SessionArchiveChunk>> {
+    let reader = BufReader::new(value);
     let mut chunks = Vec::new();
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
@@ -765,6 +777,36 @@ mod tests {
         .unwrap();
         assert!(chunk.content.contains("needle"));
         assert!(search_session_archive(root.path(), "other", &archive_id, "", 10).is_err());
+    }
+
+    #[test]
+    fn archive_validation_rejects_tampered_chunks() {
+        let source = document(vec![text_turn(
+            1,
+            SessionRole::User,
+            "original archived evidence".into(),
+        )]);
+        let archive_id = Uuid::new_v4().to_string();
+        let bundle =
+            build_session_archive(&source, "workspace", &archive_id, "fingerprint", Utc::now())
+                .unwrap();
+        let root = tempdir().unwrap();
+        let directory = archive_directory(root.path(), "workspace", &archive_id).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("manifest.json"), bundle.manifest_content).unwrap();
+        std::fs::write(directory.join("document.json"), bundle.document_content).unwrap();
+        std::fs::write(
+            directory.join("chunks.jsonl"),
+            bundle
+                .chunks_content
+                .replace("original archived evidence", "tampered archived evidence"),
+        )
+        .unwrap();
+
+        assert!(validate_session_archive(&directory, "workspace", &archive_id).is_err());
+        assert!(
+            search_session_archive(root.path(), "workspace", &archive_id, "tampered", 10).is_err()
+        );
     }
 
     #[cfg(unix)]

@@ -679,6 +679,7 @@ impl SkillHub {
             let target = package.join(&relative);
             fs::create_dir_all(target.parent().context("Skill file has no parent")?)?;
             fs::write(&target, &bytes)?;
+            set_executable(&target, entry.mode == "100755")?;
             files.push(SkillFileEntry {
                 path: relative.to_string_lossy().replace('\\', "/"),
                 size,
@@ -1143,8 +1144,12 @@ pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
         let Ok(package) = inspect_skill_entrypoint(&entry.path().join("SKILL.md")) else {
             continue;
         };
+        let stable_id = format!(
+            "{:x}",
+            Sha256::digest(platform_path::identity(&package.root).as_bytes())
+        );
         output.push(CatalogAsset {
-            id: format!("agentkib-home:skill:{}", package.name),
+            id: format!("agentkib-home:skill:{stable_id}"),
             scope: CatalogScope::AgentkibHome,
             workspace_id: None,
             agent: None,
@@ -1677,6 +1682,35 @@ fn skill_display_name(root: &Path, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+#[cfg(unix)]
+fn set_executable(path: &Path, executable: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if executable {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path, _executable: bool) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
 fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
     let mut paths = WalkDir::new(root)
         .follow_links(false)
@@ -1701,6 +1735,7 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
             .context("Skill package size overflow")?;
         hash.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
         hash.update([0]);
+        hash.update([u8::from(is_executable(&metadata))]);
         let mut file = fs::File::open(entry.path())?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -1738,10 +1773,11 @@ fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        output.insert(
-            relative,
-            format!("{:x}", Sha256::digest(fs::read(entry.path())?)),
-        );
+        let metadata = fs::metadata(entry.path())?;
+        let mut hash = Sha256::new();
+        hash.update([u8::from(is_executable(&metadata))]);
+        hash.update(fs::read(entry.path())?);
+        output.insert(relative, format!("{:x}", hash.finalize()));
     }
     Ok(output)
 }
@@ -2128,6 +2164,25 @@ mod tests {
         assert!(candidate_directories(&candidates, "").is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn executable_mode_is_applied_and_included_in_package_hashes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("run.sh");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        let before = package_hash(directory.path()).unwrap().0;
+
+        set_executable(&script, true).unwrap();
+
+        assert_ne!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert_ne!(package_hash(directory.path()).unwrap().0, before);
+    }
+
     #[test]
     fn library_scan_emits_one_logical_agentkib_home_asset() {
         let directory = tempfile::tempdir().unwrap();
@@ -2143,6 +2198,23 @@ mod tests {
         assert_eq!(assets[0].name, "reviewer");
         assert_eq!(assets[0].path, platform_path::canonicalize(&skill).unwrap());
         assert!(assets[0].size > 5);
+    }
+
+    #[test]
+    fn library_catalog_ids_do_not_collide_for_matching_frontmatter_names() {
+        let directory = tempfile::tempdir().unwrap();
+        write_skill(&directory.path().join("skills/first"), "first");
+        write_skill(&directory.path().join("skills/second"), "second");
+
+        let assets = scan_library_assets(directory.path()).unwrap();
+        let ids = assets
+            .iter()
+            .map(|asset| asset.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(assets.len(), 2);
+        assert!(assets.iter().all(|asset| asset.name == "reviewer"));
+        assert_eq!(ids.len(), 2);
     }
 
     #[test]

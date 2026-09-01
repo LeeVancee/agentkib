@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
@@ -228,7 +229,7 @@ export function WorkspaceSessionsPage({
 
   return (
     <>
-      <div className="grid min-h-[calc(100vh-150px)] grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:block">
+      <div className="grid h-[calc(100vh-150px)] max-h-[calc(100vh-150px)] min-h-0 grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:h-full max-[760px]:max-h-none max-[760px]:block">
         <Card
           className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:absolute max-[760px]:inset-0 max-[760px]:h-full max-[760px]:max-h-none ${showDetail ? "max-[760px]:hidden" : ""}`}
         >
@@ -608,9 +609,10 @@ function ConversationEventRow({ event }: { event: ConversationEvent }) {
         </strong>
         {event.timestamp && <time className="ml-auto">{formatDateTime(event.timestamp)}</time>}
       </header>
-      <div className="select-text text-sm leading-7 whitespace-pre-wrap [overflow-wrap:anywhere]">
-        {event.content}
-      </div>
+      <MarkdownContent
+        content={event.content ?? ""}
+        className="select-text text-sm leading-7 [overflow-wrap:anywhere]"
+      />
       {(event.attachment_count > 0 || event.truncated) && (
         <footer
           className={`mt-3 flex gap-2 text-xs ${isUser ? "text-primary-foreground/70" : "text-muted-foreground"}`}

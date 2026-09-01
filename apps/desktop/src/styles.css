@@ -648,6 +648,120 @@ button {
   height: 0;
 }
 
+.markdown-content {
+  min-width: 0;
+  color: inherit;
+}
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+.markdown-content p {
+  margin: 0.5rem 0;
+}
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin: 1rem 0 0.5rem;
+  color: var(--foreground);
+  font-weight: 650;
+  line-height: 1.35;
+}
+.markdown-content h1 {
+  font-size: 1.25rem;
+}
+.markdown-content h2 {
+  font-size: 1.125rem;
+}
+.markdown-content h3,
+.markdown-content h4 {
+  font-size: 1rem;
+}
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+.markdown-content ul {
+  list-style: disc;
+}
+.markdown-content ol {
+  list-style: decimal;
+}
+.markdown-content li + li {
+  margin-top: 0.25rem;
+}
+.markdown-content li > p {
+  margin: 0.25rem 0;
+}
+.markdown-content blockquote {
+  margin: 0.75rem 0;
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.875rem;
+  color: var(--muted-foreground);
+}
+.markdown-content a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-content code {
+  border-radius: 0.3rem;
+  background: color-mix(in srgb, var(--muted) 78%, transparent);
+  padding: 0.12rem 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.88em;
+}
+.markdown-content pre {
+  max-width: 100%;
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: color-mix(in srgb, var(--muted) 72%, transparent);
+  padding: 0.75rem 0.875rem;
+}
+.markdown-content pre code {
+  display: block;
+  overflow-wrap: normal;
+  background: transparent;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  white-space: pre;
+}
+.markdown-content hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.markdown-content table {
+  display: block;
+  max-width: 100%;
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+.markdown-content th {
+  background: color-mix(in srgb, var(--muted) 72%, transparent);
+  color: var(--foreground);
+  font-weight: 650;
+}
+.markdown-content input[type="checkbox"] {
+  margin-right: 0.45rem;
+  accent-color: var(--primary);
+}
+
 .app-sidebar-item {
   position: relative;
   display: flex;

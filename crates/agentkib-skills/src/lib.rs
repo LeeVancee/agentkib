@@ -815,12 +815,32 @@ impl SkillHub {
     fn apply_install(&self, prepared: PreparedOperation) -> Result<()> {
         let name = &prepared.target_name;
         let target = self.skills_dir().join(name);
+        let backup = self.backups_dir().join(name);
         ensure!(!target.exists(), "A Skill with this name already exists");
+        if backup.exists() {
+            ensure!(
+                backup.is_dir() && !platform_path::is_reparse_or_symlink(&backup)?,
+                "Rollback Skill must be a regular directory"
+            );
+        }
         let mut lock = load_lock(&self.root)?;
-        move_path(&prepared.package, &target)?;
+        let stale_backup = prepared.temp.path().join("stale-backup");
+        if backup.is_dir() {
+            move_path(&backup, &stale_backup)?;
+        }
+        if let Err(error) = move_path(&prepared.package, &target) {
+            if stale_backup.is_dir() {
+                let _ = move_path(&stale_backup, &backup);
+            }
+            return Err(error.into());
+        }
         lock.skills.insert(name.clone(), prepared.lock);
+        lock.previous.remove(name);
         if let Err(error) = save_lock(&self.root, &lock) {
             let _ = move_path(&target, &prepared.package);
+            if stale_backup.is_dir() {
+                let _ = move_path(&stale_backup, &backup);
+            }
             return Err(error);
         }
         drop(prepared.temp);
@@ -2048,6 +2068,55 @@ mod tests {
             installed_name_for_source(directory.path(), &lock, &source),
             Some("reviewer".into())
         );
+    }
+
+    #[test]
+    fn reinstall_clears_stale_rollback_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let backup = root.join("backups/skills/reviewer");
+        write_skill(&backup, "stale backup");
+        let stale_entry = SkillLockEntry {
+            source: Some(source("stale-commit", "stale-tree")),
+            content_sha256: "stale-hash".into(),
+            installed_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        save_lock(
+            root,
+            &SkillLockFile {
+                schema_version: 1,
+                skills: BTreeMap::from([("reviewer".into(), stale_entry.clone())]),
+                previous: BTreeMap::from([("reviewer".into(), stale_entry)]),
+            },
+        )
+        .unwrap();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        let prepared = prepared_operation(
+            root,
+            SkillOperationKind::Install,
+            None,
+            Utc::now() + Duration::minutes(15),
+        );
+        hub.previews
+            .lock()
+            .unwrap()
+            .insert("reinstall".into(), prepared);
+
+        let installed = hub.apply("reinstall", true, false).unwrap();
+        let lock = load_lock(root).unwrap();
+
+        assert!(!backup.exists());
+        assert!(!lock.previous.contains_key("reviewer"));
+        assert_eq!(
+            lock.skills["reviewer"]
+                .source
+                .as_ref()
+                .unwrap()
+                .resolved_commit,
+            "commit-incoming"
+        );
+        assert!(!installed.can_rollback);
     }
 
     #[test]

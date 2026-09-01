@@ -42,6 +42,16 @@ describe("desktop startup flow", () => {
     expect(startup).not.toContain("await runtimeHost.start()");
   });
 
+  it("exits benchmark mode when Runtime startup exhausts retries", () => {
+    const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
+    const runtimeStart = source.indexOf("void runtimeHost.start().catch");
+    const windowCreation = source.indexOf("await createMainWindow()", runtimeStart);
+    const failureHandler = source.slice(runtimeStart, windowCreation);
+
+    expect(failureHandler).toContain("startupBenchmark.enabled");
+    expect(failureHandler).toContain("app.exit(1)");
+  });
+
   it("shows the main window after the Renderer first commits", () => {
     const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
     const rendererCommit = source.indexOf('name === "renderer-first-commit"');

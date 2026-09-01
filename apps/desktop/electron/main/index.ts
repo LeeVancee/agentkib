@@ -164,8 +164,10 @@ async function startApplication(): Promise<void> {
   });
 
   startupBenchmark.mark("runtime-spawn");
-  void runtimeHost.start().catch(() => {
-    // Terminal startup failures are surfaced by the Runtime status bridge inside the main window.
+  void runtimeHost.start().catch((error: unknown) => {
+    if (!startupBenchmark.enabled) return;
+    process.stderr.write(`AgentKib benchmark runtime startup failed: ${String(error)}\n`);
+    app.exit(1);
   });
   await createMainWindow();
   applicationInitialized = true;

@@ -8,6 +8,7 @@
     "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "dev:typescript": "pnpm --filter @agentkib/desktop dev:typescript",
     "build": "pnpm --filter @agentkib/desktop build",
+    "build:typescript": "pnpm --filter @agentkib/desktop build:typescript",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "format": "oxfmt packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",
     "format:check": "oxfmt --check packages/backend/src packages/backend/test apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts",

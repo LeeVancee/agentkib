@@ -29,6 +29,7 @@ const MAX_SKILL_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_ENTRY_BYTES: u64 = 1024 * 1024;
 const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+const MAX_RETAINED_PREVIEWS: usize = 4;
 const PREVIEW_TTL_MINUTES: i64 = 15;
 const CURATED_URL: &str = "https://github.com/openai/skills/tree/main/skills/.curated";
 
@@ -557,25 +558,41 @@ impl SkillHub {
         ensure!(!target.exists(), "A Skill with this name already exists");
         let backup = self.backups_dir().join(&record.name);
         let trashed_backup = trash_root.join("backup");
+        if backup.exists() {
+            ensure!(
+                backup.is_dir() && !platform_path::is_reparse_or_symlink(&backup)?,
+                "Rollback Skill must be a regular directory"
+            );
+        }
         if trashed_backup.exists() {
             ensure!(
                 trashed_backup.is_dir() && !platform_path::is_reparse_or_symlink(&trashed_backup)?,
                 "Removed rollback package is not a regular directory"
             );
-            ensure!(
-                !backup.exists(),
-                "A rollback Skill with this name already exists"
-            );
         }
         let mut lock = load_lock(&self.root)?;
         self.ensure_layout()?;
-        move_path(&package, &target)?;
+        let conflicting_backup = trash_root.join(format!("conflicting-backup-{}", Uuid::new_v4()));
+        if backup.is_dir() {
+            move_path(&backup, &conflicting_backup)?;
+        }
+        if let Err(error) = move_path(&package, &target) {
+            if conflicting_backup.is_dir() {
+                let _ = move_path(&conflicting_backup, &backup);
+            }
+            return Err(error.into());
+        }
         if trashed_backup.is_dir()
             && let Err(error) = move_path(&trashed_backup, &backup)
         {
             let _ = move_path(&target, &package);
+            if conflicting_backup.is_dir() {
+                let _ = move_path(&conflicting_backup, &backup);
+            }
             return Err(error.into());
         }
+        lock.skills.remove(&record.name);
+        lock.previous.remove(&record.name);
         if let Some(entry) = record.lock.clone() {
             lock.skills.insert(record.name.clone(), entry);
         }
@@ -587,6 +604,9 @@ impl SkillHub {
                 let _ = move_path(&backup, &trashed_backup);
             }
             let _ = move_path(&target, &package);
+            if conflicting_backup.is_dir() {
+                let _ = move_path(&conflicting_backup, &backup);
+            }
             return Err(error);
         }
         // The package and lock are already restored; cleanup must not turn that durable mutation
@@ -793,23 +813,35 @@ impl SkillHub {
             installed_at: previous.map_or(now, |entry| entry.installed_at),
             updated_at: now,
         };
+        self.store_prepared_preview(PreparedOperation {
+            preview: preview.clone(),
+            target_name,
+            temp,
+            package,
+            lock: lock_entry,
+            expected_existing_sha256,
+        })?;
+        Ok(preview)
+    }
+
+    fn store_prepared_preview(&self, prepared: PreparedOperation) -> Result<()> {
         let mut previews = self
             .previews
             .lock()
             .map_err(|_| anyhow::anyhow!("Skill preview lock is unavailable"))?;
         previews.retain(|_, value| value.preview.expires_at > Utc::now());
-        previews.insert(
-            token,
-            PreparedOperation {
-                preview: preview.clone(),
-                target_name,
-                temp,
-                package,
-                lock: lock_entry,
-                expected_existing_sha256,
-            },
-        );
-        Ok(preview)
+        while previews.len() >= MAX_RETAINED_PREVIEWS {
+            let Some(oldest) = previews
+                .iter()
+                .min_by_key(|(_, value)| value.preview.expires_at)
+                .map(|(token, _)| token.clone())
+            else {
+                break;
+            };
+            previews.remove(&oldest);
+        }
+        previews.insert(prepared.preview.token.clone(), prepared);
+        Ok(())
     }
 
     fn apply_install(&self, prepared: PreparedOperation) -> Result<()> {
@@ -2038,7 +2070,33 @@ mod tests {
         assert_eq!(removed.name, "my_skill");
         assert_eq!(removed.display_name, "reviewer");
         validate_trash_id(&removed.id).unwrap();
-        assert_eq!(hub.restore(&removed.id, true).unwrap().name, "my_skill");
+        let conflicting_backup = directory.path().join("backups/skills/my_skill");
+        write_skill(&conflicting_backup, "unrelated backup");
+        let conflicting_entry = SkillLockEntry {
+            source: Some(source("unrelated-commit", "unrelated-tree")),
+            content_sha256: "unrelated-hash".into(),
+            installed_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        save_lock(
+            directory.path(),
+            &SkillLockFile {
+                schema_version: 1,
+                skills: BTreeMap::from([("my_skill".into(), conflicting_entry.clone())]),
+                previous: BTreeMap::from([("my_skill".into(), conflicting_entry)]),
+            },
+        )
+        .unwrap();
+
+        let restored = hub.restore(&removed.id, true).unwrap();
+        let lock = load_lock(directory.path()).unwrap();
+
+        assert_eq!(restored.name, "my_skill");
+        assert_eq!(restored.status, InstalledSkillStatus::Unmanaged);
+        assert!(!restored.can_rollback);
+        assert!(!lock.skills.contains_key("my_skill"));
+        assert!(!lock.previous.contains_key("my_skill"));
+        assert!(!conflicting_backup.exists());
     }
 
     #[test]
@@ -2419,6 +2477,33 @@ mod tests {
         let error = hub.apply("tampered", true, false).unwrap_err().to_string();
         assert!(error.contains("changed after preview"));
         assert!(!root.join("skills/reviewer").exists());
+    }
+
+    #[test]
+    fn prepared_preview_pool_is_bounded_and_drops_oldest_staging_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        let mut oldest_path = None;
+
+        for index in 0..=MAX_RETAINED_PREVIEWS {
+            let mut prepared = prepared_operation(
+                root,
+                SkillOperationKind::Install,
+                None,
+                Utc::now() + Duration::minutes(1) + Duration::seconds(index as i64),
+            );
+            prepared.preview.token = format!("preview-{index}");
+            if index == 0 {
+                oldest_path = Some(prepared.temp.path().to_path_buf());
+            }
+            hub.store_prepared_preview(prepared).unwrap();
+        }
+
+        let previews = hub.previews.lock().unwrap();
+        assert_eq!(previews.len(), MAX_RETAINED_PREVIEWS);
+        assert!(!previews.contains_key("preview-0"));
+        assert!(!oldest_path.unwrap().exists());
     }
 
     #[tokio::test]

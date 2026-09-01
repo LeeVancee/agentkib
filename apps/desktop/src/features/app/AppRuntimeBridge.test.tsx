@@ -29,6 +29,29 @@ describe("AppRuntimeBridge", () => {
     await initializeI18n("zh-CN");
   });
 
+  it("synchronizes Runtime information when legacy workspace migration fails", async () => {
+    window.localStorage.setItem("agentkib.project", "/missing/legacy-workspace");
+    addWorkspace.mockRejectedValue(new Error("legacy workspace missing"));
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "zh-CN",
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(addWorkspace).toHaveBeenCalledWith("/missing/legacy-workspace"));
+    await waitFor(() => expect(runtimeInfo).toHaveBeenCalledOnce());
+    expect(useAppStore.getState().runtime).toMatchObject({ effective_locale: "zh-CN" });
+    expect(window.localStorage.getItem("agentkib.project")).toBe("/missing/legacy-workspace");
+  });
+
   it("shows an in-window retry action after a terminal Runtime failure", async () => {
     let statusListener: ((status: DesktopRuntimeStatus) => void) | undefined;
     const retry = vi.fn().mockResolvedValue(undefined);

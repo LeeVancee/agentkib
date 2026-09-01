@@ -75,8 +75,12 @@ export function AppRuntimeBridge() {
         onRuntimeStatus(await desktop.runtime.status());
         const legacy = localStorage.getItem("agentkib.project");
         if (legacy) {
-          await api.addWorkspace(legacy);
-          localStorage.removeItem("agentkib.project");
+          try {
+            await api.addWorkspace(legacy);
+            localStorage.removeItem("agentkib.project");
+          } catch (error) {
+            if (!disposed) setMessage(localizeMessage(error));
+          }
         }
         await synchronizeRuntime();
       } catch (error) {

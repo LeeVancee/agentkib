@@ -188,6 +188,7 @@ function registerApplicationIpc(): void {
   });
   ipcMain.handle("agentkib:benchmark:mark", async (event, name: unknown) => {
     assertTrustedRenderer(event);
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
     if (
       name !== "renderer-first-commit" &&
       name !== "home-data-ready" &&
@@ -202,7 +203,7 @@ function registerApplicationIpc(): void {
       return;
     }
     startupBenchmark.mark(name);
-    if (name === "renderer-first-commit" && mainWindow && !mainWindow.isDestroyed()) {
+    if (name === "renderer-first-commit") {
       startupBenchmark.mark("window-shown");
       mainWindow.show();
     }

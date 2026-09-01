@@ -37,6 +37,14 @@ describe("desktop startup flow", () => {
     expect(showWindow).toBeGreaterThan(rendererCommit);
   });
 
+  it("only reports the first commit from the main Renderer surface", () => {
+    const rendererSource = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
+    const mainSource = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
+
+    expect(rendererSource).toContain('surface !== "quota-popover" && <BenchmarkCommitMarker />');
+    expect(mainSource).toContain("event.sender !== mainWindow.webContents");
+  });
+
   it("flushes the handshake response before initializing the MCP Hub", () => {
     const source = readFileSync(
       path.join(repositoryRoot, "crates/agentkib-runtime/src/main.rs"),

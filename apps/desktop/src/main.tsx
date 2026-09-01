@@ -48,7 +48,7 @@ async function bootstrap() {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <BenchmarkCommitMarker />
+        {surface !== "quota-popover" && <BenchmarkCommitMarker />}
         <AppDialogProvider>{app}</AppDialogProvider>
       </QueryClientProvider>
     </StrictMode>,

@@ -345,16 +345,22 @@ class RuntimeClient {
   async stop() {
     if (!this.child || this.child.exitCode !== null) return;
     const exited = new Promise((resolve) => this.child.once("exit", resolve));
-    try {
-      await this.request("agentkib.shutdown", {});
-    } catch {
-      // The bounded process exit below handles an already-failed runtime.
-    }
+    const gracefulShutdown = (async () => {
+      try {
+        await this.request("agentkib.shutdown", {});
+      } catch {
+        // The bounded process exit below handles an already-failed runtime.
+      }
+      await exited;
+    })();
     await Promise.race([
-      exited,
+      gracefulShutdown,
       new Promise((resolve) => setTimeout(resolve, 2_000)),
     ]);
-    if (this.child.exitCode === null) this.child.kill();
+    if (this.child.exitCode === null) {
+      this.child.kill();
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 500))]);
+    }
   }
 }
 

@@ -66,4 +66,11 @@ describe("desktop startup flow", () => {
     expect(response).toBeGreaterThan(-1);
     expect(hub).toBeGreaterThan(response);
   });
+
+  it("bounds the benchmark client's shutdown request", () => {
+    const source = readFileSync(path.join(desktopRoot, "scripts/benchmark-runtime.mjs"), "utf8");
+
+    expect(source).toContain("const gracefulShutdown = (async () =>");
+    expect(source).toContain("Promise.race([\n      gracefulShutdown,");
+  });
 });

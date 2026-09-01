@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,6 +17,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value as JsonValue;
 use walkdir::{DirEntry, WalkDir};
+
+const MAX_GROK_SUMMARY_BYTES: u64 = 256 * 1024;
 
 pub trait WorkspaceDiscoveryProvider: Send {
     fn installation(&self) -> AgentInstallation;
@@ -35,8 +38,10 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(CursorProvider::default()),
+        Box::new(OpenCodeProvider::default()),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
+        Box::new(GrokBuildProvider::default()),
         Box::new(DeepSeekHarnessProvider::default()),
     ];
     let provider_results = parallel_map_bounded(providers, 4, |provider| {
@@ -451,6 +456,219 @@ fn file_uri_path(value: &str) -> Option<PathBuf> {
 }
 
 #[derive(Default)]
+struct OpenCodeProvider {
+    config_home: Option<PathBuf>,
+    data_home: Option<PathBuf>,
+}
+
+impl OpenCodeProvider {
+    fn config_home(&self) -> Option<PathBuf> {
+        self.config_home.clone().or_else(|| {
+            agentkib_platform::xdg::config_home()
+                .or_else(|| dirs::home_dir().map(|path| path.join(".config")))
+                .map(|path| path.join("opencode"))
+        })
+    }
+
+    fn data_home(&self) -> Option<PathBuf> {
+        self.data_home.clone().or_else(|| {
+            agentkib_platform::xdg::data_home()
+                .or_else(|| dirs::home_dir().map(|path| path.join(".local/share")))
+                .map(|path| path.join("opencode"))
+        })
+    }
+}
+
+impl WorkspaceDiscoveryProvider for OpenCodeProvider {
+    fn installation(&self) -> AgentInstallation {
+        let mut value = installation(
+            AgentKind::OpenCode,
+            self.config_home(),
+            agent_is_installed(AgentKind::OpenCode),
+        );
+        value.configured = value.configured || self.data_home().is_some_and(|path| path.is_dir());
+        value
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
+        let Some(data_home) = self.data_home().filter(|path| path.is_dir()) else {
+            return Ok(Vec::new());
+        };
+        let mut output = discover_opencode_database(&data_home.join("opencode.db"))?;
+        let database_paths: BTreeSet<_> = output
+            .iter()
+            .map(|candidate| platform_path::identity(&candidate.path))
+            .collect();
+        output.extend(
+            discover_legacy_opencode_projects(&data_home)?
+                .into_iter()
+                .filter(|candidate| {
+                    !database_paths.contains(&platform_path::identity(&candidate.path))
+                }),
+        );
+        Ok(output)
+    }
+
+    fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
+        Ok(self
+            .config_home()
+            .filter(|path| path.is_dir())
+            .map(|home| {
+                scan_known_home(
+                    AgentKind::OpenCode,
+                    &home,
+                    &[
+                        "AGENTS.md",
+                        "opencode.json",
+                        "opencode.jsonc",
+                        "skills",
+                        "agents",
+                        "commands",
+                        "plugins",
+                        "tools",
+                    ],
+                )
+            })
+            .transpose()?
+            .unwrap_or_default())
+    }
+}
+
+fn discover_opencode_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let connection = open_read_only(path)?;
+    let project_columns = table_columns(&connection, "project")?;
+    if !project_columns.contains("worktree") {
+        return Ok(Vec::new());
+    }
+    let mut output = Vec::new();
+    let project_time = opencode_timestamp_expression(&project_columns);
+    let project_sql = format!(
+        "SELECT worktree, 0, {project_time} FROM project \
+         WHERE worktree IS NOT NULL AND worktree != '' GROUP BY worktree"
+    );
+    append_opencode_database_candidates(&connection, &project_sql, &mut output)?;
+
+    let session_columns = table_columns(&connection, "session")?;
+    if session_columns.contains("directory") {
+        let session_time = opencode_timestamp_expression(&session_columns);
+        let session_sql = format!(
+            "SELECT directory, COUNT(*), {session_time} FROM session \
+             WHERE directory IS NOT NULL AND directory != '' GROUP BY directory"
+        );
+        append_opencode_database_candidates(&connection, &session_sql, &mut output)?;
+    }
+
+    let mut grouped = BTreeMap::<String, DiscoveryCandidate>::new();
+    for candidate in output {
+        let key = platform_path::identity(&candidate.path);
+        grouped
+            .entry(key)
+            .and_modify(|existing| {
+                existing.session_count = existing
+                    .session_count
+                    .saturating_add(candidate.session_count);
+                existing.last_active_at = latest(existing.last_active_at, candidate.last_active_at);
+            })
+            .or_insert(candidate);
+    }
+    Ok(grouped.into_values().collect())
+}
+
+fn opencode_timestamp_expression(columns: &BTreeSet<String>) -> &'static str {
+    match (
+        columns.contains("time_updated"),
+        columns.contains("time_created"),
+    ) {
+        (true, true) => "MAX(COALESCE(time_updated, time_created))",
+        (true, false) => "MAX(time_updated)",
+        (false, true) => "MAX(time_created)",
+        (false, false) => "NULL",
+    }
+}
+
+fn append_opencode_database_candidates(
+    connection: &Connection,
+    sql: &str,
+    output: &mut Vec<DiscoveryCandidate>,
+) -> Result<()> {
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (directory, count, updated) = row?;
+        output.push(candidate(
+            PathBuf::from(directory),
+            Some(AgentKind::OpenCode),
+            DiscoveryEvidence::SessionCwd,
+            updated.and_then(timestamp_from_integer),
+            count.max(0) as u64,
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn discover_legacy_opencode_projects(data_home: &Path) -> Result<Vec<DiscoveryCandidate>> {
+    let projects = data_home.join("storage/project");
+    if !projects.is_dir() {
+        return Ok(Vec::new());
+    }
+    let sessions = data_home.join("storage/session");
+    let mut output = Vec::new();
+    for entry in fs::read_dir(projects)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file()
+            || path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<JsonValue>(&fs::read_to_string(&path)?) else {
+            continue;
+        };
+        let Some(worktree) = value.get("worktree").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let project_id = value.get("id").and_then(JsonValue::as_str);
+        let session_count = project_id
+            .map(|id| sessions.join(id))
+            .filter(|path| path.is_dir())
+            .and_then(|path| fs::read_dir(path).ok())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+                    })
+                    .count() as u64
+            })
+            .unwrap_or(0);
+        let updated = value
+            .pointer("/time/updated")
+            .or_else(|| value.pointer("/time/created"))
+            .and_then(parse_json_timestamp)
+            .or_else(|| modified_at(&path).ok());
+        output.push(candidate(
+            PathBuf::from(worktree),
+            Some(AgentKind::OpenCode),
+            DiscoveryEvidence::SessionCwd,
+            updated,
+            session_count,
+            false,
+        ));
+    }
+    Ok(output)
+}
+
+#[derive(Default)]
 struct OpenClawProvider {
     home: Option<PathBuf>,
 }
@@ -644,6 +862,119 @@ impl WorkspaceDiscoveryProvider for HermesProvider {
         }
         Ok(assets)
     }
+}
+
+#[derive(Default)]
+struct GrokBuildProvider {
+    home: Option<PathBuf>,
+}
+
+impl GrokBuildProvider {
+    fn home(&self) -> Option<PathBuf> {
+        self.home.clone().or_else(|| {
+            env::var_os("GROK_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|path| path.join(".grok")))
+        })
+    }
+}
+
+impl WorkspaceDiscoveryProvider for GrokBuildProvider {
+    fn installation(&self) -> AgentInstallation {
+        installation(
+            AgentKind::GrokBuild,
+            self.home(),
+            agent_is_installed(AgentKind::GrokBuild),
+        )
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
+        let Some(sessions) = self
+            .home()
+            .map(|home| home.join("sessions"))
+            .filter(|path| path.is_dir())
+        else {
+            return Ok(Vec::new());
+        };
+        let mut output = Vec::new();
+        for entry in WalkDir::new(sessions)
+            .min_depth(3)
+            .max_depth(3)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| platform_path::is_safe_scan_entry(entry.path()))
+        {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() || entry.file_name() != "summary.json" {
+                continue;
+            }
+            let Ok(value) = read_bounded_json(entry.path(), MAX_GROK_SUMMARY_BYTES) else {
+                continue;
+            };
+            let Some(cwd) = value.pointer("/info/cwd").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            if cwd.trim().is_empty() {
+                continue;
+            }
+            let timestamp = value
+                .get("updated_at")
+                .or_else(|| value.get("updatedAt"))
+                .or_else(|| value.get("created_at"))
+                .or_else(|| value.get("createdAt"))
+                .and_then(parse_json_timestamp);
+            output.push(candidate(
+                PathBuf::from(cwd),
+                Some(AgentKind::GrokBuild),
+                DiscoveryEvidence::SessionCwd,
+                timestamp,
+                1,
+                false,
+            ));
+        }
+        Ok(output)
+    }
+
+    fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
+        Ok(self
+            .home()
+            .filter(|path| path.is_dir())
+            .map(|home| {
+                scan_known_home(
+                    AgentKind::GrokBuild,
+                    &home,
+                    &[
+                        "config.toml",
+                        "managed_config.toml",
+                        "requirements.toml",
+                        "AGENTS.md",
+                        "rules",
+                        "skills",
+                        "plugins",
+                        "agents",
+                        "hooks",
+                        "workflows",
+                    ],
+                )
+            })
+            .transpose()?
+            .unwrap_or_default())
+    }
+}
+
+fn read_bounded_json(path: &Path, limit: u64) -> Result<JsonValue> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > limit {
+        anyhow::bail!("JSON file is not a bounded regular file");
+    }
+    let mut content = String::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > limit {
+        anyhow::bail!("JSON file exceeds the read limit");
+    }
+    Ok(serde_json::from_str(&content)?)
 }
 
 #[derive(Default)]
@@ -872,6 +1203,10 @@ fn has_project_marker(path: &Path) -> bool {
         ".codex",
         ".claude",
         ".cursor",
+        ".opencode",
+        "opencode.json",
+        "opencode.jsonc",
+        ".grok",
         ".dsh",
     ]
     .into_iter()
@@ -987,27 +1322,37 @@ fn is_private_home_file(path: &Path) -> bool {
 }
 
 fn home_asset_kind(path: &Path) -> AssetKind {
-    let text = path.to_string_lossy().to_ascii_lowercase();
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if name.eq_ignore_ascii_case("SKILL.md") || text.contains("/skills/") {
+    if name.eq_ignore_ascii_case("SKILL.md") || has_path_component(path, "skills") {
         AssetKind::Skill
-    } else if name.eq_ignore_ascii_case("MEMORY.md") || text.contains("/memory/") {
+    } else if name.eq_ignore_ascii_case("MEMORY.md") || has_path_component(path, "memory") {
         AssetKind::Memory
-    } else if name.eq_ignore_ascii_case("hooks.json") || text.contains("/hooks/") {
+    } else if name.eq_ignore_ascii_case("hooks.json") || has_path_component(path, "hooks") {
         AssetKind::Hook
-    } else if text.contains("/agents/")
-        || text.contains("/profiles/")
-        || text.contains("/.agent-presets/")
+    } else if has_path_component(path, "agents")
+        || has_path_component(path, "profiles")
+        || has_path_component(path, ".agent-presets")
     {
         AssetKind::Agent
+    } else if has_path_component(path, "workflows") {
+        AssetKind::Configuration
     } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
         AssetKind::Instruction
     } else {
         AssetKind::Configuration
     }
+}
+
+fn has_path_component(path: &Path, expected: &str) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|component| component.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn home_asset(agent: AgentKind, path: &Path, kind: AssetKind) -> Result<CatalogAsset> {
@@ -1080,8 +1425,10 @@ fn agent_is_installed(agent: AgentKind) -> bool {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude",
         AgentKind::Cursor => "cursor",
+        AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "openclaw",
         AgentKind::Hermes => "hermes",
+        AgentKind::GrokBuild => "grok",
         AgentKind::DeepSeekHarness => "dsh",
     };
     command_is_available(command) || app_bundle_is_available(agent)
@@ -1101,9 +1448,11 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
     let bundle = match agent {
         AgentKind::Codex => "Codex.app",
         AgentKind::Cursor => "Cursor.app",
+        AgentKind::OpenCode => "OpenCode.app",
         AgentKind::ClaudeCode
         | AgentKind::OpenClaw
         | AgentKind::Hermes
+        | AgentKind::GrokBuild
         | AgentKind::DeepSeekHarness => return false,
     };
     let mut candidates = vec![PathBuf::from("/Applications").join(bundle)];
@@ -1115,9 +1464,39 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
         .any(|path| path.join("Contents/Info.plist").is_file())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn app_bundle_is_available(agent: AgentKind) -> bool {
-    agent == AgentKind::Cursor && command::cursor_app_is_available()
+    if agent == AgentKind::Cursor {
+        return command::cursor_app_is_available();
+    }
+    if agent != AgentKind::OpenCode {
+        return false;
+    }
+    dirs::data_local_dir().is_some_and(|local| {
+        [
+            local.join("Programs/OpenCode/OpenCode.exe"),
+            local.join("OpenCode/OpenCode.exe"),
+        ]
+        .into_iter()
+        .any(|path| path.is_file())
+    })
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn app_bundle_is_available(agent: AgentKind) -> bool {
+    match agent {
+        AgentKind::Cursor => command::cursor_app_is_available(),
+        AgentKind::OpenCode => {
+            let search = command::search_directories();
+            command::desktop_application_executables(
+                &["ai.opencode.desktop", "opencode-desktop"],
+                &search,
+            )
+            .into_iter()
+            .any(|path| command::is_executable(&path))
+        }
+        _ => false,
+    }
 }
 
 fn candidate(
@@ -1284,6 +1663,184 @@ mod tests {
         assert_eq!(value.home, Some(home));
     }
 
+    #[test]
+    fn opencode_residual_configuration_is_not_installation_evidence() {
+        let dir = tempdir().unwrap();
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(&config_home).unwrap();
+
+        let value = installation(AgentKind::OpenCode, Some(config_home.clone()), false);
+
+        assert!(!value.installed);
+        assert!(value.configured);
+        assert_eq!(value.home, Some(config_home));
+    }
+
+    #[test]
+    fn opencode_discovers_sqlite_projects_without_exposing_session_titles() {
+        let dir = tempdir().unwrap();
+        let data_home = dir.path().join("data/opencode");
+        fs::create_dir_all(&data_home).unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(workspace.join(".opencode")).unwrap();
+        let connection = Connection::open(data_home.join("opencode.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, time_created INTEGER, time_updated INTEGER);\
+                 CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project VALUES (?1, ?2, 1000, 2000)",
+                rusqlite::params!["project-private-id", workspace.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES (?1, ?2, ?3, ?4, 2000, 3000)",
+                rusqlite::params![
+                    "session-private-id",
+                    "project-private-id",
+                    workspace.display().to_string(),
+                    "private session title"
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let candidates = OpenCodeProvider {
+            config_home: None,
+            data_home: Some(data_home),
+        }
+        .discover()
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, workspace);
+        assert_eq!(candidates[0].session_count, 1);
+        let normalized = normalize_and_merge(candidates.clone());
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].path,
+            platform_path::canonicalize(&workspace).unwrap()
+        );
+        let debug = format!("{candidates:?}");
+        assert!(!debug.contains("private session title"));
+        assert!(!debug.contains("session-private-id"));
+    }
+
+    #[test]
+    fn opencode_discovers_distinct_session_directories_and_tolerates_missing_timestamps() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("opencode.db");
+        let project = dir.path().join("project");
+        let package = project.join("packages/api");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::create_dir_all(package.join(".opencode")).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE project (worktree TEXT);\
+                 CREATE TABLE session (directory TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project VALUES (?1)",
+                [project.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES (?1)",
+                [package.display().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let candidates = discover_opencode_database(&database).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.last_active_at.is_none())
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.path == package)
+                .unwrap()
+                .session_count,
+            1
+        );
+        let normalized = normalize_and_merge(candidates);
+        assert_eq!(normalized.len(), 2);
+    }
+
+    #[test]
+    fn opencode_home_catalog_includes_custom_tools() {
+        let dir = tempdir().unwrap();
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(config_home.join("tools")).unwrap();
+        fs::write(config_home.join("tools/custom.ts"), "export default {}").unwrap();
+
+        let assets = OpenCodeProvider {
+            config_home: Some(config_home.clone()),
+            data_home: None,
+        }
+        .scan_home_assets()
+        .unwrap();
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].agent, Some(AgentKind::OpenCode));
+        assert_eq!(assets[0].kind, AssetKind::Configuration);
+        assert_eq!(assets[0].path, config_home.join("tools/custom.ts"));
+    }
+
+    #[test]
+    fn opencode_discovers_legacy_project_json_without_exposing_metadata() {
+        let dir = tempdir().unwrap();
+        let data_home = dir.path().join("data/opencode");
+        let project_store = data_home.join("storage/project");
+        let session_store = data_home.join("storage/session/project-private-id");
+        fs::create_dir_all(&project_store).unwrap();
+        fs::create_dir_all(&session_store).unwrap();
+        let workspace = dir.path().join("legacy-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("opencode.jsonc"), "{}").unwrap();
+        fs::write(
+            project_store.join("project-private-id.json"),
+            serde_json::json!({
+                "id": "project-private-id",
+                "worktree": workspace,
+                "name": "private project title",
+                "time": { "updated": 3_000 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            session_store.join("session-private-id.json"),
+            r#"{"title":"private session title","messages":["secret"]}"#,
+        )
+        .unwrap();
+
+        let candidates = discover_legacy_opencode_projects(&data_home).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session_count, 1);
+        let normalized = normalize_and_merge(candidates.clone());
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0].path,
+            platform_path::canonicalize(&workspace).unwrap()
+        );
+        let debug = format!("{candidates:?}");
+        assert!(!debug.contains("private project title"));
+        assert!(!debug.contains("private session title"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn executable_file_is_valid_installation_evidence() {
@@ -1410,6 +1967,104 @@ mod tests {
         .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].session_count, 1);
+    }
+
+    #[test]
+    fn grok_build_discovers_only_bounded_session_summary_metadata() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let home = dir.path().join("grok");
+        let first = home.join("sessions/encoded/session-1");
+        let second = home.join("sessions/encoded/session-2");
+        let corrupt = home.join("sessions/encoded/session-3");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::create_dir_all(&corrupt).unwrap();
+        fs::write(
+            first.join("summary.json"),
+            serde_json::json!({
+                "info": { "cwd": workspace },
+                "title": "must-not-be-retained",
+                "updated_at": "2026-08-31T12:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            second.join("summary.json"),
+            serde_json::json!({
+                "info": { "cwd": workspace },
+                "created_at": "2026-08-30T12:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(corrupt.join("summary.json"), "{broken").unwrap();
+
+        let candidates = GrokBuildProvider { home: Some(home) }.discover().unwrap();
+        let candidates = normalize_and_merge(candidates);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source_agent, Some(AgentKind::GrokBuild));
+        assert_eq!(candidates[0].session_count, 2);
+        assert_eq!(candidates[0].display_name, None);
+        assert!(
+            !serde_json::to_string(&candidates[0])
+                .unwrap()
+                .contains("session-1")
+        );
+        assert!(
+            !serde_json::to_string(&candidates[0])
+                .unwrap()
+                .contains("must-not-be-retained")
+        );
+    }
+
+    #[test]
+    fn grok_build_skips_oversized_summaries_and_private_home_directories() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("grok");
+        let session = home.join("sessions/encoded/session-1");
+        fs::create_dir_all(&session).unwrap();
+        fs::File::create(session.join("summary.json"))
+            .unwrap()
+            .set_len(MAX_GROK_SUMMARY_BYTES + 1)
+            .unwrap();
+        fs::create_dir_all(home.join("skills/reviewer")).unwrap();
+        fs::write(home.join("skills/reviewer/SKILL.md"), "# Reviewer").unwrap();
+        fs::create_dir_all(home.join("workflows")).unwrap();
+        fs::write(home.join("workflows/review.md"), "# Review workflow").unwrap();
+        fs::create_dir_all(home.join("agents")).unwrap();
+        fs::write(home.join("agents/reviewer.md"), "# Reviewer agent").unwrap();
+        fs::create_dir_all(home.join("memory")).unwrap();
+        fs::write(home.join("memory/private.md"), "private").unwrap();
+
+        let provider = GrokBuildProvider { home: Some(home) };
+        assert!(provider.discover().unwrap().is_empty());
+        let assets = provider.scan_home_assets().unwrap();
+        assert!(assets.iter().any(|asset| asset.name == "reviewer"));
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.path.ends_with("workflows/review.md"))
+        );
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("workflows/review.md") && asset.kind == AssetKind::Configuration
+        }));
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("agents/reviewer.md") && asset.kind == AssetKind::Agent
+        }));
+        assert!(
+            assets
+                .iter()
+                .all(|asset| !asset.path.to_string_lossy().contains("memory"))
+        );
+        assert!(
+            assets
+                .iter()
+                .all(|asset| !asset.path.to_string_lossy().contains("sessions"))
+        );
     }
 
     #[test]

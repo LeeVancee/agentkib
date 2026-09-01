@@ -104,11 +104,13 @@ pnpm dev
 | Codex | 支持 | 支持 | 支持 |
 | Claude Code | 支持 | 支持 | 支持 |
 | Cursor | 支持 | 支持 | — |
+| OpenCode | 支持 | 支持 | — |
 | OpenClaw | 支持 | 支持 | — |
 | Hermes | 支持 | 支持 | — |
+| Grok Build | 支持 | 支持 | — |
 | DeepSeek Harness | Beta，只读 | 仅诊断，不写入 | — |
 
-AgentKib 会区分“已安装”和“只发现了卸载后留下的本地数据”。涉及 Agent Home 的写入会单独请求授权；DeepSeek Harness 的存储协议仍处于 Beta，因此不会被写入或配置 MCP。
+AgentKib 会区分“已安装”和“只发现了卸载后留下的本地数据”。Grok Build 使用原生 `.grok/config.toml`、`.grok/skills` 与 `AGENTS.md`，并诊断其默认启用的 Claude/Cursor 兼容规则。涉及 Agent Home 的写入会单独请求授权；DeepSeek Harness 的存储协议仍处于 Beta，因此不会被写入或配置 MCP。
 
 ### 本地与隐私边界
 
@@ -230,11 +232,13 @@ The UI supports Simplified Chinese, Traditional Chinese, Japanese, and English, 
 | Codex | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes |
 | Cursor | Yes | Yes | — |
+| OpenCode | Yes | Yes | — |
 | OpenClaw | Yes | Yes | — |
 | Hermes | Yes | Yes | — |
+| Grok Build | Yes | Yes | — |
 | DeepSeek Harness | Beta, read-only | Diagnostics only | — |
 
-AgentKib distinguishes an installed app or CLI from leftover local data. Agent Home writes require separate approval. DeepSeek Harness remains a read-only Beta target and is never written to or configured for MCP.
+AgentKib distinguishes an installed app or CLI from leftover local data. Grok Build uses native `.grok/config.toml`, `.grok/skills`, and `AGENTS.md` paths while diagnosing its default Claude/Cursor compatibility rules. Agent Home writes require separate approval. DeepSeek Harness remains a read-only Beta target and is never written to or configured for MCP.
 
 ### Local and private by default
 

@@ -2,8 +2,10 @@ export type AgentKind =
   | "codex"
   | "claude-code"
   | "cursor"
+  | "opencode"
   | "open-claw"
   | "hermes"
+  | "grok-build"
   | "deepseek-harness";
 export type MemoryStatus = "pending" | "approved" | "rejected" | "invalidated";
 export type MemoryType =

@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, manifest_path,
+    hash_content, manifest_path, opencode_managed_config_path,
+    opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
 use anyhow::{Context, Result};
@@ -65,6 +66,13 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
         && !override_text.trim().is_empty()
     {
         platform_overrides.insert(AgentKind::Cursor, override_text.to_string());
+    }
+    if opencode_managed_instruction_is_registered(project)
+        && let Ok(content) = fs::read_to_string(project.join(".opencode/agentkib-instructions.md"))
+        && let Some(override_text) = managed_content(&content)
+        && !override_text.trim().is_empty()
+    {
+        platform_overrides.insert(AgentKind::OpenCode, override_text.to_string());
     }
     if let Some(content) = [".hermes.md", "HERMES.md"]
         .into_iter()
@@ -257,8 +265,10 @@ pub fn plan_workspace_changes(
     let common_enabled = [
         AgentKind::Codex,
         AgentKind::Cursor,
+        AgentKind::OpenCode,
         AgentKind::OpenClaw,
         AgentKind::Hermes,
+        AgentKind::GrokBuild,
     ]
     .into_iter()
     .any(|agent| adapter_enabled(manifest, agent));
@@ -347,6 +357,16 @@ pub fn plan_workspace_changes(
             "toml",
         )?;
     }
+    if adapter_enabled(manifest, AgentKind::GrokBuild) {
+        push_change(
+            &mut changes,
+            root.join(".grok/config.toml"),
+            merge_grok_config(&root.join(".grok/config.toml"), &gateway_connections)?,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            "toml",
+        )?;
+    }
     if adapter_enabled(manifest, AgentKind::Cursor) {
         let platform_override = manifest
             .instructions
@@ -385,6 +405,43 @@ pub fn plan_workspace_changes(
             ChangeScope::Project,
             RiskLevel::Medium,
             "json",
+        )?;
+    }
+    if adapter_enabled(manifest, AgentKind::OpenCode) {
+        let platform_override = manifest
+            .instructions
+            .platform_overrides
+            .get(&AgentKind::OpenCode)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let instruction_path = root.join(".opencode/agentkib-instructions.md");
+        let existing_instruction = fs::read_to_string(&instruction_path).unwrap_or_default();
+        let manages_instruction = !platform_override.trim().is_empty()
+            || existing_instruction.contains(START)
+                && opencode_managed_instruction_is_registered(&root);
+        if manages_instruction {
+            push_change(
+                &mut changes,
+                instruction_path,
+                managed_markdown(&existing_instruction, platform_override),
+                ChangeScope::Project,
+                RiskLevel::Medium,
+                "markdown",
+            )?;
+        }
+        let config_path = opencode_managed_config_path(&root);
+        let format = if config_path.extension() == Some(OsStr::new("jsonc")) {
+            "jsonc"
+        } else {
+            "json"
+        };
+        push_change(
+            &mut changes,
+            config_path.clone(),
+            merge_opencode_config(&config_path, &gateway_connections, manages_instruction)?,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            format,
         )?;
     }
     if adapter_enabled(manifest, AgentKind::OpenClaw) {
@@ -481,12 +538,17 @@ pub fn plan_workspace_changes(
     }
 
     for skill in &manifest.skills {
-        let shared_skill_enabled = [AgentKind::Codex, AgentKind::OpenClaw, AgentKind::Hermes]
-            .into_iter()
-            .any(|agent| {
-                adapter_enabled(manifest, agent)
-                    && (skill.targets.is_empty() || skill.targets.contains(&agent))
-            });
+        let shared_skill_enabled = [
+            AgentKind::Codex,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+        ]
+        .into_iter()
+        .any(|agent| {
+            adapter_enabled(manifest, agent)
+                && (skill.targets.is_empty() || skill.targets.contains(&agent))
+        });
         let cursor_private_enabled = adapter_enabled(manifest, AgentKind::Cursor)
             && (skill.targets.is_empty() || skill.targets.contains(&AgentKind::Cursor))
             && !shared_skill_enabled;
@@ -523,7 +585,21 @@ pub fn plan_workspace_changes(
                     root.join(".claude/skills")
                         .join(&skill.name)
                         .join(&relative_path),
-                    content,
+                    content.clone(),
+                    ChangeScope::Project,
+                    RiskLevel::Low,
+                    validator_for_skill_file(&relative_path),
+                )?;
+            }
+            if adapter_enabled(manifest, AgentKind::GrokBuild)
+                && (skill.targets.is_empty() || skill.targets.contains(&AgentKind::GrokBuild))
+            {
+                push_change(
+                    &mut changes,
+                    root.join(".grok/skills")
+                        .join(&skill.name)
+                        .join(&relative_path),
+                    content.clone(),
                     ChangeScope::Project,
                     RiskLevel::Low,
                     validator_for_skill_file(&relative_path),
@@ -690,10 +766,10 @@ fn read_handoff_gitignore(path: &Path) -> Result<Option<String>> {
 }
 
 fn adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
-    manifest
-        .adapters
-        .get(&agent)
-        .is_none_or(|state| state.enabled)
+    manifest.adapters.get(&agent).map_or(
+        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        |state| state.enabled,
+    )
 }
 
 fn skill_source_files(
@@ -851,6 +927,12 @@ fn validator_for_skill_file(path: &Path) -> &'static str {
     }
 }
 
+fn has_path_component(path: &Path, name: &str) -> bool {
+    let name = OsStr::new(name);
+    path.components()
+        .any(|component| component.as_os_str() == name)
+}
+
 fn update_generated_hashes(
     root: &Path,
     manifest: &mut Manifest,
@@ -876,28 +958,44 @@ fn update_generated_hashes(
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| change.target.display().to_string());
         let hash = hash_content(change.after.as_bytes());
-        let name = change
-            .target
+        let relative = change.target.strip_prefix(root).ok();
+        let name = relative
+            .unwrap_or(&change.target)
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let path = change.target.to_string_lossy();
-        let agents: &[AgentKind] = if path.contains(".openclaw") {
+        let scoped_path = relative.unwrap_or(change.target.as_path());
+        let agents: &[AgentKind] = if has_path_component(scoped_path, ".opencode") {
+            &[AgentKind::OpenCode]
+        } else if has_path_component(scoped_path, ".openclaw")
+            || home.openclaw_config.as_ref() == Some(&change.target)
+            || name == "TOOLS.md"
+        {
             &[AgentKind::OpenClaw]
-        } else if path.contains(".hermes") {
+        } else if has_path_component(scoped_path, ".hermes")
+            || home.hermes_config.as_ref() == Some(&change.target)
+            || name == ".hermes.md"
+        {
             &[AgentKind::Hermes]
-        } else if path.contains(".codex") {
+        } else if has_path_component(scoped_path, ".grok") {
+            &[AgentKind::GrokBuild]
+        } else if has_path_component(scoped_path, ".codex") || name == "AGENTS.override.md" {
             &[AgentKind::Codex]
-        } else if path.contains(".cursor") {
+        } else if has_path_component(scoped_path, ".cursor") {
             &[AgentKind::Cursor]
-        } else if path.contains(".claude") || name == "CLAUDE.md" || name == ".mcp.json" {
+        } else if has_path_component(scoped_path, ".claude")
+            || name == "CLAUDE.md"
+            || name == ".mcp.json"
+        {
             &[AgentKind::ClaudeCode]
         } else {
             &[
                 AgentKind::Codex,
                 AgentKind::Cursor,
+                AgentKind::OpenCode,
                 AgentKind::OpenClaw,
                 AgentKind::Hermes,
+                AgentKind::GrokBuild,
             ]
         };
         for agent in agents {
@@ -1029,16 +1127,34 @@ fn legacy_connection_server(connection: &ConnectionDefinition) -> McpServerConfi
 }
 
 fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
+    merge_toml_mcp_config(path, connections, AgentKind::Codex, "Codex")
+}
+
+fn merge_grok_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
+    merge_toml_mcp_config(path, connections, AgentKind::GrokBuild, "Grok Build")
+}
+
+fn merge_toml_mcp_config(
+    path: &Path,
+    connections: &[ConnectionDefinition],
+    agent: AgentKind,
+    label: &str,
+) -> Result<String> {
     let existing = fs::read_to_string(path).unwrap_or_default();
     if !existing.contains(TOML_START) {
-        for connection in connections
-            .iter()
-            .filter(|value| targeted(value, AgentKind::Codex))
-        {
-            let table = format!("[mcp_servers.{}]", safe_key(&connection.name));
-            if existing.lines().any(|line| line.trim() == table) {
+        let parsed = toml::from_str::<toml::Value>(&existing).ok();
+        let existing_servers = parsed
+            .as_ref()
+            .and_then(|value| value.get("mcp_servers"))
+            .and_then(toml::Value::as_table);
+        for connection in connections.iter().filter(|value| targeted(value, agent)) {
+            let key = safe_key(&connection.name);
+            let table = format!("[mcp_servers.{key}]");
+            if existing_servers.is_some_and(|servers| servers.contains_key(&key))
+                || existing.lines().any(|line| line.trim() == table)
+            {
                 anyhow::bail!(
-                    "Codex configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
+                    "{label} configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
                     connection.name
                 );
             }
@@ -1047,10 +1163,7 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
     let mut block = String::new();
     block.push_str(TOML_START);
     block.push('\n');
-    for connection in connections
-        .iter()
-        .filter(|value| targeted(value, AgentKind::Codex))
-    {
+    for connection in connections.iter().filter(|value| targeted(value, agent)) {
         block.push_str(&format!("[mcp_servers.{}]\n", safe_key(&connection.name)));
         match &connection.transport {
             ConnectionTransport::Stdio { command, args } => {
@@ -1060,10 +1173,9 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
                     serde_json::to_string(args).unwrap_or_else(|_| "[]".into())
                 ));
             }
-            ConnectionTransport::Http { url } => block.push_str(&format!(
-                "url = {}\n",
-                toml_string(&agent_url(url, AgentKind::Codex))
-            )),
+            ConnectionTransport::Http { url } => {
+                block.push_str(&format!("url = {}\n", toml_string(&agent_url(url, agent))))
+            }
         }
         if !connection.allow_tools.is_empty() {
             block.push_str(&format!(
@@ -1095,6 +1207,39 @@ fn safe_key(value: &str) -> String {
 
 fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
+}
+
+fn merge_opencode_config(
+    path: &Path,
+    connections: &[ConnectionDefinition],
+    include_instructions: bool,
+) -> Result<String> {
+    let mut root = read_json_object(path)?;
+    root.entry("$schema")
+        .or_insert_with(|| "https://opencode.ai/config.json".into());
+    if include_instructions {
+        let instructions = root
+            .entry("instructions")
+            .or_insert_with(|| JsonValue::Array(Vec::new()))
+            .as_array_mut()
+            .context("OpenCode instructions must be an array")?;
+        let managed = JsonValue::String(".opencode/agentkib-instructions.md".into());
+        if !instructions.contains(&managed) {
+            instructions.push(managed);
+        }
+    }
+    let servers = root
+        .entry("mcp")
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .context("OpenCode mcp must be an object")?;
+    for connection in connections
+        .iter()
+        .filter(|value| targeted(value, AgentKind::OpenCode))
+    {
+        merge_json_server(servers, connection, AgentKind::OpenCode);
+    }
+    Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
 }
 
 fn merge_mcp_json(
@@ -1157,8 +1302,17 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
     let mut value = JsonMap::new();
     match &connection.transport {
         ConnectionTransport::Stdio { command, args } => {
-            value.insert("command".into(), command.clone().into());
-            value.insert("args".into(), serde_json::json!(args));
+            if agent == AgentKind::OpenCode {
+                value.insert("type".into(), "local".into());
+                value.insert(
+                    "command".into(),
+                    serde_json::json!(std::iter::once(command).chain(args).collect::<Vec<_>>()),
+                );
+                value.insert("enabled".into(), true.into());
+            } else {
+                value.insert("command".into(), command.clone().into());
+                value.insert("args".into(), serde_json::json!(args));
+            }
         }
         ConnectionTransport::Http { url } => {
             value.insert("url".into(), agent_url(url, agent).into());
@@ -1169,15 +1323,25 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
                 AgentKind::OpenClaw => {
                     value.insert("transport".into(), "streamable-http".into());
                 }
+                AgentKind::OpenCode => {
+                    value.insert("type".into(), "remote".into());
+                    value.insert("enabled".into(), true.into());
+                }
                 AgentKind::Codex
                 | AgentKind::Cursor
                 | AgentKind::Hermes
+                | AgentKind::GrokBuild
                 | AgentKind::DeepSeekHarness => {}
             }
         }
     }
     if !connection.env.is_empty() {
-        value.insert("env".into(), serde_json::json!(connection.env));
+        let key = if agent == AgentKind::OpenCode {
+            "environment"
+        } else {
+            "env"
+        };
+        value.insert(key.into(), serde_json::json!(connection.env));
     }
     if !connection.allow_tools.is_empty() {
         value.insert(
@@ -1193,17 +1357,31 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude-code",
         AgentKind::Cursor => "cursor",
+        AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
+        AgentKind::GrokBuild => "grok-build",
         AgentKind::DeepSeekHarness => "deepseek-harness",
     };
     url.replace("{agent}", slug)
 }
 
 fn read_json_object(path: &Path) -> Result<JsonMap<String, JsonValue>> {
-    let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let value: JsonValue = serde_json::from_str(&content)
-        .with_context(|| format!("Invalid JSON: {}", path.display()))?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Could not read JSON configuration: {}", path.display()));
+        }
+    };
+    let is_jsonc = path.extension().and_then(|value| value.to_str()) == Some("jsonc");
+    let value: JsonValue = if is_jsonc {
+        json5::from_str(&content).with_context(|| format!("Invalid JSONC: {}", path.display()))?
+    } else {
+        serde_json::from_str(&content)
+            .with_context(|| format!("Invalid JSON: {}", path.display()))?
+    };
     value
         .as_object()
         .cloned()
@@ -1268,6 +1446,105 @@ mod tests {
 
         assert!(manifest.instructions.shared.is_empty());
         assert!(!agentkib_core::manifest_path(dir.path()).exists());
+        assert!(manifest.adapters[&AgentKind::GrokBuild].enabled);
+    }
+
+    #[test]
+    fn legacy_manifest_without_grok_adapter_does_not_write_grok_files() {
+        let dir = tempdir().unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.adapters.remove(&AgentKind::GrokBuild);
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.to_string_lossy().contains(".grok"))
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_opencode_adapter_does_not_write_opencode_files() {
+        let dir = tempdir().unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.adapters.remove(&AgentKind::OpenCode);
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !has_path_component(&change.target, ".opencode"))
+        );
+    }
+
+    #[test]
+    fn grok_build_writes_native_skills_and_preserves_unmanaged_toml() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".agents/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join(".grok")).unwrap();
+        fs::write(
+            dir.path().join(".grok/config.toml"),
+            "model = \"grok-code\"\n\n[mcp_servers.keep]\ncommand = \"keep\"\n",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/workspaces/ws/agents/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::GrokBuild],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(plan.changes.iter().any(|change| {
+            change.target.ends_with(".grok/skills/reviewer/SKILL.md")
+                && change.after == "# Reviewer"
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".grok/config.toml"))
+            .unwrap();
+        assert!(config.after.contains("model = \"grok-code\""));
+        assert!(config.after.contains("[mcp_servers.keep]"));
+        assert!(config.after.contains("/agents/grok-build"));
+    }
+
+    #[test]
+    fn grok_build_rejects_unmanaged_mcp_name_collision() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[mcp_servers.agentkib] # local gateway\nurl = \"https://user.example/mcp\"\n",
+        )
+        .unwrap();
+        let connections = [ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::GrokBuild],
+        }];
+
+        assert!(
+            merge_grok_config(&path, &connections)
+                .unwrap_err()
+                .to_string()
+                .contains("unmanaged MCP")
+        );
     }
 
     #[test]
@@ -1310,6 +1587,36 @@ mod tests {
     }
 
     #[test]
+    fn first_import_ignores_unregistered_opencode_override() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            managed_markdown("", "Use OpenCode tools."),
+        )
+        .unwrap();
+
+        let unregistered = default_manifest(dir.path()).unwrap();
+        assert!(
+            !unregistered
+                .instructions
+                .platform_overrides
+                .contains_key(&AgentKind::OpenCode)
+        );
+
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ instructions: ['.opencode/*.md'] }",
+        )
+        .unwrap();
+        let registered = default_manifest(dir.path()).unwrap();
+        assert_eq!(
+            registered.instructions.platform_overrides[&AgentKind::OpenCode],
+            "Use OpenCode tools."
+        );
+    }
+
+    #[test]
     fn first_import_discovers_nested_agents_rules() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("AGENTS.md"), "Root rules\n").unwrap();
@@ -1348,6 +1655,178 @@ mod tests {
                 .iter()
                 .any(|change| change.target.ends_with(".cursor/mcp.json"))
         );
+        assert!(
+            plan.changes
+                .iter()
+                .any(|change| change.target.ends_with(".opencode/opencode.json"))
+        );
+    }
+
+    #[test]
+    fn opencode_plan_preserves_unknown_config_and_uses_native_gateway_shape() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"theme":"dark","mcp":{"existing":{"type":"remote","url":"https://example.com"}}}"#,
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(plan.changes.iter().all(|change| {
+            matches!(change.scope, ChangeScope::Project)
+                && change.target.starts_with(&plan.project_root)
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["mcp"]["existing"]["url"], "https://example.com");
+        assert_eq!(value["mcp"]["agentkib"]["type"], "remote");
+        assert_eq!(value["mcp"]["agentkib"]["enabled"], true);
+        assert_eq!(
+            value["mcp"]["agentkib"]["url"],
+            "http://127.0.0.1/mcp/opencode"
+        );
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!([".opencode/agentkib-instructions.md"])
+        );
+        let instruction = plan
+            .changes
+            .iter()
+            .find(|change| {
+                change
+                    .target
+                    .ends_with(".opencode/agentkib-instructions.md")
+            })
+            .unwrap();
+        assert!(instruction.after.contains("Use OpenCode tools."));
+    }
+
+    #[test]
+    fn opencode_plan_updates_the_effective_jsonc_config() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ theme: 'dark', instructions: ['docs/team.md'] }",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.jsonc"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(["docs/team.md", ".opencode/agentkib-instructions.md"])
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.ends_with(".opencode/opencode.json"))
+        );
+    }
+
+    #[test]
+    fn opencode_plan_updates_an_existing_root_config() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("opencode.jsonc"),
+            "{ theme: 'dark', instructions: ['docs/team.md'] }",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("opencode.jsonc"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+
+        assert!(agentkib_platform::path::equivalent(
+            &config.target,
+            &dir.path().join("opencode.jsonc")
+        ));
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(["docs/team.md", ".opencode/agentkib-instructions.md"])
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.ends_with(".opencode/opencode.json"))
+        );
+    }
+
+    #[test]
+    fn opencode_plan_does_not_reregister_disabled_managed_instruction() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            format!(
+                "Unmanaged text.\n\n{}",
+                managed_markdown("", "Disabled override.")
+            ),
+        )
+        .unwrap();
+
+        let manifest = default_manifest(dir.path()).unwrap();
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(plan.changes.iter().all(|change| {
+            !change
+                .target
+                .ends_with(".opencode/agentkib-instructions.md")
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+        assert_eq!(value["instructions"], serde_json::json!([]));
     }
 
     #[test]
@@ -1381,6 +1860,79 @@ mod tests {
             persisted.adapters[&AgentKind::Codex]
                 .generated_hashes
                 .contains_key("AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn managed_hash_classification_ignores_parent_directory_names() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join(".opencode-demo/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("AGENTS.md"), "Shared rules").unwrap();
+        let manifest = default_manifest(&project).unwrap();
+
+        let plan = plan_workspace_changes(&project, &manifest, &HomeTargets::default()).unwrap();
+        let manifest_change = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/manifest.yaml"))
+            .unwrap();
+        let persisted: Manifest = serde_yaml::from_str(&manifest_change.after).unwrap();
+
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+        ] {
+            assert!(
+                persisted.adapters[&agent]
+                    .generated_hashes
+                    .contains_key("AGENTS.md")
+            );
+        }
+    }
+
+    #[test]
+    fn grok_substring_in_workspace_parent_does_not_misclassify_generated_hashes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("my.grok-project/repo");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = default_manifest(&root).unwrap();
+
+        let plan = plan_workspace_changes(&root, &manifest, &HomeTargets::default()).unwrap();
+        let manifest_change = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agentkib/manifest.yaml"))
+            .unwrap();
+        let persisted: Manifest = serde_yaml::from_str(&manifest_change.after).unwrap();
+
+        for agent in [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+        ] {
+            assert!(
+                persisted.adapters[&agent]
+                    .generated_hashes
+                    .contains_key("AGENTS.md")
+            );
+        }
+        assert!(
+            persisted.adapters[&AgentKind::Codex]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
+        );
+        assert!(
+            !persisted.adapters[&AgentKind::GrokBuild]
+                .generated_hashes
+                .contains_key(".codex/config.toml")
         );
     }
 
@@ -1654,6 +2206,47 @@ mod tests {
         )
         .unwrap();
         assert!(hermes.contains("/agents/hermes"));
+    }
+
+    #[test]
+    fn opencode_stdio_connection_uses_command_array_and_environment() {
+        let dir = tempdir().unwrap();
+        let connection = ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Stdio {
+                command: "agentkib-mcp".into(),
+                args: vec!["serve".into()],
+            },
+            env: BTreeMap::from([("MODE".into(), "local".into())]),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        };
+
+        let merged =
+            merge_opencode_config(&dir.path().join("opencode.json"), &[connection], false).unwrap();
+        let value: JsonValue = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(value["mcp"]["agentkib"]["type"], "local");
+        assert_eq!(
+            value["mcp"]["agentkib"]["command"],
+            serde_json::json!(["agentkib-mcp", "serve"])
+        );
+        assert_eq!(value["mcp"]["agentkib"]["environment"]["MODE"], "local");
+    }
+
+    #[test]
+    fn mcp_merge_keeps_json_strict_and_accepts_explicit_jsonc() {
+        let dir = tempdir().unwrap();
+        let strict = dir.path().join("mcp.json");
+        fs::write(&strict, r#"{"mcpServers": {},}"#).unwrap();
+        let strict_error = merge_mcp_json(&strict, &[], AgentKind::Cursor).unwrap_err();
+        assert!(strict_error.to_string().contains("Invalid JSON"));
+
+        let jsonc = dir.path().join("opencode.jsonc");
+        fs::write(&jsonc, "{ // supported comment\n mcp: {},\n}").unwrap();
+        let merged = merge_opencode_config(&jsonc, &[], false).unwrap();
+        let value: JsonValue = serde_json::from_str(&merged).unwrap();
+        assert!(value["mcp"].is_object());
     }
 
     #[test]

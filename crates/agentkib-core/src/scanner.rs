@@ -32,18 +32,7 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
                 {
                     if entry.file_type().is_file() {
                         let entry_path = entry.into_path();
-                        let is_asset =
-                            entry_path
-                                .file_name()
-                                .and_then(|v| v.to_str())
-                                .is_some_and(|name| {
-                                    name == "SKILL.md"
-                                        || name.ends_with(".toml")
-                                        || name.ends_with(".json")
-                                        || name.ends_with(".md")
-                                        || name.ends_with(".mdc")
-                                });
-                        if is_asset {
+                        if is_asset(agent, path, &entry_path) {
                             assets.push(record(agent, kind, entry_path, summary)?);
                         }
                     }
@@ -89,9 +78,27 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
     })
 }
 
+fn is_asset(agent: AgentKind, candidate: &str, path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| {
+            name == "SKILL.md"
+                || name.ends_with(".toml")
+                || name.ends_with(".json")
+                || name.ends_with(".jsonc")
+                || name.ends_with(".md")
+                || name.ends_with(".mdc")
+                || agent == AgentKind::OpenCode
+                    && matches!(candidate, ".opencode/plugins" | ".opencode/tools")
+                    && (name.ends_with(".js") || name.ends_with(".ts"))
+        })
+}
+
 fn validate_native_config(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let format = if name.ends_with(".json") {
+    let format = if name.ends_with(".jsonc") {
+        "JSONC"
+    } else if name.ends_with(".json") {
         "JSON"
     } else if name.ends_with(".toml") {
         "TOML"
@@ -126,7 +133,11 @@ fn validate_native_config(path: &Path) -> Option<String> {
             "{format} exceeds the 1 MiB validation limit"
         )));
     }
-    let error = if format == "JSON" {
+    let error = if format == "JSONC" {
+        json5::from_str::<serde_json::Value>(&content)
+            .err()
+            .map(|error| error.to_string())
+    } else if format == "JSON" {
         serde_json::from_str::<serde_json::Value>(&content)
             .err()
             .map(|error| error.to_string())
@@ -201,6 +212,65 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
             (".cursor/hooks.json", AssetKind::Hook, "Cursor Hooks"),
             (".cursor/mcp.json", AssetKind::Connection, "Cursor MCP"),
         ],
+        AgentKind::OpenCode => vec![
+            (
+                "AGENTS.md",
+                AssetKind::Instruction,
+                "OpenCode project instructions",
+            ),
+            (
+                "CLAUDE.md",
+                AssetKind::Instruction,
+                "OpenCode fallback project instructions",
+            ),
+            (
+                "opencode.json",
+                AssetKind::Configuration,
+                "OpenCode configuration",
+            ),
+            (
+                "opencode.jsonc",
+                AssetKind::Configuration,
+                "OpenCode configuration",
+            ),
+            (
+                ".opencode/opencode.json",
+                AssetKind::Connection,
+                "OpenCode project configuration and MCP",
+            ),
+            (
+                ".opencode/opencode.jsonc",
+                AssetKind::Connection,
+                "OpenCode project configuration and MCP",
+            ),
+            (".opencode/skills", AssetKind::Skill, "OpenCode Skills"),
+            (
+                ".claude/skills",
+                AssetKind::Skill,
+                "Claude-compatible Skills",
+            ),
+            (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
+            (
+                ".opencode/agents",
+                AssetKind::Agent,
+                "OpenCode custom Agents",
+            ),
+            (
+                ".opencode/commands",
+                AssetKind::Instruction,
+                "OpenCode commands",
+            ),
+            (
+                ".opencode/plugins",
+                AssetKind::Configuration,
+                "OpenCode plugins",
+            ),
+            (
+                ".opencode/tools",
+                AssetKind::Configuration,
+                "OpenCode custom tools",
+            ),
+        ],
         AgentKind::OpenClaw => vec![
             (
                 "AGENTS.md",
@@ -240,6 +310,41 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 ".cursorrules",
                 AssetKind::Instruction,
                 "Hermes Cursor-compatible rules",
+            ),
+        ],
+        AgentKind::GrokBuild => vec![
+            (
+                "AGENTS.md",
+                AssetKind::Instruction,
+                "Grok Build project instructions",
+            ),
+            (
+                ".grok/rules",
+                AssetKind::Instruction,
+                "Grok Build project rules",
+            ),
+            (".grok/skills", AssetKind::Skill, "Grok Build Skills"),
+            (".grok/agents", AssetKind::Agent, "Grok Build Agents"),
+            (
+                ".grok/plugins",
+                AssetKind::Configuration,
+                "Grok Build Plugins",
+            ),
+            (".grok/hooks", AssetKind::Hook, "Grok Build Hooks"),
+            (
+                ".grok/workflows",
+                AssetKind::Configuration,
+                "Grok Build Workflows",
+            ),
+            (
+                ".grok/config.toml",
+                AssetKind::Configuration,
+                "Grok Build project configuration",
+            ),
+            (
+                ".grok/lsp.json",
+                AssetKind::Configuration,
+                "Grok Build LSP configuration",
             ),
         ],
         AgentKind::DeepSeekHarness => vec![
@@ -288,10 +393,14 @@ fn summary_translation_key(summary: &str) -> Option<&'static str> {
         Some("assets.summary.codexInstructions")
     } else if summary.contains("Claude Code") && summary.contains("instruction") {
         Some("assets.summary.claudeInstructions")
+    } else if summary.contains("OpenCode") && summary.contains("instruction") {
+        Some("assets.summary.openCodeInstructions")
     } else if summary.contains("OpenClaw") && summary.contains("instruction") {
         Some("assets.summary.openClawInstructions")
     } else if summary.contains("Hermes") && summary.contains("instruction") {
         Some("assets.summary.hermesInstructions")
+    } else if summary.contains("Grok Build") && summary.contains("instruction") {
+        Some("assets.summary.grokBuildInstructions")
     } else if summary.contains("DeepSeek Harness") && summary.contains("instruction") {
         Some("assets.summary.deepseekHarnessInstructions")
     } else if summary.contains("Cursor") && summary.contains("instruction") {
@@ -308,6 +417,34 @@ fn summary_translation_key(summary: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_grok_build_native_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".grok/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".grok/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".grok/config.toml"),
+            "[mcp_servers.example]\nurl = \"https://example.com/mcp\"\n",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let grok = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::GrokBuild)
+            .unwrap();
+        assert!(grok.detected);
+        assert!(scan.assets.iter().any(|asset| {
+            asset.agent == AgentKind::GrokBuild
+                && asset.path.ends_with(".grok/skills/reviewer/SKILL.md")
+        }));
+    }
     use tempfile::tempdir;
 
     #[test]
@@ -330,6 +467,38 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn keeps_json_strict_while_accepting_jsonc_syntax() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".cursor")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".cursor/mcp.json"),
+            r#"{"mcpServers": {},}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ // supported comment\n mcp: {},\n}",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        let cursor = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::Cursor)
+            .unwrap();
+        let opencode = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert_eq!(cursor.warnings.len(), 1);
+        assert!(opencode.warnings.is_empty());
     }
 
     #[test]
@@ -397,6 +566,48 @@ mod tests {
             asset.agent == AgentKind::Cursor
                 && asset.kind == AssetKind::Skill
                 && asset.path.ends_with(".agents/skills/reviewer/SKILL.md")
+        }));
+    }
+
+    #[test]
+    fn scans_opencode_javascript_and_typescript_plugins_and_tools() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/plugins")).unwrap();
+        fs::create_dir_all(dir.path().join(".opencode/tools")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/plugins/javascript.js"),
+            "export default {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/plugins/typescript.ts"),
+            "export default {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/tools/custom.ts"),
+            "export default {}",
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let opencode = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::OpenCode)
+            .unwrap();
+
+        assert!(opencode.detected);
+        assert_eq!(opencode.asset_count, 3);
+        assert!(
+            scan.assets
+                .iter()
+                .any(|asset| asset.path.ends_with(".opencode/tools/custom.ts"))
+        );
+        assert!(scan.assets.iter().all(|asset| {
+            asset.agent != AgentKind::OpenCode
+                || asset.path.extension().and_then(|value| value.to_str()) == Some("js")
+                || asset.path.extension().and_then(|value| value.to_str()) == Some("ts")
         }));
     }
 }

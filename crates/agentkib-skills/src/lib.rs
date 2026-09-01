@@ -279,16 +279,8 @@ impl SkillHub {
     }
 
     pub async fn prepare_install(&self, source: SkillSource) -> Result<SkillOperationPreview> {
-        let existing = load_lock(&self.root)?
-            .skills
-            .into_iter()
-            .find_map(|(name, entry)| {
-                entry
-                    .source
-                    .as_ref()
-                    .is_some_and(|current| same_source(current, &source))
-                    .then_some(name)
-            });
+        let lock = load_lock(&self.root)?;
+        let existing = installed_name_for_source(&self.root, &lock, &source);
         match existing {
             Some(name) => {
                 self.prepare(source, SkillOperationKind::Update, Some(&name))
@@ -430,7 +422,7 @@ impl SkillHub {
                 "Rollback Skill must be a regular directory"
             );
         }
-        let id = format!("{}-{}", name, Uuid::new_v4());
+        let id = format!("skill-{}", Uuid::new_v4());
         let trash_root = self.trash_dir().join(&id);
         fs::create_dir_all(&trash_root)?;
         let package = trash_root.join("package");
@@ -1506,6 +1498,21 @@ fn same_source(left: &SkillSource, right: &SkillSource) -> bool {
         && left.path == right.path
 }
 
+fn installed_name_for_source(
+    root: &Path,
+    lock: &SkillLockFile,
+    source: &SkillSource,
+) -> Option<String> {
+    lock.skills.iter().find_map(|(name, entry)| {
+        (root.join("skills").join(name).is_dir()
+            && entry
+                .source
+                .as_ref()
+                .is_some_and(|current| same_source(current, source)))
+        .then(|| name.clone())
+    })
+}
+
 fn join_repo_path(left: &str, right: &str) -> String {
     if left.is_empty() {
         right.to_string()
@@ -1940,7 +1947,7 @@ mod tests {
     #[test]
     fn unmanaged_packages_are_listed_without_a_lockfile() {
         let directory = tempfile::tempdir().unwrap();
-        let skill = directory.path().join("skills/folder-name");
+        let skill = directory.path().join("skills/my_skill");
         fs::create_dir_all(&skill).unwrap();
         fs::write(
             skill.join("SKILL.md"),
@@ -1949,7 +1956,7 @@ mod tests {
         .unwrap();
         let installed = list_installed(directory.path()).unwrap();
         assert_eq!(installed.len(), 1);
-        assert_eq!(installed[0].name, "folder-name");
+        assert_eq!(installed[0].name, "my_skill");
         assert_eq!(installed[0].display_name, "reviewer");
         assert_eq!(installed[0].status, InstalledSkillStatus::Unmanaged);
 
@@ -1958,9 +1965,40 @@ mod tests {
             directory.path().join("cache"),
         )
         .unwrap();
-        let removed = hub.uninstall("folder-name", true).unwrap();
-        assert_eq!(removed.name, "folder-name");
+        let removed = hub.uninstall("my_skill", true).unwrap();
+        assert_eq!(removed.name, "my_skill");
         assert_eq!(removed.display_name, "reviewer");
+        validate_trash_id(&removed.id).unwrap();
+        assert_eq!(hub.restore(&removed.id, true).unwrap().name, "my_skill");
+    }
+
+    #[test]
+    fn stale_lock_entries_do_not_select_the_update_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = source("commit", "tree");
+        let lock = SkillLockFile {
+            schema_version: 1,
+            skills: BTreeMap::from([(
+                "reviewer".into(),
+                SkillLockEntry {
+                    source: Some(source.clone()),
+                    content_sha256: "hash".into(),
+                    installed_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+            )]),
+            previous: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            installed_name_for_source(directory.path(), &lock, &source),
+            None
+        );
+        write_skill(&directory.path().join("skills/reviewer"), "body");
+        assert_eq!(
+            installed_name_for_source(directory.path(), &lock, &source),
+            Some("reviewer".into())
+        );
     }
 
     #[test]

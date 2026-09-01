@@ -1300,8 +1300,13 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
 
 fn read_json_object(path: &Path) -> Result<JsonMap<String, JsonValue>> {
     let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let value: JsonValue =
-        json5::from_str(&content).with_context(|| format!("Invalid JSON: {}", path.display()))?;
+    let is_jsonc = path.extension().and_then(|value| value.to_str()) == Some("jsonc");
+    let value: JsonValue = if is_jsonc {
+        json5::from_str(&content).with_context(|| format!("Invalid JSONC: {}", path.display()))?
+    } else {
+        serde_json::from_str(&content)
+            .with_context(|| format!("Invalid JSON: {}", path.display()))?
+    };
     value
         .as_object()
         .cloned()
@@ -1842,6 +1847,21 @@ mod tests {
             serde_json::json!(["agentkib-mcp", "serve"])
         );
         assert_eq!(value["mcp"]["agentkib"]["environment"]["MODE"], "local");
+    }
+
+    #[test]
+    fn mcp_merge_keeps_json_strict_and_accepts_explicit_jsonc() {
+        let dir = tempdir().unwrap();
+        let strict = dir.path().join("mcp.json");
+        fs::write(&strict, r#"{"mcpServers": {},}"#).unwrap();
+        let strict_error = merge_mcp_json(&strict, &[], AgentKind::Cursor).unwrap_err();
+        assert!(strict_error.to_string().contains("Invalid JSON"));
+
+        let jsonc = dir.path().join("opencode.jsonc");
+        fs::write(&jsonc, "{ // supported comment\n mcp: {},\n}").unwrap();
+        let merged = merge_opencode_config(&jsonc, &[], false).unwrap();
+        let value: JsonValue = serde_json::from_str(&merged).unwrap();
+        assert!(value["mcp"].is_object());
     }
 
     #[test]

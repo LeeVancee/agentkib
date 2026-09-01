@@ -14,6 +14,7 @@ const MAX_CONTEXT_BYTES_PER_FILE: u64 = MAX_CONTEXT_CHARS_PER_FILE as u64 * 4;
 const MAX_CONTEXT_CHARS_TOTAL: usize = 512 * 1024;
 const DSH_MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const DSH_MAX_SOURCE_BYTES: u64 = 1024 * 1024;
+const OPENCODE_MANAGED_INSTRUCTION: &str = ".opencode/agentkib-instructions.md";
 
 pub fn resolve_context(
     project: &Path,
@@ -447,9 +448,52 @@ fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn opencode_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
-    dirs.iter()
+    let mut result = dirs
+        .iter()
         .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"]))
-        .collect()
+        .collect::<Vec<_>>();
+    let Some(root) = dirs.first() else {
+        return result;
+    };
+    let managed = root.join(OPENCODE_MANAGED_INSTRUCTION);
+    let registered = [
+        root.join("opencode.json"),
+        root.join("opencode.jsonc"),
+        root.join(".opencode/opencode.json"),
+        root.join(".opencode/opencode.jsonc"),
+    ]
+    .iter()
+    .any(|config| opencode_registers_managed_instruction(config));
+    if registered && managed.is_file() {
+        result.push(managed);
+    }
+    result
+}
+
+fn opencode_registers_managed_instruction(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > DSH_MAX_SOURCE_BYTES {
+        return false;
+    }
+    let Ok(content) = read_utf8_file_with_limit(path, DSH_MAX_SOURCE_BYTES) else {
+        return false;
+    };
+    let value = if path.extension().and_then(|value| value.to_str()) == Some("jsonc") {
+        json5::from_str::<serde_json::Value>(&content).ok()
+    } else {
+        serde_json::from_str::<serde_json::Value>(&content).ok()
+    };
+    value
+        .and_then(|value| value.get("instructions")?.as_array().cloned())
+        .is_some_and(|instructions| {
+            instructions.iter().any(|instruction| {
+                instruction.as_str().is_some_and(|value| {
+                    value.trim_start_matches("./") == OPENCODE_MANAGED_INSTRUCTION
+                })
+            })
+        })
 }
 
 fn cursor_rule_is_always(path: &Path) -> bool {
@@ -798,6 +842,37 @@ mod tests {
         assert_eq!(preview.sections.len(), 2);
         assert_eq!(preview.sections[0].content.trim(), "root agents");
         assert_eq!(preview.sections[1].content.trim(), "nested fallback");
+    }
+
+    #[test]
+    fn opencode_includes_only_registered_managed_instructions() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "shared").unwrap();
+        fs::write(
+            dir.path().join(OPENCODE_MANAGED_INSTRUCTION),
+            "OpenCode override",
+        )
+        .unwrap();
+
+        let unregistered =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+        assert_eq!(unregistered.sections.len(), 1);
+
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ // OpenCode accepts JSONC\n instructions: ['./.opencode/agentkib-instructions.md'],\n}",
+        )
+        .unwrap();
+        let registered =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+
+        assert_eq!(registered.sections.len(), 2);
+        assert!(equivalent(
+            &registered.sections[1].source,
+            &dir.path().join(OPENCODE_MANAGED_INSTRUCTION)
+        ));
+        assert_eq!(registered.sections[1].content.trim(), "OpenCode override");
     }
 
     #[test]

@@ -2392,6 +2392,57 @@ mod tests {
     }
 
     #[test]
+    fn opencode_registered_override_satisfies_instruction_diagnostics() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "OpenCode override".into());
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "Shared rule").unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            "<!-- agentkib:managed:start -->\nOpenCode override\n<!-- agentkib:managed:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":[".opencode/agentkib-instructions.md"]}"#,
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let row = report
+            .matrix
+            .iter()
+            .find(|row| row.agent == AgentKind::OpenCode)
+            .unwrap();
+        assert_eq!(row.instructions.expected, 2);
+        assert_eq!(row.instructions.actual, 2);
+        assert!(report.issues.iter().all(|issue| {
+            issue.agent != Some(AgentKind::OpenCode)
+                || !matches!(
+                    issue.code.as_str(),
+                    "instruction.missing" | "instruction.expected-content-missing"
+                )
+        }));
+    }
+
+    #[test]
     fn reports_mcp_configuration_failures_without_target_repairs() {
         let dir = tempdir().unwrap();
         let mut value = manifest(dir.path());

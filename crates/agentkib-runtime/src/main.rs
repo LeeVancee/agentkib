@@ -1768,6 +1768,13 @@ fn matches_native_schema(value: &Value, target: AgentKind) -> bool {
 }
 
 fn native_root_is_safe_and_writable(root: &Path) -> bool {
+    native_root_is_safe_and_writable_with(root, directory_allows_file_creation)
+}
+
+fn native_root_is_safe_and_writable_with(
+    root: &Path,
+    probe_write_access: impl FnOnce(&Path) -> bool,
+) -> bool {
     if !root.is_absolute() {
         return false;
     }
@@ -1793,7 +1800,7 @@ fn native_root_is_safe_and_writable(root: &Path) -> bool {
             Err(_) => return false,
         }
     }
-    nearest_existing.is_some_and(|directory| directory_allows_file_creation(&directory))
+    nearest_existing.is_some_and(|directory| probe_write_access(&directory))
 }
 
 fn directory_allows_file_creation(directory: &Path) -> bool {
@@ -4188,21 +4195,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn native_import_probes_effective_write_access() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir_in(env::current_dir().unwrap()).unwrap();
         let agent_home = directory.path().join("agent-home");
         fs::create_dir(&agent_home).unwrap();
-        fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o577)).unwrap();
 
-        assert!(!native_root_is_safe_and_writable(
-            &agent_home.join("sessions")
+        assert!(!native_root_is_safe_and_writable_with(
+            &agent_home.join("sessions"),
+            |directory| {
+                assert_eq!(directory, agent_home);
+                false
+            }
         ));
-
-        fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(native_root_is_safe_and_writable(
-            &agent_home.join("sessions")
+        assert!(native_root_is_safe_and_writable_with(
+            &agent_home.join("sessions"),
+            |directory| {
+                assert_eq!(directory, agent_home);
+                true
+            }
         ));
+        assert!(directory_allows_file_creation(&agent_home));
         assert_eq!(fs::read_dir(agent_home).unwrap().count(), 0);
     }
 

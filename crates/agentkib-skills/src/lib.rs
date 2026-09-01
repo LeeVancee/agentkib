@@ -860,24 +860,29 @@ impl SkillHub {
             );
         }
         let mut lock = load_lock(&self.root)?;
-        let stale_backup = prepared.temp.path().join("stale-backup");
+        // Keep the displaced rollback package outside the preview TempDir. If recovery is
+        // blocked (for example by a transient Windows file lock), dropping the preview must
+        // not delete the last copy of the previous package.
+        let stale_backup = self
+            .root
+            .join(".staging")
+            .join(format!("stale-backup-{}", Uuid::new_v4()));
         if backup.is_dir() {
             move_path(&backup, &stale_backup)?;
         }
         if let Err(error) = move_path(&prepared.package, &target) {
-            if stale_backup.is_dir() {
-                let _ = move_path(&stale_backup, &backup);
-            }
+            let _ = recover_staged_backup(&stale_backup, &backup);
             return Err(error.into());
         }
         lock.skills.insert(name.clone(), prepared.lock);
         lock.previous.remove(name);
         if let Err(error) = save_lock(&self.root, &lock) {
             let _ = move_path(&target, &prepared.package);
-            if stale_backup.is_dir() {
-                let _ = move_path(&stale_backup, &backup);
-            }
+            let _ = recover_staged_backup(&stale_backup, &backup);
             return Err(error);
+        }
+        if stale_backup.is_dir() {
+            let _ = fs::remove_dir_all(stale_backup);
         }
         drop(prepared.temp);
         Ok(())
@@ -1159,6 +1164,17 @@ fn recover_uninstall_moves(
     backup: &Path,
 ) -> bool {
     recover_uninstall_moves_with(package, target, trashed_backup, backup, move_path)
+}
+
+fn recover_staged_backup(staged_backup: &Path, backup: &Path) -> bool {
+    recover_staged_backup_with(staged_backup, backup, move_path)
+}
+
+fn recover_staged_backup_with<F>(staged_backup: &Path, backup: &Path, mut move_dir: F) -> bool
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    !staged_backup.is_dir() || move_dir(staged_backup, backup).is_ok()
 }
 
 fn recover_uninstall_moves_with<F>(
@@ -2843,6 +2859,32 @@ mod tests {
         assert!(package.is_dir());
         assert!(trashed_backup.is_dir());
         assert!(!target.exists());
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn failed_install_backup_recovery_keeps_the_package_outside_preview_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join(".staging")).unwrap();
+        let preview = tempfile::Builder::new()
+            .prefix("skill-")
+            .tempdir_in(root.join(".staging"))
+            .unwrap();
+        let staged_backup = root.join(".staging/stale-backup-test");
+        let backup = root.join("backups/skills/reviewer");
+        write_skill(&staged_backup, "previous package");
+
+        let recovered = recover_staged_backup_with(&staged_backup, &backup, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "simulated transient file lock",
+            ))
+        });
+        drop(preview);
+
+        assert!(!recovered);
+        assert!(staged_backup.is_dir());
         assert!(!backup.exists());
     }
 

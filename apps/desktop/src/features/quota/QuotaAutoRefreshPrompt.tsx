@@ -46,9 +46,6 @@ export function QuotaAutoRefreshPrompt({
           <h2 className="m-0 text-sm font-semibold text-foreground">
             {tr("quota.autoRefreshPromptTitle")}
           </h2>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {tr("quota.autoRefreshPromptDescription")}
-          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               type="button"

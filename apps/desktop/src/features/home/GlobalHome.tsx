@@ -178,9 +178,6 @@ export function GlobalHome({
               <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
                 <div>
                   <h2 className="text-base font-semibold">{tr("home.continueWork")}</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {tr("home.continueWorkDetail")}
-                  </p>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -284,9 +281,6 @@ export function GlobalHome({
                     </span>
                     <span className="min-w-0 flex-1">
                       <strong className="block text-sm">{tr("home.allClear")}</strong>
-                      <small className="mt-1 block text-xs text-muted-foreground">
-                        {tr("home.allClearDescription")}
-                      </small>
                     </span>
                     <Button
                       variant="outline"

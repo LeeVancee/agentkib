@@ -264,7 +264,7 @@ function WorkspacesPage({
           <div className="flex flex-wrap items-center gap-2">
             <SelectControl
               aria-label={tr("workspace.allAgents")}
-              className="h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1"
+              className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
               value={agent}
               onChange={(event) => setAgent(event.target.value as typeof agent)}
             >
@@ -277,7 +277,7 @@ function WorkspacesPage({
             </SelectControl>
             <SelectControl
               aria-label={tr("workspace.allStatuses")}
-              className="h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1"
+              className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
               value={status}
               onChange={(event) => setStatus(event.target.value as typeof status)}
             >

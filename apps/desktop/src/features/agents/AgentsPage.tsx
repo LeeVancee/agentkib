@@ -144,7 +144,7 @@ export function AgentsPage({
             />
           </label>
           <SelectControl
-            className="h-9 rounded-lg border border-border bg-background px-3"
+            className="h-9"
             value={agentSort}
             onChange={(event) => setAgentSort(event.target.value as typeof agentSort)}
             aria-label={tr("agents.status")}

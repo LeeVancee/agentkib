@@ -186,7 +186,6 @@ export function SessionHandoffDialog({
               Session Continuation
             </span>
             <DialogTitle className="mt-0 text-xl">{tr("handoff.title")}</DialogTitle>
-            <p className="m-0 mt-1 text-xs text-muted-foreground">{tr("handoff.description")}</p>
           </div>
           <Button variant="ghost" size="icon" onClick={close} aria-label={tr("common.close")}>
             <X size={17} />

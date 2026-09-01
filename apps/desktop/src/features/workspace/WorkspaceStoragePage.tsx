@@ -242,7 +242,7 @@ export function WorkspaceStoragePage({
           </label>
           <SelectControl
             aria-label={tr("workspace.allAgents")}
-            className="h-9 min-w-[150px] rounded-xl border-2 border-foreground/25 bg-card px-3.5 font-medium text-foreground shadow-xs hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20"
+            className="h-9 min-w-[150px]"
             value={agent}
             onChange={(event) => {
               setAgent(event.target.value as typeof agent);

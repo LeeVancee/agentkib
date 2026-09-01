@@ -95,9 +95,6 @@ function ContextPage({
             </span>
             <div className="min-w-0">
               <h2 className="text-base font-semibold">{tr("context.environment")}</h2>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {tr("context.description")}
-              </p>
             </div>
           </div>
         </div>
@@ -159,7 +156,6 @@ function ContextPage({
             </span>
             <div className="min-w-0">
               <h2 className="text-base font-semibold">{tr("context.effective")}</h2>
-              <p className="mt-1 text-xs text-muted-foreground">{tr("context.description")}</p>
             </div>
           </div>
           {preview && (

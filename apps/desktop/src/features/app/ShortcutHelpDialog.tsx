@@ -1,10 +1,4 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   currentAppPlatform,
   formatShortcut,
@@ -26,7 +20,6 @@ export function ShortcutHelpDialog({
       <DialogContent className="w-[min(560px,calc(100vw-2rem))]">
         <DialogHeader>
           <DialogTitle>{tr("shortcuts.title")}</DialogTitle>
-          <DialogDescription>{tr("shortcuts.description")}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-5">
           <ShortcutGroupSection group="navigation" platform={platform} />

@@ -22,8 +22,7 @@ const emptyGateway = (): RemoteGatewayInput => ({
   url: "",
   auth_kind: "token",
 });
-const gatewayControlClass =
-  "h-10 rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20";
+const gatewayControlClass = "h-10";
 
 function authKinds(kind: RemoteGatewayKind): RemoteGatewayAuthKind[] {
   return kind === "open-claw" ? ["token", "password", "none"] : ["session-token", "basic", "none"];

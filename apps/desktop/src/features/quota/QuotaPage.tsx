@@ -604,7 +604,6 @@ function QuotaDisplaySettings({
       <header className="flex items-start justify-between border-b border-border px-3.5 pb-3 pt-3.5">
         <div className="grid gap-1">
           <strong className="text-sm">{tr("quota.popoverSettings")}</strong>
-          <span className="text-xs text-muted-foreground">{tr("quota.popoverSettingsHint")}</span>
         </div>
         <Button
           variant="outline"

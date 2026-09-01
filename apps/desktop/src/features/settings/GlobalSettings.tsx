@@ -79,7 +79,7 @@ const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
 const hasFileAccessSettings = ["macos", "windows"].includes(appPlatform);
 const settingsControlClass =
-  "h-10 min-w-[180px] justify-self-end rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[560px]:min-w-0 max-[560px]:flex-1";
+  "h-10 min-w-[180px] justify-self-end max-[560px]:min-w-0 max-[560px]:flex-1";
 const appIconAssets: Record<AppIconPreference, string> = {
   white: appIconWhite,
   black: appIconBlack,
@@ -145,7 +145,6 @@ export function GlobalSettings({
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.closeBehavior")}</strong>
-              <small>{tr("settings.closeBehaviorGlobalDescription")}</small>
             </SettingsCopy>
             <CloseBehaviorSelect
               value={runtime?.close_behavior}
@@ -160,7 +159,6 @@ export function GlobalSettings({
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
-              <small>{tr("settings.onboardingDescription")}</small>
             </SettingsCopy>
             <Button variant="outline" onClick={() => void onOnboardingRestarted()}>
               {tr("settings.onboardingRestart")}
@@ -181,10 +179,7 @@ export function GlobalSettings({
     return (
       <div className="grid gap-5">
         <div className="grid gap-5 xl:grid-cols-2">
-          <SettingGroup
-            title={tr("settings.discovery")}
-            description={tr("settings.discoveryDescription")}
-          >
+          <SettingGroup title={tr("settings.discovery")}>
             <SettingsRow>
               <SettingsCopy>
                 <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
@@ -206,10 +201,7 @@ export function GlobalSettings({
               </SettingDetail>
             ))}
           </SettingGroup>
-          <SettingGroup
-            title={tr("settings.scanRoots")}
-            description={tr("settings.scanRootsDescription")}
-          >
+          <SettingGroup title={tr("settings.scanRoots")}>
             <div className="flex justify-end border-b border-border/60 px-5 py-3">
               <Button
                 size="sm"
@@ -248,10 +240,7 @@ export function GlobalSettings({
             </SettingsListEmptyState>
           </SettingGroup>
         </div>
-        <SettingGroup
-          title={tr("settings.excluded")}
-          description={tr("settings.excludedDescription")}
-        >
+        <SettingGroup title={tr("settings.excluded")}>
           <SettingsListEmptyState items={excluded.length} emptyText={tr("settings.noExcluded")}>
             <div className="divide-y divide-border/60">
               {excluded.map((item) => (
@@ -279,7 +268,7 @@ export function GlobalSettings({
   if (section === "integrations")
     return (
       <div className="grid gap-5">
-        <SettingGroup title="AgentKib MCP Hub" description={tr("settings.mcpDescription")}>
+        <SettingGroup title="AgentKib MCP Hub">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -299,10 +288,7 @@ export function GlobalSettings({
   if (section === "privacy")
     return (
       <div className="grid gap-5">
-        <SettingGroup
-          title={tr("settings.localData")}
-          description={tr("settings.localDataGlobalDescription")}
-        >
+        <SettingGroup title={tr("settings.localData")}>
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("settings.dataLocation")}</strong>
@@ -544,7 +530,7 @@ function SettingsRow({ children, border = true }: { children: ReactNode; border?
   return (
     <div
       className={cn(
-        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,280px)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
+        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
         border && "border-b border-border/60",
       )}
     >
@@ -582,24 +568,11 @@ function SettingDetail({
     </div>
   );
 }
-function SettingGroup({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
+function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border pb-2">
       <header className="border-b border-border/70 py-4">
         <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-        {description && (
-          <p className="mt-1 max-w-[62ch] text-xs leading-relaxed text-muted-foreground">
-            {description}
-          </p>
-        )}
       </header>
       <div className="[&>*:last-child]:border-b-0">{children}</div>
     </section>
@@ -673,14 +646,10 @@ function KeyboardShortcutsSetting() {
   const platform = currentAppPlatform();
   const definition = getShortcutDefinition("open-help");
   return (
-    <SettingGroup
-      title={tr("settings.shortcutsTitle")}
-      description={tr("settings.shortcutsDescription")}
-    >
+    <SettingGroup title={tr("settings.shortcutsTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.shortcuts")}</strong>
-          <small>{tr("settings.shortcutsHint")}</small>
         </SettingsCopy>
         <Button
           variant="outline"
@@ -719,14 +688,10 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingGroup
-      title={tr("settings.quotaTitle")}
-      description={tr("settings.quotaAutoRefreshDescription")}
-    >
+    <SettingGroup title={tr("settings.quotaTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>
-          <small>{tr("settings.quotaAutoRefreshHint")}</small>
         </SettingsCopy>
         <Label className="inline-flex items-center justify-self-end">
           <Switch
@@ -851,7 +816,6 @@ function LanguageSetting({
     <SettingsRow>
       <SettingsCopy>
         <strong>{tr("settings.language")}</strong>
-        <small>{tr("settings.languageDescription")}</small>
       </SettingsCopy>
       <SelectControl
         aria-label={tr("settings.language")}
@@ -891,7 +855,7 @@ function ThemeSetting({
       <ToggleGroup
         spacing={0}
         variant="outline"
-        className="segmented-control shrink-0 justify-self-end"
+        className="segmented-control w-max max-w-none shrink-0 justify-self-end max-[640px]:w-full max-[640px]:max-w-full"
         value={[selected]}
         onValueChange={(values) => {
           const theme = values[0];
@@ -931,7 +895,7 @@ export function AccentThemeSetting({
     <SettingsRow>
       <SettingsCopy>
         <strong>{tr("settings.accentTheme")}</strong>
-        <small>
+        <small className="sr-only">
           {tr(
             effectiveTheme === "dark"
               ? "settings.accentTheme.darkHint"
@@ -1075,10 +1039,7 @@ function GitIdentitySettings() {
     }
   };
   return (
-    <SettingGroup
-      title={tr("settings.gitIdentity")}
-      description={tr("settings.gitIdentityDescription")}
-    >
+    <SettingGroup title={tr("settings.gitIdentity")}>
       {error && (
         <SettingDetail variant="error" role="alert">
           {error}

@@ -147,8 +147,7 @@ export function InsightsPage({
   const showCommitFilters = section === "overview" || section === "commits";
   const showRange = !["milestones", "sources"].includes(section);
   const showMetricTabs = section === "overview";
-  const filterClass =
-    "h-10 min-w-[132px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1";
+  const filterClass = "h-10 min-w-[132px] max-[520px]:min-w-0 max-[520px]:flex-1";
 
   if (!view) return <InsightsSkeleton section={section} />;
 

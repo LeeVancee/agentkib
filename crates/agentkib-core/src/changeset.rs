@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, atomic_write};
@@ -6,11 +7,14 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
+use crate::path_policy::ensure_project_target_has_safe_ancestors;
 use crate::{ApplyReport, ChangeScope, ChangeSet, ensure_allowed_target};
 
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub approved_home_files: Vec<PathBuf>,
+    pub protected_home_roots: Vec<PathBuf>,
+    pub approved_application_files: Vec<PathBuf>,
     pub home_approval: bool,
 }
 
@@ -31,9 +35,27 @@ pub fn apply_changeset(
             &changeset.project_root,
             &change.target,
             &options.approved_home_files,
+            &options.approved_application_files,
         )?;
+        if matches!(change.scope, ChangeScope::Project) {
+            ensure_project_target_has_safe_ancestors(&changeset.project_root, &change.target)?;
+        }
         if matches!(change.scope, ChangeScope::AgentHome) && !options.home_approval {
             bail!("Agent Home write is not authorized");
+        }
+        if matches!(change.scope, ChangeScope::ApplicationData)
+            && !options
+                .approved_application_files
+                .iter()
+                .any(|path| path == &change.target)
+        {
+            bail!("Application data write is not authorized");
+        }
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
         }
         let current = fs::read(&change.target).unwrap_or_default();
         let current_hash = if change.target.exists() {
@@ -54,11 +76,29 @@ pub fn apply_changeset(
             .target
             .parent()
             .context("Target has no parent directory")?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
         fs::create_dir_all(parent)?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
         if change.target.exists() {
             fs::copy(&change.target, backup_dir.join(format!("{index}.bak")))?;
         }
         let mut temp = NamedTempFile::new_in(parent)?;
+        if matches!(change.scope, ChangeScope::ApplicationData) {
+            ensure_application_data_parent_chain(&change.target)?;
+        }
+        if matches!(change.scope, ChangeScope::AgentHome) {
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
         use std::io::Write;
         temp.write_all(change.after.as_bytes())?;
         if let Ok(metadata) = fs::metadata(&change.target) {
@@ -70,6 +110,22 @@ pub fn apply_changeset(
 
     let mut applied = Vec::new();
     for (index, (change, temp)) in changeset.changes.iter().zip(prepared).enumerate() {
+        if matches!(change.scope, ChangeScope::ApplicationData)
+            && let Err(error) = ensure_application_data_parent_chain(&change.target)
+        {
+            if index > 0 {
+                rollback(changeset, &backup_dir, index - 1);
+            }
+            return Err(error);
+        }
+        if matches!(change.scope, ChangeScope::AgentHome)
+            && let Err(error) = ensure_protected_home_parent_chain(&change.target, options)
+        {
+            if index > 0 {
+                rollback(changeset, &backup_dir, index - 1);
+            }
+            return Err(error);
+        }
         let expected = change
             .original_hash
             .as_deref()
@@ -96,6 +152,81 @@ pub fn apply_changeset(
     })
 }
 
+fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> Result<()> {
+    let Some(root) = options
+        .protected_home_roots
+        .iter()
+        .find(|root| target.starts_with(root))
+    else {
+        return Ok(());
+    };
+    let relative = target
+        .strip_prefix(root)
+        .context("Protected Agent Home target is outside its root")?;
+    if relative
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("Protected Agent Home target contains an unsafe path component");
+    }
+    let parent = target.parent().context("Target has no parent directory")?;
+    let mut reached_root = false;
+    // Continue above the session root so a replaced Agent Home (or one of its parents)
+    // cannot redirect a write after the target was planned.
+    for directory in parent.ancestors() {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if agentkib_platform::path::is_reparse_or_symlink(directory)? || !metadata.is_dir()
+                {
+                    bail!("Protected Agent Home parent is not a regular directory")
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Protected Agent Home parent is unavailable: {}",
+                        directory.display()
+                    )
+                });
+            }
+        }
+        if directory == root {
+            reached_root = true;
+        }
+    }
+    if !reached_root {
+        bail!("Protected Agent Home target is outside its root")
+    }
+    Ok(())
+}
+
+fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
+    let parent = target.parent().context("Target has no parent directory")?;
+    // Validate through the data root and all existing ancestors so replacing the root itself
+    // cannot redirect a private archive write after planning.
+    for directory in parent.ancestors() {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => {
+                if agentkib_platform::path::is_reparse_or_symlink(directory)? || !metadata.is_dir()
+                {
+                    bail!("Application data parent is not a regular directory")
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Application data parent is unavailable: {}",
+                        directory.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn rollback(changeset: &ChangeSet, backup_dir: &Path, last_index: usize) {
     for index in (0..=last_index).rev() {
         let target = &changeset.changes[index].target;
@@ -117,6 +248,17 @@ fn validate_written(validator: &str, content: &str) -> Result<()> {
         }
         "json" => {
             let _: serde_json::Value = serde_json::from_str(content)?;
+        }
+        "jsonl" => {
+            for (index, line) in content.lines().enumerate() {
+                if !line.trim().is_empty() {
+                    let _: serde_json::Value = serde_json::from_str(line)
+                        .with_context(|| format!("Invalid JSONL record {}", index + 1))?;
+                }
+            }
+        }
+        "jsonc" => {
+            let _: serde_json::Value = json5::from_str(content)?;
         }
         "toml" => {
             let _: toml::Value = toml::from_str(content)?;
@@ -161,6 +303,65 @@ mod tests {
     }
 
     #[test]
+    fn accepts_jsonc_validator_for_opencode_changes() {
+        validate_written("jsonc", "{ // comment\n instructions: [],\n}").unwrap();
+    }
+
+    #[test]
+    fn applies_an_opencode_jsonc_change() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join(".opencode/opencode.jsonc");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: dir.path().canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::Project,
+                original_hash: None,
+                before: String::new(),
+                after: "{ // comment\n instructions: [],\n}".into(),
+                risk: RiskLevel::Low,
+                validator: "jsonc".into(),
+            }],
+        };
+
+        apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).unwrap();
+        assert!(target.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_project_change_through_a_symlinked_directory() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real-opencode");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join(".opencode")).unwrap();
+        let target = dir.path().join(".opencode/opencode.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: dir.path().canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target,
+                scope: ChangeScope::Project,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Low,
+                validator: "json".into(),
+            }],
+        };
+
+        assert!(
+            apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).is_err()
+        );
+        assert!(!real.join("opencode.json").exists());
+    }
+
+    #[test]
     fn restores_all_files_when_post_write_validation_fails() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("AGENTS.md");
@@ -198,5 +399,177 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "original");
         assert_eq!(fs::read_to_string(second).unwrap(), "{}");
+    }
+
+    #[test]
+    fn validates_each_jsonl_record() {
+        assert!(validate_written("jsonl", "{\"type\":\"one\"}\n{\"type\":\"two\"}\n").is_ok());
+        assert!(validate_written("jsonl", "{\"type\":\"one\"}\nnot-json\n").is_err());
+    }
+
+    #[test]
+    fn application_data_requires_exact_file_authorization() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let target = dir.path().join("private/archive/document.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::ApplicationData,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Medium,
+                validator: "json".into(),
+            }],
+        };
+        assert!(
+            apply_changeset(&set, &dir.path().join("backup"), &ApplyOptions::default()).is_err()
+        );
+
+        apply_changeset(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions {
+                approved_application_files: vec![target.clone()],
+                ..ApplyOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_data_rejects_a_symlinked_private_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let project = dir.path().join("project");
+        let outside = dir.path().join("outside");
+        let continuation_root = dir.path().join("continuations");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &continuation_root).unwrap();
+        let target = continuation_root
+            .join("workspace")
+            .join("archive")
+            .join("document.json");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::ApplicationData,
+                original_hash: None,
+                before: String::new(),
+                after: "{}".into(),
+                risk: RiskLevel::Medium,
+                validator: "json".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_application_files: vec![target],
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("workspace/archive/document.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_agent_home_rejects_a_symlinked_session_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let project = dir.path().join("project");
+        let agent_home = dir.path().join("agent-home");
+        let session_root = agent_home.join("sessions");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&agent_home).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &session_root).unwrap();
+        let target = session_root.join("2026/09/session.jsonl");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: true,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::AgentHome,
+                original_hash: None,
+                before: String::new(),
+                after: "{}\n".into(),
+                risk: RiskLevel::High,
+                validator: "jsonl".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_home_files: vec![target],
+            protected_home_roots: vec![session_root],
+            home_approval: true,
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("2026/09/session.jsonl").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_agent_home_rejects_a_symlinked_agent_home() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let project = dir.path().join("project");
+        let agent_home = dir.path().join("agent-home");
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(outside.join("sessions")).unwrap();
+        symlink(&outside, &agent_home).unwrap();
+        let session_root = agent_home.join("sessions");
+        let target = session_root.join("2026/09/session.jsonl");
+        let set = ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: true,
+            changes: vec![FileChange {
+                target: target.clone(),
+                scope: ChangeScope::AgentHome,
+                original_hash: None,
+                before: String::new(),
+                after: "{}\n".into(),
+                risk: RiskLevel::High,
+                validator: "jsonl".into(),
+            }],
+        };
+        let options = ApplyOptions {
+            approved_home_files: vec![target],
+            protected_home_roots: vec![session_root],
+            home_approval: true,
+            ..ApplyOptions::default()
+        };
+
+        assert!(apply_changeset(&set, &dir.path().join("backup"), &options).is_err());
+        assert!(!outside.join("sessions/2026/09/session.jsonl").exists());
     }
 }

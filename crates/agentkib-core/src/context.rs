@@ -1,19 +1,25 @@
 use std::collections::{BTreeSet, HashSet};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use agentkib_platform::path::{canonicalize, equivalent, starts_with as path_starts_with};
 use anyhow::{Context, Result, bail};
+use walkdir::WalkDir;
 
 use crate::{AgentKind, ContextPreview, ContextSection, Manifest, canonical_project};
 
 const MAX_CONTEXT_CHARS_PER_FILE: usize = 128 * 1024;
 const MAX_CONTEXT_BYTES_PER_FILE: u64 = MAX_CONTEXT_CHARS_PER_FILE as u64 * 4;
 const MAX_CONTEXT_CHARS_TOTAL: usize = 512 * 1024;
+const GROK_MAX_CONTEXT_CHARS_PER_FILE: usize = 10_000;
+const GROK_MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const DSH_MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const DSH_MAX_SOURCE_BYTES: u64 = 1024 * 1024;
+const OPENCODE_MANAGED_INSTRUCTION: &str = ".opencode/agentkib-instructions.md";
+const MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES: usize = 8_192;
 
 pub fn resolve_context(
     project: &Path,
@@ -45,12 +51,16 @@ pub fn resolve_context(
         AgentKind::Codex => codex_sources(&dirs),
         AgentKind::ClaudeCode => claude_sources(&dirs),
         AgentKind::Cursor => cursor_sources(&dirs),
+        AgentKind::OpenCode => opencode_sources(&dirs, &mut warnings),
         AgentKind::OpenClaw => openclaw_sources(&dirs),
         AgentKind::Hermes => hermes_sources(&dirs),
+        AgentKind::GrokBuild => Vec::new(),
         AgentKind::DeepSeekHarness => Vec::new(),
     };
     let mut sections = if agent == AgentKind::DeepSeekHarness {
         deepseek_harness_sections(&context_root, &dirs, &mut warnings)
+    } else if agent == AgentKind::GrokBuild {
+        grok_build_sections(&root, &dirs, &mut warnings)
     } else {
         let mut sections = Vec::new();
         let mut remaining_context_chars = MAX_CONTEXT_CHARS_TOTAL;
@@ -59,32 +69,49 @@ pub fn resolve_context(
                 push_context_budget_warning(&mut warnings);
                 break;
             }
+            let agent_home_source =
+                agent == AgentKind::OpenCode && !path_starts_with(&source, &root);
+            let external_root = agent_home_source
+                .then(|| source.parent().and_then(|parent| canonicalize(parent).ok()))
+                .flatten();
+            let allowed_root = external_root.as_deref().unwrap_or(&root);
+            let warning_start = warnings.len();
             match load_with_imports(
                 &source,
-                &root,
+                allowed_root,
                 &mut HashSet::new(),
                 0,
                 &mut remaining_context_chars,
                 &mut warnings,
             ) {
                 Ok(content) => sections.push(ContextSection {
-                    scope: source
-                        .parent()
-                        .unwrap_or(&root)
-                        .strip_prefix(&root)
-                        .unwrap_or(Path::new("."))
-                        .display()
-                        .to_string(),
+                    scope: if agent_home_source {
+                        "agent-home".into()
+                    } else {
+                        source
+                            .parent()
+                            .unwrap_or(&root)
+                            .strip_prefix(&root)
+                            .unwrap_or(Path::new("."))
+                            .display()
+                            .to_string()
+                    },
                     source,
                     content,
                     precedence: sections.len(),
                 }),
                 Err(error) => warnings.push(error.to_string()),
             }
+            if agent_home_source {
+                for warning in &mut warnings[warning_start..] {
+                    *warning = format!("Agent home: {warning}");
+                }
+            }
         }
         sections
     };
-    if sections.is_empty() {
+    let has_project_instruction = sections.iter().any(|section| section.scope != "agent-home");
+    if !has_project_instruction {
         warnings.push("No project instruction file was found for this Agent".into());
     }
 
@@ -95,7 +122,7 @@ pub fn resolve_context(
             .iter()
             .any(|section| section.content.contains(override_text.trim()));
         if !override_text.trim().is_empty() && !already_generated {
-            if !sections.is_empty() {
+            if has_project_instruction {
                 warnings.push("The platform override is applied after native project instructions; check for semantic conflicts".into());
             }
             sections.push(ContextSection {
@@ -182,6 +209,393 @@ fn user_home() -> Option<PathBuf> {
     env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GrokCompat {
+    claude_agents: bool,
+    claude_rules: bool,
+    cursor_agents: bool,
+    cursor_rules: bool,
+}
+
+impl Default for GrokCompat {
+    fn default() -> Self {
+        Self {
+            claude_agents: true,
+            claude_rules: true,
+            cursor_agents: true,
+            cursor_rules: true,
+        }
+    }
+}
+
+fn grok_home() -> Option<PathBuf> {
+    env::var_os("GROK_HOME")
+        .map(PathBuf::from)
+        .or_else(|| user_home().map(|home| home.join(".grok")))
+}
+
+fn grok_compat(home: Option<&Path>, project: &Path) -> GrokCompat {
+    let home_value = home
+        .map(|home| home.join("config.toml"))
+        .and_then(|path| read_utf8_file_with_limit(&path, GROK_MAX_CONFIG_BYTES).ok())
+        .and_then(|content| toml::from_str::<toml::Value>(&content).ok());
+    let project_value =
+        read_utf8_file_with_limit(&project.join(".grok/config.toml"), GROK_MAX_CONFIG_BYTES)
+            .ok()
+            .and_then(|content| toml::from_str::<toml::Value>(&content).ok());
+    resolve_grok_compat_values(home_value.as_ref(), project_value.as_ref(), |env_name| {
+        env::var(env_name)
+            .ok()
+            .and_then(|value| parse_env_bool(&value))
+    })
+}
+
+fn resolve_grok_compat_values(
+    home_value: Option<&toml::Value>,
+    project_value: Option<&toml::Value>,
+    env_value: impl Fn(&str) -> Option<bool>,
+) -> GrokCompat {
+    let value_from = |value: &toml::Value, vendor: &str, surface: &str| {
+        value
+            .get("compat")
+            .and_then(|value| value.get(vendor))
+            .and_then(|value| value.get(surface))
+            .and_then(toml::Value::as_bool)
+    };
+    let config_value = |vendor: &str, surface: &str| {
+        project_value
+            .and_then(|value| value_from(value, vendor, surface))
+            .or_else(|| home_value.and_then(|value| value_from(value, vendor, surface)))
+    };
+    let resolved = |env_name: &str, vendor: &str, surface: &str| {
+        env_value(env_name)
+            .or_else(|| config_value(vendor, surface))
+            .unwrap_or(true)
+    };
+    GrokCompat {
+        claude_agents: resolved("GROK_CLAUDE_AGENTS_ENABLED", "claude", "agents"),
+        claude_rules: resolved("GROK_CLAUDE_RULES_ENABLED", "claude", "rules"),
+        cursor_agents: resolved("GROK_CURSOR_AGENTS_ENABLED", "cursor", "agents"),
+        cursor_rules: resolved("GROK_CURSOR_RULES_ENABLED", "cursor", "rules"),
+    }
+}
+
+fn parse_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn grok_build_sections(
+    project: &Path,
+    dirs: &[PathBuf],
+    warnings: &mut Vec<String>,
+) -> Vec<ContextSection> {
+    let home = grok_home();
+    let compat = grok_compat(home.as_deref(), project);
+    grok_build_sections_with_roots(project, dirs, home, user_home(), compat, warnings)
+}
+
+fn grok_build_sections_with_roots(
+    project: &Path,
+    dirs: &[PathBuf],
+    home: Option<PathBuf>,
+    user_home: Option<PathBuf>,
+    compat: GrokCompat,
+    warnings: &mut Vec<String>,
+) -> Vec<ContextSection> {
+    const GENERIC_NAMES: &[&str] = &[
+        "Agents.md",
+        "Claude.md",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        "AGENT.md",
+        "AGENTS.md",
+    ];
+    // The configured Home directory itself is trusted and may be a symlink (for
+    // example to another volume). Canonicalize that root once, then keep applying
+    // the normal containment checks to every file discovered beneath it.
+    let home = home.and_then(|root| canonicalize(&root).ok());
+    let user_home = user_home.and_then(|root| canonicalize(&root).ok());
+    let mut sources = Vec::new();
+    if let Some(home) = home.as_ref() {
+        collect_grok_root(home, GENERIC_NAMES, &[("rules", false)], None, &mut sources);
+    }
+    if let Some(user) = user_home.as_ref() {
+        if compat.claude_agents || compat.claude_rules {
+            collect_grok_root(
+                &user.join(".claude"),
+                if compat.claude_agents {
+                    GENERIC_NAMES
+                } else {
+                    &[]
+                },
+                if compat.claude_rules {
+                    &[("rules", false)]
+                } else {
+                    &[]
+                },
+                None,
+                &mut sources,
+            );
+        }
+        if compat.cursor_agents || compat.cursor_rules {
+            collect_grok_root(
+                &user.join(".cursor"),
+                if compat.cursor_agents {
+                    GENERIC_NAMES
+                } else {
+                    &[]
+                },
+                if compat.cursor_rules {
+                    &[("rules", true)]
+                } else {
+                    &[]
+                },
+                None,
+                &mut sources,
+            );
+        }
+    }
+    let mut project_names = GENERIC_NAMES.to_vec();
+    if compat.claude_agents {
+        project_names.extend([".claude/CLAUDE.md", ".claude/CLAUDE.local.md"]);
+    }
+    let mut project_rules = vec![(".grok/rules", false)];
+    if compat.claude_rules {
+        project_rules.push((".claude/rules", false));
+    }
+    if compat.cursor_rules {
+        project_rules.push((".cursor/rules", true));
+    }
+    for dir in dirs {
+        collect_grok_root(
+            dir,
+            &project_names,
+            &project_rules,
+            Some(project),
+            &mut sources,
+        );
+    }
+
+    let mut seen = HashSet::new();
+    let mut sections = Vec::new();
+    let mut remaining = MAX_CONTEXT_CHARS_TOTAL;
+    for source in sources {
+        if remaining == 0 {
+            push_context_budget_warning(warnings);
+            break;
+        }
+        let Ok(canonical) = canonicalize(&source) else {
+            continue;
+        };
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let allowed = path_starts_with(&canonical, project)
+            || home
+                .as_ref()
+                .is_some_and(|root| path_starts_with(&canonical, root))
+            || user_home.as_ref().is_some_and(|user| {
+                path_starts_with(&canonical, &user.join(".claude"))
+                    || path_starts_with(&canonical, &user.join(".cursor"))
+            });
+        if !allowed {
+            continue;
+        }
+        let Ok((content, truncated)) = read_grok_context_file(&canonical) else {
+            warnings.push(format!("Could not read {}", source.display()));
+            continue;
+        };
+        let content = if source
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.eq_ignore_ascii_case("rules"))
+        {
+            grok_rule_body(&content)
+        } else {
+            content
+        };
+        if truncated {
+            warnings.push(format!(
+                "Grok Build instruction file exceeds {GROK_MAX_CONTEXT_CHARS_PER_FILE} characters and was truncated for preview: {}",
+                source.display()
+            ));
+        }
+        let mut output = String::new();
+        append_context_text(&mut output, &content, &mut remaining, warnings);
+        sections.push(ContextSection {
+            scope: source
+                .parent()
+                .and_then(|parent| parent.strip_prefix(project).ok())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "agent-home".into()),
+            source,
+            content: output,
+            precedence: sections.len(),
+        });
+    }
+    sections
+}
+
+fn collect_grok_root(
+    root: &Path,
+    names: &[&str],
+    rule_dirs: &[(&str, bool)],
+    git_root: Option<&Path>,
+    output: &mut Vec<PathBuf>,
+) {
+    for name in names {
+        let path = root.join(name);
+        if grok_source_is_safe(root, &path, git_root) {
+            output.push(path);
+        }
+    }
+    for (relative, accepts_mdc) in rule_dirs {
+        let rules = root.join(relative);
+        let Ok(metadata) = fs::symlink_metadata(&rules) else {
+            continue;
+        };
+        if !metadata.file_type().is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&rules) else {
+            continue;
+        };
+        let mut files = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("md")
+                            || (*accepts_mdc && extension.eq_ignore_ascii_case("mdc"))
+                    })
+                    && grok_source_is_safe(root, path, None)
+            })
+            .collect::<Vec<_>>();
+        if let Some(git_root) = git_root {
+            retain_not_git_ignored(git_root, &mut files);
+        }
+        files.sort();
+        output.extend(files);
+    }
+}
+
+fn grok_source_is_safe(root: &Path, path: &Path, git_root: Option<&Path>) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+    let Ok(canonical) = canonicalize(path) else {
+        return false;
+    };
+    path_starts_with(&canonical, root)
+        && git_root.is_none_or(|git_root| !git_path_is_ignored(git_root, path))
+}
+
+fn git_path_is_ignored(git_root: &Path, path: &Path) -> bool {
+    Command::new("git")
+        .current_dir(git_root)
+        .args(["check-ignore", "--quiet", "--no-index", "--"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn retain_not_git_ignored(git_root: &Path, paths: &mut Vec<PathBuf>) {
+    let Some(ignored) = git_ignored_paths(git_root, paths) else {
+        paths.retain(|path| !git_path_is_ignored(git_root, path));
+        return;
+    };
+    paths.retain(|path| !ignored.contains(path));
+}
+
+fn git_ignored_paths(git_root: &Path, paths: &[PathBuf]) -> Option<HashSet<PathBuf>> {
+    if paths.is_empty() {
+        return Some(HashSet::new());
+    }
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.to_str()?.as_bytes());
+        input.push(0);
+    }
+
+    let mut child = Command::new("git")
+        .current_dir(git_root)
+        .args(["check-ignore", "--no-index", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    // Drain stdout while paths are still being written so large ignored sets cannot fill the pipe.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return None;
+    }
+
+    let output = String::from_utf8(output.stdout).ok()?;
+    Some(
+        output
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+    )
+}
+
+fn read_grok_context_file(path: &Path) -> Result<(String, bool)> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        bail!("Grok Build instruction source must be a regular file");
+    }
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take((GROK_MAX_CONTEXT_CHARS_PER_FILE * 4 + 4) as u64)
+        .read_to_end(&mut bytes)?;
+    let raw = match String::from_utf8(bytes) {
+        Ok(value) => value,
+        Err(error) if error.utf8_error().error_len().is_none() => {
+            let valid_up_to = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid_up_to);
+            String::from_utf8(bytes).expect("the validated UTF-8 prefix must remain valid")
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let truncated = raw.chars().count() > GROK_MAX_CONTEXT_CHARS_PER_FILE;
+    let content = if truncated {
+        raw.chars().take(GROK_MAX_CONTEXT_CHARS_PER_FILE).collect()
+    } else {
+        raw
+    };
+    Ok((content, truncated))
+}
+
+fn grok_rule_body(content: &str) -> String {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return content.to_string();
+    }
+    let remaining = lines.collect::<Vec<_>>();
+    let Some(end) = remaining.iter().position(|line| line.trim() == "---") else {
+        return content.to_string();
+    };
+    remaining[end + 1..].join("\n")
 }
 
 fn deepseek_harness_sections(
@@ -445,6 +859,586 @@ fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
     result
 }
 
+fn opencode_sources(dirs: &[PathBuf], warnings: &mut Vec<String>) -> Vec<PathBuf> {
+    let config_home = agentkib_platform::xdg::config_home()
+        .or_else(|| user_home().map(|home| home.join(".config")))
+        .map(|home| home.join("opencode"));
+    let home = user_home();
+    opencode_sources_with_roots(dirs, config_home.as_deref(), home.as_deref(), warnings)
+}
+
+fn opencode_sources_with_roots(
+    dirs: &[PathBuf],
+    config_home: Option<&Path>,
+    home: Option<&Path>,
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let global = config_home
+        .map(|home| home.join("AGENTS.md"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            home.map(|home| home.join(".claude/CLAUDE.md"))
+                .filter(|path| path.is_file())
+        });
+    result.extend(global);
+    if let Some(config_home) = config_home {
+        let patterns = opencode_global_instruction_patterns(config_home);
+        result.extend(opencode_configured_instruction_sources(
+            config_home,
+            config_home,
+            &patterns,
+            warnings,
+        ));
+    }
+    result.extend(
+        dirs.iter()
+            .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"])),
+    );
+    let Some(root) = dirs.first() else {
+        return result;
+    };
+    for base in dirs {
+        let patterns = opencode_project_instruction_patterns(base);
+        result.extend(opencode_configured_instruction_sources(
+            root, base, &patterns, warnings,
+        ));
+    }
+    let mut seen = HashSet::new();
+    result.retain(|path| canonicalize(path).is_ok_and(|path| seen.insert(path)));
+    result
+}
+
+pub fn opencode_managed_instruction_is_registered(project: &Path) -> bool {
+    opencode_project_instruction_patterns(project)
+        .iter()
+        .any(|value| {
+            opencode_instruction_pattern_matches(
+                value.trim_start_matches("./"),
+                OPENCODE_MANAGED_INSTRUCTION,
+            )
+        })
+}
+
+pub fn opencode_managed_config_path(project: &Path) -> PathBuf {
+    let mut effective = None;
+    for config in [
+        project.join("opencode.json"),
+        project.join("opencode.jsonc"),
+        project.join(".opencode/opencode.json"),
+        project.join(".opencode/opencode.jsonc"),
+    ] {
+        if fs::symlink_metadata(&config).is_ok() {
+            effective = Some(config);
+        }
+    }
+    effective.unwrap_or_else(|| project.join(".opencode/opencode.json"))
+}
+
+fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
+    let configs = [
+        project.join("opencode.json"),
+        project.join("opencode.jsonc"),
+        project.join(".opencode/opencode.json"),
+        project.join(".opencode/opencode.jsonc"),
+    ];
+    let mut effective = Vec::new();
+    for config in configs {
+        if let Some(instructions) = opencode_config_instruction_patterns(&config) {
+            for instruction in instructions {
+                if !effective.contains(&instruction) {
+                    effective.push(instruction);
+                }
+            }
+        }
+    }
+    effective
+}
+
+fn opencode_global_instruction_patterns(config_home: &Path) -> Vec<String> {
+    let mut effective = None;
+    for config in [
+        config_home.join("opencode.json"),
+        config_home.join("opencode.jsonc"),
+    ] {
+        if let Some(instructions) = opencode_config_instruction_patterns(&config) {
+            effective = Some(instructions);
+        }
+    }
+    effective.unwrap_or_default()
+}
+
+fn opencode_config_instruction_patterns(path: &Path) -> Option<Vec<String>> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return None;
+    };
+    if !metadata.is_file() || metadata.len() > DSH_MAX_SOURCE_BYTES {
+        return None;
+    }
+    let Ok(content) = read_utf8_file_with_limit(path, DSH_MAX_SOURCE_BYTES) else {
+        return None;
+    };
+    let value = if path.extension().and_then(|value| value.to_str()) == Some("jsonc") {
+        json5::from_str::<serde_json::Value>(&content).ok()
+    } else {
+        serde_json::from_str::<serde_json::Value>(&content).ok()
+    };
+    value?.get("instructions")?.as_array().map(|instructions| {
+        instructions
+            .iter()
+            .filter_map(|instruction| instruction.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+fn opencode_configured_instruction_sources(
+    root: &Path,
+    base: &Path,
+    patterns: &[String],
+    warnings: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut output = Vec::new();
+    let mut seen = HashSet::new();
+    for raw_pattern in patterns {
+        if raw_pattern.starts_with("http://") || raw_pattern.starts_with("https://") {
+            continue;
+        }
+        let pattern = raw_pattern.trim_start_matches("./").to_string();
+        if pattern.is_empty() || Path::new(&pattern).is_absolute() || pattern.starts_with("~/") {
+            warnings.push(format!(
+                "OpenCode instruction source is outside the project and was not read: {raw_pattern}"
+            ));
+            continue;
+        }
+        let has_glob = pattern
+            .bytes()
+            .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b'{' | b'@' | b'+' | b'!' | b'('));
+        if has_glob {
+            let mut entries = 0;
+            for entry in WalkDir::new(base)
+                .max_depth(16)
+                .follow_links(false)
+                .same_file_system(true)
+                .into_iter()
+                .filter_entry(|entry| agentkib_platform::path::is_safe_scan_entry(entry.path()))
+                .filter_map(Result::ok)
+            {
+                entries += 1;
+                if entries > MAX_OPENCODE_INSTRUCTION_SCAN_ENTRIES {
+                    warnings.push(format!(
+                        "OpenCode instruction glob scan limit was reached: {raw_pattern}"
+                    ));
+                    break;
+                }
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let Ok(relative) = entry.path().strip_prefix(base) else {
+                    continue;
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if opencode_instruction_pattern_matches(&pattern, &relative) {
+                    push_safe_opencode_instruction(root, entry.path(), &mut seen, &mut output);
+                }
+            }
+        } else {
+            push_safe_opencode_instruction(root, &base.join(&pattern), &mut seen, &mut output);
+        }
+    }
+    output
+}
+
+fn push_safe_opencode_instruction(
+    root: &Path,
+    path: &Path,
+    seen: &mut HashSet<PathBuf>,
+    output: &mut Vec<PathBuf>,
+) {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.file_type().is_file()
+        || metadata.len() > MAX_CONTEXT_BYTES_PER_FILE
+        || opencode_instruction_path_is_sensitive(path)
+    {
+        return;
+    }
+    let Ok(canonical) = canonicalize(path) else {
+        return;
+    };
+    let Ok(canonical_root) = canonicalize(root) else {
+        return;
+    };
+    if path_starts_with(&canonical, &canonical_root) && seen.insert(canonical) {
+        output.push(path.to_path_buf());
+    }
+}
+
+fn opencode_instruction_path_is_sensitive(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name == ".env"
+        || name.contains("credential")
+        || name.contains("token")
+        || name.contains("secret")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+}
+
+fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
+    const MAX_BRACE_VARIANTS: usize = 128;
+
+    fn brace_variants(pattern: &str) -> Vec<String> {
+        fn split_choices(value: &str) -> Option<Vec<&str>> {
+            let mut depth = 0;
+            let mut escaped = false;
+            let mut start = 0;
+            let mut choices = Vec::new();
+            for (index, character) in value.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match character {
+                    '\\' => escaped = true,
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        choices.push(&value[start..index]);
+                        start = index + 1;
+                    }
+                    _ => {}
+                }
+            }
+            if choices.is_empty() {
+                return None;
+            }
+            choices.push(&value[start..]);
+            Some(choices)
+        }
+
+        fn expand(pattern: &str, output: &mut Vec<String>) {
+            if output.len() >= MAX_BRACE_VARIANTS {
+                return;
+            }
+            let bytes = pattern.as_bytes();
+            let mut open = None;
+            let mut depth = 0;
+            let mut escaped = false;
+            for (index, byte) in bytes.iter().copied().enumerate() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match byte {
+                    b'\\' => escaped = true,
+                    b'{' => {
+                        if open.is_none() {
+                            open = Some(index);
+                        }
+                        depth += 1;
+                    }
+                    b'}' if depth > 0 => {
+                        depth -= 1;
+                        if depth != 0 {
+                            continue;
+                        }
+                        let start = open.expect("an open brace exists while depth is positive");
+                        let Some(choices) = split_choices(&pattern[start + 1..index]) else {
+                            open = None;
+                            continue;
+                        };
+                        for choice in choices {
+                            if output.len() >= MAX_BRACE_VARIANTS {
+                                break;
+                            }
+                            let expanded =
+                                format!("{}{}{}", &pattern[..start], choice, &pattern[index + 1..]);
+                            expand(&expanded, output);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            output.push(pattern.to_string());
+        }
+
+        let mut output = Vec::new();
+        expand(pattern, &mut output);
+        output
+    }
+
+    #[derive(Clone)]
+    enum SegmentAtom {
+        Literal(char),
+        Any,
+        Star,
+        Class {
+            negated: bool,
+            ranges: Vec<(char, char)>,
+        },
+        Extglob {
+            kind: char,
+            alternatives: Vec<Vec<SegmentAtom>>,
+        },
+    }
+
+    fn parse_segment_atoms(pattern: &str) -> Option<Vec<SegmentAtom>> {
+        fn sequence(chars: &[char], index: &mut usize) -> Option<Vec<SegmentAtom>> {
+            let mut atoms = Vec::new();
+            while *index < chars.len() && !matches!(chars[*index], ')' | '|') {
+                let character = chars[*index];
+                if matches!(character, '@' | '?' | '+' | '*' | '!')
+                    && chars.get(*index + 1) == Some(&'(')
+                {
+                    let kind = character;
+                    *index += 2;
+                    let mut alternatives = Vec::new();
+                    loop {
+                        alternatives.push(sequence(chars, index)?);
+                        match chars.get(*index) {
+                            Some('|') => *index += 1,
+                            Some(')') => {
+                                *index += 1;
+                                break;
+                            }
+                            _ => return None,
+                        }
+                    }
+                    atoms.push(SegmentAtom::Extglob { kind, alternatives });
+                    continue;
+                }
+                match character {
+                    '\\' => {
+                        *index += 1;
+                        atoms.push(SegmentAtom::Literal(*chars.get(*index)?));
+                        *index += 1;
+                    }
+                    '?' => {
+                        atoms.push(SegmentAtom::Any);
+                        *index += 1;
+                    }
+                    '*' => {
+                        if !matches!(atoms.last(), Some(SegmentAtom::Star)) {
+                            atoms.push(SegmentAtom::Star);
+                        }
+                        *index += 1;
+                    }
+                    '[' => {
+                        *index += 1;
+                        let negated = matches!(chars.get(*index), Some('!' | '^'));
+                        if negated {
+                            *index += 1;
+                        }
+                        let mut ranges = Vec::new();
+                        while *index < chars.len() && chars[*index] != ']' {
+                            let start = if chars[*index] == '\\' {
+                                *index += 1;
+                                *chars.get(*index)?
+                            } else {
+                                chars[*index]
+                            };
+                            *index += 1;
+                            if chars.get(*index) == Some(&'-')
+                                && chars.get(*index + 1).is_some_and(|value| *value != ']')
+                            {
+                                *index += 1;
+                                let end = if chars[*index] == '\\' {
+                                    *index += 1;
+                                    *chars.get(*index)?
+                                } else {
+                                    chars[*index]
+                                };
+                                *index += 1;
+                                ranges.push((start, end));
+                            } else {
+                                ranges.push((start, start));
+                            }
+                        }
+                        if ranges.is_empty() || chars.get(*index) != Some(&']') {
+                            return None;
+                        }
+                        *index += 1;
+                        atoms.push(SegmentAtom::Class { negated, ranges });
+                    }
+                    _ => {
+                        atoms.push(SegmentAtom::Literal(character));
+                        *index += 1;
+                    }
+                }
+            }
+            Some(atoms)
+        }
+
+        let chars = pattern.chars().collect::<Vec<_>>();
+        let mut index = 0;
+        let atoms = sequence(&chars, &mut index)?;
+        (index == chars.len()).then_some(atoms)
+    }
+
+    fn segment_matches(pattern: &str, target: &str) -> bool {
+        fn apply_sequence(
+            atoms: &[SegmentAtom],
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            if depth > 32 {
+                return BTreeSet::new();
+            }
+            let mut positions = BTreeSet::from([start]);
+            for atom in atoms {
+                let mut next = BTreeSet::new();
+                for position in positions {
+                    next.extend(apply_atom(atom, target, position, depth + 1));
+                }
+                if next.is_empty() {
+                    return next;
+                }
+                positions = next;
+            }
+            positions
+        }
+
+        fn apply_alternatives(
+            alternatives: &[Vec<SegmentAtom>],
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            alternatives
+                .iter()
+                .flat_map(|alternative| apply_sequence(alternative, target, start, depth))
+                .collect()
+        }
+
+        fn repeat_alternatives(
+            alternatives: &[Vec<SegmentAtom>],
+            target: &[char],
+            starts: BTreeSet<usize>,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            let mut reached = starts;
+            let mut frontier = reached.clone();
+            while !frontier.is_empty() {
+                let mut next = BTreeSet::new();
+                for position in frontier {
+                    for end in apply_alternatives(alternatives, target, position, depth + 1) {
+                        if end > position && reached.insert(end) {
+                            next.insert(end);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            reached
+        }
+
+        fn apply_atom(
+            atom: &SegmentAtom,
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            match atom {
+                SegmentAtom::Literal(expected) => target
+                    .get(start)
+                    .filter(|value| *value == expected)
+                    .map(|_| BTreeSet::from([start + 1]))
+                    .unwrap_or_default(),
+                SegmentAtom::Any => {
+                    if start < target.len() {
+                        BTreeSet::from([start + 1])
+                    } else {
+                        BTreeSet::new()
+                    }
+                }
+                SegmentAtom::Star => (start..=target.len()).collect(),
+                SegmentAtom::Class { negated, ranges } => target
+                    .get(start)
+                    .filter(|value| {
+                        let matched = ranges
+                            .iter()
+                            .any(|(first, last)| first <= *value && *value <= last);
+                        matched != *negated
+                    })
+                    .map(|_| BTreeSet::from([start + 1]))
+                    .unwrap_or_default(),
+                SegmentAtom::Extglob { kind, alternatives } => match kind {
+                    '@' => apply_alternatives(alternatives, target, start, depth + 1),
+                    '?' => {
+                        let mut ends = BTreeSet::from([start]);
+                        ends.extend(apply_alternatives(alternatives, target, start, depth + 1));
+                        ends
+                    }
+                    '+' => {
+                        let once = apply_alternatives(alternatives, target, start, depth + 1);
+                        repeat_alternatives(alternatives, target, once, depth + 1)
+                    }
+                    '*' => repeat_alternatives(
+                        alternatives,
+                        target,
+                        BTreeSet::from([start]),
+                        depth + 1,
+                    ),
+                    '!' => (start..=target.len())
+                        .filter(|end| {
+                            !apply_alternatives(alternatives, &target[..*end], start, depth + 1)
+                                .contains(end)
+                        })
+                        .collect(),
+                    _ => BTreeSet::new(),
+                },
+            }
+        }
+
+        let Some(atoms) = parse_segment_atoms(pattern) else {
+            return false;
+        };
+        let target = target.chars().collect::<Vec<_>>();
+        apply_sequence(&atoms, &target, 0, 0).contains(&target.len())
+    }
+
+    fn path_matches(pattern: &[&str], target: &[&str]) -> bool {
+        let (mut pattern_index, mut target_index) = (0, 0);
+        let mut globstar = None;
+        let mut globstar_target_index = 0;
+        while target_index < target.len() {
+            if pattern_index < pattern.len()
+                && pattern[pattern_index] != "**"
+                && segment_matches(pattern[pattern_index], target[target_index])
+            {
+                pattern_index += 1;
+                target_index += 1;
+            } else if pattern.get(pattern_index) == Some(&"**") {
+                globstar = Some(pattern_index);
+                globstar_target_index = target_index;
+                pattern_index += 1;
+            } else if let Some(globstar_index) = globstar {
+                globstar_target_index += 1;
+                target_index = globstar_target_index;
+                pattern_index = globstar_index + 1;
+            } else {
+                return false;
+            }
+        }
+        while pattern.get(pattern_index) == Some(&"**") {
+            pattern_index += 1;
+        }
+        pattern_index == pattern.len()
+    }
+
+    let target = target.split('/').collect::<Vec<_>>();
+    brace_variants(pattern).into_iter().any(|pattern| {
+        let pattern = pattern.split('/').collect::<Vec<_>>();
+        path_matches(&pattern, &target)
+    })
+}
+
 fn cursor_rule_is_always(path: &Path) -> bool {
     read_context_file(path).is_ok_and(|(content, _)| {
         let mut lines = content.lines();
@@ -643,6 +1637,184 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn grok_build_context_matches_home_compat_and_project_precedence() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let nested = project.join("src/module");
+        let grok_home = dir.path().join("grok-home");
+        let user_home = dir.path().join("user-home");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(grok_home.join("rules")).unwrap();
+        fs::create_dir_all(user_home.join(".claude/rules")).unwrap();
+        fs::create_dir_all(user_home.join(".cursor/rules")).unwrap();
+        fs::create_dir_all(project.join(".grok/rules")).unwrap();
+        fs::create_dir_all(project.join(".cursor/rules")).unwrap();
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project)
+            .status()
+            .unwrap();
+        fs::write(grok_home.join("AGENTS.md"), "global-named").unwrap();
+        fs::write(grok_home.join("rules/global.md"), "global-rule").unwrap();
+        fs::write(
+            user_home.join(".claude/AGENTS.md"),
+            "claude-compatible-home",
+        )
+        .unwrap();
+        fs::write(
+            user_home.join(".cursor/rules/global.mdc"),
+            "---\ndescription: Global Cursor rule\n---\ncursor-compatible-home",
+        )
+        .unwrap();
+        fs::write(project.join("Agents.md"), "project-named").unwrap();
+        fs::write(
+            project.join(".grok/rules/project.md"),
+            "---\ndescription: Project rule\n---\nproject-rule",
+        )
+        .unwrap();
+        fs::write(
+            project.join(".cursor/rules/project.mdc"),
+            "---\ndescription: Project Cursor rule\n---\ncursor-compatible-project",
+        )
+        .unwrap();
+        fs::write(project.join(".grok/rules/ignored.md"), "ignored-rule").unwrap();
+        fs::write(
+            project.join(".grok/rules/ignored-too.md"),
+            "ignored-rule-too",
+        )
+        .unwrap();
+        fs::write(project.join(".grok/rules/kept.md"), "kept-rule").unwrap();
+        fs::write(project.join(".gitignore"), ".grok/rules/ignored*.md\n").unwrap();
+        fs::write(nested.join("AGENTS.md"), "nested-named").unwrap();
+
+        let dirs = directory_chain(&project, &nested).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            &dirs,
+            Some(grok_home),
+            Some(user_home),
+            GrokCompat::default(),
+            &mut warnings,
+        );
+        let contents = sections
+            .iter()
+            .map(|section| section.content.trim())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contents,
+            [
+                "global-named",
+                "global-rule",
+                "claude-compatible-home",
+                "cursor-compatible-home",
+                "project-named",
+                "kept-rule",
+                "project-rule",
+                "cursor-compatible-project",
+                "nested-named",
+            ]
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn grok_build_compat_uses_env_then_project_then_home_then_defaults() {
+        let home: toml::Value = toml::from_str(
+            "[compat.claude]\nagents = false\nrules = false\n\n[compat.cursor]\nagents = false\n",
+        )
+        .unwrap();
+        let project: toml::Value = toml::from_str("[compat.claude]\nagents = true\n").unwrap();
+        let compat = resolve_grok_compat_values(Some(&home), Some(&project), |name| {
+            (name == "GROK_CURSOR_AGENTS_ENABLED").then_some(true)
+        });
+
+        assert!(compat.claude_agents);
+        assert!(!compat.claude_rules);
+        assert!(compat.cursor_agents);
+        assert!(compat.cursor_rules);
+    }
+
+    #[test]
+    fn grok_build_context_caps_each_instruction_file() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "x".repeat(10_050)).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            dir.path(),
+            &[dir.path().to_path_buf()],
+            None,
+            None,
+            GrokCompat {
+                claude_agents: false,
+                claude_rules: false,
+                cursor_agents: false,
+                cursor_rules: false,
+            },
+            &mut warnings,
+        );
+
+        assert_eq!(sections[0].content.chars().count(), 10_000);
+        assert!(warnings.iter().any(|warning| warning.contains("10000")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_build_context_accepts_a_symlinked_home_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let actual_home = dir.path().join("actual-grok-home");
+        let linked_home = dir.path().join("linked-grok-home");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir_all(actual_home.join("rules")).unwrap();
+        fs::write(actual_home.join("AGENTS.md"), "global instructions").unwrap();
+        fs::write(actual_home.join("rules/global.md"), "global rule").unwrap();
+        symlink(&actual_home, &linked_home).unwrap();
+
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            std::slice::from_ref(&project),
+            Some(linked_home),
+            None,
+            GrokCompat::default(),
+            &mut warnings,
+        );
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].content, "global instructions");
+        assert_eq!(sections[1].content, "global rule");
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_build_context_rejects_rules_symlinked_outside_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir_all(project.join(".grok/rules")).unwrap();
+        let outside = dir.path().join("outside.md");
+        fs::write(&outside, "private").unwrap();
+        symlink(&outside, project.join(".grok/rules/private.md")).unwrap();
+        let mut warnings = Vec::new();
+        let sections = grok_build_sections_with_roots(
+            &project,
+            std::slice::from_ref(&project),
+            None,
+            None,
+            GrokCompat::default(),
+            &mut warnings,
+        );
+
+        assert!(sections.is_empty());
+    }
+
+    #[test]
     fn codex_context_inherits_root_and_nested_rules_in_order() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("src/module");
@@ -774,6 +1946,349 @@ mod tests {
         assert_eq!(preview.sections[0].content.trim(), "shared");
         assert!(preview.sections[1].content.contains("cursor override"));
         assert_eq!(preview.sections[2].content.trim(), "nested");
+    }
+
+    #[test]
+    fn opencode_prefers_agents_and_falls_back_to_claude_per_directory() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "root agents").unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "ignored root fallback").unwrap();
+        fs::write(nested.join("CLAUDE.md"), "nested fallback").unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+
+        let project_sections = preview
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .collect::<Vec<_>>();
+        assert_eq!(project_sections.len(), 2);
+        assert_eq!(project_sections[0].content.trim(), "root agents");
+        assert_eq!(project_sections[1].content.trim(), "nested fallback");
+    }
+
+    #[test]
+    fn opencode_includes_global_rules_before_the_project_chain() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let nested = project.join("src");
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&config_home).unwrap();
+        fs::create_dir_all(config_home.join("rules")).unwrap();
+        fs::write(config_home.join("AGENTS.md"), "global").unwrap();
+        fs::write(config_home.join("rules/team.md"), "global configured").unwrap();
+        fs::write(
+            config_home.join("opencode.jsonc"),
+            "{ instructions: ['rules/*.md'] }",
+        )
+        .unwrap();
+        fs::write(project.join("AGENTS.md"), "project").unwrap();
+        fs::write(nested.join("CLAUDE.md"), "nested").unwrap();
+
+        let dirs = directory_chain(&project, &nested).unwrap();
+        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None, &mut Vec::new());
+
+        assert_eq!(
+            sources,
+            [
+                config_home.join("AGENTS.md"),
+                config_home.join("rules/team.md"),
+                project.join("AGENTS.md"),
+                nested.join("CLAUDE.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn opencode_global_jsonc_without_instructions_preserves_json_instructions() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(project.join("docs")).unwrap();
+        fs::create_dir_all(config_home.join("rules")).unwrap();
+        fs::write(config_home.join("rules/global.md"), "global configured").unwrap();
+        fs::write(
+            config_home.join("opencode.json"),
+            r#"{"instructions":["rules/global.md"]}"#,
+        )
+        .unwrap();
+        fs::write(config_home.join("opencode.jsonc"), "{ theme: 'dark' }").unwrap();
+
+        let dirs = directory_chain(&project, &project).unwrap();
+        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None, &mut Vec::new());
+
+        assert!(sources.contains(&config_home.join("rules/global.md")));
+    }
+
+    #[test]
+    fn opencode_includes_configured_project_instruction_paths_and_globs() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "project").unwrap();
+        fs::write(dir.path().join("docs/team.md"), "team").unwrap();
+        fs::write(dir.path().join("docs/review.md"), "review").unwrap();
+        fs::write(dir.path().join("docs/secret.env"), "secret").unwrap();
+        fs::write(
+            dir.path().join("opencode.jsonc"),
+            "{ instructions: ['docs/team.md', 'docs/*.{md,env}'] }",
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+        let canonical_root = canonicalize(dir.path()).unwrap();
+        let project_sources = preview
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .map(|section| section.source.strip_prefix(&canonical_root).unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(project_sources.contains(&Path::new("AGENTS.md")));
+        assert!(project_sources.contains(&Path::new("docs/team.md")));
+        assert!(project_sources.contains(&Path::new("docs/review.md")));
+        assert!(!project_sources.contains(&Path::new("docs/secret.env")));
+        assert_eq!(
+            project_sources
+                .iter()
+                .filter(|source| **source == Path::new("docs/team.md"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn opencode_resolves_each_config_from_its_own_directory() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("packages/api");
+        fs::create_dir_all(nested.join(".opencode")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::create_dir_all(nested.join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team.md"), "root team").unwrap();
+        fs::write(nested.join("docs/team.md"), "nested shadow").unwrap();
+        fs::write(nested.join("docs/api.md"), "nested config").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/team.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            nested.join(".opencode/opencode.jsonc"),
+            "{ instructions: ['docs/api.md'] }",
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+        let sources = preview
+            .sections
+            .iter()
+            .map(|section| canonicalize(&section.source).unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&canonicalize(&dir.path().join("docs/team.md")).unwrap()));
+        assert!(sources.contains(&canonicalize(&nested.join("docs/api.md")).unwrap()));
+        assert!(!sources.contains(&canonicalize(&nested.join("docs/team.md")).unwrap()));
+    }
+
+    #[test]
+    fn opencode_preserves_escaped_glob_literals() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team[prod].md"), "production").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/team\\[prod\\].md"]}"#,
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+
+        assert!(
+            preview
+                .sections
+                .iter()
+                .any(|section| equivalent(&section.source, &dir.path().join("docs/team[prod].md")))
+        );
+    }
+
+    #[test]
+    fn opencode_resolves_extglob_instruction_patterns() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team.md"), "team").unwrap();
+        fs::write(dir.path().join("docs/review.md"), "review").unwrap();
+        fs::write(dir.path().join("docs/draft.md"), "draft").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/@(team|review).md"]}"#,
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+        let sources = preview
+            .sections
+            .iter()
+            .filter_map(|section| section.source.file_name()?.to_str())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&"team.md"));
+        assert!(sources.contains(&"review.md"));
+        assert!(!sources.contains(&"draft.md"));
+    }
+
+    #[test]
+    fn opencode_project_configs_merge_and_deduplicate_instructions() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/root.md","docs/shared.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":["docs/shared.md",".opencode/agentkib-instructions.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ theme: 'dark' }",
+        )
+        .unwrap();
+
+        assert_eq!(
+            opencode_project_instruction_patterns(dir.path()),
+            [
+                "docs/root.md",
+                "docs/shared.md",
+                ".opencode/agentkib-instructions.md",
+            ]
+        );
+        assert!(opencode_managed_instruction_is_registered(dir.path()));
+    }
+
+    #[test]
+    fn opencode_includes_only_registered_managed_instructions() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "shared").unwrap();
+        fs::write(
+            dir.path().join(OPENCODE_MANAGED_INSTRUCTION),
+            "OpenCode override",
+        )
+        .unwrap();
+
+        let unregistered =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+        assert_eq!(
+            unregistered
+                .sections
+                .iter()
+                .filter(|section| section.scope != "agent-home")
+                .count(),
+            1
+        );
+
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ // OpenCode accepts JSONC\n instructions: ['.opencode/*.md'],\n}",
+        )
+        .unwrap();
+        let registered =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+
+        let project_sections = registered
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .collect::<Vec<_>>();
+        assert_eq!(project_sections.len(), 2);
+        assert!(equivalent(
+            &project_sections[1].source,
+            &dir.path().join(OPENCODE_MANAGED_INSTRUCTION)
+        ));
+        assert_eq!(project_sections[1].content.trim(), "OpenCode override");
+    }
+
+    #[test]
+    fn opencode_registration_matches_component_and_recursive_globs() {
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "**/agentkib-*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.[m]d",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.[a-z][!x]",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.\\m\\d",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".opencode/agentkib-instructions.{md,txt}",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            ".{cursor,{open,closed}code}/agentkib-instructions.{txt,md}",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/?.md",
+            "docs/规.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/[规约].md",
+            "docs/规.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            r"docs/team\[prod\].md",
+            "docs/team[prod].md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/@(team|review).md",
+            "docs/team.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/+(a|b).md",
+            "docs/abba.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/?(team).md",
+            "docs/.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/*(ab|c).md",
+            "docs/abccab.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/!(draft).md",
+            "docs/final.md"
+        ));
+        assert!(!opencode_instruction_pattern_matches(
+            "docs/!(draft).md",
+            "docs/draft.md"
+        ));
+        assert!(!opencode_instruction_pattern_matches(
+            "docs/*.md",
+            OPENCODE_MANAGED_INSTRUCTION
+        ));
     }
 
     #[test]

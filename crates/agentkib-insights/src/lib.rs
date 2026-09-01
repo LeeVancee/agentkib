@@ -273,7 +273,9 @@ pub fn collect_usage(
                 AgentKind::DeepSeekHarness => {
                     Box::new(DeepSeekHarnessProvider::new(home.as_deref()))
                 }
-                AgentKind::Cursor => unreachable!("Cursor usage is not collected here"),
+                AgentKind::Cursor | AgentKind::OpenCode | AgentKind::GrokBuild => {
+                    unreachable!("usage is not collected for this Agent")
+                }
             };
             let cursor = cursors
                 .get(&agent)

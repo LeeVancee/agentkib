@@ -31,8 +31,10 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 function Empty({
@@ -83,7 +85,7 @@ function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
 }
-function Changes({
+export function Changes({
   changeSet,
   origin,
   launchRequest,
@@ -146,7 +148,11 @@ function Changes({
         <div>
           <h2>{tr("handoff.savedLaunchFailed")}</h2>
           <p>{error || appliedLaunchFailure}</p>
-          <code>.agentkib/handoffs/{launchRequest.filename}</code>
+          <code>
+            {launchRequest.mode === "native-session"
+              ? shortPath(launchRequest.target_path)
+              : `.agentkib/handoffs/${launchRequest.filename}`}
+          </code>
         </div>
         <Button
           className="bg-primary text-primary-foreground hover:bg-primary/90"
@@ -183,7 +189,7 @@ function Changes({
   const applyAndContinue = async () => {
     if (!launchRequest || !launchSupported) return;
     await runLocked(async () => {
-      const result = await api.continueSessionHandoff(changeSet, launchRequest);
+      const result = await api.continueSessionHandoff(changeSet, launchRequest, homeApproved);
       if (!active.current) return;
       if (result.status === "launched") {
         await onApplied(false);
@@ -261,13 +267,13 @@ function Changes({
             >
               {tr("changes.includeHome")}
             </Button>
-            {changeSet.requires_home_approval && (
-              <Label className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
-                {tr("changes.homeApproval")}
-              </Label>
-            )}
           </div>
+        )}
+        {changeSet.requires_home_approval && (
+          <Label className="flex items-center gap-2 border-t border-border p-4 text-xs text-muted-foreground">
+            <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
+            {tr("changes.homeApproval")}
+          </Label>
         )}
       </div>
       <div className="rounded-xl border border-border bg-card shadow-sm min-w-0">

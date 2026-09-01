@@ -514,8 +514,10 @@ fn parse_agent(value: &str) -> Result<AgentKind> {
         "codex" => Ok(AgentKind::Codex),
         "claude-code" => Ok(AgentKind::ClaudeCode),
         "cursor" => Ok(AgentKind::Cursor),
+        "opencode" => Ok(AgentKind::OpenCode),
         "openclaw" | "open-claw" => Ok(AgentKind::OpenClaw),
         "hermes" => Ok(AgentKind::Hermes),
+        "grok" | "grok-build" => Ok(AgentKind::GrokBuild),
         "deepseek-harness" | "dsh" => Ok(AgentKind::DeepSeekHarness),
         _ => anyhow::bail!("Unknown Agent: {value}"),
     }
@@ -653,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn negotiates_mcp_and_lists_the_six_builtin_tools() {
+    fn negotiates_mcp_and_lists_the_eight_builtin_tools() {
         let dir = tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir(&project).unwrap();

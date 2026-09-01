@@ -42,7 +42,7 @@ import type {
   ConversationSessionSummary,
   SessionHandoffRequest,
   SessionHandoffPreparation,
-  SessionHandoffDraft,
+  SessionContinuationMode,
   SessionHandoffLaunchRequest,
   HandoffContinuationResult,
   HandoffFormat,
@@ -180,18 +180,24 @@ export interface DesktopApi {
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
-    summarizeHandoff(request: SessionHandoffRequest): Promise<SessionHandoffDraft>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
     planHandoff(
+      sessionId: string,
       workspaceId: string,
       filename: string,
       format: HandoffFormat,
-      editedContent: string,
+      editedContent: string | undefined,
       targetAgent: AgentKind,
+      mode: SessionContinuationMode,
+      sourceFingerprint: string,
+      acceptLosses: boolean,
+      historyBudgetTokens: number,
+      archiveId: string | undefined,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,
       launchRequest: SessionHandoffLaunchRequest,
+      approveHome: boolean,
     ): Promise<HandoffContinuationResult>;
     launchHandoff(launchRequest: SessionHandoffLaunchRequest): Promise<HandoffLaunchReceipt>;
     openers(id: string): Promise<WorkspaceOpener[]>;

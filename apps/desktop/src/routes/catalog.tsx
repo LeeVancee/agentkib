@@ -64,8 +64,10 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 type CatalogSearch = { assetSection?: AssetSection };
@@ -301,6 +303,9 @@ function CatalogPage({
             </TabsTrigger>
           </TabsList>
         </Tabs>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          {tr("catalog.portabilityDescription")}
+        </p>
       </section>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />

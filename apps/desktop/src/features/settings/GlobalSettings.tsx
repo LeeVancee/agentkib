@@ -63,6 +63,7 @@ import type {
   ThemePreference,
   WorkspaceSummary,
 } from "@/core/types";
+import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 import {
@@ -81,8 +82,10 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 
@@ -321,17 +324,19 @@ export function GlobalSettings({
           <QuotaDiagnostics status={quotaStatus} />
         </SettingGroup>
         <SettingGroup title={tr("settings.providerStatus")}>
-          {insightsStatus?.providers.map((provider) => (
-            <SettingsRow key={provider.agent}>
-              <div className="flex items-center gap-3">
-                <AgentIcon agent={provider.agent} />
-                <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
-              </div>
-              <StatusText active={provider.available}>
-                {tr(provider.available ? "quota.available" : "insights.noData")}
-              </StatusText>
-            </SettingsRow>
-          ))}
+          {insightsStatus?.providers
+            .filter((provider) => agentSupportsInsights(provider.agent))
+            .map((provider) => (
+              <SettingsRow key={provider.agent}>
+                <div className="flex items-center gap-3">
+                  <AgentIcon agent={provider.agent} />
+                  <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
+                </div>
+                <StatusText active={provider.available}>
+                  {tr(provider.available ? "quota.available" : "insights.noData")}
+                </StatusText>
+              </SettingsRow>
+            ))}
           {!insightsStatus?.providers.length && (
             <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
           )}

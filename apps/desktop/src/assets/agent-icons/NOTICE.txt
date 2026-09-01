@@ -5,6 +5,7 @@ These local SVG assets are sourced from LobeHub Lobe Icons
 - claudecode-color.svg -> claude-code.svg
 - openclaw-color.svg -> open-claw.svg
 - hermesagent.svg -> hermes.svg
+- grok.svg -> grok-build.svg
 - cursor.svg -> cursor.svg
 
 Source: https://github.com/lobehub/lobe-icons
@@ -30,6 +31,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+The OpenCode icon is also sourced from LobeHub Lobe Icons:
+
+- packages/static-svg/icons/opencode.svg -> opencode.svg
+
+Source: https://github.com/lobehub/lobe-icons
 
 The DeepSeek Harness icon is adapted from the favicon distributed with
 DeepSeek Harness 0.1.0-rc.5:

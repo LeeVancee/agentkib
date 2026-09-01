@@ -47,7 +47,11 @@ import {
   localizeMessage,
   tr,
 } from "@/core/i18n";
-import { buildHeatmapMonthMarkers } from "@/features/insights/insights";
+import {
+  agentSupportsInsights,
+  buildHeatmapMonthMarkers,
+  insightsAgentKinds,
+} from "@/features/insights/insights";
 import type {
   Achievement,
   AgentKind,
@@ -67,8 +71,10 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
+  "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
 };
 
@@ -187,9 +193,9 @@ export function InsightsPage({
                 onChange={(event) => setAgent(event.target.value as typeof agent)}
               >
                 <option value="all">{tr("workspace.allAgents")}</option>
-                {Object.entries(agentLabels).map(([value, label]) => (
+                {insightsAgentKinds.map((value) => (
                   <option key={value} value={value}>
-                    {label}
+                    {agentLabels[value]}
                   </option>
                 ))}
               </SelectControl>
@@ -439,9 +445,11 @@ export function InsightsPage({
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-border">
-              {status?.providers.map((provider) => (
-                <ProviderRow key={provider.agent} provider={provider} />
-              ))}
+              {status?.providers
+                .filter((provider) => agentSupportsInsights(provider.agent))
+                .map((provider) => (
+                  <ProviderRow key={provider.agent} provider={provider} />
+                ))}
             </div>
           </CardContent>
         </Card>

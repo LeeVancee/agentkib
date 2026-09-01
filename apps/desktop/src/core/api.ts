@@ -24,6 +24,7 @@ import type {
   RemoteGatewayInput,
   SessionHandoffLaunchRequest,
   SessionHandoffRequest,
+  SessionContinuationMode,
   ThemePreference,
 } from "./types";
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
@@ -145,20 +146,39 @@ export const api = {
     desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
-  summarizeSessionHandoff: (request: SessionHandoffRequest) =>
-    desktopApi().workspace.summarizeHandoff(request),
   sanitizeSessionHandoff: (format: HandoffFormat, editedContent: string) =>
     desktopApi().workspace.sanitizeHandoff(format, editedContent),
   planSessionHandoff: (
+    sessionId: string,
     workspaceId: string,
     filename: string,
     format: HandoffFormat,
-    editedContent: string,
+    editedContent: string | undefined,
     targetAgent: AgentKind,
+    mode: SessionContinuationMode,
+    sourceFingerprint: string,
+    acceptLosses: boolean,
+    historyBudgetTokens: number,
+    archiveId: string | undefined,
   ) =>
-    desktopApi().workspace.planHandoff(workspaceId, filename, format, editedContent, targetAgent),
-  continueSessionHandoff: (changeSet: ChangeSet, launchRequest: SessionHandoffLaunchRequest) =>
-    desktopApi().workspace.continueHandoff(changeSet, launchRequest),
+    desktopApi().workspace.planHandoff(
+      sessionId,
+      workspaceId,
+      filename,
+      format,
+      editedContent,
+      targetAgent,
+      mode,
+      sourceFingerprint,
+      acceptLosses,
+      historyBudgetTokens,
+      archiveId,
+    ),
+  continueSessionHandoff: (
+    changeSet: ChangeSet,
+    launchRequest: SessionHandoffLaunchRequest,
+    approveHome: boolean,
+  ) => desktopApi().workspace.continueHandoff(changeSet, launchRequest, approveHome),
   launchSessionHandoff: (launchRequest: SessionHandoffLaunchRequest) =>
     desktopApi().workspace.launchHandoff(launchRequest),
   workspaceSessionStatus: (workspaceId: string) =>

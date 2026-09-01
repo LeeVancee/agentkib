@@ -11,6 +11,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "json5",
  "serde_json",
  "serde_yaml",
  "tempfile",
@@ -40,10 +41,13 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "hex",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "uuid",
  "walkdir",
 ]
 
@@ -55,6 +59,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "hex",
+ "json5",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -139,6 +144,7 @@ dependencies = [
 name = "agentkib-mcp"
 version = "0.7.0"
 dependencies = [
+ "agentkib-conversations",
  "agentkib-core",
  "agentkib-platform",
  "agentkib-store",
@@ -220,6 +226,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

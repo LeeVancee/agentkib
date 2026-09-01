@@ -6,6 +6,7 @@ import {
   optionalString,
   requireBoolean,
   requireObject,
+  requirePositiveInteger,
   requireString,
   requireText,
 } from "./validation";
@@ -14,6 +15,7 @@ const KNOWN_AGENTS = new Set([
   "codex",
   "claude-code",
   "cursor",
+  "opencode",
   "open-claw",
   "hermes",
   "deepseek-harness",
@@ -149,12 +151,6 @@ export function registerRuntimeIpc({
         request: requireObject(request, "handoff request"),
       });
     });
-    ipcMain.handle("agentkib:session:summarize-handoff", (event, request: unknown) => {
-      assertTrustedRenderer(event);
-      return runtimeRequest(event, RUNTIME_METHODS.summarizeSessionHandoff, {
-        request: requireObject(request, "handoff request"),
-      });
-    });
     ipcMain.handle(
       "agentkib:session:sanitize-handoff",
       (event, format: unknown, editedContent: unknown) => {
@@ -169,29 +165,43 @@ export function registerRuntimeIpc({
       "agentkib:session:plan-handoff",
       (
         event,
+        sessionId: unknown,
         workspaceId: unknown,
         filename: unknown,
         format: unknown,
         editedContent: unknown,
         targetAgent: unknown,
+        mode: unknown,
+        sourceFingerprint: unknown,
+        acceptLosses: unknown,
+        historyBudgetTokens: unknown,
+        archiveId: unknown,
       ) => {
         assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.planSessionHandoff, {
+          sessionId: requireString(sessionId, "sessionId"),
           workspaceId: requireString(workspaceId, "workspaceId"),
           filename: requireString(filename, "filename"),
           format: requireString(format, "format"),
-          editedContent: requireText(editedContent, "editedContent"),
+          editedContent:
+            editedContent === undefined ? undefined : requireText(editedContent, "editedContent"),
           targetAgent: requireString(targetAgent, "targetAgent"),
+          mode: requireString(mode, "mode"),
+          sourceFingerprint: requireString(sourceFingerprint, "sourceFingerprint"),
+          acceptLosses: requireBoolean(acceptLosses, "acceptLosses"),
+          historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
+          archiveId: optionalString(archiveId, "archiveId"),
         });
       },
     );
     ipcMain.handle(
       "agentkib:session:continue-handoff",
-      (event, changeSet: unknown, launchRequest: unknown) => {
+      (event, changeSet: unknown, launchRequest: unknown, approveHome: unknown) => {
         assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.continueSessionHandoff, {
           changeSet: requireObject(changeSet, "changeSet"),
           launchRequest: requireObject(launchRequest, "launchRequest"),
+          approveHome: requireBoolean(approveHome, "approveHome"),
         });
       },
     );

@@ -4,7 +4,7 @@
 
 ## AgentKib 是什么
 
-AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、Claude Code、Cursor、OpenClaw、Hermes 和 DeepSeek Harness 已使用过的工作区，并集中展示其中的 Instructions、Skills、MCP、记忆和原生配置。
+AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 DeepSeek Harness 已使用过的工作区，并集中展示其中的 Instructions、Skills、MCP、记忆和原生配置。
 
 主要页面和功能如下：
 
@@ -17,6 +17,18 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 - **设置**：管理扫描目录、关闭行为、语言、主题、MCP Hub、远程 Gateway 和 Obsidian 集成。
 
 发现和浏览不会直接修改 Agent 配置。需要同步公共资产时，AgentKib 会先生成 ChangeSet 和完整 Diff，确认后才写入。
+
+### Agent 支持矩阵
+
+| Agent | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 |
+| --- | --- | --- | --- |
+| Codex | 支持 | 支持 | 支持 |
+| Claude Code | 支持 | 支持 | 支持 |
+| Cursor | 支持 | 支持 | — |
+| OpenCode | 支持 | 支持 | — |
+| OpenClaw | 支持 | 支持 | — |
+| Hermes | 支持 | 支持 | — |
+| DeepSeek Harness | Beta，只读 | 仅诊断，不写入 | — |
 
 ## 一、安装编译环境
 
@@ -73,11 +85,7 @@ winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --source wing
 
 该工作负载应包含 MSVC x64/x86 编译工具和 Windows 10/11 SDK。若安装器提示重启，请先重启 Windows。
 
-### 4. WebView2 Runtime
-
-Windows 11 和 Microsoft Edge 通常已包含 WebView2 Evergreen Runtime。AgentKib 要求 **111.0.1661.15 或更高版本**；若诊断提示缺失或版本过低，请安装微软官方 WebView2 Evergreen Runtime 后重开终端。
-
-### 5. 一键诊断
+### 4. 一键诊断
 
 在仓库根目录执行：
 
@@ -85,7 +93,7 @@ Windows 11 和 Microsoft Edge 通常已包含 WebView2 Evergreen Runtime。Agent
 pnpm diagnose:windows
 ```
 
-诊断为只读操作，会检查系统架构、Git/Node/pnpm/Rust、MSVC、Windows SDK、WebView2，以及 GitHub 和 Cargo Registry 连通性。存在必需项缺失时会返回非零退出码和修复提示。
+诊断为只读操作，会检查系统架构、Git/Node/pnpm/Rust、MSVC、Windows SDK，以及 GitHub 和 Cargo Registry 连通性。存在必需项缺失时会返回非零退出码和修复提示。
 
 ## 二、安装项目依赖
 
@@ -188,10 +196,6 @@ pnpm dev
 
 重新打开 Visual Studio Installer，确认 Build Tools 2022 已安装“使用 C++ 的桌面开发”，并包含 MSVC x64/x86 与 Windows 10/11 SDK；安装完成后重开终端，必要时重启 Windows。
 
-### 窗口空白或 WebView2 报错
-
-更新、修复或重新安装 WebView2 Evergreen Runtime 111+，然后删除开发构建缓存并重新编译。不要删除 `%LOCALAPPDATA%\ai.agentkib.dev`；正式版数据位于 `%LOCALAPPDATA%\ai.agentkib`，两者都应在备份并确认要清空后才能删除。
-
 ### `localhost:1420` 端口被占用
 
 开发服务器默认使用端口 `1420`。先结束占用该端口的旧 Vite/Node 进程，再重新运行 `pnpm dev`。
@@ -208,6 +212,6 @@ Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue
 
 - 已验收目标仅为 Windows 11 x64 的编译、开发启动、NSIS 安装和启动。
 - Windows ARM64 仅提供 Preview 安装包，尚未完成与 x64 等价的原生回归。
-- GitHub Release 已由版本标签自动发布；v0.3.1 起可在设置中检查并安装正式更新。Windows 安装包仍未进行代码签名，ARM64 仍为 Preview。
+- GitHub Release 已由版本标签自动发布；具体升级方式见[升级指南](UPGRADING.md)。Windows 安装包仍未进行代码签名，ARM64 仍为 Preview。
 - macOS/Linux 行为通过平台隔离和现有 CI 保持，本机无法替代对应平台的原生回归。
 - 完整 Windows 功能等价测试仍需后续阶段逐项完成。

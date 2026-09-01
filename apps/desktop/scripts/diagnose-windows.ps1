@@ -121,25 +121,6 @@ if ($sdkVersion) {
   Add-Result "Windows SDK" "FAIL" "Windows SDK was not found. Add it with the Build Tools installer."
 }
 
-$webView = @(
-  "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients",
-  "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients",
-  "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients"
-) | ForEach-Object {
-  Get-ChildItem -Path $_ -ErrorAction SilentlyContinue | ForEach-Object {
-    Get-ItemProperty $_.PSPath
-  }
-} | Where-Object { $_.name -match "WebView2" } | Select-Object -First 1
-$webViewVersion = $null
-$hasWebViewVersion = $webView -and $webView.pv -and [version]::TryParse([string] $webView.pv, [ref] $webViewVersion)
-if ($hasWebViewVersion -and $webViewVersion -ge [version] "111.0.1661.15") {
-  Add-Result "WebView2 Runtime 111+" "PASS" "$($webView.name) $($webView.pv)"
-} elseif ($webView) {
-  Add-Result "WebView2 Runtime 111+" "FAIL" "WebView2 111.0.1661.15 or newer is required; found $($webView.pv)."
-} else {
-  Add-Result "WebView2 Runtime 111+" "FAIL" "WebView2 Evergreen Runtime 111.0.1661.15 or newer was not found."
-}
-
 if ($gitVersion) {
   & cmd.exe /D /C "git ls-remote https://github.com/starroyhq/agentkib.git refs/heads/main >nul 2>&1"
   $gitConnectionExitCode = $LASTEXITCODE

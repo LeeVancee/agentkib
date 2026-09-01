@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/starroyhq/agentkib/security/advisories/new
+    about: Report suspected vulnerabilities privately. Do not include security details in a public issue.
   - name: AgentKib documentation
     url: https://github.com/starroyhq/agentkib#readme
     about: Read the installation, privacy, and platform notes before filing an issue.

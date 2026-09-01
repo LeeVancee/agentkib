@@ -208,4 +208,32 @@ describe("SkillHubPage", () => {
     expect(screen.queryByText("skill-installer")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add to library" })).toBeNull();
   });
+
+  it("does not start another URL inspection from Enter while one is pending", async () => {
+    mocks.installedSkills.mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
+    mocks.discoverSkills.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+
+    render(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    const input = screen.getByPlaceholderText(
+      "https://github.com/owner/repo/tree/main/path/to/skill",
+    );
+    await user.type(input, "https://github.com/owner/repo{Enter}");
+    await waitFor(() => expect(mocks.discoverSkills).toHaveBeenCalledTimes(1));
+
+    await user.keyboard("{Enter}");
+    expect(mocks.discoverSkills).toHaveBeenCalledTimes(1);
+  });
 });

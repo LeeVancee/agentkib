@@ -1812,15 +1812,11 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
 }
 
 fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
-    let mut paths = WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    paths.sort_by(|left, right| left.path().cmp(right.path()));
-    let mut hash = Sha256::new();
+    let mut files = Vec::new();
     let mut total = 0_u64;
     let mut modified_at = None;
-    for entry in paths {
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry?;
         if entry.file_type().is_dir() {
             continue;
         }
@@ -1828,20 +1824,37 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
             entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
             "Skill package contains an unsupported file"
         );
-        let relative = entry
-            .path()
-            .strip_prefix(root)?
-            .to_string_lossy()
-            .replace('\\', "/");
         let metadata = fs::metadata(entry.path())?;
+        ensure!(
+            metadata.len() <= MAX_SKILL_FILE_BYTES,
+            "Skill package contains a file larger than 8 MiB"
+        );
+        ensure!(
+            files.len() < MAX_SKILL_FILES,
+            "Skill package contains more than 512 files"
+        );
         total = total
             .checked_add(metadata.len())
             .context("Skill package size overflow")?;
+        ensure!(
+            total <= MAX_SKILL_TOTAL_BYTES,
+            "Skill package is larger than 32 MiB"
+        );
+        files.push((entry.into_path(), metadata));
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut hash = Sha256::new();
+    for (path, metadata) in files {
+        let relative = path
+            .strip_prefix(root)?
+            .to_string_lossy()
+            .replace('\\', "/");
         hash.update((relative.len() as u64).to_le_bytes());
         hash.update(relative.as_bytes());
         hash.update([u8::from(is_executable(&metadata))]);
         hash.update(metadata.len().to_le_bytes());
-        let mut file = fs::File::open(entry.path())?;
+        let mut file = fs::File::open(path)?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let read = file.read(&mut buffer)?;
@@ -2477,6 +2490,21 @@ mod tests {
         assert_ne!(
             package_hash(&split).unwrap().0,
             package_hash(&combined).unwrap().0
+        );
+    }
+
+    #[test]
+    fn package_hash_rejects_unbounded_local_file_trees() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_SKILL_FILES {
+            fs::write(directory.path().join(format!("file-{index:03}")), []).unwrap();
+        }
+
+        assert!(
+            package_hash(directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("more than 512 files")
         );
     }
 

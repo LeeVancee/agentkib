@@ -66,4 +66,35 @@ describe("catalog presentation", () => {
     expect(groups[0].records).toHaveLength(2);
     expect(groups[1].path).toBe("/other/CLAUDE.md");
   });
+
+  it("retains shared ownership when a manifest and Agent expose the same Skill root", () => {
+    const groups = groupCatalogAssets([
+      {
+        id: "shared",
+        scope: "workspace",
+        workspace_id: "w",
+        kind: "skill",
+        name: "reviewer",
+        path: "/repo/.agents/skills/reviewer",
+        summary: "",
+        size: 10,
+      },
+      {
+        id: "native",
+        scope: "workspace",
+        workspace_id: "w",
+        agent: "codex",
+        kind: "skill",
+        name: "reviewer",
+        path: "/repo/.agents/skills/reviewer",
+        summary: "",
+        size: 10,
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].shared).toBe(true);
+    expect(groups[0].agents).toEqual(["codex"]);
+    expect(groups[0].records).toHaveLength(2);
+  });
 });

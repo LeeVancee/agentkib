@@ -402,7 +402,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && url.trim()) void discoverUrl();
+                  if (event.key === "Enter" && url.trim() && !busy) void discoverUrl();
                 }}
                 placeholder="https://github.com/owner/repo/tree/main/path/to/skill"
               />

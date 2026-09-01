@@ -25,6 +25,7 @@ const MAX_TREE_ENTRIES: usize = 20_000;
 const MAX_CANDIDATES: usize = 200;
 const MAX_DISCOVERY_DEPTH: usize = 8;
 const MAX_SKILL_FILES: usize = 512;
+const MAX_SKILL_PACKAGE_ENTRIES: usize = 4_096;
 const MAX_SKILL_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_ENTRY_BYTES: u64 = 1024 * 1024;
@@ -269,38 +270,32 @@ impl SkillHub {
             let Some(source) = skill.source.clone() else {
                 continue;
             };
-            let parsed = parsed_source(&source)?;
-            let key = (
-                parsed.owner.to_ascii_lowercase(),
-                parsed.repository.to_ascii_lowercase(),
-                source.reference.clone(),
-            );
-            let commit = if let Some(commit) = commits.get(&key) {
-                commit.clone()
-            } else {
-                let commit = self
-                    .get_commit(&parsed, &source.reference)
-                    .await
-                    .with_context(|| {
-                        format!("Could not check updates for {}", skill.display_name)
-                    })?;
-                commits.insert(key, commit.clone());
-                commit
-            };
-            let resolved = self
-                .resolve_repository_at_commit(
-                    &parsed,
+            let check: Result<bool> = async {
+                let parsed = parsed_source(&source)?;
+                let key = (
+                    parsed.owner.to_ascii_lowercase(),
+                    parsed.repository.to_ascii_lowercase(),
                     source.reference.clone(),
-                    parsed.path.clone(),
-                    commit,
-                )
-                .await
-                .with_context(|| format!("Could not check updates for {}", skill.display_name))?;
-            let tree_sha = directory_tree_sha(&resolved, &source.path)
-                .with_context(|| format!("Could not check updates for {}", skill.display_name))?;
-            if tree_sha != source.tree_sha {
-                skill.status = InstalledSkillStatus::UpdateAvailable;
+                );
+                let commit = if let Some(commit) = commits.get(&key) {
+                    commit.clone()
+                } else {
+                    let commit = self.get_commit(&parsed, &source.reference).await?;
+                    commits.insert(key, commit.clone());
+                    commit
+                };
+                let resolved = self
+                    .resolve_repository_at_commit(
+                        &parsed,
+                        source.reference.clone(),
+                        parsed.path.clone(),
+                        commit,
+                    )
+                    .await?;
+                Ok(directory_tree_sha(&resolved, &source.path)? != source.tree_sha)
             }
+            .await;
+            skill.status = update_check_status(skill.status, check);
         }
         Ok(installed)
     }
@@ -872,14 +867,31 @@ impl SkillHub {
             move_path(&backup, &stale_backup)?;
         }
         if let Err(error) = move_path(&prepared.package, &target) {
-            let _ = recover_staged_backup(&stale_backup, &backup);
+            if let Err(recovery_error) = recover_staged_backup(&stale_backup, &backup) {
+                let preserved_preview = prepared.temp.keep();
+                bail!(
+                    "Could not activate the prepared Skill ({error}); restoring the previous rollback package also failed ({recovery_error}). Package state is preserved under {}, {}, and {} for recovery",
+                    target.display(),
+                    stale_backup.display(),
+                    preserved_preview.display()
+                );
+            }
             return Err(error.into());
         }
         lock.skills.insert(name.clone(), prepared.lock);
         lock.previous.remove(name);
         if let Err(error) = save_lock(&self.root, &lock) {
-            let _ = move_path(&target, &prepared.package);
-            let _ = recover_staged_backup(&stale_backup, &backup);
+            let recovery =
+                recover_install_moves(&target, &prepared.package, &stale_backup, &backup);
+            if let Err(recovery_error) = recovery {
+                let preserved_preview = prepared.temp.keep();
+                bail!(
+                    "Could not save Skill installation metadata ({error}); automatic recovery also failed ({recovery_error}). Package state is preserved under {}, {}, and {} for recovery",
+                    target.display(),
+                    stale_backup.display(),
+                    preserved_preview.display()
+                );
+            }
             return Err(error);
         }
         if stale_backup.is_dir() {
@@ -1210,6 +1222,42 @@ where
 
 fn recover_update_moves(backup: &Path, target: &Path, prior_backup: &Path) -> Result<()> {
     recover_update_moves_with(backup, target, prior_backup, move_path)
+}
+
+fn recover_install_moves(
+    target: &Path,
+    package: &Path,
+    staged_backup: &Path,
+    backup: &Path,
+) -> Result<()> {
+    recover_install_moves_with(target, package, staged_backup, backup, move_path)
+}
+
+fn recover_install_moves_with<F>(
+    target: &Path,
+    package: &Path,
+    staged_backup: &Path,
+    backup: &Path,
+    mut move_dir: F,
+) -> Result<()>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    move_dir(target, package).with_context(|| {
+        format!(
+            "the activated Skill remains at {} because it could not be returned to {}",
+            target.display(),
+            package.display()
+        )
+    })?;
+    recover_staged_backup_with(staged_backup, backup, move_dir)
+}
+
+fn update_check_status(current: InstalledSkillStatus, check: Result<bool>) -> InstalledSkillStatus {
+    match check {
+        Ok(true) => InstalledSkillStatus::UpdateAvailable,
+        Ok(false) | Err(_) => current,
+    }
 }
 
 fn recover_update_moves_with<F>(
@@ -1993,8 +2041,14 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
 fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u64)> {
     let mut files = Vec::new();
     let mut total = 0_u64;
+    let mut entries = 0_usize;
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = entry?;
+        entries += 1;
+        ensure!(
+            entries <= MAX_SKILL_PACKAGE_ENTRIES,
+            "Skill package contains more than 4096 entries"
+        );
         if entry.file_type().is_dir() {
             continue;
         }
@@ -2723,6 +2777,21 @@ mod tests {
     }
 
     #[test]
+    fn package_hash_rejects_unbounded_empty_directory_trees() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..MAX_SKILL_PACKAGE_ENTRIES {
+            fs::create_dir(directory.path().join(format!("directory-{index:04}"))).unwrap();
+        }
+
+        assert!(
+            package_hash(directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("more than 4096 entries")
+        );
+    }
+
+    #[test]
     fn library_scan_emits_one_logical_agentkib_home_asset() {
         let directory = tempfile::tempdir().unwrap();
         let skill = directory.path().join("skills/folder-name");
@@ -2985,6 +3054,48 @@ mod tests {
         assert!(backup.is_dir());
         assert!(prior_backup.is_dir());
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn failed_install_recovery_reports_the_live_package_location() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let target = root.join("skills/reviewer");
+        let package = root.join(".staging/preview/package");
+        let staged_backup = root.join(".staging/stale-backup-test");
+        let backup = root.join("backups/skills/reviewer");
+        write_skill(&target, "incoming");
+        write_skill(&staged_backup, "previous rollback");
+
+        let error =
+            recover_install_moves_with(&target, &package, &staged_backup, &backup, |_, _| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated transient file lock",
+                ))
+            })
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(&target.display().to_string()));
+        assert!(error.contains(&package.display().to_string()));
+        assert!(target.is_dir());
+        assert!(staged_backup.is_dir());
+    }
+
+    #[test]
+    fn failed_update_check_does_not_mask_a_healthy_update() {
+        assert_eq!(
+            update_check_status(
+                InstalledSkillStatus::Current,
+                Err(anyhow::anyhow!("source is unavailable")),
+            ),
+            InstalledSkillStatus::Current
+        );
+        assert_eq!(
+            update_check_status(InstalledSkillStatus::Current, Ok(true)),
+            InstalledSkillStatus::UpdateAvailable
+        );
     }
 
     #[test]

@@ -882,6 +882,15 @@ fn opencode_sources_with_roots(
                 .filter(|path| path.is_file())
         });
     result.extend(global);
+    if let Some(config_home) = config_home {
+        let patterns = opencode_global_instruction_patterns(config_home);
+        result.extend(opencode_configured_instruction_sources(
+            config_home,
+            config_home,
+            &patterns,
+            warnings,
+        ));
+    }
     result.extend(
         dirs.iter()
             .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"])),
@@ -929,6 +938,19 @@ fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
     ];
     let mut effective = None;
     for config in configs {
+        if let Some(instructions) = opencode_config_instruction_patterns(&config) {
+            effective = Some(instructions);
+        }
+    }
+    effective.unwrap_or_default()
+}
+
+fn opencode_global_instruction_patterns(config_home: &Path) -> Vec<String> {
+    let mut effective = None;
+    for config in [
+        config_home.join("opencode.json"),
+        config_home.join("opencode.jsonc"),
+    ] {
         if let Some(instructions) = opencode_config_instruction_patterns(&config) {
             effective = Some(instructions);
         }
@@ -1038,7 +1060,10 @@ fn push_safe_opencode_instruction(
     let Ok(canonical) = canonicalize(path) else {
         return;
     };
-    if path_starts_with(&canonical, root) && seen.insert(canonical) {
+    let Ok(canonical_root) = canonicalize(root) else {
+        return;
+    };
+    if path_starts_with(&canonical, &canonical_root) && seen.insert(canonical) {
         output.push(path.to_path_buf());
     }
 }
@@ -1796,7 +1821,14 @@ mod tests {
         let config_home = dir.path().join("config/opencode");
         fs::create_dir_all(&nested).unwrap();
         fs::create_dir_all(&config_home).unwrap();
+        fs::create_dir_all(config_home.join("rules")).unwrap();
         fs::write(config_home.join("AGENTS.md"), "global").unwrap();
+        fs::write(config_home.join("rules/team.md"), "global configured").unwrap();
+        fs::write(
+            config_home.join("opencode.jsonc"),
+            "{ instructions: ['rules/*.md'] }",
+        )
+        .unwrap();
         fs::write(project.join("AGENTS.md"), "project").unwrap();
         fs::write(nested.join("CLAUDE.md"), "nested").unwrap();
 
@@ -1807,6 +1839,7 @@ mod tests {
             sources,
             [
                 config_home.join("AGENTS.md"),
+                config_home.join("rules/team.md"),
                 project.join("AGENTS.md"),
                 nested.join("CLAUDE.md"),
             ]

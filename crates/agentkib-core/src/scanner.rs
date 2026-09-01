@@ -40,6 +40,7 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
                                     name == "SKILL.md"
                                         || name.ends_with(".toml")
                                         || name.ends_with(".json")
+                                        || name.ends_with(".jsonc")
                                         || name.ends_with(".md")
                                         || name.ends_with(".mdc")
                                 });
@@ -91,7 +92,7 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
 
 fn validate_native_config(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
-    let format = if name.ends_with(".json") {
+    let format = if name.ends_with(".json") || name.ends_with(".jsonc") {
         "JSON"
     } else if name.ends_with(".toml") {
         "TOML"
@@ -127,7 +128,7 @@ fn validate_native_config(path: &Path) -> Option<String> {
         )));
     }
     let error = if format == "JSON" {
-        serde_json::from_str::<serde_json::Value>(&content)
+        json5::from_str::<serde_json::Value>(&content)
             .err()
             .map(|error| error.to_string())
     } else {
@@ -200,6 +201,60 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
             (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
             (".cursor/hooks.json", AssetKind::Hook, "Cursor Hooks"),
             (".cursor/mcp.json", AssetKind::Connection, "Cursor MCP"),
+        ],
+        AgentKind::OpenCode => vec![
+            (
+                "AGENTS.md",
+                AssetKind::Instruction,
+                "OpenCode project instructions",
+            ),
+            (
+                "CLAUDE.md",
+                AssetKind::Instruction,
+                "OpenCode fallback project instructions",
+            ),
+            (
+                "opencode.json",
+                AssetKind::Configuration,
+                "OpenCode configuration",
+            ),
+            (
+                "opencode.jsonc",
+                AssetKind::Configuration,
+                "OpenCode configuration",
+            ),
+            (
+                ".opencode/opencode.json",
+                AssetKind::Connection,
+                "OpenCode project configuration and MCP",
+            ),
+            (
+                ".opencode/opencode.jsonc",
+                AssetKind::Connection,
+                "OpenCode project configuration and MCP",
+            ),
+            (".opencode/skills", AssetKind::Skill, "OpenCode Skills"),
+            (
+                ".claude/skills",
+                AssetKind::Skill,
+                "Claude-compatible Skills",
+            ),
+            (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
+            (
+                ".opencode/agents",
+                AssetKind::Agent,
+                "OpenCode custom Agents",
+            ),
+            (
+                ".opencode/commands",
+                AssetKind::Instruction,
+                "OpenCode commands",
+            ),
+            (
+                ".opencode/plugins",
+                AssetKind::Configuration,
+                "OpenCode plugins",
+            ),
         ],
         AgentKind::OpenClaw => vec![
             (
@@ -288,6 +343,8 @@ fn summary_translation_key(summary: &str) -> Option<&'static str> {
         Some("assets.summary.codexInstructions")
     } else if summary.contains("Claude Code") && summary.contains("instruction") {
         Some("assets.summary.claudeInstructions")
+    } else if summary.contains("OpenCode") && summary.contains("instruction") {
+        Some("assets.summary.openCodeInstructions")
     } else if summary.contains("OpenClaw") && summary.contains("instruction") {
         Some("assets.summary.openClawInstructions")
     } else if summary.contains("Hermes") && summary.contains("instruction") {

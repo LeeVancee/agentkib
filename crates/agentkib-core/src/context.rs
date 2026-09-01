@@ -45,6 +45,7 @@ pub fn resolve_context(
         AgentKind::Codex => codex_sources(&dirs),
         AgentKind::ClaudeCode => claude_sources(&dirs),
         AgentKind::Cursor => cursor_sources(&dirs),
+        AgentKind::OpenCode => opencode_sources(&dirs),
         AgentKind::OpenClaw => openclaw_sources(&dirs),
         AgentKind::Hermes => hermes_sources(&dirs),
         AgentKind::DeepSeekHarness => Vec::new(),
@@ -445,6 +446,12 @@ fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
     result
 }
 
+fn opencode_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    dirs.iter()
+        .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"]))
+        .collect()
+}
+
 fn cursor_rule_is_always(path: &Path) -> bool {
     read_context_file(path).is_ok_and(|(content, _)| {
         let mut lines = content.lines();
@@ -774,6 +781,23 @@ mod tests {
         assert_eq!(preview.sections[0].content.trim(), "shared");
         assert!(preview.sections[1].content.contains("cursor override"));
         assert_eq!(preview.sections[2].content.trim(), "nested");
+    }
+
+    #[test]
+    fn opencode_prefers_agents_and_falls_back_to_claude_per_directory() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "root agents").unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "ignored root fallback").unwrap();
+        fs::write(nested.join("CLAUDE.md"), "nested fallback").unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
+
+        assert_eq!(preview.sections.len(), 2);
+        assert_eq!(preview.sections[0].content.trim(), "root agents");
+        assert_eq!(preview.sections[1].content.trim(), "nested fallback");
     }
 
     #[test]

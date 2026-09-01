@@ -66,6 +66,12 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
     {
         platform_overrides.insert(AgentKind::Cursor, override_text.to_string());
     }
+    if let Ok(content) = fs::read_to_string(project.join(".opencode/agentkib-instructions.md"))
+        && let Some(override_text) = managed_content(&content)
+        && !override_text.trim().is_empty()
+    {
+        platform_overrides.insert(AgentKind::OpenCode, override_text.to_string());
+    }
     if let Some(content) = [".hermes.md", "HERMES.md"]
         .into_iter()
         .find_map(|name| fs::read_to_string(project.join(name)).ok())
@@ -257,6 +263,7 @@ pub fn plan_workspace_changes(
     let common_enabled = [
         AgentKind::Codex,
         AgentKind::Cursor,
+        AgentKind::OpenCode,
         AgentKind::OpenClaw,
         AgentKind::Hermes,
     ]
@@ -387,6 +394,37 @@ pub fn plan_workspace_changes(
             "json",
         )?;
     }
+    if adapter_enabled(manifest, AgentKind::OpenCode) {
+        let platform_override = manifest
+            .instructions
+            .platform_overrides
+            .get(&AgentKind::OpenCode)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let instruction_path = root.join(".opencode/agentkib-instructions.md");
+        let existing_instruction = fs::read_to_string(&instruction_path).unwrap_or_default();
+        let manages_instruction =
+            !platform_override.trim().is_empty() || existing_instruction.contains(START);
+        if manages_instruction {
+            push_change(
+                &mut changes,
+                instruction_path,
+                managed_markdown(&existing_instruction, platform_override),
+                ChangeScope::Project,
+                RiskLevel::Medium,
+                "markdown",
+            )?;
+        }
+        let config_path = root.join(".opencode/opencode.json");
+        push_change(
+            &mut changes,
+            config_path.clone(),
+            merge_opencode_config(&config_path, &gateway_connections, manages_instruction)?,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            "json",
+        )?;
+    }
     if adapter_enabled(manifest, AgentKind::OpenClaw) {
         let platform_override = manifest
             .instructions
@@ -481,12 +519,17 @@ pub fn plan_workspace_changes(
     }
 
     for skill in &manifest.skills {
-        let shared_skill_enabled = [AgentKind::Codex, AgentKind::OpenClaw, AgentKind::Hermes]
-            .into_iter()
-            .any(|agent| {
-                adapter_enabled(manifest, agent)
-                    && (skill.targets.is_empty() || skill.targets.contains(&agent))
-            });
+        let shared_skill_enabled = [
+            AgentKind::Codex,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+        ]
+        .into_iter()
+        .any(|agent| {
+            adapter_enabled(manifest, agent)
+                && (skill.targets.is_empty() || skill.targets.contains(&agent))
+        });
         let cursor_private_enabled = adapter_enabled(manifest, AgentKind::Cursor)
             && (skill.targets.is_empty() || skill.targets.contains(&AgentKind::Cursor))
             && !shared_skill_enabled;
@@ -882,7 +925,9 @@ fn update_generated_hashes(
             .and_then(|value| value.to_str())
             .unwrap_or_default();
         let path = change.target.to_string_lossy();
-        let agents: &[AgentKind] = if path.contains(".openclaw") {
+        let agents: &[AgentKind] = if path.contains(".opencode") {
+            &[AgentKind::OpenCode]
+        } else if path.contains(".openclaw") {
             &[AgentKind::OpenClaw]
         } else if path.contains(".hermes") {
             &[AgentKind::Hermes]
@@ -896,6 +941,7 @@ fn update_generated_hashes(
             &[
                 AgentKind::Codex,
                 AgentKind::Cursor,
+                AgentKind::OpenCode,
                 AgentKind::OpenClaw,
                 AgentKind::Hermes,
             ]
@@ -1097,6 +1143,39 @@ fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
 }
 
+fn merge_opencode_config(
+    path: &Path,
+    connections: &[ConnectionDefinition],
+    include_instructions: bool,
+) -> Result<String> {
+    let mut root = read_json_object(path)?;
+    root.entry("$schema")
+        .or_insert_with(|| "https://opencode.ai/config.json".into());
+    if include_instructions {
+        let instructions = root
+            .entry("instructions")
+            .or_insert_with(|| JsonValue::Array(Vec::new()))
+            .as_array_mut()
+            .context("OpenCode instructions must be an array")?;
+        let managed = JsonValue::String("./agentkib-instructions.md".into());
+        if !instructions.contains(&managed) {
+            instructions.push(managed);
+        }
+    }
+    let servers = root
+        .entry("mcp")
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .context("OpenCode mcp must be an object")?;
+    for connection in connections
+        .iter()
+        .filter(|value| targeted(value, AgentKind::OpenCode))
+    {
+        merge_json_server(servers, connection, AgentKind::OpenCode);
+    }
+    Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
+}
+
 fn merge_mcp_json(
     path: &Path,
     connections: &[ConnectionDefinition],
@@ -1157,8 +1236,17 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
     let mut value = JsonMap::new();
     match &connection.transport {
         ConnectionTransport::Stdio { command, args } => {
-            value.insert("command".into(), command.clone().into());
-            value.insert("args".into(), serde_json::json!(args));
+            if agent == AgentKind::OpenCode {
+                value.insert("type".into(), "local".into());
+                value.insert(
+                    "command".into(),
+                    serde_json::json!(std::iter::once(command).chain(args).collect::<Vec<_>>()),
+                );
+                value.insert("enabled".into(), true.into());
+            } else {
+                value.insert("command".into(), command.clone().into());
+                value.insert("args".into(), serde_json::json!(args));
+            }
         }
         ConnectionTransport::Http { url } => {
             value.insert("url".into(), agent_url(url, agent).into());
@@ -1169,6 +1257,10 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
                 AgentKind::OpenClaw => {
                     value.insert("transport".into(), "streamable-http".into());
                 }
+                AgentKind::OpenCode => {
+                    value.insert("type".into(), "remote".into());
+                    value.insert("enabled".into(), true.into());
+                }
                 AgentKind::Codex
                 | AgentKind::Cursor
                 | AgentKind::Hermes
@@ -1177,7 +1269,12 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
         }
     }
     if !connection.env.is_empty() {
-        value.insert("env".into(), serde_json::json!(connection.env));
+        let key = if agent == AgentKind::OpenCode {
+            "environment"
+        } else {
+            "env"
+        };
+        value.insert(key.into(), serde_json::json!(connection.env));
     }
     if !connection.allow_tools.is_empty() {
         value.insert(
@@ -1193,6 +1290,7 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude-code",
         AgentKind::Cursor => "cursor",
+        AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
         AgentKind::DeepSeekHarness => "deepseek-harness",
@@ -1202,8 +1300,8 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
 
 fn read_json_object(path: &Path) -> Result<JsonMap<String, JsonValue>> {
     let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let value: JsonValue = serde_json::from_str(&content)
-        .with_context(|| format!("Invalid JSON: {}", path.display()))?;
+    let value: JsonValue =
+        json5::from_str(&content).with_context(|| format!("Invalid JSON: {}", path.display()))?;
     value
         .as_object()
         .cloned()
@@ -1348,6 +1446,70 @@ mod tests {
                 .iter()
                 .any(|change| change.target.ends_with(".cursor/mcp.json"))
         );
+        assert!(
+            plan.changes
+                .iter()
+                .any(|change| change.target.ends_with(".opencode/opencode.json"))
+        );
+    }
+
+    #[test]
+    fn opencode_plan_preserves_unknown_config_and_uses_native_gateway_shape() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"theme":"dark","mcp":{"existing":{"type":"remote","url":"https://example.com"}}}"#,
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(plan.changes.iter().all(|change| {
+            matches!(change.scope, ChangeScope::Project)
+                && change.target.starts_with(&plan.project_root)
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(value["mcp"]["existing"]["url"], "https://example.com");
+        assert_eq!(value["mcp"]["agentkib"]["type"], "remote");
+        assert_eq!(value["mcp"]["agentkib"]["enabled"], true);
+        assert_eq!(
+            value["mcp"]["agentkib"]["url"],
+            "http://127.0.0.1/mcp/opencode"
+        );
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(["./agentkib-instructions.md"])
+        );
+        let instruction = plan
+            .changes
+            .iter()
+            .find(|change| {
+                change
+                    .target
+                    .ends_with(".opencode/agentkib-instructions.md")
+            })
+            .unwrap();
+        assert!(instruction.after.contains("Use OpenCode tools."));
     }
 
     #[test]
@@ -1654,6 +1816,32 @@ mod tests {
         )
         .unwrap();
         assert!(hermes.contains("/agents/hermes"));
+    }
+
+    #[test]
+    fn opencode_stdio_connection_uses_command_array_and_environment() {
+        let dir = tempdir().unwrap();
+        let connection = ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Stdio {
+                command: "agentkib-mcp".into(),
+                args: vec!["serve".into()],
+            },
+            env: BTreeMap::from([("MODE".into(), "local".into())]),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        };
+
+        let merged =
+            merge_opencode_config(&dir.path().join("opencode.json"), &[connection], false).unwrap();
+        let value: JsonValue = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(value["mcp"]["agentkib"]["type"], "local");
+        assert_eq!(
+            value["mcp"]["agentkib"]["command"],
+            serde_json::json!(["agentkib-mcp", "serve"])
+        );
+        assert_eq!(value["mcp"]["agentkib"]["environment"]["MODE"], "local");
     }
 
     #[test]

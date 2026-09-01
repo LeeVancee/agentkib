@@ -33,6 +33,20 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
             &["mcpServers"],
             &mut candidates,
         )?;
+        for path in [
+            project.join("opencode.json"),
+            project.join("opencode.jsonc"),
+            project.join(".opencode/opencode.json"),
+            project.join(".opencode/opencode.jsonc"),
+        ] {
+            scan_json5_servers(
+                &path,
+                AgentKind::OpenCode,
+                "project",
+                &["mcp"],
+                &mut candidates,
+            )?;
+        }
     }
     if let Some(home) = dirs::home_dir() {
         scan_codex(&home.join(".codex/config.toml"), "home", &mut candidates)?;
@@ -59,6 +73,20 @@ pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigration
         )?;
         scan_hermes(&home.join(".hermes/config.yaml"), "home", &mut candidates)?;
     }
+    if let Some(config_home) = agentkib_platform::xdg::config_home()
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .map(|home| home.join("opencode"))
+    {
+        for name in ["opencode.json", "opencode.jsonc"] {
+            scan_json5_servers(
+                &config_home.join(name),
+                AgentKind::OpenCode,
+                "home",
+                &["mcp"],
+                &mut candidates,
+            )?;
+        }
+    }
     candidates.retain(|candidate| candidate.name != "agentkib");
     candidates.sort_by(|left, right| {
         left.agent
@@ -73,6 +101,7 @@ pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerCo
         AgentKind::Codex => codex_server(candidate)?,
         AgentKind::ClaudeCode => json_server(candidate, &["mcpServers"], false)?,
         AgentKind::Cursor => json_server(candidate, &["mcpServers"], false)?,
+        AgentKind::OpenCode => opencode_server(candidate)?,
         AgentKind::OpenClaw => json_server(candidate, &["mcp", "servers"], true)?,
         AgentKind::Hermes => hermes_server(candidate)?,
         AgentKind::DeepSeekHarness => {
@@ -283,7 +312,14 @@ fn collect_json_servers(
         let endpoint = server
             .get("url")
             .or_else(|| server.get("command"))
-            .and_then(Value::as_str)
+            .and_then(|value| {
+                value.as_str().or_else(|| {
+                    value
+                        .as_array()
+                        .and_then(|values| values.first())
+                        .and_then(Value::as_str)
+                })
+            })
             .unwrap_or("unavailable");
         let transport = server
             .get("transport")
@@ -303,7 +339,9 @@ fn collect_json_servers(
             name,
             transport,
             endpoint,
-            server.get("env").is_some() || server.get("headers").is_some(),
+            server.get("env").is_some()
+                || server.get("environment").is_some()
+                || server.get("headers").is_some(),
         ));
     }
 }
@@ -342,7 +380,10 @@ fn candidate(
 ) -> McpMigrationCandidate {
     let source_path = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let digest = Sha256::digest(format!("{}:{name}", source_path.display()));
-    let supported = matches!(transport, "stdio" | "http" | "streamable-http" | "sse");
+    let supported = matches!(
+        transport,
+        "stdio" | "http" | "streamable-http" | "sse" | "local" | "remote"
+    );
     McpMigrationCandidate {
         id: hex::encode(&digest[..12]),
         agent,
@@ -468,6 +509,39 @@ fn hermes_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
     ))
 }
 
+fn opencode_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
+    let content = std::fs::read_to_string(&candidate.source_path)?;
+    let value: Value = json5::from_str(&content)?;
+    let server = value
+        .get("mcp")
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get(&candidate.name))
+        .context("OpenCode MCP candidate no longer exists")?;
+    let transport = if let Some(url) = server.get("url").and_then(Value::as_str) {
+        McpServerTransport::StreamableHttp { url: url.into() }
+    } else {
+        let command = server
+            .get("command")
+            .and_then(Value::as_array)
+            .context("OpenCode MCP command must be an array")?;
+        let executable = command
+            .first()
+            .and_then(Value::as_str)
+            .context("OpenCode MCP command is missing")?;
+        McpServerTransport::Stdio {
+            command: executable.into(),
+            args: command
+                .iter()
+                .skip(1)
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            cwd: None,
+        }
+    };
+    Ok(base_server(candidate, transport))
+}
+
 fn json_strings(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
@@ -554,6 +628,12 @@ fn remove_native_candidates(
             upsert_json_gateway(&mut value, &["mcpServers"], agent, gateway_url)?;
             Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
         }
+        AgentKind::OpenCode => {
+            let mut value: Value = json5::from_str(content)?;
+            remove_json_names(&mut value, &["mcp"], &names)?;
+            upsert_json_gateway(&mut value, &["mcp"], agent, gateway_url)?;
+            Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
+        }
         AgentKind::OpenClaw => {
             let mut value: Value = json5::from_str(content)?;
             remove_json_names(&mut value, &["mcp", "servers"], &names)?;
@@ -582,6 +662,7 @@ fn agent_gateway_url(template: &str, agent: AgentKind) -> String {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude-code",
         AgentKind::Cursor => "cursor",
+        AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
         AgentKind::DeepSeekHarness => "deepseek-harness",
@@ -612,6 +693,10 @@ fn upsert_json_gateway(
         }
         AgentKind::OpenClaw => {
             gateway.insert("transport".into(), "streamable-http".into());
+        }
+        AgentKind::OpenCode => {
+            gateway.insert("type".into(), "remote".into());
+            gateway.insert("enabled".into(), true.into());
         }
         AgentKind::Codex | AgentKind::Cursor | AgentKind::Hermes | AgentKind::DeepSeekHarness => {}
     }
@@ -718,6 +803,73 @@ mod tests {
         assert_eq!(
             value.pointer("/mcpServers/other/future"),
             Some(&Value::from(42))
+        );
+    }
+
+    #[test]
+    fn opencode_jsonc_scan_and_migration_use_native_shapes_without_leaking_secrets() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::create_dir(dir.path().join(".opencode")).unwrap();
+        std::fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            r#"{
+  // keep unknown fields
+  "theme": "dark",
+  "mcp": {
+    "selected": {
+      "type": "local",
+      "command": ["node", "server.js"],
+      "environment": { "API_TOKEN": "do-not-return" }
+    },
+    "other": { "type": "remote", "url": "https://example.com/mcp", "future": 42 }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let selected = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::OpenCode && candidate.name == "selected"
+            })
+            .unwrap();
+        assert_eq!(selected.endpoint, "node");
+        assert!(selected.has_secret_values);
+        assert!(
+            !serde_json::to_string(selected)
+                .unwrap()
+                .contains("do-not-return")
+        );
+        let server = migration_server(selected).unwrap();
+        assert!(matches!(
+            server.transport,
+            McpServerTransport::Stdio { ref command, ref args, .. }
+                if command == "node" && args == &["server.js"]
+        ));
+
+        let plan = plan_migration(
+            dir.path(),
+            std::slice::from_ref(&selected.id),
+            &[server],
+            "http://127.0.0.1/mcp/{agent}",
+        )
+        .unwrap();
+        let native = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.jsonc"))
+            .unwrap();
+        let value: Value = serde_json::from_str(&native.after).unwrap();
+        assert_eq!(value["theme"], "dark");
+        assert!(value.pointer("/mcp/selected").is_none());
+        assert_eq!(value["mcp"]["other"]["future"], 42);
+        assert_eq!(value["mcp"]["agentkib"]["type"], "remote");
+        assert_eq!(value["mcp"]["agentkib"]["enabled"], true);
+        assert_eq!(
+            value["mcp"]["agentkib"]["url"],
+            "http://127.0.0.1/mcp/opencode"
         );
     }
 }

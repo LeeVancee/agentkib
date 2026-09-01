@@ -4,7 +4,7 @@
 
 ## AgentKib 是什么
 
-AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、Claude Code、Cursor、OpenClaw、Hermes 和 DeepSeek Harness 已使用过的工作区，并集中展示其中的 Instructions、Skills、MCP、记忆和原生配置。
+AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 DeepSeek Harness 已使用过的工作区，并集中展示其中的 Instructions、Skills、MCP、记忆和原生配置。
 
 主要页面和功能如下：
 
@@ -17,6 +17,18 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 - **设置**：管理扫描目录、关闭行为、语言、主题、MCP Hub、远程 Gateway 和 Obsidian 集成。
 
 发现和浏览不会直接修改 Agent 配置。需要同步公共资产时，AgentKib 会先生成 ChangeSet 和完整 Diff，确认后才写入。
+
+### Agent 支持矩阵
+
+| Agent | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 |
+| --- | --- | --- | --- |
+| Codex | 支持 | 支持 | 支持 |
+| Claude Code | 支持 | 支持 | 支持 |
+| Cursor | 支持 | 支持 | — |
+| OpenCode | 支持 | 支持 | — |
+| OpenClaw | 支持 | 支持 | — |
+| Hermes | 支持 | 支持 | — |
+| DeepSeek Harness | Beta，只读 | 仅诊断，不写入 | — |
 
 ## 一、安装编译环境
 

@@ -35,6 +35,7 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(CursorProvider::default()),
+        Box::new(OpenCodeProvider::default()),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(DeepSeekHarnessProvider::default()),
@@ -448,6 +449,177 @@ fn cursor_workspace_path(value: &JsonValue) -> Option<PathBuf> {
 
 fn file_uri_path(value: &str) -> Option<PathBuf> {
     platform_path::file_uri_to_path(value)
+}
+
+#[derive(Default)]
+struct OpenCodeProvider {
+    config_home: Option<PathBuf>,
+    data_home: Option<PathBuf>,
+}
+
+impl OpenCodeProvider {
+    fn config_home(&self) -> Option<PathBuf> {
+        self.config_home.clone().or_else(|| {
+            agentkib_platform::xdg::config_home()
+                .or_else(|| dirs::home_dir().map(|path| path.join(".config")))
+                .map(|path| path.join("opencode"))
+        })
+    }
+
+    fn data_home(&self) -> Option<PathBuf> {
+        self.data_home.clone().or_else(|| {
+            agentkib_platform::xdg::data_home()
+                .or_else(|| dirs::home_dir().map(|path| path.join(".local/share")))
+                .map(|path| path.join("opencode"))
+        })
+    }
+}
+
+impl WorkspaceDiscoveryProvider for OpenCodeProvider {
+    fn installation(&self) -> AgentInstallation {
+        let mut value = installation(
+            AgentKind::OpenCode,
+            self.config_home(),
+            agent_is_installed(AgentKind::OpenCode),
+        );
+        value.configured = value.configured || self.data_home().is_some_and(|path| path.is_dir());
+        value
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
+        let Some(data_home) = self.data_home().filter(|path| path.is_dir()) else {
+            return Ok(Vec::new());
+        };
+        let mut output = discover_opencode_database(&data_home.join("opencode.db"))?;
+        let database_paths: BTreeSet<_> = output
+            .iter()
+            .map(|candidate| platform_path::identity(&candidate.path))
+            .collect();
+        output.extend(
+            discover_legacy_opencode_projects(&data_home)?
+                .into_iter()
+                .filter(|candidate| {
+                    !database_paths.contains(&platform_path::identity(&candidate.path))
+                }),
+        );
+        Ok(output)
+    }
+
+    fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
+        Ok(self
+            .config_home()
+            .filter(|path| path.is_dir())
+            .map(|home| {
+                scan_known_home(
+                    AgentKind::OpenCode,
+                    &home,
+                    &[
+                        "AGENTS.md",
+                        "opencode.json",
+                        "opencode.jsonc",
+                        "skills",
+                        "agents",
+                        "commands",
+                        "plugins",
+                    ],
+                )
+            })
+            .transpose()?
+            .unwrap_or_default())
+    }
+}
+
+fn discover_opencode_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let connection = open_read_only(path)?;
+    if !table_has_column(&connection, "project", "worktree")? {
+        return Ok(Vec::new());
+    }
+    let has_sessions = table_has_column(&connection, "session", "project_id")?
+        && table_has_column(&connection, "session", "directory")?;
+    let sql = if has_sessions {
+        "SELECT p.worktree, COUNT(s.id), MAX(COALESCE(s.time_updated, s.time_created)) \
+         FROM project p LEFT JOIN session s ON s.project_id = p.id \
+         WHERE p.worktree IS NOT NULL AND p.worktree != '' GROUP BY p.id, p.worktree"
+    } else {
+        "SELECT worktree, 0, MAX(COALESCE(time_updated, time_created)) \
+         FROM project WHERE worktree IS NOT NULL AND worktree != '' GROUP BY id, worktree"
+    };
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    let mut output = Vec::new();
+    for row in rows {
+        let (worktree, count, updated) = row?;
+        output.push(candidate(
+            PathBuf::from(worktree),
+            Some(AgentKind::OpenCode),
+            DiscoveryEvidence::SessionCwd,
+            updated.and_then(timestamp_from_integer),
+            count.max(0) as u64,
+            false,
+        ));
+    }
+    Ok(output)
+}
+
+fn discover_legacy_opencode_projects(data_home: &Path) -> Result<Vec<DiscoveryCandidate>> {
+    let projects = data_home.join("storage/project");
+    if !projects.is_dir() {
+        return Ok(Vec::new());
+    }
+    let sessions = data_home.join("storage/session");
+    let mut output = Vec::new();
+    for entry in fs::read_dir(projects)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file()
+            || path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<JsonValue>(&fs::read_to_string(&path)?) else {
+            continue;
+        };
+        let Some(worktree) = value.get("worktree").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let project_id = value.get("id").and_then(JsonValue::as_str);
+        let session_count = project_id
+            .map(|id| sessions.join(id))
+            .filter(|path| path.is_dir())
+            .and_then(|path| fs::read_dir(path).ok())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry.path().extension().and_then(|value| value.to_str()) == Some("json")
+                    })
+                    .count() as u64
+            })
+            .unwrap_or(0);
+        let updated = value
+            .pointer("/time/updated")
+            .or_else(|| value.pointer("/time/created"))
+            .and_then(parse_json_timestamp)
+            .or_else(|| modified_at(&path).ok());
+        output.push(candidate(
+            PathBuf::from(worktree),
+            Some(AgentKind::OpenCode),
+            DiscoveryEvidence::SessionCwd,
+            updated,
+            session_count,
+            false,
+        ));
+    }
+    Ok(output)
 }
 
 #[derive(Default)]
@@ -1080,6 +1252,7 @@ fn agent_is_installed(agent: AgentKind) -> bool {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude",
         AgentKind::Cursor => "cursor",
+        AgentKind::OpenCode => "opencode",
         AgentKind::OpenClaw => "openclaw",
         AgentKind::Hermes => "hermes",
         AgentKind::DeepSeekHarness => "dsh",
@@ -1101,6 +1274,7 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
     let bundle = match agent {
         AgentKind::Codex => "Codex.app",
         AgentKind::Cursor => "Cursor.app",
+        AgentKind::OpenCode => "OpenCode.app",
         AgentKind::ClaudeCode
         | AgentKind::OpenClaw
         | AgentKind::Hermes
@@ -1115,9 +1289,31 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
         .any(|path| path.join("Contents/Info.plist").is_file())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn app_bundle_is_available(agent: AgentKind) -> bool {
-    agent == AgentKind::Cursor && command::cursor_app_is_available()
+    if agent == AgentKind::Cursor {
+        return command::cursor_app_is_available();
+    }
+    if agent != AgentKind::OpenCode {
+        return false;
+    }
+    dirs::data_local_dir().is_some_and(|local| {
+        [
+            local.join("Programs/OpenCode/OpenCode.exe"),
+            local.join("OpenCode/OpenCode.exe"),
+        ]
+        .into_iter()
+        .any(|path| path.is_file())
+    })
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn app_bundle_is_available(agent: AgentKind) -> bool {
+    match agent {
+        AgentKind::Cursor => command::cursor_app_is_available(),
+        AgentKind::OpenCode => command_is_available("ai.opencode.desktop"),
+        _ => false,
+    }
 }
 
 fn candidate(
@@ -1282,6 +1478,103 @@ mod tests {
         assert!(!value.installed);
         assert!(value.configured);
         assert_eq!(value.home, Some(home));
+    }
+
+    #[test]
+    fn opencode_residual_configuration_is_not_installation_evidence() {
+        let dir = tempdir().unwrap();
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(&config_home).unwrap();
+
+        let value = installation(AgentKind::OpenCode, Some(config_home.clone()), false);
+
+        assert!(!value.installed);
+        assert!(value.configured);
+        assert_eq!(value.home, Some(config_home));
+    }
+
+    #[test]
+    fn opencode_discovers_sqlite_projects_without_exposing_session_titles() {
+        let dir = tempdir().unwrap();
+        let data_home = dir.path().join("data/opencode");
+        fs::create_dir_all(&data_home).unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let connection = Connection::open(data_home.join("opencode.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, time_created INTEGER, time_updated INTEGER);\
+                 CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project VALUES (?1, ?2, 1000, 2000)",
+                rusqlite::params!["project-private-id", workspace.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session VALUES (?1, ?2, ?3, ?4, 2000, 3000)",
+                rusqlite::params![
+                    "session-private-id",
+                    "project-private-id",
+                    workspace.display().to_string(),
+                    "private session title"
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let candidates = OpenCodeProvider {
+            config_home: None,
+            data_home: Some(data_home),
+        }
+        .discover()
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, workspace);
+        assert_eq!(candidates[0].session_count, 1);
+        let debug = format!("{candidates:?}");
+        assert!(!debug.contains("private session title"));
+        assert!(!debug.contains("session-private-id"));
+    }
+
+    #[test]
+    fn opencode_discovers_legacy_project_json_without_exposing_metadata() {
+        let dir = tempdir().unwrap();
+        let data_home = dir.path().join("data/opencode");
+        let project_store = data_home.join("storage/project");
+        let session_store = data_home.join("storage/session/project-private-id");
+        fs::create_dir_all(&project_store).unwrap();
+        fs::create_dir_all(&session_store).unwrap();
+        let workspace = dir.path().join("legacy-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(
+            project_store.join("project-private-id.json"),
+            serde_json::json!({
+                "id": "project-private-id",
+                "worktree": workspace,
+                "name": "private project title",
+                "time": { "updated": 3_000 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            session_store.join("session-private-id.json"),
+            r#"{"title":"private session title","messages":["secret"]}"#,
+        )
+        .unwrap();
+
+        let candidates = discover_legacy_opencode_projects(&data_home).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session_count, 1);
+        let debug = format!("{candidates:?}");
+        assert!(!debug.contains("private project title"));
+        assert!(!debug.contains("private session title"));
     }
 
     #[cfg(unix)]

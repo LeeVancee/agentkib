@@ -714,6 +714,7 @@ fn instruction_fragment_can_be_repaired(
         let shared_instructions_are_planned = [
             AgentKind::Codex,
             AgentKind::Cursor,
+            AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
         ]
@@ -736,6 +737,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::ClaudeCode => cwd.join("CLAUDE.md"),
             AgentKind::Codex => cwd.join("AGENTS.override.md"),
             AgentKind::Cursor => cwd.join(".cursor/rules/agentkib.mdc"),
+            AgentKind::OpenCode => cwd.join(".opencode/agentkib-instructions.md"),
             AgentKind::OpenClaw => cwd.join("TOOLS.md"),
             AgentKind::Hermes => cwd.join(".hermes.md"),
             AgentKind::DeepSeekHarness => return false,
@@ -754,7 +756,7 @@ fn instruction_fragment_can_be_repaired(
                     cwd.join("AGENTS.md")
                 }
             }
-            AgentKind::Cursor | AgentKind::OpenClaw => cwd.join("AGENTS.md"),
+            AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw => cwd.join("AGENTS.md"),
             AgentKind::Hermes => {
                 let private = cwd.join(".hermes.md");
                 let legacy = cwd.join("HERMES.md");
@@ -781,6 +783,7 @@ fn mcp_target_can_be_repaired(project: &Path, agent: AgentKind) -> bool {
         AgentKind::Codex => project.join(".codex/config.toml"),
         AgentKind::ClaudeCode => project.join(".mcp.json"),
         AgentKind::Cursor => project.join(".cursor/mcp.json"),
+        AgentKind::OpenCode => project.join(".opencode/opencode.json"),
         AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::DeepSeekHarness => return false,
     };
     planned_instruction_file_is_safe(project, &target)
@@ -826,6 +829,7 @@ fn generated_skill_is_current(
     let roots: &[&str] = match agent {
         AgentKind::ClaudeCode => &[".claude/skills"],
         AgentKind::Cursor => &[".cursor/skills", ".agents/skills"],
+        AgentKind::OpenCode => &[".opencode/skills", ".claude/skills", ".agents/skills"],
         AgentKind::DeepSeekHarness => &[".dsh/skills", ".agents/skills"],
         AgentKind::OpenClaw => &["skills", ".agents/skills"],
         AgentKind::Codex | AgentKind::Hermes => &[".agents/skills"],
@@ -834,7 +838,10 @@ fn generated_skill_is_current(
     let Some(source_files) = managed_skill_files(project, &source) else {
         return false;
     };
-    if matches!(agent, AgentKind::Cursor | AgentKind::OpenClaw) {
+    if matches!(
+        agent,
+        AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw
+    ) {
         let expected_root = if agent == AgentKind::Cursor {
             cursor_skill_root(manifest, skill)
         } else {
@@ -868,15 +875,20 @@ fn generated_skill_is_current(
 }
 
 fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'static str {
-    let shared_skill_enabled = [AgentKind::Codex, AgentKind::OpenClaw, AgentKind::Hermes]
-        .into_iter()
-        .any(|shared_agent| {
-            manifest
-                .adapters
-                .get(&shared_agent)
-                .is_none_or(|state| state.enabled)
-                && (skill.targets.is_empty() || skill.targets.contains(&shared_agent))
-        });
+    let shared_skill_enabled = [
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::OpenClaw,
+        AgentKind::Hermes,
+    ]
+    .into_iter()
+    .any(|shared_agent| {
+        manifest
+            .adapters
+            .get(&shared_agent)
+            .is_none_or(|state| state.enabled)
+            && (skill.targets.is_empty() || skill.targets.contains(&shared_agent))
+    });
     if shared_skill_enabled {
         ".agents/skills"
     } else {
@@ -972,13 +984,20 @@ fn generated_skill_can_be_repaired(
     let relative_root = match agent {
         AgentKind::ClaudeCode => ".claude/skills",
         AgentKind::Cursor => cursor_skill_root(manifest, skill),
-        AgentKind::Codex | AgentKind::OpenClaw | AgentKind::Hermes => ".agents/skills",
+        AgentKind::Codex | AgentKind::OpenCode | AgentKind::OpenClaw | AgentKind::Hermes => {
+            ".agents/skills"
+        }
         AgentKind::DeepSeekHarness => return false,
     };
     let target = project.join(relative_root).join(&skill.name);
-    if matches!(agent, AgentKind::Cursor | AgentKind::OpenClaw) {
+    if matches!(
+        agent,
+        AgentKind::Cursor | AgentKind::OpenCode | AgentKind::OpenClaw
+    ) {
         let roots: &[&str] = if agent == AgentKind::Cursor {
             &[".cursor/skills", ".agents/skills"]
+        } else if agent == AgentKind::OpenCode {
+            &[".opencode/skills", ".claude/skills", ".agents/skills"]
         } else {
             &["skills", ".agents/skills"]
         };
@@ -2148,6 +2167,7 @@ mod tests {
         for agent in [
             AgentKind::Codex,
             AgentKind::Cursor,
+            AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
         ] {
@@ -2317,6 +2337,56 @@ mod tests {
                 issue.code == "mcp.target-missing"
                     && issue.agent == Some(agent)
                     && !issue.repairable
+            }));
+        }
+    }
+
+    #[test]
+    fn opencode_missing_managed_assets_are_repairable_in_project_paths() {
+        let dir = tempdir().unwrap();
+        let mut value = manifest(dir.path());
+        value.skills.push(SkillDefinition {
+            name: "reviewer".into(),
+            path: "skill-sources/reviewer".into(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        value.connections.push(ConnectionDefinition {
+            name: "filesystem".into(),
+            transport: ConnectionTransport::Http {
+                url: "http://127.0.0.1/mcp".into(),
+            },
+            env: Default::default(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::OpenCode],
+        });
+        fs::create_dir_all(dir.path().join("skill-sources/reviewer")).unwrap();
+        fs::write(
+            dir.path().join("skill-sources/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join(".agentkib")).unwrap();
+        fs::write(
+            manifest_path(dir.path()),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+
+        let report = diagnose_workspace(
+            dir.path(),
+            "workspace",
+            &BTreeSet::from([AgentKind::OpenCode]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        for code in [
+            "instruction.missing",
+            "skill.target-missing",
+            "mcp.target-missing",
+        ] {
+            assert!(report.issues.iter().any(|issue| {
+                issue.agent == Some(AgentKind::OpenCode) && issue.code == code && issue.repairable
             }));
         }
     }

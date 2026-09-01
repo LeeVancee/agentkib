@@ -29,6 +29,7 @@ const agentOrder: AgentKind[] = [
   "codex",
   "claude-code",
   "cursor",
+  "opencode",
   "open-claw",
   "hermes",
   "deepseek-harness",

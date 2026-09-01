@@ -33,6 +33,7 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
   "deepseek-harness": "DeepSeek Harness",

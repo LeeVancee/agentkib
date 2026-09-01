@@ -615,6 +615,7 @@
   "assets.summary.codexInstructions": "Codex プロジェクト指示",
   "assets.summary.claudeInstructions": "Claude Code プロジェクト指示",
   "assets.summary.cursorInstructions": "Cursor プロジェクト指示",
+  "assets.summary.openCodeInstructions": "OpenCode プロジェクト指示",
   "assets.summary.openClawInstructions": "OpenClaw プロジェクト指示",
   "assets.summary.hermesInstructions": "Hermes プロジェクト指示",
   "assets.summary.skillDirectory": "Agent Skill ディレクトリ",

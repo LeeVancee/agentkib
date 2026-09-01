@@ -67,6 +67,7 @@ const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
   cursor: "Cursor",
+  opencode: "OpenCode",
   "open-claw": "OpenClaw",
   hermes: "Hermes",
   "deepseek-harness": "DeepSeek Harness",
@@ -187,11 +188,13 @@ export function InsightsPage({
                 onChange={(event) => setAgent(event.target.value as typeof agent)}
               >
                 <option value="all">{tr("workspace.allAgents")}</option>
-                {Object.entries(agentLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
+                {Object.entries(agentLabels)
+                  .filter(([value]) => value !== "opencode")
+                  .map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
               </SelectControl>
             )}
             {showTokenFilters && (

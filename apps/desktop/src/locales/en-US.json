@@ -618,6 +618,7 @@
   "assets.summary.codexInstructions": "Codex project instructions",
   "assets.summary.claudeInstructions": "Claude Code project instructions",
   "assets.summary.cursorInstructions": "Cursor project instructions",
+  "assets.summary.openCodeInstructions": "OpenCode project instructions",
   "assets.summary.openClawInstructions": "OpenClaw project instructions",
   "assets.summary.hermesInstructions": "Hermes project instructions",
   "assets.summary.skillDirectory": "Agent skill directory",

@@ -1,6 +1,7 @@
 import claudeCodeIcon from "@/assets/agent-icons/claude-code.svg";
 import codexIcon from "@/assets/agent-icons/codex.svg";
 import cursorIcon from "@/assets/agent-icons/cursor.svg";
+import openCodeIcon from "@/assets/agent-icons/opencode.svg";
 import hermesIcon from "@/assets/agent-icons/hermes.svg";
 import openClawIcon from "@/assets/agent-icons/open-claw.svg";
 import deepSeekHarnessIcon from "@/assets/agent-icons/deepseek-harness.svg";
@@ -11,6 +12,7 @@ const agentIcons: Record<AgentKind, string> = {
   codex: codexIcon,
   "claude-code": claudeCodeIcon,
   cursor: cursorIcon,
+  opencode: openCodeIcon,
   "open-claw": openClawIcon,
   hermes: hermesIcon,
   "deepseek-harness": deepSeekHarnessIcon,
@@ -26,6 +28,7 @@ export function AgentIcon({ agent }: { agent: AgentKind }) {
         className={cn(
           "block size-full object-contain",
           agent === "cursor" && "rounded-md bg-[#1d1d1f] p-1",
+          agent === "opencode" && "dark:invert",
           agent === "hermes" && "opacity-[0.92] invert",
         )}
         src={agentIcons[agent]}

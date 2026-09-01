@@ -67,32 +67,49 @@ pub fn resolve_context(
                 push_context_budget_warning(&mut warnings);
                 break;
             }
+            let agent_home_source =
+                agent == AgentKind::OpenCode && !path_starts_with(&source, &root);
+            let external_root = agent_home_source
+                .then(|| source.parent().and_then(|parent| canonicalize(parent).ok()))
+                .flatten();
+            let allowed_root = external_root.as_deref().unwrap_or(&root);
+            let warning_start = warnings.len();
             match load_with_imports(
                 &source,
-                &root,
+                allowed_root,
                 &mut HashSet::new(),
                 0,
                 &mut remaining_context_chars,
                 &mut warnings,
             ) {
                 Ok(content) => sections.push(ContextSection {
-                    scope: source
-                        .parent()
-                        .unwrap_or(&root)
-                        .strip_prefix(&root)
-                        .unwrap_or(Path::new("."))
-                        .display()
-                        .to_string(),
+                    scope: if agent_home_source {
+                        "agent-home".into()
+                    } else {
+                        source
+                            .parent()
+                            .unwrap_or(&root)
+                            .strip_prefix(&root)
+                            .unwrap_or(Path::new("."))
+                            .display()
+                            .to_string()
+                    },
                     source,
                     content,
                     precedence: sections.len(),
                 }),
                 Err(error) => warnings.push(error.to_string()),
             }
+            if agent_home_source {
+                for warning in &mut warnings[warning_start..] {
+                    *warning = format!("Agent home: {warning}");
+                }
+            }
         }
         sections
     };
-    if sections.is_empty() {
+    let has_project_instruction = sections.iter().any(|section| section.scope != "agent-home");
+    if !has_project_instruction {
         warnings.push("No project instruction file was found for this Agent".into());
     }
 
@@ -103,7 +120,7 @@ pub fn resolve_context(
             .iter()
             .any(|section| section.content.contains(override_text.trim()));
         if !override_text.trim().is_empty() && !already_generated {
-            if !sections.is_empty() {
+            if has_project_instruction {
                 warnings.push("The platform override is applied after native project instructions; check for semantic conflicts".into());
             }
             sections.push(ContextSection {
@@ -841,10 +858,31 @@ fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn opencode_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let mut result = dirs
-        .iter()
-        .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"]))
-        .collect::<Vec<_>>();
+    let config_home = agentkib_platform::xdg::config_home()
+        .or_else(|| user_home().map(|home| home.join(".config")))
+        .map(|home| home.join("opencode"));
+    let home = user_home();
+    opencode_sources_with_roots(dirs, config_home.as_deref(), home.as_deref())
+}
+
+fn opencode_sources_with_roots(
+    dirs: &[PathBuf],
+    config_home: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let global = config_home
+        .map(|home| home.join("AGENTS.md"))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            home.map(|home| home.join(".claude/CLAUDE.md"))
+                .filter(|path| path.is_file())
+        });
+    result.extend(global);
+    result.extend(
+        dirs.iter()
+            .filter_map(|dir| first_existing(dir, &["AGENTS.md", "CLAUDE.md"])),
+    );
     let Some(root) = dirs.first() else {
         return result;
     };
@@ -1483,9 +1521,39 @@ mod tests {
         let preview =
             resolve_context(dir.path(), &nested, AgentKind::OpenCode, None, vec![]).unwrap();
 
-        assert_eq!(preview.sections.len(), 2);
-        assert_eq!(preview.sections[0].content.trim(), "root agents");
-        assert_eq!(preview.sections[1].content.trim(), "nested fallback");
+        let project_sections = preview
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .collect::<Vec<_>>();
+        assert_eq!(project_sections.len(), 2);
+        assert_eq!(project_sections[0].content.trim(), "root agents");
+        assert_eq!(project_sections[1].content.trim(), "nested fallback");
+    }
+
+    #[test]
+    fn opencode_includes_global_rules_before_the_project_chain() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().join("project");
+        let nested = project.join("src");
+        let config_home = dir.path().join("config/opencode");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&config_home).unwrap();
+        fs::write(config_home.join("AGENTS.md"), "global").unwrap();
+        fs::write(project.join("AGENTS.md"), "project").unwrap();
+        fs::write(nested.join("CLAUDE.md"), "nested").unwrap();
+
+        let dirs = directory_chain(&project, &nested).unwrap();
+        let sources = opencode_sources_with_roots(&dirs, Some(&config_home), None);
+
+        assert_eq!(
+            sources,
+            [
+                config_home.join("AGENTS.md"),
+                project.join("AGENTS.md"),
+                nested.join("CLAUDE.md"),
+            ]
+        );
     }
 
     #[test]
@@ -1501,7 +1569,14 @@ mod tests {
 
         let unregistered =
             resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
-        assert_eq!(unregistered.sections.len(), 1);
+        assert_eq!(
+            unregistered
+                .sections
+                .iter()
+                .filter(|section| section.scope != "agent-home")
+                .count(),
+            1
+        );
 
         fs::write(
             dir.path().join(".opencode/opencode.jsonc"),
@@ -1511,12 +1586,17 @@ mod tests {
         let registered =
             resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
 
-        assert_eq!(registered.sections.len(), 2);
+        let project_sections = registered
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .collect::<Vec<_>>();
+        assert_eq!(project_sections.len(), 2);
         assert!(equivalent(
-            &registered.sections[1].source,
+            &project_sections[1].source,
             &dir.path().join(OPENCODE_MANAGED_INSTRUCTION)
         ));
-        assert_eq!(registered.sections[1].content.trim(), "OpenCode override");
+        assert_eq!(project_sections[1].content.trim(), "OpenCode override");
     }
 
     #[test]

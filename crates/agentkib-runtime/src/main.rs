@@ -2272,6 +2272,35 @@ struct PlanMcpMigrationRequest {
     candidate_ids: Vec<String>,
 }
 
+fn merge_reentered_secret_values(
+    candidate: &agentkib_core::McpMigrationCandidate,
+    mut imported: agentkib_core::McpServerConfig,
+    effective: &agentkib_core::McpConfigDocument,
+) -> anyhow::Result<agentkib_core::McpServerConfig> {
+    if !candidate.has_secret_values {
+        return Ok(imported);
+    }
+    let secrets = effective
+        .servers
+        .iter()
+        .find(|server| {
+            server.name == candidate.name
+                && (!server.env.is_empty()
+                    || !server.headers.is_empty()
+                    || server.oauth_credentials.is_some())
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Re-enter local secret values and probe `{}` before removing its native configuration",
+                candidate.name
+            )
+        })?;
+    imported.env = secrets.env.clone();
+    imported.headers = secrets.headers.clone();
+    imported.oauth_credentials = secrets.oauth_credentials.clone();
+    Ok(imported)
+}
+
 fn plan_mcp_migration(
     request: PlanMcpMigrationRequest,
 ) -> anyhow::Result<agentkib_core::ChangeSet> {
@@ -2294,26 +2323,7 @@ fn plan_mcp_migration(
         .filter(|candidate| request.candidate_ids.contains(&candidate.id))
     {
         let imported = agentkib_mcp::native::migration_server(candidate)?;
-        let server = if candidate.has_secret_values {
-            effective
-                .servers
-                .iter()
-                .find(|server| {
-                    server.name == candidate.name
-                        && (!server.env.is_empty()
-                            || !server.headers.is_empty()
-                            || server.oauth_credentials.is_some())
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Re-enter local secret values and probe `{}` before removing its native configuration",
-                        candidate.name
-                    )
-                })?
-        } else {
-            imported
-        };
+        let server = merge_reentered_secret_values(candidate, imported, &effective)?;
         if matches!(
             &server.transport,
             agentkib_core::McpServerTransport::Sse { .. }
@@ -3246,6 +3256,39 @@ mod tests {
                 &approved,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn reentered_secrets_preserve_imported_opencode_disabled_state() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".opencode")).unwrap();
+        std::fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"mcp":{"private":{"type":"local","enabled":false,"command":["node"],"environment":{"TOKEN":"native-secret"}}}}"#,
+        )
+        .unwrap();
+        let candidates = agentkib_mcp::native::scan_native_candidates(Some(dir.path())).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.name == "private")
+            .unwrap();
+        let imported = agentkib_mcp::native::migration_server(candidate).unwrap();
+        assert!(!imported.enabled);
+
+        let mut reentered = imported.clone();
+        reentered.enabled = true;
+        reentered.env = BTreeMap::from([("TOKEN".into(), "reentered-secret".into())]);
+        let effective = agentkib_core::McpConfigDocument {
+            schema_version: 1,
+            servers: vec![reentered],
+        };
+        let merged = merge_reentered_secret_values(candidate, imported, &effective).unwrap();
+
+        assert!(!merged.enabled);
+        assert_eq!(
+            merged.env.get("TOKEN").map(String::as_str),
+            Some("reentered-secret")
         );
     }
 }

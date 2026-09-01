@@ -380,17 +380,47 @@ fn collect_json_servers(
                     "stdio"
                 }
             });
-        output.push(candidate(
+        let has_secret_values = ["env", "environment", "headers"]
+            .into_iter()
+            .any(|key| secret_container_has_values(server.get(key)));
+        let mut migration_candidate = candidate(
             path,
             agent,
             scope,
             name,
             transport,
             endpoint,
-            server.get("env").is_some()
-                || server.get("environment").is_some()
-                || server.get("headers").is_some(),
-        ));
+            has_secret_values,
+        );
+        if agent == AgentKind::OpenCode && server.get("timeout").is_some() {
+            migration_candidate.supported = false;
+            if !migration_candidate
+                .warnings
+                .iter()
+                .any(|warning| warning == "Unsupported native MCP fields or transport")
+            {
+                migration_candidate
+                    .warnings
+                    .push("Unsupported native MCP fields or transport".into());
+            }
+        }
+        output.push(migration_candidate);
+    }
+}
+
+fn secret_container_has_values(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Object(values)) => values.values().any(|value| match value {
+            Value::Null => false,
+            Value::String(value) => !value.is_empty(),
+            Value::Array(value) => !value.is_empty(),
+            Value::Object(value) => !value.is_empty(),
+            Value::Bool(_) | Value::Number(_) => true,
+        }),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Bool(_) | Value::Number(_)) => true,
+        Some(Value::Null) | None => false,
     }
 }
 
@@ -852,6 +882,38 @@ mod tests {
                 ["Unsupported native MCP fields or transport"]
             );
         }
+    }
+
+    #[test]
+    fn opencode_scan_ignores_empty_secret_containers_and_rejects_timeout() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".opencode")).unwrap();
+        std::fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"mcp":{
+                "empty-secrets":{"type":"local","command":["node"],"environment":{},"headers":{}},
+                "timed":{"type":"remote","url":"https://example.com/mcp","timeout":30000}
+            }}"#,
+        )
+        .unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let empty = candidates
+            .iter()
+            .find(|candidate| candidate.name == "empty-secrets")
+            .unwrap();
+        assert!(!empty.has_secret_values);
+        assert!(empty.supported);
+
+        let timed = candidates
+            .iter()
+            .find(|candidate| candidate.name == "timed")
+            .unwrap();
+        assert!(!timed.supported);
+        assert_eq!(
+            timed.warnings,
+            ["Unsupported native MCP fields or transport"]
+        );
     }
 
     #[test]

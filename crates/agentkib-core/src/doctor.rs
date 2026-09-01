@@ -224,13 +224,17 @@ pub fn diagnose_workspace_with_mcp_error(
                 match resolve_context(project, &cwd, agent, manifest, Vec::new()) {
                     Ok(preview) => {
                         let content_was_truncated = preview.warnings.iter().any(|warning| {
-                            warning.contains("truncated for preview")
-                                || warning.contains("instruction budget")
+                            !warning.starts_with("Agent home: ")
+                                && (warning.contains("truncated for preview")
+                                    || warning.contains("instruction budget"))
                         });
                         let current_sections = preview
                             .sections
                             .into_iter()
-                            .filter(|section| section.scope != "platform-override")
+                            .filter(|section| {
+                                section.scope != "platform-override"
+                                    && section.scope != "agent-home"
+                            })
                             .collect::<Vec<_>>();
                         let expected_here = expected_instruction_fragments
                             .iter()
@@ -254,6 +258,9 @@ pub fn diagnose_workspace_with_mcp_error(
                                 .extend(expected_here.iter().map(|(index, _)| *index));
                         }
                         for warning in preview.warnings {
+                            if warning.starts_with("Agent home: ") {
+                                continue;
+                            }
                             let missing_instruction = warning.contains("No project instruction");
                             // The resolver exposes this advisory for the preview UI, but Doctor
                             // only reports conditions that can be proven from files and parsed

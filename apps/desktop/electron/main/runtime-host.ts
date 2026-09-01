@@ -163,13 +163,15 @@ export class DesktopRuntimeHost extends EventEmitter {
     }
 
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    try {
-      await this.#requestNow(RUNTIME_METHODS.shutdown, {});
-    } catch {
-      // An already-failed runtime still needs the bounded termination path below.
-    }
-
-    await Promise.race([exited, delay(this.#options.shutdownTimeoutMs)]);
+    const gracefulShutdown = (async () => {
+      try {
+        await this.#requestNow(RUNTIME_METHODS.shutdown, {});
+      } catch {
+        // An already-failed runtime still needs the bounded termination path below.
+      }
+      await exited;
+    })();
+    await Promise.race([gracefulShutdown, delay(this.#options.shutdownTimeoutMs)]);
     if (child.exitCode === null) {
       child.kill();
       await Promise.race([exited, delay(500)]);

@@ -14,6 +14,16 @@ describe("desktop startup flow", () => {
     expect(source).not.toContain("await api.runtime()");
   });
 
+  it("updates startup appearance caches when settings change", () => {
+    const source = readFileSync(
+      path.join(desktopRoot, "src/features/settings/GlobalSettings.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("cacheEffectiveLocale(nextRuntime.effective_locale)");
+    expect(source).toContain("cacheEffectiveTheme(nextRuntime.effective_theme)");
+  });
+
   it("registers IPC and starts the Runtime without blocking window creation", () => {
     const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
     const start = source.indexOf("async function startApplication");

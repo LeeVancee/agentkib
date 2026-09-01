@@ -37,6 +37,7 @@ lines.on("line", (line) => {
     return;
   }
   if (request.method === "agentkib.shutdown") {
+    if (mode === "ignore-shutdown") return;
     respond(request, null);
     process.exit(0);
   }
@@ -138,6 +139,17 @@ describe("DesktopRuntimeHost", () => {
     await host.stop();
     await startingResult;
     await requestResult;
+    expect(host.status.state).toBe("stopping");
+  });
+
+  it("bounds shutdown when the runtime ignores the shutdown request", async () => {
+    const host = createHost(() => "ignore-shutdown");
+    await host.start();
+    const startedAt = Date.now();
+
+    await host.stop();
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(host.status.state).toBe("stopping");
   });
 });

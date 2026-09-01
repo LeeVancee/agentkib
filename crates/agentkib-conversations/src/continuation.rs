@@ -963,11 +963,12 @@ pub fn render_claude_native_session_with_notice(
                     "content": output,
                     "is_error": is_error
                 })),
-                SessionBlock::Attachment { kind, media_type, inline_base64: Some(data), .. } => content.push(serde_json::json!({
+                SessionBlock::Attachment { kind, media_type, filename, inline_base64: Some(data) } => content.push(serde_json::json!({
                     "type": match kind {
                         SessionAttachmentKind::Image => "image",
                         SessionAttachmentKind::Document => "document",
                     },
+                    "name": filename,
                     "source": {"type":"base64", "media_type":media_type, "data":data}
                 })),
                 SessionBlock::Attachment { .. } => {}
@@ -1057,7 +1058,7 @@ enum ComparableBlock {
     Text(SessionRole, String),
     ToolCall(String, String, String),
     ToolResult(String, String, bool),
-    Attachment(SessionAttachmentKind, String, String),
+    Attachment(SessionAttachmentKind, String, String, Option<String>),
 }
 
 fn comparable_document_blocks(
@@ -1098,11 +1099,14 @@ fn comparable_document_blocks(
                     kind,
                     media_type,
                     inline_base64: Some(data),
-                    ..
+                    filename,
                 } => blocks.push(ComparableBlock::Attachment(
                     *kind,
                     media_type.clone(),
                     data.clone(),
+                    (*kind == SessionAttachmentKind::Document)
+                        .then(|| filename.clone())
+                        .flatten(),
                 )),
                 SessionBlock::Attachment { .. } => {}
             }
@@ -1166,6 +1170,13 @@ fn comparable_native_blocks(content: &str, target: AgentKind) -> Result<Vec<Comp
                                             },
                                             media_type,
                                             data,
+                                            (kind == "input_file")
+                                                .then(|| {
+                                                    item.get("filename")
+                                                        .and_then(Value::as_str)
+                                                        .map(str::to_string)
+                                                })
+                                                .flatten(),
                                         ));
                                     }
                                 }
@@ -1274,6 +1285,13 @@ fn comparable_native_blocks(content: &str, target: AgentKind) -> Result<Vec<Comp
                                     },
                                     media_type.into(),
                                     data.into(),
+                                    (kind == "document")
+                                        .then(|| {
+                                            item.get("name")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_string)
+                                        })
+                                        .flatten(),
                                 ));
                             }
                         }
@@ -1785,6 +1803,7 @@ mod tests {
         .unwrap();
         validate_native_roundtrip(&claude, AgentKind::ClaudeCode, &document).unwrap();
         assert!(claude.contains(r#""type":"document""#));
+        assert!(claude.contains(r#""name":"reference.pdf""#));
     }
 
     #[test]

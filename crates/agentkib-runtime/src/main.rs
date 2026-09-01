@@ -1032,10 +1032,12 @@ fn prepare_session_handoff(
             window_strategy: window.strategy,
             window_stats: window.stats,
             archive_id,
-            mcp_available: continuation_mcp_available(
-                &continuation_workspace_id,
-                envelope.request.target_agent,
-            )?,
+            mcp_available: continuation_mcp_status(window.strategy, || {
+                continuation_mcp_available(
+                    &continuation_workspace_id,
+                    envelope.request.target_agent,
+                )
+            })?,
             losses: document.losses.clone(),
         },
     })
@@ -1742,11 +1744,14 @@ fn matches_native_schema(value: &Value, target: AgentKind) -> bool {
 }
 
 fn native_root_is_safe_and_writable(root: &Path) -> bool {
+    if !root.is_absolute() {
+        return false;
+    }
     let mut cursor = Some(root);
     while let Some(path) = cursor {
         match fs::symlink_metadata(path) {
             Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
+                if platform_path::is_reparse_or_symlink(path).unwrap_or(true) {
                     return false;
                 }
                 if metadata.is_dir() {
@@ -1898,6 +1903,16 @@ fn continuation_mcp_available(workspace_id: &str, target: AgentKind) -> anyhow::
     Ok(configured && mcp_hub().is_ok_and(|hub| hub.status().running))
 }
 
+fn continuation_mcp_status(
+    strategy: SessionWindowStrategy,
+    probe: impl FnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    match strategy {
+        SessionWindowStrategy::Full => Ok(false),
+        SessionWindowStrategy::Windowed => probe(),
+    }
+}
+
 fn validate_applied_continuation(
     workspace: &Path,
     request: &SessionHandoffLaunchRequest,
@@ -1959,9 +1974,9 @@ fn validate_native_session_target(path: &Path, target: AgentKind) -> anyhow::Res
         path.extension().and_then(|value| value.to_str()) == Some("jsonl"),
         "Native session must be JSONL"
     );
-    if let Ok(metadata) = fs::symlink_metadata(&root) {
+    if fs::symlink_metadata(&root).is_ok() {
         anyhow::ensure!(
-            !metadata.file_type().is_symlink(),
+            !platform_path::is_reparse_or_symlink(&root)?,
             "Native session root is a symlink"
         );
     }
@@ -1970,9 +1985,9 @@ fn validate_native_session_target(path: &Path, target: AgentKind) -> anyhow::Res
         if directory == root {
             break;
         }
-        if let Ok(metadata) = fs::symlink_metadata(directory) {
+        if fs::symlink_metadata(directory).is_ok() {
             anyhow::ensure!(
-                !metadata.file_type().is_symlink(),
+                !platform_path::is_reparse_or_symlink(directory)?,
                 "Native session directory is a symlink"
             );
         }
@@ -2030,7 +2045,7 @@ fn collect_latest_jsonl(
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_symlink() {
+        if platform_path::is_reparse_or_symlink(&path).unwrap_or(true) {
             continue;
         }
         if file_type.is_dir() {
@@ -4089,6 +4104,29 @@ mod tests {
         assert!(!native_import_format_matches(true, Some(false)));
         assert!(native_import_format_matches(true, Some(true)));
         assert!(native_import_format_matches(true, None));
+    }
+
+    #[test]
+    fn full_continuation_does_not_require_an_mcp_probe() {
+        assert!(
+            !continuation_mcp_status(SessionWindowStrategy::Full, || {
+                anyhow::bail!("malformed MCP configuration")
+            })
+            .unwrap()
+        );
+        assert!(
+            continuation_mcp_status(SessionWindowStrategy::Windowed, || {
+                anyhow::bail!("malformed MCP configuration")
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_import_rejects_a_relative_agent_home() {
+        assert!(!native_root_is_safe_and_writable(Path::new(
+            "relative-agent-home/sessions"
+        )));
     }
 
     #[cfg(unix)]

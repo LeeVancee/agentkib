@@ -425,6 +425,7 @@ fn estimate_block_tokens(block: &SessionBlock) -> usize {
             media_type,
             filename,
             inline_base64,
+            ..
         } => {
             estimate_text_tokens(media_type)
                 + filename.as_deref().map(estimate_text_tokens).unwrap_or(0)
@@ -503,7 +504,7 @@ fn archive_block(block: &SessionBlock) -> (&'static str, String) {
         SessionBlock::Text { text } => ("text", text.clone()),
         SessionBlock::ToolCall { call_id, name, input } => ("tool-call", serde_json::json!({"call_id":call_id,"name":name,"input":input}).to_string()),
         SessionBlock::ToolResult { call_id, output, is_error } => ("tool-result", serde_json::json!({"call_id":call_id,"output":output,"is_error":is_error}).to_string()),
-        SessionBlock::Attachment { media_type, filename, inline_base64 } => ("attachment", serde_json::json!({"media_type":media_type,"filename":filename,"inline_base64":inline_base64}).to_string()),
+        SessionBlock::Attachment { kind, media_type, filename, inline_base64 } => ("attachment", serde_json::json!({"kind":kind,"media_type":media_type,"filename":filename,"inline_base64":inline_base64}).to_string()),
     }
 }
 

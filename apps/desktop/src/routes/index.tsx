@@ -8,6 +8,7 @@ import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/cat
 import { useAppStore } from "../stores/app-store";
 import { desktopApi } from "../core/desktop";
 import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
+import { selectRecentContinuations } from "../features/home/home-continuations";
 import type { WorkspaceSummary } from "../core/types";
 import {
   useHomeActivity,
@@ -28,11 +29,9 @@ function HomeRoute() {
   const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
   const continuationWorkspaces = useMemo(
     () =>
-      [...workspaces]
-        .sort((left, right) =>
-          (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
-        )
-        .slice(0, 3),
+      [...workspaces].sort((left, right) =>
+        (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
+      ),
     [workspaces],
   );
   const continuationQueries = useQueries({
@@ -42,19 +41,10 @@ function HomeRoute() {
       staleTime: 60_000,
     })),
   });
-  const recentContinuations = continuationWorkspaces.flatMap((workspace, index) => {
-    const sessions =
-      continuationQueries[index]?.data?.filter((session) => session.availability === "readable") ??
-      [];
-    if (!sessions.length) return [];
-    return [
-      {
-        workspace,
-        sessionCount: sessions.length,
-        agents: [...new Set(sessions.map((session) => session.agent))],
-      },
-    ];
-  });
+  const recentContinuations = selectRecentContinuations(
+    continuationWorkspaces,
+    continuationQueries.map((query) => query.data),
+  );
   const doctorSummariesQuery = useHomeDoctorSummaries(workspaces.map((workspace) => workspace.id));
   const installationsQuery = useHomeInstallations();
   const memoriesQuery = useHomeMemories();

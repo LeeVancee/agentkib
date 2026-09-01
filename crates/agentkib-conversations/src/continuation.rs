@@ -26,6 +26,14 @@ pub enum SessionRole {
     Tool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionAttachmentKind {
+    #[default]
+    Image,
+    Document,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum SessionBlock {
@@ -43,6 +51,8 @@ pub enum SessionBlock {
         is_error: bool,
     },
     Attachment {
+        #[serde(default)]
+        kind: SessionAttachmentKind,
         media_type: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         filename: Option<String>,
@@ -330,6 +340,7 @@ fn codex_attachment_blocks(
         let identity = format!("{media_type}:{data}");
         if known.insert(identity) {
             blocks.push(SessionBlock::Attachment {
+                kind: SessionAttachmentKind::Image,
                 media_type,
                 filename: None,
                 inline_base64: Some(data),
@@ -449,7 +460,7 @@ pub fn read_claude_document(
                             .unwrap_or(false),
                     });
                 }
-                Some("image" | "document") => {
+                Some(kind @ ("image" | "document")) => {
                     let source = block.get("source");
                     if source
                         .and_then(|value| value.get("type"))
@@ -457,6 +468,11 @@ pub fn read_claude_document(
                         == Some("base64")
                     {
                         blocks.push(SessionBlock::Attachment {
+                            kind: if kind == "document" {
+                                SessionAttachmentKind::Document
+                            } else {
+                                SessionAttachmentKind::Image
+                            },
                             media_type: source
                                 .and_then(|value| value.get("media_type"))
                                 .and_then(Value::as_str)
@@ -643,12 +659,18 @@ pub fn render_handoff_with_notice(
                             serde_json::to_string(value)?,
                         )),
                         SessionBlock::Attachment {
+                            kind,
                             media_type,
                             filename,
-                            ..
+                            inline_base64,
                         } => output.push_str(&format!(
-                            "_Inline attachment: {} ({media_type})_\n",
-                            filename.as_deref().unwrap_or("unnamed"),
+                            "```agentkib-attachment\n{}\n```\n",
+                            serde_json::to_string(&serde_json::json!({
+                                "kind": kind,
+                                "media_type": media_type,
+                                "filename": filename,
+                                "inline_base64": inline_base64,
+                            }))?,
                         )),
                     }
                 }
@@ -758,20 +780,29 @@ pub fn render_codex_native_session_with_notice(
                     }
                 })),
                 SessionBlock::Attachment {
+                    kind,
                     media_type,
                     inline_base64: Some(data),
-                    ..
+                    filename,
                 } => {
+                    let content = match kind {
+                        SessionAttachmentKind::Image => serde_json::json!({
+                            "type": "input_image",
+                            "image_url": format!("data:{media_type};base64,{data}")
+                        }),
+                        SessionAttachmentKind::Document => serde_json::json!({
+                            "type": "input_file",
+                            "file_data": format!("data:{media_type};base64,{data}"),
+                            "filename": filename
+                        }),
+                    };
                     records.push(serde_json::json!({
                         "timestamp": timestamp,
                         "type": "response_item",
                         "payload": {
                             "type": "message",
                             "role": "user",
-                            "content": [{
-                                "type": "input_image",
-                                "image_url": format!("data:{media_type};base64,{data}")
-                            }]
+                            "content": [content]
                         }
                     }));
                 }
@@ -843,8 +874,11 @@ pub fn render_claude_native_session_with_notice(
                     "content": output,
                     "is_error": is_error
                 })),
-                SessionBlock::Attachment { media_type, inline_base64: Some(data), .. } => content.push(serde_json::json!({
-                    "type": "image",
+                SessionBlock::Attachment { kind, media_type, inline_base64: Some(data), .. } => content.push(serde_json::json!({
+                    "type": match kind {
+                        SessionAttachmentKind::Image => "image",
+                        SessionAttachmentKind::Document => "document",
+                    },
                     "source": {"type":"base64", "media_type":media_type, "data":data}
                 })),
                 SessionBlock::Attachment { .. } => {}
@@ -934,7 +968,7 @@ enum ComparableBlock {
     Text(SessionRole, String),
     ToolCall(String, String, String),
     ToolResult(String, String, bool),
-    Attachment(String, String),
+    Attachment(SessionAttachmentKind, String, String),
 }
 
 fn comparable_document_blocks(
@@ -972,10 +1006,12 @@ fn comparable_document_blocks(
                     *is_error,
                 )),
                 SessionBlock::Attachment {
+                    kind,
                     media_type,
                     inline_base64: Some(data),
                     ..
                 } => blocks.push(ComparableBlock::Attachment(
+                    *kind,
                     media_type.clone(),
                     data.clone(),
                 )),
@@ -1022,13 +1058,26 @@ fn comparable_native_blocks(content: &str, target: AgentKind) -> Result<Vec<Comp
                                         blocks.push(ComparableBlock::Text(role, text.into()));
                                     }
                                 }
-                                Some("input_image") => {
+                                Some(kind @ ("input_image" | "input_file")) => {
+                                    let data_field = if kind == "input_file" {
+                                        "file_data"
+                                    } else {
+                                        "image_url"
+                                    };
                                     if let Some((media_type, data)) = item
-                                        .get("image_url")
+                                        .get(data_field)
                                         .and_then(Value::as_str)
                                         .and_then(parse_data_url)
                                     {
-                                        blocks.push(ComparableBlock::Attachment(media_type, data));
+                                        blocks.push(ComparableBlock::Attachment(
+                                            if kind == "input_file" {
+                                                SessionAttachmentKind::Document
+                                            } else {
+                                                SessionAttachmentKind::Image
+                                            },
+                                            media_type,
+                                            data,
+                                        ));
                                     }
                                 }
                                 _ => {}
@@ -1123,12 +1172,17 @@ fn comparable_native_blocks(content: &str, target: AgentKind) -> Result<Vec<Comp
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false),
                         )),
-                        Some("image") => {
+                        Some(kind @ ("image" | "document")) => {
                             if let (Some(media_type), Some(data)) = (
                                 item.pointer("/source/media_type").and_then(Value::as_str),
                                 item.pointer("/source/data").and_then(Value::as_str),
                             ) {
                                 blocks.push(ComparableBlock::Attachment(
+                                    if kind == "document" {
+                                        SessionAttachmentKind::Document
+                                    } else {
+                                        SessionAttachmentKind::Image
+                                    },
                                     media_type.into(),
                                     data.into(),
                                 ));
@@ -1404,7 +1458,7 @@ mod tests {
         let path = directory.path().join("session.jsonl");
         let records = [
             serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reading"},{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"README.md"}}]}}),
-            serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}]}}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"ZGVm"}}]}}),
             serde_json::json!({"type":"assistant","isCompactSummary":true,"message":{"role":"assistant","content":[{"type":"text","text":"do not import summary"}]}}),
         ];
         fs::write(
@@ -1421,7 +1475,21 @@ mod tests {
         let value = stats(&document);
         assert_eq!(value.tool_call_count, 1);
         assert_eq!(value.tool_result_count, 1);
-        assert_eq!(value.attachment_count, 1);
+        assert_eq!(value.attachment_count, 2);
+        assert!(
+            document
+                .turns
+                .iter()
+                .flat_map(|turn| &turn.blocks)
+                .any(|block| matches!(
+                    block,
+                    SessionBlock::Attachment {
+                        kind: SessionAttachmentKind::Document,
+                        media_type,
+                        ..
+                    } if media_type == "application/pdf"
+                ))
+        );
         assert!(
             !serde_json::to_string(&document)
                 .unwrap()
@@ -1489,9 +1557,16 @@ mod tests {
                         is_error: true,
                     },
                     SessionBlock::Attachment {
+                        kind: SessionAttachmentKind::Image,
                         media_type: "image/png".into(),
                         filename: Some("reference.png".into()),
                         inline_base64: Some("YWJj".into()),
+                    },
+                    SessionBlock::Attachment {
+                        kind: SessionAttachmentKind::Document,
+                        media_type: "application/pdf".into(),
+                        filename: Some("reference.pdf".into()),
+                        inline_base64: Some("ZGVm".into()),
                     },
                 ],
             }],
@@ -1515,5 +1590,46 @@ mod tests {
         )
         .unwrap();
         validate_native_roundtrip(&claude, AgentKind::ClaudeCode, &document).unwrap();
+        assert!(claude.contains(r#""type":"document""#));
+    }
+
+    #[test]
+    fn markdown_handoff_retains_inline_attachment_payloads() {
+        let document = SessionDocument {
+            schema_version: SESSION_DOCUMENT_SCHEMA_VERSION,
+            source: SessionDocumentSource {
+                agent: AgentKind::ClaudeCode,
+                workspace_id: "workspace".into(),
+                title: None,
+                created_at: None,
+                updated_at: None,
+                git_branch: None,
+            },
+            turns: vec![SessionTurn {
+                id: "turn-1".into(),
+                role: SessionRole::User,
+                timestamp: None,
+                blocks: vec![SessionBlock::Attachment {
+                    kind: SessionAttachmentKind::Document,
+                    media_type: "application/pdf".into(),
+                    filename: Some("reference.pdf".into()),
+                    inline_base64: Some("ZGVm".into()),
+                }],
+            }],
+            losses: Vec::new(),
+            redaction_count: 0,
+        };
+
+        let handoff = render_handoff(
+            &document,
+            AgentKind::ClaudeCode,
+            HandoffFormat::Markdown,
+            Utc::now(),
+        )
+        .unwrap();
+
+        assert!(handoff.contains("agentkib-attachment"));
+        assert!(handoff.contains("application/pdf"));
+        assert!(handoff.contains("ZGVm"));
     }
 }

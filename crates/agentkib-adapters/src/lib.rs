@@ -404,8 +404,9 @@ pub fn plan_workspace_changes(
             .unwrap_or_default();
         let instruction_path = root.join(".opencode/agentkib-instructions.md");
         let existing_instruction = fs::read_to_string(&instruction_path).unwrap_or_default();
-        let manages_instruction =
-            !platform_override.trim().is_empty() || existing_instruction.contains(START);
+        let manages_instruction = !platform_override.trim().is_empty()
+            || existing_instruction.contains(START)
+                && opencode_managed_instruction_is_registered(&root);
         if manages_instruction {
             push_change(
                 &mut changes,
@@ -1556,6 +1557,41 @@ mod tests {
             })
             .unwrap();
         assert!(instruction.after.contains("Use OpenCode tools."));
+    }
+
+    #[test]
+    fn opencode_plan_does_not_reregister_disabled_managed_instruction() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/agentkib-instructions.md"),
+            format!(
+                "Unmanaged text.\n\n{}",
+                managed_markdown("", "Disabled override.")
+            ),
+        )
+        .unwrap();
+
+        let manifest = default_manifest(dir.path()).unwrap();
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+
+        assert!(plan.changes.iter().all(|change| {
+            !change
+                .target
+                .ends_with(".opencode/agentkib-instructions.md")
+        }));
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".opencode/opencode.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+        assert_eq!(value["instructions"], serde_json::json!([]));
     }
 
     #[test]

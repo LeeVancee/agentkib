@@ -425,7 +425,10 @@ fn toml_server(candidate: &McpMigrationCandidate, label: &str) -> Result<McpServ
                     .with_context(|| format!("{label} MCP command is missing"))?
                     .into(),
                 args: toml_strings(server.get("args")),
-                cwd: None,
+                cwd: server
+                    .get("cwd")
+                    .and_then(toml::Value::as_str)
+                    .map(PathBuf::from),
             }
         },
     ))
@@ -791,6 +794,7 @@ mod tests {
 [mcp_servers.selected]
 command = "node"
 args = ["server.js"]
+cwd = "services/reviewer"
 env = { API_TOKEN = "do-not-return" }
 
 [mcp_servers.other]
@@ -813,6 +817,11 @@ future = 42
                 .contains("do-not-return")
         );
         let server = migration_server(selected).unwrap();
+        assert!(matches!(
+            &server.transport,
+            McpServerTransport::Stdio { cwd: Some(cwd), .. }
+                if cwd == Path::new("services/reviewer")
+        ));
         let plan = plan_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),

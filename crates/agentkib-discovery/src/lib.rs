@@ -1121,6 +1121,8 @@ fn home_asset_kind(path: &Path) -> AssetKind {
         || text.contains("/.agent-presets/")
     {
         AssetKind::Agent
+    } else if text.contains("/workflows/") {
+        AssetKind::Configuration
     } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
         AssetKind::Instruction
     } else {
@@ -1610,6 +1612,9 @@ mod tests {
                 .iter()
                 .any(|asset| asset.path.ends_with("workflows/review.md"))
         );
+        assert!(assets.iter().any(|asset| {
+            asset.path.ends_with("workflows/review.md") && asset.kind == AssetKind::Configuration
+        }));
         assert!(
             assets
                 .iter()

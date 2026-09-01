@@ -921,12 +921,18 @@ pub fn opencode_managed_instruction_is_registered(project: &Path) -> bool {
 }
 
 pub fn opencode_managed_config_path(project: &Path) -> PathBuf {
-    let jsonc = project.join(".opencode/opencode.jsonc");
-    if fs::symlink_metadata(&jsonc).is_ok() {
-        jsonc
-    } else {
-        project.join(".opencode/opencode.json")
+    let mut effective = None;
+    for config in [
+        project.join("opencode.json"),
+        project.join("opencode.jsonc"),
+        project.join(".opencode/opencode.json"),
+        project.join(".opencode/opencode.jsonc"),
+    ] {
+        if fs::symlink_metadata(&config).is_ok() {
+            effective = Some(config);
+        }
     }
+    effective.unwrap_or_else(|| project.join(".opencode/opencode.json"))
 }
 
 fn opencode_project_instruction_patterns(project: &Path) -> Vec<String> {
@@ -973,15 +979,14 @@ fn opencode_config_instruction_patterns(path: &Path) -> Option<Vec<String>> {
     } else {
         serde_json::from_str::<serde_json::Value>(&content).ok()
     };
-    value.and_then(|value| {
-        Some(
-            value
-                .get("instructions")?
-                .as_array()?
-                .iter()
-                .filter_map(|instruction| instruction.as_str().map(str::to_string))
-                .collect(),
-        )
+    value.map(|value| {
+        value
+            .get("instructions")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|instruction| instruction.as_str().map(str::to_string))
+            .collect()
     })
 }
 
@@ -1006,7 +1011,7 @@ fn opencode_configured_instruction_sources(
         }
         let has_glob = pattern
             .bytes()
-            .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b'{'));
+            .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b'{' | b'@' | b'+' | b'!' | b'('));
         if has_glob {
             let mut entries = 0;
             for entry in WalkDir::new(base)
@@ -1166,84 +1171,235 @@ fn opencode_instruction_pattern_matches(pattern: &str, target: &str) -> bool {
         output
     }
 
-    fn class_matches(pattern: &[char], target: char) -> Option<(bool, usize)> {
-        let mut index = 1;
-        let negated = matches!(pattern.get(index), Some('!' | '^'));
-        if negated {
-            index += 1;
-        }
-        let mut matched = false;
-        let mut has_member = false;
-        while index < pattern.len() && pattern[index] != ']' {
-            let start = if pattern[index] == '\\' {
-                index += 1;
-                *pattern.get(index)?
-            } else {
-                pattern[index]
-            };
-            index += 1;
-            has_member = true;
-            if pattern.get(index) == Some(&'-')
-                && pattern.get(index + 1).is_some_and(|value| *value != ']')
-            {
-                index += 1;
-                let end = if pattern[index] == '\\' {
-                    index += 1;
-                    *pattern.get(index)?
-                } else {
-                    pattern[index]
-                };
-                index += 1;
-                matched |= start <= target && target <= end;
-            } else {
-                matched |= start == target;
+    #[derive(Clone)]
+    enum SegmentAtom {
+        Literal(char),
+        Any,
+        Star,
+        Class {
+            negated: bool,
+            ranges: Vec<(char, char)>,
+        },
+        Extglob {
+            kind: char,
+            alternatives: Vec<Vec<SegmentAtom>>,
+        },
+    }
+
+    fn parse_segment_atoms(pattern: &str) -> Option<Vec<SegmentAtom>> {
+        fn sequence(chars: &[char], index: &mut usize) -> Option<Vec<SegmentAtom>> {
+            let mut atoms = Vec::new();
+            while *index < chars.len() && !matches!(chars[*index], ')' | '|') {
+                let character = chars[*index];
+                if matches!(character, '@' | '?' | '+' | '*' | '!')
+                    && chars.get(*index + 1) == Some(&'(')
+                {
+                    let kind = character;
+                    *index += 2;
+                    let mut alternatives = Vec::new();
+                    loop {
+                        alternatives.push(sequence(chars, index)?);
+                        match chars.get(*index) {
+                            Some('|') => *index += 1,
+                            Some(')') => {
+                                *index += 1;
+                                break;
+                            }
+                            _ => return None,
+                        }
+                    }
+                    atoms.push(SegmentAtom::Extglob { kind, alternatives });
+                    continue;
+                }
+                match character {
+                    '\\' => {
+                        *index += 1;
+                        atoms.push(SegmentAtom::Literal(*chars.get(*index)?));
+                        *index += 1;
+                    }
+                    '?' => {
+                        atoms.push(SegmentAtom::Any);
+                        *index += 1;
+                    }
+                    '*' => {
+                        if !matches!(atoms.last(), Some(SegmentAtom::Star)) {
+                            atoms.push(SegmentAtom::Star);
+                        }
+                        *index += 1;
+                    }
+                    '[' => {
+                        *index += 1;
+                        let negated = matches!(chars.get(*index), Some('!' | '^'));
+                        if negated {
+                            *index += 1;
+                        }
+                        let mut ranges = Vec::new();
+                        while *index < chars.len() && chars[*index] != ']' {
+                            let start = if chars[*index] == '\\' {
+                                *index += 1;
+                                *chars.get(*index)?
+                            } else {
+                                chars[*index]
+                            };
+                            *index += 1;
+                            if chars.get(*index) == Some(&'-')
+                                && chars.get(*index + 1).is_some_and(|value| *value != ']')
+                            {
+                                *index += 1;
+                                let end = if chars[*index] == '\\' {
+                                    *index += 1;
+                                    *chars.get(*index)?
+                                } else {
+                                    chars[*index]
+                                };
+                                *index += 1;
+                                ranges.push((start, end));
+                            } else {
+                                ranges.push((start, start));
+                            }
+                        }
+                        if ranges.is_empty() || chars.get(*index) != Some(&']') {
+                            return None;
+                        }
+                        *index += 1;
+                        atoms.push(SegmentAtom::Class { negated, ranges });
+                    }
+                    _ => {
+                        atoms.push(SegmentAtom::Literal(character));
+                        *index += 1;
+                    }
+                }
             }
+            Some(atoms)
         }
-        if !has_member || pattern.get(index) != Some(&']') {
-            return None;
-        }
-        Some((if negated { !matched } else { matched }, index + 1))
+
+        let chars = pattern.chars().collect::<Vec<_>>();
+        let mut index = 0;
+        let atoms = sequence(&chars, &mut index)?;
+        (index == chars.len()).then_some(atoms)
     }
 
     fn segment_matches(pattern: &str, target: &str) -> bool {
-        let pattern = pattern.chars().collect::<Vec<_>>();
-        let target = target.chars().collect::<Vec<_>>();
-        let (mut pattern_index, mut target_index) = (0, 0);
-        let mut star = None;
-        let mut star_target_index = 0;
-        while target_index < target.len() {
-            let atom_end = match pattern.get(pattern_index) {
-                Some('?') => Some(pattern_index + 1),
-                Some('[') => class_matches(&pattern[pattern_index..], target[target_index])
-                    .and_then(|(matches, consumed)| matches.then_some(pattern_index + consumed)),
-                Some('\\') => pattern
-                    .get(pattern_index + 1)
-                    .filter(|value| **value == target[target_index])
-                    .map(|_| pattern_index + 2),
-                Some(value) if *value == target[target_index] && *value != '*' => {
-                    Some(pattern_index + 1)
+        fn apply_sequence(
+            atoms: &[SegmentAtom],
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            if depth > 32 {
+                return BTreeSet::new();
+            }
+            let mut positions = BTreeSet::from([start]);
+            for atom in atoms {
+                let mut next = BTreeSet::new();
+                for position in positions {
+                    next.extend(apply_atom(atom, target, position, depth + 1));
                 }
-                _ => None,
-            };
-            if let Some(next_pattern_index) = atom_end {
-                pattern_index = next_pattern_index;
-                target_index += 1;
-            } else if pattern_index < pattern.len() && pattern[pattern_index] == '*' {
-                star = Some(pattern_index);
-                star_target_index = target_index;
-                pattern_index += 1;
-            } else if let Some(star_index) = star {
-                star_target_index += 1;
-                target_index = star_target_index;
-                pattern_index = star_index + 1;
-            } else {
-                return false;
+                if next.is_empty() {
+                    return next;
+                }
+                positions = next;
+            }
+            positions
+        }
+
+        fn apply_alternatives(
+            alternatives: &[Vec<SegmentAtom>],
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            alternatives
+                .iter()
+                .flat_map(|alternative| apply_sequence(alternative, target, start, depth))
+                .collect()
+        }
+
+        fn repeat_alternatives(
+            alternatives: &[Vec<SegmentAtom>],
+            target: &[char],
+            starts: BTreeSet<usize>,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            let mut reached = starts;
+            let mut frontier = reached.clone();
+            while !frontier.is_empty() {
+                let mut next = BTreeSet::new();
+                for position in frontier {
+                    for end in apply_alternatives(alternatives, target, position, depth + 1) {
+                        if end > position && reached.insert(end) {
+                            next.insert(end);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            reached
+        }
+
+        fn apply_atom(
+            atom: &SegmentAtom,
+            target: &[char],
+            start: usize,
+            depth: usize,
+        ) -> BTreeSet<usize> {
+            match atom {
+                SegmentAtom::Literal(expected) => target
+                    .get(start)
+                    .filter(|value| *value == expected)
+                    .map(|_| BTreeSet::from([start + 1]))
+                    .unwrap_or_default(),
+                SegmentAtom::Any => {
+                    if start < target.len() {
+                        BTreeSet::from([start + 1])
+                    } else {
+                        BTreeSet::new()
+                    }
+                }
+                SegmentAtom::Star => (start..=target.len()).collect(),
+                SegmentAtom::Class { negated, ranges } => target
+                    .get(start)
+                    .filter(|value| {
+                        let matched = ranges
+                            .iter()
+                            .any(|(first, last)| first <= *value && *value <= last);
+                        matched != *negated
+                    })
+                    .map(|_| BTreeSet::from([start + 1]))
+                    .unwrap_or_default(),
+                SegmentAtom::Extglob { kind, alternatives } => match kind {
+                    '@' => apply_alternatives(alternatives, target, start, depth + 1),
+                    '?' => {
+                        let mut ends = BTreeSet::from([start]);
+                        ends.extend(apply_alternatives(alternatives, target, start, depth + 1));
+                        ends
+                    }
+                    '+' => {
+                        let once = apply_alternatives(alternatives, target, start, depth + 1);
+                        repeat_alternatives(alternatives, target, once, depth + 1)
+                    }
+                    '*' => repeat_alternatives(
+                        alternatives,
+                        target,
+                        BTreeSet::from([start]),
+                        depth + 1,
+                    ),
+                    '!' => (start..=target.len())
+                        .filter(|end| {
+                            !apply_alternatives(alternatives, &target[..*end], start, depth + 1)
+                                .contains(end)
+                        })
+                        .collect(),
+                    _ => BTreeSet::new(),
+                },
             }
         }
-        while pattern.get(pattern_index) == Some(&'*') {
-            pattern_index += 1;
-        }
-        pattern_index == pattern.len()
+
+        let Some(atoms) = parse_segment_atoms(pattern) else {
+            return false;
+        };
+        let target = target.chars().collect::<Vec<_>>();
+        apply_sequence(&atoms, &target, 0, 0).contains(&target.len())
     }
 
     fn path_matches(pattern: &[&str], target: &[&str]) -> bool {
@@ -1942,6 +2098,50 @@ mod tests {
     }
 
     #[test]
+    fn opencode_resolves_extglob_instruction_patterns() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/team.md"), "team").unwrap();
+        fs::write(dir.path().join("docs/review.md"), "review").unwrap();
+        fs::write(dir.path().join("docs/draft.md"), "draft").unwrap();
+        fs::write(
+            dir.path().join("opencode.json"),
+            r#"{"instructions":["docs/@(team|review).md"]}"#,
+        )
+        .unwrap();
+
+        let preview =
+            resolve_context(dir.path(), dir.path(), AgentKind::OpenCode, None, vec![]).unwrap();
+        let sources = preview
+            .sections
+            .iter()
+            .filter_map(|section| section.source.file_name()?.to_str())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&"team.md"));
+        assert!(sources.contains(&"review.md"));
+        assert!(!sources.contains(&"draft.md"));
+    }
+
+    #[test]
+    fn opencode_effective_config_without_instructions_clears_registration() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join(".opencode")).unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.json"),
+            r#"{"instructions":[".opencode/agentkib-instructions.md"]}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".opencode/opencode.jsonc"),
+            "{ theme: 'dark' }",
+        )
+        .unwrap();
+
+        assert!(!opencode_managed_instruction_is_registered(dir.path()));
+    }
+
+    #[test]
     fn opencode_includes_only_registered_managed_instructions() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join(".opencode")).unwrap();
@@ -2025,6 +2225,30 @@ mod tests {
         assert!(opencode_instruction_pattern_matches(
             r"docs/team\[prod\].md",
             "docs/team[prod].md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/@(team|review).md",
+            "docs/team.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/+(a|b).md",
+            "docs/abba.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/?(team).md",
+            "docs/.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/*(ab|c).md",
+            "docs/abccab.md"
+        ));
+        assert!(opencode_instruction_pattern_matches(
+            "docs/!(draft).md",
+            "docs/final.md"
+        ));
+        assert!(!opencode_instruction_pattern_matches(
+            "docs/!(draft).md",
+            "docs/draft.md"
         ));
         assert!(!opencode_instruction_pattern_matches(
             "docs/*.md",

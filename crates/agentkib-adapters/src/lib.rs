@@ -1735,6 +1735,44 @@ mod tests {
     }
 
     #[test]
+    fn opencode_plan_updates_an_existing_root_config() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("opencode.jsonc"),
+            "{ theme: 'dark', instructions: ['docs/team.md'] }",
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::OpenCode, "Use OpenCode tools.".into());
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let config = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("opencode.jsonc"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&config.after).unwrap();
+
+        assert!(agentkib_platform::path::equivalent(
+            &config.target,
+            &dir.path().join("opencode.jsonc")
+        ));
+        assert_eq!(value["theme"], "dark");
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(["docs/team.md", ".opencode/agentkib-instructions.md"])
+        );
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.ends_with(".opencode/opencode.json"))
+        );
+    }
+
+    #[test]
     fn opencode_plan_does_not_reregister_disabled_managed_instruction() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".opencode")).unwrap();

@@ -2,9 +2,10 @@ import { defineConfig } from "vite";
 import { octane } from "@octanejs/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
+import { octaneRouteGenerator } from "./route-generator.ts";
 
 const config = {
-  plugins: [octane({ requireDirective: true }), tailwindcss()],
+  plugins: [octaneRouteGenerator(), octane({ requireDirective: true }), tailwindcss()],
   resolve: {
     conditions: ["module", "browser", "default"],
     extensions: [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json", ".tsrx"],

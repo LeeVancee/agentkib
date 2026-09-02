@@ -300,7 +300,7 @@ export function useAppNavigation() {
     }
     void navigate({
       to: "/settings",
-      search: (current) => ({ ...current, settingsSection: section }) as never,
+      search: (current: AppSearch) => ({ ...current, settingsSection: section }) as never,
     });
   };
 

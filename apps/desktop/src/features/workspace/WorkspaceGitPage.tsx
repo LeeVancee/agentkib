@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   Binary,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileCode2,
@@ -69,6 +70,15 @@ interface GraphEdge {
   to: number;
   color: number;
 }
+
+interface HistoryPage {
+  commits: GitCommitSummary[];
+  nextCursor?: string;
+}
+
+const historyPageSize = 50;
+const emptyCommitHistory: GitCommitSummary[] = [];
+
 export interface CommitGraphRow {
   lane: number;
   lanes: number;
@@ -125,8 +135,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const [section, setSection] = useState<GitSection>("history");
   const [internalSubview, setInternalSubview] = useState<GitSubview | undefined>(subview);
   const [summary, setSummary] = useState<GitWorkspaceSummary>();
-  const [commits, setCommits] = useState<GitCommitSummary[]>([]);
-  const [nextCursor, setNextCursor] = useState<string>();
+  const [historyPages, setHistoryPages] = useState<HistoryPage[]>([]);
+  const [historyPageIndex, setHistoryPageIndex] = useState(0);
   const [selectedOid, setSelectedOid] = useState<string>();
   const [files, setFiles] = useState<GitFileChange[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>();
@@ -140,7 +150,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const [path, setPath] = useState("");
   const [mergesOnly, setMergesOnly] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingPage, setLoadingPage] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState("");
   const [error, setError] = useState("");
@@ -171,6 +181,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   }, [subview]);
 
   const historyQuery = (): GitHistoryQuery => ({
+    limit: historyPageSize,
     reference: appliedFilters.reference || undefined,
     author: appliedFilters.author.trim() || undefined,
     since: appliedFilters.since || undefined,
@@ -182,7 +193,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const load = async () => {
     const sequence = ++historySequence.current;
     setLoading(true);
-    setLoadingMore(false);
+    setLoadingPage(false);
     setError("");
     setSelectedFile(undefined);
     setDiffState({ status: "idle" });
@@ -191,16 +202,17 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       if (sequence !== historySequence.current) return;
       setSummary(nextSummary);
       if (!nextSummary) {
-        setCommits([]);
-        setNextCursor(undefined);
+        setHistoryPages([]);
+        setHistoryPageIndex(0);
         return;
       }
       const page = await api.workspaceGitHistory(workspace.id, historyQuery());
       if (sequence !== historySequence.current) return;
-      setCommits(page?.commits ?? []);
-      setNextCursor(page?.next_cursor);
+      const commits = page?.commits ?? [];
+      setHistoryPages([{ commits, nextCursor: page?.next_cursor }]);
+      setHistoryPageIndex(0);
       setSelectedOid((current) =>
-        page?.commits.some((commit) => commit.oid === current) ? current : page?.commits[0]?.oid,
+        commits.some((commit) => commit.oid === current) ? current : commits[0]?.oid,
       );
     } catch (reason) {
       if (sequence === historySequence.current) setError(localizeMessage(reason));
@@ -230,6 +242,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     return () => window.clearTimeout(timeout);
   }, [reference, author, since, until, path, mergesOnly, appliedFilters]);
 
+  const commits = historyPages[historyPageIndex]?.commits ?? emptyCommitHistory;
+  const nextCursor = historyPages[historyPageIndex]?.nextCursor;
   const filteredCommits = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
     if (!needle) return commits;
@@ -342,23 +356,45 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     void loadDiff(diffRequest);
   }, [workspace.id, diffRequest]);
 
-  const loadMore = async () => {
-    if (!nextCursor || loadingMore) return;
+  const showPreviousPage = () => {
+    if (historyPageIndex === 0 || loadingPage) return;
+    const previousPageIndex = historyPageIndex - 1;
+    setHistoryPageIndex(previousPageIndex);
+    setSelectedOid(historyPages[previousPageIndex]?.commits[0]?.oid);
+    historyListRef.current?.scrollTo({ top: 0 });
+  };
+
+  const showNextPage = async () => {
+    if (loadingPage) return;
+    const cachedPage = historyPages[historyPageIndex + 1];
+    if (cachedPage) {
+      setHistoryPageIndex((current) => current + 1);
+      setSelectedOid(cachedPage.commits[0]?.oid);
+      historyListRef.current?.scrollTo({ top: 0 });
+      return;
+    }
+    if (!nextCursor) return;
     const sequence = historySequence.current;
     const cursor = nextCursor;
-    setLoadingMore(true);
+    setLoadingPage(true);
     try {
       const page = await api.workspaceGitHistory(workspace.id, {
         ...historyQuery(),
         cursor,
       });
       if (sequence !== historySequence.current) return;
-      setCommits((current) => [...current, ...(page?.commits ?? [])]);
-      setNextCursor(page?.next_cursor);
+      const commits = page?.commits ?? [];
+      setHistoryPages((current) => [
+        ...current.slice(0, historyPageIndex + 1),
+        { commits, nextCursor: page?.next_cursor },
+      ]);
+      setHistoryPageIndex((current) => current + 1);
+      setSelectedOid(commits[0]?.oid);
+      historyListRef.current?.scrollTo({ top: 0 });
     } catch (reason) {
       if (sequence === historySequence.current) setError(localizeMessage(reason));
     } finally {
-      if (sequence === historySequence.current) setLoadingMore(false);
+      if (sequence === historySequence.current) setLoadingPage(false);
     }
   };
 
@@ -787,15 +823,36 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                   </div>
                 )}
               </div>
-              {nextCursor && !search.trim() && (
-                <Button
-                  variant="ghost"
-                  className="mx-auto my-2"
-                  disabled={loadingMore}
-                  onClick={() => void loadMore()}
-                >
-                  {tr(loadingMore ? "common.loading" : "git.loadMore")}
-                </Button>
+              {(historyPageIndex > 0 || nextCursor) && (
+                <div className="flex min-h-12 items-center justify-center gap-2 border-t border-border px-3">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={historyPageIndex === 0 || loadingPage}
+                    onClick={showPreviousPage}
+                    aria-label={tr("git.previousPage")}
+                    title={tr("git.previousPage")}
+                  >
+                    <ChevronLeft size={14} />
+                  </Button>
+                  <span className="min-w-16 text-center text-xs tabular-nums text-muted-foreground">
+                    {tr("git.pageNumber", { page: historyPageIndex + 1 })}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={!nextCursor || loadingPage}
+                    onClick={() => void showNextPage()}
+                    aria-label={tr("git.nextPage")}
+                    title={tr("git.nextPage")}
+                  >
+                    {loadingPage ? (
+                      <RefreshCw size={14} className="animate-spin" />
+                    ) : (
+                      <ChevronRight size={14} />
+                    )}
+                  </Button>
+                </div>
               )}
             </section>
           </Card>

@@ -5,6 +5,7 @@ type Updater<T> = T | ((current: T) => T);
 
 interface AppState {
   sidebarCollapsed: boolean;
+  sidebarPeek: boolean;
   runtime?: RuntimeInfo;
   navigationRequest?: AppNavigationRequest;
   menuCommand?: AppMenuCommandRequest;
@@ -14,6 +15,7 @@ interface AppState {
 interface AppActions {
   reset: () => void;
   setSidebarCollapsed: (value: Updater<boolean>) => void;
+  setSidebarPeek: (value: Updater<boolean>) => void;
   setRuntime: (value: Updater<RuntimeInfo | undefined>) => void;
   setNavigationRequest: (value: Updater<AppNavigationRequest | undefined>) => void;
   setMenuCommand: (value: Updater<AppMenuCommandRequest | undefined>) => void;
@@ -47,10 +49,12 @@ function persistSidebarCollapsed(value: boolean) {
 
 export const useAppStore = create<AppState & AppActions>((set) => ({
   sidebarCollapsed: initialSidebarCollapsed(),
+  sidebarPeek: false,
   quotaConfigureRequest: 0,
   reset: () =>
     set({
       sidebarCollapsed: false,
+      sidebarPeek: false,
       runtime: undefined,
       navigationRequest: undefined,
       menuCommand: undefined,
@@ -62,6 +66,7 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
       persistSidebarCollapsed(next);
       return { sidebarCollapsed: next };
     }),
+  setSidebarPeek: (value) => set((state) => ({ sidebarPeek: resolve(value, state.sidebarPeek) })),
   setRuntime: (value) => set((state) => ({ runtime: resolve(value, state.runtime) })),
   setNavigationRequest: (value) =>
     set((state) => ({ navigationRequest: resolve(value, state.navigationRequest) })),

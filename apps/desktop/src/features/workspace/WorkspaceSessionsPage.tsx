@@ -1,21 +1,32 @@
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MarkdownContent } from "@/components/MarkdownContent";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArrowLeft,
   Bot,
+  Check,
   ChevronRight,
   CircleAlert,
   FileOutput,
   GitBranch,
+  ListFilter,
+  ListChecks,
   MessageSquareText,
   RefreshCw,
   Search,
+  X,
   UserRound,
   Wrench,
 } from "lucide-react";
@@ -63,6 +74,7 @@ export function WorkspaceSessionsPage({
   const [nextCursor, setNextCursor] = useState<string>();
   const [warnings, setWarnings] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
   const [refreshing, setRefreshing] = useState(false);
@@ -228,109 +240,137 @@ export function WorkspaceSessionsPage({
 
   return (
     <>
-      <div className="grid min-h-[calc(100vh-150px)] grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:block">
+      <div className="grid h-[calc(100vh-150px)] max-h-[calc(100vh-150px)] min-h-0 grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:h-full max-[760px]:max-h-none max-[760px]:block">
         <Card
           className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:absolute max-[760px]:inset-0 max-[760px]:h-full max-[760px]:max-h-none ${showDetail ? "max-[760px]:hidden" : ""}`}
         >
-          <div className="border-b border-border/70">
-            <div className="flex items-center justify-between gap-3 px-4 pb-3 pt-4">
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
-                  <MessageSquareText size={16} />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-foreground">
-                    {tr("conversations.settingsTitle")}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {tr("conversations.sessionCount", { count: filtered.length })}
-                  </p>
-                </div>
+          <div className="border-b border-border/70 px-3 py-3">
+            <div className="flex min-h-8 items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-sm font-semibold text-foreground">
+                  {tr("conversations.listTitle")}
+                </p>
+                <Badge
+                  variant="outline"
+                  className="shrink-0 border-transparent bg-muted text-muted-foreground !rounded-full !px-2 !py-0.5 !text-xs tabular-nums"
+                >
+                  {sessions.length}
+                </Badge>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 text-muted-foreground hover:bg-muted hover:text-foreground"
-                onClick={() => void refresh(true)}
-                disabled={refreshing}
-                aria-label={tr("conversations.refresh")}
-                title={tr("conversations.refresh")}
-              >
-                <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-              </Button>
+              <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
+                    aria-label={tr("conversations.agentFilter")}
+                    title={tr("conversations.agentFilter")}
+                  >
+                    <ListFilter size={16} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-40">
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>{tr("conversations.agentFilter")}</DropdownMenuLabel>
+                      {[
+                        ["all", tr("conversations.allAgents")],
+                        ["codex", "Codex"],
+                        ["claude-code", "Claude Code"],
+                      ].map(([value, label]) => (
+                        <DropdownMenuItem
+                          key={value}
+                          onClick={() => setAgent(value as AgentFilter)}
+                          className="pr-2"
+                        >
+                          <span className="grid size-4 place-items-center">
+                            {agent === value && <Check size={14} />}
+                          </span>
+                          {label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${filter !== "current" ? "bg-accent text-accent-foreground" : ""}`}
+                    aria-label={tr("conversations.filterLabel")}
+                    title={tr(`conversations.filter.${filter}`)}
+                  >
+                    <ListChecks size={16} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-44">
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>{tr("conversations.filterLabel")}</DropdownMenuLabel>
+                      {(["current", "archived", "metadata", "all"] as SessionFilter[]).map(
+                        (value) => (
+                          <DropdownMenuItem
+                            key={value}
+                            onClick={() => setFilter(value)}
+                            className="pr-2"
+                          >
+                            <span className="grid size-4 place-items-center">
+                              {filter === value && <Check size={14} />}
+                            </span>
+                            <span>{tr(`conversations.filter.${value}`)}</span>
+                            <Badge
+                              variant="outline"
+                              className="ml-auto border-transparent bg-muted text-muted-foreground !rounded-full !px-1.5 !py-0 !text-[10px] tabular-nums"
+                            >
+                              {filterCounts[value]}
+                            </Badge>
+                          </DropdownMenuItem>
+                        ),
+                      )}
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className={`text-muted-foreground hover:bg-muted hover:text-foreground ${searchOpen ? "bg-muted text-foreground" : ""}`}
+                  onClick={() => setSearchOpen((open) => !open)}
+                  aria-label={tr("conversations.searchPlaceholder")}
+                  aria-expanded={searchOpen}
+                  title={tr("conversations.searchPlaceholder")}
+                >
+                  <Search size={16} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => void refresh(true)}
+                  disabled={refreshing}
+                  aria-label={tr("conversations.refresh")}
+                  title={tr("conversations.refresh")}
+                >
+                  <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+                </Button>
+              </div>
             </div>
-            <div className="grid grid-cols-[minmax(0,1fr)_126px] gap-2 px-4 pb-4 max-[640px]:grid-cols-1">
-              <label className="flex h-10 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-3 text-muted-foreground transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
+            {searchOpen && (
+              <label className="mt-3 flex h-9 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-3 text-muted-foreground transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
                 <Search size={15} />
                 <Input
-                  className="h-auto border-0 bg-transparent px-0 py-0 text-sm text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
+                  autoFocus
+                  className="h-auto min-w-0 border-0 bg-transparent px-0 py-0 text-sm text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder={tr("conversations.searchPlaceholder")}
                 />
+                {query && (
+                  <Button
+                    variant="bare"
+                    size="icon-xs"
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => setQuery("")}
+                    aria-label={tr("common.clear")}
+                    title={tr("common.clear")}
+                  >
+                    <X size={14} />
+                  </Button>
+                )}
               </label>
-              <SelectControl
-                className="h-10 min-w-0 border-input bg-background text-foreground"
-                value={agent}
-                onChange={(event) => setAgent(event.target.value as AgentFilter)}
-                aria-label={tr("conversations.agentFilter")}
-              >
-                <option value="all">{tr("conversations.allAgents")}</option>
-                <option value="codex">Codex</option>
-                <option value="claude-code">Claude Code</option>
-              </SelectControl>
-            </div>
+            )}
           </div>
-          <Tabs value={filter} onValueChange={(value) => setFilter(value as SessionFilter)}>
-            <TabsList
-              className="segmented-control flex w-full justify-start"
-              variant="default"
-              aria-label={tr("conversations.filterLabel")}
-            >
-              {(["current", "archived", "metadata", "all"] as SessionFilter[]).map((value) => (
-                <TabsTrigger
-                  key={value}
-                  value={value}
-                  className="segmented-control-item h-9 min-h-9 flex-none gap-1.5 px-2.5 text-xs"
-                >
-                  <span>{tr(`conversations.filter.${value}`)}</span>
-                  <Badge
-                    variant={filter === value ? "default" : "secondary"}
-                    className="!rounded-full !px-1.5 !py-0 !text-[10px]"
-                  >
-                    {filterCounts[value]}
-                  </Badge>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          {statuses.length > 0 && (
-            <div className="grid gap-1.5 border-b border-border/70 bg-muted/20 px-4 py-3">
-              {statuses.map((status) => {
-                const sourceSessions = sessions.filter((session) => session.agent === status.agent);
-                const readable = sourceSessions.filter(
-                  (session) => session.availability === "readable",
-                ).length;
-                return (
-                  <span
-                    className="grid min-h-8 grid-cols-[36px_auto_minmax(0,1fr)] items-center gap-2.5 text-xs"
-                    key={status.agent}
-                  >
-                    <AgentIcon agent={status.agent} />
-                    <strong className="font-medium text-foreground">
-                      {status.agent === "codex" ? "Codex" : "Claude Code"}
-                    </strong>
-                    <em className="overflow-hidden text-right text-muted-foreground [text-overflow:ellipsis] whitespace-nowrap not-italic">
-                      {tr("conversations.sourceCoverage", {
-                        total: status.session_count,
-                        readable,
-                      })}
-                    </em>
-                  </span>
-                );
-              })}
-            </div>
-          )}
           {statuses.some((status) => status.freshness !== "fresh") && (
             <div className="flex min-h-[38px] items-center gap-2 border-b border-amber-200/70 bg-amber-50/70 px-4 py-2.5 text-xs text-amber-800">
               <CircleAlert size={14} />
@@ -409,7 +449,7 @@ export function WorkspaceSessionsPage({
                   )}
                 </strong>
                 {filter === "current" && filterCounts.metadata > 0 && (
-                  <Button variant="outline" size="sm" onClick={() => setFilter("metadata")}>
+                  <Button variant="outline" onClick={() => setFilter("metadata")}>
                     {tr("conversations.viewMetadata")}
                   </Button>
                 )}
@@ -459,7 +499,6 @@ export function WorkspaceSessionsPage({
                 {selected.availability === "readable" && events.length > 0 && (
                   <Button
                     variant="outline"
-                    size="sm"
                     className="shrink-0"
                     onClick={() => setShowHandoff(true)}
                   >
@@ -527,7 +566,6 @@ export function WorkspaceSessionsPage({
                 {nextCursor && (
                   <Button
                     variant="outline"
-                    size="sm"
                     className="self-center"
                     disabled={loadingEarlier}
                     onClick={() => void loadEarlier()}
@@ -608,9 +646,10 @@ function ConversationEventRow({ event }: { event: ConversationEvent }) {
         </strong>
         {event.timestamp && <time className="ml-auto">{formatDateTime(event.timestamp)}</time>}
       </header>
-      <div className="select-text text-sm leading-7 whitespace-pre-wrap [overflow-wrap:anywhere]">
-        {event.content}
-      </div>
+      <MarkdownContent
+        content={event.content ?? ""}
+        className="select-text text-sm leading-7 [overflow-wrap:anywhere]"
+      />
       {(event.attachment_count > 0 || event.truncated) && (
         <footer
           className={`mt-3 flex gap-2 text-xs ${isUser ? "text-primary-foreground/70" : "text-muted-foreground"}`}

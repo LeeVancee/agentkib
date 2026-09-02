@@ -163,7 +163,6 @@ export function AppRuntimeBridge() {
         )}
       </div>
       <Button
-        size="sm"
         disabled={retrying}
         onClick={() => {
           setRetrying(true);

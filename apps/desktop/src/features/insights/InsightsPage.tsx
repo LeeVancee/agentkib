@@ -1,4 +1,10 @@
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { InsightsSkeleton } from "./InsightsSkeleton";
@@ -147,8 +153,7 @@ export function InsightsPage({
   const showCommitFilters = section === "overview" || section === "commits";
   const showRange = !["milestones", "sources"].includes(section);
   const showMetricTabs = section === "overview";
-  const filterClass =
-    "h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1";
+  const filterClass = "h-10 min-w-[132px] max-[520px]:min-w-0 max-[520px]:flex-1";
 
   if (!view) return <InsightsSkeleton section={section} />;
 
@@ -164,9 +169,13 @@ export function InsightsPage({
             </div>
           )}
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3 overflow-x-auto pb-1">
           {showMetricTabs && (
-            <Tabs value={metric} onValueChange={(value) => setMetric(value as HeatmapMetric)}>
+            <Tabs
+              value={metric}
+              onValueChange={(value) => setMetric(value as HeatmapMetric)}
+              className="shrink-0"
+            >
               <TabsList
                 className="segmented-control !h-auto w-fit max-w-full justify-start"
                 variant="default"
@@ -184,62 +193,96 @@ export function InsightsPage({
               </TabsList>
             </Tabs>
           )}
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex shrink-0 flex-nowrap items-center justify-end gap-2">
             {showTokenFilters && (
-              <SelectControl
-                className={filterClass}
-                aria-label={tr("workspace.allAgents")}
+              <Select
                 value={agent}
-                onChange={(event) => setAgent(event.target.value as typeof agent)}
+                onValueChange={(value) => {
+                  if (value !== null) setAgent(String(value) as typeof agent);
+                }}
               >
-                <option value="all">{tr("workspace.allAgents")}</option>
-                {insightsAgentKinds.map((value) => (
-                  <option key={value} value={value}>
-                    {agentLabels[value]}
-                  </option>
-                ))}
-              </SelectControl>
+                <SelectTrigger className={filterClass} aria-label={tr("workspace.allAgents")}>
+                  <SelectValue>
+                    {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+                  {insightsAgentKinds.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {agentLabels[value]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             {showTokenFilters && (
-              <SelectControl
-                className={filterClass}
-                aria-label={tr("workspace.all")}
+              <Select
                 value={workspaceId}
-                onChange={(event) => setWorkspaceId(event.target.value)}
+                onValueChange={(value) => {
+                  if (value !== null) setWorkspaceId(String(value));
+                }}
               >
-                <option value="all">{tr("workspace.all")}</option>
-                {workspaces.map((value) => (
-                  <option key={value.id} value={value.id}>
-                    {value.name}
-                  </option>
-                ))}
-              </SelectControl>
+                <SelectTrigger className={filterClass} aria-label={tr("workspace.all")}>
+                  <SelectValue>
+                    {workspaceId === "all"
+                      ? tr("workspace.all")
+                      : (workspaces.find((value) => value.id === workspaceId)?.name ??
+                        tr("workspace.all"))}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{tr("workspace.all")}</SelectItem>
+                  {workspaces.map((value) => (
+                    <SelectItem key={value.id} value={value.id}>
+                      {value.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             {showCommitFilters && (
-              <SelectControl
-                className={filterClass}
-                aria-label={tr("insights.allRepositories")}
+              <Select
                 value={repository}
-                onChange={(event) => setRepository(event.target.value)}
+                onValueChange={(value) => {
+                  if (value !== null) setRepository(String(value));
+                }}
               >
-                <option value="all">{tr("insights.allRepositories")}</option>
-                {repositoryOptions.map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {name}
-                  </option>
-                ))}
-              </SelectControl>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.allRepositories")}>
+                  <SelectValue>
+                    {repository === "all"
+                      ? tr("insights.allRepositories")
+                      : (repositoryOptions.find(([id]) => id === repository)?.[1] ??
+                        tr("insights.allRepositories"))}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{tr("insights.allRepositories")}</SelectItem>
+                  {repositoryOptions.map(([id, name]) => (
+                    <SelectItem key={id} value={id}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             {showRange && (
-              <SelectControl
-                className={filterClass}
-                aria-label={tr("insights.range52w")}
+              <Select
                 value={range}
-                onChange={(event) => setRange(event.target.value as typeof range)}
+                onValueChange={(value) => {
+                  if (value !== null) setRange(String(value) as typeof range);
+                }}
               >
-                <option value="52w">{tr("insights.range52w")}</option>
-                <option value="year">{tr("insights.rangeYear")}</option>
-              </SelectControl>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.range52w")}>
+                  <SelectValue>
+                    {range === "52w" ? tr("insights.range52w") : tr("insights.rangeYear")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="52w">{tr("insights.range52w")}</SelectItem>
+                  <SelectItem value="year">{tr("insights.rangeYear")}</SelectItem>
+                </SelectContent>
+              </Select>
             )}
           </div>
         </div>

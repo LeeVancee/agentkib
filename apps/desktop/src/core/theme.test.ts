@@ -34,18 +34,18 @@ describe("theme runtime", () => {
   });
 
   it("restores a valid saved accent and falls back for an unknown value", () => {
-    window.localStorage.setItem("agentkib.accent-theme", "violet");
-    expect(accentThemePreference()).toBe("violet");
+    window.localStorage.setItem("agentkib.accent-theme", "sakura");
+    expect(accentThemePreference()).toBe("sakura");
 
     window.localStorage.setItem("agentkib.accent-theme", "unknown");
-    expect(accentThemePreference()).toBe("sky");
+    expect(accentThemePreference()).toBe("vtron");
   });
 
   it("applies and persists the selected accent", () => {
-    applyAccentTheme("emerald");
+    applyAccentTheme("ocean-breeze");
 
-    expect(document.documentElement.dataset.accentTheme).toBe("emerald");
-    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("emerald");
+    expect(document.documentElement.dataset.accentTheme).toBe("ocean-breeze");
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("ocean-breeze");
   });
 
   it("caches the last explicit theme for non-blocking startup", () => {

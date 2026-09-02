@@ -9,7 +9,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -89,62 +95,92 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
   const selected = assets.find((asset) => asset.id === selectedId);
   const workspaceName = (id?: string) =>
     workspaces.find((workspace) => workspace.id === id)?.name ?? "—";
-  const controlClass =
-    "h-10 w-[136px] min-w-0 rounded-xl border-2 border-foreground/25 bg-card text-sm font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20";
+  const controlClass = "h-10 w-[136px] min-w-0";
 
   const filterControls = (
     <div className="flex flex-wrap gap-2">
-      <SelectControl
-        aria-label={tr("workspace.all")}
-        className={controlClass}
+      <Select
         value={workspaceId}
-        onChange={(event) => setWorkspaceId(event.target.value)}
+        onValueChange={(value) => {
+          if (value !== null) setWorkspaceId(String(value));
+        }}
       >
-        <option value="all">{tr("workspace.all")}</option>
-        {workspaces.map((workspace) => (
-          <option key={workspace.id} value={workspace.id}>
-            {workspace.name}
-          </option>
-        ))}
-      </SelectControl>
-      <SelectControl
-        aria-label={tr("workspace.allAgents")}
-        className={controlClass}
-        value={agent}
-        onChange={(event) => setAgent(event.target.value as typeof agent)}
-      >
-        <option value="all">{tr("workspace.allAgents")}</option>
-        {Object.entries(agentLabels).map(([value, label]) => (
-          <option key={value} value={value}>
-            {label}
-          </option>
-        ))}
-      </SelectControl>
-      {showKind && (
-        <SelectControl
-          aria-label={tr("catalog.allTypes")}
-          className={controlClass}
-          value={kind}
-          onChange={(event) => setKind(event.target.value)}
-        >
-          <option value="all">{tr("catalog.allTypes")}</option>
-          {kinds.map((value) => (
-            <option key={value} value={value}>
-              {tr(`status.asset.${value}`)}
-            </option>
+        <SelectTrigger className={controlClass} aria-label={tr("workspace.all")}>
+          <SelectValue>
+            {workspaceId === "all"
+              ? tr("workspace.all")
+              : (workspaces.find((workspace) => workspace.id === workspaceId)?.name ??
+                tr("workspace.all"))}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">{tr("workspace.all")}</SelectItem>
+          {workspaces.map((workspace) => (
+            <SelectItem key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </SelectItem>
           ))}
-        </SelectControl>
-      )}
-      <SelectControl
-        aria-label={tr("catalog.allOwnership")}
-        className={controlClass}
-        value={ownership}
-        onChange={(event) => setOwnership(event.target.value as typeof ownership)}
+        </SelectContent>
+      </Select>
+      <Select
+        value={agent}
+        onValueChange={(value) => {
+          if (value !== null) setAgent(String(value) as typeof agent);
+        }}
       >
-        <option value="all">{tr("catalog.allOwnership")}</option>
-        <option value="shared">{tr("catalog.shared")}</option>
-        <option value="native">{tr("catalog.native")}</option>
-      </SelectControl>
+        <SelectTrigger className={controlClass} aria-label={tr("workspace.allAgents")}>
+          <SelectValue>
+            {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+          {Object.entries(agentLabels).map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {showKind && (
+        <Select
+          value={kind}
+          onValueChange={(value) => {
+            if (value !== null) setKind(String(value));
+          }}
+        >
+          <SelectTrigger className={controlClass} aria-label={tr("catalog.allTypes")}>
+            <SelectValue>
+              {kind === "all" ? tr("catalog.allTypes") : tr(`status.asset.${kind}`)}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
+            {kinds.map((value) => (
+              <SelectItem key={value} value={value}>
+                {tr(`status.asset.${value}`)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      <Select
+        value={ownership}
+        onValueChange={(value) => {
+          if (value !== null) setOwnership(String(value) as typeof ownership);
+        }}
+      >
+        <SelectTrigger className={controlClass} aria-label={tr("catalog.allOwnership")}>
+          <SelectValue>
+            {ownership === "all" ? tr("catalog.allOwnership") : tr(`catalog.${ownership}`)}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">{tr("catalog.allOwnership")}</SelectItem>
+          <SelectItem value="shared">{tr("catalog.shared")}</SelectItem>
+          <SelectItem value="native">{tr("catalog.native")}</SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 

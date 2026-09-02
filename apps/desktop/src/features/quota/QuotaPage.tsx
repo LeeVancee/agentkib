@@ -231,12 +231,7 @@ export function QuotaPage({
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
-          <div className="flex items-center gap-2">
-            {snapshot && refreshLabel && (
-              <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
-                {refreshLabel}
-              </Badge>
-            )}
+          <div className="flex items-center gap-2 lg:ml-auto">
             {popoverSupported && (
               <CollapsibleTrigger
                 className="inline-flex min-h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -257,6 +252,11 @@ export function QuotaPage({
             >
               <RefreshCw size={15} className={busy ? "animate-spin" : ""} />
             </Button>
+            {snapshot && refreshLabel && (
+              <Badge variant="secondary" className="hidden whitespace-nowrap sm:inline-flex">
+                {refreshLabel}
+              </Badge>
+            )}
           </div>
         </div>
 
@@ -604,7 +604,6 @@ function QuotaDisplaySettings({
       <header className="flex items-start justify-between border-b border-border px-3.5 pb-3 pt-3.5">
         <div className="grid gap-1">
           <strong className="text-sm">{tr("quota.popoverSettings")}</strong>
-          <span className="text-xs text-muted-foreground">{tr("quota.popoverSettingsHint")}</span>
         </div>
         <Button
           variant="outline"

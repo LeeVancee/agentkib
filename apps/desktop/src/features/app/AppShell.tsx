@@ -7,6 +7,10 @@ import { ariaShortcut, currentAppPlatform, getShortcutDefinition } from "@/core/
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
+import {
+  clearSidebarPeekCloseTimer,
+  scheduleSidebarPeekClose as scheduleSidebarPeekCloseTimer,
+} from "./sidebar-peek";
 import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -26,6 +30,7 @@ export function WindowNavigationControls({
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const platform = currentAppPlatform();
   const backShortcut = getShortcutDefinition("history-back");
   const forwardShortcut = getShortcutDefinition("history-forward");
@@ -42,7 +47,10 @@ export function WindowNavigationControls({
         aria-expanded={!sidebarCollapsed}
         data-collapsed={sidebarCollapsed}
         title={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onClick={() => {
+          setSidebarPeek(false);
+          setSidebarCollapsed(!sidebarCollapsed);
+        }}
       >
         <span className="app-sidebar-collapse-icon" aria-hidden="true">
           <PanelLeftClose
@@ -111,6 +119,8 @@ export function AppShell({
   onForward?: () => void;
 }) {
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const sidebarPeek = useAppStore((state) => state.sidebarPeek);
+  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const locationKey = useLocation({ select: (location) => location.href });
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const previousSidebarMode = useRef(sidebarMode);
@@ -131,6 +141,21 @@ export function AppShell({
     }
   }, [locationKey]);
 
+  useEffect(() => {
+    if (!sidebarCollapsed && sidebarPeek) setSidebarPeek(false);
+  }, [sidebarCollapsed, sidebarPeek, setSidebarPeek]);
+
+  const revealSidebar = () => {
+    if (!sidebarCollapsed) return;
+    clearSidebarPeekCloseTimer();
+    setSidebarPeek(true);
+  };
+
+  const scheduleSidebarPeekClose = () => {
+    if (!sidebarCollapsed) return;
+    scheduleSidebarPeekCloseTimer(setSidebarPeek);
+  };
+
   return (
     <div
       className={cn(
@@ -139,6 +164,12 @@ export function AppShell({
         sidebarMotion && `app-shell-sidebar-motion-${sidebarMotion}`,
       )}
     >
+      <div
+        className="app-sidebar-hover-trigger"
+        aria-hidden="true"
+        onPointerEnter={revealSidebar}
+        onPointerLeave={scheduleSidebarPeekClose}
+      />
       <WindowToolbar />
       <WindowNavigationControls
         canGoBack={canGoBack}

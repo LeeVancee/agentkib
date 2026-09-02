@@ -5,7 +5,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
@@ -211,7 +217,6 @@ function WorkspacesPage({
     <ToggleGroup
       spacing={0}
       variant="default"
-      size="sm"
       className="segmented-control shrink-0"
       value={[view]}
       onValueChange={(values) => {
@@ -262,32 +267,52 @@ function WorkspacesPage({
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <SelectControl
-              aria-label={tr("workspace.allAgents")}
-              className="h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1"
+            <Select
               value={agent}
-              onChange={(event) => setAgent(event.target.value as typeof agent)}
+              onValueChange={(value) => {
+                if (value !== null) setAgent(String(value) as typeof agent);
+              }}
             >
-              <option value="all">{tr("workspace.allAgents")}</option>
-              {Object.entries(agentLabels).map(([value, label]) => (
-                <option value={value} key={value}>
-                  {label}
-                </option>
-              ))}
-            </SelectControl>
-            <SelectControl
-              aria-label={tr("workspace.allStatuses")}
-              className="h-10 min-w-[146px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[520px]:min-w-0 max-[520px]:flex-1"
+              <SelectTrigger
+                aria-label={tr("workspace.allAgents")}
+                className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
+              >
+                <SelectValue>
+                  {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+                {Object.entries(agentLabels).map(([value, label]) => (
+                  <SelectItem value={value} key={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
               value={status}
-              onChange={(event) => setStatus(event.target.value as typeof status)}
+              onValueChange={(value) => {
+                if (value !== null) setStatus(String(value) as typeof status);
+              }}
             >
-              <option value="all">{tr("workspace.allStatuses")}</option>
-              <option value="healthy">{workspaceStatusLabel("healthy")}</option>
-              <option value="attention">{workspaceStatusLabel("attention")}</option>
-            </SelectControl>
+              <SelectTrigger
+                aria-label={tr("workspace.allStatuses")}
+                className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
+              >
+                <SelectValue>
+                  {status === "all" ? tr("workspace.allStatuses") : workspaceStatusLabel(status)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("workspace.allStatuses")}</SelectItem>
+                <SelectItem value="healthy">{workspaceStatusLabel("healthy")}</SelectItem>
+                <SelectItem value="attention">{workspaceStatusLabel("attention")}</SelectItem>
+              </SelectContent>
+            </Select>
             <Badge
-              variant="secondary"
-              className="h-8 rounded-lg px-2.5 text-xs tabular-nums text-muted-foreground"
+              variant="outline"
+              className="h-8 rounded-lg border-border bg-muted px-2.5 text-xs tabular-nums text-muted-foreground"
             >
               {tr("workspace.resultCount", { count: filtered.length })}
             </Badge>

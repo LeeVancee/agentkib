@@ -71,9 +71,6 @@ export function GettingStartedCard({
           </span>
           <div>
             <h2 className="text-base font-semibold tracking-[-.02em]">{tr("onboarding.title")}</h2>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {tr("onboarding.description")}
-            </p>
           </div>
         </div>
         <Button

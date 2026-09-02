@@ -422,7 +422,11 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
             <CardContent className="flex flex-col gap-2 p-4 pt-2 sm:flex-row">
               <Input
                 value={url}
-                onChange={(event) => setUrl(event.target.value)}
+                disabled={busy === "discover-url"}
+                onChange={(event) => {
+                  setUrl(event.target.value);
+                  setCandidates([]);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && url.trim() && !busy) void discoverUrl();
                 }}

@@ -14,6 +14,7 @@ use agentkib_platform::fs::{atomic_write, move_path};
 use agentkib_platform::path as platform_path;
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, Utc};
+use futures_util::{StreamExt, stream};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,6 +24,9 @@ use walkdir::WalkDir;
 
 const MAX_TREE_ENTRIES: usize = 20_000;
 const MAX_CANDIDATES: usize = 200;
+const MAX_DISCOVERY_CONCURRENCY: usize = 8;
+const MAX_DISCOVERY_METADATA_BYTES: u64 = 8 * 1024 * 1024;
+const DISCOVERY_TIMEOUT_SECONDS: u64 = 90;
 const MAX_DISCOVERY_DEPTH: usize = 8;
 const MAX_SKILL_FILES: usize = 512;
 const MAX_SKILL_PACKAGE_ENTRIES: usize = 4_096;
@@ -223,40 +227,57 @@ impl SkillHub {
         let parsed = parse_github_url(value)?;
         let resolved = self.resolve_repository(&parsed).await?;
         let directories = candidate_directories(&resolved.entries, &resolved.root_path)?;
-        let mut results = Vec::with_capacity(directories.len());
-        for directory in directories {
-            let result: Result<SkillCandidate> = async {
+        ensure_candidate_metadata_budget(&resolved.entries, &directories)?;
+        let owner = &resolved.owner;
+        let repository = &resolved.repository;
+        let commit = &resolved.commit;
+        let reference = &resolved.reference;
+        let entries = &resolved.entries;
+        let root_path = &resolved.root_path;
+        let root_tree = &resolved.root_tree;
+        let inspection = stream::iter(directories.into_iter().map(|directory| async move {
+            let context_path = directory.clone();
+            let result: Result<SkillCandidate> = async move {
                 let skill_path = join_repo_path(&directory, "SKILL.md");
                 let content = self
                     .download_raw(
-                        &resolved.owner,
-                        &resolved.repository,
-                        &resolved.commit,
+                        owner,
+                        repository,
+                        commit,
                         &skill_path,
                         MAX_SKILL_ENTRY_BYTES,
                     )
                     .await?;
                 let content = String::from_utf8(content).context("SKILL.md must be UTF-8")?;
                 let metadata = parse_skill_frontmatter(&content)?;
-                let tree_sha = directory_tree_sha(&resolved, &directory)?;
+                let tree_sha =
+                    directory_tree_sha_from_entries(entries, root_path, root_tree, &directory)?;
                 Ok(SkillCandidate {
                     name: metadata.name,
                     description: metadata.description,
                     license: metadata.license,
                     compatibility: metadata.compatibility,
                     source: SkillSource {
-                        kind: source_kind(&resolved.owner, &resolved.repository, &directory),
-                        repository: format!("{}/{}", resolved.owner, resolved.repository),
-                        reference: resolved.reference.clone(),
+                        kind: source_kind(owner, repository, &directory),
+                        repository: format!("{owner}/{repository}"),
+                        reference: reference.clone(),
                         path: directory.clone(),
-                        resolved_commit: resolved.commit.clone(),
+                        resolved_commit: commit.clone(),
                         tree_sha,
                     },
                 })
             }
             .await;
-            results.push(result.with_context(|| format!("Could not inspect Skill at {directory}")));
-        }
+            result.with_context(|| format!("Could not inspect Skill at {context_path}"))
+        }))
+        .buffer_unordered(MAX_DISCOVERY_CONCURRENCY)
+        .collect::<Vec<_>>();
+        let results = tokio::time::timeout(
+            std::time::Duration::from_secs(DISCOVERY_TIMEOUT_SECONDS),
+            inspection,
+        )
+        .await
+        .context("GitHub Skill inspection exceeded the 90 second limit")?;
         valid_discovery_candidates(results)
     }
 
@@ -1823,12 +1844,49 @@ fn reserve_package_layout<'a>(
     Ok(())
 }
 
-fn directory_tree_sha(resolved: &ResolvedRepository, directory: &str) -> Result<String> {
-    if directory == resolved.root_path {
-        return Ok(resolved.root_tree.clone());
+fn ensure_candidate_metadata_budget(entries: &[TreeEntry], directories: &[String]) -> Result<()> {
+    let mut total = 0_u64;
+    for directory in directories {
+        let path = join_repo_path(directory, "SKILL.md");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.kind == "blob" && entry.path == path)
+            .with_context(|| format!("Skill entrypoint was not found: {path}"))?;
+        let size = entry.size.unwrap_or(MAX_SKILL_ENTRY_BYTES);
+        ensure!(
+            size <= MAX_SKILL_ENTRY_BYTES,
+            "SKILL.md exceeds the 1 MiB limit: {path}"
+        );
+        total = total
+            .checked_add(size)
+            .context("Skill discovery metadata size overflow")?;
+        ensure!(
+            total <= MAX_DISCOVERY_METADATA_BYTES,
+            "Skill discovery metadata exceeds the 8 MiB limit"
+        );
     }
-    resolved
-        .entries
+    Ok(())
+}
+
+fn directory_tree_sha(resolved: &ResolvedRepository, directory: &str) -> Result<String> {
+    directory_tree_sha_from_entries(
+        &resolved.entries,
+        &resolved.root_path,
+        &resolved.root_tree,
+        directory,
+    )
+}
+
+fn directory_tree_sha_from_entries(
+    entries: &[TreeEntry],
+    root_path: &str,
+    root_tree: &str,
+    directory: &str,
+) -> Result<String> {
+    if directory == root_path {
+        return Ok(root_tree.to_string());
+    }
+    entries
         .iter()
         .find(|entry| entry.kind == "tree" && entry.path == directory)
         .map(|entry| entry.sha.clone())
@@ -2590,6 +2648,26 @@ mod tests {
             candidate_directories(&entries, "skills/a").unwrap(),
             ["skills/a"]
         );
+    }
+
+    #[test]
+    fn candidate_discovery_rejects_an_excessive_metadata_budget() {
+        let directories = (0..9)
+            .map(|index| format!("skills/{index}"))
+            .collect::<Vec<_>>();
+        let entries = directories
+            .iter()
+            .map(|directory| TreeEntry {
+                path: format!("{directory}/SKILL.md"),
+                mode: "100644".into(),
+                kind: "blob".into(),
+                sha: directory.clone(),
+                size: Some(MAX_SKILL_ENTRY_BYTES),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(ensure_candidate_metadata_budget(&entries[..8], &directories[..8]).is_ok());
+        assert!(ensure_candidate_metadata_budget(&entries, &directories).is_err());
     }
 
     #[test]

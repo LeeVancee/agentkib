@@ -202,6 +202,7 @@ describe("SkillHubPage", () => {
 
     await user.clear(input);
     await user.type(input, "https://github.com/owner/second");
+    expect(screen.queryByText("skill-installer")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Inspect" }));
 
     expect(await screen.findByText(/inspection failed/)).toBeTruthy();
@@ -232,6 +233,7 @@ describe("SkillHubPage", () => {
     );
     await user.type(input, "https://github.com/owner/repo{Enter}");
     await waitFor(() => expect(mocks.discoverSkills).toHaveBeenCalledTimes(1));
+    expect((input as HTMLInputElement).disabled).toBe(true);
 
     await user.keyboard("{Enter}");
     expect(mocks.discoverSkills).toHaveBeenCalledTimes(1);

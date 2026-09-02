@@ -88,6 +88,12 @@ function upsertSkill<T extends { name: string }>(items: T[], next: T) {
   return items.map((item, itemIndex) => (itemIndex === index ? next : item));
 }
 
+function upsertRemovedSkill(items: RemovedSkill[], next: RemovedSkill) {
+  const index = items.findIndex((item) => item.id === next.id);
+  if (index < 0) return [...items, next];
+  return items.map((item, itemIndex) => (itemIndex === index ? next : item));
+}
+
 export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: SkillHubPageProps) {
   const dialogs = useAppDialogs();
   const [section, setSection] = useState<SkillHubSection>("library");
@@ -233,7 +239,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     await run(`uninstall:${skill.name}`, async () => {
       const removedSkill = await api.uninstallSkill(skill.name);
       setInstalled((items) => items.filter((item) => item.name !== skill.name));
-      setRemoved((items) => upsertSkill(items, removedSkill));
+      setRemoved((items) => upsertRemovedSkill(items, removedSkill));
       await refreshAfterMutation();
     });
   };

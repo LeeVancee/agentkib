@@ -239,6 +239,56 @@ describe("SkillHubPage", () => {
     expect(mocks.discoverSkills).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps separate trash records for repeated removals of the same Skill", async () => {
+    const current = {
+      name: "reviewer",
+      display_name: "reviewer",
+      description: "Current version",
+      path: "/tmp/.agentkib/skills/reviewer",
+      size: 128,
+      status: "current" as const,
+      can_rollback: false,
+    };
+    const previousRemoval = {
+      id: "skill-previous",
+      name: "reviewer",
+      display_name: "reviewer",
+      removed_at: "2026-09-01T00:00:00Z",
+      path: "/tmp/.agentkib/trash/skills/skill-previous/package",
+    };
+    const latestRemoval = {
+      ...previousRemoval,
+      id: "skill-latest",
+      removed_at: "2026-09-02T00:00:00Z",
+      path: "/tmp/.agentkib/trash/skills/skill-latest/package",
+    };
+    mocks.installedSkills
+      .mockResolvedValueOnce([current])
+      .mockRejectedValue(new Error("refresh failed"));
+    mocks.removedSkills
+      .mockResolvedValueOnce([previousRemoval])
+      .mockRejectedValue(new Error("refresh failed"));
+    mocks.uninstallSkill.mockResolvedValue(latestRemoval);
+    const user = userEvent.setup();
+
+    render(
+      <AppDialogProvider>
+        <SkillHubPage
+          workspaceAssets={[]}
+          workspaces={[]}
+          onOpen={vi.fn()}
+          onReload={vi.fn().mockRejectedValue(new Error("reload failed"))}
+        />
+      </AppDialogProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Move to trash" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(mocks.uninstallSkill).toHaveBeenCalledWith("reviewer"));
+    expect(await screen.findAllByRole("button", { name: "Restore" })).toHaveLength(2);
+  });
+
   it("keeps a successful rollback and refresh error while refreshing the catalog", async () => {
     const current = {
       name: "reviewer",

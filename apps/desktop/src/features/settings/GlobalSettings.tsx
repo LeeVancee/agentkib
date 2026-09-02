@@ -839,15 +839,16 @@ function AppIconSetting({
           <ToggleGroupItem
             key={icon}
             value={icon}
-            className="segmented-control-item inline-flex h-9 min-h-9 min-w-[90px] items-center justify-center gap-1.5 px-3 text-sm"
+            className="segmented-control-item inline-flex h-10 min-h-10 w-14 min-w-14 items-center justify-center px-4 py-0"
+            aria-label={tr(`settings.appIcon.${icon}`)}
+            title={tr(`settings.appIcon.${icon}`)}
           >
             <img
-              className="size-5 rounded-md object-cover"
+              className="size-6 shrink-0 rounded-md object-cover"
               src={appIconAssets[icon]}
               alt=""
               aria-hidden="true"
             />
-            {tr(`settings.appIcon.${icon}`)}
           </ToggleGroupItem>
         ))}
       </ToggleGroup>

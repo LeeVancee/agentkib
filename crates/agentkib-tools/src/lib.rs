@@ -565,17 +565,19 @@ async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> A
     if installed && matches!(channel, AgentToolChannel::Unknown | AgentToolChannel::Local) {
         warnings.push("channel-unverified".to_owned());
     }
-    let state =
-        if installed && matches!(channel, AgentToolChannel::Unknown | AgentToolChannel::Local) {
-            AgentToolState::Unknown
-        } else {
-            determine_state(
-                installed,
-                installations.len(),
-                current_version.as_deref(),
-                latest_version.as_deref(),
-            )
-        };
+    let has_conflict = installations_conflict(&installations);
+    let state = if has_conflict {
+        AgentToolState::Conflict
+    } else if installed && matches!(channel, AgentToolChannel::Unknown | AgentToolChannel::Local) {
+        AgentToolState::Unknown
+    } else {
+        determine_state(
+            installed,
+            false,
+            current_version.as_deref(),
+            latest_version.as_deref(),
+        )
+    };
     let actions = actions_for(
         spec,
         state,
@@ -1350,7 +1352,8 @@ fn resolved_tool_paths(spec: ToolSpec) -> Vec<(PathBuf, bool)> {
     let mut paths: Vec<(PathBuf, bool)> = Vec::new();
     let mut seen = BTreeMap::<String, usize>::new();
     for candidate in candidates {
-        if !command::is_executable(&candidate)
+        if is_bundled_desktop_executable(spec.agent, &candidate)
+            || !command::is_executable(&candidate)
             || command::is_windows_app_execution_alias_path(&candidate)
         {
             continue;
@@ -1376,10 +1379,6 @@ fn known_cli_candidates(agent: AgentKind) -> Vec<PathBuf> {
     {
         let home = dirs_home();
         match agent {
-            AgentKind::Codex => vec![
-                PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
-                home.join("Applications/ChatGPT.app/Contents/Resources/codex"),
-            ],
             AgentKind::OpenCode => vec![home.join(".opencode/bin/opencode")],
             _ => Vec::new(),
         }
@@ -1389,6 +1388,12 @@ fn known_cli_candidates(agent: AgentKind) -> Vec<PathBuf> {
         let _ = agent;
         Vec::new()
     }
+}
+
+fn is_bundled_desktop_executable(agent: AgentKind, path: &Path) -> bool {
+    agent == AgentKind::Codex
+        && cfg!(target_os = "macos")
+        && normalized_path(path).ends_with("/chatgpt.app/contents/resources/codex")
 }
 
 fn anchored_manager_path(
@@ -1866,14 +1871,14 @@ fn truncate_output(output: &str, limit: usize) -> String {
 
 fn determine_state(
     installed: bool,
-    executable_count: usize,
+    has_conflict: bool,
     current: Option<&str>,
     latest: Option<&str>,
 ) -> AgentToolState {
     if !installed {
         return AgentToolState::Uninstalled;
     }
-    if executable_count > 1 {
+    if has_conflict {
         return AgentToolState::Conflict;
     }
     let (Some(current), Some(latest)) = (current, latest) else {
@@ -1886,6 +1891,33 @@ fn determine_state(
         (Some(current), Some(latest)) if current < latest => AgentToolState::UpdateAvailable,
         (Some(_), Some(_)) => AgentToolState::Current,
         _ => AgentToolState::Unknown,
+    }
+}
+
+fn installations_conflict(installations: &[AgentToolInstallation]) -> bool {
+    if installations.len() < 2 {
+        return false;
+    }
+    if installations
+        .iter()
+        .filter(|installation| installation.is_path_default)
+        .count()
+        != 1
+    {
+        return true;
+    }
+    let first = &installations[0];
+    installations.iter().skip(1).any(|installation| {
+        installation.runnable != first.runnable
+            || !optional_versions_equal(installation.version.as_deref(), first.version.as_deref())
+    })
+}
+
+fn optional_versions_equal(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => versions_equal(left, right),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -2009,6 +2041,26 @@ fn channel_name(channel: AgentToolChannel) -> &'static str {
 mod tests {
     use super::*;
 
+    fn test_installation(
+        id: &str,
+        version: Option<&str>,
+        runnable: bool,
+        is_path_default: bool,
+    ) -> AgentToolInstallation {
+        AgentToolInstallation {
+            id: id.to_owned(),
+            path: PathBuf::from(format!("/tmp/{id}")),
+            resolved_path: PathBuf::from(format!("/tmp/{id}")),
+            version: version.map(ToOwned::to_owned),
+            runnable,
+            error: None,
+            channel: AgentToolChannel::Homebrew,
+            environment: AgentToolEnvironment::System,
+            manager_path: Some(PathBuf::from("/opt/homebrew/bin/brew")),
+            is_path_default,
+        }
+    }
+
     #[test]
     fn tool_catalog_excludes_deepseek_harness() {
         assert_eq!(TOOL_SPECS.len(), 7);
@@ -2104,21 +2156,54 @@ mod tests {
     #[test]
     fn compares_versions_without_treating_unknown_values_as_outdated() {
         assert_eq!(
-            determine_state(true, 1, Some("codex-cli 0.49.1"), Some("0.50.0")),
+            determine_state(true, false, Some("codex-cli 0.49.1"), Some("0.50.0")),
             AgentToolState::UpdateAvailable
         );
         assert_eq!(
-            determine_state(true, 1, Some("build-a"), Some("build-b")),
+            determine_state(true, false, Some("build-a"), Some("build-b")),
             AgentToolState::Unknown
         );
     }
 
     #[test]
-    fn conflicts_take_precedence_over_version_state() {
+    fn duplicate_installations_only_conflict_when_they_disagree_or_lack_a_default() {
+        let matching = [
+            test_installation("path-default", Some("codex-cli 1.0.0"), true, true),
+            test_installation("secondary", Some("1.0.0"), true, false),
+        ];
+        assert!(!installations_conflict(&matching));
+
+        let mut versions_differ = matching.clone();
+        versions_differ[1].version = Some("1.1.0".to_owned());
+        assert!(installations_conflict(&versions_differ));
+
+        let mut runnable_differs = matching.clone();
+        runnable_differs[1].runnable = false;
+        runnable_differs[1].version = None;
+        assert!(installations_conflict(&runnable_differs));
+
+        let mut no_default = matching.clone();
+        no_default[0].is_path_default = false;
+        assert!(installations_conflict(&no_default));
+
         assert_eq!(
-            determine_state(true, 2, Some("1.0.0"), Some("1.0.0")),
+            determine_state(true, true, Some("1.0.0"), Some("1.0.0")),
             AgentToolState::Conflict
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chatgpt_bundled_codex_is_not_a_managed_cli() {
+        assert!(is_bundled_desktop_executable(
+            AgentKind::Codex,
+            Path::new("/Applications/ChatGPT.app/Contents/Resources/codex")
+        ));
+        assert!(!is_bundled_desktop_executable(
+            AgentKind::Codex,
+            Path::new("/opt/homebrew/bin/codex")
+        ));
+        assert!(known_cli_candidates(AgentKind::Codex).is_empty());
     }
 
     #[test]

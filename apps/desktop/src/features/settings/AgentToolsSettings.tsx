@@ -108,6 +108,7 @@ export function AgentToolsSettings({
     (tool) =>
       tool.state === "conflict" ||
       tool.state === "unknown" ||
+      tool.warnings.includes("multiple-executables") ||
       tool.installations.some((installation) => !installation.runnable),
   );
   const upgrades = tools.flatMap((tool) =>
@@ -235,30 +236,27 @@ export function AgentToolsSettings({
 
   return (
     <div className="grid gap-3">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            {tr("settings.tools.title")}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">{tr("settings.tools.description")}</p>
-        </div>
-        <Button
-          variant="outline"
-          onClick={() => void api.openExternal(`${PROJECT_URL}/blob/main/docs/DEVELOPMENT.md`)}
-        >
-          <Info size={15} />
-          {tr("settings.tools.environmentHelp")}
-        </Button>
-      </header>
-
       <AppUpdateSetting currentVersion={currentVersion} updatesEnabled={updatesEnabled} />
 
       <section className="grid gap-3" aria-labelledby="agent-tools-heading">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 id="agent-tools-heading" className="font-heading text-lg font-semibold">
-              {tr("settings.tools.localEnvironment")}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 id="agent-tools-heading" className="font-heading text-lg font-semibold">
+                {tr("settings.tools.localEnvironment")}
+              </h2>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                onClick={() =>
+                  void api.openExternal(`${PROJECT_URL}/blob/main/docs/DEVELOPMENT.md`)
+                }
+              >
+                <Info size={14} />
+                {tr("settings.tools.environmentHelp")}
+              </Button>
+            </div>
             <p className="mt-0.5 text-sm text-muted-foreground">
               {toolsQuery.data?.latest_checked_at
                 ? tr("settings.tools.lastChecked", {
@@ -461,6 +459,8 @@ function AgentToolCard({
   const action =
     tool.actions.find((candidate) => candidate.id === selectedActionId) ?? tool.actions[0];
   const StateIcon = stateIcons[tool.state];
+  const hasMultipleInstallations = tool.warnings.includes("multiple-executables");
+  const DetailIcon = hasMultipleInstallations ? CircleAlert : StateIcon;
   const stateClass = {
     current: "border-emerald-500/35 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
     "update-available": "border-amber-500/35 bg-amber-500/8 text-amber-700 dark:text-amber-300",
@@ -558,12 +558,14 @@ function AgentToolCard({
           "mt-1 flex min-h-4 items-start gap-1 text-[11px]",
           tool.state === "conflict"
             ? "text-destructive"
-            : tool.state === "current"
-              ? "text-emerald-700 dark:text-emerald-300"
-              : "text-muted-foreground",
+            : hasMultipleInstallations
+              ? "text-amber-700 dark:text-amber-300"
+              : tool.state === "current"
+                ? "text-emerald-700 dark:text-emerald-300"
+                : "text-muted-foreground",
         )}
       >
-        <StateIcon size={12} className="mt-0.5" />
+        <DetailIcon size={12} className="mt-0.5" />
         {toolWarning(tool)}
       </p>
       <div className="mt-auto flex justify-end pt-1">
@@ -926,6 +928,8 @@ function executionResultDescription(result: AgentToolExecutionResult) {
 function toolWarning(tool: AgentToolStatus) {
   if (tool.state === "conflict")
     return tr("settings.tools.multipleExecutables", { count: tool.installations.length });
+  if (tool.warnings.includes("multiple-executables"))
+    return tr("settings.tools.multipleInstallationsNotice", { count: tool.installations.length });
   if (tool.state === "current") return tr("settings.tools.noIssues");
   if (tool.state === "update-available") return tr("settings.tools.updateSuggested");
   if (tool.state === "uninstalled") return tr("settings.tools.executableMissing");

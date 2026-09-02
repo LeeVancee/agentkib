@@ -169,6 +169,11 @@ describe("AgentToolsSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "GitHub" }));
     expect(api.openExternal).toHaveBeenCalledWith("https://github.com/starroyhq/agentkib");
+
+    await user.click(screen.getByRole("button", { name: "Environment guide" }));
+    expect(api.openExternal).toHaveBeenCalledWith(
+      "https://github.com/starroyhq/agentkib/blob/main/docs/DEVELOPMENT.md",
+    );
   });
 
   it("never exposes DeepSeek Harness in tool management", () => {
@@ -230,6 +235,50 @@ describe("AgentToolsSettings", () => {
     expect(screen.getByText("Version probe failed")).toBeTruthy();
     expect(screen.getByText(/Resolved target: .*node_modules\/\@openai\/codex/)).toBeTruthy();
     expect(screen.getByText(/\.nvm\/versions\/node\/v22\/bin\/npm/)).toBeTruthy();
+  });
+
+  it("reports matching duplicate installations without marking them as a conflict", async () => {
+    const duplicate = tool("codex", {
+      state: "current",
+      warnings: ["multiple-executables"],
+      installations: [
+        {
+          id: "codex:default",
+          path: "/opt/homebrew/bin/codex",
+          resolved_path: "/opt/homebrew/Caskroom/codex/1.0.0/bin/codex",
+          version: "1.0.0",
+          runnable: true,
+          channel: "homebrew",
+          environment: "system",
+          manager_path: "/opt/homebrew/bin/brew",
+          is_path_default: true,
+        },
+        {
+          id: "codex:secondary",
+          path: "~/.local/bin/codex",
+          resolved_path: "~/.local/share/codex/codex",
+          version: "1.0.0",
+          runnable: true,
+          channel: "official-installer",
+          environment: "standalone",
+          is_path_default: false,
+        },
+      ],
+    });
+    vi.mocked(useAgentTools).mockReturnValue({
+      data: { ...snapshot, tools: [duplicate, ...snapshot.tools.slice(1)] },
+      error: null,
+      isPending: false,
+    } as ReturnType<typeof useAgentTools>);
+
+    const user = userEvent.setup();
+    renderSettings();
+
+    expect(screen.queryByText("Conflict")).toBeNull();
+    expect(screen.getByText("2 installations found; updates target the PATH default")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Diagnose installations (1)" }));
+    expect(screen.getAllByText("/opt/homebrew/bin/codex").length).toBeGreaterThan(0);
+    expect(screen.getByText("~/.local/bin/codex")).toBeTruthy();
   });
 
   it("confirms before executing an official channel action", async () => {

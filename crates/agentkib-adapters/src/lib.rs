@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, manifest_path, opencode_managed_config_path,
+    hash_content, inspect_skill_entrypoint, manifest_path, opencode_managed_config_path,
     opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
@@ -198,12 +198,13 @@ fn discover_shared_skills(project: &Path) -> Result<Vec<agentkib_core::SkillDefi
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let skill_file = entry.path().join("SKILL.md");
-        if skill_file.is_file()
-            && let Some(name) = entry.file_name().to_str()
-        {
+        if let Ok(package) = inspect_skill_entrypoint(&skill_file) {
+            let Some(directory_name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
             skills.push(agentkib_core::SkillDefinition {
-                name: name.to_string(),
-                path: format!(".agents/skills/{name}"),
+                name: package.name,
+                path: format!(".agents/skills/{directory_name}"),
                 targets: Vec::new(),
             });
         }
@@ -1447,6 +1448,23 @@ mod tests {
         assert!(manifest.instructions.shared.is_empty());
         assert!(!agentkib_core::manifest_path(dir.path()).exists());
         assert!(manifest.adapters[&AgentKind::GrokBuild].enabled);
+    }
+
+    #[test]
+    fn default_manifest_uses_the_skill_frontmatter_name() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/folder-name")).unwrap();
+        fs::write(
+            dir.path().join(".agents/skills/folder-name/SKILL.md"),
+            "---\nname: logical-name\n---\nBody",
+        )
+        .unwrap();
+
+        let manifest = default_manifest(dir.path()).unwrap();
+
+        assert_eq!(manifest.skills.len(), 1);
+        assert_eq!(manifest.skills[0].name, "logical-name");
+        assert_eq!(manifest.skills[0].path, ".agents/skills/folder-name");
     }
 
     #[test]

@@ -296,6 +296,69 @@ export function registerRuntimeIpc({
         .then(withElectronRuntimeCapabilities);
     });
 
+    ipcMain.handle("agentkib:skills:catalog", (event, force: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.listSkillCatalog, {
+        force: typeof force === "boolean" ? force : false,
+      }),
+    );
+    ipcMain.handle("agentkib:skills:discover", (event, url: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.discoverSkills, {
+        url: requireText(url, "url"),
+      }),
+    );
+    ipcMain.handle("agentkib:skills:installed", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.listInstalledSkills, {}),
+    );
+    ipcMain.handle("agentkib:skills:prepare-install", (event, source: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.prepareSkillInstall, {
+        source: requireObject(source, "source"),
+      }),
+    );
+    ipcMain.handle(
+      "agentkib:skills:apply-operation",
+      (event, token: unknown, allowModified: unknown) =>
+        runtimeRequest(event, RUNTIME_METHODS.applySkillOperation, {
+          token: requireString(token, "token"),
+          confirmed: true,
+          allowModified: typeof allowModified === "boolean" ? allowModified : false,
+        }),
+    );
+    ipcMain.handle("agentkib:skills:check-updates", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.checkSkillUpdates, {}),
+    );
+    ipcMain.handle("agentkib:skills:prepare-update", (event, name: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.prepareSkillUpdate, {
+        name: requireString(name, "name"),
+      }),
+    );
+    ipcMain.handle("agentkib:skills:rollback", (event, name: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.rollbackSkill, {
+        name: requireString(name, "name"),
+        confirmed: true,
+      }),
+    );
+    ipcMain.handle("agentkib:skills:uninstall", (event, name: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.uninstallSkill, {
+        name: requireString(name, "name"),
+        confirmed: true,
+      }),
+    );
+    ipcMain.handle("agentkib:skills:removed", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.listRemovedSkills, {}),
+    );
+    ipcMain.handle("agentkib:skills:restore", (event, id: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.restoreSkill, {
+        id: requireString(id, "id"),
+        confirmed: true,
+      }),
+    );
+    ipcMain.handle("agentkib:skills:read-file", (event, name: unknown, filePath: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.readSkillFile, {
+        name: requireString(name, "name"),
+        path: requireString(filePath, "path"),
+      }),
+    );
+
     ipcMain.handle("agentkib:mcp:hub-status", (event) =>
       runtimeRequest(event, RUNTIME_METHODS.mcpHubStatus, {}),
     );

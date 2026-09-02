@@ -34,38 +34,42 @@ use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
     ACHIEVEMENTS_METHOD, ADD_GIT_IDENTITY_ALIAS_METHOD, ADD_OBSIDIAN_VAULT_METHOD,
     ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, AGENT_USAGE_BREAKDOWN_METHOD, APPLY_CHANGES_METHOD,
-    CANCEL_STORAGE_METHOD, CLEAR_SESSION_INDEX_METHOD, CONTINUE_SESSION_HANDOFF_METHOD,
+    APPLY_SKILL_OPERATION_METHOD, CANCEL_STORAGE_METHOD, CHECK_SKILL_UPDATES_METHOD,
+    CLEAR_SESSION_INDEX_METHOD, CONTINUE_SESSION_HANDOFF_METHOD, DISCOVER_SKILLS_METHOD,
     DISCOVERY_REPORT_METHOD, EXCLUDE_WORKSPACE_METHOD, GET_MCP_SERVER_METHOD,
     GIT_COMMIT_FILES_METHOD, GIT_DIFF_METHOD, GIT_IDENTITIES_METHOD, HANDSHAKE_METHOD,
     HandshakeRequest, HandshakeResult, INSIGHTS_HEATMAP_METHOD, INSIGHTS_STATUS_METHOD,
     INSIGHTS_SUMMARY_METHOD, INSIGHTS_VIEW_METHOD, INSTALL_MCP_METHOD,
     LAUNCH_SESSION_HANDOFF_METHOD, LINK_OBSIDIAN_WORKSPACE_METHOD, LIST_ACTIVITY_METHOD,
     LIST_AGENT_INSTALLATIONS_METHOD, LIST_EXCLUDED_WORKSPACES_METHOD, LIST_GLOBAL_MEMORIES_METHOD,
-    LIST_MCP_INSTALLATIONS_METHOD, LIST_MCP_RUNTIMES_METHOD, LIST_MCP_SERVERS_METHOD,
-    LIST_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD, LIST_SCAN_ROOTS_METHOD,
+    LIST_INSTALLED_SKILLS_METHOD, LIST_MCP_INSTALLATIONS_METHOD, LIST_MCP_RUNTIMES_METHOD,
+    LIST_MCP_SERVERS_METHOD, LIST_MEMORIES_METHOD, LIST_REMOTE_GATEWAYS_METHOD,
+    LIST_REMOVED_SKILLS_METHOD, LIST_SCAN_ROOTS_METHOD, LIST_SKILL_CATALOG_METHOD,
     LIST_WORKSPACE_OPENERS_METHOD, LIST_WORKSPACES_METHOD, MCP_HUB_STATUS_METHOD,
     MODEL_USAGE_BREAKDOWN_METHOD, OBSIDIAN_INTEGRATION_METHOD, OPEN_OBSIDIAN_METHOD,
     OPEN_OBSIDIAN_WORKSPACE_METHOD, OPEN_WORKSPACE_WITH_APP_METHOD, PLAN_CHANGES_METHOD,
     PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD, PREPARE_MANIFEST_METHOD,
-    PREPARE_SESSION_HANDOFF_METHOD, PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD,
-    PROTOCOL_VERSION, QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD,
-    QUOTA_SNAPSHOT_METHOD, REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD,
+    PREPARE_SESSION_HANDOFF_METHOD, PREPARE_SKILL_INSTALL_METHOD, PREPARE_SKILL_UPDATE_METHOD,
+    PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
+    QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD,
+    READ_SKILL_FILE_METHOD, REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD,
     REFRESH_MCP_REGISTRY_METHOD, REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD,
     REFRESH_STORAGE_METHOD, REFRESH_WORKSPACE_METHOD, REFRESH_WORKSPACE_SESSIONS_METHOD,
     REMOVE_MCP_SERVER_METHOD, REMOVE_REMOTE_GATEWAY_METHOD, REMOVE_SCAN_ROOT_METHOD,
     REPOSITORY_COMMIT_BREAKDOWN_METHOD, RESOLVE_CONTEXT_METHOD, RESOLVE_STORAGE_PATH_METHOD,
-    RESTART_MCP_RUNTIME_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD, REVIEW_MEMORY_METHOD,
-    RUNTIME_INFO_METHOD, RpcRequest, RpcResponse, RuntimePeer, SANITIZE_SESSION_HANDOFF_METHOD,
-    SAVE_MCP_LOCAL_VALUES_METHOD, SAVE_MCP_SERVER_METHOD, SAVE_REMOTE_GATEWAY_METHOD,
-    SCAN_NATIVE_MCP_METHOD, SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD,
-    SEARCH_MCP_REGISTRY_METHOD, SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD,
-    SET_APP_ICON_PREFERENCE_METHOD, SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD,
-    SET_LOCALE_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD,
-    SET_QUOTA_PROMPT_SEEN_METHOD, SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD,
-    SHUTDOWN_METHOD, START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
-    STORAGE_OVERVIEW_METHOD, UNINSTALL_MCP_METHOD, UNLINK_OBSIDIAN_WORKSPACE_METHOD,
-    UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD, UPDATE_ONBOARDING_METHOD,
-    WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
+    RESTART_MCP_RUNTIME_METHOD, RESTORE_EXCLUDED_WORKSPACE_METHOD, RESTORE_SKILL_METHOD,
+    REVIEW_MEMORY_METHOD, ROLLBACK_SKILL_METHOD, RUNTIME_INFO_METHOD, RpcRequest, RpcResponse,
+    RuntimePeer, SANITIZE_SESSION_HANDOFF_METHOD, SAVE_MCP_LOCAL_VALUES_METHOD,
+    SAVE_MCP_SERVER_METHOD, SAVE_REMOTE_GATEWAY_METHOD, SCAN_NATIVE_MCP_METHOD,
+    SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SEARCH_MCP_REGISTRY_METHOD,
+    SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD, SET_APP_ICON_PREFERENCE_METHOD,
+    SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD, SET_LOCALE_METHOD,
+    SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD,
+    SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD, SHUTDOWN_METHOD,
+    START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
+    STORAGE_OVERVIEW_METHOD, UNINSTALL_MCP_METHOD, UNINSTALL_SKILL_METHOD,
+    UNLINK_OBSIDIAN_WORKSPACE_METHOD, UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD,
+    UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
     WORKSPACE_GIT_HISTORY_METHOD, WORKSPACE_GIT_SUMMARY_METHOD, WORKSPACE_SESSION_STATUS_METHOD,
     WORKSPACE_SESSIONS_METHOD, WORKSPACE_USAGE_BREAKDOWN_METHOD,
 };
@@ -88,6 +92,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
+static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
 
 #[derive(Serialize)]
 struct McpInstallResult {
@@ -175,6 +180,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // shell immediately while subsequent business requests remain queued on stdin.
                 if handshake_succeeded {
                     initialize_mcp_hub()?;
+                    initialize_skill_hub()?;
                 }
                 if should_shutdown {
                     if let Some(scan) = storage_scan.take() {
@@ -220,6 +226,19 @@ fn initialize_mcp_hub() -> anyhow::Result<()> {
     MCP_HUB
         .set(hub)
         .map_err(|_| anyhow::anyhow!("AgentKib MCP Hub was initialized more than once"))
+}
+
+fn initialize_skill_hub() -> anyhow::Result<()> {
+    if SKILL_HUB.get().is_some() {
+        return Ok(());
+    }
+    let hub = agentkib_skills::SkillHub::new(
+        agentkib_skills::default_home_dir()?,
+        agentkib_store::default_data_dir()?.join("skill-cache"),
+    )?;
+    SKILL_HUB
+        .set(hub)
+        .map_err(|_| anyhow::anyhow!("AgentKib Skill Hub was initialized more than once"))
 }
 
 enum RuntimeEvent {
@@ -304,6 +323,12 @@ fn mcp_hub() -> anyhow::Result<&'static agentkib_mcp::HubController> {
         .ok_or_else(|| anyhow::anyhow!("AgentKib MCP Hub is not initialized"))
 }
 
+fn skill_hub() -> anyhow::Result<&'static agentkib_skills::SkillHub> {
+    SKILL_HUB
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("AgentKib Skill Hub is not initialized"))
+}
+
 fn load_mcp_network_settings() -> McpNetworkSettings {
     let data_dir = agentkib_store::default_data_dir().ok();
     let root = data_dir
@@ -360,6 +385,18 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
         SEARCH_CATALOG_ASSETS_METHOD => command_response(request, search_catalog_assets),
+        LIST_SKILL_CATALOG_METHOD => command_response(request, list_skill_catalog),
+        DISCOVER_SKILLS_METHOD => command_response(request, discover_skills),
+        LIST_INSTALLED_SKILLS_METHOD => command_response(request, list_installed_skills),
+        PREPARE_SKILL_INSTALL_METHOD => command_response(request, prepare_skill_install),
+        APPLY_SKILL_OPERATION_METHOD => command_response(request, apply_skill_operation),
+        CHECK_SKILL_UPDATES_METHOD => command_response(request, check_skill_updates),
+        PREPARE_SKILL_UPDATE_METHOD => command_response(request, prepare_skill_update),
+        ROLLBACK_SKILL_METHOD => command_response(request, rollback_skill),
+        UNINSTALL_SKILL_METHOD => command_response(request, uninstall_skill),
+        LIST_REMOVED_SKILLS_METHOD => command_response(request, list_removed_skills),
+        RESTORE_SKILL_METHOD => command_response(request, restore_skill),
+        READ_SKILL_FILE_METHOD => command_response(request, read_skill_file),
         LIST_GLOBAL_MEMORIES_METHOD => command_response(request, list_global_memories),
         LIST_ACTIVITY_METHOD => command_response(request, list_activity),
         LIST_SCAN_ROOTS_METHOD => command_response(request, list_scan_roots),
@@ -559,7 +596,16 @@ struct WorkspaceIdRequest {
 }
 
 fn add_workspace(request: WorkspacePathRequest) -> anyhow::Result<agentkib_core::WorkspaceSummary> {
-    Store::open_default()?.add_workspace(Path::new(&request.path))
+    let path = Path::new(&request.path);
+    if agentkib_discovery::known_agent_homes()
+        .iter()
+        .any(|home| agentkib_platform::path::equivalent(home, path))
+    {
+        anyhow::bail!(
+            "Agent Home cannot be added as a workspace; manage its files in the global asset catalog"
+        );
+    }
+    Store::open_default()?.add_workspace(path)
 }
 
 fn refresh_workspace(
@@ -3250,6 +3296,131 @@ fn search_catalog_assets(
         request.workspace_id.as_deref(),
         request.limit,
     )
+}
+
+#[derive(Deserialize)]
+struct SkillCatalogRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+fn list_skill_catalog(
+    request: SkillCatalogRequest,
+) -> anyhow::Result<agentkib_core::SkillCatalogSnapshot> {
+    runtime_block_on(skill_hub()?.curated(request.force))
+}
+
+#[derive(Deserialize)]
+struct DiscoverSkillsRequest {
+    url: String,
+}
+
+fn discover_skills(
+    request: DiscoverSkillsRequest,
+) -> anyhow::Result<Vec<agentkib_core::SkillCandidate>> {
+    runtime_block_on(skill_hub()?.discover(&request.url))
+}
+
+fn list_installed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::InstalledSkill>> {
+    skill_hub()?.installed()
+}
+
+#[derive(Deserialize)]
+struct PrepareSkillInstallRequest {
+    source: agentkib_core::SkillSource,
+}
+
+fn prepare_skill_install(
+    request: PrepareSkillInstallRequest,
+) -> anyhow::Result<agentkib_core::SkillOperationPreview> {
+    runtime_block_on(skill_hub()?.prepare_install(request.source))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplySkillOperationRequest {
+    token: String,
+    confirmed: bool,
+    #[serde(default)]
+    allow_modified: bool,
+}
+
+fn apply_skill_operation(
+    request: ApplySkillOperationRequest,
+) -> anyhow::Result<agentkib_core::InstalledSkill> {
+    let skill = skill_hub()?.apply(&request.token, request.confirmed, request.allow_modified)?;
+    complete_skill_mutation("skill.apply", &skill.name);
+    Ok(skill)
+}
+
+fn check_skill_updates(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::InstalledSkill>> {
+    runtime_block_on(skill_hub()?.check_updates())
+}
+
+#[derive(Deserialize)]
+struct SkillNameRequest {
+    name: String,
+}
+
+fn prepare_skill_update(
+    request: SkillNameRequest,
+) -> anyhow::Result<agentkib_core::SkillOperationPreview> {
+    runtime_block_on(skill_hub()?.prepare_update(&request.name))
+}
+
+#[derive(Deserialize)]
+struct ConfirmSkillRequest {
+    name: String,
+    confirmed: bool,
+}
+
+fn rollback_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+    let skill = skill_hub()?.rollback(&request.name, request.confirmed)?;
+    complete_skill_mutation("skill.rollback", &skill.name);
+    Ok(skill)
+}
+
+fn uninstall_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::RemovedSkill> {
+    let skill = skill_hub()?.uninstall(&request.name, request.confirmed)?;
+    complete_skill_mutation("skill.uninstall", &skill.name);
+    Ok(skill)
+}
+
+fn list_removed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::RemovedSkill>> {
+    skill_hub()?.removed()
+}
+
+#[derive(Deserialize)]
+struct RestoreSkillRequest {
+    id: String,
+    confirmed: bool,
+}
+
+fn restore_skill(request: RestoreSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+    let skill = skill_hub()?.restore(&request.id, request.confirmed)?;
+    complete_skill_mutation("skill.restore", &skill.name);
+    Ok(skill)
+}
+
+fn complete_skill_mutation(action: &str, name: &str) {
+    // The filesystem mutation is already durable; follow-up bookkeeping must not turn it into a
+    // reported failure that encourages the user to repeat the operation.
+    if let Ok(store) = Store::open_default() {
+        let _ = store.audit(None, action, name);
+    }
+    let _ = refresh_discovery(EmptyRequest {});
+}
+
+#[derive(Deserialize)]
+struct ReadSkillFileRequest {
+    name: String,
+    path: String,
+}
+
+fn read_skill_file(
+    request: ReadSkillFileRequest,
+) -> anyhow::Result<agentkib_core::SkillFilePreview> {
+    skill_hub()?.read_file(&request.name, &request.path)
 }
 
 #[derive(Deserialize)]

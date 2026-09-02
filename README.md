@@ -62,7 +62,7 @@ Only use files from the official release and verify the matching `.sha256` check
 | --- | --- |
 | Today | Prioritized local actions and recent workspace activity |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
-| Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
+| Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets; the Skills area also manages a local library and discovers reviewed or public GitHub packages without enabling them for an Agent automatically |
 | Agents | Installation state, configuration homes, capabilities, and discovered assets |
 | Quota | Locally available quota windows, balances, and reset times |
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |

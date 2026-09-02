@@ -1213,7 +1213,7 @@
   "settings.tools.conflictsDescription": "检测到多个物理可执行文件。请检查 PATH，并手动移除过时安装。",
   "settings.tools.noConflicts": "未检测到安装冲突。",
   "settings.tools.diagnosticsTitle": "安装诊断",
-  "settings.tools.diagnosticsDescription": "逐项检查版本、来源、PATH 默认项和可运行状态。版本或运行状态不一致、PATH 默认项不明确或来源未验证时会阻止自动升级。",
+  "settings.tools.diagnosticsDescription": "逐项检查版本、来源、PATH 默认项和可运行状态。检测到多个物理安装、PATH 默认项不明确或来源未验证时会阻止自动升级。",
   "settings.tools.noDiagnostics": "未发现需要处理的安装问题。",
   "settings.tools.runnable": "可运行",
   "settings.tools.notRunnable": "不可运行",

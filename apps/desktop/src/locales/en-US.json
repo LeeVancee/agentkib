@@ -1213,7 +1213,7 @@
   "settings.tools.conflictsDescription": "Multiple physical executables were found. Review your PATH and remove obsolete installations manually.",
   "settings.tools.noConflicts": "No installation conflicts were detected.",
   "settings.tools.diagnosticsTitle": "Installation diagnostics",
-  "settings.tools.diagnosticsDescription": "Review each installation's version, source, PATH default and runnable state. Automatic updates are blocked when versions or runnable states differ, the PATH default is ambiguous, or the source is unverified.",
+  "settings.tools.diagnosticsDescription": "Review each installation's version, source, PATH default and runnable state. Automatic updates are blocked when multiple physical installations are found, the PATH default is ambiguous, or the source is unverified.",
   "settings.tools.noDiagnostics": "No installation issues need attention.",
   "settings.tools.runnable": "Runnable",
   "settings.tools.notRunnable": "Not runnable",

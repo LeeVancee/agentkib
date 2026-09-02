@@ -1213,7 +1213,7 @@
   "settings.tools.conflictsDescription": "偵測到多個實體可執行檔。請檢查 PATH 並手動移除過時安裝。",
   "settings.tools.noConflicts": "未偵測到安裝衝突。",
   "settings.tools.diagnosticsTitle": "安裝診斷",
-  "settings.tools.diagnosticsDescription": "逐項檢查版本、來源、PATH 預設項目與可執行狀態。版本或執行狀態不一致、PATH 預設項目不明確或來源未驗證時會阻止自動升級。",
+  "settings.tools.diagnosticsDescription": "逐項檢查版本、來源、PATH 預設項目與可執行狀態。偵測到多個實體安裝、PATH 預設項目不明確或來源未驗證時會阻止自動升級。",
   "settings.tools.noDiagnostics": "未發現需要處理的安裝問題。",
   "settings.tools.runnable": "可執行",
   "settings.tools.notRunnable": "無法執行",

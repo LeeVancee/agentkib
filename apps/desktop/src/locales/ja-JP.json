@@ -1213,7 +1213,7 @@
   "settings.tools.conflictsDescription": "複数の実体ファイルが検出されました。PATH を確認し、古いインストールを手動で削除してください。",
   "settings.tools.noConflicts": "インストールの競合は検出されませんでした。",
   "settings.tools.diagnosticsTitle": "インストール診断",
-  "settings.tools.diagnosticsDescription": "各インストールのバージョン、取得元、PATH の既定項目、実行状態を確認します。バージョンまたは実行状態が異なる場合、PATH の既定項目が曖昧な場合、または取得元を確認できない場合は自動更新を停止します。",
+  "settings.tools.diagnosticsDescription": "各インストールのバージョン、取得元、PATH の既定項目、実行状態を確認します。複数の物理インストールが見つかった場合、PATH の既定項目が曖昧な場合、または取得元を確認できない場合は自動更新を停止します。",
   "settings.tools.noDiagnostics": "対応が必要なインストール問題はありません。",
   "settings.tools.runnable": "実行可能",
   "settings.tools.notRunnable": "実行不可",

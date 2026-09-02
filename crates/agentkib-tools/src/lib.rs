@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -326,7 +327,7 @@ impl ToolInspector {
             return (
                 cached_values(&cache),
                 latest,
-                AgentToolCacheStatus::Cached,
+                AgentToolCacheStatus::Fresh,
                 Vec::new(),
             );
         }
@@ -1173,6 +1174,7 @@ async fn run_action_with_timeout(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    anchor_program_path(&mut command, program);
     configure_process_group(command.as_std_mut());
     let mut child = command
         .spawn()
@@ -1259,6 +1261,7 @@ async fn probe_version(path: &Path, args: &[&str]) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    anchor_program_path(&mut command, path);
     configure_process_group(command.as_std_mut());
     let mut child = command
         .spawn()
@@ -1352,7 +1355,8 @@ fn resolved_tool_paths(spec: ToolSpec) -> Vec<(PathBuf, bool)> {
     let mut paths: Vec<(PathBuf, bool)> = Vec::new();
     let mut seen = BTreeMap::<String, usize>::new();
     for candidate in candidates {
-        if is_bundled_desktop_executable(spec.agent, &candidate)
+        if is_ambiguous_cursor_agent_alias(spec, &candidate)
+            || is_bundled_desktop_executable(spec.agent, &candidate)
             || !command::is_executable(&candidate)
             || command::is_windows_app_execution_alias_path(&candidate)
         {
@@ -1372,6 +1376,17 @@ fn resolved_tool_paths(spec: ToolSpec) -> Vec<(PathBuf, bool)> {
         }
     }
     paths
+}
+
+fn is_ambiguous_cursor_agent_alias(spec: ToolSpec, path: &Path) -> bool {
+    if spec.agent != AgentKind::Cursor
+        || !path
+            .file_stem()
+            .is_some_and(|name| name.eq_ignore_ascii_case("agent"))
+    {
+        return false;
+    }
+    infer_channel(AgentKind::Cursor, path) != AgentToolChannel::OfficialInstaller
 }
 
 fn known_cli_candidates(agent: AgentKind) -> Vec<PathBuf> {
@@ -1763,6 +1778,7 @@ async fn run_readonly_command(program: &Path, args: &[&str]) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    anchor_program_path(&mut command, program);
     configure_process_group(command.as_std_mut());
     let mut child = command
         .spawn()
@@ -1801,6 +1817,21 @@ async fn run_readonly_command(program: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
+fn anchor_program_path(command: &mut tokio::process::Command, program: &Path) {
+    if let Some(path) = anchored_search_path(program, std::env::var_os("PATH").as_deref()) {
+        command.env("PATH", path);
+    }
+}
+
+fn anchored_search_path(program: &Path, current: Option<&OsStr>) -> Option<OsString> {
+    let parent = program.parent()?.to_path_buf();
+    let mut directories = vec![parent];
+    if let Some(current) = current {
+        directories.extend(std::env::split_paths(current));
+    }
+    std::env::join_paths(directories).ok()
+}
+
 fn normalized_path(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "/")
@@ -1811,7 +1842,10 @@ fn is_official_path(agent: AgentKind, value: &str) -> bool {
     let markers: &[&str] = match agent {
         AgentKind::Codex => &["/.local/share/codex/"],
         AgentKind::ClaudeCode => &["/.local/share/claude/", "/.claude/"],
-        AgentKind::Cursor => &["/.local/share/cursor-agent/"],
+        AgentKind::Cursor => &[
+            "/.local/share/cursor-agent/",
+            "/appdata/local/cursor-agent/",
+        ],
         AgentKind::OpenCode => &["/.opencode/"],
         AgentKind::OpenClaw => &["/.openclaw/"],
         AgentKind::Hermes => &["/.hermes/"],
@@ -1895,30 +1929,11 @@ fn determine_state(
 }
 
 fn installations_conflict(installations: &[AgentToolInstallation]) -> bool {
-    if installations.len() < 2 {
-        return false;
-    }
-    if installations
-        .iter()
-        .filter(|installation| installation.is_path_default)
-        .count()
-        != 1
-    {
-        return true;
-    }
-    let first = &installations[0];
-    installations.iter().skip(1).any(|installation| {
-        installation.runnable != first.runnable
-            || !optional_versions_equal(installation.version.as_deref(), first.version.as_deref())
-    })
-}
-
-fn optional_versions_equal(left: Option<&str>, right: Option<&str>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => versions_equal(left, right),
-        (None, None) => true,
-        _ => false,
-    }
+    // Discovery has already collapsed aliases that resolve to the same
+    // physical executable. More than one remaining entry therefore means
+    // updating only the PATH default could leave another real installation
+    // active, so automatic changes must stay disabled.
+    installations.len() > 1
 }
 
 fn parse_cursor_installer_version(script: &str) -> Option<String> {
@@ -2166,25 +2181,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_installations_only_conflict_when_they_disagree_or_lack_a_default() {
+    fn distinct_physical_installations_always_conflict() {
         let matching = [
             test_installation("path-default", Some("codex-cli 1.0.0"), true, true),
             test_installation("secondary", Some("1.0.0"), true, false),
         ];
-        assert!(!installations_conflict(&matching));
-
-        let mut versions_differ = matching.clone();
-        versions_differ[1].version = Some("1.1.0".to_owned());
-        assert!(installations_conflict(&versions_differ));
-
-        let mut runnable_differs = matching.clone();
-        runnable_differs[1].runnable = false;
-        runnable_differs[1].version = None;
-        assert!(installations_conflict(&runnable_differs));
-
-        let mut no_default = matching.clone();
-        no_default[0].is_path_default = false;
-        assert!(installations_conflict(&no_default));
+        assert!(installations_conflict(&matching));
+        assert!(!installations_conflict(&matching[..1]));
+        assert!(!installations_conflict(&[]));
 
         assert_eq!(
             determine_state(true, true, Some("1.0.0"), Some("1.0.0")),
@@ -2223,6 +2227,13 @@ mod tests {
             AgentToolChannel::OfficialInstaller
         );
         assert_eq!(
+            infer_channel(
+                AgentKind::Cursor,
+                Path::new("C:\\Users\\tester\\AppData\\Local\\cursor-agent\\cursor-agent.cmd")
+            ),
+            AgentToolChannel::OfficialInstaller
+        );
+        assert_eq!(
             infer_channel(AgentKind::Codex, Path::new("/home/user/.local/bin/codex")),
             AgentToolChannel::Local
         );
@@ -2240,6 +2251,24 @@ mod tests {
             ),
             AgentToolChannel::Pnpm
         );
+    }
+
+    #[test]
+    fn rejects_unrelated_cursor_agent_aliases() {
+        let spec = tool_spec(AgentKind::Cursor).unwrap();
+
+        assert!(is_ambiguous_cursor_agent_alias(
+            spec,
+            Path::new("/usr/local/bin/agent")
+        ));
+        assert!(!is_ambiguous_cursor_agent_alias(
+            spec,
+            Path::new("/home/user/.local/share/cursor-agent/versions/1/agent")
+        ));
+        assert!(!is_ambiguous_cursor_agent_alias(
+            spec,
+            Path::new("/usr/local/bin/cursor-agent")
+        ));
     }
 
     #[test]
@@ -2308,6 +2337,34 @@ mod tests {
         assert!(sources.contains_key("homebrew-cask:codex"));
         assert!(sources.contains_key("homebrew-formula:opencode"));
         assert!(!sources.keys().any(|key| key.contains("deepseek")));
+    }
+
+    #[tokio::test]
+    async fn valid_ttl_cache_does_not_report_an_offline_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let inspector = ToolInspector::new(directory.path().to_path_buf()).unwrap();
+        let now = Utc::now();
+        let sources = release_sources();
+        let cache = VersionCache {
+            versions: sources
+                .keys()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        CachedVersion {
+                            version: "1.0.0".to_owned(),
+                            checked_at: now,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        write_cache(&inspector.cache_path, &cache).unwrap();
+
+        let (_, _, status, errors) = inspector.latest_versions(false, now, &sources).await;
+
+        assert_eq!(status, AgentToolCacheStatus::Fresh);
+        assert!(errors.is_empty());
     }
 
     #[test]
@@ -2438,6 +2495,19 @@ mod tests {
 
         assert_eq!(outcome.status, AgentToolExecutionStatus::Succeeded);
         assert_eq!(outcome.output, "bound:install -g @openai/codex@1.1.0");
+    }
+
+    #[test]
+    fn bound_program_directory_leads_the_child_path() {
+        let current =
+            std::env::join_paths([Path::new("/system/bin"), Path::new("/other/bin")]).unwrap();
+        let anchored =
+            anchored_search_path(Path::new("/managed/node/bin/npm"), Some(&current)).unwrap();
+        let directories = std::env::split_paths(&anchored).collect::<Vec<_>>();
+
+        assert_eq!(directories[0], PathBuf::from("/managed/node/bin"));
+        assert_eq!(directories[1], PathBuf::from("/system/bin"));
+        assert_eq!(directories[2], PathBuf::from("/other/bin"));
     }
 
     #[cfg(unix)]

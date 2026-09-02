@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
 pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
@@ -26,6 +26,18 @@ pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
 pub const SEARCH_CATALOG_ASSETS_METHOD: &str = "catalog.searchAssets";
+pub const LIST_SKILL_CATALOG_METHOD: &str = "skills.listCatalog";
+pub const DISCOVER_SKILLS_METHOD: &str = "skills.discover";
+pub const LIST_INSTALLED_SKILLS_METHOD: &str = "skills.listInstalled";
+pub const PREPARE_SKILL_INSTALL_METHOD: &str = "skills.prepareInstall";
+pub const APPLY_SKILL_OPERATION_METHOD: &str = "skills.applyOperation";
+pub const CHECK_SKILL_UPDATES_METHOD: &str = "skills.checkUpdates";
+pub const PREPARE_SKILL_UPDATE_METHOD: &str = "skills.prepareUpdate";
+pub const ROLLBACK_SKILL_METHOD: &str = "skills.rollback";
+pub const UNINSTALL_SKILL_METHOD: &str = "skills.uninstall";
+pub const LIST_REMOVED_SKILLS_METHOD: &str = "skills.listRemoved";
+pub const RESTORE_SKILL_METHOD: &str = "skills.restore";
+pub const READ_SKILL_FILE_METHOD: &str = "skills.readFile";
 pub const LIST_GLOBAL_MEMORIES_METHOD: &str = "memories.listGlobal";
 pub const LIST_ACTIVITY_METHOD: &str = "activity.list";
 pub const LIST_SCAN_ROOTS_METHOD: &str = "discovery.listScanRoots";
@@ -211,6 +223,18 @@ export const RUNTIME_METHODS = {{
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",
   searchCatalogAssets: "{SEARCH_CATALOG_ASSETS_METHOD}",
+  listSkillCatalog: "{LIST_SKILL_CATALOG_METHOD}",
+  discoverSkills: "{DISCOVER_SKILLS_METHOD}",
+  listInstalledSkills: "{LIST_INSTALLED_SKILLS_METHOD}",
+  prepareSkillInstall: "{PREPARE_SKILL_INSTALL_METHOD}",
+  applySkillOperation: "{APPLY_SKILL_OPERATION_METHOD}",
+  checkSkillUpdates: "{CHECK_SKILL_UPDATES_METHOD}",
+  prepareSkillUpdate: "{PREPARE_SKILL_UPDATE_METHOD}",
+  rollbackSkill: "{ROLLBACK_SKILL_METHOD}",
+  uninstallSkill: "{UNINSTALL_SKILL_METHOD}",
+  listRemovedSkills: "{LIST_REMOVED_SKILLS_METHOD}",
+  restoreSkill: "{RESTORE_SKILL_METHOD}",
+  readSkillFile: "{READ_SKILL_FILE_METHOD}",
   listGlobalMemories: "{LIST_GLOBAL_MEMORIES_METHOD}",
   listActivity: "{LIST_ACTIVITY_METHOD}",
   listScanRoots: "{LIST_SCAN_ROOTS_METHOD}",

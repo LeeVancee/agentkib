@@ -75,6 +75,23 @@ const desktopApi = Object.freeze({
     setIndexEnabled: (enabled: boolean) =>
       ipcRenderer.invoke("agentkib:sessions:set-index-enabled", enabled),
   }),
+  skills: Object.freeze({
+    catalog: (force = false) => ipcRenderer.invoke("agentkib:skills:catalog", force),
+    discover: (url: string) => ipcRenderer.invoke("agentkib:skills:discover", url),
+    installed: () => ipcRenderer.invoke("agentkib:skills:installed"),
+    prepareInstall: (source: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-install", source),
+    applyOperation: (token: string, allowModified = false) =>
+      ipcRenderer.invoke("agentkib:skills:apply-operation", token, allowModified),
+    checkUpdates: () => ipcRenderer.invoke("agentkib:skills:check-updates"),
+    prepareUpdate: (name: string) => ipcRenderer.invoke("agentkib:skills:prepare-update", name),
+    rollback: (name: string) => ipcRenderer.invoke("agentkib:skills:rollback", name),
+    uninstall: (name: string) => ipcRenderer.invoke("agentkib:skills:uninstall", name),
+    removed: () => ipcRenderer.invoke("agentkib:skills:removed"),
+    restore: (id: string) => ipcRenderer.invoke("agentkib:skills:restore", id),
+    readFile: (name: string, path: string) =>
+      ipcRenderer.invoke("agentkib:skills:read-file", name, path),
+  }),
   mcp: Object.freeze({
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
     updateNetwork: (settings: unknown) =>

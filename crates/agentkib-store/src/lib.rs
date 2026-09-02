@@ -8,11 +8,11 @@ use agentkib_conversations::{
     SessionIndexFreshness,
 };
 use agentkib_core::{
-    ActivityRecord, AgentInstallation, AgentKind, AssetKind, CatalogAsset, CatalogScope,
-    DiscoveryCandidate, DiscoveryEvidence, DiscoveryReport, ExcludedWorkspace, McpInstallation,
-    McpRegistryEntry, McpRuntimeStatus, McpToolDescriptor, MemoryProposal, MemoryRecord,
-    MemoryStatus, ScanRoot, WorkspaceSource, WorkspaceStatus, WorkspaceSummary, hash_content,
-    load_manifest, scan_workspace,
+    ActivityRecord, AgentInstallation, AgentKind, AssetKind, AssetRecord, CatalogAsset,
+    CatalogScope, DiscoveryCandidate, DiscoveryEvidence, DiscoveryReport, ExcludedWorkspace,
+    McpInstallation, McpRegistryEntry, McpRuntimeStatus, McpToolDescriptor, MemoryProposal,
+    MemoryRecord, MemoryStatus, ScanRoot, WorkspaceSource, WorkspaceStatus, WorkspaceSummary,
+    hash_content, inspect_skill_entrypoint, load_manifest, scan_workspace,
 };
 use agentkib_insights::{
     Achievement, AgentUsageBreakdown, GitIdentitySummary, GitRepositorySnapshot, HeatmapPoint,
@@ -592,11 +592,21 @@ impl Store {
     ) -> Result<DiscoveryReport> {
         let transaction = self.connection.unchecked_transaction()?;
         let excluded = excluded_paths(&transaction)?;
+        let agent_homes: BTreeSet<_> = installations
+            .iter()
+            .filter_map(|installation| installation.home.as_deref())
+            .map(platform_path::identity)
+            .collect();
+        let mut managed_homes = agent_homes;
+        if let Ok(home) = agentkib_skills::default_home_dir() {
+            managed_homes.insert(platform_path::identity(&home));
+        }
         let mut grouped: BTreeMap<String, (PathBuf, Vec<&DiscoveryCandidate>)> = BTreeMap::new();
         for candidate in candidates {
             let identity = platform_path::identity(&candidate.path);
             if candidate.path.is_dir()
                 && !platform_path::is_known_agent_probe_workspace(&candidate.path)
+                && !managed_homes.contains(&identity)
                 && !excluded.contains(&identity)
             {
                 grouped
@@ -628,8 +638,11 @@ impl Store {
             for row in rows {
                 let (id, path) = row?;
                 // Provider 读取失败或用户撤销扫描目录时，不能误删仍然存在的工作区。
-                // 仅清理已经失效的路径，以及有稳定标记的第三方合成探针目录。
-                if !path.is_dir() || platform_path::is_known_agent_probe_workspace(&path) {
+                // 仅清理失效路径、稳定探针目录和只应出现在全局资产目录的 Agent Home。
+                if !path.is_dir()
+                    || platform_path::is_known_agent_probe_workspace(&path)
+                    || managed_homes.contains(&platform_path::identity(&path))
+                {
                     stale.push(id);
                 }
             }
@@ -638,7 +651,10 @@ impl Store {
             transaction.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
         }
 
-        transaction.execute("DELETE FROM catalog_assets WHERE scope = 'agent-home'", [])?;
+        transaction.execute(
+            "DELETE FROM catalog_assets WHERE scope IN ('agent-home', 'agentkib-home')",
+            [],
+        )?;
         for asset in home_assets {
             insert_catalog_asset(&transaction, asset)?;
         }
@@ -899,6 +915,19 @@ impl Store {
         let path = platform_path::canonicalize(path).context("Workspace does not exist")?;
         if !path.is_dir() {
             bail!("Workspace must be a directory");
+        }
+        let path_identity = platform_path::identity(&path);
+        if agentkib_skills::default_home_dir()
+            .is_ok_and(|home| platform_path::identity(&home) == path_identity)
+        {
+            bail!(
+                "AgentKib Home cannot be added as a workspace; manage its files in the global asset catalog"
+            );
+        }
+        if known_agent_home_identities(&self.connection)?.contains(&path_identity) {
+            bail!(
+                "Agent Home cannot be added as a workspace; manage its files in the global asset catalog"
+            );
         }
         let candidate = DiscoveryCandidate {
             path: path.clone(),
@@ -2720,6 +2749,17 @@ fn excluded_paths(connection: &Connection) -> Result<BTreeSet<String>> {
     Ok(output)
 }
 
+fn known_agent_home_identities(connection: &Connection) -> Result<BTreeSet<String>> {
+    let mut statement =
+        connection.prepare("SELECT home FROM agent_installations WHERE home IS NOT NULL")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut output = BTreeSet::new();
+    for row in rows {
+        output.insert(platform_path::identity(Path::new(&row?)));
+    }
+    Ok(output)
+}
+
 fn matching_stored_path(
     connection: &Connection,
     table: &str,
@@ -2817,6 +2857,25 @@ fn record_scan_failure(connection: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+fn logical_asset_count(assets: &[AssetRecord]) -> usize {
+    let mut logical = BTreeSet::new();
+    for asset in assets {
+        let path = if asset.kind == AssetKind::Skill {
+            asset.path.parent().unwrap_or(&asset.path)
+        } else {
+            &asset.path
+        };
+        let agent = (asset.kind != AssetKind::Skill).then_some(asset.agent);
+        logical.insert(format!(
+            "{:?}|{:?}|{}",
+            asset.kind,
+            agent,
+            platform_path::identity(path)
+        ));
+    }
+    logical.len()
+}
+
 fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> Result<()> {
     if !path.is_dir() {
         bail!("Workspace does not exist: {}", path.display());
@@ -2824,6 +2883,23 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
     let scan = scan_workspace(path)?;
     let mut warning_count = scan.warnings.len() as u64;
     let manifest = load_manifest(path).ok();
+    let manifest_skill_names: BTreeMap<_, _> = manifest
+        .as_ref()
+        .into_iter()
+        .flat_map(|manifest| &manifest.skills)
+        .map(|skill| {
+            let source = path.join(&skill.path);
+            let entrypoint = if source.is_dir() {
+                source.join("SKILL.md")
+            } else {
+                source.clone()
+            };
+            let root = inspect_skill_entrypoint(&entrypoint)
+                .map(|package| package.root)
+                .unwrap_or(source);
+            (platform_path::identity(&root), skill.name.clone())
+        })
+        .collect();
     if let Some(manifest) = manifest.as_ref() {
         for adapter in manifest.adapters.values() {
             for (target, expected) in &adapter.generated_hashes {
@@ -2847,17 +2923,41 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
     };
     connection.execute(
         "UPDATE workspaces SET manifest_workspace_id = ?1, status = ?2, asset_count = ?3, warning_count = ?4, last_scanned_at = ?5 WHERE id = ?6",
-        params![manifest.as_ref().map(|value| value.workspace.id.clone()), enum_string(status)?, scan.assets.len() as i64, warning_count as i64, Utc::now().to_rfc3339(), id],
+        params![manifest.as_ref().map(|value| value.workspace.id.clone()), enum_string(status)?, logical_asset_count(&scan.assets) as i64, warning_count as i64, Utc::now().to_rfc3339(), id],
     )?;
     connection.execute(
         "DELETE FROM catalog_assets WHERE workspace_id = ?1",
         params![id],
     )?;
     for asset in scan.assets {
-        let modified_at = fs::metadata(&asset.path)
-            .ok()
-            .and_then(|value| value.modified().ok())
-            .map(DateTime::<Utc>::from);
+        let skill = (asset.kind == AssetKind::Skill)
+            .then(|| inspect_skill_entrypoint(&asset.path))
+            .transpose()?;
+        let catalog_path = skill
+            .as_ref()
+            .map(|skill| skill.root.clone())
+            .unwrap_or_else(|| asset.path.clone());
+        let name = manifest_skill_names
+            .get(&platform_path::identity(&catalog_path))
+            .cloned()
+            .or_else(|| skill.as_ref().map(|skill| skill.name.clone()))
+            .unwrap_or_else(|| {
+                asset
+                    .path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("asset")
+                    .to_string()
+            });
+        let modified_at = skill
+            .as_ref()
+            .and_then(|skill| skill.modified_at)
+            .or_else(|| {
+                fs::metadata(&asset.path)
+                    .ok()
+                    .and_then(|value| value.modified().ok())
+                    .map(DateTime::<Utc>::from)
+            });
         insert_catalog_asset(
             connection,
             &CatalogAsset {
@@ -2866,23 +2966,18 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
                     Some(id),
                     Some(asset.agent),
                     asset.kind,
-                    &asset.path,
+                    &catalog_path,
                 ),
                 scope: CatalogScope::Workspace,
                 workspace_id: Some(id.to_string()),
                 agent: Some(asset.agent),
                 kind: asset.kind,
-                name: asset
-                    .path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("asset")
-                    .to_string(),
-                path: asset.path,
+                name,
+                path: catalog_path,
                 summary: asset.summary,
                 summary_key: asset.summary_key,
                 summary_params: asset.summary_params,
-                size: asset.size,
+                size: skill.as_ref().map_or(asset.size, |skill| skill.size),
                 modified_at,
             },
         )?;
@@ -2914,6 +3009,16 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
         )?;
         for skill in manifest.skills {
             let asset_path = path.join(&skill.path);
+            let entrypoint = if asset_path.is_dir() {
+                asset_path.join("SKILL.md")
+            } else {
+                asset_path.clone()
+            };
+            let package = inspect_skill_entrypoint(&entrypoint).ok();
+            let catalog_path = package
+                .as_ref()
+                .map(|package| package.root.clone())
+                .unwrap_or(asset_path);
             insert_catalog_asset(
                 connection,
                 &CatalogAsset {
@@ -2922,19 +3027,19 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
                         Some(id),
                         None,
                         AssetKind::Skill,
-                        &asset_path,
+                        &catalog_path,
                     ),
                     scope: CatalogScope::Workspace,
                     workspace_id: Some(id.to_string()),
                     agent: None,
                     kind: AssetKind::Skill,
                     name: skill.name,
-                    path: asset_path,
+                    path: catalog_path,
                     summary: "Shared Skill".into(),
                     summary_key: Some("assets.summary.sharedSkill".into()),
                     summary_params: Default::default(),
-                    size: 0,
-                    modified_at: None,
+                    size: package.as_ref().map_or(0, |package| package.size),
+                    modified_at: package.and_then(|package| package.modified_at),
                 },
             )?;
         }
@@ -3543,6 +3648,154 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn discovery_excludes_and_removes_exact_agent_homes_but_keeps_descendants() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join(".codex");
+        let project = agent_home.join("projects/app");
+        fs::create_dir_all(agent_home.join("skills/reviewer")).unwrap();
+        fs::write(agent_home.join("skills/reviewer/SKILL.md"), "# Reviewer").unwrap();
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+
+        store
+            .sync_discovery(&[candidate(&agent_home)], &[], &[], Utc::now(), &[])
+            .unwrap();
+        let stale_id = store.list_workspaces().unwrap()[0].id.clone();
+        assert!(
+            !store
+                .search_catalog_assets("", None, Some(&stale_id), 100)
+                .unwrap()
+                .is_empty()
+        );
+
+        let installation = AgentInstallation {
+            agent: AgentKind::Codex,
+            installed: true,
+            configured: true,
+            version: None,
+            home: Some(agent_home.clone()),
+            warnings: Vec::new(),
+        };
+        let report = store
+            .sync_discovery(
+                &[candidate(&agent_home), candidate(&project)],
+                &[installation],
+                &[],
+                Utc::now(),
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(report.discovered_count, 1);
+        assert_eq!(report.removed_count, 1);
+        let workspaces = store.list_workspaces().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].path, project.canonicalize().unwrap());
+        assert!(
+            store
+                .search_catalog_assets("", None, Some(&stale_id), 100)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn manually_adding_a_known_agent_home_is_rejected() {
+        let dir = tempdir().unwrap();
+        let agent_home = dir.path().join(".codex");
+        fs::create_dir(&agent_home).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        store
+            .sync_discovery(
+                &[],
+                &[AgentInstallation {
+                    agent: AgentKind::Codex,
+                    installed: true,
+                    configured: true,
+                    version: None,
+                    home: Some(agent_home.clone()),
+                    warnings: Vec::new(),
+                }],
+                &[],
+                Utc::now(),
+                &[],
+            )
+            .unwrap();
+
+        let error = store.add_workspace(&agent_home).unwrap_err().to_string();
+
+        assert!(error.contains("Agent Home cannot be added as a workspace"));
+    }
+
+    #[test]
+    fn workspace_catalog_uses_one_logical_skill_package() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let skill = workspace.join(".agents/skills/folder-name");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        let entrypoint = "---\nname: logical-name\n---\nBody";
+        let guide = "Guide";
+        fs::write(skill.join("SKILL.md"), entrypoint).unwrap();
+        fs::write(skill.join("references/guide.md"), guide).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+
+        let registered = store.add_workspace(&workspace).unwrap();
+        let assets = store
+            .search_catalog_assets("logical-name", None, Some(&registered.id), 100)
+            .unwrap();
+
+        assert_eq!(registered.asset_count, 1);
+        assert_eq!(assets.len(), 5);
+        assert!(assets.iter().all(|asset| asset.name == "logical-name"));
+        let skill = platform_path::canonicalize(&skill).unwrap();
+        assert!(assets.iter().all(|asset| asset.path == skill));
+        assert!(
+            assets
+                .iter()
+                .all(|asset| asset.size == (entrypoint.len() + guide.len()) as u64)
+        );
+        assert!(assets.iter().all(|asset| asset.modified_at.is_some()));
+        assert_eq!(
+            assets
+                .iter()
+                .filter_map(|asset| asset.agent)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn manifest_skill_name_remains_authoritative() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let skill = workspace.join("custom/skill-folder");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: frontmatter-name\n---\nBody",
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.join(".agentkib")).unwrap();
+        fs::write(
+            workspace.join(".agentkib/manifest.yaml"),
+            "schema_version: 2\nworkspace:\n  id: workspace-id\n  name: Workspace\nskills:\n  - name: manifest-name\n    path: custom/skill-folder\n",
+        )
+        .unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+
+        let registered = store.add_workspace(&workspace).unwrap();
+        let assets = store
+            .search_catalog_assets("manifest-name", None, Some(&registered.id), 100)
+            .unwrap();
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].name, "manifest-name");
+        assert_eq!(assets[0].path, platform_path::canonicalize(&skill).unwrap());
+        assert!(assets[0].size > 0);
     }
 
     #[test]

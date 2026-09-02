@@ -20,6 +20,7 @@ agentkib-mcp.workspace = true
 agentkib-platform.workspace = true
 agentkib-quota.workspace = true
 agentkib-storage.workspace = true
+agentkib-skills.workspace = true
 agentkib-store.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

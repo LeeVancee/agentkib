@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
+import { SkillHubPage } from "@/features/skills/SkillHubPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
@@ -314,7 +315,12 @@ function CatalogPage({
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
       {section === "skills" && (
-        <AssetPage assets={skillAssets} workspaces={workspaces} onOpen={onOpen} />
+        <SkillHubPage
+          workspaceAssets={skillAssets}
+          workspaces={workspaces}
+          onOpen={onOpen}
+          onReload={onReload}
+        />
       )}
       {section === "other" && (
         <AssetPage assets={otherAssets} workspaces={workspaces} onOpen={onOpen} />

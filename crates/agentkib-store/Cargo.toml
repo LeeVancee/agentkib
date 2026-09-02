@@ -11,6 +11,7 @@ dev-app = []
 agentkib-core.workspace = true
 agentkib-conversations.workspace = true
 agentkib-platform.workspace = true
+agentkib-skills.workspace = true
 agentkib-insights.workspace = true
 agentkib-quota.workspace = true
 agentkib-storage.workspace = true

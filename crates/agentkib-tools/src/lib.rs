@@ -979,7 +979,8 @@ fn update_action(
     } else {
         installation.manager_path.as_deref()
     };
-    let command = update_command(spec.agent, channel, target, program)?;
+    let shell = current_shell();
+    let command = update_command(spec.agent, channel, target, program, shell)?;
     let mode = match channel {
         AgentToolChannel::OfficialInstaller => AgentToolActionMode::CopyCommand,
         AgentToolChannel::Npm
@@ -1011,7 +1012,7 @@ fn update_action(
         kind: AgentToolActionKind::Update,
         mode,
         channel,
-        shell: Some(current_shell()),
+        shell: Some(shell),
         command: Some(command),
         url: Some(spec.official_url.to_owned()),
         target_version: target.map(ToOwned::to_owned),
@@ -1044,14 +1045,14 @@ fn install_command(
             .and_then(|program| {
                 package_manager_args(agent, channel, AgentToolActionKind::Install, target)
                     .ok()
-                    .map(|args| display_command(program, &args))
+                    .map(|args| display_command(program, &args, shell))
             })
             .or_else(|| package_command(agent, channel, target)),
         AgentToolChannel::Yarn => package_command(agent, channel, target),
         AgentToolChannel::Homebrew => manager.and_then(|program| {
             package_manager_args(agent, channel, AgentToolActionKind::Install, target)
                 .ok()
-                .map(|args| display_command(program, &args))
+                .map(|args| display_command(program, &args, shell))
         }),
         AgentToolChannel::Nix if agent == AgentKind::Hermes => {
             Some("nix profile install github:NousResearch/hermes-agent".to_owned())
@@ -1065,6 +1066,7 @@ fn update_command(
     channel: AgentToolChannel,
     target: Option<&str>,
     program: Option<&Path>,
+    shell: AgentToolShell,
 ) -> Option<String> {
     match channel {
         AgentToolChannel::Npm
@@ -1074,7 +1076,7 @@ fn update_command(
         | AgentToolChannel::Homebrew => program.and_then(|program| {
             package_manager_args(agent, channel, AgentToolActionKind::Update, target)
                 .ok()
-                .map(|args| display_command(program, &args))
+                .map(|args| display_command(program, &args, shell))
         }),
         AgentToolChannel::Yarn => package_command(agent, channel, target),
         AgentToolChannel::OfficialInstaller => program.map(|program| {
@@ -1083,7 +1085,7 @@ fn update_command(
             } else {
                 "update"
             };
-            display_command(program, &[argument.to_owned()])
+            display_command(program, &[argument.to_owned()], shell)
         }),
         AgentToolChannel::Nix if agent == AgentKind::Hermes => {
             Some("nix profile upgrade hermes-agent".to_owned())
@@ -1191,26 +1193,69 @@ fn executable_channel(channel: AgentToolChannel) -> bool {
     )
 }
 
-fn display_command(program: &Path, args: &[String]) -> String {
-    std::iter::once(display_argument(
-        &redact_home_path(program).to_string_lossy(),
-    ))
-    .chain(args.iter().map(|argument| display_argument(argument)))
-    .collect::<Vec<_>>()
-    .join(" ")
+fn display_command(program: &Path, args: &[String], shell: AgentToolShell) -> String {
+    let program = redact_home_path(program);
+    let program = program.to_string_lossy();
+    let arguments = args
+        .iter()
+        .map(|argument| display_argument(argument, shell))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = match shell {
+        AgentToolShell::Posix => display_posix_program(&program),
+        AgentToolShell::Powershell => {
+            format!("& {}", display_powershell_program(&program))
+        }
+    };
+    if arguments.is_empty() {
+        command
+    } else {
+        format!("{command} {arguments}")
+    }
 }
 
-fn display_argument(value: &str) -> String {
+fn display_posix_program(value: &str) -> String {
+    if value == "~" {
+        return "$HOME".to_owned();
+    }
+    if let Some(suffix) = value.strip_prefix("~/") {
+        return format!(
+            "\"$HOME\"/{}",
+            display_argument(suffix, AgentToolShell::Posix)
+        );
+    }
+    display_argument(value, AgentToolShell::Posix)
+}
+
+fn display_argument(value: &str, shell: AgentToolShell) -> String {
     if value
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || b"@%_+=:,./~-".contains(&byte))
     {
         value.to_owned()
-    } else if cfg!(windows) {
-        format!("\"{}\"", value.replace('"', "\"\""))
     } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
+        match shell {
+            AgentToolShell::Posix => format!("'{}'", value.replace('\'', "'\"'\"'")),
+            AgentToolShell::Powershell => format!("'{}'", value.replace('\'', "''")),
+        }
     }
+}
+
+fn display_powershell_program(value: &str) -> String {
+    if value == "~" {
+        return "$HOME".to_owned();
+    }
+    if let Some(suffix) = value
+        .strip_prefix("~\\")
+        .or_else(|| value.strip_prefix("~/"))
+    {
+        let suffix = suffix
+            .replace('`', "``")
+            .replace('$', "`$")
+            .replace('"', "`\"");
+        return format!("\"$HOME\\{suffix}\"");
+    }
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn executable_action(
@@ -2882,10 +2927,17 @@ mod tests {
             action.manager_path.as_deref(),
             Some(Path::new("/opt/nvm/versions/node/v22/bin/npm"))
         );
-        assert_eq!(
-            action.command.as_deref(),
-            Some("/opt/nvm/versions/node/v22/bin/npm install -g @openai/codex@1.1.0")
+        let expected_command = display_command(
+            Path::new("/opt/nvm/versions/node/v22/bin/npm"),
+            &[
+                "install".to_owned(),
+                "-g".to_owned(),
+                "@openai/codex@1.1.0".to_owned(),
+            ],
+            current_shell(),
         );
+        assert_eq!(action.command.as_deref(), Some(expected_command.as_str()));
+        assert_eq!(action.shell, Some(current_shell()));
         assert!(action.id.contains("codex:nvm-installation"));
 
         let mut moved = installation;
@@ -3203,9 +3255,60 @@ mod tests {
         let action = update_action(spec, &installation, Some("2026.08.31-4057e58")).unwrap();
 
         assert_eq!(action.mode, AgentToolActionMode::CopyCommand);
+        let expected_command = display_command(
+            Path::new("/home/tester/.local/bin/cursor-agent"),
+            &["update".to_owned()],
+            current_shell(),
+        );
+        assert_eq!(action.command.as_deref(), Some(expected_command.as_str()));
+        assert_eq!(action.shell, Some(current_shell()));
+    }
+
+    #[test]
+    fn posix_display_command_expands_home_with_spaces() {
         assert_eq!(
-            action.command.as_deref(),
-            Some("/home/tester/.local/bin/cursor-agent update")
+            display_command(
+                Path::new("~/My Tools/cursor-agent"),
+                &["update".to_owned()],
+                AgentToolShell::Posix,
+            ),
+            r#""$HOME"/'My Tools/cursor-agent' update"#
+        );
+    }
+
+    #[test]
+    fn posix_display_command_quotes_home_path_special_characters() {
+        assert_eq!(
+            display_command(
+                Path::new("~/Node! $`\"'\\ Tools/npm"),
+                &["install".to_owned()],
+                AgentToolShell::Posix,
+            ),
+            r#""$HOME"/'Node! $`"'"'"'\ Tools/npm' install"#
+        );
+    }
+
+    #[test]
+    fn powershell_display_command_invokes_home_relative_program() {
+        assert_eq!(
+            display_command(
+                Path::new(r"~\AppData\Local\cursor-agent\cursor-agent.cmd"),
+                &["update".to_owned()],
+                AgentToolShell::Powershell,
+            ),
+            r#"& "$HOME\AppData\Local\cursor-agent\cursor-agent.cmd" update"#
+        );
+    }
+
+    #[test]
+    fn powershell_display_command_quotes_absolute_program() {
+        assert_eq!(
+            display_command(
+                Path::new(r"C:\Program Files\Claude\claude.exe"),
+                &["update".to_owned()],
+                AgentToolShell::Powershell,
+            ),
+            r#"& 'C:\Program Files\Claude\claude.exe' update"#
         );
     }
 

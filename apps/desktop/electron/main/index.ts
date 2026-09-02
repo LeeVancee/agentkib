@@ -66,6 +66,9 @@ let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
 const startupBenchmark = new StartupBenchmark();
 
+// Keep the native window above the renderer's compact-layout breakpoint.
+const MAIN_WINDOW_MIN_WIDTH = 1024;
+
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
   app_icon_preference?: "white" | "black";
@@ -746,7 +749,7 @@ async function createMainWindow(): Promise<void> {
     title: "AgentKib",
     width: 1360,
     height: 860,
-    minWidth: 900,
+    minWidth: MAIN_WINDOW_MIN_WIDTH,
     minHeight: 680,
     show: false,
     backgroundColor: "#0a0a0a",

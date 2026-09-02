@@ -407,6 +407,9 @@ button {
 :root[data-platform="macos"] .app-sidebar-content {
   padding-top: var(--window-toolbar-height);
 }
+:root[data-platform="windows"] .app-sidebar-content {
+  padding-top: 3.25rem;
+}
 .app-sidebar-header {
   position: relative;
   display: grid;

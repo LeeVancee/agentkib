@@ -424,10 +424,6 @@ button {
   font-size: 0.9375rem;
   font-weight: 650;
   letter-spacing: -0.02em;
-  transition: opacity 180ms ease;
-}
-.sidebar-brand:hover {
-  opacity: 0.72;
 }
 .sidebar-brand-label {
   white-space: nowrap;
@@ -538,7 +534,6 @@ button {
   transform: translateY(1px) scale(0.99);
 }
 .app-sidebar-item:focus-visible,
-.sidebar-brand:focus-visible,
 .sidebar-mobile-trigger:focus-visible {
   outline: 2px solid var(--sidebar-ring);
   outline-offset: 2px;
@@ -974,7 +969,6 @@ button {
   }
   .app-sidebar,
   .app-sidebar-item,
-  .sidebar-brand,
   .app-sidebar-collapse-button,
   .app-history-button {
     transition: none;

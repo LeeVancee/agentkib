@@ -7,7 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
-import { AppUpdateSetting } from "./GlobalSettings";
+import { AppUpdateSetting } from "./AgentToolsSettings";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -91,6 +91,22 @@ describe("AppUpdateSetting", () => {
 
     expect(api.openExternal).toHaveBeenCalledWith(availableUpdate.release_url);
     expect(api.installAppUpdate).not.toHaveBeenCalled();
+  });
+
+  it("reports an error when a manual Release page cannot be opened", async () => {
+    vi.mocked(api.checkAppUpdate).mockResolvedValue({
+      ...availableUpdate,
+      install_mode: "manual",
+    });
+    vi.mocked(api.openExternal).mockRejectedValue(new Error("Could not open the Release page"));
+    const user = userEvent.setup();
+    renderSetting();
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+    await user.click(await screen.findByRole("button", { name: "Open Release download" }));
+
+    expect(await screen.findByText(/Could not open the Release page/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
   it("requires confirmation before installing an in-app update", async () => {

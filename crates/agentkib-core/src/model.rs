@@ -501,6 +501,153 @@ pub struct AgentInstallation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum AgentToolState {
+    Current,
+    UpdateAvailable,
+    Uninstalled,
+    Conflict,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolChannel {
+    OfficialInstaller,
+    Npm,
+    Pnpm,
+    Bun,
+    Yarn,
+    Homebrew,
+    Volta,
+    DesktopApp,
+    Nix,
+    Local,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolEnvironment {
+    System,
+    Standalone,
+    Nvm,
+    Fnm,
+    Mise,
+    Volta,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolInstallation {
+    pub id: String,
+    pub path: PathBuf,
+    pub resolved_path: PathBuf,
+    pub version: Option<String>,
+    pub runnable: bool,
+    pub error: Option<String>,
+    pub channel: AgentToolChannel,
+    pub environment: AgentToolEnvironment,
+    pub manager_path: Option<PathBuf>,
+    pub is_path_default: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolActionKind {
+    Install,
+    Update,
+    OpenDocumentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolActionMode {
+    Execute,
+    CopyCommand,
+    OpenDocumentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolShell {
+    Posix,
+    Powershell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolAction {
+    pub id: String,
+    pub kind: AgentToolActionKind,
+    pub mode: AgentToolActionMode,
+    pub channel: AgentToolChannel,
+    pub shell: Option<AgentToolShell>,
+    pub command: Option<String>,
+    pub url: Option<String>,
+    pub target_version: Option<String>,
+    pub installation_id: Option<String>,
+    pub manager_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolStatus {
+    pub agent: AgentKind,
+    pub installed: bool,
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub recommended_version: Option<String>,
+    pub upstream_version: Option<String>,
+    pub state: AgentToolState,
+    pub channel: AgentToolChannel,
+    pub installations: Vec<AgentToolInstallation>,
+    pub warnings: Vec<String>,
+    pub official_url: String,
+    pub release_url: Option<String>,
+    pub actions: Vec<AgentToolAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolExecutionStatus {
+    Succeeded,
+    Failed,
+    TimedOut,
+    Busy,
+    Unchanged,
+    VerificationFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolExecutionResult {
+    pub agent: AgentKind,
+    pub action_id: String,
+    pub status: AgentToolExecutionStatus,
+    pub exit_code: Option<i32>,
+    pub output: String,
+    pub installation_id: Option<String>,
+    pub before_version: Option<String>,
+    pub after_version: Option<String>,
+    pub completed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentToolCacheStatus {
+    Fresh,
+    Cached,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentToolSnapshot {
+    pub tools: Vec<AgentToolStatus>,
+    pub checked_at: DateTime<Utc>,
+    pub latest_checked_at: Option<DateTime<Utc>>,
+    pub cache_status: AgentToolCacheStatus,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CatalogScope {
     Workspace,
     AgentHome,

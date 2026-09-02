@@ -1,6 +1,7 @@
 import { desktopApi } from "./desktop";
 import type {
   AgentKind,
+  AgentToolExecutionResult,
   AppIconPreference,
   AppUpdateProgress,
   ChangeSet,
@@ -61,6 +62,9 @@ export const api = {
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
     desktopApi().memories.review(id, status, editedContent),
   runtime: () => desktopApi().home.runtime(),
+  agentTools: (force = false) => desktopApi().home.agentTools(force),
+  executeAgentTool: (agent: AgentKind, actionId: string): Promise<AgentToolExecutionResult> =>
+    desktopApi().home.executeAgentTool(agent, actionId),
   updateOnboarding: (event: OnboardingEvent) => desktopApi().home.updateOnboarding(event),
   openFilesAndFoldersSettings: () => desktopApi().shell.openFilesAndFoldersSettings(),
   openExternal: (url: string) => desktopApi().shell.openExternal(url),

@@ -10,7 +10,7 @@ describe("SettingsSidebar v8 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
-  it("shows only the back entry and five settings sections", () => {
+  it("shows only the back entry and six settings sections", () => {
     const { container } = render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <SettingsSidebar
@@ -28,6 +28,7 @@ describe("SettingsSidebar v8 navigation", () => {
     expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(7);
+    expect(screen.getByRole("button", { name: "Tools & updates" })).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(8);
   });
 });

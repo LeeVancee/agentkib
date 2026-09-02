@@ -5,6 +5,7 @@ import {
   Database,
   FolderSearch,
   Menu,
+  PackageSearch,
   PlugZap,
   Settings2,
   Stethoscope,
@@ -12,7 +13,13 @@ import {
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 
-export type SettingsSection = "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
+export type SettingsSection =
+  | "general"
+  | "discovery"
+  | "tools"
+  | "integrations"
+  | "privacy"
+  | "diagnostics";
 
 const sections: Array<{
   id: SettingsSection;
@@ -21,6 +28,7 @@ const sections: Array<{
 }> = [
   { id: "general", label: "settings.section.general", icon: Settings2 },
   { id: "discovery", label: "settings.section.discovery", icon: FolderSearch },
+  { id: "tools", label: "settings.section.tools", icon: PackageSearch },
   { id: "integrations", label: "settings.section.integrations", icon: PlugZap },
   { id: "privacy", label: "settings.section.privacy", icon: Database },
   { id: "diagnostics", label: "settings.section.diagnostics", icon: Stethoscope },

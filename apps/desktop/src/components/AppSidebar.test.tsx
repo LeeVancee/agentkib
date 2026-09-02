@@ -18,7 +18,6 @@ describe("AppSidebar v8 navigation", () => {
           entries={[{ id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" }]}
           onNavigate={() => undefined}
           onSettings={() => undefined}
-          onBrandClick={() => undefined}
           collapsed={false}
           onCollapsedChange={() => undefined}
         />
@@ -40,7 +39,6 @@ describe("AppSidebar v8 navigation", () => {
           entries={[{ id: "home", label: "nav.home", icon: () => null, shortcut: "navigate-home" }]}
           onNavigate={() => undefined}
           onSettings={() => undefined}
-          onBrandClick={() => undefined}
           collapsed={false}
           onCollapsedChange={() => undefined}
         />
@@ -62,7 +60,6 @@ describe("AppSidebar v8 navigation", () => {
           entries={[{ id: "agents", label: "nav.agents", icon: () => null }]}
           onNavigate={() => undefined}
           onSettings={() => undefined}
-          onBrandClick={() => undefined}
           collapsed={false}
           context={{ kind: "agents", filter: "all", onFilterChange: () => undefined }}
         />

@@ -221,6 +221,7 @@ dependencies = [
  "agentkib-skills",
  "agentkib-storage",
  "agentkib-store",
+ "agentkib-tools",
  "anyhow",
  "chrono",
  "dirs",
@@ -284,6 +285,26 @@ dependencies = [
  "sha2",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "agentkib-tools"
+version = "0.7.0"
+dependencies = [
+ "agentkib-core",
+ "agentkib-platform",
+ "anyhow",
+ "chrono",
+ "dirs",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

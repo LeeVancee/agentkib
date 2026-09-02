@@ -33,7 +33,8 @@ use agentkib_platform::path as platform_path;
 use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
     ACHIEVEMENTS_METHOD, ADD_GIT_IDENTITY_ALIAS_METHOD, ADD_OBSIDIAN_VAULT_METHOD,
-    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, AGENT_USAGE_BREAKDOWN_METHOD, APPLY_CHANGES_METHOD,
+    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, AGENT_TOOL_EXECUTE_METHOD,
+    AGENT_TOOLS_STATUS_METHOD, AGENT_USAGE_BREAKDOWN_METHOD, APPLY_CHANGES_METHOD,
     APPLY_SKILL_OPERATION_METHOD, CANCEL_STORAGE_METHOD, CHECK_SKILL_UPDATES_METHOD,
     CLEAR_SESSION_INDEX_METHOD, CONTINUE_SESSION_HANDOFF_METHOD, DISCOVER_SKILLS_METHOD,
     DISCOVERY_REPORT_METHOD, EXCLUDE_WORKSPACE_METHOD, GET_MCP_SERVER_METHOD,
@@ -171,6 +172,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     write_response(&mut stdout, response)?;
                     continue;
                 }
+                if request.method == AGENT_TOOL_EXECUTE_METHOD {
+                    if let Some(response) = start_agent_tool_execution(request, &events_tx) {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
 
                 let starts_hub = request.method == HANDSHAKE_METHOD;
                 let (response, should_shutdown) = handle_request(request);
@@ -211,6 +218,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 storage_scan = None;
                 write_response(&mut stdout, result_response(request_id, *result))?;
             }
+            RuntimeEvent::AgentToolFinished { request_id, result } => {
+                write_response(&mut stdout, result_response(request_id, *result))?;
+            }
         }
     }
 
@@ -247,6 +257,10 @@ enum RuntimeEvent {
     StorageFinished {
         request_id: Value,
         result: Box<anyhow::Result<RefreshReceipt>>,
+    },
+    AgentToolFinished {
+        request_id: Value,
+        result: Box<anyhow::Result<agentkib_core::AgentToolExecutionResult>>,
     },
 }
 
@@ -298,6 +312,27 @@ fn start_storage_scan(
     *active_scan = Some(StorageScan {
         request_id,
         cancelled,
+    });
+    None
+}
+
+fn start_agent_tool_execution(
+    request: RpcRequest,
+    events_tx: &Sender<RuntimeEvent>,
+) -> Option<RpcResponse> {
+    let params = match serde_json::from_value::<AgentToolExecuteRequest>(request.params) {
+        Ok(params) => params,
+        Err(error) => return Some(invalid_params_response(request.id, error)),
+    };
+    let request_id = request.id;
+    let worker_request_id = request_id.clone();
+    let worker_events = events_tx.clone();
+    std::thread::spawn(move || {
+        let result = agent_tool_execute(params);
+        let _ = worker_events.send(RuntimeEvent::AgentToolFinished {
+            request_id: worker_request_id,
+            result: Box::new(result),
+        });
     });
     None
 }
@@ -384,6 +419,7 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
+        AGENT_TOOLS_STATUS_METHOD => command_response(request, agent_tools_status),
         SEARCH_CATALOG_ASSETS_METHOD => command_response(request, search_catalog_assets),
         LIST_SKILL_CATALOG_METHOD => command_response(request, list_skill_catalog),
         DISCOVER_SKILLS_METHOD => command_response(request, discover_skills),
@@ -3285,6 +3321,36 @@ fn list_agent_installations(
     _: EmptyRequest,
 ) -> anyhow::Result<Vec<agentkib_core::AgentInstallation>> {
     Store::open_default()?.list_agent_installations()
+}
+
+#[derive(Deserialize)]
+struct AgentToolsStatusRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+fn agent_tools_status(
+    request: AgentToolsStatusRequest,
+) -> anyhow::Result<agentkib_core::AgentToolSnapshot> {
+    let inspector =
+        agentkib_tools::ToolInspector::new(agentkib_store::default_data_dir()?.join("tool-cache"))?;
+    runtime_block_on(inspector.snapshot(request.force))
+}
+
+#[derive(Deserialize)]
+struct AgentToolExecuteRequest {
+    agent: AgentKind,
+    action_id: String,
+    #[serde(default)]
+    confirmed: bool,
+}
+
+fn agent_tool_execute(
+    request: AgentToolExecuteRequest,
+) -> anyhow::Result<agentkib_core::AgentToolExecutionResult> {
+    let inspector =
+        agentkib_tools::ToolInspector::new(agentkib_store::default_data_dir()?.join("tool-cache"))?;
+    runtime_block_on(inspector.execute(request.agent, &request.action_id, request.confirmed))
 }
 
 fn search_catalog_assets(

@@ -30,6 +30,8 @@ import type {
   WorkspaceScan,
   WorkspaceSummary,
   AgentInstallation,
+  AgentToolSnapshot,
+  AgentToolExecutionResult,
   ActivityRecord,
   GitCommitPage,
   GitDiff,
@@ -243,6 +245,8 @@ export interface DesktopApi {
     runtime(): Promise<RuntimeInfo>;
     workspaces(): Promise<WorkspaceSummary[]>;
     agentInstallations(): Promise<AgentInstallation[]>;
+    agentTools(force?: boolean): Promise<AgentToolSnapshot>;
+    executeAgentTool(agent: AgentKind, actionId: string): Promise<AgentToolExecutionResult>;
     catalogAssets(input: {
       query?: string;
       agent?: AgentKind;

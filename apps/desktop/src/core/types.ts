@@ -346,6 +346,100 @@ export interface AgentInstallation {
   home?: string;
   warnings: string[];
 }
+export type AgentToolState =
+  | "current"
+  | "update-available"
+  | "uninstalled"
+  | "conflict"
+  | "unknown";
+export type AgentToolChannel =
+  | "official-installer"
+  | "npm"
+  | "pnpm"
+  | "bun"
+  | "yarn"
+  | "homebrew"
+  | "volta"
+  | "desktop-app"
+  | "nix"
+  | "local"
+  | "unknown";
+export type AgentToolEnvironment =
+  | "system"
+  | "standalone"
+  | "nvm"
+  | "fnm"
+  | "mise"
+  | "volta"
+  | "unknown";
+export interface AgentToolInstallation {
+  id: string;
+  path: string;
+  resolved_path: string;
+  version?: string;
+  runnable: boolean;
+  error?: string;
+  channel: AgentToolChannel;
+  environment: AgentToolEnvironment;
+  manager_path?: string;
+  is_path_default: boolean;
+}
+export type AgentToolActionKind = "install" | "update" | "open-documentation";
+export type AgentToolActionMode = "execute" | "copy-command" | "open-documentation";
+export type AgentToolShell = "posix" | "powershell";
+export interface AgentToolAction {
+  id: string;
+  kind: AgentToolActionKind;
+  mode: AgentToolActionMode;
+  channel: AgentToolChannel;
+  shell?: AgentToolShell;
+  command?: string;
+  url?: string;
+  target_version?: string;
+  installation_id?: string;
+  manager_path?: string;
+}
+export interface AgentToolStatus {
+  agent: AgentKind;
+  installed: boolean;
+  current_version?: string;
+  latest_version?: string;
+  recommended_version?: string;
+  upstream_version?: string;
+  state: AgentToolState;
+  channel: AgentToolChannel;
+  installations: AgentToolInstallation[];
+  warnings: string[];
+  official_url: string;
+  release_url?: string;
+  actions: AgentToolAction[];
+}
+export type AgentToolExecutionStatus =
+  | "succeeded"
+  | "failed"
+  | "timed-out"
+  | "busy"
+  | "unchanged"
+  | "verification-failed";
+export interface AgentToolExecutionResult {
+  agent: AgentKind;
+  action_id: string;
+  status: AgentToolExecutionStatus;
+  exit_code?: number;
+  output: string;
+  installation_id?: string;
+  before_version?: string;
+  after_version?: string;
+  completed_at: string;
+}
+export type AgentToolCacheStatus = "fresh" | "cached" | "unavailable";
+export interface AgentToolSnapshot {
+  tools: AgentToolStatus[];
+  checked_at: string;
+  latest_checked_at?: string;
+  cache_status: AgentToolCacheStatus;
+  errors: string[];
+}
 export interface CatalogAsset {
   id: string;
   scope: "workspace" | "agent-home" | "agentkib-home";

@@ -28,7 +28,7 @@ lines.on("line", (line) => {
   if (request.method === "agentkib.handshake") {
     if (mode === "never-handshake") return;
     const send = () => respond(request, {
-      protocolVersion: 4,
+      protocolVersion: 7,
       runtime: { name: "fake-runtime", version: "0.0.0" },
       pid: process.pid,
     });
@@ -90,7 +90,7 @@ describe("DesktopRuntimeHost", () => {
     const starting = host.start();
     const request = host.request<{ value: number }>("echo", { value: 7 });
 
-    await expect(starting).resolves.toMatchObject({ protocolVersion: 4 });
+    await expect(starting).resolves.toMatchObject({ protocolVersion: 7 });
     await expect(request).resolves.toEqual({ value: 7 });
     expect(host.status.state).toBe("ready");
   });
@@ -103,7 +103,7 @@ describe("DesktopRuntimeHost", () => {
     const starting = host.start();
     const request = host.request("echo", { recovered: true });
 
-    await expect(starting).resolves.toMatchObject({ protocolVersion: 4 });
+    await expect(starting).resolves.toMatchObject({ protocolVersion: 7 });
     await expect(request).resolves.toEqual({ recovered: true });
     expect(statuses.some((status) => status.state === "restarting")).toBe(true);
     expect(host.status.state).toBe("ready");
@@ -125,7 +125,7 @@ describe("DesktopRuntimeHost", () => {
     expect(host.status.state).toBe("failed");
 
     mode = "ready";
-    await expect(host.retry()).resolves.toMatchObject({ protocolVersion: 4 });
+    await expect(host.retry()).resolves.toMatchObject({ protocolVersion: 7 });
     expect(host.status.state).toBe("ready");
   });
 

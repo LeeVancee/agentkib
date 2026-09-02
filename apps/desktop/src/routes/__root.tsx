@@ -189,7 +189,6 @@ function AppShellRouter({
       entries={entries}
       onNavigate={onNavigate}
       onSettings={onSettings}
-      onBrandClick={() => onNavigate("home")}
       context={
         isWorkspace
           ? {
@@ -263,6 +262,7 @@ function AppShellRouter({
               ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
               : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
           isSettings && settingsSection === "general" && "pt-4",
+          isSettings && settingsSection === "tools" && "max-w-[1520px] pt-4",
         )}
       >
         <Outlet />
@@ -301,6 +301,7 @@ const searchSchema = z.object({
     .enum([
       "general",
       "discovery",
+      "tools",
       "integrations",
       "privacy",
       "diagnostics",

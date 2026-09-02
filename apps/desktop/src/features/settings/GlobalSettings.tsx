@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   CircleAlert,
-  Download,
   ExternalLink,
   FolderGit2,
   GitCommitHorizontal,
@@ -10,7 +9,6 @@ import {
   Keyboard,
   Monitor,
   Moon,
-  RefreshCw,
   Sun,
   Trash2,
   X,
@@ -27,6 +25,7 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
 import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
+import { AgentToolsSettings } from "./AgentToolsSettings";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import {
@@ -49,7 +48,6 @@ import type {
   ActivityRecord,
   AgentKind,
   AppIconPreference,
-  AppUpdateInfo,
   CloseBehavior,
   DiscoveryReport,
   ExcludedWorkspace,
@@ -147,10 +145,6 @@ export function GlobalSettings({
               onChange={onCloseBehaviorChanged}
             />
           </SettingsRow>
-          <AppUpdateSetting
-            currentVersion={runtime?.app_version}
-            updatesEnabled={runtime?.updates_enabled ?? false}
-          />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
@@ -170,6 +164,13 @@ export function GlobalSettings({
         <KeyboardShortcutsSetting />
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
       </div>
+    );
+  if (section === "tools")
+    return (
+      <AgentToolsSettings
+        currentVersion={runtime?.app_version}
+        updatesEnabled={runtime?.updates_enabled ?? false}
+      />
     );
   if (section === "discovery")
     return (
@@ -344,148 +345,6 @@ export function GlobalSettings({
       </div>
       <ActivityPage records={activity} />
     </div>
-  );
-}
-
-type AppUpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "failed";
-
-export function AppUpdateSetting({
-  currentVersion,
-  updatesEnabled = true,
-}: {
-  currentVersion?: string;
-  updatesEnabled?: boolean;
-}) {
-  const dialogs = useAppDialogs();
-  const [status, setStatus] = useState<AppUpdateStatus>("idle");
-  const [update, setUpdate] = useState<AppUpdateInfo>();
-  const [error, setError] = useState("");
-  const [downloaded, setDownloaded] = useState(0);
-  const [contentLength, setContentLength] = useState<number>();
-  const busy = status === "checking" || status === "downloading";
-  const progress = contentLength
-    ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-    : 0;
-
-  const check = async () => {
-    if (busy || !updatesEnabled) return;
-    setStatus("checking");
-    setError("");
-    setUpdate(undefined);
-    try {
-      const available = await api.checkAppUpdate();
-      setUpdate(available);
-      setStatus(available ? "available" : "up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const install = async () => {
-    if (!update || busy) return;
-    if (update.install_mode === "manual") {
-      try {
-        await api.openExternal(update.release_url);
-      } catch (reason) {
-        setError(localizeMessage(reason));
-        setStatus("failed");
-      }
-      return;
-    }
-    if (
-      !(await dialogs.confirm({
-        title: tr("settings.updateInstallTitle"),
-        description: tr("settings.updateInstallConfirm", { version: update.version }),
-      }))
-    )
-      return;
-
-    setStatus("downloading");
-    setError("");
-    setDownloaded(0);
-    setContentLength(undefined);
-    try {
-      await api.installAppUpdate(update.version, (event) => {
-        if (event.event === "started") {
-          setContentLength(event.data.content_length);
-        } else if (event.event === "progress") {
-          setDownloaded(event.data.downloaded);
-          setContentLength(event.data.content_length);
-        }
-      });
-      setStatus("up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const description = (() => {
-    if (!updatesEnabled) return tr("settings.updateUnavailableInDevelopment");
-    if (status === "checking") return tr("settings.updateChecking");
-    if (status === "up-to-date")
-      return tr("settings.updateUpToDate", { version: currentVersion ?? "—" });
-    if (status === "available" && update)
-      return tr("settings.updateAvailable", {
-        current: update.current_version,
-        version: update.version,
-      });
-    if (status === "downloading")
-      return contentLength
-        ? tr("settings.updateDownloadingProgress", { progress })
-        : tr("settings.updateDownloading");
-    if (status === "failed") return error;
-    return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
-  })();
-
-  return (
-    <>
-      <SettingsRow
-        border={Boolean(update?.notes || status === "failed" || status === "downloading")}
-      >
-        <SettingsCopy>
-          <strong>{tr("settings.updates")}</strong>
-          <small className={status === "failed" ? "!text-destructive" : undefined}>
-            {description}
-          </small>
-        </SettingsCopy>
-        {status === "available" && update ? (
-          <Button type="button" disabled={busy} onClick={() => void install()}>
-            {update.install_mode === "manual" ? <ExternalLink size={14} /> : <Download size={14} />}
-            {tr(
-              update.install_mode === "manual"
-                ? "settings.updateOpenRelease"
-                : "settings.updateDownloadInstall",
-            )}
-          </Button>
-        ) : (
-          <Button type="button" disabled={busy || !updatesEnabled} onClick={() => void check()}>
-            <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
-            {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-          </Button>
-        )}
-      </SettingsRow>
-      {status === "downloading" && (
-        <div
-          className="h-1 bg-muted"
-          role="progressbar"
-          aria-valuenow={progress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
-        </div>
-      )}
-      {update?.notes && status !== "failed" && (
-        <SettingDetail>
-          <span className="whitespace-pre-wrap break-words">
-            <strong className="mb-1 block text-foreground">{tr("settings.updateNotes")}</strong>
-            {update.notes}
-          </span>
-        </SettingDetail>
-      )}
-    </>
   );
 }
 

@@ -240,6 +240,9 @@ const desktopApi = Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
     workspaces: () => ipcRenderer.invoke("agentkib:home:workspaces"),
     agentInstallations: () => ipcRenderer.invoke("agentkib:home:agent-installations"),
+    agentTools: (force?: boolean) => ipcRenderer.invoke("agentkib:home:agent-tools", force),
+    executeAgentTool: (agent: string, actionId: string) =>
+      ipcRenderer.invoke("agentkib:home:execute-agent-tool", agent, actionId),
     catalogAssets: (input: unknown) => ipcRenderer.invoke("agentkib:home:catalog-assets", input),
     globalMemories: (status?: string) =>
       ipcRenderer.invoke("agentkib:home:global-memories", status),

@@ -31,7 +31,7 @@ export function AgentIcon({ agent }: { agent: AgentKind }) {
           "block size-full object-contain",
           agent === "cursor" && "rounded-md bg-[#1d1d1f] p-1",
           agent === "opencode" && "dark:invert",
-          agent === "hermes" && "opacity-[0.92] invert",
+          agent === "hermes" && "opacity-[0.92] dark:invert",
           agent === "grok-build" && "opacity-[0.92] dark:invert",
         )}
         src={agentIcons[agent]}

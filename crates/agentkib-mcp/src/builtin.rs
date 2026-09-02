@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use agentkib_core::{
     AgentKind, AssetKind, AssetRecord, MemoryProposal, MemoryStatus, MemoryType,
@@ -9,6 +13,8 @@ use agentkib_store::Store;
 use anyhow::{Context, Result, bail};
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{Value, json};
+
+const MAX_ASSET_READ_BYTES: u64 = 256 * 1024;
 
 pub const BUILTIN_TOOL_NAMES: [&str; 8] = [
     "workspace_get_context",
@@ -101,10 +107,7 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
             if !is_readable_asset_path(&scan.assets, &requested_input, &requested) {
                 bail!("The requested path is not in the readable asset inventory");
             }
-            let content = std::fs::read_to_string(&requested)?;
-            if content.len() > 256 * 1024 {
-                bail!("Asset exceeds the 256 KiB limit");
-            }
+            let content = read_bounded_asset_text(&requested)?;
             json!({"path":requested,"content":content})
         }
         "skill_list" => serde_json::to_value(manifest.skills)?,
@@ -195,6 +198,25 @@ fn is_readable_asset_path(
         })
 }
 
+fn read_bounded_asset_text(path: &Path) -> Result<String> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        bail!("Asset must be a regular file");
+    }
+    if metadata.len() > MAX_ASSET_READ_BYTES {
+        bail!("Asset exceeds the 256 KiB limit");
+    }
+
+    let mut content = String::with_capacity(metadata.len() as usize);
+    file.take(MAX_ASSET_READ_BYTES + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_ASSET_READ_BYTES {
+        bail!("Asset exceeds the 256 KiB limit");
+    }
+    Ok(content)
+}
+
 fn tool(name: &str, description: &str, input_schema: Value) -> Tool {
     serde_json::from_value(json!({
         "name": name,
@@ -262,6 +284,27 @@ mod tests {
             &skill.join("references/../../../../notes.md"),
             &canonicalize(&outside).unwrap()
         ));
+    }
+
+    #[test]
+    fn asset_get_rejects_oversized_skill_supporting_files_before_reading_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("assets")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let oversized = skill.join("assets/large.txt");
+        fs::write(&oversized, vec![b'a'; MAX_ASSET_READ_BYTES as usize + 1]).unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(is_readable_asset_path(
+            &scan.assets,
+            &oversized,
+            &canonicalize(&oversized).unwrap()
+        ));
+        assert_eq!(
+            read_bounded_asset_text(&oversized).unwrap_err().to_string(),
+            "Asset exceeds the 256 KiB limit"
+        );
     }
 
     #[cfg(unix)]

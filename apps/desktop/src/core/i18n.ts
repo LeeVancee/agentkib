@@ -1,5 +1,7 @@
+/** @jsxImportSource octane */
+
 import i18n, { type TOptions } from "i18next";
-import { initReactI18next } from "react-i18next";
+import { initReactI18next } from "@octanejs/i18next";
 import enUS from "../locales/en-US.json";
 import jaJP from "../locales/ja-JP.json";
 import zhCN from "../locales/zh-CN.json";
@@ -46,7 +48,7 @@ export function cacheEffectiveLocale(locale: SupportedLocale, preference?: Local
 
 export async function initializeI18n(locale: SupportedLocale) {
   if (!i18n.isInitialized) {
-    await i18n.use(initReactI18next).init({
+    await i18n.use(initReactI18next as never).init({
       lng: locale,
       fallbackLng: "en-US",
       supportedLngs: supportedLocales,
@@ -59,7 +61,7 @@ export async function initializeI18n(locale: SupportedLocale) {
       interpolation: { escapeValue: false },
       returnNull: false,
       showSupportNotice: false,
-    });
+    } as never);
   } else {
     await i18n.changeLanguage(locale);
   }

@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { Check, ChevronRight, Circle, ShieldCheck, X } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useState } from "octane";
+import { Check, ChevronRight, Circle, ShieldCheck, X } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { api } from "@/core/api";

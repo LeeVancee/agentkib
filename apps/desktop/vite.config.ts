@@ -1,43 +1,33 @@
 import { defineConfig } from "vite";
-import react, { reactCompilerPreset } from "@vitejs/plugin-react";
-import babel from "@rolldown/plugin-babel";
-import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import { octane } from "@octanejs/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
 const config = {
-  plugins: [
-    tanstackRouter({ target: "react", autoCodeSplitting: true }),
-    react(),
-    babel({
-      presets: [
-        reactCompilerPreset({
-          target: "19",
-        }),
-      ],
-    }),
-    tailwindcss(),
-  ],
+  plugins: [octane({ requireDirective: true }), tailwindcss()],
   resolve: {
+    conditions: ["module", "browser", "default"],
+    extensions: [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json", ".tsrx"],
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
+      extend: path.resolve(import.meta.dirname, "./src/vendor/extend.ts"),
+      "style-to-js": path.resolve(import.meta.dirname, "./src/vendor/style-to-js.ts"),
+      "void-elements": path.resolve(import.meta.dirname, "./src/vendor/void-elements.ts"),
     },
   },
   clearScreen: false,
   server: { port: 1420, strictPort: true },
-  test: { setupFiles: ["./src/test/test-setup.ts"] },
+  test: {
+    setupFiles: ["./src/test/test-setup.ts"],
+    include: ["src/**/*.{test,spec}.{ts,tsx,tsrx}"],
+  },
   build: {
     target: "es2022",
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          if (id.indexOf("/lucide-react/") >= 0) return "icons";
-          if (
-            ["/react/", "/react-dom/", "/scheduler/", "/i18next/", "/react-i18next/"].some(
-              (dependency) => id.indexOf(dependency) >= 0,
-            )
-          )
-            return "framework";
+          if (id.indexOf("/@octanejs/lucide/") >= 0) return "icons";
+          if (id.indexOf("/octane/") >= 0 || id.indexOf("/i18next/") >= 0) return "framework";
           return undefined;
         },
       },

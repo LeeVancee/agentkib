@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -7,8 +9,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "octane";
+import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type { WorkspaceOpener, WorkspaceSummary } from "@/core/types";

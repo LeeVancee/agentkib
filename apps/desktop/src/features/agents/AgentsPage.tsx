@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,8 +13,15 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useState } from "react";
-import { ChevronRight, CircleAlert, FileCode2, FolderGit2, PlugZap, Search } from "lucide-react";
+import { useEffect, useState } from "octane";
+import {
+  ChevronRight,
+  CircleAlert,
+  FileCode2,
+  FolderGit2,
+  PlugZap,
+  Search,
+} from "@octanejs/lucide";
 import { cn } from "@/lib/utils";
 import { formatRelativeTime, tr } from "@/core/i18n";
 import type {
@@ -106,7 +115,7 @@ export function AgentsPage({
     0,
   );
   const visibleAgentKinds = agentKinds
-    .filter((agent) => {
+    .filter((agent: AgentKind) => {
       const item = installations.find((installation) => installation.agent === agent);
       if (!agentLabels[agent].toLowerCase().includes(agentQuery.trim().toLowerCase())) return false;
       if (filter === "enabled") return Boolean(item?.installed);
@@ -145,13 +154,13 @@ export function AgentsPage({
             <Input
               className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
               value={agentQuery}
-              onChange={(event) => setAgentQuery(event.target.value)}
+              onChange={(event) => setAgentQuery((event.target as HTMLInputElement).value)}
               placeholder={tr("common.search")}
             />
           </label>
           <Select
             value={agentSort}
-            onValueChange={(value) => {
+            onValueChange={(value: any) => {
               if (value !== null) setAgentSort(String(value) as typeof agentSort);
             }}
           >
@@ -171,8 +180,8 @@ export function AgentsPage({
         <div className="grid gap-4">
           <Card className="overflow-hidden rounded-2xl border-border shadow-sm">
             <CardContent className="grid gap-2 p-3">
-              {visibleAgentKinds.map((agent) => {
-                const item = installations.find((value) => value.agent === agent);
+              {visibleAgentKinds.map((agent: AgentKind) => {
+                const item = installations.find((value: any) => value.agent === agent);
                 const remoteCount = remoteGateways
                   .filter((gateway) => gateway.kind === agent)
                   .reduce((total, gateway) => total + gateway.workspaces.length, 0);
@@ -247,7 +256,7 @@ export function AgentsPage({
             {selected === "deepseek-harness" && <Badge variant="outline">Beta</Badge>}
             <Tabs
               value={section}
-              onValueChange={(value) => setSection(value as AgentDetailSection)}
+              onValueChange={(value: any) => setSection(value as AgentDetailSection)}
               className="shrink-0"
             >
               <TabsList
@@ -258,7 +267,7 @@ export function AgentsPage({
                 {(agentSupportsInsights(selected)
                   ? (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
                   : (["overview", "assets", "workspaces"] as AgentDetailSection[])
-                ).map((value) => (
+                ).map((value: any) => (
                   <TabsTrigger
                     className="segmented-control-item h-9 min-h-9 flex-none px-3"
                     value={value}
@@ -397,14 +406,14 @@ export function AgentsPage({
                     className="h-9 border-0 px-0 shadow-none focus-visible:ring-0"
                     aria-label={tr("catalog.searchPlaceholder")}
                     value={assetQuery}
-                    onChange={(event) => setAssetQuery(event.target.value)}
+                    onChange={(event) => setAssetQuery((event.target as HTMLInputElement).value)}
                     placeholder={tr("catalog.searchPlaceholder")}
                   />
                 </label>
                 {assetKinds.length > 1 && (
                   <Select
                     value={assetKind}
-                    onValueChange={(value) => {
+                    onValueChange={(value: any) => {
                       if (value !== null) setAssetKind(String(value));
                     }}
                   >
@@ -420,7 +429,7 @@ export function AgentsPage({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
-                      {assetKinds.map((value) => (
+                      {assetKinds.map((value: any) => (
                         <SelectItem key={value} value={value}>
                           {tr(`status.asset.${value}`)}
                         </SelectItem>

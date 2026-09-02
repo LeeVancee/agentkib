@@ -1,14 +1,13 @@
-"use client";
+/** @jsxImportSource octane */
 
-import { Switch as SwitchPrimitive } from "@base-ui/react/switch";
-
+import type { PropsOf } from "@/lib/octane-types";
+import { Switch as SwitchPrimitive } from "@octanejs/base-ui/switch";
 import { cn } from "@/lib/utils";
-
 function Switch({
   className,
   size = "default",
   ...props
-}: SwitchPrimitive.Root.Props & {
+}: PropsOf<typeof SwitchPrimitive.Root> & {
   size?: "sm" | "default";
 }) {
   return (
@@ -28,5 +27,4 @@ function Switch({
     </SwitchPrimitive.Root>
   );
 }
-
 export { Switch };

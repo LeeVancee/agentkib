@@ -1,4 +1,7 @@
-import { createContext, useContext, type ReactNode } from "react";
+/** @jsxImportSource octane */
+
+import { createContext, useContext } from "octane";
+import type { Renderable } from "@/lib/octane-types";
 
 type ShortcutHelpContextValue = {
   openShortcutHelp: () => void;
@@ -12,7 +15,7 @@ export function ShortcutHelpProvider({
   children,
   openShortcutHelp,
 }: {
-  children: ReactNode;
+  children: Renderable;
   openShortcutHelp: () => void;
 }) {
   return (

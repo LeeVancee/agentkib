@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef, useState } from "octane";
+import { useQueryClient } from "@octanejs/tanstack-query";
+import { AlertTriangle, RefreshCw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
@@ -9,9 +11,9 @@ import { applyTheme, cacheEffectiveTheme } from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { useHomeQueryEvents } from "@/features/home/home-query";
-import { useInsightsQueryEvents } from "@/features/insights/insights-query";
-import { useQuotaQueryEvents } from "@/features/quota/quota-query";
+import { useHomeQueryEvents } from "@/features/home/home-query.tsx";
+import { useInsightsQueryEvents } from "@/features/insights/insights-query.tsx";
+import { useQuotaQueryEvents } from "@/features/quota/quota-query.tsx";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 

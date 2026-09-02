@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -12,7 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { WorkspaceStorageSkeleton } from "./WorkspaceSkeleton";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "octane";
 import { hierarchy, treemap, treemapResquarify } from "d3-hierarchy";
 import {
   CircleAlert,
@@ -23,7 +25,7 @@ import {
   ScanLine,
   Search,
   X,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { currentLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -114,7 +116,7 @@ export function WorkspaceStoragePage({
       const tag = (event.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (selected) setSelected(undefined);
-      else if (trail.length) setTrail((value) => value.slice(0, -1));
+      else if (trail.length) setTrail((value: any) => value.slice(0, -1));
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -196,7 +198,7 @@ export function WorkspaceStoragePage({
     if (location.node.kind === "root-files") return;
     setSelected(undefined);
     if (location.node.children.length) {
-      setTrail((value) => [...value, location]);
+      setTrail((value: any) => [...value, location]);
       return;
     }
     if (!location.node.expandable && location.node.kind !== "aggregate") return;
@@ -209,9 +211,12 @@ export function WorkspaceStoragePage({
     try {
       const node = await api.workspaceStorageChildren(location.workspaceId, relativePath);
       if (location.node.kind === "aggregate" && current) {
-        setTrail((value) => [...value.slice(0, -1), { workspaceId: location.workspaceId, node }]);
+        setTrail((value: any) => [
+          ...value.slice(0, -1),
+          { workspaceId: location.workspaceId, node },
+        ]);
       } else {
-        setTrail((value) => [...value, { workspaceId: location.workspaceId, node }]);
+        setTrail((value: any) => [...value, { workspaceId: location.workspaceId, node }]);
       }
     } catch (reason) {
       setError(`${tr("storage.expandFailed")}: ${localizeMessage(reason)}`);
@@ -242,13 +247,13 @@ export function WorkspaceStoragePage({
             <Input
               className="h-9 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
               placeholder={tr("storage.searchPlaceholder")}
             />
           </label>
           <Select
             value={agent}
-            onValueChange={(value) => {
+            onValueChange={(value: any) => {
               if (value === null) return;
               setAgent(String(value) as typeof agent);
               setTrail([]);
@@ -274,7 +279,7 @@ export function WorkspaceStoragePage({
             variant="default"
             className="segmented-control shrink-0"
             value={[metric]}
-            onValueChange={(values) => {
+            onValueChange={(values: any) => {
               const value = values[0];
               if (value) {
                 setMetric(value as StorageMetric);
@@ -283,7 +288,7 @@ export function WorkspaceStoragePage({
             }}
             aria-label={tr("storage.metricLabel")}
           >
-            {(["allocated", "regenerable", "agent-assets"] as StorageMetric[]).map((value) => (
+            {(["allocated", "regenerable", "agent-assets"] as StorageMetric[]).map((value: any) => (
               <ToggleGroupItem
                 key={value}
                 value={value}
@@ -410,7 +415,7 @@ export function WorkspaceStoragePage({
                       className="min-w-0 truncate"
                       aria-current={index === trail.length - 1 ? "page" : undefined}
                       onClick={() => {
-                        setTrail((value) => value.slice(0, index + 1));
+                        setTrail((value: any) => value.slice(0, index + 1));
                         setSelected(undefined);
                       }}
                     >
@@ -495,9 +500,9 @@ function StorageTreemapChart({
     if (!width) return undefined;
     const hierarchyRoot = hierarchy<StorageChartRoot | StorageChartItem>(
       { children: data },
-      (value) => ("children" in value ? value.children : undefined),
+      (value: any) => ("children" in value ? value.children : undefined),
     )
-      .sum((value) => ("size" in value ? value.size : 0))
+      .sum((value: any) => ("size" in value ? value.size : 0))
       .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
     return treemap<StorageChartRoot | StorageChartItem>()
       .size([width, 510])

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { AgentKind } from "@/core/types";
 
 export const sessionHandoffTargets: Array<[AgentKind, string]> = [

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 export type HomeBenchmarkOutcome = "pending" | "ready" | "failed";
 
 interface QueryStatus {

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { tr } from "@/core/i18n";
 import type { QuotaCollectorStatus, QuotaSnapshot } from "@/core/types";

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { AgentKind, HeatmapPoint } from "@/core/types";
 
 export const insightsAgentKinds: AgentKind[] = [

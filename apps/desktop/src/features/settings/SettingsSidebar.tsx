@@ -1,5 +1,7 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
-import { useEffect, useId, useState, type ComponentType } from "react";
+import { useEffect, useId, useState } from "octane";
 import {
   ArrowLeft,
   Database,
@@ -8,18 +10,19 @@ import {
   PlugZap,
   Settings2,
   Stethoscope,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
+import type { OctaneComponent } from "@/lib/octane-types";
 
 export type SettingsSection = "general" | "discovery" | "integrations" | "privacy" | "diagnostics";
 
 const sections: Array<{
   id: SettingsSection;
   label: string;
-  icon: ComponentType<{ size?: number }>;
+  icon: OctaneComponent<{ size?: number }>;
 }> = [
   { id: "general", label: "settings.section.general", icon: Settings2 },
   { id: "discovery", label: "settings.section.discovery", icon: FolderSearch },

@@ -1,8 +1,8 @@
-import type { HTMLAttributes } from "react";
+/** @jsxImportSource octane */
 
+import type { DivProps, PropsOf } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function Card({ className, ...props }: DivProps) {
   return (
     <div
       data-slot="card"
@@ -11,8 +11,7 @@ function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
     />
   );
 }
-
-function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function CardHeader({ className, ...props }: DivProps) {
   return (
     <div
       data-slot="card-header"
@@ -21,8 +20,7 @@ function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
     />
   );
 }
-
-function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+function CardTitle({ className, ...props }: PropsOf<"h3">) {
   return (
     <h3
       data-slot="card-title"
@@ -31,8 +29,7 @@ function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) 
     />
   );
 }
-
-function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+function CardDescription({ className, ...props }: PropsOf<"p">) {
   return (
     <p
       data-slot="card-description"
@@ -41,12 +38,10 @@ function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphEl
     />
   );
 }
-
-function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function CardContent({ className, ...props }: DivProps) {
   return <div data-slot="card-content" className={cn("p-6 pt-0", className)} {...props} />;
 }
-
-function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function CardFooter({ className, ...props }: DivProps) {
   return (
     <div
       data-slot="card-footer"
@@ -55,5 +50,4 @@ function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
     />
   );
 }
-
 export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter };

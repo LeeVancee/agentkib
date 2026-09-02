@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import type { RecentContinuation } from "./GlobalHome";
 

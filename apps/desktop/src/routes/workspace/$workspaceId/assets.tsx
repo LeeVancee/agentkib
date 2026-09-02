@@ -1,8 +1,9 @@
-import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { WorkspaceAssetsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { useMemo, useState } from "react";
-import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
+import { useMemo, useState } from "octane";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { tr } from "../../../core/i18n";
@@ -18,8 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { FileCode2, Search, ShieldCheck, X } from "@octanejs/lucide";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "../../../core/types";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";
 const agentLabels: Record<AgentKind, string> = {
@@ -110,7 +110,7 @@ function Assets({
       <Tabs
         className="min-w-0 max-w-full"
         value={section}
-        onValueChange={(value) => onSection(value as WorkspaceAssetSection)}
+        onValueChange={(value: any) => onSection(value as WorkspaceAssetSection)}
       >
         <TabsList
           className="segmented-control w-fit max-w-full justify-start"
@@ -145,7 +145,7 @@ function Assets({
               <Tabs
                 className="min-w-0"
                 value={instructionsMode}
-                onValueChange={(value) => setInstructionsMode(value as "preview" | "edit")}
+                onValueChange={(value: any) => setInstructionsMode(value as "preview" | "edit")}
               >
                 <TabsList
                   className="segmented-control w-fit justify-start"
@@ -172,7 +172,10 @@ function Assets({
                 onChange={(event) =>
                   onChange({
                     ...manifest,
-                    instructions: { ...manifest.instructions, shared: event.target.value },
+                    instructions: {
+                      ...manifest.instructions,
+                      shared: (event.target as HTMLInputElement).value,
+                    },
                   })
                 }
               />
@@ -209,12 +212,12 @@ function Assets({
           <div className="flex flex-wrap items-center gap-2 p-4">
             <Input
               value={skillName}
-              onChange={(event) => setSkillName(event.target.value)}
+              onChange={(event) => setSkillName((event.target as HTMLInputElement).value)}
               placeholder={tr("assets.name")}
             />
             <Input
               value={skillPath}
-              onChange={(event) => setSkillPath(event.target.value)}
+              onChange={(event) => setSkillPath((event.target as HTMLInputElement).value)}
               placeholder=".agents/skills/name"
             />
             <Button
@@ -259,12 +262,12 @@ function Assets({
           <div className="flex flex-wrap items-center gap-2 p-4 grid-cols-[repeat(auto-fit,minmax(140px,1fr))]">
             <Input
               value={connectionName}
-              onChange={(event) => setConnectionName(event.target.value)}
+              onChange={(event) => setConnectionName((event.target as HTMLInputElement).value)}
               placeholder={tr("assets.name")}
             />
             <Select
               value={transport}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value === "stdio" || value === "http") setTransport(value);
               }}
             >
@@ -278,7 +281,7 @@ function Assets({
             </Select>
             <Input
               value={endpoint}
-              onChange={(event) => setEndpoint(event.target.value)}
+              onChange={(event) => setEndpoint((event.target as HTMLInputElement).value)}
               placeholder={transport === "stdio" ? "/absolute/path/to/server" : "https://…"}
             />
             <Button
@@ -297,7 +300,7 @@ function Assets({
               <Search size={16} />
               <Input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
                 placeholder={tr("assets.searchPlaceholder")}
               />
             </div>
@@ -311,7 +314,9 @@ function Assets({
               <span>{tr("assets.size")}</span>
             </div>
             {filtered.map((asset) => {
-              const allAgents = asset.agents.map((agent) => agentLabels[agent]).join(" · ");
+              const allAgents = asset.agents
+                .map((agent: AgentKind) => agentLabels[agent])
+                .join(" · ");
               return (
                 <div
                   className="grid grid-cols-[minmax(0,1.5fr)_minmax(160px,1fr)_minmax(120px,auto)_auto] items-center gap-3 border-b border-border px-4 py-3 text-sm last:border-b-0"
@@ -329,7 +334,7 @@ function Assets({
                     aria-label={allAgents}
                     title={allAgents}
                   >
-                    {asset.agents.map((agent) => (
+                    {asset.agents.map((agent: AgentKind) => (
                       <span
                         className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground"
                         key={agent}

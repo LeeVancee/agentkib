@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -11,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "octane";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -29,7 +31,7 @@ import {
   RefreshCw,
   Search,
   Tags,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
@@ -158,8 +160,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const historySequence = useRef(0);
   const filesSequence = useRef(0);
   const diffSequence = useRef(0);
-  const historyListRef = useRef<HTMLDivElement>(null);
-  const worktreeListRef = useRef<HTMLElement>(null);
+  const historyListRef = useRef<HTMLDivElement | null>(null);
+  const worktreeListRef = useRef<HTMLElement | null>(null);
   const historyScrollTop = useRef(0);
   const worktreeScrollTop = useRef(0);
   const [appliedFilters, setAppliedFilters] = useState({
@@ -606,7 +608,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
         <Tabs
           className="min-w-0 max-w-full shrink-0"
           value={section}
-          onValueChange={(value) => (value === "history" ? showHistory() : showWorktree())}
+          onValueChange={(value: any) => (value === "history" ? showHistory() : showWorktree())}
         >
           <TabsList
             className="segmented-control w-fit max-w-full justify-start"
@@ -686,13 +688,13 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
               <Input
                 className="h-8 min-w-0 pl-8"
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => setSearch((event.target as HTMLInputElement).value)}
                 placeholder={tr("git.searchPlaceholder")}
               />
             </div>
             <Select
               value={reference || "__all_refs__"}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value !== null) {
                   const nextReference = String(value);
                   setReference(nextReference === "__all_refs__" ? "" : nextReference);
@@ -723,7 +725,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
             </Select>
             <Select
               value={mergesOnly ? "merges" : "all"}
-              onValueChange={(value) => setMergesOnly(value === "merges")}
+              onValueChange={(value: any) => setMergesOnly(value === "merges")}
             >
               <SelectTrigger className="h-8 min-w-0" aria-label={tr("git.commitKind")}>
                 <SelectValue>
@@ -738,7 +740,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
             <Input
               className="h-8 min-w-0 max-[760px]:hidden"
               value={author}
-              onChange={(event) => setAuthor(event.target.value)}
+              onChange={(event) => setAuthor((event.target as HTMLInputElement).value)}
               placeholder={tr("git.author")}
               aria-label={tr("git.author")}
             />
@@ -746,20 +748,20 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
               className="h-8 min-w-0 max-[1120px]:hidden"
               type="date"
               value={since}
-              onChange={(event) => setSince(event.target.value)}
+              onChange={(event) => setSince((event.target as HTMLInputElement).value)}
               aria-label={tr("git.since")}
             />
             <Input
               className="h-8 min-w-0 max-[1120px]:hidden"
               type="date"
               value={until}
-              onChange={(event) => setUntil(event.target.value)}
+              onChange={(event) => setUntil((event.target as HTMLInputElement).value)}
               aria-label={tr("git.until")}
             />
             <Input
               className="h-8 min-w-0 max-[760px]:hidden"
               value={path}
-              onChange={(event) => setPath(event.target.value)}
+              onChange={(event) => setPath((event.target as HTMLInputElement).value)}
               placeholder={tr("git.path")}
               aria-label={tr("git.path")}
             />

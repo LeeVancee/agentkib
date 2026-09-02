@@ -1,13 +1,14 @@
-import { Tooltip } from "@base-ui/react/tooltip";
-import type { ReactElement } from "react";
+/** @jsxImportSource octane */
 
+import { Tooltip } from "@octanejs/base-ui/tooltip";
+import type { Renderable } from "@/lib/octane-types";
 export function SidebarTooltip({
   label,
   children,
   side = "right",
 }: {
   label: string;
-  children: ReactElement;
+  children: Renderable;
   side?: "top" | "right" | "bottom" | "left";
 }) {
   return (

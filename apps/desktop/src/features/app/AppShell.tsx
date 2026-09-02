@@ -1,6 +1,8 @@
-import type { ReactNode } from "react";
+/** @jsxImportSource octane */
 
-import { useLocation } from "@tanstack/react-router";
+import type { Renderable } from "@/lib/octane-types";
+
+import { useLocation } from "@octanejs/tanstack-router";
 import { Button } from "@/components/ui/button";
 import { WindowToolbar } from "@/components/WindowToolbar";
 import { ariaShortcut, currentAppPlatform, getShortcutDefinition } from "@/core/keyboard-shortcuts";
@@ -11,8 +13,8 @@ import {
   clearSidebarPeekCloseTimer,
   scheduleSidebarPeekClose as scheduleSidebarPeekCloseTimer,
 } from "./sidebar-peek";
-import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "@octanejs/lucide";
+import { useEffect, useLayoutEffect, useRef, useState } from "octane";
 
 const mainClassName =
   "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
@@ -93,7 +95,7 @@ export function WindowNavigationControls({
   );
 }
 
-export function AppShellHeader({ children }: { children?: ReactNode }) {
+export function AppShellHeader({ children }: { children?: Renderable }) {
   return <div className="app-shell-header">{children}</div>;
 }
 
@@ -108,10 +110,10 @@ export function AppShell({
   onBack,
   onForward,
 }: {
-  sidebar: ReactNode;
+  sidebar: Renderable;
   sidebarMode?: "primary" | "settings";
-  children: ReactNode;
-  toolbar?: ReactNode;
+  children: Renderable;
+  toolbar?: Renderable;
   mainClassName?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -122,7 +124,7 @@ export function AppShell({
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const locationKey = useLocation({ select: (location) => location.href });
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const previousSidebarMode = useRef(sidebarMode);
   const [sidebarMotion, setSidebarMotion] = useState<"to-primary" | "to-settings" | null>(null);
 

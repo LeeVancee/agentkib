@@ -1,5 +1,7 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
-import { useHomeInstallations } from "@/features/home/home-query";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
+import { useHomeInstallations } from "@/features/home/home-query.tsx";
 import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
 import { api } from "../../../core/api";
@@ -16,8 +18,8 @@ function WorkspaceSessionsRoute() {
   if (!selectedWorkspace || !scan) return <WorkspaceSessionsSkeleton />;
   const targetAgents = Array.from(
     new Set([
-      ...scan.agents.filter((agent) => agent.detected).map((agent) => agent.agent),
-      ...installations.filter((agent) => agent.installed).map((agent) => agent.agent),
+      ...scan.agents.filter((agent: any) => agent.detected).map((agent: any) => agent.agent),
+      ...installations.filter((agent: any) => agent.installed).map((agent: any) => agent.agent),
     ]),
   );
   return (

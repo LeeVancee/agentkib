@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 let sidebarPeekCloseTimer: number | undefined;
 
 export function clearSidebarPeekCloseTimer() {

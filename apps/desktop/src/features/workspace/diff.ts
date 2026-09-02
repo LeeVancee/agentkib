@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 export type DiffLine = { type: "same" | "added" | "removed"; content: string };
 
 export function diffLines(before: string, after: string): DiffLine[] {

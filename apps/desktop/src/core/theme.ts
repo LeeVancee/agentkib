@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { EffectiveTheme, ThemePreference } from "./types";
 
 export type AccentTheme = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";

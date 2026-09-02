@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentAppPlatform } from "@/core/keyboard-shortcuts";
-import { useAppShortcuts, type AppShortcutActions } from "./useAppShortcuts";
+import { useAppShortcuts, type AppShortcutActions } from "./useAppShortcuts.tsx";
 
 function ShortcutHarness(actions: AppShortcutActions) {
   useAppShortcuts(actions);
@@ -27,7 +27,7 @@ function createActions(overrides: Partial<AppShortcutActions> = {}): AppShortcut
   };
 }
 
-describe("useAppShortcuts", () => {
+describe("useAppShortcuts.tsx", () => {
   beforeEach(() => {
     document.documentElement.dataset.platform = "windows";
   });

@@ -1,4 +1,6 @@
-import { useEffect, useRef } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef } from "octane";
 import type { GlobalPage } from "./app-route";
 import {
   currentAppPlatform,

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { DesktopApi } from "../../electron/api";
 
 export function desktopApi(): DesktopApi {

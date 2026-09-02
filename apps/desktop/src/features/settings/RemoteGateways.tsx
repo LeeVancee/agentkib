@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,8 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppDialogs } from "@/components/AppDialogProvider";
-import { useState } from "react";
-import { Pencil, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
+import { useState } from "octane";
+import { Pencil, Plus, RefreshCw, Server, Trash2, X } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { formatDateTime, localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -133,7 +135,7 @@ export function RemoteGatewaysSettings({
               <span>{tr("gateway.kind")}</span>
               <Select
                 value={draft.kind}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value === null) return;
                   const kind = String(value) as RemoteGatewayKind;
                   setDraft({
@@ -158,7 +160,9 @@ export function RemoteGatewaysSettings({
               <Input
                 required
                 value={draft.name}
-                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                onChange={(event) =>
+                  setDraft({ ...draft, name: (event.target as HTMLInputElement).value })
+                }
               />
             </Label>
             <Label className="grid gap-1.5 text-xs text-muted-foreground sm:col-span-2">
@@ -172,14 +176,16 @@ export function RemoteGatewaysSettings({
                     ? "wss://gateway.example.com"
                     : "https://hermes.example.com"
                 }
-                onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+                onChange={(event) =>
+                  setDraft({ ...draft, url: (event.target as HTMLInputElement).value })
+                }
               />
             </Label>
             <Label className="grid gap-1.5 text-xs text-muted-foreground">
               <span>{tr("gateway.auth")}</span>
               <Select
                 value={draft.auth_kind}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value !== null)
                     setDraft({ ...draft, auth_kind: String(value) as RemoteGatewayAuthKind });
                 }}
@@ -202,7 +208,9 @@ export function RemoteGatewaysSettings({
                 <Input
                   required
                   value={draft.username ?? ""}
-                  onChange={(event) => setDraft({ ...draft, username: event.target.value })}
+                  onChange={(event) =>
+                    setDraft({ ...draft, username: (event.target as HTMLInputElement).value })
+                  }
                 />
               </Label>
             )}
@@ -218,7 +226,9 @@ export function RemoteGatewaysSettings({
                   }
                   value={draft.secret ?? ""}
                   placeholder={draft.id ? tr("gateway.secretKeep") : ""}
-                  onChange={(event) => setDraft({ ...draft, secret: event.target.value })}
+                  onChange={(event) =>
+                    setDraft({ ...draft, secret: (event.target as HTMLInputElement).value })
+                  }
                 />
               </Label>
             )}

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import claudeCodeIcon from "@/assets/agent-icons/claude-code.svg";
 import codexIcon from "@/assets/agent-icons/codex.svg";
 import cursorIcon from "@/assets/agent-icons/cursor.svg";

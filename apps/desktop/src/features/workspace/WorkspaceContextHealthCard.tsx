@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   Check,
   ChevronRight,
@@ -5,7 +7,7 @@ import {
   Clock3,
   GitCompareArrows,
   ShieldCheck,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatRelativeTime, tr } from "@/core/i18n";

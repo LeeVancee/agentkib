@@ -1,4 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect, useState } from "octane";
+import type { Renderable } from "@/lib/octane-types";
 import {
   Check,
   CircleAlert,
@@ -15,7 +18,7 @@ import {
   Sun,
   Trash2,
   X,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -210,10 +213,7 @@ export function GlobalSettings({
           </SettingGroup>
           <SettingGroup title={tr("settings.scanRoots")}>
             <div className="flex justify-end border-b border-border/60 px-5 py-3">
-              <Button
-                className="gap-2"
-                onClick={() => void onAddRoot()}
-              >
+              <Button className="gap-2" onClick={() => void onAddRoot()}>
                 <FolderPlus size={15} />
                 {tr("settings.addFolder")}
               </Button>
@@ -533,7 +533,7 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
   );
 }
 
-function SettingsRow({ children, border = true }: { children: ReactNode; border?: boolean }) {
+function SettingsRow({ children, border = true }: { children: Renderable; border?: boolean }) {
   return (
     <div
       className={cn(
@@ -545,7 +545,7 @@ function SettingsRow({ children, border = true }: { children: ReactNode; border?
     </div>
   );
 }
-function SettingsCopy({ children }: { children: ReactNode }) {
+function SettingsCopy({ children }: { children: Renderable }) {
   return (
     <div className="grid min-w-0 gap-1 [&_code]:max-w-full [&_code]:truncate [&_code]:font-mono [&_code]:text-xs [&_code]:text-muted-foreground [&_small]:max-w-[62ch] [&_small]:text-xs [&_small]:leading-relaxed [&_small]:text-muted-foreground [&_strong]:text-sm [&_strong]:font-medium">
       {children}
@@ -557,7 +557,7 @@ function SettingDetail({
   variant = "default",
   role,
 }: {
-  children: ReactNode;
+  children: Renderable;
   variant?: "default" | "error" | "warning";
   role?: "alert" | "status";
 }) {
@@ -575,7 +575,7 @@ function SettingDetail({
     </div>
   );
 }
-function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
+function SettingGroup({ title, children }: { title: string; children: Renderable }) {
   return (
     <section className="border-b border-border pb-2">
       <header className="border-b border-border/70 py-4">
@@ -592,7 +592,7 @@ function SettingsListEmptyState({
 }: {
   items: number;
   emptyText: string;
-  children: ReactNode;
+  children: Renderable;
 }) {
   return items ? (
     <>{children}</>
@@ -600,7 +600,7 @@ function SettingsListEmptyState({
     <p className="px-5 py-5 text-sm text-muted-foreground">{emptyText}</p>
   );
 }
-function StatusText({ active, children }: { active: boolean; children: ReactNode }) {
+function StatusText({ active, children }: { active: boolean; children: Renderable }) {
   return (
     <span
       className={cn(
@@ -826,7 +826,7 @@ function LanguageSetting({
       </SettingsCopy>
       <Select
         value={runtime?.locale_preference ?? "system"}
-        onValueChange={(value) => {
+        onValueChange={(value: any) => {
           if (value !== null) void update(String(value) as LocalePreference);
         }}
       >
@@ -871,7 +871,7 @@ function ThemeSetting({
         variant="outline"
         className="segmented-control w-max max-w-none shrink-0 justify-self-end max-[640px]:w-full max-[640px]:max-w-full"
         value={[selected]}
-        onValueChange={(values) => {
+        onValueChange={(values: any) => {
           const theme = values[0];
           if (theme === "light" || theme === "dark" || theme === "system") void update(theme);
         }}
@@ -919,7 +919,7 @@ export function AccentThemeSetting({
       </SettingsCopy>
       <Select
         value={selected}
-        onValueChange={(value) => {
+        onValueChange={(value: any) => {
           if (value === null) return;
           const theme = String(value);
           if (
@@ -970,7 +970,7 @@ function AppIconSetting({
         variant="outline"
         className="segmented-control shrink-0 justify-self-end"
         value={[selected]}
-        onValueChange={(values) => {
+        onValueChange={(values: any) => {
           const icon = values[0];
           if (icon === "white" || icon === "black") void update(icon);
         }}
@@ -1013,7 +1013,7 @@ function CloseBehaviorSelect({
   return (
     <Select
       value={selected}
-      onValueChange={(value) => {
+      onValueChange={(value: any) => {
         if (value !== null)
           void onChange(value === "ask" ? undefined : (String(value) as CloseBehavior));
       }}
@@ -1079,7 +1079,7 @@ function GitIdentitySettings() {
           className="min-w-0 flex-1"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={(event) => setEmail((event.target as HTMLInputElement).value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") void add();
           }}

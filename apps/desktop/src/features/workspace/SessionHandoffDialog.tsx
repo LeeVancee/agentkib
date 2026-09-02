@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -11,8 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, Copy, FileOutput, ShieldCheck, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "octane";
+import { CircleAlert, Copy, FileOutput, ShieldCheck, X } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type {
@@ -178,7 +180,7 @@ export function SessionHandoffDialog({
   return (
     <Dialog
       open
-      onOpenChange={(open) => {
+      onOpenChange={(open: boolean) => {
         if (!open) close();
       }}
     >
@@ -283,7 +285,7 @@ export function SessionHandoffDialog({
               className="min-h-[320px] flex-1 resize-none font-mono text-xs leading-relaxed"
               aria-label={tr("handoff.preview")}
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={(event) => setContent((event.target as HTMLInputElement).value)}
               readOnly={draft.mode === "native-session" || draft.window_strategy === "windowed"}
               spellCheck={false}
             />
@@ -296,7 +298,7 @@ export function SessionHandoffDialog({
                 <Select
                   value={targetAgent}
                   disabled={busy}
-                  onValueChange={(value) => {
+                  onValueChange={(value: any) => {
                     if (value !== null) setTargetAgent(String(value) as AgentKind);
                   }}
                 >
@@ -319,7 +321,7 @@ export function SessionHandoffDialog({
                 <Select
                   value={String(historyBudget)}
                   disabled={busy}
-                  onValueChange={(value) => {
+                  onValueChange={(value: any) => {
                     if (value !== null) setHistoryBudget(Number(value));
                   }}
                 >
@@ -359,7 +361,7 @@ export function SessionHandoffDialog({
                     <Select
                       value={format}
                       disabled={busy}
-                      onValueChange={(value) => {
+                      onValueChange={(value: any) => {
                         if (value === "markdown" || value === "json") setFormat(value);
                       }}
                     >
@@ -413,16 +415,4 @@ export function SessionHandoffDialog({
 
 function formatEstimatedTokens(value: number) {
   return `≈${Math.round(value / 1000)}k Token`;
-}
-
-function agentName(agent: AgentKind) {
-  return sessionHandoffTargets.find(([value]) => value === agent)?.[1] ?? agent;
-}
-
-function formatBytes(bytes: number) {
-  return bytes < 1024
-    ? `${bytes} B`
-    : bytes < 1024 * 1024
-      ? `${Math.ceil(bytes / 1024)} KiB`
-      : `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }

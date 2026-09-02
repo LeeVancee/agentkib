@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { useEffect, useMemo, useRef, useState } from "octane";
+import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
+import { useQueryClient } from "@octanejs/tanstack-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,9 +26,9 @@ import {
   useHomeCatalog,
   useHomeRefreshJobs,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
+} from "@/features/home/home-query.tsx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "@octanejs/lucide";
 import type { AgentKind, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 
@@ -219,7 +221,7 @@ function WorkspacesPage({
       variant="default"
       className="segmented-control shrink-0"
       value={[view]}
-      onValueChange={(values) => {
+      onValueChange={(values: any) => {
         const value = values[0];
         if (value === "list" || value === "storage") onViewChange(value);
       }}
@@ -262,14 +264,14 @@ function WorkspacesPage({
               className="!h-8 !border-0 !bg-transparent !px-0 !text-foreground !shadow-none placeholder:!text-muted-foreground focus-visible:!ring-0"
               aria-label={tr("workspace.searchPlaceholder")}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
               placeholder={tr("workspace.searchPlaceholder")}
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Select
               value={agent}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value !== null) setAgent(String(value) as typeof agent);
               }}
             >
@@ -292,7 +294,7 @@ function WorkspacesPage({
             </Select>
             <Select
               value={status}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value !== null) setStatus(String(value) as typeof status);
               }}
             >
@@ -385,7 +387,7 @@ function WorkspacesPage({
                     ) : null}
                     <small className="text-[11px]">
                       {sourceAgents.length
-                        ? sourceAgents.map((value) => agentLabels[value]).join(" · ")
+                        ? sourceAgents.map((value: AgentKind) => agentLabels[value]).join(" · ")
                         : tr("workspace.source.manual")}
                     </small>
                   </span>

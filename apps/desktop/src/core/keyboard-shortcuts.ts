@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { normalizePlatform, type AppPlatform } from "./platform";
 
 export type ShortcutId =

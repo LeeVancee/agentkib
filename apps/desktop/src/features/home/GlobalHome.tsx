@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   Brain,
   Check,
@@ -8,7 +10,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -195,7 +197,9 @@ export function GlobalHome({
                         <span className="mt-1 block text-xs text-muted-foreground">
                           {tr("home.continueWorkMeta", {
                             count: item.sessionCount,
-                            agents: item.agents.map((agent) => agentLabels[agent]).join(" · "),
+                            agents: item.agents
+                              .map((agent: AgentKind) => agentLabels[agent])
+                              .join(" · "),
                           })}
                         </span>
                       </span>
@@ -370,7 +374,7 @@ function WorkspaceRow({
     .filter((value): value is AgentKind => Boolean(value))
     .filter((value, index, values) => values.indexOf(value) === index);
   const agents =
-    sourceAgents.map((value) => agentLabels[value]).join(" · ") ||
+    sourceAgents.map((value: AgentKind) => agentLabels[value]).join(" · ") ||
     (workspace.sources.length ? tr("workspace.source.scan") : tr("workspace.source.manual"));
   const count = assetCount ?? workspace.asset_count;
   return (

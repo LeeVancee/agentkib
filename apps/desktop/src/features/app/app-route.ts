@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";

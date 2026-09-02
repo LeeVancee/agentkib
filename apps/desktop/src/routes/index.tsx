@@ -1,6 +1,8 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef } from "react";
-import { useQueries } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate } from "@octanejs/tanstack-router";
+import { useEffect, useMemo, useRef } from "octane";
+import { useQueries } from "@octanejs/tanstack-query";
 import { GlobalHome } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
 import { api } from "../core/api";
@@ -19,7 +21,7 @@ import {
   useHomeInstallations,
   useHomeMemories,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
+} from "@/features/home/home-query.tsx";
 
 function HomeRoute() {
   const navigate = useNavigate();

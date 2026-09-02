@@ -1,12 +1,12 @@
-import type { HTMLAttributes } from "react";
+/** @jsxImportSource octane */
 
+import type { DivProps } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
 function Separator({
   className,
   orientation = "horizontal",
   ...props
-}: HTMLAttributes<HTMLDivElement> & { orientation?: "horizontal" | "vertical" }) {
+}: DivProps & { orientation?: "horizontal" | "vertical" }) {
   return (
     <div
       data-slot="separator"
@@ -21,5 +21,4 @@ function Separator({
     />
   );
 }
-
 export { Separator };

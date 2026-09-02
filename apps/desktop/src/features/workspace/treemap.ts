@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 export interface TreemapInput {
   id: string;
   value: number;

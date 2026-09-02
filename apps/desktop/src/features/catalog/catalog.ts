@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { AgentKind, AssetRecord, CatalogAsset } from "@/core/types";
 
 export interface CatalogAssetGroup {

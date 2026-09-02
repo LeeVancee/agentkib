@@ -1,4 +1,6 @@
-import { create } from "zustand";
+/** @jsxImportSource octane */
+
+import { create } from "@octanejs/zustand";
 import type { AppMenuCommandRequest, AppNavigationRequest, RuntimeInfo } from "../core/types";
 
 type Updater<T> = T | ((current: T) => T);
@@ -60,17 +62,19 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
       menuCommand: undefined,
       quotaConfigureRequest: 0,
     }),
-  setSidebarCollapsed: (value) =>
+  setSidebarCollapsed: (value: any) =>
     set((state) => {
       const next = resolve(value, state.sidebarCollapsed);
       persistSidebarCollapsed(next);
       return { sidebarCollapsed: next };
     }),
-  setSidebarPeek: (value) => set((state) => ({ sidebarPeek: resolve(value, state.sidebarPeek) })),
-  setRuntime: (value) => set((state) => ({ runtime: resolve(value, state.runtime) })),
-  setNavigationRequest: (value) =>
+  setSidebarPeek: (value: any) =>
+    set((state) => ({ sidebarPeek: resolve(value, state.sidebarPeek) })),
+  setRuntime: (value: any) => set((state) => ({ runtime: resolve(value, state.runtime) })),
+  setNavigationRequest: (value: any) =>
     set((state) => ({ navigationRequest: resolve(value, state.navigationRequest) })),
-  setMenuCommand: (value) => set((state) => ({ menuCommand: resolve(value, state.menuCommand) })),
-  setQuotaConfigureRequest: (value) =>
+  setMenuCommand: (value: any) =>
+    set((state) => ({ menuCommand: resolve(value, state.menuCommand) })),
+  setQuotaConfigureRequest: (value: any) =>
     set((state) => ({ quotaConfigureRequest: resolve(value, state.quotaConfigureRequest) })),
 }));

@@ -1,4 +1,6 @@
-import { create } from "zustand";
+/** @jsxImportSource octane */
+
+import { create } from "@octanejs/zustand";
 import type {
   ChangeSet,
   Manifest,
@@ -52,23 +54,23 @@ export const useWorkspaceStore = create<WorkspaceState & WorkspaceActions>((set)
   busy: false,
   message: "",
   applyingChanges: false,
-  setProject: (value) => set((state) => ({ project: resolve(value, state.project) })),
-  setSelectedWorkspace: (value) =>
+  setProject: (value: any) => set((state) => ({ project: resolve(value, state.project) })),
+  setSelectedWorkspace: (value: any) =>
     set((state) => ({ selectedWorkspace: resolve(value, state.selectedWorkspace) })),
-  setScan: (value) => set((state) => ({ scan: resolve(value, state.scan) })),
-  setManifest: (value) => set((state) => ({ manifest: resolve(value, state.manifest) })),
-  setChangeSet: (value) => set((state) => ({ changeSet: resolve(value, state.changeSet) })),
-  setChangeSetOrigin: (value) =>
+  setScan: (value: any) => set((state) => ({ scan: resolve(value, state.scan) })),
+  setManifest: (value: any) => set((state) => ({ manifest: resolve(value, state.manifest) })),
+  setChangeSet: (value: any) => set((state) => ({ changeSet: resolve(value, state.changeSet) })),
+  setChangeSetOrigin: (value: any) =>
     set((state) => ({ changeSetOrigin: resolve(value, state.changeSetOrigin) })),
-  setHandoffLaunchRequest: (value) =>
+  setHandoffLaunchRequest: (value: any) =>
     set((state) => ({ handoffLaunchRequest: resolve(value, state.handoffLaunchRequest) })),
-  setBaselineManifest: (value) =>
+  setBaselineManifest: (value: any) =>
     set((state) => ({ baselineManifest: resolve(value, state.baselineManifest) })),
-  setWorkspaceDrafts: (value) =>
+  setWorkspaceDrafts: (value: any) =>
     set((state) => ({ workspaceDrafts: resolve(value, state.workspaceDrafts) })),
-  setBusy: (value) => set((state) => ({ busy: resolve(value, state.busy) })),
-  setMessage: (value) => set((state) => ({ message: resolve(value, state.message) })),
-  setApplyingChanges: (value) =>
+  setBusy: (value: any) => set((state) => ({ busy: resolve(value, state.busy) })),
+  setMessage: (value: any) => set((state) => ({ message: resolve(value, state.message) })),
+  setApplyingChanges: (value: any) =>
     set((state) => ({ applyingChanges: resolve(value, state.applyingChanges) })),
   resetWorkspace: () =>
     set({

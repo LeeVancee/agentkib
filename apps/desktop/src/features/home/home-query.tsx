@@ -1,6 +1,8 @@
-import { useEffect } from "react";
-import { useContext } from "react";
-import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { useEffect } from "octane";
+import { useContext } from "octane";
+import { QueryClient, QueryClientContext, useQuery } from "@octanejs/tanstack-query";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import type { RefreshJobStatus } from "@/core/types";

@@ -1,16 +1,18 @@
-import { lazy, Suspense, useState } from "react";
-import { CircleAlert, RefreshCw } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { lazy, Suspense, useState } from "octane";
+import { CircleAlert, RefreshCw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
-import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { localizeMessage, tr } from "../core/i18n";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
-import { useHomeWorkspaces } from "@/features/home/home-query";
+import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
 import {
   useInsightsRefreshJob,
   useInsightsRefreshMutation,
-} from "@/features/insights/insights-query";
+} from "@/features/insights/insights-query.tsx";
 
 const InsightsPageLazy = lazy(() =>
   import("@/features/insights/InsightsPage").then(({ InsightsPage }) => ({
@@ -55,7 +57,7 @@ function InsightsRoute() {
         <div className="min-w-0 w-fit max-w-[calc(100%-3rem)] overflow-hidden">
           <Tabs
             value={section}
-            onValueChange={(value) => setSection(value as InsightsSection)}
+            onValueChange={(value: any) => setSection(value as InsightsSection)}
             className="min-w-0"
           >
             <TabsList
@@ -63,7 +65,7 @@ function InsightsRoute() {
               variant="default"
               aria-label={tr("nav.insights")}
             >
-              {["overview", "tokens", "commits", "milestones", "sources"].map((value) => (
+              {["overview", "tokens", "commits", "milestones", "sources"].map((value: any) => (
                 <TabsTrigger
                   className="segmented-control-item h-9 min-h-9 flex-none px-3"
                   key={value}

@@ -1,27 +1,23 @@
-import * as React from "react";
-import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
+/** @jsxImportSource octane */
 
+import type { PropsOf } from "@/lib/octane-types";
+import { Dialog as DialogPrimitive } from "@octanejs/base-ui/dialog";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { XIcon } from "lucide-react";
-
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
+import { XIcon } from "@octanejs/lucide";
+function Dialog({ ...props }: PropsOf<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
-
-function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
+function DialogTrigger({ ...props }: PropsOf<typeof DialogPrimitive.Trigger>) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />;
 }
-
-function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
+function DialogPortal({ ...props }: PropsOf<typeof DialogPrimitive.Portal>) {
   return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
 }
-
-function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
+function DialogClose({ ...props }: PropsOf<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
-
-function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) {
+function DialogOverlay({ className, ...props }: PropsOf<typeof DialogPrimitive.Backdrop>) {
   return (
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
@@ -33,13 +29,12 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
     />
   );
 }
-
 function DialogContent({
   className,
   children,
   showCloseButton = true,
   ...props
-}: DialogPrimitive.Popup.Props & {
+}: PropsOf<typeof DialogPrimitive.Popup> & {
   showCloseButton?: boolean;
 }) {
   return (
@@ -67,19 +62,17 @@ function DialogContent({
     </DialogPortal>
   );
 }
-
-function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
+function DialogHeader({ className, ...props }: PropsOf<"div">) {
   return (
     <div data-slot="dialog-header" className={cn("flex flex-col gap-2", className)} {...props} />
   );
 }
-
 function DialogFooter({
   className,
   showCloseButton = false,
   children,
   ...props
-}: React.ComponentProps<"div"> & {
+}: PropsOf<"div"> & {
   showCloseButton?: boolean;
 }) {
   return (
@@ -98,8 +91,7 @@ function DialogFooter({
     </div>
   );
 }
-
-function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
+function DialogTitle({ className, ...props }: PropsOf<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
@@ -108,8 +100,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
     />
   );
 }
-
-function DialogDescription({ className, ...props }: DialogPrimitive.Description.Props) {
+function DialogDescription({ className, ...props }: PropsOf<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
@@ -121,7 +112,6 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
     />
   );
 }
-
 export {
   Dialog,
   DialogClose,

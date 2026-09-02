@@ -1,7 +1,9 @@
+/** @jsxImportSource octane */
+
 import rehypeSanitize from "rehype-sanitize";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown from "@octanejs/markdown";
 import remarkGfm from "remark-gfm";
-import type { ComponentProps } from "react";
+import type { PropsOf } from "@/lib/octane-types";
 import { api } from "@/core/api";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +22,7 @@ export function MarkdownContent({ content, className }: { content: string; class
   );
 }
 
-function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
+function MarkdownLink({ href, children, ...props }: PropsOf<"a">) {
   if (!href || !/^https?:\/\//i.test(href)) return <span>{children}</span>;
   return (
     <a

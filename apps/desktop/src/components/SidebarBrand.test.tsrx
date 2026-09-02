@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@octanejs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeInfo } from "@/core/types";

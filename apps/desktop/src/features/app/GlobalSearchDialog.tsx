@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+/** @jsxImportSource octane */
+
+import { useMemo, useState } from "octane";
 import {
   Dialog,
   DialogContent,
@@ -8,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { FolderGit2, Search } from "lucide-react";
+import { FolderGit2, Search } from "@octanejs/lucide";
 import { tr } from "@/core/i18n";
 import type { WorkspaceSummary } from "@/core/types";
 import type { GlobalPage } from "./app-route";
@@ -49,7 +51,7 @@ export function GlobalSearchDialog({
   return (
     <Dialog
       open={open}
-      onOpenChange={(nextOpen) => {
+      onOpenChange={(nextOpen: boolean) => {
         if (!nextOpen) setQuery("");
         onOpenChange(nextOpen);
       }}
@@ -68,7 +70,7 @@ export function GlobalSearchDialog({
             autoFocus
             className="h-full border-0 px-0 text-[15px] shadow-none focus-visible:ring-0"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
             placeholder={tr("search.placeholder")}
           />
           <kbd className="rounded-md border border-border bg-muted px-2 py-1 text-[11px] text-muted-foreground">

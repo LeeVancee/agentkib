@@ -1,4 +1,6 @@
-import { createHashHistory, createRouter } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { createHashHistory, createRouter } from "@octanejs/tanstack-router";
 import { routeTree } from "./routeTree.gen";
 import { AppErrorFallback } from "./features/app/AppErrorFallback";
 
@@ -15,7 +17,7 @@ export function createAppRouter() {
 
 export const router = createAppRouter();
 
-declare module "@tanstack/react-router" {
+declare module "@octanejs/tanstack-router" {
   interface Register {
     router: typeof router;
   }

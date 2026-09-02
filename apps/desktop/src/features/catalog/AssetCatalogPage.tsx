@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -25,8 +27,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { ChevronRight, FileCode2, Library, Search, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronRight, FileCode2, Library, Search, X } from "@octanejs/lucide";
+import { useMemo, useState } from "octane";
 import { formatDateTime, tr } from "@/core/i18n";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
@@ -82,7 +84,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
     const normalizedQuery = query.trim().toLowerCase();
     return assets.filter((asset) => {
       const searchable =
-        `${asset.name} ${asset.path} ${asset.summary} ${asset.kind} ${asset.agents.map((value) => agentLabels[value]).join(" ")}`.toLowerCase();
+        `${asset.name} ${asset.path} ${asset.summary} ${asset.kind} ${asset.agents.map((value: AgentKind) => agentLabels[value]).join(" ")}`.toLowerCase();
       return (
         (!normalizedQuery || searchable.includes(normalizedQuery)) &&
         (agent === "all" || asset.agents.includes(agent)) &&
@@ -102,7 +104,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
     <div className="flex flex-wrap gap-2">
       <Select
         value={workspaceId}
-        onValueChange={(value) => {
+        onValueChange={(value: any) => {
           if (value !== null) setWorkspaceId(String(value));
         }}
       >
@@ -125,7 +127,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
       </Select>
       <Select
         value={agent}
-        onValueChange={(value) => {
+        onValueChange={(value: any) => {
           if (value !== null) setAgent(String(value) as typeof agent);
         }}
       >
@@ -146,7 +148,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
       {showKind && (
         <Select
           value={kind}
-          onValueChange={(value) => {
+          onValueChange={(value: any) => {
             if (value !== null) setKind(String(value));
           }}
         >
@@ -157,7 +159,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
-            {kinds.map((value) => (
+            {kinds.map((value: any) => (
               <SelectItem key={value} value={value}>
                 {tr(`status.asset.${value}`)}
               </SelectItem>
@@ -167,7 +169,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
       )}
       <Select
         value={ownership}
-        onValueChange={(value) => {
+        onValueChange={(value: any) => {
           if (value !== null) setOwnership(String(value) as typeof ownership);
         }}
       >
@@ -195,7 +197,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
               className="h-8 border-0 bg-transparent px-0 text-sm text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
               aria-label={tr("catalog.searchPlaceholder")}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
               placeholder={tr("catalog.searchPlaceholder")}
             />
             {query && (
@@ -239,7 +241,9 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
               {filtered.map((asset) => {
                 const visibleAgents = asset.agents.slice(0, 2);
                 const hiddenAgentCount = asset.agents.length - visibleAgents.length;
-                const allAgents = asset.agents.map((value) => agentLabels[value]).join(", ");
+                const allAgents = asset.agents
+                  .map((value: AgentKind) => agentLabels[value])
+                  .join(", ");
                 return (
                   <TableRow
                     key={asset.id}
@@ -293,7 +297,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                       >
                         {asset.agents.length ? (
                           <>
-                            {visibleAgents.map((value) => (
+                            {visibleAgents.map((value: AgentKind) => (
                               <Badge key={value} variant="outline" className="font-medium">
                                 {agentLabels[value]}
                               </Badge>
@@ -336,7 +340,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
 
       <Dialog
         open={Boolean(selected)}
-        onOpenChange={(open) => {
+        onOpenChange={(open: boolean) => {
           if (!open) setSelectedId(undefined);
         }}
       >
@@ -381,7 +385,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                 </dt>
                 <dd className="text-sm font-medium text-foreground">
                   {selected.agents.length
-                    ? selected.agents.map((value) => agentLabels[value]).join(" · ")
+                    ? selected.agents.map((value: AgentKind) => agentLabels[value]).join(" · ")
                     : tr("catalog.shared")}
                 </dd>
               </div>

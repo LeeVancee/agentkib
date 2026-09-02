@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +13,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "octane";
 import {
   Archive,
   ArrowLeft,
@@ -29,7 +31,7 @@ import {
   X,
   UserRound,
   Wrench,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { formatDateTime, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
@@ -149,7 +151,7 @@ export function WorkspaceSessionsPage({
   const filterCounts = useMemo(
     () =>
       Object.fromEntries(
-        (["current", "archived", "metadata", "all"] as SessionFilter[]).map((value) => [
+        (["current", "archived", "metadata", "all"] as SessionFilter[]).map((value: any) => [
           value,
           scopedSessions.filter((session) => matchesSessionFilter(session, value)).length,
         ]),
@@ -300,7 +302,7 @@ export function WorkspaceSessionsPage({
                     <DropdownMenuGroup>
                       <DropdownMenuLabel>{tr("conversations.filterLabel")}</DropdownMenuLabel>
                       {(["current", "archived", "metadata", "all"] as SessionFilter[]).map(
-                        (value) => (
+                        (value: any) => (
                           <DropdownMenuItem
                             key={value}
                             onClick={() => setFilter(value)}
@@ -314,7 +316,7 @@ export function WorkspaceSessionsPage({
                               variant="outline"
                               className="ml-auto border-transparent bg-muted text-muted-foreground !rounded-full !px-1.5 !py-0 !text-[10px] tabular-nums"
                             >
-                              {filterCounts[value]}
+                              {filterCounts[value as SessionFilter]}
                             </Badge>
                           </DropdownMenuItem>
                         ),
@@ -326,7 +328,7 @@ export function WorkspaceSessionsPage({
                   variant="ghost"
                   size="icon-sm"
                   className={`text-muted-foreground hover:bg-muted hover:text-foreground ${searchOpen ? "bg-muted text-foreground" : ""}`}
-                  onClick={() => setSearchOpen((open) => !open)}
+                  onClick={() => setSearchOpen((open: boolean) => !open)}
                   aria-label={tr("conversations.searchPlaceholder")}
                   aria-expanded={searchOpen}
                   title={tr("conversations.searchPlaceholder")}
@@ -353,7 +355,7 @@ export function WorkspaceSessionsPage({
                   autoFocus
                   className="h-auto min-w-0 border-0 bg-transparent px-0 py-0 text-sm text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
                   placeholder={tr("conversations.searchPlaceholder")}
                 />
                 {query && (

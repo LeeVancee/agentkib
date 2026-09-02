@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 export type AppPlatform = "macos" | "windows" | "linux";
 
 export function normalizePlatform(platform?: string): AppPlatform {

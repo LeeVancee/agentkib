@@ -1,14 +1,16 @@
-import { lazy, Suspense, useMemo } from "react";
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { lazy, Suspense, useMemo } from "octane";
+import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
 import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@octanejs/tanstack-router";
 import {
   useHomeCatalog,
   useHomeInsightsStatus,
   useHomeInstallations,
   useHomeRemoteGateways,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
+} from "@/features/home/home-query.tsx";
 import type { WorkspaceSummary } from "../core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
 import type { AgentKind } from "@/core/types";
@@ -50,7 +52,7 @@ function AgentsRoute() {
         onOpen={openWorkspace}
         filter={search.agentFilter ?? "all"}
         selectedAgent={search.agent}
-        onSelectedAgentChange={(agent) =>
+        onSelectedAgentChange={(agent: AgentKind) =>
           void navigate({
             to: "/agents",
             search: (current) => ({ ...current, agent }) as never,

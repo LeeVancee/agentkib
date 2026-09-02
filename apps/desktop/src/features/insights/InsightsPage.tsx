@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   Select,
   SelectContent,
@@ -14,7 +16,8 @@ import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useMemo, useState, type ComponentType } from "react";
+import { useMemo, useState } from "octane";
+import type { OctaneComponent } from "@/lib/octane-types";
 import {
   Activity,
   Award,
@@ -37,7 +40,7 @@ import {
   Sparkles,
   Workflow,
   X,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import {
   achievementReached,
   buildAchievementWallItems,
@@ -68,7 +71,7 @@ import type {
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
-import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
+import { useInsightsRefreshJob, useInsightsView } from "./insights-query.tsx";
 
 type HeatmapMetric = "tokens" | "my_commits" | "all_commits" | "attributed_commits" | "sessions";
 export type InsightsSection = "overview" | "tokens" | "commits" | "milestones" | "sources";
@@ -145,8 +148,8 @@ export function InsightsPage({
   const repositoryOptions = [
     ...new Map(
       workspaces
-        .filter((value) => value.repository_group_id)
-        .map((value) => [value.repository_group_id!, value.name]),
+        .filter((value: any) => value.repository_group_id)
+        .map((value: any) => [value.repository_group_id!, value.name]),
     ).entries(),
   ];
   const showTokenFilters = section === "overview" || section === "tokens";
@@ -173,7 +176,7 @@ export function InsightsPage({
           {showMetricTabs && (
             <Tabs
               value={metric}
-              onValueChange={(value) => setMetric(value as HeatmapMetric)}
+              onValueChange={(value: any) => setMetric(value as HeatmapMetric)}
               className="shrink-0"
             >
               <TabsList
@@ -181,7 +184,7 @@ export function InsightsPage({
                 variant="default"
                 aria-label={tr("insights.heatmap")}
               >
-                {(Object.keys(metricLabels) as HeatmapMetric[]).map((value) => (
+                {(Object.keys(metricLabels) as HeatmapMetric[]).map((value: HeatmapMetric) => (
                   <TabsTrigger
                     className="segmented-control-item h-9 min-h-9 flex-none px-3"
                     key={value}
@@ -197,7 +200,7 @@ export function InsightsPage({
             {showTokenFilters && (
               <Select
                 value={agent}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value !== null) setAgent(String(value) as typeof agent);
                 }}
               >
@@ -208,7 +211,7 @@ export function InsightsPage({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-                  {insightsAgentKinds.map((value) => (
+                  {insightsAgentKinds.map((value: AgentKind) => (
                     <SelectItem key={value} value={value}>
                       {agentLabels[value]}
                     </SelectItem>
@@ -219,7 +222,7 @@ export function InsightsPage({
             {showTokenFilters && (
               <Select
                 value={workspaceId}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value !== null) setWorkspaceId(String(value));
                 }}
               >
@@ -227,13 +230,13 @@ export function InsightsPage({
                   <SelectValue>
                     {workspaceId === "all"
                       ? tr("workspace.all")
-                      : (workspaces.find((value) => value.id === workspaceId)?.name ??
+                      : (workspaces.find((value: any) => value.id === workspaceId)?.name ??
                         tr("workspace.all"))}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">{tr("workspace.all")}</SelectItem>
-                  {workspaces.map((value) => (
+                  {workspaces.map((value: any) => (
                     <SelectItem key={value.id} value={value.id}>
                       {value.name}
                     </SelectItem>
@@ -244,7 +247,7 @@ export function InsightsPage({
             {showCommitFilters && (
               <Select
                 value={repository}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value !== null) setRepository(String(value));
                 }}
               >
@@ -269,7 +272,7 @@ export function InsightsPage({
             {showRange && (
               <Select
                 value={range}
-                onValueChange={(value) => {
+                onValueChange={(value: any) => {
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
@@ -423,7 +426,7 @@ export function InsightsPage({
           <div className="grid gap-4 lg:grid-cols-2">
             <BreakdownPanel
               title={tr("insights.modelUsage")}
-              values={models.map((value) => ({
+              values={models.map((value: any) => ({
                 key: value.model,
                 label: value.model,
                 detail: `${value.session_count} ${tr("common.sessions")}`,
@@ -432,7 +435,7 @@ export function InsightsPage({
             />
             <BreakdownPanel
               title={tr("insights.workspaceUsage")}
-              values={workspaceUsage.map((value) => ({
+              values={workspaceUsage.map((value: any) => ({
                 key: value.workspace_id ?? "unlinked",
                 label: value.name,
                 detail: `${value.session_count} ${tr("common.sessions")}`,
@@ -449,7 +452,7 @@ export function InsightsPage({
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y divide-border">
-              {repositories.slice(0, 20).map((value) => (
+              {repositories.slice(0, 20).map((value: any) => (
                 <div
                   className="flex items-center justify-between gap-4 px-4 py-3"
                   key={value.repository_group_id}
@@ -730,7 +733,7 @@ function AchievementDetailDialog({
   return (
     <Dialog
       open
-      onOpenChange={(open) => {
+      onOpenChange={(open: boolean) => {
         if (!open) onClose();
       }}
     >
@@ -802,7 +805,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
         <ToggleGroup
           className="segmented-control segmented-control-grid relative w-full min-w-0 gap-0 pb-2 max-[760px]:min-w-[640px]"
           value={[selected.code]}
-          onValueChange={(values) => {
+          onValueChange={(values: any) => {
             const next = track.milestones.find((milestone) => milestone.code === values[0]);
             if (next) setSelected(next);
           }}
@@ -964,7 +967,7 @@ function AchievementMetric({
   value,
   detail,
 }: {
-  icon: ComponentType<{ size?: number; className?: string }>;
+  icon: OctaneComponent<{ size?: number; className?: string }>;
   tone: "blue" | "violet" | "green" | "amber";
   label: string;
   value: string;
@@ -1044,7 +1047,7 @@ function Empty({
   title,
   text,
 }: {
-  icon: ComponentType<{ size?: number; className?: string }>;
+  icon: OctaneComponent<{ size?: number; className?: string }>;
   title: string;
   text?: string;
 }) {

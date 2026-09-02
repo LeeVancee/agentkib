@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { formatShortcut, getShortcutDefinition } from "@/core/keyboard-shortcuts";
 import { tr } from "@/core/i18n";
-import { CircleHelp, MoreHorizontal, RefreshCw, Search } from "lucide-react";
+import { CircleHelp, MoreHorizontal, RefreshCw, Search } from "@octanejs/lucide";
 
 export function AppToolbar({
   breadcrumb,

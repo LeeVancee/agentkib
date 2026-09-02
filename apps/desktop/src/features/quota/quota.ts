@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type {
   QuotaAccount,
   QuotaPopoverPreferences,

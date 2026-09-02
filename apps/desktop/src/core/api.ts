@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { desktopApi } from "./desktop";
 import type {
   AgentKind,

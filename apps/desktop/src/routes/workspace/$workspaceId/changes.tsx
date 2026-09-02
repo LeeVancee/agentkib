@@ -1,5 +1,7 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
+import { useQueryClient } from "@octanejs/tanstack-query";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../../../core/api";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
@@ -8,8 +10,8 @@ import {
   hasActiveChangesFlow,
   type WorkspaceFlowPage,
 } from "@/features/workspace/workspace-flow";
-import { homeKeys } from "@/features/home/home-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { homeKeys } from "@/features/home/home-query.tsx";
+import { useCallback, useEffect, useRef, useState } from "octane";
 import { localizeMessage, tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -23,7 +25,7 @@ import {
   FileCode2,
   GitCompareArrows,
   ShieldCheck,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { cn } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
 import type { AgentKind, ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";

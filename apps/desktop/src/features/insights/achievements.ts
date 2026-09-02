@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { Achievement } from "@/core/types";
 
 export const achievementCategories = [

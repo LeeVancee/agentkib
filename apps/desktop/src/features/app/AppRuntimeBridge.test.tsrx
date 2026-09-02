@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
+import { fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { initializeI18n } from "@/core/i18n";

@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,8 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { useEffect, useState } from "react";
-import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";
+import { useEffect, useState } from "octane";
+import { ExternalLink, FolderOpen, Link2, Unlink } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type { ObsidianIntegration } from "@/core/types";
@@ -252,7 +254,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
             {tr("obsidian.chooseVault")}
             <Select
               value={vaultPath}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value !== null) setVaultPath(String(value));
               }}
             >
@@ -274,7 +276,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
             {tr("obsidian.relativeTarget")}
             <Input
               value={relativeTarget}
-              onChange={(event) => setRelativeTarget(event.target.value)}
+              onChange={(event) => setRelativeTarget((event.target as HTMLInputElement).value)}
               placeholder={tr("obsidian.relativeTargetHint")}
             />
           </Label>

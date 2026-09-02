@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { Check, Pencil, X } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useState } from "octane";
+import { Check, Pencil, X } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -43,7 +45,7 @@ export function MemoryCard({
         <Textarea
           className="min-h-24 resize-y"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => setDraft((event.target as HTMLInputElement).value)}
         />
       ) : (
         <p>{record.content}</p>
@@ -60,7 +62,7 @@ export function MemoryCard({
           </Button>
           <Button
             className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-            onClick={() => setEditing((value) => !value)}
+            onClick={() => setEditing((value: any) => !value)}
           >
             {editing ? <X size={14} /> : <Pencil size={14} />}
             {editing ? tr("memory.cancelEdit") : tr("common.edit")}

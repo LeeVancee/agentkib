@@ -1,8 +1,10 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import { localizeMessage, tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
-import { Gauge } from "lucide-react";
-import { useState } from "react";
+import { Gauge } from "@octanejs/lucide";
+import { useState } from "octane";
 
 export function QuotaAutoRefreshPrompt({
   compact = false,

@@ -1,4 +1,6 @@
-import { Award, Bot, FolderGit2, Gauge, Home, Library } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { Award, Bot, FolderGit2, Gauge, Home, Library } from "@octanejs/lucide";
 import type { SidebarEntry } from "@/components/AppSidebar";
 import type { GlobalPage } from "./app-route";
 

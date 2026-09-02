@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -7,7 +9,7 @@ import { QuotaSkeleton } from "./QuotaSkeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "octane";
 import {
   Check,
   ChevronDown,
@@ -17,7 +19,7 @@ import {
   Search,
   Settings2,
   X,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
@@ -50,7 +52,7 @@ import {
   useQuotaSnapshot,
   useQuotaStatus,
   useSetQuotaPreferencesMutation,
-} from "./quota-query";
+} from "./quota-query.tsx";
 
 type QuotaFilter = "all" | "healthy" | "warning" | "unavailable";
 
@@ -208,20 +210,20 @@ export function QuotaPage({
             <Input
               className="!border-0 !bg-transparent !px-0 !text-foreground !shadow-none placeholder:!text-muted-foreground focus-visible:!ring-0"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
               placeholder={tr("quota.search")}
             />
           </Label>
           <ToggleGroup
             className="segmented-control w-fit max-w-full max-sm:w-full"
             value={[filter]}
-            onValueChange={(values) => {
+            onValueChange={(values: any) => {
               const value = values[0];
               if (value) setFilter(value as QuotaFilter);
             }}
             aria-label={tr("quota.filterLabel")}
           >
-            {(["all", "healthy", "warning", "unavailable"] as QuotaFilter[]).map((value) => (
+            {(["all", "healthy", "warning", "unavailable"] as QuotaFilter[]).map((value: any) => (
               <ToggleGroupItem
                 key={value}
                 value={value}

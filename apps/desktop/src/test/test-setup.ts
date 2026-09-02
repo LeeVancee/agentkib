@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 if (typeof window !== "undefined") {
   const unsubscribe = () => undefined;
   if (typeof window.localStorage?.getItem !== "function") {

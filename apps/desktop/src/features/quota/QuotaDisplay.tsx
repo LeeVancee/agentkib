@@ -1,5 +1,7 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
-import { Gauge } from "lucide-react";
+import { Gauge } from "@octanejs/lucide";
 import { tr } from "@/core/i18n";
 import { quotaSeverity, type QuotaDisplayWindow } from "@/features/quota/quota";
 import type { AgentKind, QuotaProvider } from "@/core/types";

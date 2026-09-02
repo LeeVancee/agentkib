@@ -1,12 +1,11 @@
-import type { ReactNode } from "react";
+/** @jsxImportSource octane */
 
+import type { Renderable } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "./skeleton";
-
 function SkeletonText({ className }: { className?: string }) {
   return <Skeleton className={cn("h-3 w-24", className)} />;
 }
-
 function SkeletonMetricCard({ className }: { className?: string }) {
   return (
     <div
@@ -23,8 +22,7 @@ function SkeletonMetricCard({ className }: { className?: string }) {
     </div>
   );
 }
-
-function SkeletonPanel({ children, className }: { children?: ReactNode; className?: string }) {
+function SkeletonPanel({ children, className }: { children?: Renderable; className?: string }) {
   return (
     <div
       className={cn(
@@ -36,7 +34,6 @@ function SkeletonPanel({ children, className }: { children?: ReactNode; classNam
     </div>
   );
 }
-
 function SkeletonPanelHeader({ className }: { className?: string }) {
   return (
     <div className={cn("grid gap-2 border-b border-border/70 px-5 py-4", className)}>
@@ -45,7 +42,6 @@ function SkeletonPanelHeader({ className }: { className?: string }) {
     </div>
   );
 }
-
 function SkeletonListRows({
   count = 5,
   className,
@@ -70,7 +66,6 @@ function SkeletonListRows({
     </div>
   );
 }
-
 function SkeletonTable({
   rows = 5,
   columns = 4,
@@ -114,7 +109,6 @@ function SkeletonTable({
     </div>
   );
 }
-
 function SkeletonToolbar({ className }: { className?: string }) {
   return (
     <div className={cn("flex flex-wrap items-center justify-between gap-3", className)}>
@@ -126,13 +120,12 @@ function SkeletonToolbar({ className }: { className?: string }) {
     </div>
   );
 }
-
 function SkeletonPage({
   children,
   className,
   label = "Loading",
 }: {
-  children: ReactNode;
+  children: Renderable;
   className?: string;
   label?: string;
 }) {
@@ -142,7 +135,6 @@ function SkeletonPage({
     </div>
   );
 }
-
 export {
   SkeletonListRows,
   SkeletonMetricCard,

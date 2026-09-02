@@ -1,6 +1,8 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useId, useState, type ComponentType } from "react";
+import { useEffect, useId, useState } from "octane";
 import {
   Bot,
   Boxes,
@@ -15,9 +17,10 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { tr } from "../core/i18n";
 import { cn } from "@/lib/utils";
+import type { OctaneComponent } from "@/lib/octane-types";
 import { SidebarBrand } from "./SidebarBrand";
 import { useAppStore } from "@/stores/app-store";
 import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
@@ -33,7 +36,7 @@ import type { GlobalPage, Page } from "@/features/app/app-route";
 export interface SidebarEntry<T extends string> {
   id: T;
   label: string;
-  icon: ComponentType<{ size?: number }>;
+  icon: OctaneComponent<{ size?: number }>;
   badge?: number;
   shortcut?: ShortcutId;
 }

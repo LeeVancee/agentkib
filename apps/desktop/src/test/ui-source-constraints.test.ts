@@ -12,7 +12,12 @@ function businessSources(directory: string): string[] {
       if (path === join(sourceRoot, "components", "ui")) return [];
       return businessSources(path);
     }
-    if (!entry.name.endsWith(".tsx") || entry.name.endsWith(".test.tsx")) return [];
+    if (
+      (!entry.name.endsWith(".tsx") && !entry.name.endsWith(".tsrx")) ||
+      entry.name.endsWith(".test.tsx") ||
+      entry.name.endsWith(".test.tsrx")
+    )
+      return [];
     return [path];
   });
 }

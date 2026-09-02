@@ -1,7 +1,9 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
 import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "octane";
 import { api } from "../../../core/api";
 import { localizeMessage, tr } from "../../../core/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +27,7 @@ import {
   FolderOpen,
   RefreshCw,
   SlidersHorizontal,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import type { AgentKind, ContextPreview } from "../../../core/types";
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -40,7 +42,7 @@ const agentLabels: Record<AgentKind, string> = {
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
     <div className="flex flex-wrap gap-2">
-      {values.map((value) => (
+      {values.map((value: any) => (
         <Badge key={value} variant="outline" className="bg-background text-xs">
           {value}
         </Badge>
@@ -109,7 +111,7 @@ function ContextPage({
             <Label className="text-xs text-muted-foreground">Agent</Label>
             <Select
               value={agent}
-              onValueChange={(value) => {
+              onValueChange={(value: any) => {
                 if (value !== null) setAgent(String(value) as AgentKind);
               }}
             >
@@ -137,7 +139,7 @@ function ContextPage({
               <Input
                 className="h-10 pl-9"
                 value={cwd}
-                onChange={(event) => setCwd(event.target.value)}
+                onChange={(event) => setCwd((event.target as HTMLInputElement).value)}
               />
             </div>
           </div>

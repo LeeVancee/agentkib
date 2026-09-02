@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { initializeI18n } from "@/core/i18n";
 import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";

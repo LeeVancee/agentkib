@@ -1,19 +1,16 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import { WorkspaceDoctorSkeleton } from "./WorkspaceSkeleton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { useEffect, useState } from "react";
-import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
+import { useEffect, useState } from "octane";
+import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "@octanejs/lucide";
 import { localizeMessage, tr } from "@/core/i18n";
-import type {
-  ContextDoctorReport,
-  ContextDoctorSummary,
-  DoctorAssetStatus,
-  WorkspaceSummary,
-} from "@/core/types";
+import type { ContextDoctorSummary, DoctorAssetStatus, WorkspaceSummary } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
-import { useHomeDoctorReport } from "@/features/home/home-query";
+import { useHomeDoctorReport } from "@/features/home/home-query.tsx";
 
 export function WorkspaceDoctorPage({
   workspace,

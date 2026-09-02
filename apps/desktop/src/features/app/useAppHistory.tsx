@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { useCallback, useEffect, useRef, useState } from "octane";
+import { useRouter } from "@octanejs/tanstack-router";
 
 const APP_HISTORY_LIMIT = 10;
 

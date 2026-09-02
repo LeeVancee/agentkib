@@ -1,11 +1,14 @@
-import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
+import { useQueryClient } from "@octanejs/tanstack-query";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { useAppStore } from "../stores/app-store";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
   homeKeys,
   useHomeActivity,
@@ -15,15 +18,13 @@ import {
   useHomeRemoteGateways,
   useHomeScanRoots,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
-import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { useQuotaStatus } from "@/features/quota/quota-query";
+} from "@/features/home/home-query.tsx";
+import { useQuotaStatus } from "@/features/quota/quota-query.tsx";
 import type { CloseBehavior, RuntimeInfo } from "../core/types";
 
 type SettingsSearch = { settingsSection?: SettingsSection };
 
 function SettingsRoute() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
@@ -37,14 +38,7 @@ function SettingsRoute() {
   const { data: scanRoots = [] } = useHomeScanRoots();
   const { data: excluded = [] } = useHomeExcluded();
   const { data: activity = [] } = useHomeActivity();
-  const { message, setMessage } = useWorkspaceStore();
-
-  const setSection = (nextSection: SettingsSection) => {
-    void navigate({
-      to: "/settings",
-      search: (current) => ({ ...current, settingsSection: nextSection }) as never,
-    });
-  };
+  const { setMessage } = useWorkspaceStore();
 
   const run = async (operation: () => Promise<void>) => {
     setMessage("");

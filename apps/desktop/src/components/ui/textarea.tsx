@@ -1,8 +1,8 @@
-import * as React from "react";
+/** @jsxImportSource octane */
 
+import type { PropsOf } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
+function Textarea({ className, ...props }: PropsOf<"textarea">) {
   return (
     <textarea
       data-slot="textarea"
@@ -14,5 +14,4 @@ function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
     />
   );
 }
-
 export { Textarea };

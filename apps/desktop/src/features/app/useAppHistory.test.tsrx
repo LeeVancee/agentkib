@@ -3,7 +3,7 @@ import {
   createAppHistoryState,
   updateAppHistoryState,
   type AppHistoryLocation,
-} from "./useAppHistory";
+} from "./useAppHistory.tsx";
 
 function location(href: string, index: number, key = `key-${index}`): AppHistoryLocation {
   const [pathAndSearch, hash = ""] = href.split("#");

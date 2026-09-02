@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/app-store";
 

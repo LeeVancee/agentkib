@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   SkeletonListRows,
   SkeletonMetricCard,

@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@octanejs/testing-library";
+import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, WorkspaceSummary } from "@/core/types";
-import { useAppNavigation } from "./useAppNavigation";
-import type { AppHistoryEntry } from "./useAppHistory";
+import { useAppNavigation } from "./useAppNavigation.tsx";
+import type { AppHistoryEntry } from "./useAppHistory.tsx";
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+function QueryWrapper({ children }: { children: unknown }) {
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+}
 
 const testDoubles = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -26,7 +33,7 @@ const homeHistoryEntry: AppHistoryEntry = {
   browserIndex: 0,
 };
 
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@octanejs/tanstack-router", () => ({
   useLocation: () => ({ pathname: "/" }),
   useNavigate: () => testDoubles.navigate,
   useSearch: () => ({}),
@@ -38,6 +45,14 @@ vi.mock("@/components/AppDialogProvider", () => ({
     confirm: testDoubles.confirm,
     requestSecrets: testDoubles.requestSecrets,
   }),
+}));
+
+vi.mock("@/features/home/home-query.tsx", () => ({
+  homeKeys: { all: ["home"] },
+  useOptionalQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useHomeMemories: () => ({ data: [] }),
+  useHomeRefreshJobs: () => ({ data: [] }),
+  useHomeWorkspaces: () => ({ data: [], isPending: false }),
 }));
 
 describe("useAppNavigation guards", () => {
@@ -74,7 +89,7 @@ describe("useAppNavigation guards", () => {
       workspaceDrafts: { [workspace.id]: draft },
     });
 
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     act(() => result.current.openSettings());
 
@@ -93,7 +108,7 @@ describe("useAppNavigation guards", () => {
       navigationRequest: { page: "settings", settings_section: "privacy" },
     });
 
-    renderHook(() => useAppNavigation());
+    renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     expect(testDoubles.navigate).toHaveBeenCalledOnce();
     expect(testDoubles.navigate.mock.calls[0][0].search({})).toEqual({
@@ -104,7 +119,7 @@ describe("useAppNavigation guards", () => {
 
   it("blocks settings navigation while a ChangeSet is applying", () => {
     useWorkspaceStore.setState({ applyingChanges: true });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     act(() => result.current.openSettings("diagnostics"));
 
@@ -114,7 +129,7 @@ describe("useAppNavigation guards", () => {
 
   it("blocks adding a workspace before opening the directory picker", async () => {
     useWorkspaceStore.setState({ applyingChanges: true });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => result.current.addWorkspace());
 
@@ -139,7 +154,7 @@ describe("useAppNavigation guards", () => {
       name: "Next workspace",
     };
     useWorkspaceStore.setState({ applyingChanges: true, selectedWorkspace: currentWorkspace });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => result.current.openWorkspace(nextWorkspace));
 
@@ -154,7 +169,7 @@ describe("useAppNavigation guards", () => {
       useWorkspaceStore.setState({ applyingChanges: true });
       return "C:/new-workspace";
     });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => result.current.addWorkspace());
 
@@ -164,7 +179,7 @@ describe("useAppNavigation guards", () => {
 
   it("blocks history navigation while a ChangeSet is applying", async () => {
     useWorkspaceStore.setState({ applyingChanges: true });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => {
       expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(false);
@@ -189,7 +204,7 @@ describe("useAppNavigation guards", () => {
       manifest: {} as Manifest,
       baselineManifest: '{"version":0}',
     });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => {
       expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(false);
@@ -217,7 +232,7 @@ describe("useAppNavigation guards", () => {
       manifest: {} as Manifest,
       baselineManifest: '{"version":0}',
     });
-    const { result } = renderHook(() => useAppNavigation());
+    const { result } = renderHook(() => useAppNavigation(), { wrapper: QueryWrapper });
 
     await act(async () => {
       expect(await result.current.prepareHistoryNavigation(homeHistoryEntry)).toBe(true);

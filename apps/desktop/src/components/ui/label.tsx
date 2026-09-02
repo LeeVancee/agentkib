@@ -1,8 +1,8 @@
-import * as React from "react";
+/** @jsxImportSource octane */
 
+import type { PropsOf } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Label({ className, ...props }: React.ComponentProps<"label">) {
+function Label({ className, ...props }: PropsOf<"label">) {
   return (
     <label
       data-slot="label"
@@ -14,5 +14,4 @@ function Label({ className, ...props }: React.ComponentProps<"label">) {
     />
   );
 }
-
 export { Label };

@@ -1,5 +1,7 @@
-import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef } from "react";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
+import { useCallback, useEffect, useRef } from "octane";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
 import { api } from "../../../core/api";

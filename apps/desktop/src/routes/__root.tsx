@@ -1,5 +1,7 @@
-import { createRootRoute, Outlet, useNavigate, useSearch } from "@tanstack/react-router";
-import { CircleAlert } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { createRootRoute, Outlet, useNavigate, useSearch } from "@octanejs/tanstack-router";
+import { CircleAlert } from "@octanejs/lucide";
 import { z } from "zod";
 import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
@@ -15,13 +17,13 @@ import {
   type ParsedRoute,
 } from "../features/app/app-route";
 import { cn } from "@/lib/utils";
-import { useAppNavigation } from "../features/app/useAppNavigation";
+import { useAppNavigation } from "../features/app/useAppNavigation.tsx";
 import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
 import { ShortcutHelpProvider } from "../features/app/ShortcutHelpContext";
-import { useAppShortcuts } from "../features/app/useAppShortcuts";
-import { useAppHistory } from "../features/app/useAppHistory";
+import { useAppShortcuts } from "../features/app/useAppShortcuts.tsx";
+import { useAppHistory } from "../features/app/useAppHistory.tsx";
 import { useAppStore } from "../stores/app-store";
-import { useState } from "react";
+import { useState } from "octane";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { AppToolbar } from "@/features/app/AppToolbar";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
@@ -56,7 +58,7 @@ function RootLayout() {
     onRefreshCurrent: refreshCurrentView,
     onAddWorkspace: addWorkspace,
     onAddScanRoot: addScanRoot,
-    onToggleSidebar: () => setSidebarCollapsed((value) => !value),
+    onToggleSidebar: () => setSidebarCollapsed((value: any) => !value),
     onGoBack: appHistory.goBack,
     onGoForward: appHistory.goForward,
     onOpenSearch: () => setSearchOpen(true),

@@ -1,9 +1,11 @@
+/** @jsxImportSource octane */
+
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Gauge, RefreshCw, Settings2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "octane";
+import { useQueryClient } from "@octanejs/tanstack-query";
+import { ExternalLink, Gauge, RefreshCw, Settings2 } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { changeLocale, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
@@ -26,7 +28,7 @@ import {
   useQuotaRefreshJob,
   useQuotaRefreshMutation,
   useQuotaSnapshot,
-} from "./quota-query";
+} from "./quota-query.tsx";
 import { useAppStore } from "@/stores/app-store";
 
 export function QuotaPopover() {

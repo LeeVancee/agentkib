@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef } from "octane";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@octanejs/tanstack-query";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import type { InsightsQuery } from "@/core/types";

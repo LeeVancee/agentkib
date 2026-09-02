@@ -1,9 +1,14 @@
-import { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
+/** @jsxImportSource octane */
+
+import type { PropsOf } from "@/lib/octane-types";
+import { Tabs as TabsPrimitive } from "@octanejs/base-ui/tabs";
 import { cva, type VariantProps } from "class-variance-authority";
-
 import { cn } from "@/lib/utils";
-
-function Tabs({ className, orientation = "horizontal", ...props }: TabsPrimitive.Root.Props) {
+function Tabs({
+  className,
+  orientation = "horizontal",
+  ...props
+}: PropsOf<typeof TabsPrimitive.Root>) {
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
@@ -14,7 +19,6 @@ function Tabs({ className, orientation = "horizontal", ...props }: TabsPrimitive
     />
   );
 }
-
 const tabsListVariants = cva(
   "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
@@ -29,12 +33,11 @@ const tabsListVariants = cva(
     },
   },
 );
-
 function TabsList({
   className,
   variant = "default",
   ...props
-}: TabsPrimitive.List.Props & VariantProps<typeof tabsListVariants>) {
+}: PropsOf<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
@@ -44,8 +47,7 @@ function TabsList({
     />
   );
 }
-
-function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
+function TabsTrigger({ className, ...props }: PropsOf<typeof TabsPrimitive.Tab>) {
   return (
     <TabsPrimitive.Tab
       data-slot="tabs-trigger"
@@ -60,8 +62,7 @@ function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
     />
   );
 }
-
-function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
+function TabsContent({ className, ...props }: PropsOf<typeof TabsPrimitive.Panel>) {
   return (
     <TabsPrimitive.Panel
       data-slot="tabs-content"
@@ -70,5 +71,4 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
     />
   );
 }
-
 export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants };

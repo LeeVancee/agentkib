@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   createContext,
   useCallback,
@@ -6,8 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
-} from "react";
+} from "octane";
+import type { Renderable } from "@/lib/octane-types";
 
 import {
   AlertDialog,
@@ -60,7 +62,7 @@ interface SecretRequest {
 
 const AppDialogContext = createContext<AppDialogs | undefined>(undefined);
 
-export function AppDialogProvider({ children }: { children: ReactNode }) {
+export function AppDialogProvider({ children }: { children: Renderable }) {
   const [queue, setQueue] = useState<DialogRequest[]>([]);
   const [secretRequest, setSecretRequest] = useState<SecretRequest>();
   const [secretValues, setSecretValues] = useState<Record<string, string>>({});
@@ -141,7 +143,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
       {children}
       <AlertDialog
         open={Boolean(active)}
-        onOpenChange={(open) => {
+        onOpenChange={(open: boolean) => {
           if (!open && active) finish(false, active.id);
         }}
       >
@@ -177,7 +179,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
       </AlertDialog>
       <Dialog
         open={Boolean(secretRequest)}
-        onOpenChange={(open) => {
+        onOpenChange={(open: boolean) => {
           if (!open && secretRequest) finishSecrets(null, secretRequest.id);
         }}
       >
@@ -196,7 +198,10 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                     autoComplete="off"
                     value={secretValues[key] ?? ""}
                     onChange={(event) =>
-                      setSecretValues((current) => ({ ...current, [key]: event.target.value }))
+                      setSecretValues((current) => ({
+                        ...current,
+                        [key]: (event.target as HTMLInputElement).value,
+                      }))
                     }
                   />
                 </Label>

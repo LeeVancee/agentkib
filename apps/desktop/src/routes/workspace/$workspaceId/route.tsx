@@ -1,12 +1,14 @@
-import { useEffect, useRef } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef } from "octane";
 import {
   createFileRoute,
   Outlet,
   useLocation,
   useNavigate,
   useParams,
-} from "@tanstack/react-router";
-import { FolderGit2, GitCompareArrows } from "lucide-react";
+} from "@octanejs/tanstack-router";
+import { FolderGit2, GitCompareArrows } from "@octanejs/lucide";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,7 +22,7 @@ import {
   WorkspaceSessionsSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
 import { useAppStore } from "../../../stores/app-store";
-import { useHomeWorkspaces } from "@/features/home/home-query";
+import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { localizeMessage, tr } from "../../../core/i18n";
@@ -33,7 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
-import { Copy, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Copy, MoreHorizontal, RefreshCw } from "@octanejs/lucide";
 function WorkspaceActions({
   workspace,
   onError,

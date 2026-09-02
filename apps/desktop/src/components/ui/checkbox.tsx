@@ -1,9 +1,10 @@
-import { Checkbox as CheckboxPrimitive } from "@base-ui/react/checkbox";
+/** @jsxImportSource octane */
 
+import type { PropsOf } from "@/lib/octane-types";
+import { Checkbox as CheckboxPrimitive } from "@octanejs/base-ui/checkbox";
 import { cn } from "@/lib/utils";
-import { CheckIcon } from "lucide-react";
-
-function Checkbox({ className, ...props }: CheckboxPrimitive.Root.Props) {
+import { CheckIcon } from "@octanejs/lucide";
+function Checkbox({ className, ...props }: PropsOf<typeof CheckboxPrimitive.Root>) {
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"
@@ -22,5 +23,4 @@ function Checkbox({ className, ...props }: CheckboxPrimitive.Root.Props) {
     </CheckboxPrimitive.Root>
   );
 }
-
 export { Checkbox };

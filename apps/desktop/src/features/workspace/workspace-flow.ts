@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { ChangeSetOrigin } from "./workspace-store";
 
 export type WorkspaceFlowPage = "overview" | "sessions" | "doctor";

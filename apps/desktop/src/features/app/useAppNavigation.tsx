@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef } from "react";
-import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { useCallback, useEffect, useRef } from "octane";
+import { useTranslation } from "@octanejs/i18next";
+import { useLocation, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
@@ -10,14 +12,14 @@ import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
-import type { AppHistoryEntry } from "./useAppHistory";
+import type { AppHistoryEntry } from "./useAppHistory.tsx";
 import {
   homeKeys,
   useOptionalQueryClient,
   useHomeMemories,
   useHomeRefreshJobs,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
+} from "@/features/home/home-query.tsx";
 
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
@@ -314,7 +316,7 @@ export function useAppNavigation() {
         quotaProvider: navigationRequest.provider,
         quotaWindow: navigationRequest.window,
       });
-      if (navigationRequest.configure_popover) setQuotaConfigureRequest((value) => value + 1);
+      if (navigationRequest.configure_popover) setQuotaConfigureRequest((value: any) => value + 1);
     } else {
       navigateGlobal(navigationRequest.page);
     }

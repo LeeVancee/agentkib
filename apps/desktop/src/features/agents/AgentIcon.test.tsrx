@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render } from "@octanejs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentIcon } from "./AgentIcon";
 

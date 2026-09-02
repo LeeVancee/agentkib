@@ -1,6 +1,8 @@
-import { lazy, Suspense } from "react";
+/** @jsxImportSource octane */
+
+import { lazy, Suspense } from "octane";
 import { QuotaSkeleton } from "@/features/quota/QuotaSkeleton";
-import { createFileRoute, useSearch } from "@tanstack/react-router";
+import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
 import { useAppStore } from "../stores/app-store";
 import type { QuotaWindowSelector } from "../core/types";
 

@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { AgentIcon } from "@/features/agents/AgentIcon";
-import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
+/** @jsxImportSource octane */
+
+import { useEffect, useMemo, useRef, useState } from "octane";
+import { useQueryClient } from "@octanejs/tanstack-query";
+import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
+import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,31 +25,26 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
-import { formatDateTime, localizeMessage, tr } from "../core/i18n";
+import { localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
   useHomeCatalog,
   useHomeMemories,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
+} from "@/features/home/home-query.tsx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
   Boxes,
   Brain,
-  Check,
   CircleAlert,
-  ExternalLink,
   FileCode2,
-  Library,
-  Pencil,
   PlugZap,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
-  X,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import type {
   AgentKind,
   ChangeSet,
@@ -59,7 +55,6 @@ import type {
   McpRuntimeStatus,
   McpServerConfig,
   MemoryRecord,
-  MemoryType,
   RuntimeInfo,
   WorkspaceSummary,
 } from "../core/types";
@@ -231,7 +226,7 @@ function CatalogPage({
   return (
     <div className="relative grid gap-5 pb-8">
       <section className="w-fit max-w-full">
-        <Tabs value={section} onValueChange={(value) => onSection(value as AssetSection)}>
+        <Tabs value={section} onValueChange={(value: any) => onSection(value as AssetSection)}>
           <TabsList
             className="segmented-control !h-auto w-fit max-w-full justify-start"
             variant="default"
@@ -551,7 +546,7 @@ function McpHubPage({
               min="1"
               max="65535"
               defaultValue={runtime?.mcp_network?.port ?? 47653}
-              onBlur={(event) => void updatePort(Number(event.target.value))}
+              onBlur={(event) => void updatePort(Number((event.target as HTMLInputElement).value))}
             />
           </Label>
           <Label className="!grid gap-2">
@@ -570,7 +565,7 @@ function McpHubPage({
           </div>
           <Select
             value={scope || "__global_scope__"}
-            onValueChange={(value) => {
+            onValueChange={(value: any) => {
               if (value !== null) {
                 const nextScope = String(value);
                 setScope(nextScope === "__global_scope__" ? "" : nextScope);
@@ -610,7 +605,7 @@ function McpHubPage({
           <div className="flex items-center gap-2 p-5">
             <Input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery((event.target as HTMLInputElement).value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void searchRegistry();
               }}
@@ -672,7 +667,7 @@ function McpHubPage({
                   <small>{server.transport === "stdio" ? server.command : server.url}</small>
                   <span>
                     {server.targets.length
-                      ? server.targets.map((agent) => agentLabels[agent]).join(" · ")
+                      ? server.targets.map((agent: AgentKind) => agentLabels[agent]).join(" · ")
                       : tr("mcp.allAgents")}
                   </span>
                 </div>
@@ -930,7 +925,7 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
           <Textarea
             className="min-h-[230px]"
             value={config}
-            onChange={(event) => setConfig(event.target.value)}
+            onChange={(event) => setConfig((event.target as HTMLInputElement).value)}
             spellCheck={false}
           />
         </Label>
@@ -939,7 +934,7 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
             <span className="text-sm font-medium">{tr("mcp.environmentSecrets")}</span>
             <Textarea
               value={env}
-              onChange={(event) => setEnv(event.target.value)}
+              onChange={(event) => setEnv((event.target as HTMLInputElement).value)}
               placeholder="API_TOKEN=…"
               spellCheck={false}
             />
@@ -948,7 +943,7 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
             <span className="text-sm font-medium">{tr("mcp.headerSecrets")}</span>
             <Textarea
               value={headers}
-              onChange={(event) => setHeaders(event.target.value)}
+              onChange={(event) => setHeaders((event.target as HTMLInputElement).value)}
               placeholder="Authorization=Bearer …"
               spellCheck={false}
             />
@@ -991,7 +986,7 @@ function McpMigrationInventory({
   };
   const toggle = (id: string, checked: boolean) =>
     setSelected((current) =>
-      checked ? [...current, id] : current.filter((value) => value !== id),
+      checked ? [...current, id] : current.filter((value: any) => value !== id),
     );
   return (
     <Card className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">

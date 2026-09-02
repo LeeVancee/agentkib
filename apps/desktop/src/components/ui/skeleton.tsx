@@ -1,8 +1,8 @@
-import type { HTMLAttributes } from "react";
+/** @jsxImportSource octane */
 
+import type { DivProps } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+function Skeleton({ className, ...props }: DivProps) {
   return (
     <div
       data-slot="skeleton"
@@ -12,5 +12,4 @@ function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
     />
   );
 }
-
 export { Skeleton };

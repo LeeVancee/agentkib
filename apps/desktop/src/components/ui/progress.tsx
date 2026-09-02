@@ -1,12 +1,8 @@
-import type { HTMLAttributes } from "react";
+/** @jsxImportSource octane */
 
+import type { DivProps } from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Progress({
-  className,
-  value = 0,
-  ...props
-}: HTMLAttributes<HTMLDivElement> & { value?: number }) {
+function Progress({ className, value = 0, ...props }: DivProps & { value?: number }) {
   const progress = Math.min(100, Math.max(0, value));
   return (
     <div
@@ -26,5 +22,4 @@ function Progress({
     </div>
   );
 }
-
 export { Progress };

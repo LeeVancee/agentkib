@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 export type AgentKind =
   | "codex"
   | "claude-code"

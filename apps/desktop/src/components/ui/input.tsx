@@ -1,9 +1,9 @@
-import * as React from "react";
-import { Input as InputPrimitive } from "@base-ui/react/input";
+/** @jsxImportSource octane */
 
+import type { PropsOf } from "@/lib/octane-types";
+import { Input as InputPrimitive } from "@octanejs/base-ui/input";
 import { cn } from "@/lib/utils";
-
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+function Input({ className, type, ...props }: PropsOf<"input">) {
   return (
     <InputPrimitive
       type={type}
@@ -16,5 +16,4 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
     />
   );
 }
-
 export { Input };

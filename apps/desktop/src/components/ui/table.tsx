@@ -1,8 +1,14 @@
-import type { HTMLAttributes, ThHTMLAttributes, TdHTMLAttributes } from "react";
+/** @jsxImportSource octane */
 
+import type {
+  TableCellProps,
+  TableDataCellProps,
+  TableProps,
+  TableSectionProps,
+  PropsOf,
+} from "@/lib/octane-types";
 import { cn } from "@/lib/utils";
-
-function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
+function Table({ className, ...props }: TableProps) {
   return (
     <div data-slot="table-container" className="relative w-full overflow-auto">
       <table
@@ -13,8 +19,7 @@ function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
     </div>
   );
 }
-
-function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
+function TableHeader({ className, ...props }: TableSectionProps) {
   return (
     <thead
       data-slot="table-header"
@@ -23,8 +28,7 @@ function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionEle
     />
   );
 }
-
-function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
+function TableBody({ className, ...props }: TableSectionProps) {
   return (
     <tbody
       data-slot="table-body"
@@ -33,8 +37,7 @@ function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionEleme
     />
   );
 }
-
-function TableFooter({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
+function TableFooter({ className, ...props }: TableSectionProps) {
   return (
     <tfoot
       data-slot="table-footer"
@@ -43,8 +46,7 @@ function TableFooter({ className, ...props }: HTMLAttributes<HTMLTableSectionEle
     />
   );
 }
-
-function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowElement>) {
+function TableRow({ className, ...props }: PropsOf<"tr">) {
   return (
     <tr
       data-slot="table-row"
@@ -56,8 +58,7 @@ function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowElement>) 
     />
   );
 }
-
-function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
+function TableHead({ className, ...props }: TableCellProps) {
   return (
     <th
       data-slot="table-head"
@@ -69,12 +70,10 @@ function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCellElemen
     />
   );
 }
-
-function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
+function TableCell({ className, ...props }: TableDataCellProps) {
   return <td data-slot="table-cell" className={cn("p-3 align-middle", className)} {...props} />;
 }
-
-function TableCaption({ className, ...props }: HTMLAttributes<HTMLTableCaptionElement>) {
+function TableCaption({ className, ...props }: PropsOf<"caption">) {
   return (
     <caption
       data-slot="table-caption"
@@ -83,5 +82,4 @@ function TableCaption({ className, ...props }: HTMLAttributes<HTMLTableCaptionEl
     />
   );
 }
-
 export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption };

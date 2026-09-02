@@ -1,5 +1,7 @@
-import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
-import { AlertTriangle, Home, RefreshCw, RotateCcw } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useRouter, type ErrorComponentProps } from "@octanejs/tanstack-router";
+import { AlertTriangle, Home, RefreshCw, RotateCcw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { tr } from "@/core/i18n";

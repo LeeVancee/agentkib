@@ -1,15 +1,17 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+/** @jsxImportSource octane */
+
+import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
-import { useHomeDoctorReport } from "@/features/home/home-query";
+import { useHomeDoctorReport } from "@/features/home/home-query.tsx";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { CircleAlert, Copy } from "lucide-react";
+import { CircleAlert, Copy } from "@octanejs/lucide";
 import { formatRelativeTime, tr } from "../../../core/i18n";
 import type { AgentKind, Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
 const agentLabels: Record<AgentKind, string> = {
@@ -43,10 +45,10 @@ function Overview({
   doctorSummary?: import("@/core/types").ContextDoctorSummary;
 }) {
   const configuredAgents = scan.agents.filter(
-    (agent) => agent.detected || agent.warnings.length > 0,
+    (agent: any) => agent.detected || agent.warnings.length > 0,
   );
   const unconfiguredAgents = scan.agents.filter(
-    (agent) => !agent.detected && agent.warnings.length === 0,
+    (agent: any) => !agent.detected && agent.warnings.length === 0,
   );
   const sources =
     workspace.sources

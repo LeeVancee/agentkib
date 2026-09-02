@@ -1362,7 +1362,8 @@ async fn run_action_with_timeout(
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     anchor_program_path(&mut command, program);
     configure_process_group(command.as_std_mut());
     let mut child = command
@@ -1482,13 +1483,26 @@ async fn probe_version(path: &Path, args: &[&str]) -> Result<String> {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     anchor_program_path(&mut command, path);
     configure_process_group(command.as_std_mut());
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not run {}", path.display()))?;
-    let process_tree = child.id().and_then(|pid| ProcessTree::attach_pid(pid).ok());
+    let process_tree = match child.id().map(ProcessTree::attach_pid) {
+        Some(Ok(tree)) => tree,
+        Some(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error).context("Could not supervise version probe process tree");
+        }
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            bail!("Version probe process did not expose a process id");
+        }
+    };
     let stdout = child
         .stdout
         .take()
@@ -1505,9 +1519,7 @@ async fn probe_version(path: &Path, args: &[&str]) -> Result<String> {
     let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(result) => result?,
         Err(_) => {
-            if let Some(tree) = &process_tree {
-                let _ = tree.terminate();
-            }
+            let _ = process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
             stdout_abort.abort();
@@ -1522,9 +1534,7 @@ async fn probe_version(path: &Path, args: &[&str]) -> Result<String> {
     {
         Ok(output) => output?,
         Err(_) => {
-            if let Some(tree) = &process_tree {
-                let _ = tree.terminate();
-            }
+            let _ = process_tree.terminate();
             stdout_abort.abort();
             stderr_abort.abort();
             bail!("Version probe timed out");
@@ -2015,13 +2025,26 @@ async fn run_readonly_command(program: &Path, args: &[&str]) -> Result<String> {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     anchor_program_path(&mut command, program);
     configure_process_group(command.as_std_mut());
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not inspect {}", program.display()))?;
-    let process_tree = child.id().and_then(|pid| ProcessTree::attach_pid(pid).ok());
+    let process_tree = match child.id().map(ProcessTree::attach_pid) {
+        Some(Ok(tree)) => tree,
+        Some(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error).context("Could not supervise inspection process tree");
+        }
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            bail!("Inspection process did not expose a process id");
+        }
+    };
     let stdout = child
         .stdout
         .take()
@@ -2032,9 +2055,7 @@ async fn run_readonly_command(program: &Path, args: &[&str]) -> Result<String> {
     let status = match tokio::time::timeout_at(deadline, child.wait()).await {
         Ok(result) => result?,
         Err(_) => {
-            if let Some(tree) = &process_tree {
-                let _ = tree.terminate();
-            }
+            let _ = process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
             stdout_abort.abort();
@@ -2044,9 +2065,7 @@ async fn run_readonly_command(program: &Path, args: &[&str]) -> Result<String> {
     let stdout = match tokio::time::timeout_at(deadline, stdout_task).await {
         Ok(output) => output??,
         Err(_) => {
-            if let Some(tree) = &process_tree {
-                let _ = tree.terminate();
-            }
+            let _ = process_tree.terminate();
             stdout_abort.abort();
             bail!("Package manager inspection timed out");
         }
@@ -2976,6 +2995,53 @@ mod tests {
         let error = result.err().expect("cancellation should stop the command");
         assert!(error.to_string().contains("cancelled"));
         assert!(started.elapsed() < StdDuration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_version_probe_terminates_descendants() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let probe = directory.path().join("probe");
+        let descendant_ready = directory.path().join("descendant-ready");
+        let trigger = directory.path().join("trigger");
+        let survived = directory.path().join("survived");
+        std::fs::write(
+            &probe,
+            "#!/bin/sh\n(printf ready > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.05; done; printf survived > \"$3\") &\nwait\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let task_probe = probe.clone();
+        let task_ready = descendant_ready.clone();
+        let task_trigger = trigger.clone();
+        let task_survived = survived.clone();
+        let task = tokio::spawn(async move {
+            let ready = task_ready.to_string_lossy().into_owned();
+            let trigger = task_trigger.to_string_lossy().into_owned();
+            let survived = task_survived.to_string_lossy().into_owned();
+            probe_version(&task_probe, &[&ready, &trigger, &survived]).await
+        });
+        tokio::time::timeout(StdDuration::from_secs(5), async {
+            while !descendant_ready.exists() {
+                tokio::time::sleep(StdDuration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("probe descendant did not start");
+        assert!(
+            !survived.exists(),
+            "probe descendant ran before cancellation"
+        );
+
+        task.abort();
+        let _ = task.await;
+        std::fs::write(&trigger, "continue").unwrap();
+        tokio::time::sleep(StdDuration::from_millis(500)).await;
+
+        assert!(!survived.exists(), "probe descendant survived cancellation");
     }
 
     #[test]

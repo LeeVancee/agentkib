@@ -66,6 +66,10 @@ let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
 const startupBenchmark = new StartupBenchmark();
 
+// Keep the desktop window comfortably above the renderer's 1024px compact breakpoint.
+// 1280px is Tailwind's default `xl` breakpoint and leaves room for the desktop layout.
+const MAIN_WINDOW_MIN_WIDTH = 1280;
+
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
   app_icon_preference?: "white" | "black";
@@ -763,7 +767,7 @@ async function createMainWindow(): Promise<void> {
     title: "AgentKib",
     width: 1360,
     height: 860,
-    minWidth: 900,
+    minWidth: MAIN_WINDOW_MIN_WIDTH,
     minHeight: 680,
     show: false,
     backgroundColor: "#0a0a0a",

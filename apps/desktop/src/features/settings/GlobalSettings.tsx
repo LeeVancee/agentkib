@@ -4,6 +4,7 @@ import {
   CircleAlert,
   ExternalLink,
   FolderGit2,
+  FolderPlus,
   GitCommitHorizontal,
   History,
   Keyboard,
@@ -17,7 +18,13 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useAppDialogs } from "@/components/AppDialogProvider";
@@ -64,6 +71,8 @@ import type {
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
+import appIconBlack from "../../../resources/icons/app-icon-black.png";
+import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import {
   ariaShortcut,
   currentAppPlatform,
@@ -75,7 +84,11 @@ const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
 const hasFileAccessSettings = ["macos", "windows"].includes(appPlatform);
 const settingsControlClass =
-  "h-10 min-w-[180px] rounded-xl border-2 border-foreground/25 bg-card px-3 font-medium text-foreground shadow-xs transition-colors hover:border-primary/65 hover:bg-muted/60 focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/20 max-[560px]:min-w-0 max-[560px]:flex-1";
+  "h-10 min-w-[180px] justify-self-end max-[560px]:min-w-0 max-[560px]:flex-1";
+const appIconAssets: Record<AppIconPreference, string> = {
+  white: appIconWhite,
+  black: appIconBlack,
+};
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -137,7 +150,6 @@ export function GlobalSettings({
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.closeBehavior")}</strong>
-              <small>{tr("settings.closeBehaviorGlobalDescription")}</small>
             </SettingsCopy>
             <CloseBehaviorSelect
               value={runtime?.close_behavior}
@@ -148,7 +160,6 @@ export function GlobalSettings({
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
-              <small>{tr("settings.onboardingDescription")}</small>
             </SettingsCopy>
             <Button variant="outline" onClick={() => void onOnboardingRestarted()}>
               {tr("settings.onboardingRestart")}
@@ -175,14 +186,11 @@ export function GlobalSettings({
   if (section === "discovery")
     return (
       <div className="grid gap-5">
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
-          <SettingGroup
-            title={tr("settings.discovery")}
-            description={tr("settings.discoveryDescription")}
-          >
+        <div className="grid gap-5 xl:grid-cols-2">
+          <SettingGroup title={tr("settings.discovery")}>
             <SettingsRow>
               <SettingsCopy>
-                <strong>{tr("settings.discoveryStatus")}</strong>
+                <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
               </SettingsCopy>
               <span
                 className={cn(
@@ -201,16 +209,13 @@ export function GlobalSettings({
               </SettingDetail>
             ))}
           </SettingGroup>
-          <SettingGroup
-            title={tr("settings.scanRoots")}
-            description={tr("settings.scanRootsDescription")}
-          >
+          <SettingGroup title={tr("settings.scanRoots")}>
             <div className="flex justify-end border-b border-border/60 px-5 py-3">
               <Button
-                size="sm"
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                className="gap-2"
                 onClick={() => void onAddRoot()}
               >
+                <FolderPlus size={15} />
                 {tr("settings.addFolder")}
               </Button>
             </div>
@@ -243,10 +248,7 @@ export function GlobalSettings({
             </SettingsListEmptyState>
           </SettingGroup>
         </div>
-        <SettingGroup
-          title={tr("settings.excluded")}
-          description={tr("settings.excludedDescription")}
-        >
+        <SettingGroup title={tr("settings.excluded")}>
           <SettingsListEmptyState items={excluded.length} emptyText={tr("settings.noExcluded")}>
             <div className="divide-y divide-border/60">
               {excluded.map((item) => (
@@ -261,7 +263,7 @@ export function GlobalSettings({
                       {formatDateTime(item.created_at)}
                     </small>
                   </span>
-                  <Button size="sm" variant="outline" onClick={() => void onRestore(item.path)}>
+                  <Button variant="outline" onClick={() => void onRestore(item.path)}>
                     {tr("common.restore")}
                   </Button>
                 </div>
@@ -274,7 +276,7 @@ export function GlobalSettings({
   if (section === "integrations")
     return (
       <div className="grid gap-5">
-        <SettingGroup title="AgentKib MCP Hub" description={tr("settings.mcpDescription")}>
+        <SettingGroup title="AgentKib MCP Hub">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -294,10 +296,7 @@ export function GlobalSettings({
   if (section === "privacy")
     return (
       <div className="grid gap-5">
-        <SettingGroup
-          title={tr("settings.localData")}
-          description={tr("settings.localDataGlobalDescription")}
-        >
+        <SettingGroup title={tr("settings.localData")}>
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("settings.dataLocation")}</strong>
@@ -351,10 +350,9 @@ export function GlobalSettings({
 function ActivityPage({ records }: { records: ActivityRecord[] }) {
   return (
     <Card className="rounded-xl border border-border bg-card shadow-sm">
-      <CardHeader className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
+      <CardHeader className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 text-left">
         <div>
           <h2>{tr("activity.title")}</h2>
-          <p>{tr("activity.description")}</p>
         </div>
       </CardHeader>
       <CardContent className="p-0">
@@ -398,7 +396,7 @@ function SettingsRow({ children, border = true }: { children: ReactNode; border?
   return (
     <div
       className={cn(
-        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,280px)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
+        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
         border && "border-b border-border/60",
       )}
     >
@@ -436,26 +434,13 @@ function SettingDetail({
     </div>
   );
 }
-function SettingGroup({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
+function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border pb-2">
       <header className="border-b border-border/70 py-4">
         <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-        {description && (
-          <p className="mt-1 max-w-[62ch] text-xs leading-relaxed text-muted-foreground">
-            {description}
-          </p>
-        )}
       </header>
-      <div>{children}</div>
+      <div className="[&>*:last-child]:border-b-0">{children}</div>
     </section>
   );
 }
@@ -478,7 +463,7 @@ function StatusText({ active, children }: { active: boolean; children: ReactNode
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 text-xs font-medium",
+        "inline-flex items-center gap-1.5 justify-self-end text-xs font-medium",
         active ? "text-emerald-600" : "text-muted-foreground",
       )}
     >
@@ -505,7 +490,7 @@ function FileAccessSettingsRow() {
           <strong>{tr("settings.appDataAccess")}</strong>
         </SettingsCopy>
         <Button
-          className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+          className="justify-self-end border border-transparent bg-transparent text-foreground hover:bg-muted"
           type="button"
           onClick={() => void openSettings()}
         >
@@ -527,14 +512,10 @@ function KeyboardShortcutsSetting() {
   const platform = currentAppPlatform();
   const definition = getShortcutDefinition("open-help");
   return (
-    <SettingGroup
-      title={tr("settings.shortcutsTitle")}
-      description={tr("settings.shortcutsDescription")}
-    >
+    <SettingGroup title={tr("settings.shortcutsTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.shortcuts")}</strong>
-          <small>{tr("settings.shortcutsHint")}</small>
         </SettingsCopy>
         <Button
           variant="outline"
@@ -573,16 +554,12 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingGroup
-      title={tr("settings.quotaTitle")}
-      description={tr("settings.quotaAutoRefreshDescription")}
-    >
+    <SettingGroup title={tr("settings.quotaTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>
-          <small>{tr("settings.quotaAutoRefreshHint")}</small>
         </SettingsCopy>
-        <Label className="inline-flex items-center">
+        <Label className="inline-flex items-center justify-self-end">
           <Switch
             checked={runtime?.quota_auto_refresh_enabled === true}
             disabled={busy || !runtime}
@@ -658,7 +635,7 @@ function ConversationPrivacySettings({
         <SettingsCopy>
           <strong>{tr("conversations.indexSetting")}</strong>
         </SettingsCopy>
-        <Label className="inline-flex items-center">
+        <Label className="inline-flex items-center justify-self-end">
           <Switch
             checked={runtime?.session_index_enabled !== false}
             disabled={busy}
@@ -671,7 +648,7 @@ function ConversationPrivacySettings({
           <strong>{tr("conversations.indexedWorkspaces", { count: indexedCount })}</strong>
         </SettingsCopy>
         <Button
-          className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+          className="justify-self-end border border-transparent bg-transparent text-foreground hover:bg-muted"
           disabled={busy || indexedCount === 0}
           onClick={() => void clear()}
         >
@@ -705,20 +682,26 @@ function LanguageSetting({
     <SettingsRow>
       <SettingsCopy>
         <strong>{tr("settings.language")}</strong>
-        <small>{tr("settings.languageDescription")}</small>
       </SettingsCopy>
-      <SelectControl
-        aria-label={tr("settings.language")}
-        className={settingsControlClass}
+      <Select
         value={runtime?.locale_preference ?? "system"}
-        onChange={(event) => void update(event.target.value as LocalePreference)}
+        onValueChange={(value) => {
+          if (value !== null) void update(String(value) as LocalePreference);
+        }}
       >
-        {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
-          <option key={locale} value={locale}>
-            {tr(`settings.language.${locale}`)}
-          </option>
-        ))}
-      </SelectControl>
+        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.language")}>
+          <SelectValue>
+            {tr(`settings.language.${runtime?.locale_preference ?? "system"}`)}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
+            <SelectItem key={locale} value={locale}>
+              {tr(`settings.language.${locale}`)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingsRow>
   );
 }
@@ -745,7 +728,7 @@ function ThemeSetting({
       <ToggleGroup
         spacing={0}
         variant="outline"
-        className="segmented-control shrink-0"
+        className="segmented-control w-max max-w-none shrink-0 justify-self-end max-[640px]:w-full max-[640px]:max-w-full"
         value={[selected]}
         onValueChange={(values) => {
           const theme = values[0];
@@ -785,7 +768,7 @@ export function AccentThemeSetting({
     <SettingsRow>
       <SettingsCopy>
         <strong>{tr("settings.accentTheme")}</strong>
-        <small>
+        <small className="sr-only">
           {tr(
             effectiveTheme === "dark"
               ? "settings.accentTheme.darkHint"
@@ -793,30 +776,34 @@ export function AccentThemeSetting({
           )}
         </small>
       </SettingsCopy>
-      <SelectControl
-        aria-label={tr("settings.accentTheme")}
-        className={settingsControlClass}
+      <Select
         value={selected}
-        onChange={(event) => {
-          const theme = event.target.value;
+        onValueChange={(value) => {
+          if (value === null) return;
+          const theme = String(value);
           if (
-            theme !== "black" &&
-            theme !== "sky" &&
+            theme !== "minimal-neutral" &&
+            theme !== "vtron" &&
             theme !== "claude" &&
-            theme !== "violet" &&
-            theme !== "emerald"
+            theme !== "sakura" &&
+            theme !== "ocean-breeze"
           )
             return;
           applyAccentTheme(theme);
           setSelected(theme);
         }}
       >
-        {(["black", "sky", "claude", "violet", "emerald"] as AccentTheme[]).map((theme) => (
-          <option key={theme} value={theme}>
-            {tr(`settings.accentTheme.${theme}`)}
-          </option>
-        ))}
-      </SelectControl>
+        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
+          <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
+            <SelectItem key={theme} value={theme}>
+              {tr(`settings.accentTheme.${theme}`)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </SettingsRow>
   );
 }
@@ -840,7 +827,7 @@ function AppIconSetting({
       <ToggleGroup
         spacing={0}
         variant="outline"
-        className="segmented-control shrink-0"
+        className="segmented-control shrink-0 justify-self-end"
         value={[selected]}
         onValueChange={(values) => {
           const icon = values[0];
@@ -854,11 +841,12 @@ function AppIconSetting({
             value={icon}
             className="segmented-control-item inline-flex h-9 min-h-9 min-w-[90px] items-center justify-center gap-1.5 px-3 text-sm"
           >
-            {icon === "white" ? (
-              <span className="size-4 rounded border border-border bg-white" aria-hidden="true" />
-            ) : (
-              <span className="size-4 rounded border border-border bg-black" aria-hidden="true" />
-            )}
+            <img
+              className="size-5 rounded-md object-cover"
+              src={appIconAssets[icon]}
+              alt=""
+              aria-hidden="true"
+            />
             {tr(`settings.appIcon.${icon}`)}
           </ToggleGroupItem>
         ))}
@@ -882,23 +870,34 @@ function CloseBehaviorSelect({
     : "settings.close.tray";
   const selected = value ?? "ask";
   return (
-    <SelectControl
-      aria-label={tr("settings.closeBehavior")}
-      className={settingsControlClass}
-      title={tr("settings.close.quitShortcut", { modifier })}
+    <Select
       value={selected}
-      onChange={(event) =>
-        void onChange(
-          event.target.value === "ask" ? undefined : (event.target.value as CloseBehavior),
-        )
-      }
+      onValueChange={(value) => {
+        if (value !== null)
+          void onChange(value === "ask" ? undefined : (String(value) as CloseBehavior));
+      }}
     >
-      <option value="ask">{tr("settings.close.ask")}</option>
-      <option value="minimize-to-tray" disabled={!trayAvailable}>
-        {tr(trayKey)}
-      </option>
-      <option value="quit">{tr("settings.close.quit")}</option>
-    </SelectControl>
+      <SelectTrigger
+        className={settingsControlClass}
+        aria-label={tr("settings.closeBehavior")}
+        title={tr("settings.close.quitShortcut", { modifier })}
+      >
+        <SelectValue>
+          {selected === "ask"
+            ? tr("settings.close.ask")
+            : selected === "quit"
+              ? tr("settings.close.quit")
+              : tr(trayKey)}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
+        <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
+          {tr(trayKey)}
+        </SelectItem>
+        <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -928,10 +927,7 @@ function GitIdentitySettings() {
     }
   };
   return (
-    <SettingGroup
-      title={tr("settings.gitIdentity")}
-      description={tr("settings.gitIdentityDescription")}
-    >
+    <SettingGroup title={tr("settings.gitIdentity")}>
       {error && (
         <SettingDetail variant="error" role="alert">
           {error}

@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app-store";
+import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
 
 export type SettingsSection =
   | "general"
@@ -44,6 +46,8 @@ export function SettingsSidebar(props: {
 }) {
   const { active, onSelect, onBack, collapsed } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
+  const sidebarPeek = useAppStore((state) => state.sidebarPeek);
+  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const sidebarId = useId();
 
   useEffect(() => {
@@ -54,6 +58,17 @@ export function SettingsSidebar(props: {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [mobileOpen]);
+
+  const handleSidebarMouseEnter = () => {
+    if (!collapsed) return;
+    clearSidebarPeekCloseTimer();
+    setSidebarPeek(true);
+  };
+
+  const handleSidebarMouseLeave = () => {
+    if (!collapsed) return;
+    scheduleSidebarPeekClose(setSidebarPeek);
+  };
 
   const select = (section: SettingsSection) => {
     setMobileOpen(false);
@@ -89,8 +104,11 @@ export function SettingsSidebar(props: {
         className={cn(
           "app-sidebar",
           collapsed && "app-sidebar-collapsed",
+          collapsed && sidebarPeek && "app-sidebar-peek",
           mobileOpen && "app-sidebar-open",
         )}
+        onPointerEnter={handleSidebarMouseEnter}
+        onPointerLeave={handleSidebarMouseLeave}
       >
         <div className="app-sidebar-content">
           <div className="app-sidebar-header">

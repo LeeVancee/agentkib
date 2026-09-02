@@ -22,13 +22,10 @@ const agentIcons: Record<AgentKind, string> = {
 
 export function AgentIcon({ agent }: { agent: AgentKind }) {
   return (
-    <div
-      className="grid size-9 place-items-center overflow-hidden rounded-xl border border-border bg-muted/50 p-1"
-      aria-hidden="true"
-    >
+    <div className="grid size-9 place-items-center overflow-hidden" aria-hidden="true">
       <img
         className={cn(
-          "block size-full object-contain",
+          "block size-8 object-contain",
           agent === "cursor" && "rounded-md bg-[#1d1d1f] p-1",
           agent === "opencode" && "dark:invert",
           agent === "hermes" && "opacity-[0.92] dark:invert",

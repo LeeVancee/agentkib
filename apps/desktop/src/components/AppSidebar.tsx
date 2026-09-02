@@ -19,6 +19,8 @@ import {
 import { tr } from "../core/i18n";
 import { cn } from "@/lib/utils";
 import { SidebarBrand } from "./SidebarBrand";
+import { useAppStore } from "@/stores/app-store";
+import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
 import {
   ariaShortcut,
   currentAppPlatform,
@@ -90,6 +92,8 @@ export function AppSidebar(props: {
 }) {
   const { active, entries, onNavigate, onSettings, collapsed, context } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
+  const sidebarPeek = useAppStore((state) => state.sidebarPeek);
+  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const [toolsOpen, setToolsOpen] = useState(
     () =>
       active === "catalog" ||
@@ -112,6 +116,17 @@ export function AppSidebar(props: {
         context?.kind === "global",
     );
   }, [active, context?.kind]);
+
+  const handleSidebarMouseEnter = () => {
+    if (!collapsed) return;
+    clearSidebarPeekCloseTimer();
+    setSidebarPeek(true);
+  };
+
+  const handleSidebarMouseLeave = () => {
+    if (!collapsed) return;
+    scheduleSidebarPeekClose(setSidebarPeek);
+  };
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -189,8 +204,11 @@ export function AppSidebar(props: {
         className={cn(
           "app-sidebar",
           collapsed && "app-sidebar-collapsed",
+          collapsed && sidebarPeek && "app-sidebar-peek",
           mobileOpen && "app-sidebar-open",
         )}
+        onPointerEnter={handleSidebarMouseEnter}
+        onPointerLeave={handleSidebarMouseLeave}
       >
         <div className="app-sidebar-content">
           <div className="app-sidebar-header">

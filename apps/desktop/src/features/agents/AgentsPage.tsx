@@ -1,5 +1,11 @@
 import { Input } from "@/components/ui/input";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -132,13 +138,7 @@ export function AgentsPage({
 
   return (
     <div className="grid gap-3 pb-8">
-      <section className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{tr("agents.managementTitle")}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {tr("agents.enabled")} · {tr("agents.available")}
-          </p>
-        </div>
+      <section className="flex flex-wrap items-center justify-end gap-2 border-b border-border pb-4">
         <div className="flex items-center gap-2">
           <label className="flex h-9 min-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3">
             <Search size={14} className="text-muted-foreground" />
@@ -149,15 +149,22 @@ export function AgentsPage({
               placeholder={tr("common.search")}
             />
           </label>
-          <SelectControl
-            className="h-9 rounded-lg border border-border bg-background px-3"
+          <Select
             value={agentSort}
-            onChange={(event) => setAgentSort(event.target.value as typeof agentSort)}
-            aria-label={tr("agents.status")}
+            onValueChange={(value) => {
+              if (value !== null) setAgentSort(String(value) as typeof agentSort);
+            }}
           >
-            <option value="status">{tr("agents.status")}</option>
-            <option value="name">{tr("agents.name")}</option>
-          </SelectControl>
+            <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
+              <SelectValue>
+                {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="status">{tr("agents.status")}</SelectItem>
+              <SelectItem value="name">{tr("agents.name")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </section>
       <div className="relative grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
@@ -238,28 +245,31 @@ export function AgentsPage({
               )}
             </div>
             {selected === "deepseek-harness" && <Badge variant="outline">Beta</Badge>}
-          </CardHeader>
-
-          <Tabs value={section} onValueChange={(value) => setSection(value as AgentDetailSection)}>
-            <TabsList
-              className="segmented-control w-full justify-start px-4"
-              variant="default"
-              aria-label={agentLabels[selected]}
+            <Tabs
+              value={section}
+              onValueChange={(value) => setSection(value as AgentDetailSection)}
+              className="shrink-0"
             >
-              {(agentSupportsInsights(selected)
-                ? (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
-                : (["overview", "assets", "workspaces"] as AgentDetailSection[])
-              ).map((value) => (
-                <TabsTrigger
-                  className="segmented-control-item h-9 min-h-9 flex-none px-3"
-                  value={value}
-                  key={value}
-                >
-                  {tr(`agents.section.${value}`)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+              <TabsList
+                className="segmented-control !h-auto w-fit justify-start"
+                variant="default"
+                aria-label={agentLabels[selected]}
+              >
+                {(agentSupportsInsights(selected)
+                  ? (["overview", "assets", "workspaces", "usage"] as AgentDetailSection[])
+                  : (["overview", "assets", "workspaces"] as AgentDetailSection[])
+                ).map((value) => (
+                  <TabsTrigger
+                    className="segmented-control-item h-9 min-h-9 flex-none px-3"
+                    value={value}
+                    key={value}
+                  >
+                    {tr(`agents.section.${value}`)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </CardHeader>
 
           {section === "overview" && (
             <div className="grid gap-5 p-5">
@@ -392,19 +402,31 @@ export function AgentsPage({
                   />
                 </label>
                 {assetKinds.length > 1 && (
-                  <SelectControl
-                    aria-label={tr("catalog.allTypes")}
-                    className="h-9 w-full md:w-auto md:min-w-[150px]"
+                  <Select
                     value={assetKind}
-                    onChange={(event) => setAssetKind(event.target.value)}
+                    onValueChange={(value) => {
+                      if (value !== null) setAssetKind(String(value));
+                    }}
                   >
-                    <option value="all">{tr("catalog.allTypes")}</option>
-                    {assetKinds.map((value) => (
-                      <option key={value} value={value}>
-                        {tr(`status.asset.${value}`)}
-                      </option>
-                    ))}
-                  </SelectControl>
+                    <SelectTrigger
+                      aria-label={tr("catalog.allTypes")}
+                      className="h-9 w-full md:w-auto md:min-w-[150px]"
+                    >
+                      <SelectValue>
+                        {assetKind === "all"
+                          ? tr("catalog.allTypes")
+                          : tr(`status.asset.${assetKind}`)}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
+                      {assetKinds.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {tr(`status.asset.${value}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
               </div>
               <div className="grid gap-2">

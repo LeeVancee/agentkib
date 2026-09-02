@@ -1,6 +1,6 @@
 import type { EffectiveTheme, ThemePreference } from "./types";
 
-export type AccentTheme = "black" | "sky" | "claude" | "violet" | "emerald";
+export type AccentTheme = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";
 
 const ACCENT_THEME_STORAGE_KEY = "agentkib.accent-theme";
 const EFFECTIVE_THEME_STORAGE_KEY = "agentkib.effective-theme";
@@ -39,13 +39,13 @@ export function cacheEffectiveTheme(theme: EffectiveTheme, preference?: ThemePre
 
 export function accentThemePreference(): AccentTheme {
   const value = window.localStorage.getItem(ACCENT_THEME_STORAGE_KEY);
-  return value === "black" ||
-    value === "sky" ||
+  return value === "minimal-neutral" ||
+    value === "vtron" ||
     value === "claude" ||
-    value === "violet" ||
-    value === "emerald"
+    value === "sakura" ||
+    value === "ocean-breeze"
     ? value
-    : "sky";
+    : "vtron";
 }
 
 export function applyAccentTheme(theme: AccentTheme) {

@@ -13,7 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -304,9 +310,6 @@ function CatalogPage({
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          {tr("catalog.portabilityDescription")}
-        </p>
       </section>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
@@ -527,7 +530,6 @@ function McpHubPage({
             STREAMABLE HTTP MCP HUB
           </span>
           <h2>{tr("mcp.title")}</h2>
-          <p>{tr("mcp.description")}</p>
         </div>
         <div className="grid gap-1.5 text-right text-sm text-muted-foreground">
           <span
@@ -545,7 +547,6 @@ function McpHubPage({
       <div className="grid gap-5 rounded-2xl border border-border bg-card p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_auto]">
         <div className="grid gap-1.5">
           <h2>{tr("mcp.network")}</h2>
-          <p>{tr("mcp.networkDescription")}</p>
         </div>
         <div className="flex flex-wrap items-end gap-4">
           <Label className="!grid gap-2">
@@ -572,20 +573,31 @@ function McpHubPage({
         <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
           <div className="grid gap-1.5">
             <h2>{tr("mcp.scope")}</h2>
-            <p>{tr("mcp.scopeDescription")}</p>
           </div>
-          <SelectControl
-            className="min-w-40 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            value={scope}
-            onChange={(event) => setScope(event.target.value)}
+          <Select
+            value={scope || "__global_scope__"}
+            onValueChange={(value) => {
+              if (value !== null) {
+                const nextScope = String(value);
+                setScope(nextScope === "__global_scope__" ? "" : nextScope);
+              }
+            }}
           >
-            <option value="">{tr("mcp.globalScope")}</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.path}>
-                {workspace.name}
-              </option>
-            ))}
-          </SelectControl>
+            <SelectTrigger className="min-w-40" aria-label={tr("mcp.scope")}>
+              <SelectValue>
+                {workspaces.find((workspace) => workspace.path === scope)?.name ??
+                  tr("mcp.globalScope")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.id} value={workspace.path}>
+                  {workspace.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       <McpServerEditor project={project} onSaved={load} />
@@ -599,7 +611,6 @@ function McpHubPage({
           <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
             <div className="grid gap-1.5">
               <h2>{tr("mcp.registry")}</h2>
-              <p>{tr("mcp.registryDescription")}</p>
             </div>
           </div>
           <div className="flex items-center gap-2 p-5">
@@ -653,7 +664,6 @@ function McpHubPage({
           <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
             <div className="grid gap-1.5">
               <h2>{tr("mcp.configured")}</h2>
-              <p>{tr("mcp.configuredDescription")}</p>
             </div>
             <Badge variant="outline">{servers.length}</Badge>
           </div>
@@ -780,7 +790,6 @@ function McpHubPage({
           <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
             <div className="grid gap-1.5">
               <h2>{tr("mcp.runtimes")}</h2>
-              <p>{tr("mcp.lazyRuntime")}</p>
             </div>
             <Button
               className="border border-transparent bg-transparent text-foreground hover:bg-muted"
@@ -906,7 +915,6 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
       <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
         <div className="grid gap-1.5">
           <h2>{tr("mcp.editor")}</h2>
-          <p>{tr("mcp.editorDescription")}</p>
         </div>
         <Button
           className="bg-primary text-primary-foreground hover:bg-primary/90"
@@ -951,9 +959,6 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
               spellCheck={false}
             />
           </Label>
-          <small className="text-sm leading-6 text-muted-foreground">
-            {tr("mcp.secretDescription")}
-          </small>
         </div>
       </div>
     </Card>
@@ -999,7 +1004,6 @@ function McpMigrationInventory({
       <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
         <div className="grid gap-1.5">
           <h2>{tr("mcp.migration")}</h2>
-          <p>{tr("mcp.migrationDescription")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button

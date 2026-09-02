@@ -4,12 +4,18 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useMemo, useState } from "react";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
@@ -52,6 +58,7 @@ function Assets({
   const [connectionName, setConnectionName] = useState("");
   const [transport, setTransport] = useState<"stdio" | "http">("stdio");
   const [endpoint, setEndpoint] = useState("");
+  const [instructionsMode, setInstructionsMode] = useState<"preview" | "edit">("preview");
   const nativeAssets = useMemo(() => groupWorkspaceAssets(scan.assets), [scan.assets]);
   const filtered = nativeAssets.filter((asset) =>
     `${asset.agents.join(" ")} ${asset.kind} ${asset.path}`
@@ -100,9 +107,13 @@ function Assets({
   ];
   return (
     <div className="grid gap-4">
-      <Tabs value={section} onValueChange={(value) => onSection(value as WorkspaceAssetSection)}>
+      <Tabs
+        className="min-w-0 max-w-full"
+        value={section}
+        onValueChange={(value) => onSection(value as WorkspaceAssetSection)}
+      >
         <TabsList
-          className="segmented-control w-full justify-start"
+          className="segmented-control w-fit max-w-full justify-start"
           variant="default"
           aria-label={tr("nav.assets")}
         >
@@ -126,18 +137,47 @@ function Assets({
               <strong>{tr("assets.sharedLayerEmpty")}</strong>
             </div>
           )}
-          <Label className="grid gap-2 p-4">
-            {tr("assets.sharedInstructions")}
-            <Textarea
-              value={manifest.instructions.shared}
-              onChange={(event) =>
-                onChange({
-                  ...manifest,
-                  instructions: { ...manifest.instructions, shared: event.target.value },
-                })
-              }
-            />
-          </Label>
+          <div className="grid gap-2 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-foreground">
+                {tr("assets.sharedInstructions")}
+              </span>
+              <Tabs
+                className="min-w-0"
+                value={instructionsMode}
+                onValueChange={(value) => setInstructionsMode(value as "preview" | "edit")}
+              >
+                <TabsList
+                  className="segmented-control w-fit justify-start"
+                  variant="default"
+                  aria-label={tr("assets.sharedInstructions")}
+                >
+                  <TabsTrigger className="segmented-control-item h-8 px-3 text-xs" value="preview">
+                    {tr("assets.preview")}
+                  </TabsTrigger>
+                  <TabsTrigger className="segmented-control-item h-8 px-3 text-xs" value="edit">
+                    {tr("common.edit")}
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            {instructionsMode === "preview" ? (
+              <MarkdownContent
+                content={manifest.instructions.shared || tr("assets.sharedLayerEmpty")}
+                className="min-h-48 rounded-xl border border-border bg-background px-4 py-3 text-sm [overflow-wrap:anywhere]"
+              />
+            ) : (
+              <Textarea
+                value={manifest.instructions.shared}
+                onChange={(event) =>
+                  onChange({
+                    ...manifest,
+                    instructions: { ...manifest.instructions, shared: event.target.value },
+                  })
+                }
+              />
+            )}
+          </div>
         </Card>
       )}
       {section === "skills" && (
@@ -222,13 +262,20 @@ function Assets({
               onChange={(event) => setConnectionName(event.target.value)}
               placeholder={tr("assets.name")}
             />
-            <SelectControl
+            <Select
               value={transport}
-              onChange={(event) => setTransport(event.target.value as "stdio" | "http")}
+              onValueChange={(value) => {
+                if (value === "stdio" || value === "http") setTransport(value);
+              }}
             >
-              <option value="stdio">stdio</option>
-              <option value="http">HTTP</option>
-            </SelectControl>
+              <SelectTrigger>
+                <SelectValue>{transport === "stdio" ? "stdio" : "HTTP"}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stdio">stdio</SelectItem>
+                <SelectItem value="http">HTTP</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               value={endpoint}
               onChange={(event) => setEndpoint(event.target.value)}

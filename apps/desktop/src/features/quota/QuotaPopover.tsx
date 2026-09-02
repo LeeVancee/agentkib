@@ -236,9 +236,6 @@ export function QuotaPopover() {
           <div className="grid min-h-[300px] place-content-center justify-items-center gap-2 text-center text-muted-foreground">
             <Gauge size={25} />
             <strong className="text-sm text-foreground">{tr("quota.popoverEmpty")}</strong>
-            <small className="max-w-[270px] text-xs leading-relaxed">
-              {tr("quota.popoverEmptyHint")}
-            </small>
           </div>
         )}
         {selected && (

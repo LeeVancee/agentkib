@@ -128,43 +128,38 @@ export function GlobalHome({
         />
       )}
 
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[2rem] font-semibold tracking-[-.04em]">{tr("home.todayTitle")}</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">{tr("home.todaySubtitle")}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
+          <Button
+            variant="bare"
+            className="h-auto gap-2 rounded-md px-2 py-1 font-semibold text-primary hover:bg-primary/10 hover:text-primary"
+            onClick={onShowWorkspaces}
+          >
+            <CircleAlert size={16} />
+            {tr("home.issueSummary", { count: issueCount })}
+          </Button>
+          {metrics.map(({ label, value, onClick }) => (
+            <Button
+              key={label}
+              variant="bare"
+              size="content"
+              className="h-auto gap-1.5 rounded-md px-2 py-1 text-sm hover:bg-primary/10 hover:text-primary"
+              onClick={onClick}
+            >
+              <strong className="tabular-nums">{value}</strong>
+              <span className="text-muted-foreground">{label}</span>
+            </Button>
+          ))}
+          <span className="ml-auto text-xs text-muted-foreground">
+            {discovery
+              ? tr("home.updated", { time: relativeTime(discovery.finished_at) })
+              : tr("home.discovering")}
+          </span>
         </div>
-        <Button className="gap-2" onClick={onRefresh}>
+        <Button className="shrink-0 gap-2" onClick={onRefresh}>
           <RefreshCw size={15} />
           {tr("common.refresh")}
         </Button>
-      </header>
-
-      <div className="flex min-h-14 flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/55 px-5 py-3 text-sm">
-        <Button
-          variant="link"
-          className="h-auto gap-2 p-0 font-semibold text-blue-600"
-          onClick={onShowWorkspaces}
-        >
-          <CircleAlert size={16} />
-          {tr("home.issueSummary", { count: issueCount })}
-        </Button>
-        {metrics.map(({ label, value, onClick }) => (
-          <Button
-            key={label}
-            variant="bare"
-            size="content"
-            className="h-auto gap-1.5 p-0 text-sm hover:text-foreground"
-            onClick={onClick}
-          >
-            <strong className="tabular-nums">{value}</strong>
-            <span className="text-muted-foreground">{label}</span>
-          </Button>
-        ))}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {discovery
-            ? tr("home.updated", { time: relativeTime(discovery.finished_at) })
-            : tr("home.discovering")}
-        </span>
       </div>
 
       {!workspaces.length ? (
@@ -183,9 +178,6 @@ export function GlobalHome({
               <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
                 <div>
                   <h2 className="text-base font-semibold">{tr("home.continueWork")}</h2>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {tr("home.continueWorkDetail")}
-                  </p>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -241,7 +233,7 @@ export function GlobalHome({
                           key={workspace.id}
                           onClick={() => void onOpenDoctor(workspace)}
                         >
-                          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-blue-500/10 text-blue-600">
+                          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
                             <CircleAlert size={16} />
                           </span>
                           <span className="min-w-0 flex-1">
@@ -289,15 +281,8 @@ export function GlobalHome({
                     </span>
                     <span className="min-w-0 flex-1">
                       <strong className="block text-sm">{tr("home.allClear")}</strong>
-                      <small className="mt-1 block text-xs text-muted-foreground">
-                        {tr("home.allClearDescription")}
-                      </small>
                     </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void onOpenDoctor(workspaces[0])}
-                    >
+                    <Button variant="outline" onClick={() => void onOpenDoctor(workspaces[0])}>
                       <ShieldCheck size={14} />
                       {tr("home.openDoctor")}
                     </Button>
@@ -311,7 +296,7 @@ export function GlobalHome({
                 <h2 className="text-base font-semibold">{tr("home.recentActivity")}</h2>
                 <Button
                   variant="link"
-                  className="h-auto p-0 text-xs text-blue-600"
+                  className="h-auto p-0 text-xs text-primary"
                   onClick={onShowInsights}
                 >
                   {tr("home.viewAll")}
@@ -342,13 +327,13 @@ export function GlobalHome({
               <h2 className="text-base font-semibold">{tr("home.recentWorkspaces")}</h2>
               <Button
                 variant="link"
-                className="h-auto p-0 text-xs text-blue-600"
+                className="h-auto p-0 text-xs text-primary"
                 onClick={onShowWorkspaces}
               >
                 {tr("home.viewAll")}
               </Button>
             </CardHeader>
-            <CardContent className="p-0">
+            <CardContent className="divide-y divide-border p-0">
               {workspaces.slice(0, 3).map((workspace) => (
                 <WorkspaceRow
                   key={workspace.id}
@@ -357,8 +342,8 @@ export function GlobalHome({
                   onOpen={onOpen}
                 />
               ))}
-              <div className="border-t border-border px-5 py-4">
-                <Button size="sm" className="gap-1.5" onClick={() => void onAddRoot()}>
+              <div className="px-5 py-4">
+                <Button className="gap-1.5" onClick={() => void onAddRoot()}>
                   <Plus size={14} />
                   {tr("home.createWorkspace")}
                 </Button>
@@ -392,7 +377,7 @@ function WorkspaceRow({
     <Button
       variant="bare"
       size="content"
-      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-5 py-4 text-left last:border-b-0 hover:bg-muted/40"
+      className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 text-left hover:bg-muted/40"
       onClick={() => void onOpen(workspace)}
     >
       <div className="grid size-9 place-items-center rounded-lg text-emerald-700">
@@ -408,7 +393,7 @@ function WorkspaceRow({
         </span>
       </div>
       {workspace.status === "attention" ? (
-        <Badge variant="secondary" className="gap-1 bg-blue-500/10 text-blue-600">
+        <Badge variant="secondary" className="gap-1 bg-primary/10 text-primary">
           <CircleAlert size={13} />
           {workspaceStatusLabel("attention")}
         </Badge>

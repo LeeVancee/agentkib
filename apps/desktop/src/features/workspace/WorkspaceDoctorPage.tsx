@@ -100,7 +100,6 @@ export function WorkspaceDoctorPage({
           </span>
           <h2>{tr("doctor.title")}</h2>
           {conclusion && <strong className="mt-1 block text-sm">{conclusion}</strong>}
-          <p>{tr("doctor.description")}</p>
         </div>
         <div className="flex gap-2">
           <Badge

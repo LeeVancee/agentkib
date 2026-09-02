@@ -5,6 +5,7 @@ import {
   Download,
   ExternalLink,
   FolderGit2,
+  FolderPlus,
   GitCommitHorizontal,
   History,
   Keyboard,
@@ -210,9 +211,10 @@ export function GlobalSettings({
           <SettingGroup title={tr("settings.scanRoots")}>
             <div className="flex justify-end border-b border-border/60 px-5 py-3">
               <Button
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                className="gap-2"
                 onClick={() => void onAddRoot()}
               >
+                <FolderPlus size={15} />
                 {tr("settings.addFolder")}
               </Button>
             </div>

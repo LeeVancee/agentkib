@@ -237,7 +237,7 @@ describe("SkillHubPage", () => {
     expect(mocks.discoverSkills).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a successful rollback result when the following refresh fails", async () => {
+  it("keeps a successful rollback and refresh error while refreshing the catalog", async () => {
     const current = {
       name: "reviewer",
       display_name: "reviewer",
@@ -251,6 +251,11 @@ describe("SkillHubPage", () => {
       .mockResolvedValueOnce([current])
       .mockRejectedValue(new Error("refresh failed"));
     mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
     mocks.rollbackSkill.mockResolvedValue({
       ...current,
       description: "Previous version",
@@ -269,11 +274,15 @@ describe("SkillHubPage", () => {
       </AppDialogProvider>,
     );
 
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await waitFor(() => expect(mocks.skillCatalog).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("tab", { name: /Library/ }));
     await user.click(await screen.findByRole("button", { name: "Roll back" }));
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(await screen.findByText("Previous version")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Roll back" })).toBeNull();
     expect(await screen.findByText(/refresh failed|reload failed/)).toBeTruthy();
+    expect(mocks.skillCatalog).toHaveBeenCalledTimes(2);
   });
 });

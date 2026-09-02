@@ -110,13 +110,16 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     setRemoved(nextRemoved);
   };
 
-  const loadCatalog = async (force = false) => {
+  const loadCatalog = async (force = false, reportError = true) => {
     setBusy("catalog");
-    setError("");
+    if (reportError) setError("");
     try {
       setCatalog(await api.skillCatalog(force));
+      return undefined;
     } catch (nextError) {
-      setError(localizeMessage(nextError));
+      const message = localizeMessage(nextError);
+      if (reportError) setError(message);
+      return message;
     } finally {
       setBusy(undefined);
     }
@@ -151,12 +154,15 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   };
 
   const refreshAfterMutation = async () => {
-    try {
-      await Promise.all([loadLibrary(), onReload()]);
-    } catch (nextError) {
-      setError(localizeMessage(nextError));
+    const refreshResults = await Promise.allSettled([loadLibrary(), onReload()]);
+    const refreshErrors = refreshResults.flatMap((result) =>
+      result.status === "rejected" ? [localizeMessage(result.reason)] : [],
+    );
+    if (catalog) {
+      const catalogError = await loadCatalog(true, false);
+      if (catalogError) refreshErrors.push(catalogError);
     }
-    if (catalog) await loadCatalog(true);
+    if (refreshErrors.length) setError(refreshErrors.join(" · "));
   };
 
   const prepareInstall = (candidate: SkillCandidate) =>

@@ -752,11 +752,7 @@ impl SkillHub {
             "Skill package exceeds the 512 file limit"
         );
         let entrypoint = package.join("SKILL.md");
-        let entry_content = fs::read_to_string(&entrypoint).context("SKILL.md must be UTF-8")?;
-        ensure!(
-            entry_content.len() as u64 <= MAX_SKILL_ENTRY_BYTES,
-            "SKILL.md exceeds the 1 MiB limit"
-        );
+        let entry_content = read_skill_entrypoint(&entrypoint)?;
         let metadata = parse_skill_frontmatter(&entry_content)?;
         if let Some(installed_name) = installed_name {
             ensure!(
@@ -1799,7 +1795,34 @@ fn parse_skill_frontmatter(content: &str) -> Result<SkillFrontmatter> {
             "Skill compatibility exceeds 500 characters"
         );
     }
+    if let Some(license) = metadata.license.as_deref() {
+        ensure!(license.len() <= 256, "Skill license exceeds 256 characters");
+    }
     Ok(metadata)
+}
+
+fn read_skill_entrypoint(path: &Path) -> Result<String> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Could not inspect {}", path.display()))?;
+    ensure!(
+        metadata.file_type().is_file() && !platform_path::is_reparse_or_symlink(path)?,
+        "SKILL.md must be a regular file"
+    );
+    ensure!(
+        metadata.len() <= MAX_SKILL_ENTRY_BYTES,
+        "SKILL.md exceeds the 1 MiB limit"
+    );
+    let mut content = String::with_capacity(metadata.len() as usize);
+    fs::File::open(path)
+        .with_context(|| format!("Could not open {}", path.display()))?
+        .take(MAX_SKILL_ENTRY_BYTES + 1)
+        .read_to_string(&mut content)
+        .context("SKILL.md must be UTF-8")?;
+    ensure!(
+        content.len() as u64 <= MAX_SKILL_ENTRY_BYTES,
+        "SKILL.md exceeds the 1 MiB limit"
+    );
+    Ok(content)
 }
 
 fn validate_skill_name(name: &str) -> Result<()> {
@@ -1969,7 +1992,7 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
         };
         let record = lock.skills.get(&name);
         let entrypoint = entry.path().join("SKILL.md");
-        let content = fs::read_to_string(&entrypoint).ok();
+        let content = read_skill_entrypoint(&entrypoint).ok();
         if content.is_none() && record.is_none() {
             continue;
         }
@@ -2019,7 +2042,7 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
 }
 
 fn skill_display_name(root: &Path, fallback: &str) -> String {
-    fs::read_to_string(root.join("SKILL.md"))
+    read_skill_entrypoint(&root.join("SKILL.md"))
         .ok()
         .and_then(|content| parse_skill_frontmatter(&content).ok())
         .map(|metadata| metadata.name)
@@ -2027,7 +2050,7 @@ fn skill_display_name(root: &Path, fallback: &str) -> String {
 }
 
 fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> InstalledSkill {
-    let content = fs::read_to_string(target.join("SKILL.md")).ok();
+    let content = read_skill_entrypoint(&target.join("SKILL.md")).ok();
     let metadata = content
         .as_deref()
         .and_then(|content| parse_skill_frontmatter(content).ok());
@@ -2073,7 +2096,7 @@ fn managed_skill_result(
     lock: &SkillLockEntry,
     can_rollback: bool,
 ) -> Result<InstalledSkill> {
-    let content = fs::read_to_string(package_root.join("SKILL.md"))?;
+    let content = read_skill_entrypoint(&package_root.join("SKILL.md"))?;
     let metadata = parse_skill_frontmatter(&content)?;
     let package = package_hash(package_root)?;
     Ok(InstalledSkill {
@@ -2423,6 +2446,26 @@ mod tests {
         assert!(
             parse_skill_frontmatter("---\nname: reviewer\ndescription: x\n---invalid\n").is_err()
         );
+        let oversized_license = format!(
+            "---\nname: reviewer\ndescription: x\nlicense: {}\n---\n",
+            "x".repeat(257)
+        );
+        assert!(parse_skill_frontmatter(&oversized_license).is_err());
+    }
+
+    #[test]
+    fn installed_library_rejects_an_oversized_skill_entrypoint_before_reading_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let skill = directory.path().join("skills/oversized");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            vec![b'x'; MAX_SKILL_ENTRY_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        assert!(read_skill_entrypoint(&skill.join("SKILL.md")).is_err());
+        assert!(list_installed(directory.path()).unwrap().is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -14,7 +14,7 @@ import type {
   AgentToolStatus,
 } from "@/core/types";
 import { AgentToolsSettings } from "./AgentToolsSettings";
-import { refreshAgentTools, useAgentTools } from "./agent-tools-query";
+import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import { api } from "@/core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 
@@ -22,6 +22,7 @@ vi.mock("./agent-tools-query", () => ({
   agentToolsKey: ["settings", "agent-tools"],
   useAgentTools: vi.fn(),
   refreshAgentTools: vi.fn(),
+  acquireAgentToolsExecution: vi.fn(),
 }));
 
 vi.mock("@/core/api", () => ({
@@ -122,6 +123,16 @@ function renderSettings() {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
+    resolve = complete;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("AgentToolsSettings", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
@@ -147,6 +158,7 @@ describe("AgentToolsSettings", () => {
       completed_at: "2026-09-02T08:01:00Z",
     });
     vi.mocked(refreshAgentTools).mockReset().mockResolvedValue(snapshot);
+    vi.mocked(acquireAgentToolsExecution).mockReset().mockResolvedValue(vi.fn());
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -296,6 +308,122 @@ describe("AgentToolsSettings", () => {
     });
   });
 
+  it("abandons an update that acquires the execution gate after unmount", async () => {
+    let finishAcquire!: (release: () => void) => void;
+    const release = vi.fn();
+    vi.mocked(acquireAgentToolsExecution).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishAcquire = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <AgentToolsSettings currentVersion="0.7.0" updatesEnabled />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Update" }));
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>{null}</AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => finishAcquire(release));
+
+    await waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(api.executeAgentTool).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("does not execute after the tools page unmounts during confirmation", async () => {
+    const release = vi.fn();
+    vi.mocked(acquireAgentToolsExecution).mockResolvedValueOnce(release);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <AgentToolsSettings currentVersion="0.7.0" updatesEnabled />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Update" }));
+    expect(await screen.findByText(/npm install -g @openai\/codex@1\.1\.0/)).toBeTruthy();
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>{null}</AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(api.executeAgentTool).not.toHaveBeenCalled();
+  });
+
+  it("does not report an execution failure after the tools page unmounts", async () => {
+    const pendingExecution = deferred<AgentToolExecutionResult>();
+    vi.mocked(api.executeAgentTool).mockReturnValueOnce(pendingExecution.promise);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <AgentToolsSettings currentVersion="0.7.0" updatesEnabled />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Update" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(api.executeAgentTool).toHaveBeenCalledOnce());
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>{null}</AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      pendingExecution.reject(new Error("execution failed"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: "OK" })).toBeNull();
+  });
+
+  it("does not report a post-update refresh failure after unmount", async () => {
+    const pendingRefresh = deferred<AgentToolSnapshot>();
+    vi.mocked(refreshAgentTools).mockReturnValueOnce(pendingRefresh.promise);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <AgentToolsSettings currentVersion="0.7.0" updatesEnabled />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Update" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(refreshAgentTools).toHaveBeenCalledOnce());
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>{null}</AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      pendingRefresh.reject(new Error("refresh failed"));
+      await Promise.resolve();
+    });
+
+    expect(useWorkspaceStore.getState().message).toBe("");
+    expect(screen.queryByRole("button", { name: "OK" })).toBeNull();
+  });
+
   it("reports a failed refresh after a single update", async () => {
     vi.mocked(refreshAgentTools).mockRejectedValueOnce(new Error("detection unavailable"));
     const user = userEvent.setup();
@@ -388,5 +516,36 @@ describe("AgentToolsSettings", () => {
     await user.click(await screen.findByRole("button", { name: "OK" }));
     expect(useWorkspaceStore.getState().message).toContain("batch detection unavailable");
     expect(api.executeAgentTool).toHaveBeenCalledOnce();
+  });
+
+  it("does not report a post-batch refresh failure after unmount", async () => {
+    const pendingRefresh = deferred<AgentToolSnapshot>();
+    vi.mocked(refreshAgentTools).mockReturnValueOnce(pendingRefresh.promise);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>
+          <AgentToolsSettings currentVersion="0.7.0" updatesEnabled />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Review and update (1)" }));
+    await user.click(screen.getByRole("button", { name: "Run all updates" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(refreshAgentTools).toHaveBeenCalledOnce());
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <AppDialogProvider>{null}</AppDialogProvider>
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      pendingRefresh.reject(new Error("batch refresh failed"));
+      await Promise.resolve();
+    });
+
+    expect(useWorkspaceStore.getState().message).toBe("");
+    expect(screen.queryByRole("button", { name: "OK" })).toBeNull();
   });
 });

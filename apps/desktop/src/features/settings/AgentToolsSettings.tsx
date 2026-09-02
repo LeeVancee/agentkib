@@ -53,7 +53,7 @@ import type {
 } from "@/core/types";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { refreshAgentTools, useAgentTools } from "./agent-tools-query";
+import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import { SettingsNotice } from "./components/SettingsLayout";
 
 const PROJECT_URL = "https://github.com/starroyhq/agentkib";
@@ -105,6 +105,13 @@ export function AgentToolsSettings({
   const [copyNotice, setCopyNotice] = useState("");
   const [executingAgent, setExecutingAgent] = useState<AgentKind>();
   const executionLock = useRef(false);
+  const lifecycleGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      lifecycleGeneration.current += 1;
+    },
+    [],
+  );
   const tools = (toolsQuery.data?.tools ?? []).filter((tool) => MANAGED_AGENTS.has(tool.agent));
   const diagnostics = tools.filter(
     (tool) =>
@@ -149,15 +156,23 @@ export function AgentToolsSettings({
     confirm = true,
   ): Promise<AgentToolExecutionResult | undefined> => {
     if (executionLock.current) return undefined;
+    const generation = lifecycleGeneration.current;
+    const isCurrent = () => generation === lifecycleGeneration.current;
     executionLock.current = true;
     setExecutingAgent(tool.agent);
+    const releaseExecution = await acquireAgentToolsExecution();
+    if (!releaseExecution || !isCurrent()) {
+      releaseExecution?.();
+      executionLock.current = false;
+      if (isCurrent()) setExecutingAgent(undefined);
+      return undefined;
+    }
     try {
       const installation =
         tool.installations.find((candidate) => candidate.id === action.installation_id) ??
         primaryInstallation(tool);
-      if (
-        confirm &&
-        !(await dialogs.confirm({
+      if (confirm) {
+        const confirmed = await dialogs.confirm({
           title: tr("settings.tools.executeTitle"),
           description: tr("settings.tools.executeConfirm", {
             agent: agentLabels[tool.agent],
@@ -168,17 +183,20 @@ export function AgentToolsSettings({
             manager: action.manager_path ?? tr("settings.tools.managerMissing"),
             command: action.command ?? "—",
           }),
-        }))
-      ) {
-        return undefined;
+        });
+        if (!confirmed || !isCurrent()) return undefined;
       }
+      if (!isCurrent()) return undefined;
       setGlobalMessage("");
       const result = await api.executeAgentTool(tool.agent, action.id);
+      releaseExecution();
+      if (!isCurrent()) return result;
       try {
         await refreshAgentTools(queryClient);
       } catch (error) {
-        setGlobalMessage(localizeMessage(error));
+        if (isCurrent()) setGlobalMessage(localizeMessage(error));
       }
+      if (!isCurrent()) return result;
       if (confirm) {
         await dialogs.notify({
           title: tr(`settings.tools.result.${result.status}`),
@@ -188,7 +206,7 @@ export function AgentToolsSettings({
       }
       return result;
     } catch (error) {
-      if (confirm) {
+      if (confirm && isCurrent()) {
         await dialogs.notify({
           title: tr("settings.tools.result.failed"),
           description: localizeMessage(error),
@@ -197,28 +215,35 @@ export function AgentToolsSettings({
       }
       return undefined;
     } finally {
+      releaseExecution();
       executionLock.current = false;
-      setExecutingAgent(undefined);
+      if (isCurrent()) setExecutingAgent(undefined);
     }
   };
 
   const executeBatch = async () => {
     if (!upgrades.length || executionLock.current) return;
+    const generation = lifecycleGeneration.current;
+    const isCurrent = () => generation === lifecycleGeneration.current;
     executionLock.current = true;
+    const releaseExecution = await acquireAgentToolsExecution();
+    if (!releaseExecution || !isCurrent()) {
+      releaseExecution?.();
+      executionLock.current = false;
+      return;
+    }
     try {
-      if (
-        !(await dialogs.confirm({
-          title: tr("settings.tools.batchExecuteTitle"),
-          description: tr("settings.tools.batchExecuteConfirm", { count: upgrades.length }),
-        }))
-      ) {
-        return;
-      }
+      const confirmed = await dialogs.confirm({
+        title: tr("settings.tools.batchExecuteTitle"),
+        description: tr("settings.tools.batchExecuteConfirm", { count: upgrades.length }),
+      });
+      if (!confirmed || !isCurrent()) return;
       setGlobalMessage("");
       setBatchOpen(false);
       const results: AgentToolExecutionResult[] = [];
       let requestFailures = 0;
       for (const { tool, action } of upgrades) {
+        if (!isCurrent()) return;
         setExecutingAgent(tool.agent);
         try {
           results.push(await api.executeAgentTool(tool.agent, action.id));
@@ -226,11 +251,14 @@ export function AgentToolsSettings({
           requestFailures += 1;
         }
       }
+      releaseExecution();
+      if (!isCurrent()) return;
       try {
         await refreshAgentTools(queryClient);
       } catch (error) {
-        setGlobalMessage(localizeMessage(error));
+        if (isCurrent()) setGlobalMessage(localizeMessage(error));
       }
+      if (!isCurrent()) return;
       const succeeded = results.filter((result) => result.status === "succeeded").length;
       await dialogs.notify({
         title: tr("settings.tools.batchResultTitle"),
@@ -241,8 +269,9 @@ export function AgentToolsSettings({
         tone: succeeded === upgrades.length ? "default" : "warning",
       });
     } finally {
+      releaseExecution();
       executionLock.current = false;
-      setExecutingAgent(undefined);
+      if (isCurrent()) setExecutingAgent(undefined);
     }
   };
 

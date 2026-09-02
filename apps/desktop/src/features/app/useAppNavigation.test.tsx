@@ -18,6 +18,7 @@ const testDoubles = vi.hoisted(() => ({
   requestSecrets: vi.fn(),
   open: vi.fn(),
   agentTools: vi.fn(),
+  requestRefresh: vi.fn(),
   location: { pathname: "/" },
   search: {} as Record<string, string>,
 }));
@@ -53,7 +54,10 @@ describe("useAppNavigation guards", () => {
       configurable: true,
       value: {
         shell: { openDirectory: testDoubles.open },
-        home: { agentTools: testDoubles.agentTools },
+        home: {
+          agentTools: testDoubles.agentTools,
+          refreshDiscovery: testDoubles.requestRefresh,
+        },
       },
     });
     useAppStore.getState().reset();
@@ -63,6 +67,7 @@ describe("useAppNavigation guards", () => {
     testDoubles.confirm.mockReset().mockResolvedValue(false);
     testDoubles.open.mockReset();
     testDoubles.agentTools.mockReset();
+    testDoubles.requestRefresh.mockReset().mockResolvedValue(undefined);
     testDoubles.location.pathname = "/";
     testDoubles.search = {};
   });
@@ -258,7 +263,7 @@ describe("useAppNavigation guards", () => {
     queryClient.clear();
   });
 
-  it("clears a previous tool refresh error and updates the cache", async () => {
+  it("prioritizes a tools settings refresh over retained workspace state", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -266,16 +271,96 @@ describe("useAppNavigation guards", () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const snapshot = { tools: [], detected_at: "2026-09-03T00:00:00Z" };
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
     testDoubles.location.pathname = "/settings";
     testDoubles.search = { settingsSection: "tools" };
     testDoubles.agentTools.mockResolvedValueOnce(snapshot);
-    useWorkspaceStore.setState({ message: "previous error" });
+    const manifest = {} as Manifest;
+    useWorkspaceStore.setState({
+      message: "previous error",
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+    });
     const { result } = renderHook(() => useAppNavigation(), { wrapper });
 
     await act(async () => result.current.refreshCurrentView());
 
     expect(useWorkspaceStore.getState().message).toBe("");
     expect(queryClient.getQueryData(["settings", "agent-tools"])).toBe(snapshot);
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
+    expect(useWorkspaceStore.getState().project).toBe(workspace.path);
+    expect(useWorkspaceStore.getState().manifest).toBe(manifest);
     queryClient.clear();
+  });
+
+  it("clears stale workspace busy state when opening settings without discarding the draft", () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const manifest = {} as Manifest;
+    const draft = {} as Manifest;
+    useWorkspaceStore.setState({
+      busy: true,
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+      baselineManifest: '{"version":0}',
+      workspaceDrafts: { [workspace.id]: draft },
+    });
+    testDoubles.location.pathname = "/workspace/workspace-1";
+    const { rerender } = renderHook(() => useAppNavigation());
+
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    rerender();
+
+    const state = useWorkspaceStore.getState();
+    expect(state.busy).toBe(false);
+    expect(state.selectedWorkspace).toBe(workspace);
+    expect(state.project).toBe(workspace.path);
+    expect(state.manifest).toBe(manifest);
+    expect(state.baselineManifest).toBe('{"version":0}');
+    expect(state.workspaceDrafts[workspace.id]).toBe(draft);
+  });
+
+  it("refreshes the home route instead of retained workspace state", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const manifest = {} as Manifest;
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+    });
+    testDoubles.location.pathname = "/";
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(testDoubles.requestRefresh).toHaveBeenCalledWith(true);
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
+    expect(useWorkspaceStore.getState().manifest).toBe(manifest);
   });
 });

@@ -247,8 +247,11 @@ export function useAppNavigation() {
   );
 
   useEffect(() => {
-    if (route.kind !== "workspace") workspaceOpenRequest.current += 1;
-  }, [route.kind]);
+    if (route.kind !== "workspace") {
+      workspaceOpenRequest.current += 1;
+      setBusy(false);
+    }
+  }, [route.kind, setBusy]);
   useEffect(() => {
     if (
       route.kind !== "workspace" ||
@@ -344,10 +347,6 @@ export function useAppNavigation() {
   };
 
   const refreshCurrentView = async () => {
-    if (selectedWorkspace && project && manifest) {
-      await load(project, manifest);
-      return;
-    }
     if (appMode === "settings") {
       if (settingsSection === "discovery") await requestRefreshKinds(["discovery"]);
       else if (settingsSection === "tools") {
@@ -361,6 +360,10 @@ export function useAppNavigation() {
       else if (settingsSection === "diagnostics")
         await requestRefreshKinds(["discovery", "insights", "gateways", "quota"]);
       else await loadGlobal();
+      return;
+    }
+    if (route.kind === "workspace" && selectedWorkspace && project && manifest) {
+      await load(project, manifest);
       return;
     }
     if (globalPage === "quota") await requestRefreshKinds(["quota"]);

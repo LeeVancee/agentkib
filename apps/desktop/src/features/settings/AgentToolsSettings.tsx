@@ -30,7 +30,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { SelectControl } from "@/components/ui/select-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
 import { formatDateTime, localizeMessage, tr } from "@/core/i18n";
@@ -363,19 +369,28 @@ export function AgentToolsSettings({
               <TerminalSquare size={18} />
               {tr("settings.tools.manualCommand")}
             </h3>
-            <SelectControl
-              aria-label={tr("settings.tools.selectAgent")}
-              className="h-8 min-w-44"
-              value={selectedAgent}
-              onChange={(event) => setSelectedAgent(event.target.value as AgentKind)}
+            <Select
+              value={selectedAgent || "none"}
+              onValueChange={(value) =>
+                setSelectedAgent(
+                  value === "none" || value === null ? "" : (String(value) as AgentKind),
+                )
+              }
             >
-              <option value="">{tr("settings.tools.selectAgent")}</option>
-              {tools.map((tool) => (
-                <option key={tool.agent} value={tool.agent}>
-                  {agentLabels[tool.agent]}
-                </option>
-              ))}
-            </SelectControl>
+              <SelectTrigger className="h-8 min-w-44" aria-label={tr("settings.tools.selectAgent")}>
+                <SelectValue>
+                  {selectedAgent ? agentLabels[selectedAgent] : tr("settings.tools.selectAgent")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">{tr("settings.tools.selectAgent")}</SelectItem>
+                {tools.map((tool) => (
+                  <SelectItem key={tool.agent} value={tool.agent}>
+                    {agentLabels[tool.agent]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="mt-3 flex min-h-16 items-center justify-between gap-3 rounded-xl border bg-muted/35 px-3 py-2">
             {selectedTool?.actions[0]?.command ? (
@@ -513,18 +528,27 @@ function AgentToolCard({
         </div>
       </dl>
       {tool.actions.length > 1 && (
-        <SelectControl
-          aria-label={tr("settings.tools.selectChannel")}
-          className="mt-1 h-7 w-full text-xs"
+        <Select
           value={action?.id ?? ""}
-          onChange={(event) => setSelectedActionId(event.target.value)}
+          onValueChange={(value) => {
+            if (value !== null) setSelectedActionId(String(value));
+          }}
         >
-          {tool.actions.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {channelLabel(candidate.channel)}
-            </option>
-          ))}
-        </SelectControl>
+          <SelectTrigger
+            size="sm"
+            className="mt-1 h-7 w-full text-xs"
+            aria-label={tr("settings.tools.selectChannel")}
+          >
+            <SelectValue>{channelLabel(action?.channel ?? tool.channel)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {tool.actions.map((candidate) => (
+              <SelectItem key={candidate.id} value={candidate.id}>
+                {channelLabel(candidate.channel)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       )}
       <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={path}>
         {path ?? tr("settings.tools.executableMissing")}

@@ -16,6 +16,7 @@ import type {
 import { AgentToolsSettings } from "./AgentToolsSettings";
 import { refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import { api } from "@/core/api";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 
 vi.mock("./agent-tools-query", () => ({
   agentToolsKey: ["settings", "agent-tools"],
@@ -125,6 +126,7 @@ describe("AgentToolsSettings", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
   beforeEach(() => {
+    useWorkspaceStore.getState().resetWorkspace();
     vi.mocked(useAgentTools).mockReturnValue({
       data: snapshot,
       error: null,
@@ -144,7 +146,7 @@ describe("AgentToolsSettings", () => {
       after_version: "1.1.0",
       completed_at: "2026-09-02T08:01:00Z",
     });
-    vi.mocked(refreshAgentTools).mockResolvedValue(snapshot);
+    vi.mocked(refreshAgentTools).mockReset().mockResolvedValue(snapshot);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -233,7 +235,7 @@ describe("AgentToolsSettings", () => {
     expect(screen.getByText("PATH default")).toBeTruthy();
     expect(screen.getByText("Not runnable")).toBeTruthy();
     expect(screen.getByText("Version probe failed")).toBeTruthy();
-    expect(screen.getByText(/Resolved target: .*node_modules\/\@openai\/codex/)).toBeTruthy();
+    expect(screen.getByText(/Resolved target: .*node_modules\/@openai\/codex/)).toBeTruthy();
     expect(screen.getByText(/\.nvm\/versions\/node\/v22\/bin\/npm/)).toBeTruthy();
   });
 
@@ -294,6 +296,30 @@ describe("AgentToolsSettings", () => {
     });
   });
 
+  it("reports a failed refresh after a single update", async () => {
+    vi.mocked(refreshAgentTools).mockRejectedValueOnce(new Error("detection unavailable"));
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Update" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await user.click(await screen.findByRole("button", { name: "OK" }));
+    expect(useWorkspaceStore.getState().message).toContain("detection unavailable");
+    expect(api.executeAgentTool).toHaveBeenCalledOnce();
+  });
+
+  it("clears a global tool refresh error when detection succeeds", async () => {
+    useWorkspaceStore.setState({ message: "global tools refresh failed" });
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Detect again" }));
+
+    await waitFor(() => expect(refreshAgentTools).toHaveBeenCalledOnce());
+    expect(useWorkspaceStore.getState().message).toBe("");
+  });
+
   it("locks update and detection actions while execution is pending", async () => {
     let completeExecution!: (result: AgentToolExecutionResult) => void;
     vi.mocked(api.executeAgentTool).mockReturnValue(
@@ -348,5 +374,19 @@ describe("AgentToolsSettings", () => {
     await waitFor(() => {
       expect(api.executeAgentTool).toHaveBeenCalledWith("codex", "codex:update:npm:1.1.0");
     });
+  });
+
+  it("reports a failed refresh after batch updates", async () => {
+    vi.mocked(refreshAgentTools).mockRejectedValueOnce(new Error("batch detection unavailable"));
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Review and update (1)" }));
+    await user.click(screen.getByRole("button", { name: "Run all updates" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await user.click(await screen.findByRole("button", { name: "OK" }));
+    expect(useWorkspaceStore.getState().message).toContain("batch detection unavailable");
+    expect(api.executeAgentTool).toHaveBeenCalledOnce();
   });
 });

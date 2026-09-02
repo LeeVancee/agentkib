@@ -52,6 +52,7 @@ import type {
   AppUpdateInfo,
 } from "@/core/types";
 import { cn } from "@/lib/utils";
+import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import { SettingsNotice } from "./components/SettingsLayout";
 
@@ -96,8 +97,8 @@ export function AgentToolsSettings({
   const queryClient = useQueryClient();
   const dialogs = useAppDialogs();
   const toolsQuery = useAgentTools();
+  const setGlobalMessage = useWorkspaceStore((state) => state.setMessage);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState("");
   const [conflictsOpen, setConflictsOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<AgentKind | "">("");
@@ -122,11 +123,11 @@ export function AgentToolsSettings({
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
-    setRefreshError("");
+    setGlobalMessage("");
     try {
       await refreshAgentTools(queryClient);
     } catch (error) {
-      setRefreshError(localizeMessage(error));
+      setGlobalMessage(localizeMessage(error));
     } finally {
       setRefreshing(false);
     }
@@ -171,8 +172,13 @@ export function AgentToolsSettings({
       ) {
         return undefined;
       }
+      setGlobalMessage("");
       const result = await api.executeAgentTool(tool.agent, action.id);
-      await refreshAgentTools(queryClient).catch(() => undefined);
+      try {
+        await refreshAgentTools(queryClient);
+      } catch (error) {
+        setGlobalMessage(localizeMessage(error));
+      }
       if (confirm) {
         await dialogs.notify({
           title: tr(`settings.tools.result.${result.status}`),
@@ -208,6 +214,7 @@ export function AgentToolsSettings({
       ) {
         return;
       }
+      setGlobalMessage("");
       setBatchOpen(false);
       const results: AgentToolExecutionResult[] = [];
       let requestFailures = 0;
@@ -219,7 +226,11 @@ export function AgentToolsSettings({
           requestFailures += 1;
         }
       }
-      await refreshAgentTools(queryClient).catch(() => undefined);
+      try {
+        await refreshAgentTools(queryClient);
+      } catch (error) {
+        setGlobalMessage(localizeMessage(error));
+      }
       const succeeded = results.filter((result) => result.status === "succeeded").length;
       await dialogs.notify({
         title: tr("settings.tools.batchResultTitle"),
@@ -286,10 +297,10 @@ export function AgentToolsSettings({
           </div>
         </div>
 
-        {(refreshError || toolsQuery.error) && (
+        {toolsQuery.error && (
           <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
             <CircleAlert size={16} className="mt-0.5" />
-            {refreshError || localizeMessage(toolsQuery.error)}
+            {localizeMessage(toolsQuery.error)}
           </SettingsNotice>
         )}
         {toolsQuery.data?.cache_status === "cached" && (

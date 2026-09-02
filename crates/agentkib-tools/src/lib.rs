@@ -1162,7 +1162,12 @@ fn package_command(
 }
 
 fn manager_program(channel: AgentToolChannel) -> Option<PathBuf> {
-    command::resolve(match channel {
+    let directories = command::agent_tool_default_directories();
+    manager_program_in(channel, &directories)
+}
+
+fn manager_program_in(channel: AgentToolChannel, directories: &[PathBuf]) -> Option<PathBuf> {
+    let name = match channel {
         AgentToolChannel::Npm => "npm",
         AgentToolChannel::Pnpm => "pnpm",
         AgentToolChannel::Bun => "bun",
@@ -1171,7 +1176,8 @@ fn manager_program(channel: AgentToolChannel) -> Option<PathBuf> {
         AgentToolChannel::Volta => "volta",
         AgentToolChannel::Nix => "nix",
         _ => return None,
-    })
+    };
+    command::resolve_in(name, directories.iter().map(PathBuf::as_path))
 }
 
 fn executable_channel(channel: AgentToolChannel) -> bool {
@@ -1772,12 +1778,17 @@ fn verify_execution(
     before_version: Option<&str>,
     installations: &[DetectedInstallation],
 ) -> (AgentToolExecutionStatus, Option<String>) {
+    if installations.len() != 1 {
+        return (AgentToolExecutionStatus::VerificationFailed, None);
+    }
     let installation = if let Some(id) = action.installation_id.as_deref() {
         installations.iter().find(|value| value.public.id == id)
     } else if action.kind == AgentToolActionKind::Install {
-        installations
-            .iter()
-            .find(|value| value.public.channel == action.channel && value.public.runnable)
+        installations.iter().find(|value| {
+            value.public.channel == action.channel
+                && value.public.runnable
+                && value.public.is_path_default
+        })
     } else {
         None
     };
@@ -1785,7 +1796,10 @@ fn verify_execution(
         return (AgentToolExecutionStatus::VerificationFailed, None);
     };
     let after_version = installation.public.version.clone();
-    if !installation.public.runnable || after_version.is_none() {
+    if !installation.public.runnable
+        || after_version.is_none()
+        || (action.kind == AgentToolActionKind::Install && !installation.public.is_path_default)
+    {
         return (AgentToolExecutionStatus::VerificationFailed, after_version);
     }
     let after = after_version.as_deref().unwrap_or_default();
@@ -2884,6 +2898,34 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn install_manager_is_resolved_only_from_default_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let default_directory = tempfile::tempdir().unwrap();
+        let inactive_directory = tempfile::tempdir().unwrap();
+        let default_manager = default_directory.path().join("npm");
+        let inactive_manager = inactive_directory.path().join("npm");
+        for path in [&default_manager, &inactive_manager] {
+            std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            manager_program_in(
+                AgentToolChannel::Npm,
+                &[default_directory.path().to_path_buf()]
+            ),
+            Some(default_manager)
+        );
+        assert_eq!(
+            manager_program_in(AgentToolChannel::Npm, &[]),
+            None,
+            "an inactive manager must not be used as an install target"
+        );
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn executable_update_invokes_the_bound_manager_path() {
         use std::os::unix::fs::PermissionsExt;
@@ -3305,6 +3347,44 @@ mod tests {
             )
             .0,
             AgentToolExecutionStatus::Succeeded
+        );
+
+        let install = AgentToolAction {
+            kind: AgentToolActionKind::Install,
+            installation_id: None,
+            ..action
+        };
+        let mut non_default = installation(Some("2.0.0"), true);
+        non_default.public.is_path_default = false;
+        assert_eq!(
+            verify_execution(AgentKind::Codex, &install, None, &[non_default]).0,
+            AgentToolExecutionStatus::VerificationFailed
+        );
+        assert_eq!(
+            verify_execution(
+                AgentKind::Codex,
+                &install,
+                None,
+                &[installation(Some("2.0.0"), true)]
+            )
+            .0,
+            AgentToolExecutionStatus::Succeeded
+        );
+
+        let mut conflicting = installation(Some("2.0.0"), true);
+        conflicting.public.id = "codex:two".to_owned();
+        conflicting.public.path = PathBuf::from("/opt/codex");
+        conflicting.public.resolved_path = PathBuf::from("/opt/codex");
+        conflicting.public.is_path_default = false;
+        assert_eq!(
+            verify_execution(
+                AgentKind::Codex,
+                &install,
+                None,
+                &[installation(Some("2.0.0"), true), conflicting]
+            )
+            .0,
+            AgentToolExecutionStatus::VerificationFailed
         );
     }
 

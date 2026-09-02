@@ -8,7 +8,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
-import { agentToolsKey } from "@/features/settings/agent-tools-query";
+import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
 import type { AppHistoryEntry } from "./useAppHistory";
@@ -350,9 +350,14 @@ export function useAppNavigation() {
     }
     if (appMode === "settings") {
       if (settingsSection === "discovery") await requestRefreshKinds(["discovery"]);
-      else if (settingsSection === "tools")
-        queryClient.setQueryData(agentToolsKey, await api.agentTools(true));
-      else if (settingsSection === "integrations") await requestRefreshKinds(["gateways"]);
+      else if (settingsSection === "tools") {
+        setMessage("");
+        try {
+          await refreshAgentTools(queryClient);
+        } catch (error) {
+          setMessage(localizeMessage(error));
+        }
+      } else if (settingsSection === "integrations") await requestRefreshKinds(["gateways"]);
       else if (settingsSection === "diagnostics")
         await requestRefreshKinds(["discovery", "insights", "gateways", "quota"]);
       else await loadGlobal();

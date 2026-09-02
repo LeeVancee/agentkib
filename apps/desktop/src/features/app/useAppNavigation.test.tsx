@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
+import type { ReactNode } from "react";
 import { act, cleanup, renderHook } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
@@ -15,6 +17,9 @@ const testDoubles = vi.hoisted(() => ({
   confirm: vi.fn().mockResolvedValue(false),
   requestSecrets: vi.fn(),
   open: vi.fn(),
+  agentTools: vi.fn(),
+  location: { pathname: "/" },
+  search: {} as Record<string, string>,
 }));
 
 const homeHistoryEntry: AppHistoryEntry = {
@@ -27,9 +32,9 @@ const homeHistoryEntry: AppHistoryEntry = {
 };
 
 vi.mock("@tanstack/react-router", () => ({
-  useLocation: () => ({ pathname: "/" }),
+  useLocation: () => testDoubles.location,
   useNavigate: () => testDoubles.navigate,
-  useSearch: () => ({}),
+  useSearch: () => testDoubles.search,
 }));
 
 vi.mock("@/components/AppDialogProvider", () => ({
@@ -46,7 +51,10 @@ describe("useAppNavigation guards", () => {
   beforeEach(() => {
     Object.defineProperty(window, "agentkibDesktop", {
       configurable: true,
-      value: { shell: { openDirectory: testDoubles.open } },
+      value: {
+        shell: { openDirectory: testDoubles.open },
+        home: { agentTools: testDoubles.agentTools },
+      },
     });
     useAppStore.getState().reset();
     useWorkspaceStore.getState().resetWorkspace();
@@ -54,6 +62,9 @@ describe("useAppNavigation guards", () => {
     testDoubles.notify.mockReset().mockResolvedValue(undefined);
     testDoubles.confirm.mockReset().mockResolvedValue(false);
     testDoubles.open.mockReset();
+    testDoubles.agentTools.mockReset();
+    testDoubles.location.pathname = "/";
+    testDoubles.search = {};
   });
 
   afterEach(cleanup);
@@ -226,5 +237,45 @@ describe("useAppNavigation guards", () => {
     expect(useWorkspaceStore.getState().selectedWorkspace).toBeUndefined();
     expect(useWorkspaceStore.getState().project).toBe("");
     expect(testDoubles.navigate).not.toHaveBeenCalled();
+  });
+
+  it("reports tool refresh failures without rejecting the toolbar action", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    testDoubles.agentTools.mockRejectedValueOnce(new Error("refresh unavailable"));
+    const { result } = renderHook(() => useAppNavigation(), { wrapper });
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(testDoubles.agentTools).toHaveBeenCalledWith(true);
+    expect(useWorkspaceStore.getState().message).toContain("refresh unavailable");
+    queryClient.clear();
+  });
+
+  it("clears a previous tool refresh error and updates the cache", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const snapshot = { tools: [], detected_at: "2026-09-03T00:00:00Z" };
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    testDoubles.agentTools.mockResolvedValueOnce(snapshot);
+    useWorkspaceStore.setState({ message: "previous error" });
+    const { result } = renderHook(() => useAppNavigation(), { wrapper });
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(useWorkspaceStore.getState().message).toBe("");
+    expect(queryClient.getQueryData(["settings", "agent-tools"])).toBe(snapshot);
+    queryClient.clear();
   });
 });

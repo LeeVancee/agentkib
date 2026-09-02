@@ -2359,13 +2359,14 @@ mod tests {
         let skill_entrypoint = "---\nname: logical-skill\n---\nskill body";
         fs::write(dir.path().join("skills/example/SKILL.md"), skill_entrypoint).unwrap();
         fs::create_dir_all(dir.path().join("skills/example/references")).unwrap();
+        fs::create_dir_all(dir.path().join("skills/example/scripts")).unwrap();
         fs::write(
             dir.path().join("skills/example/references/guide.md"),
             "guide",
         )
         .unwrap();
         fs::write(
-            dir.path().join("skills/example/script.py"),
+            dir.path().join("skills/example/scripts/script.py"),
             "print('noise')",
         )
         .unwrap();

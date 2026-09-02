@@ -236,4 +236,44 @@ describe("SkillHubPage", () => {
     await user.keyboard("{Enter}");
     expect(mocks.discoverSkills).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps a successful rollback result when the following refresh fails", async () => {
+    const current = {
+      name: "reviewer",
+      display_name: "reviewer",
+      description: "Current version",
+      path: "/tmp/.agentkib/skills/reviewer",
+      size: 128,
+      status: "current" as const,
+      can_rollback: true,
+    };
+    mocks.installedSkills
+      .mockResolvedValueOnce([current])
+      .mockRejectedValue(new Error("refresh failed"));
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.rollbackSkill.mockResolvedValue({
+      ...current,
+      description: "Previous version",
+      can_rollback: false,
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppDialogProvider>
+        <SkillHubPage
+          workspaceAssets={[]}
+          workspaces={[]}
+          onOpen={vi.fn()}
+          onReload={vi.fn().mockRejectedValue(new Error("reload failed"))}
+        />
+      </AppDialogProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Roll back" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(await screen.findByText("Previous version")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Roll back" })).toBeNull();
+    expect(await screen.findByText(/refresh failed|reload failed/)).toBeTruthy();
+  });
 });

@@ -82,6 +82,12 @@ function statusClass(status: InstalledSkill["status"]) {
   return "border-emerald-300 bg-emerald-50 text-emerald-800";
 }
 
+function upsertSkill<T extends { name: string }>(items: T[], next: T) {
+  const index = items.findIndex((item) => item.name === next.name);
+  if (index < 0) return [...items, next];
+  return items.map((item, itemIndex) => (itemIndex === index ? next : item));
+}
+
 export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: SkillHubPageProps) {
   const dialogs = useAppDialogs();
   const [section, setSection] = useState<SkillHubSection>("library");
@@ -145,7 +151,11 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   };
 
   const refreshAfterMutation = async () => {
-    await Promise.all([loadLibrary(), onReload()]);
+    try {
+      await Promise.all([loadLibrary(), onReload()]);
+    } catch (nextError) {
+      setError(localizeMessage(nextError));
+    }
     if (catalog) await loadCatalog(true);
   };
 
@@ -170,7 +180,8 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
       if (!accepted) return;
     }
     await run(`apply:${preview.skill.name}`, async () => {
-      await api.applySkillOperation(preview.token, preview.local_modified);
+      const skill = await api.applySkillOperation(preview.token, preview.local_modified);
+      setInstalled((items) => upsertSkill(items, skill));
       setPreview(undefined);
       await refreshAfterMutation();
     });
@@ -198,7 +209,8 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     )
       return;
     await run(`rollback:${skill.name}`, async () => {
-      await api.rollbackSkill(skill.name);
+      const rolledBack = await api.rollbackSkill(skill.name);
+      setInstalled((items) => upsertSkill(items, rolledBack));
       await refreshAfterMutation();
     });
   };
@@ -213,14 +225,18 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     )
       return;
     await run(`uninstall:${skill.name}`, async () => {
-      await api.uninstallSkill(skill.name);
+      const removedSkill = await api.uninstallSkill(skill.name);
+      setInstalled((items) => items.filter((item) => item.name !== skill.name));
+      setRemoved((items) => upsertSkill(items, removedSkill));
       await refreshAfterMutation();
     });
   };
 
   const restore = (skill: RemovedSkill) =>
     run(`restore:${skill.id}`, async () => {
-      await api.restoreSkill(skill.id);
+      const restored = await api.restoreSkill(skill.id);
+      setRemoved((items) => items.filter((item) => item.id !== skill.id));
+      setInstalled((items) => upsertSkill(items, restored));
       await refreshAfterMutation();
     });
 

@@ -1169,7 +1169,7 @@ impl SkillHub {
         limit: u64,
     ) -> Result<Vec<u8>> {
         let url = raw_url(owner, repository, commit, path)?;
-        let response = self.client.get(url).send().await?;
+        let mut response = self.client.get(url).send().await?;
         let status = response.status();
         ensure!(
             status.is_success(),
@@ -1178,12 +1178,16 @@ impl SkillHub {
         if let Some(length) = response.content_length() {
             ensure!(length <= limit, "GitHub file exceeds the download limit");
         }
-        let bytes = response.bytes().await?;
-        ensure!(
-            bytes.len() as u64 <= limit,
-            "GitHub file exceeds the download limit"
-        );
-        Ok(bytes.to_vec())
+        let mut bytes =
+            Vec::with_capacity(response.content_length().unwrap_or_default().min(limit) as usize);
+        while let Some(chunk) = response.chunk().await? {
+            let next_size = (bytes.len() as u64)
+                .checked_add(chunk.len() as u64)
+                .context("GitHub file size overflow")?;
+            ensure!(next_size <= limit, "GitHub file exceeds the download limit");
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     fn annotate_installed(

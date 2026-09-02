@@ -101,7 +101,7 @@ pub fn is_readable_skill_file(entrypoint: &Path, requested: &Path) -> bool {
     let Ok(relative) = requested.strip_prefix(&root) else {
         return false;
     };
-    !is_private_skill_path(relative)
+    is_supported_skill_path(relative) && !is_private_skill_path(relative)
 }
 
 fn read_skill_name(entrypoint: &Path) -> Option<String> {
@@ -159,7 +159,7 @@ fn package_metadata(root: &Path) -> (u64, Option<DateTime<Utc>>) {
             || entry
                 .path()
                 .strip_prefix(root)
-                .is_ok_and(is_private_skill_path)
+                .is_ok_and(|path| !is_supported_skill_path(path) || is_private_skill_path(path))
         {
             continue;
         }
@@ -214,6 +214,32 @@ fn is_private_skill_path(path: &Path) -> bool {
                     || name.ends_with(".pem")
                     || name.ends_with(".key")
             })
+}
+
+fn is_supported_skill_path(path: &Path) -> bool {
+    let mut components = path.components();
+    let Some(std::path::Component::Normal(first)) = components.next() else {
+        return false;
+    };
+    let Some(first) = first.to_str() else {
+        return false;
+    };
+    if first == "SKILL.md" {
+        return components.next().is_none();
+    }
+    if !matches!(first, "references" | "scripts" | "assets") {
+        return false;
+    }
+    path.components().all(|component| match component {
+        std::path::Component::Normal(value) => value.to_str().is_some_and(|value| {
+            !value.starts_with('.')
+                && !matches!(
+                    value,
+                    "node_modules" | "target" | "dist" | "build" | "__pycache__"
+                )
+        }),
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -285,8 +311,9 @@ mod tests {
         let root = dir.path().join("skill");
         fs::create_dir(&root).unwrap();
         fs::write(root.join("SKILL.md"), "x").unwrap();
+        fs::create_dir_all(root.join("references")).unwrap();
         for index in 0..MAX_SKILL_METADATA_FILES {
-            fs::write(root.join(format!("file-{index:03}")), "x").unwrap();
+            fs::write(root.join(format!("references/file-{index:03}")), "x").unwrap();
         }
 
         let package = inspect_skill_entrypoint(&root.join("SKILL.md")).unwrap();
@@ -308,6 +335,16 @@ mod tests {
         fs::write(&guide, "guide").unwrap();
         let private = root.join("secret.txt");
         fs::write(&private, "private").unwrap();
+        let npmrc = root.join(".npmrc");
+        fs::write(&npmrc, "token=private").unwrap();
+        let nested_npmrc = root.join("references/.npmrc");
+        fs::write(&nested_npmrc, "token=private").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        let git_config = root.join(".git/config");
+        fs::write(&git_config, "credential=private").unwrap();
+        fs::create_dir_all(root.join("assets/node_modules/package")).unwrap();
+        let dependency = root.join("assets/node_modules/package/index.js");
+        fs::write(&dependency, "private").unwrap();
         let outside = dir.path().join("outside.md");
         fs::write(&outside, "outside").unwrap();
         let link = root.join("references/link.md");
@@ -315,6 +352,10 @@ mod tests {
 
         assert!(is_readable_skill_file(&entrypoint, &guide));
         assert!(!is_readable_skill_file(&entrypoint, &private));
+        assert!(!is_readable_skill_file(&entrypoint, &npmrc));
+        assert!(!is_readable_skill_file(&entrypoint, &nested_npmrc));
+        assert!(!is_readable_skill_file(&entrypoint, &git_config));
+        assert!(!is_readable_skill_file(&entrypoint, &dependency));
         assert!(!is_readable_skill_file(&entrypoint, &outside));
         assert!(!is_readable_skill_file(&entrypoint, &link));
     }

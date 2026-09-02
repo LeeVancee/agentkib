@@ -1,8 +1,10 @@
+use std::cmp::Ordering as VersionOrdering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 
 use agentkib_core::{
@@ -34,6 +36,7 @@ const VERIFY_RETRIES: usize = 3;
 const VERIFY_RETRY_DELAY: StdDuration = StdDuration::from_millis(750);
 
 static EXECUTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SNAPSHOT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct DetectedInstallation {
@@ -189,6 +192,7 @@ impl ToolInspector {
     }
 
     pub async fn snapshot(&self, force: bool) -> Result<AgentToolSnapshot> {
+        let _snapshot_guard = SNAPSHOT_LOCK.get_or_init(|| Mutex::new(())).lock().await;
         let checked_at = Utc::now();
         let sources = release_sources();
         let (versions, latest_checked_at, cache_status, errors) =
@@ -209,11 +213,38 @@ impl ToolInspector {
         })
     }
 
+    pub async fn snapshot_cancellable(
+        &self,
+        force: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<AgentToolSnapshot> {
+        ensure!(
+            !cancelled.load(Ordering::SeqCst),
+            "Agent tool inspection was cancelled"
+        );
+        tokio::select! {
+            result = self.snapshot(force) => result,
+            _ = wait_for_cancellation(cancelled) => bail!("Agent tool inspection was cancelled"),
+        }
+    }
+
     pub async fn execute(
         &self,
         agent: AgentKind,
         action_id: &str,
         confirmed: bool,
+    ) -> Result<AgentToolExecutionResult> {
+        let cancelled = AtomicBool::new(false);
+        self.execute_cancellable(agent, action_id, confirmed, &cancelled)
+            .await
+    }
+
+    pub async fn execute_cancellable(
+        &self,
+        agent: AgentKind,
+        action_id: &str,
+        confirmed: bool,
+        cancelled: &AtomicBool,
     ) -> Result<AgentToolExecutionResult> {
         ensure!(
             confirmed,
@@ -236,7 +267,7 @@ impl ToolInspector {
                 completed_at: Utc::now(),
             });
         };
-        let snapshot = self.snapshot(false).await?;
+        let snapshot = self.snapshot_cancellable(false, cancelled).await?;
         let tool = snapshot
             .tools
             .iter()
@@ -252,12 +283,14 @@ impl ToolInspector {
             "This action cannot be executed inside AgentKib"
         );
         let spec = tool_spec(agent).context("Unsupported Agent tool")?;
-        let detected = detect_installations(spec).await;
+        let detected = cancellable_detect_installations(spec, cancelled).await?;
+        ensure_installation_set_stable(action.kind, &detected)?;
         let selected = action.installation_id.as_deref().and_then(|id| {
             detected
                 .iter()
                 .find(|installation| installation.public.id == id)
         });
+        ensure_update_target_still_applicable(agent, tool, action, selected)?;
         let regenerated = if action.kind == AgentToolActionKind::Install {
             install_action(spec, action.channel, action.target_version.as_deref())
         } else {
@@ -272,19 +305,24 @@ impl ToolInspector {
         );
         let before_version = selected.and_then(|value| value.public.version.clone());
         let (program, args) = executable_action(spec, tool, action, selected)?;
-        let outcome = run_action(&program, &args).await?;
+        let outcome = run_action(&program, &args, cancelled).await?;
         let mut status = outcome.status;
         let mut after_version = None;
         if status == AgentToolExecutionStatus::Succeeded {
             for attempt in 0..VERIFY_RETRIES {
-                let after = detect_installations(spec).await;
-                let verified = verify_execution(action, before_version.as_deref(), &after);
+                let after = cancellable_detect_installations(spec, cancelled).await?;
+                let verified = verify_execution(agent, action, before_version.as_deref(), &after);
                 status = verified.0;
                 after_version = verified.1;
                 if status == AgentToolExecutionStatus::Succeeded || attempt + 1 == VERIFY_RETRIES {
                     break;
                 }
-                tokio::time::sleep(VERIFY_RETRY_DELAY).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(VERIFY_RETRY_DELAY) => {}
+                    _ = wait_for_cancellation(cancelled) => {
+                        bail!("Agent tool execution was cancelled");
+                    }
+                }
             }
         }
         Ok(AgentToolExecutionResult {
@@ -424,6 +462,84 @@ impl ToolInspector {
     }
 }
 
+async fn wait_for_cancellation(cancelled: &AtomicBool) {
+    while !cancelled.load(Ordering::SeqCst) {
+        tokio::time::sleep(StdDuration::from_millis(25)).await;
+    }
+}
+
+async fn cancellable_detect_installations(
+    spec: ToolSpec,
+    cancelled: &AtomicBool,
+) -> Result<Vec<DetectedInstallation>> {
+    ensure!(
+        !cancelled.load(Ordering::SeqCst),
+        "Agent tool execution was cancelled"
+    );
+    tokio::select! {
+        installations = detect_installations(spec) => Ok(installations),
+        _ = wait_for_cancellation(cancelled) => bail!("Agent tool execution was cancelled"),
+    }
+}
+
+fn ensure_installation_set_stable(
+    kind: AgentToolActionKind,
+    installations: &[DetectedInstallation],
+) -> Result<()> {
+    match kind {
+        AgentToolActionKind::Install => ensure!(
+            installations.is_empty(),
+            "An Agent installation appeared after confirmation; detect again"
+        ),
+        AgentToolActionKind::Update => ensure!(
+            installations.len() == 1,
+            "Agent installations changed after confirmation; detect again"
+        ),
+        AgentToolActionKind::OpenDocumentation => {
+            bail!("Documentation actions cannot execute inside AgentKib")
+        }
+    }
+    Ok(())
+}
+
+fn ensure_update_target_still_applicable(
+    agent: AgentKind,
+    tool: &AgentToolStatus,
+    action: &AgentToolAction,
+    installation: Option<&DetectedInstallation>,
+) -> Result<()> {
+    if action.kind != AgentToolActionKind::Update {
+        return Ok(());
+    }
+    let installation = installation.context("The bound Agent installation is missing")?;
+    ensure!(
+        installation.public.runnable,
+        "The bound Agent installation is no longer runnable; detect again"
+    );
+    let expected = tool
+        .current_version
+        .as_deref()
+        .context("The confirmed Agent version is unavailable")?;
+    let current = installation
+        .public
+        .version
+        .as_deref()
+        .context("The bound Agent version is unavailable; detect again")?;
+    ensure!(
+        versions_equal(expected, current),
+        "The Agent version changed after confirmation; detect again"
+    );
+    let target = action
+        .target_version
+        .as_deref()
+        .context("The confirmed target version is unavailable")?;
+    ensure!(
+        compare_versions(agent, current, target) == Some(VersionOrdering::Less),
+        "The confirmed target is no longer newer than the installed version; detect again"
+    );
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -559,7 +675,7 @@ async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> A
     }
     if let (Some(current), Some(latest)) = (&current_version, &latest_version)
         && !versions_equal(current, latest)
-        && (parse_semver(current).is_none() || parse_semver(latest).is_none())
+        && compare_versions(spec.agent, current, latest).is_none()
     {
         warnings.push("version-uncomparable".to_owned());
     }
@@ -573,6 +689,7 @@ async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> A
         AgentToolState::Unknown
     } else {
         determine_state(
+            spec.agent,
             installed,
             false,
             current_version.as_deref(),
@@ -605,6 +722,7 @@ async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> A
 
 async fn detect_installations(spec: ToolSpec) -> Vec<DetectedInstallation> {
     let mut candidates = resolved_tool_paths(spec);
+    collapse_active_mise_alias(spec, &mut candidates).await;
     if spec.agent == AgentKind::Cursor && candidates.is_empty() {
         let mut seen = BTreeSet::new();
         for candidate in cursor_desktop_candidates() {
@@ -659,6 +777,67 @@ async fn detect_installations(spec: ToolSpec) -> Vec<DetectedInstallation> {
         });
     }
     installations
+}
+
+async fn collapse_active_mise_alias(spec: ToolSpec, candidates: &mut Vec<(PathBuf, bool)>) {
+    if !candidates.iter().any(|(path, _)| is_mise_shim(path)) {
+        return;
+    }
+    let Some(mise) = command::resolve("mise") else {
+        return;
+    };
+    for command_name in spec.commands {
+        let Ok(output) = run_readonly_command(&mise, &["which", command_name]).await else {
+            continue;
+        };
+        let Some(active_path) = output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .find(|path| path.is_absolute())
+        else {
+            continue;
+        };
+        if collapse_mise_aliases(candidates, &active_path) {
+            return;
+        }
+    }
+}
+
+fn collapse_mise_aliases(candidates: &mut Vec<(PathBuf, bool)>, active_path: &Path) -> bool {
+    let active_identity = platform_path::identity(active_path);
+    let Some(active_index) = candidates.iter().position(|(path, _)| {
+        is_mise_backing(path) && platform_path::identity(path) == active_identity
+    }) else {
+        return false;
+    };
+    let Some(shim_index) = candidates.iter().position(|(path, _)| is_mise_shim(path)) else {
+        return false;
+    };
+    let keep_identity = if candidates[shim_index].1 {
+        platform_path::identity(&candidates[shim_index].0)
+    } else if candidates[active_index].1 {
+        active_identity.clone()
+    } else {
+        platform_path::identity(&candidates[shim_index].0)
+    };
+    candidates.retain(|(path, _)| {
+        if is_mise_shim(path) || platform_path::identity(path) == active_identity {
+            platform_path::identity(path) == keep_identity
+        } else {
+            true
+        }
+    });
+    true
+}
+
+fn is_mise_shim(path: &Path) -> bool {
+    normalized_path(path).contains("/mise/shims/")
+}
+
+fn is_mise_backing(path: &Path) -> bool {
+    normalized_path(path).contains("/mise/installs/node/")
 }
 
 fn actions_for(
@@ -753,7 +932,6 @@ fn install_action(
             AgentToolChannel::Npm
             | AgentToolChannel::Pnpm
             | AgentToolChannel::Bun
-            | AgentToolChannel::Homebrew
             | AgentToolChannel::Volta => {
                 if target.is_some_and(is_safe_target_version) && manager.is_some() {
                     AgentToolActionMode::Execute
@@ -763,6 +941,7 @@ fn install_action(
             }
             AgentToolChannel::OfficialInstaller
             | AgentToolChannel::Yarn
+            | AgentToolChannel::Homebrew
             | AgentToolChannel::Nix => AgentToolActionMode::CopyCommand,
             AgentToolChannel::DesktopApp => AgentToolActionMode::OpenDocumentation,
             AgentToolChannel::Local | AgentToolChannel::Unknown => return None,
@@ -802,11 +981,10 @@ fn update_action(
     };
     let command = update_command(spec.agent, channel, target, program)?;
     let mode = match channel {
-        AgentToolChannel::OfficialInstaller => AgentToolActionMode::Execute,
+        AgentToolChannel::OfficialInstaller => AgentToolActionMode::CopyCommand,
         AgentToolChannel::Npm
         | AgentToolChannel::Pnpm
         | AgentToolChannel::Bun
-        | AgentToolChannel::Homebrew
         | AgentToolChannel::Volta => {
             if target.is_some_and(is_safe_target_version) && program.is_some() {
                 AgentToolActionMode::Execute
@@ -814,7 +992,9 @@ fn update_action(
                 AgentToolActionMode::CopyCommand
             }
         }
-        AgentToolChannel::Yarn | AgentToolChannel::Nix => AgentToolActionMode::CopyCommand,
+        AgentToolChannel::Yarn | AgentToolChannel::Homebrew | AgentToolChannel::Nix => {
+            AgentToolActionMode::CopyCommand
+        }
         AgentToolChannel::DesktopApp | AgentToolChannel::Local | AgentToolChannel::Unknown => {
             AgentToolActionMode::OpenDocumentation
         }
@@ -1159,15 +1339,24 @@ struct CommandOutcome {
     output: String,
 }
 
-async fn run_action(program: &Path, args: &[String]) -> Result<CommandOutcome> {
-    run_action_with_timeout(program, args, EXECUTION_TIMEOUT).await
+async fn run_action(
+    program: &Path,
+    args: &[String],
+    cancelled: &AtomicBool,
+) -> Result<CommandOutcome> {
+    run_action_with_timeout(program, args, EXECUTION_TIMEOUT, cancelled).await
 }
 
 async fn run_action_with_timeout(
     program: &Path,
     args: &[String],
     timeout: StdDuration,
+    cancelled: &AtomicBool,
 ) -> Result<CommandOutcome> {
+    ensure!(
+        !cancelled.load(Ordering::SeqCst),
+        "Agent tool execution was cancelled"
+    );
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
@@ -1179,7 +1368,19 @@ async fn run_action_with_timeout(
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not run {}", program.display()))?;
-    let process_tree = child.id().and_then(|pid| ProcessTree::attach_pid(pid).ok());
+    let process_tree = match child.id().map(ProcessTree::attach_pid) {
+        Some(Ok(tree)) => tree,
+        Some(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error).context("Could not supervise Agent tool process tree");
+        }
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            bail!("Agent tool process did not expose a process id");
+        }
+    };
     let stdout = child
         .stdout
         .take()
@@ -1193,9 +1394,18 @@ async fn run_action_with_timeout(
     let stdout_abort = stdout_task.abort_handle();
     let stderr_abort = stderr_task.abort_handle();
     let deadline = tokio::time::Instant::now() + timeout;
-    let result = tokio::time::timeout_at(deadline, child.wait()).await;
+    enum WaitResult {
+        Finished(std::io::Result<std::process::ExitStatus>),
+        TimedOut,
+        Cancelled,
+    }
+    let result = tokio::select! {
+        status = child.wait() => WaitResult::Finished(status),
+        _ = tokio::time::sleep_until(deadline) => WaitResult::TimedOut,
+        _ = wait_for_cancellation(cancelled) => WaitResult::Cancelled,
+    };
     let (mut status, mut exit_code) = match result {
-        Ok(status) => {
+        WaitResult::Finished(status) => {
             let status = status?;
             (
                 if status.success() {
@@ -1206,13 +1416,19 @@ async fn run_action_with_timeout(
                 status.code(),
             )
         }
-        Err(_) => {
-            if let Some(tree) = &process_tree {
-                let _ = tree.terminate();
-            }
+        WaitResult::TimedOut => {
+            let _ = process_tree.terminate();
             let _ = child.kill().await;
             let _ = child.wait().await;
             (AgentToolExecutionStatus::TimedOut, None)
+        }
+        WaitResult::Cancelled => {
+            let _ = process_tree.terminate();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stdout_abort.abort();
+            stderr_abort.abort();
+            bail!("Agent tool execution was cancelled");
         }
     };
     let output = if status == AgentToolExecutionStatus::TimedOut {
@@ -1220,12 +1436,14 @@ async fn run_action_with_timeout(
         stderr_abort.abort();
         String::new()
     } else {
-        match tokio::time::timeout_at(deadline, async move {
-            Ok::<_, anyhow::Error>((stdout_task.await??, stderr_task.await??))
-        })
-        .await
-        {
-            Ok(output) => {
+        let drain_result = tokio::select! {
+            output = tokio::time::timeout_at(deadline, async move {
+                Ok::<_, anyhow::Error>((stdout_task.await??, stderr_task.await??))
+            }) => Some(output),
+            _ = wait_for_cancellation(cancelled) => None,
+        };
+        match drain_result {
+            Some(Ok(output)) => {
                 let (stdout, stderr) = output?;
                 [stdout, stderr]
                     .into_iter()
@@ -1234,15 +1452,19 @@ async fn run_action_with_timeout(
                     .collect::<Vec<_>>()
                     .join("\n")
             }
-            Err(_) => {
-                if let Some(tree) = &process_tree {
-                    let _ = tree.terminate();
-                }
+            Some(Err(_)) => {
+                let _ = process_tree.terminate();
                 stdout_abort.abort();
                 stderr_abort.abort();
                 status = AgentToolExecutionStatus::TimedOut;
                 exit_code = None;
                 String::new()
+            }
+            None => {
+                let _ = process_tree.terminate();
+                stdout_abort.abort();
+                stderr_abort.abort();
+                bail!("Agent tool execution was cancelled");
             }
         }
     };
@@ -1390,18 +1612,33 @@ fn is_ambiguous_cursor_agent_alias(spec: ToolSpec, path: &Path) -> bool {
 }
 
 fn known_cli_candidates(agent: AgentKind) -> Vec<PathBuf> {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     {
-        let home = dirs_home();
+        known_unix_cli_candidates(agent, &dirs_home())
+    }
+    #[cfg(windows)]
+    {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
         match agent {
-            AgentKind::OpenCode => vec![home.join(".opencode/bin/opencode")],
+            AgentKind::GrokBuild => manager_candidates(&home.join(".grok/bin"), "grok"),
             _ => Vec::new(),
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = agent;
         Vec::new()
+    }
+}
+
+#[cfg(unix)]
+fn known_unix_cli_candidates(agent: AgentKind, home: &Path) -> Vec<PathBuf> {
+    match agent {
+        AgentKind::OpenCode => vec![home.join(".opencode/bin/opencode")],
+        AgentKind::GrokBuild => vec![home.join(".grok/bin/grok")],
+        _ => Vec::new(),
     }
 }
 
@@ -1520,6 +1757,7 @@ fn short_hash(value: &[u8]) -> String {
 }
 
 fn verify_execution(
+    agent: AgentKind,
     action: &AgentToolAction,
     before_version: Option<&str>,
     installations: &[DetectedInstallation],
@@ -1549,7 +1787,7 @@ fn verify_execution(
     if action
         .target_version
         .as_deref()
-        .is_some_and(|target| version_reaches_target(after, target))
+        .is_some_and(|target| version_reaches_target(agent, after, target))
     {
         (AgentToolExecutionStatus::Succeeded, after_version)
     } else {
@@ -1557,9 +1795,9 @@ fn verify_execution(
     }
 }
 
-fn version_reaches_target(current: &str, target: &str) -> bool {
+fn version_reaches_target(agent: AgentKind, current: &str, target: &str) -> bool {
     versions_equal(current, target)
-        || matches!((parse_semver(current), parse_semver(target)), (Some(current), Some(target)) if current >= target)
+        || compare_versions(agent, current, target).is_some_and(VersionOrdering::is_gt)
 }
 
 fn infer_channel(agent: AgentKind, path: &Path) -> AgentToolChannel {
@@ -1869,7 +2107,7 @@ fn cursor_desktop_candidates() -> Vec<PathBuf> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -1886,10 +2124,73 @@ fn redact_home_path(path: &Path) -> PathBuf {
 }
 
 fn redact_output(output: &str) -> String {
-    let Some(home) = dirs::home_dir() else {
-        return output.to_owned();
-    };
-    output.replace(home.to_string_lossy().as_ref(), "~")
+    let output = dirs::home_dir().map_or_else(
+        || output.to_owned(),
+        |home| output.replace(home.to_string_lossy().as_ref(), "~"),
+    );
+    output
+        .lines()
+        .map(|line| {
+            if contains_sensitive_output(line) {
+                "[REDACTED SENSITIVE OUTPUT]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn contains_sensitive_output(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let compact = lower
+        .chars()
+        .filter(|character| !character.is_whitespace() && !matches!(character, '\'' | '"'))
+        .collect::<String>();
+    let sensitive_markers = [
+        "authorization:",
+        "authorization=",
+        "token=",
+        "token:",
+        "password=",
+        "password:",
+        "secret=",
+        "secret:",
+        "api_key=",
+        "api-key=",
+        "apikey=",
+        "access_key=",
+        "access-key=",
+        "private_key=",
+        "private-key=",
+        "credential=",
+    ];
+    sensitive_markers
+        .iter()
+        .any(|marker| compact.contains(marker))
+        || lower.contains("bearer ")
+        || ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+            .iter()
+            .any(|prefix| lower.contains(prefix))
+        || contains_url_userinfo(&lower)
+}
+
+fn contains_url_userinfo(line: &str) -> bool {
+    let mut remaining = line;
+    while let Some((_, after_scheme)) = remaining.split_once("://") {
+        let authority = after_scheme
+            .split(['/', '?', '#', ' '])
+            .next()
+            .unwrap_or_default();
+        if authority
+            .split_once('@')
+            .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+        {
+            return true;
+        }
+        remaining = after_scheme;
+    }
+    false
 }
 
 fn truncate_output(output: &str, limit: usize) -> String {
@@ -1904,6 +2205,7 @@ fn truncate_output(output: &str, limit: usize) -> String {
 }
 
 fn determine_state(
+    agent: AgentKind,
     installed: bool,
     has_conflict: bool,
     current: Option<&str>,
@@ -1921,11 +2223,55 @@ fn determine_state(
     if versions_equal(current, latest) {
         return AgentToolState::Current;
     }
-    match (parse_semver(current), parse_semver(latest)) {
-        (Some(current), Some(latest)) if current < latest => AgentToolState::UpdateAvailable,
-        (Some(_), Some(_)) => AgentToolState::Current,
+    match compare_versions(agent, current, latest) {
+        Some(VersionOrdering::Less) => AgentToolState::UpdateAvailable,
+        Some(_) => AgentToolState::Current,
         _ => AgentToolState::Unknown,
     }
+}
+
+fn compare_versions(agent: AgentKind, current: &str, latest: &str) -> Option<VersionOrdering> {
+    if agent == AgentKind::Cursor {
+        let current_build = parse_cursor_build(current)?;
+        let latest_build = parse_cursor_build(latest)?;
+        let date_ordering = current_build.cmp(&latest_build);
+        return Some(
+            if date_ordering == VersionOrdering::Equal && !versions_equal(current, latest) {
+                // Cursor's suffix is a commit identifier rather than an ordered build number.
+                // For two different builds published on the same date, the fetched channel build
+                // remains authoritative and should be offered as an update.
+                VersionOrdering::Less
+            } else {
+                date_ordering
+            },
+        );
+    }
+    Some(parse_semver(current)?.cmp(&parse_semver(latest)?))
+}
+
+fn parse_cursor_build(value: &str) -> Option<(u16, u8, u8)> {
+    value
+        .split_whitespace()
+        .filter(|part| part.contains('-'))
+        .find_map(parse_cursor_build_part)
+}
+
+fn parse_cursor_build_part(value: &str) -> Option<(u16, u8, u8)> {
+    let value = value.trim_matches(|character: char| {
+        !character.is_ascii_alphanumeric() && character != '.' && character != '-'
+    });
+    let (date, build) = value.split_once('-')?;
+    if build.is_empty() || !build.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let mut parts = date.split('.');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 fn installations_conflict(installations: &[AgentToolInstallation]) -> bool {
@@ -2171,12 +2517,52 @@ mod tests {
     #[test]
     fn compares_versions_without_treating_unknown_values_as_outdated() {
         assert_eq!(
-            determine_state(true, false, Some("codex-cli 0.49.1"), Some("0.50.0")),
+            determine_state(
+                AgentKind::Codex,
+                true,
+                false,
+                Some("codex-cli 0.49.1"),
+                Some("0.50.0")
+            ),
             AgentToolState::UpdateAvailable
         );
         assert_eq!(
-            determine_state(true, false, Some("build-a"), Some("build-b")),
+            determine_state(
+                AgentKind::Codex,
+                true,
+                false,
+                Some("build-a"),
+                Some("build-b")
+            ),
             AgentToolState::Unknown
+        );
+    }
+
+    #[test]
+    fn compares_cursor_build_identifiers_without_semver() {
+        assert_eq!(
+            determine_state(
+                AgentKind::Cursor,
+                true,
+                false,
+                Some("2025.09.18-7ae6800"),
+                Some("2026.08.31-4057e58")
+            ),
+            AgentToolState::UpdateAvailable
+        );
+        assert!(version_reaches_target(
+            AgentKind::Cursor,
+            "2026.09.01-abcdef0",
+            "2026.08.31-4057e58"
+        ));
+        assert!(!version_reaches_target(
+            AgentKind::Cursor,
+            "2026.08.31-deadbee",
+            "2026.08.31-4057e58"
+        ));
+        assert_eq!(
+            parse_cursor_build("cursor-agent 2025.09.18-7ae6800"),
+            Some((2025, 9, 18))
         );
     }
 
@@ -2191,7 +2577,7 @@ mod tests {
         assert!(!installations_conflict(&[]));
 
         assert_eq!(
-            determine_state(true, true, Some("1.0.0"), Some("1.0.0")),
+            determine_state(AgentKind::Codex, true, true, Some("1.0.0"), Some("1.0.0")),
             AgentToolState::Conflict
         );
     }
@@ -2375,6 +2761,41 @@ mod tests {
         assert!(truncated.ends_with("..."));
     }
 
+    #[test]
+    fn execution_output_redacts_credentials_and_home_paths() {
+        let home = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/home/tester"))
+            .to_string_lossy()
+            .into_owned();
+        let output = format!(
+            "cache: {home}/.npm\nAuthorization: Bearer private-token\nBearer standalone-token\nregistry=https://user:password@example.test/npm\nGITHUB_TOKEN=private\nplain diagnostic"
+        );
+
+        let redacted = redact_output(&output);
+
+        assert!(!redacted.contains(&home));
+        assert!(!redacted.contains("private-token"));
+        assert!(!redacted.contains("standalone-token"));
+        assert!(!redacted.contains("user:password"));
+        assert!(!redacted.contains("GITHUB_TOKEN"));
+        assert!(redacted.contains("plain diagnostic"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_cli_candidates_include_native_grok_outside_path() {
+        let home = Path::new("/home/tester");
+
+        assert_eq!(
+            known_unix_cli_candidates(AgentKind::GrokBuild, home),
+            [home.join(".grok/bin/grok")]
+        );
+        assert_eq!(
+            known_unix_cli_candidates(AgentKind::OpenCode, home),
+            [home.join(".opencode/bin/opencode")]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn anchored_manager_is_resolved_beside_the_detected_installation() {
@@ -2491,7 +2912,8 @@ mod tests {
 
         let (program, args) = executable_action(spec, &tool, &action, Some(&installation)).unwrap();
         assert_eq!(program, manager);
-        let outcome = run_action(&program, &args).await.unwrap();
+        let cancelled = AtomicBool::new(false);
+        let outcome = run_action(&program, &args, &cancelled).await.unwrap();
 
         assert_eq!(outcome.status, AgentToolExecutionStatus::Succeeded);
         assert_eq!(outcome.output, "bound:install -g @openai/codex@1.1.0");
@@ -2521,12 +2943,162 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let started = std::time::Instant::now();
-        let outcome = run_action_with_timeout(&wrapper, &[], StdDuration::from_millis(100))
-            .await
-            .unwrap();
+        let cancelled = AtomicBool::new(false);
+        let outcome =
+            run_action_with_timeout(&wrapper, &[], StdDuration::from_millis(100), &cancelled)
+                .await
+                .unwrap();
 
         assert_eq!(outcome.status, AgentToolExecutionStatus::TimedOut);
         assert!(started.elapsed() < StdDuration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_interrupts_descendant_output_drain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let wrapper = directory.path().join("wrapper");
+        std::fs::write(&wrapper, "#!/bin/sh\nsleep 0.05\n(sleep 5) &\nexit 0\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_cancelled = std::sync::Arc::clone(&cancelled);
+        std::thread::spawn(move || {
+            std::thread::sleep(StdDuration::from_millis(200));
+            worker_cancelled.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let result =
+            run_action_with_timeout(&wrapper, &[], StdDuration::from_secs(5), &cancelled).await;
+
+        let error = result.err().expect("cancellation should stop the command");
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < StdDuration::from_secs(2));
+    }
+
+    #[test]
+    fn execution_rejects_installation_set_changes_after_confirmation() {
+        let installation = DetectedInstallation {
+            public: test_installation("one", Some("1.0.0"), true, true),
+            executable_path: PathBuf::from("/tmp/one"),
+            manager_path: Some(PathBuf::from("/opt/homebrew/bin/brew")),
+        };
+
+        assert!(ensure_installation_set_stable(AgentToolActionKind::Install, &[]).is_ok());
+        assert!(
+            ensure_installation_set_stable(
+                AgentToolActionKind::Install,
+                std::slice::from_ref(&installation)
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_installation_set_stable(
+                AgentToolActionKind::Update,
+                std::slice::from_ref(&installation)
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_installation_set_stable(
+                AgentToolActionKind::Update,
+                &[installation.clone(), installation]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_rejects_version_changes_after_confirmation() {
+        let spec = tool_spec(AgentKind::Codex).unwrap();
+        let installation = |version: &str, runnable: bool| DetectedInstallation {
+            public: test_installation("codex", Some(version), runnable, true),
+            executable_path: PathBuf::from("/opt/homebrew/bin/codex"),
+            manager_path: Some(PathBuf::from("/opt/homebrew/bin/brew")),
+        };
+        let confirmed = installation("1.0.0", true);
+        let action = update_action(spec, &confirmed, Some("2.0.0")).unwrap();
+        let tool = AgentToolStatus {
+            agent: AgentKind::Codex,
+            installed: true,
+            current_version: Some("1.0.0".to_owned()),
+            latest_version: Some("2.0.0".to_owned()),
+            recommended_version: Some("2.0.0".to_owned()),
+            upstream_version: Some("2.0.0".to_owned()),
+            state: AgentToolState::UpdateAvailable,
+            channel: AgentToolChannel::Homebrew,
+            installations: vec![confirmed.public.clone()],
+            warnings: Vec::new(),
+            official_url: spec.official_url.to_owned(),
+            release_url: spec.release_url.map(ToOwned::to_owned),
+            actions: vec![action.clone()],
+        };
+
+        assert!(
+            ensure_update_target_still_applicable(
+                AgentKind::Codex,
+                &tool,
+                &action,
+                Some(&confirmed)
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_update_target_still_applicable(
+                AgentKind::Codex,
+                &tool,
+                &action,
+                Some(&installation("3.0.0", true))
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_update_target_still_applicable(
+                AgentKind::Codex,
+                &tool,
+                &action,
+                Some(&installation("1.0.0", false))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn homebrew_actions_are_manual_because_versions_cannot_be_pinned() {
+        let spec = tool_spec(AgentKind::Codex).unwrap();
+        let install = install_action(spec, AgentToolChannel::Homebrew, Some("1.2.3")).unwrap();
+        assert_eq!(install.mode, AgentToolActionMode::CopyCommand);
+
+        let installation = DetectedInstallation {
+            public: test_installation("brew", Some("1.0.0"), true, true),
+            executable_path: PathBuf::from("/opt/homebrew/bin/codex"),
+            manager_path: Some(PathBuf::from("/opt/homebrew/bin/brew")),
+        };
+        let update = update_action(spec, &installation, Some("1.2.3")).unwrap();
+        assert_eq!(update.mode, AgentToolActionMode::CopyCommand);
+    }
+
+    #[test]
+    fn official_updater_actions_are_manual_because_versions_cannot_be_pinned() {
+        let spec = tool_spec(AgentKind::Cursor).unwrap();
+        let mut public = test_installation("cursor", Some("2025.09.18-7ae6800"), true, true);
+        public.channel = AgentToolChannel::OfficialInstaller;
+        public.manager_path = None;
+        let installation = DetectedInstallation {
+            executable_path: PathBuf::from("/home/tester/.local/bin/cursor-agent"),
+            manager_path: None,
+            public,
+        };
+
+        let action = update_action(spec, &installation, Some("2026.08.31-4057e58")).unwrap();
+
+        assert_eq!(action.mode, AgentToolActionMode::CopyCommand);
+        assert_eq!(
+            action.command.as_deref(),
+            Some("/home/tester/.local/bin/cursor-agent update")
+        );
     }
 
     #[test]
@@ -2567,6 +3139,25 @@ mod tests {
             infer_channel(AgentKind::Codex, Path::new("/Users/me/Library/pnpm/codex")),
             AgentToolChannel::Pnpm
         );
+    }
+
+    #[test]
+    fn mise_alias_collapse_keeps_other_physical_installations() {
+        let shim = PathBuf::from("/Users/me/.local/share/mise/shims/codex");
+        let active = PathBuf::from("/Users/me/.local/share/mise/installs/node/22/bin/codex");
+        let inactive = PathBuf::from("/Users/me/.local/share/mise/installs/node/20/bin/codex");
+        let mut candidates = vec![
+            (shim.clone(), true),
+            (active.clone(), false),
+            (inactive.clone(), false),
+        ];
+
+        assert!(collapse_mise_aliases(&mut candidates, &active));
+        assert_eq!(candidates, [(shim, true), (inactive, false)]);
+
+        let unrelated = Path::new("/Users/me/.local/share/mise/installs/node/18/bin/codex");
+        assert!(!collapse_mise_aliases(&mut candidates, unrelated));
+        assert_eq!(candidates.len(), 2);
     }
 
     #[cfg(unix)]
@@ -2620,15 +3211,33 @@ mod tests {
         };
 
         assert_eq!(
-            verify_execution(&action, Some("1.0.0"), &[installation(Some("1.0.0"), true)]).0,
+            verify_execution(
+                AgentKind::Codex,
+                &action,
+                Some("1.0.0"),
+                &[installation(Some("1.0.0"), true)]
+            )
+            .0,
             AgentToolExecutionStatus::Unchanged
         );
         assert_eq!(
-            verify_execution(&action, Some("1.0.0"), &[installation(None, false)]).0,
+            verify_execution(
+                AgentKind::Codex,
+                &action,
+                Some("1.0.0"),
+                &[installation(None, false)]
+            )
+            .0,
             AgentToolExecutionStatus::VerificationFailed
         );
         assert_eq!(
-            verify_execution(&action, Some("1.0.0"), &[installation(Some("2.0.0"), true)]).0,
+            verify_execution(
+                AgentKind::Codex,
+                &action,
+                Some("1.0.0"),
+                &[installation(Some("2.0.0"), true)]
+            )
+            .0,
             AgentToolExecutionStatus::Succeeded
         );
     }

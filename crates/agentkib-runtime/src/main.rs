@@ -29,6 +29,8 @@ use agentkib_platform::applications::{
     WorkspaceApplicationCategory, detect_workspace_applications,
     open_workspace as open_workspace_application,
 };
+#[cfg(target_os = "windows")]
+use agentkib_platform::network::system_proxy_url;
 use agentkib_platform::path as platform_path;
 use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
@@ -3927,7 +3929,7 @@ fn quota_collector_environment() -> anyhow::Result<(String, BTreeMap<String, Str
 
     #[cfg(target_os = "windows")]
     {
-        let environment = BTreeMap::new();
+        let environment = quota_proxy_environment(&process_environment, system_proxy_url());
         let config_source = resolve_win_codexbar_config(&process_environment)
             .map(|_| "win-codexbar".to_string())
             .unwrap_or_else(|| "automatic".to_string());
@@ -3983,6 +3985,29 @@ fn quota_collector_environment() -> anyhow::Result<(String, BTreeMap<String, Str
         }
         Ok((config_source, environment))
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn quota_proxy_environment(
+    process_environment: &BTreeMap<String, String>,
+    system_proxy: Option<String>,
+) -> BTreeMap<String, String> {
+    let has_explicit_proxy = process_environment.keys().any(|key| {
+        ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+            .iter()
+            .any(|candidate| key.eq_ignore_ascii_case(candidate))
+    });
+    if has_explicit_proxy {
+        return BTreeMap::new();
+    }
+
+    let Some(proxy) = system_proxy.filter(|value| !value.trim().is_empty()) else {
+        return BTreeMap::new();
+    };
+    BTreeMap::from([
+        ("HTTP_PROXY".to_string(), proxy.clone()),
+        ("HTTPS_PROXY".to_string(), proxy),
+    ])
 }
 
 #[derive(Clone)]
@@ -4278,6 +4303,37 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn quota_proxy_environment_uses_windows_proxy_when_process_has_none() {
+        let environment =
+            quota_proxy_environment(&BTreeMap::new(), Some("http://127.0.0.1:33210".to_string()));
+
+        assert_eq!(
+            environment.get("HTTP_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:33210")
+        );
+        assert_eq!(
+            environment.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://127.0.0.1:33210")
+        );
+    }
+
+    #[test]
+    fn quota_proxy_environment_preserves_explicit_process_proxy() {
+        let process_environment = BTreeMap::from([(
+            "https_proxy".to_string(),
+            "http://explicit.example:8080".to_string(),
+        )]);
+
+        assert!(
+            quota_proxy_environment(
+                &process_environment,
+                Some("http://system.example:8080".to_string())
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn handshake_does_not_require_the_mcp_hub() {

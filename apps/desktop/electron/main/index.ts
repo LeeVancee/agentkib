@@ -66,9 +66,9 @@ let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
 const startupBenchmark = new StartupBenchmark();
 
-// Native window decorations can reduce the renderer viewport on Windows and Linux.
-// Leave enough room for it to stay above its 1024px compact breakpoint.
-const MAIN_WINDOW_MIN_WIDTH = process.platform === "darwin" ? 1024 : 1038;
+// Keep the desktop window comfortably above the renderer's 1024px compact breakpoint.
+// 1280px is Tailwind's default `xl` breakpoint and leaves room for the desktop layout.
+const MAIN_WINDOW_MIN_WIDTH = 1280;
 
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";

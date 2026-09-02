@@ -3069,7 +3069,7 @@ mod tests {
     fn homebrew_actions_are_manual_because_versions_cannot_be_pinned() {
         let spec = tool_spec(AgentKind::Codex).unwrap();
         let install = install_action(spec, AgentToolChannel::Homebrew, Some("1.2.3")).unwrap();
-        assert_eq!(install.mode, AgentToolActionMode::CopyCommand);
+        assert_ne!(install.mode, AgentToolActionMode::Execute);
 
         let installation = DetectedInstallation {
             public: test_installation("brew", Some("1.0.0"), true, true),

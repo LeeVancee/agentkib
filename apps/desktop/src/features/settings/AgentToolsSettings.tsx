@@ -126,6 +126,7 @@ export function AgentToolsSettings({
       .map((action) => ({ tool, action })),
   );
   const selectedTool = tools.find((tool) => tool.agent === selectedAgent);
+  const selectedCommandAction = selectedTool?.actions.find((action) => action.command);
 
   const refresh = async () => {
     if (refreshing) return;
@@ -432,15 +433,15 @@ export function AgentToolsSettings({
             </Select>
           </div>
           <div className="mt-3 flex min-h-16 items-center justify-between gap-3 rounded-xl border bg-muted/35 px-3 py-2">
-            {selectedTool?.actions[0]?.command ? (
+            {selectedCommandAction?.command ? (
               <>
                 <code className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs">
-                  {selectedTool.actions[0].command}
+                  {selectedCommandAction.command}
                 </code>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => void copyCommand(selectedTool.actions[0]?.command ?? "")}
+                  onClick={() => void copyCommand(selectedCommandAction.command ?? "")}
                 >
                   <Copy size={14} />
                   {tr("common.copy")}

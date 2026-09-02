@@ -205,6 +205,50 @@ describe("AgentToolsSettings", () => {
     expect(screen.queryByText("DeepSeek Harness")).toBeNull();
   });
 
+  it("shows an available manual command when the preferred channel has none", async () => {
+    const command = "C:/Program Files/nodejs/npm.cmd install -g opencode-ai@1.2.3";
+    const openCode = tool("opencode", {
+      installed: false,
+      actions: [
+        {
+          id: "opencode:docs:official-installer:unversioned",
+          kind: "open-documentation",
+          mode: "open-documentation",
+          channel: "official-installer",
+          url: "https://opencode.ai/docs/",
+        },
+        {
+          id: "opencode:install:npm:1.2.3",
+          kind: "install",
+          mode: "execute",
+          channel: "npm",
+          shell: "powershell",
+          command,
+          target_version: "1.2.3",
+          manager_path: "C:/Program Files/nodejs/npm.cmd",
+        },
+      ],
+    });
+    vi.mocked(useAgentTools).mockReturnValue({
+      data: {
+        ...snapshot,
+        tools: snapshot.tools.map((candidate) =>
+          candidate.agent === "opencode" ? openCode : candidate,
+        ),
+      },
+      error: null,
+      isPending: false,
+    } as ReturnType<typeof useAgentTools>);
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole("combobox", { name: "Select Agent" }));
+    await user.click(await screen.findByRole("option", { name: "OpenCode" }));
+
+    expect(screen.getByText(command)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+  });
+
   it("shows per-installation diagnostics and the PATH default", async () => {
     const conflicted = tool("codex", {
       state: "conflict",

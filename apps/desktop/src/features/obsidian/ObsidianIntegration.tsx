@@ -16,6 +16,7 @@ import { ExternalLink, FolderOpen, Link2, Unlink } from "lucide-react";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
 import type { ObsidianIntegration } from "@/core/types";
+import { SettingsNotice, SettingsPanel } from "@/features/settings/components/SettingsLayout";
 
 function InstallationStatus({ integration }: { integration: ObsidianIntegration }) {
   const { installation } = integration;
@@ -74,14 +75,9 @@ export function ObsidianSettingsCard() {
   };
 
   return (
-    <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
-      <div className="flex min-h-16 items-center justify-between gap-4 border-b border-border/60 bg-muted/20 px-5 py-3">
-        <div className="flex items-center gap-3.5">
-          <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted text-muted-foreground">
-            <Link2 size={18} />
-          </div>
-          <h2>{tr("obsidian.title")}</h2>
-        </div>
+    <SettingsPanel
+      title={tr("obsidian.title")}
+      action={
         <div className="flex items-center gap-2">
           {integration?.installation.installed && (
             <Button variant="outline" onClick={() => void openApp()}>
@@ -94,7 +90,8 @@ export function ObsidianSettingsCard() {
             {tr("obsidian.addVault")}
           </Button>
         </div>
-      </div>
+      }
+    >
       {integration ? (
         <InstallationStatus integration={integration} />
       ) : (
@@ -114,9 +111,9 @@ export function ObsidianSettingsCard() {
         </code>
       )}
       {error && (
-        <div className="mx-5 my-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </div>
+        </SettingsNotice>
       )}
       <div className="px-5 pb-5 pt-2.5">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
@@ -141,7 +138,7 @@ export function ObsidianSettingsCard() {
           <p className="text-sm text-muted-foreground">{tr("obsidian.noVaults")}</p>
         )}
       </div>
-    </Card>
+    </SettingsPanel>
   );
 }
 

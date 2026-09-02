@@ -5,6 +5,7 @@ import {
   SkeletonPanelHeader,
   SkeletonText,
 } from "@/components/ui/skeleton-layouts";
+import { SettingsPage, type SettingsPageVariant } from "./components/SettingsLayout";
 
 export function SettingsSkeleton() {
   return (
@@ -26,15 +27,17 @@ export function SettingsSkeleton() {
   );
 }
 
-export function SettingsContentSkeleton() {
+export function SettingsContentSkeleton({ variant = "form" }: { variant?: SettingsPageVariant }) {
   return (
-    <SkeletonPage label="Loading settings">
-      <SkeletonPanel>
-        <SkeletonPanelHeader />
-        <div className="p-5">
-          <SkeletonListRows count={5} compact />
-        </div>
-      </SkeletonPanel>
-    </SkeletonPage>
+    <SettingsPage variant={variant}>
+      <SkeletonPage label="Loading settings">
+        <SkeletonPanel className="rounded-xl shadow-none">
+          <SkeletonPanelHeader />
+          <div className="p-5">
+            <SkeletonListRows count={5} compact />
+          </div>
+        </SkeletonPanel>
+      </SkeletonPage>
+    </SettingsPage>
   );
 }

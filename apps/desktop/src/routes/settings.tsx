@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
+import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
 import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { useAppStore } from "../stores/app-store";
@@ -27,6 +28,12 @@ function SettingsRoute() {
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
+  const layoutVariant: SettingsPageVariant =
+    section === "tools"
+      ? "workspace"
+      : section === "general" || section === "privacy"
+        ? "form"
+        : "management";
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
@@ -98,7 +105,7 @@ function SettingsRoute() {
   return (
     <>
       {!runtime && workspacesPending ? (
-        <SettingsContentSkeleton />
+        <SettingsContentSkeleton variant={layoutVariant} />
       ) : (
         <GlobalSettings
           section={section}

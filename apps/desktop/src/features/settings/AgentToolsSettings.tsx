@@ -53,6 +53,7 @@ import type {
 } from "@/core/types";
 import { cn } from "@/lib/utils";
 import { refreshAgentTools, useAgentTools } from "./agent-tools-query";
+import { SettingsNotice } from "./components/SettingsLayout";
 
 const PROJECT_URL = "https://github.com/starroyhq/agentkib";
 const RELEASES_URL = `${PROJECT_URL}/releases`;
@@ -286,13 +287,13 @@ export function AgentToolsSettings({
         </div>
 
         {(refreshError || toolsQuery.error) && (
-          <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <SettingsNotice tone="error" inset={false} className="text-sm" role="alert">
             <CircleAlert size={16} className="mt-0.5" />
             {refreshError || localizeMessage(toolsQuery.error)}
-          </div>
+          </SettingsNotice>
         )}
         {toolsQuery.data?.cache_status === "cached" && (
-          <div className="flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+          <SettingsNotice tone="warning" inset={false} className="text-sm" role="status">
             <Info size={16} className="mt-0.5" />
             <span>
               {tr("settings.tools.usingCachedVersions")}
@@ -305,15 +306,15 @@ export function AgentToolsSettings({
                 </>
               )}
             </span>
-          </div>
+          </SettingsNotice>
         )}
         {toolsQuery.data?.cache_status !== "cached" && Boolean(toolsQuery.data?.errors.length) && (
-          <div className="flex items-start gap-2 rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+          <SettingsNotice tone="warning" inset={false} className="text-sm" role="status">
             <CircleAlert size={16} className="mt-0.5" />
             {tr("settings.tools.partialSourceFailure", {
               count: toolsQuery.data?.errors.length ?? 0,
             })}
-          </div>
+          </SettingsNotice>
         )}
 
         {toolsQuery.isPending ? (

@@ -257,12 +257,10 @@ function AppShellRouter({
       <section
         className={cn(
           isSettings
-            ? "mx-auto grid w-full max-w-[888px] gap-5 px-6 pb-10 pt-6 max-[640px]:px-4"
+            ? "mx-auto grid w-full max-w-[1520px] gap-5 px-6 pb-10 pt-4 max-[640px]:px-4"
             : isWorkspace
               ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
               : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
-          isSettings && settingsSection === "general" && "pt-4",
-          isSettings && settingsSection === "tools" && "max-w-[1520px] pt-4",
         )}
       >
         <Outlet />

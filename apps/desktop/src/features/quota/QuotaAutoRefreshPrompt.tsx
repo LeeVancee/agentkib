@@ -47,17 +47,11 @@ export function QuotaAutoRefreshPrompt({
             {tr("quota.autoRefreshPromptTitle")}
           </h2>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy}
-              onClick={() => void run(onEnableAutoRefresh)}
-            >
+            <Button type="button" disabled={busy} onClick={() => void run(onEnableAutoRefresh)}>
               {tr("quota.enableAutoRefresh")}
             </Button>
             <Button
               type="button"
-              size="sm"
               variant="ghost"
               disabled={busy}
               onClick={() => void run(onNotNow)}

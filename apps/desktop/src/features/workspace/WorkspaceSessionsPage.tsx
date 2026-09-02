@@ -449,7 +449,7 @@ export function WorkspaceSessionsPage({
                   )}
                 </strong>
                 {filter === "current" && filterCounts.metadata > 0 && (
-                  <Button variant="outline" size="sm" onClick={() => setFilter("metadata")}>
+                  <Button variant="outline" onClick={() => setFilter("metadata")}>
                     {tr("conversations.viewMetadata")}
                   </Button>
                 )}
@@ -499,7 +499,6 @@ export function WorkspaceSessionsPage({
                 {selected.availability === "readable" && events.length > 0 && (
                   <Button
                     variant="outline"
-                    size="sm"
                     className="shrink-0"
                     onClick={() => setShowHandoff(true)}
                   >
@@ -567,7 +566,6 @@ export function WorkspaceSessionsPage({
                 {nextCursor && (
                   <Button
                     variant="outline"
-                    size="sm"
                     className="self-center"
                     disabled={loadingEarlier}
                     onClick={() => void loadEarlier()}

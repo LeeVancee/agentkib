@@ -217,7 +217,6 @@ function WorkspacesPage({
     <ToggleGroup
       spacing={0}
       variant="default"
-      size="sm"
       className="segmented-control shrink-0"
       value={[view]}
       onValueChange={(values) => {

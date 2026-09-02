@@ -282,11 +282,7 @@ export function GlobalHome({
                     <span className="min-w-0 flex-1">
                       <strong className="block text-sm">{tr("home.allClear")}</strong>
                     </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void onOpenDoctor(workspaces[0])}
-                    >
+                    <Button variant="outline" onClick={() => void onOpenDoctor(workspaces[0])}>
                       <ShieldCheck size={14} />
                       {tr("home.openDoctor")}
                     </Button>
@@ -347,7 +343,7 @@ export function GlobalHome({
                 />
               ))}
               <div className="px-5 py-4">
-                <Button size="sm" className="gap-1.5" onClick={() => void onAddRoot()}>
+                <Button className="gap-1.5" onClick={() => void onAddRoot()}>
                   <Plus size={14} />
                   {tr("home.createWorkspace")}
                 </Button>

@@ -210,7 +210,6 @@ export function GlobalSettings({
           <SettingGroup title={tr("settings.scanRoots")}>
             <div className="flex justify-end border-b border-border/60 px-5 py-3">
               <Button
-                size="sm"
                 className="bg-primary text-primary-foreground hover:bg-primary/90"
                 onClick={() => void onAddRoot()}
               >
@@ -261,7 +260,7 @@ export function GlobalSettings({
                       {formatDateTime(item.created_at)}
                     </small>
                   </span>
-                  <Button size="sm" variant="outline" onClick={() => void onRestore(item.path)}>
+                  <Button variant="outline" onClick={() => void onRestore(item.path)}>
                     {tr("common.restore")}
                   </Button>
                 </div>

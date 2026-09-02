@@ -481,7 +481,6 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
                     <span className="min-w-0 flex-1">{tr("git.filesFailed")}</span>
                     <Button
                       variant="ghost"
-                      size="sm"
                       onClick={() => {
                         if (detailOid) void loadCommitFiles(detailOid);
                       }}
@@ -869,7 +868,7 @@ function CommitGraph({ row, commit }: { row: CommitGraphRow; commit: GitCommitSu
   const x = (lane: number) => lane * 16 + 10;
   return (
     <svg
-      className="self-stretch overflow-visible"
+      className="self-center overflow-visible"
       width={width}
       height="44"
       viewBox={`0 0 ${width} 44`}
@@ -931,12 +930,7 @@ function GitDiffPane({
       )}
     >
       <div className="sticky top-0 z-10 flex min-h-9 items-center gap-2 border-b border-border bg-card px-2.5 py-1.5 text-xs text-muted-foreground">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="hidden max-[760px]:inline-flex"
-          onClick={onBackToFiles}
-        >
+        <Button variant="ghost" className="hidden max-[760px]:inline-flex" onClick={onBackToFiles}>
           <ArrowLeft size={14} />
           {tr("git.backToFiles")}
         </Button>

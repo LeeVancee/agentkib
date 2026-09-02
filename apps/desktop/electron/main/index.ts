@@ -66,8 +66,9 @@ let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
 const startupBenchmark = new StartupBenchmark();
 
-// Keep the native window above the renderer's compact-layout breakpoint.
-const MAIN_WINDOW_MIN_WIDTH = 1024;
+// Native window decorations can reduce the renderer viewport on Windows and Linux.
+// Leave enough room for it to stay above its 1024px compact breakpoint.
+const MAIN_WINDOW_MIN_WIDTH = process.platform === "darwin" ? 1024 : 1038;
 
 interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";

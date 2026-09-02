@@ -14,7 +14,7 @@ use agentkib_platform::fs::{atomic_write, move_path};
 use agentkib_platform::path as platform_path;
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, Utc};
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,6 +27,8 @@ const MAX_CANDIDATES: usize = 200;
 const MAX_DISCOVERY_CONCURRENCY: usize = 8;
 const MAX_DISCOVERY_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 const DISCOVERY_TIMEOUT_SECONDS: u64 = 90;
+const MAX_PACKAGE_DOWNLOAD_CONCURRENCY: usize = 8;
+const PACKAGE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 120;
 const MAX_DISCOVERY_DEPTH: usize = 8;
 const MAX_SKILL_FILES: usize = 512;
 const MAX_SKILL_PACKAGE_ENTRIES: usize = 4_096;
@@ -526,12 +528,12 @@ impl SkillHub {
     pub fn removed(&self) -> Result<Vec<RemovedSkill>> {
         let mut output = Vec::new();
         let directory = self.trash_dir();
-        let Ok(entries) = fs::read_dir(directory) else {
+        let Some(entries) = read_dir_if_exists(&directory)? else {
             return Ok(output);
         };
-        for entry in entries.filter_map(Result::ok) {
-            if !entry.file_type().is_ok_and(|kind| kind.is_dir())
-                || platform_path::is_reparse_or_symlink(&entry.path()).unwrap_or(true)
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() || platform_path::is_reparse_or_symlink(&entry.path())?
             {
                 continue;
             }
@@ -750,22 +752,33 @@ impl SkillHub {
             &package,
             planned.iter().map(|(_, relative, _)| relative.as_path()),
         )?;
-        let mut files = Vec::with_capacity(planned.len());
-        for (entry, relative, size) in planned {
-            let bytes = self
-                .download_raw(
-                    &resolved.owner,
-                    &resolved.repository,
-                    &resolved.commit,
-                    &entry.path,
-                    MAX_SKILL_FILE_BYTES,
-                )
-                .await?;
-            ensure!(
-                bytes.len() as u64 == size,
-                "GitHub file size changed during download: {}",
-                entry.path
-            );
+        let owner = &resolved.owner;
+        let repository = &resolved.repository;
+        let commit = &resolved.commit;
+        let downloads = stream::iter(planned.into_iter().map(
+            |(entry, relative, size)| async move {
+                let bytes = self
+                    .download_raw(owner, repository, commit, &entry.path, MAX_SKILL_FILE_BYTES)
+                    .await?;
+                ensure!(
+                    bytes.len() as u64 == size,
+                    "GitHub file size changed during download: {}",
+                    entry.path
+                );
+                Ok::<_, anyhow::Error>((entry, relative, size, bytes))
+            },
+        ))
+        .buffer_unordered(MAX_PACKAGE_DOWNLOAD_CONCURRENCY)
+        .try_collect::<Vec<_>>();
+        let mut downloaded = tokio::time::timeout(
+            std::time::Duration::from_secs(PACKAGE_DOWNLOAD_TIMEOUT_SECONDS),
+            downloads,
+        )
+        .await
+        .context("GitHub Skill package download exceeded the 120 second limit")??;
+        downloaded.sort_by(|left, right| left.0.path.cmp(&right.0.path));
+        let mut files = Vec::with_capacity(downloaded.len());
+        for (entry, relative, size, bytes) in downloaded {
             let target = package.join(&relative);
             fs::write(&target, &bytes)?;
             set_executable(&target, entry.mode == "100755")?;
@@ -1463,7 +1476,7 @@ pub fn default_home_dir() -> Result<PathBuf> {
 
 pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
     let directory = root.join("skills");
-    let Ok(entries) = fs::read_dir(directory) else {
+    let Some(entries) = read_dir_if_exists(&directory)? else {
         return Ok(Vec::new());
     };
     let mut output = Vec::new();
@@ -2094,6 +2107,14 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
+fn read_dir_if_exists(path: &Path) -> Result<Option<fs::ReadDir>> {
+    match fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("Could not read {}", path.display())),
+    }
+}
+
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2107,7 +2128,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
     let directory = root.join("skills");
     let lock = load_lock(root)?;
-    let Ok(entries) = fs::read_dir(directory) else {
+    let Some(entries) = read_dir_if_exists(&directory)? else {
         return Ok(Vec::new());
     };
     let mut output = Vec::new();
@@ -2746,6 +2767,32 @@ mod tests {
         assert!(!lock.skills.contains_key("my_skill"));
         assert!(!lock.previous.contains_key("my_skill"));
         assert!(!conflicting_backup.exists());
+    }
+
+    #[test]
+    fn library_readers_only_treat_a_missing_directory_as_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        assert!(list_installed(root).unwrap().is_empty());
+        assert!(scan_library_assets(root).unwrap().is_empty());
+
+        fs::write(root.join("skills"), "not a directory").unwrap();
+        assert!(list_installed(root).is_err());
+        assert!(scan_library_assets(root).is_err());
+
+        let trash_directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(trash_directory.path().join("trash")).unwrap();
+        fs::write(
+            trash_directory.path().join("trash/skills"),
+            "not a directory",
+        )
+        .unwrap();
+        let hub = SkillHub::new(
+            trash_directory.path().to_path_buf(),
+            trash_directory.path().join("cache"),
+        )
+        .unwrap();
+        assert!(hub.removed().is_err());
     }
 
     #[test]

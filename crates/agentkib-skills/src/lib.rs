@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -702,7 +702,7 @@ impl SkillHub {
         let package = temp.path().join("package");
         fs::create_dir(&package)?;
         let mut total_size = 0_u64;
-        let mut files = Vec::new();
+        let mut planned = Vec::with_capacity(entries.len());
         for entry in entries {
             let size = entry.size.unwrap_or_default();
             ensure!(
@@ -723,6 +723,14 @@ impl SkillHub {
                 .unwrap_or(&entry.path)
                 .trim_start_matches('/');
             let relative = safe_relative_path(relative)?;
+            planned.push((entry, relative, size));
+        }
+        reserve_package_layout(
+            &package,
+            planned.iter().map(|(_, relative, _)| relative.as_path()),
+        )?;
+        let mut files = Vec::with_capacity(planned.len());
+        for (entry, relative, size) in planned {
             let bytes = self
                 .download_raw(
                     &resolved.owner,
@@ -738,11 +746,13 @@ impl SkillHub {
                 entry.path
             );
             let target = package.join(&relative);
-            fs::create_dir_all(target.parent().context("Skill file has no parent")?)?;
             fs::write(&target, &bytes)?;
             set_executable(&target, entry.mode == "100755")?;
             files.push(SkillFileEntry {
-                path: relative.to_string_lossy().replace('\\', "/"),
+                path: relative
+                    .to_str()
+                    .context("GitHub package path must be UTF-8")?
+                    .replace('\\', "/"),
                 size,
                 executable: entry.mode == "100755",
             });
@@ -1752,6 +1762,67 @@ fn package_entries<'a>(entries: &'a [TreeEntry], path: &str) -> Result<Vec<&'a T
     Ok(output)
 }
 
+fn reserve_package_layout<'a>(
+    root: &Path,
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<()> {
+    let mut files = BTreeSet::new();
+    let mut directories = BTreeMap::new();
+    for relative in paths {
+        let original = relative
+            .to_str()
+            .context("GitHub package path must be UTF-8")?
+            .replace('\\', "/");
+        let portable = original.to_lowercase();
+        let original_parts = original.split('/').collect::<Vec<_>>();
+        let parts = portable.split('/').collect::<Vec<_>>();
+        ensure!(!original.is_empty(), "Skill package path is empty");
+        for index in 1..parts.len() {
+            let directory = parts[..index].join("/");
+            let original_directory = original_parts[..index].join("/");
+            ensure!(
+                !files.contains(&directory),
+                "Skill package paths collide on a supported filesystem: {}",
+                relative.display()
+            );
+            if let Some(existing) = directories.get(&directory) {
+                ensure!(
+                    existing == &original_directory,
+                    "Skill package paths collide on a supported filesystem: {}",
+                    relative.display()
+                );
+            } else {
+                directories.insert(directory, original_directory);
+            }
+        }
+        ensure!(
+            !directories.contains_key(&portable) && files.insert(portable),
+            "Skill package paths collide on a supported filesystem: {}",
+            relative.display()
+        );
+
+        let target = root.join(relative);
+        let parent = target.parent().context("Skill file has no parent")?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Skill package paths collide on a supported filesystem: {}",
+                relative.display()
+            )
+        })?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .with_context(|| {
+                format!(
+                    "Skill package paths collide on a supported filesystem: {}",
+                    relative.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn directory_tree_sha(resolved: &ResolvedRepository, directory: &str) -> Result<String> {
     if directory == resolved.root_path {
         return Ok(resolved.root_tree.clone());
@@ -2172,10 +2243,7 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
     let mut hash = Sha256::new();
     let mut modified_at = None;
     for (path, metadata) in files {
-        let relative = path
-            .strip_prefix(root)?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = utf8_package_relative(root, &path)?;
         hash.update((relative.len() as u64).to_le_bytes());
         hash.update(relative.as_bytes());
         hash.update([u8::from(is_executable(&metadata))]);
@@ -2243,16 +2311,20 @@ fn hash_file_contents(path: &Path, hash: &mut Sha256) -> Result<()> {
     Ok(())
 }
 
+fn utf8_package_relative(root: &Path, path: &Path) -> Result<String> {
+    path.strip_prefix(root)?
+        .to_str()
+        .map(|relative| relative.replace('\\', "/"))
+        .context("Skill package contains a non-UTF-8 path")
+}
+
 fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
     if !root.is_dir() {
         return Ok(BTreeMap::new());
     }
     let mut output = BTreeMap::new();
     for (path, metadata) in bounded_package_files(root)?.0 {
-        let relative = path
-            .strip_prefix(root)?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = utf8_package_relative(root, &path)?;
         let mut hash = Sha256::new();
         hash.update([u8::from(is_executable(&metadata))]);
         hash.update(metadata.len().to_le_bytes());
@@ -2900,6 +2972,33 @@ mod tests {
         assert!(candidate_directories(&candidates, "").is_err());
     }
 
+    #[test]
+    fn package_layout_rejects_case_insensitive_and_file_directory_collisions() {
+        let case_collision = tempfile::tempdir().unwrap();
+        let error = reserve_package_layout(
+            case_collision.path(),
+            [Path::new("Foo.md"), Path::new("foo.md")],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collide"));
+
+        let directory_collision = tempfile::tempdir().unwrap();
+        let error = reserve_package_layout(
+            directory_collision.path(),
+            [Path::new("Assets/one.png"), Path::new("assets/two.png")],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collide"));
+
+        let file_directory_collision = tempfile::tempdir().unwrap();
+        let error = reserve_package_layout(
+            file_directory_collision.path(),
+            [Path::new("Scripts"), Path::new("scripts/run.sh")],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collide"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn executable_mode_is_applied_and_included_in_package_hashes() {
@@ -2933,6 +3032,23 @@ mod tests {
         assert_ne!(
             package_hash(&split).unwrap().0,
             package_hash(&combined).unwrap().0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_hash_rejects_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/tmp/skill");
+        let path = root.join(OsString::from_vec(vec![0xff]));
+
+        assert!(
+            utf8_package_relative(root, &path)
+                .unwrap_err()
+                .to_string()
+                .contains("non-UTF-8")
         );
     }
 

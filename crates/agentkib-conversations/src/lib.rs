@@ -1517,6 +1517,7 @@ struct ParsedTranscript {
 
 fn parse_codex_transcript(path: &Path) -> Result<ParsedTranscript> {
     let snapshot = read_jsonl_snapshot(path)?;
+    let injected_context_lines = injected_codex_user_context_lines(&snapshot.records);
     let mut primary = Vec::new();
     let mut fallback = Vec::new();
     let mut primary_messages = BTreeSet::new();
@@ -1573,6 +1574,7 @@ fn parse_codex_transcript(path: &Path) -> Result<ParsedTranscript> {
             (Some("response_item"), Some("message")) => {
                 let role = value.pointer("/payload/role").and_then(Value::as_str);
                 if matches!(role, Some("user" | "assistant"))
+                    && !(role == Some("user") && injected_context_lines.contains(&line))
                     && let Some(content) = response_message_text(value.pointer("/payload/content"))
                 {
                     fallback.push(message_event(
@@ -2026,10 +2028,63 @@ fn response_message_text(value: Option<&Value>) -> Option<String> {
             )
         })
         .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .filter(|text| !looks_like_internal_context(text))
         .collect::<Vec<_>>()
         .join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+pub(crate) fn injected_codex_user_context_lines(records: &[(usize, Value)]) -> BTreeSet<usize> {
+    let mut user_messages_by_turn = BTreeMap::<String, Vec<(usize, bool)>>::new();
+    for (line, value) in records {
+        if !matches!(
+            (
+                value.get("type").and_then(Value::as_str),
+                value.pointer("/payload/type").and_then(Value::as_str),
+                value.pointer("/payload/role").and_then(Value::as_str),
+            ),
+            (Some("response_item"), Some("message"), Some("user"))
+        ) {
+            continue;
+        }
+        let Some(turn_id) = value
+            .pointer("/payload/internal_chat_message_metadata_passthrough/turn_id")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(content) = value.pointer("/payload/content") else {
+            continue;
+        };
+        user_messages_by_turn
+            .entry(turn_id.into())
+            .or_default()
+            .push((*line, is_injected_codex_context_content(content)));
+    }
+    user_messages_by_turn
+        .into_values()
+        .filter(|messages| messages.iter().any(|(_, is_context)| !is_context))
+        .flat_map(|messages| {
+            messages
+                .into_iter()
+                .filter_map(|(line, is_context)| is_context.then_some(line))
+        })
+        .collect()
+}
+
+fn is_injected_codex_context_content(value: &Value) -> bool {
+    let Some(blocks) = value.as_array() else {
+        return false;
+    };
+    !blocks.is_empty()
+        && blocks.iter().all(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("text" | "input_text")
+            ) && block
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(looks_like_internal_context)
+        })
 }
 
 fn attachment_count(value: &Value) -> u64 {
@@ -2339,6 +2394,41 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("database"));
+    }
+
+    #[test]
+    fn codex_keeps_visible_context_like_messages_and_skips_only_injected_context() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[{"type":"input_text","text":"<environment_context>injected context</environment_context>"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[{"type":"input_text","text":"continue the real task"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<path>visible assistant output</path>"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-2"},"content":[{"type":"input_text","text":"<path>the user intentionally used this prefix</path>"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let page = read_codex_events(&path, None, 100).unwrap();
+        let contents = page
+            .events
+            .iter()
+            .filter_map(|event| event.content.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            [
+                "continue the real task",
+                "<path>visible assistant output</path>",
+                "<path>the user intentionally used this prefix</path>",
+            ]
+        );
     }
 
     #[test]

@@ -113,6 +113,7 @@ export function SessionHandoffDialog({
     [draft?.losses],
   );
   const reasoningExcluded = draft?.losses.find((loss) => loss.code === "reasoning-excluded");
+  const supportsMcpSetup = targetAgent === "codex" || targetAgent === "claude-code";
 
   const showDraft = (nextDraft: SessionHandoffDraft) => {
     setDraft(nextDraft);
@@ -169,6 +170,7 @@ export function SessionHandoffDialog({
   };
 
   const planMcpConnection = async () => {
+    if (!supportsMcpSetup) return;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -330,17 +332,21 @@ export function SessionHandoffDialog({
               >
                 <CircleAlert className="mt-0.5 shrink-0" size={14} />
                 <span>
-                  {tr(
-                    draft.mcp_available
-                      ? "handoff.window.archiveReady"
-                      : "handoff.window.mcpRequired",
-                    {
-                      turns: draft.window_stats.deferred_turn_count,
-                      blocks: draft.window_stats.deferred_block_count,
-                    },
-                  )}
+                  {draft.mcp_available
+                    ? tr("handoff.window.archiveReady", {
+                        turns: draft.window_stats.deferred_turn_count,
+                        blocks: draft.window_stats.deferred_block_count,
+                      })
+                    : supportsMcpSetup
+                      ? tr("handoff.window.mcpRequired", {
+                          turns: draft.window_stats.deferred_turn_count,
+                          blocks: draft.window_stats.deferred_block_count,
+                        })
+                      : tr("handoff.window.mcpUnsupported", {
+                          agent: agentName(targetAgent),
+                        })}
                 </span>
-                {!draft.mcp_available && (
+                {!draft.mcp_available && supportsMcpSetup && (
                   <Button
                     size="sm"
                     className="shrink-0"

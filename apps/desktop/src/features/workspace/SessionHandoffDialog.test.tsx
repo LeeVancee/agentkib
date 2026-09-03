@@ -149,6 +149,60 @@ describe("SessionHandoffDialog", () => {
     );
   });
 
+  it("offers MCP setup for Codex", async () => {
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={[]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+    expect(await screen.findByRole("button", { name: "Connect Codex MCP" })).toBeTruthy();
+  });
+
+  it.each([
+    ["cursor", "Cursor"],
+    ["open-claw", "OpenClaw"],
+    ["hermes", "Hermes"],
+    ["deepseek-harness", "DeepSeek Harness"],
+  ] as const)(
+    "explains that %s cannot read a private archive instead of offering MCP setup",
+    async (targetAgent, agentLabel) => {
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+      render(
+        <SessionHandoffDialog
+          workspace={workspace}
+          session={session}
+          targetAgents={[targetAgent]}
+          onClose={vi.fn()}
+          onPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+      expect(
+        await screen.findByText(
+          new RegExp(`${agentLabel} cannot retrieve AgentKib private archives yet`, "i"),
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Connect .* MCP/ })).toBeNull();
+      expect(
+        (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect(api.planSessionMcpConnection).not.toHaveBeenCalled();
+    },
+  );
+
   it("treats excluded reasoning as privacy information without requiring acknowledgement", async () => {
     vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
       status: "ready",
@@ -193,14 +247,14 @@ describe("SessionHandoffDialog", () => {
           deferred_block_count: 0,
         },
         archive_id: undefined,
-        mcp_available: true,
+        mcp_available: false,
       },
     });
     render(
       <SessionHandoffDialog
         workspace={workspace}
         session={session}
-        targetAgents={["claude-code"]}
+        targetAgents={["cursor"]}
         onClose={vi.fn()}
         onPlanned={vi.fn()}
         onMcpConnectionPlanned={vi.fn()}
@@ -211,5 +265,10 @@ describe("SessionHandoffDialog", () => {
 
     expect(await screen.findByText(/Full history <1k Token/)).toBeTruthy();
     expect(screen.queryByText(/Full history ≈0k Token/)).toBeNull();
+    expect(screen.queryByText(/cannot retrieve AgentKib private archives yet/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Connect .* MCP/ })).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });

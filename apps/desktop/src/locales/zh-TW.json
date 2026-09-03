@@ -1172,6 +1172,7 @@
   "handoff.window.deferred": "按需讀取（估算）",
   "handoff.window.archiveReady": "{{turns}} 個較早節點、{{blocks}} 個內容區塊將進入私有封存；目標 Agent 可透過 AgentKib MCP 按需讀取。",
   "handoff.window.mcpRequired": "目標 Agent 尚未連接 AgentKib MCP，無法安全讀取私有封存。請先完成連接。",
+  "handoff.window.mcpUnsupported": "{{agent}} 尚未支援讀取 AgentKib 私有封存。請返回並選擇 Codex 或 Claude Code 繼續這段長會話。",
   "handoff.connectMcp": "連接 {{agent}} MCP",
   "handoff.section.direct": "將直接匯入",
   "handoff.section.directDetail": "{{turns}} 個完整節點 · {{tools}} 次工具呼叫",

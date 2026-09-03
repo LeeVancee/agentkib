@@ -8,6 +8,7 @@ const internalTitlePrefixes = [
   "<app-context>",
   "<skills_instructions>",
   "<environment_context>",
+  "# AGENTS.md instructions",
 ];
 
 export function displaySessionTitle(title?: string) {

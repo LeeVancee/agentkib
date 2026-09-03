@@ -1172,6 +1172,7 @@
   "handoff.window.deferred": "オンデマンド履歴（推定）",
   "handoff.window.archiveReady": "古い {{turns}} 件のタイムラインノードと {{blocks}} 件のコンテンツブロックを非公開アーカイブに保存し、AgentKib MCP から必要に応じて取得できます。",
   "handoff.window.mcpRequired": "対象 Agent が AgentKib MCP に接続されていないため、非公開アーカイブを安全に取得できません。先に接続してください。",
+  "handoff.window.mcpUnsupported": "{{agent}} はまだ AgentKib の非公開アーカイブを取得できません。この長いセッションを続けるには、戻って Codex または Claude Code を選択してください。",
   "handoff.connectMcp": "{{agent}} MCP を接続",
   "handoff.section.direct": "直接インポート",
   "handoff.section.directDetail": "完全な {{turns}} 件 · ツール呼び出し {{tools}} 件",

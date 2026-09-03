@@ -1172,6 +1172,7 @@
   "handoff.window.deferred": "On-demand history (estimated)",
   "handoff.window.archiveReady": "{{turns}} older timeline nodes and {{blocks}} content blocks will be kept in a private archive for on-demand access through AgentKib MCP.",
   "handoff.window.mcpRequired": "The target Agent is not connected to AgentKib MCP, so it cannot safely retrieve the private archive. Connect it first.",
+  "handoff.window.mcpUnsupported": "{{agent}} cannot retrieve AgentKib private archives yet. Go back and choose Codex or Claude Code to continue this long session.",
   "handoff.connectMcp": "Connect {{agent}} MCP",
   "handoff.section.direct": "Loaded directly",
   "handoff.section.directDetail": "{{turns}} complete timeline entries · {{tools}} tool calls",

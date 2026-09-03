@@ -1172,6 +1172,7 @@
   "handoff.window.deferred": "按需读取（估算）",
   "handoff.window.archiveReady": "{{turns}} 个较早节点、{{blocks}} 个内容块将进入私有归档；目标 Agent 可通过 AgentKib MCP 按需读取。",
   "handoff.window.mcpRequired": "目标 Agent 尚未连接 AgentKib MCP，无法安全读取私有归档。请先完成连接。",
+  "handoff.window.mcpUnsupported": "{{agent}} 暂不支持读取 AgentKib 私有归档。请返回并选择 Codex 或 Claude Code 继续此长会话。",
   "handoff.connectMcp": "连接 {{agent}} MCP",
   "handoff.section.direct": "将直接导入",
   "handoff.section.directDetail": "{{turns}} 个完整节点 · {{tools}} 次工具调用",

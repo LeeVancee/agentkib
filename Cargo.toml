@@ -17,6 +17,7 @@ members = [
   "crates/agentkib-mcp",
   "crates/agentkib-skills",
   "crates/agentkib-gateways",
+  "crates/agentkib-tools",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ agentkib-storage = { path = "crates/agentkib-storage" }
 agentkib-mcp = { path = "crates/agentkib-mcp" }
 agentkib-skills = { path = "crates/agentkib-skills" }
 agentkib-gateways = { path = "crates/agentkib-gateways" }
+agentkib-tools = { path = "crates/agentkib-tools" }
 agentkib-store = { path = "crates/agentkib-store" }
 anyhow = "1.0"
 async-trait = "0.1"
@@ -57,6 +59,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+semver = "1.0"
 sha2 = "0.10"
 tempfile = "3.20"
 thiserror = "2.0"

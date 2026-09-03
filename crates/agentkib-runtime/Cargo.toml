@@ -22,6 +22,7 @@ agentkib-quota.workspace = true
 agentkib-storage.workspace = true
 agentkib-skills.workspace = true
 agentkib-store.workspace = true
+agentkib-tools.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 dirs.workspace = true

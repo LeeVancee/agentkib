@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   CircleAlert,
-  Download,
   ExternalLink,
   FolderGit2,
   FolderPlus,
@@ -11,7 +10,6 @@ import {
   Keyboard,
   Monitor,
   Moon,
-  RefreshCw,
   Sun,
   Trash2,
   X,
@@ -28,12 +26,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
 import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
+import { AgentToolsSettings } from "./AgentToolsSettings";
+import {
+  SettingsCopy,
+  SettingsNotice,
+  SettingsPage,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
+  SettingsStatus,
+} from "./components/SettingsLayout";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import {
@@ -51,12 +58,11 @@ import {
   type AccentTheme,
 } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
-import type { SettingsSection } from "./SettingsSidebar";
+import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
   ActivityRecord,
   AgentKind,
   AppIconPreference,
-  AppUpdateInfo,
   CloseBehavior,
   DiscoveryReport,
   ExcludedWorkspace,
@@ -103,7 +109,7 @@ const agentLabels: Record<AgentKind, string> = {
 };
 
 export type GlobalSettingsProps = {
-  section: SettingsSection;
+  section: SettingsSectionId;
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   discovery?: DiscoveryReport;
@@ -143,8 +149,8 @@ export function GlobalSettings({
 }: GlobalSettingsProps) {
   if (section === "general")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title={tr("settings.interface")}>
+      <SettingsPage variant="form">
+        <SettingsSection title={tr("settings.interface")}>
           <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
           <AccentThemeSetting effectiveTheme={runtime?.effective_theme} />
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
@@ -159,10 +165,6 @@ export function GlobalSettings({
               onChange={onCloseBehaviorChanged}
             />
           </SettingsRow>
-          <AppUpdateSetting
-            currentVersion={runtime?.app_version}
-            updatesEnabled={runtime?.updates_enabled ?? false}
-          />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
@@ -172,21 +174,30 @@ export function GlobalSettings({
             </Button>
           </SettingsRow>
           {runtime?.tray_available === false && (
-            <SettingDetail variant="warning" role="status">
+            <SettingsNotice tone="warning" role="status">
               <CircleAlert size={14} />
               {tr("settings.trayUnavailable")}
-            </SettingDetail>
+            </SettingsNotice>
           )}
-        </SettingGroup>
+        </SettingsSection>
         <KeyboardShortcutsSetting />
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
-      </div>
+      </SettingsPage>
+    );
+  if (section === "tools")
+    return (
+      <SettingsPage variant="workspace">
+        <AgentToolsSettings
+          currentVersion={runtime?.app_version}
+          updatesEnabled={runtime?.updates_enabled ?? false}
+        />
+      </SettingsPage>
     );
   if (section === "discovery")
     return (
-      <div className="grid gap-5">
-        <div className="grid gap-5 xl:grid-cols-2">
-          <SettingGroup title={tr("settings.discovery")}>
+      <SettingsPage variant="management">
+        <div className="grid gap-5 lg:grid-cols-[minmax(240px,0.75fr)_minmax(0,1.25fr)]">
+          <SettingsSection title={tr("settings.discovery")}>
             <SettingsRow>
               <SettingsCopy>
                 <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
@@ -203,21 +214,20 @@ export function GlobalSettings({
               </span>
             </SettingsRow>
             {discovery?.errors.map((error) => (
-              <SettingDetail variant="error" key={error}>
+              <SettingsNotice tone="error" key={error}>
                 {error}
-              </SettingDetail>
+              </SettingsNotice>
             ))}
-          </SettingGroup>
-          <SettingGroup title={tr("settings.scanRoots")}>
-            <div className="flex justify-end border-b border-border/60 px-5 py-3">
-              <Button
-                className="gap-2"
-                onClick={() => void onAddRoot()}
-              >
+          </SettingsSection>
+          <SettingsSection
+            title={tr("settings.scanRoots")}
+            action={
+              <Button className="gap-2" onClick={() => void onAddRoot()}>
                 <FolderPlus size={15} />
                 {tr("settings.addFolder")}
               </Button>
-            </div>
+            }
+          >
             <SettingsListEmptyState items={scanRoots.length} emptyText={tr("settings.noScanRoots")}>
               <div className="divide-y divide-border/60">
                 {scanRoots.map((root) => (
@@ -245,9 +255,9 @@ export function GlobalSettings({
                 ))}
               </div>
             </SettingsListEmptyState>
-          </SettingGroup>
+          </SettingsSection>
         </div>
-        <SettingGroup title={tr("settings.excluded")}>
+        <SettingsSection title={tr("settings.excluded")}>
           <SettingsListEmptyState items={excluded.length} emptyText={tr("settings.noExcluded")}>
             <div className="divide-y divide-border/60">
               {excluded.map((item) => (
@@ -269,13 +279,13 @@ export function GlobalSettings({
               ))}
             </div>
           </SettingsListEmptyState>
-        </SettingGroup>
-      </div>
+        </SettingsSection>
+      </SettingsPage>
     );
   if (section === "integrations")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title="AgentKib MCP Hub">
+      <SettingsPage variant="management">
+        <SettingsSection title="AgentKib MCP Hub">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -283,236 +293,83 @@ export function GlobalSettings({
                 {runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}
               </code>
             </SettingsCopy>
-            <StatusText active={Boolean(runtime?.mcp_hub?.running)}>
+            <SettingsStatus tone={runtime?.mcp_hub?.running ? "success" : "neutral"}>
               {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
-            </StatusText>
+            </SettingsStatus>
           </SettingsRow>
-        </SettingGroup>
+        </SettingsSection>
         <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />
         <ObsidianSettingsCard />
-      </div>
+      </SettingsPage>
     );
   if (section === "privacy")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title={tr("settings.localData")}>
+      <SettingsPage variant="form">
+        <SettingsSection title={tr("settings.localData")}>
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("settings.dataLocation")}</strong>
               <code>{runtime?.data_dir ?? "—"}</code>
             </SettingsCopy>
-            <StatusText active>
+            <SettingsStatus tone="success" indicator={false}>
               <Check size={14} />
               {tr("common.localOnly")}
-            </StatusText>
+            </SettingsStatus>
           </SettingsRow>
           {hasFileAccessSettings && <FileAccessSettingsRow />}
-        </SettingGroup>
+        </SettingsSection>
         <ConversationPrivacySettings
           runtime={runtime}
           workspaces={workspaces}
           onChanged={onLocaleChanged}
         />
         <GitIdentitySettings />
-      </div>
+      </SettingsPage>
     );
   return (
-    <div className="grid gap-5">
-      <div className="grid gap-5 xl:grid-cols-2">
-        <SettingGroup title={tr("quota.diagnostics")}>
+    <SettingsPage variant="management">
+      <div className="grid gap-5 lg:grid-cols-2">
+        <SettingsPanel title={tr("quota.diagnostics")}>
           <QuotaDiagnostics status={quotaStatus} />
-        </SettingGroup>
-        <SettingGroup title={tr("settings.providerStatus")}>
+        </SettingsPanel>
+        <SettingsPanel title={tr("settings.providerStatus")}>
           {insightsStatus?.providers
             .filter((provider) => agentSupportsInsights(provider.agent))
             .map((provider) => (
-              <SettingsRow key={provider.agent}>
+              <SettingsRow className="px-5" key={provider.agent}>
                 <div className="flex items-center gap-3">
                   <AgentIcon agent={provider.agent} />
                   <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
                 </div>
-                <StatusText active={provider.available}>
+                <SettingsStatus tone={provider.available ? "success" : "neutral"}>
                   {tr(provider.available ? "quota.available" : "insights.noData")}
-                </StatusText>
+                </SettingsStatus>
               </SettingsRow>
             ))}
           {!insightsStatus?.providers.length && (
             <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
           )}
-        </SettingGroup>
+        </SettingsPanel>
       </div>
       <ActivityPage records={activity} />
-    </div>
-  );
-}
-
-type AppUpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "failed";
-
-export function AppUpdateSetting({
-  currentVersion,
-  updatesEnabled = true,
-}: {
-  currentVersion?: string;
-  updatesEnabled?: boolean;
-}) {
-  const dialogs = useAppDialogs();
-  const [status, setStatus] = useState<AppUpdateStatus>("idle");
-  const [update, setUpdate] = useState<AppUpdateInfo>();
-  const [error, setError] = useState("");
-  const [downloaded, setDownloaded] = useState(0);
-  const [contentLength, setContentLength] = useState<number>();
-  const busy = status === "checking" || status === "downloading";
-  const progress = contentLength
-    ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-    : 0;
-
-  const check = async () => {
-    if (busy || !updatesEnabled) return;
-    setStatus("checking");
-    setError("");
-    setUpdate(undefined);
-    try {
-      const available = await api.checkAppUpdate();
-      setUpdate(available);
-      setStatus(available ? "available" : "up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const install = async () => {
-    if (!update || busy) return;
-    if (update.install_mode === "manual") {
-      try {
-        await api.openExternal(update.release_url);
-      } catch (reason) {
-        setError(localizeMessage(reason));
-        setStatus("failed");
-      }
-      return;
-    }
-    if (
-      !(await dialogs.confirm({
-        title: tr("settings.updateInstallTitle"),
-        description: tr("settings.updateInstallConfirm", { version: update.version }),
-      }))
-    )
-      return;
-
-    setStatus("downloading");
-    setError("");
-    setDownloaded(0);
-    setContentLength(undefined);
-    try {
-      await api.installAppUpdate(update.version, (event) => {
-        if (event.event === "started") {
-          setContentLength(event.data.content_length);
-        } else if (event.event === "progress") {
-          setDownloaded(event.data.downloaded);
-          setContentLength(event.data.content_length);
-        }
-      });
-      setStatus("up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const description = (() => {
-    if (!updatesEnabled) return tr("settings.updateUnavailableInDevelopment");
-    if (status === "checking") return tr("settings.updateChecking");
-    if (status === "up-to-date")
-      return tr("settings.updateUpToDate", { version: currentVersion ?? "—" });
-    if (status === "available" && update)
-      return tr("settings.updateAvailable", {
-        current: update.current_version,
-        version: update.version,
-      });
-    if (status === "downloading")
-      return contentLength
-        ? tr("settings.updateDownloadingProgress", { progress })
-        : tr("settings.updateDownloading");
-    if (status === "failed") return error;
-    return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
-  })();
-
-  return (
-    <>
-      <SettingsRow
-        border={Boolean(update?.notes || status === "failed" || status === "downloading")}
-      >
-        <SettingsCopy>
-          <strong>{tr("settings.updates")}</strong>
-          <small className={status === "failed" ? "!text-destructive" : undefined}>
-            {description}
-          </small>
-        </SettingsCopy>
-        {status === "available" && update ? (
-          <Button type="button" disabled={busy} onClick={() => void install()}>
-            {update.install_mode === "manual" ? <ExternalLink size={14} /> : <Download size={14} />}
-            {tr(
-              update.install_mode === "manual"
-                ? "settings.updateOpenRelease"
-                : "settings.updateDownloadInstall",
-            )}
-          </Button>
-        ) : (
-          <Button type="button" disabled={busy || !updatesEnabled} onClick={() => void check()}>
-            <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
-            {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-          </Button>
-        )}
-      </SettingsRow>
-      {status === "downloading" && (
-        <div
-          className="h-1 bg-muted"
-          role="progressbar"
-          aria-valuenow={progress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
-        </div>
-      )}
-      {update?.notes && status !== "failed" && (
-        <SettingDetail>
-          <span className="whitespace-pre-wrap break-words">
-            <strong className="mb-1 block text-foreground">{tr("settings.updateNotes")}</strong>
-            {update.notes}
-          </span>
-        </SettingDetail>
-      )}
-    </>
+    </SettingsPage>
   );
 }
 
 function ActivityPage({ records }: { records: ActivityRecord[] }) {
   return (
-    <Card className="rounded-xl border border-border bg-card shadow-sm">
-      <CardHeader className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 text-left">
-        <div>
-          <h2>{tr("activity.title")}</h2>
+    <SettingsPanel title={tr("activity.title")} contentClassName="divide-y divide-border/60">
+      {records.map((record) => (
+        <ActivityRow key={record.id} record={record} />
+      ))}
+      {!records.length && (
+        <div className="grid min-h-[260px] place-content-center justify-items-center gap-1.5 p-[30px] text-center text-muted-foreground">
+          <History size={28} className="mb-1.5" />
+          <h3 className="m-0 text-[13px] font-semibold text-foreground">{tr("home.noActivity")}</h3>
+          <p className="m-0 max-w-[380px] leading-relaxed">{tr("activity.emptyText")}</p>
         </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="divide-y divide-border/60">
-          {records.map((record) => (
-            <ActivityRow key={record.id} record={record} />
-          ))}
-          {!records.length && (
-            <div className="grid min-h-[260px] place-content-center justify-items-center gap-1.5 p-[30px] text-center text-muted-foreground">
-              <History size={28} className="mb-1.5" />
-              <h3 className="m-0 text-[13px] font-semibold text-foreground">
-                {tr("home.noActivity")}
-              </h3>
-              <p className="m-0 max-w-[380px] leading-relaxed">{tr("activity.emptyText")}</p>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      )}
+    </SettingsPanel>
   );
 }
 function ActivityRow({ record }: { record: ActivityRecord }) {
@@ -533,58 +390,6 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
   );
 }
 
-function SettingsRow({ children, border = true }: { children: ReactNode; border?: boolean }) {
-  return (
-    <div
-      className={cn(
-        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
-        border && "border-b border-border/60",
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-function SettingsCopy({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid min-w-0 gap-1 [&_code]:max-w-full [&_code]:truncate [&_code]:font-mono [&_code]:text-xs [&_code]:text-muted-foreground [&_small]:max-w-[62ch] [&_small]:text-xs [&_small]:leading-relaxed [&_small]:text-muted-foreground [&_strong]:text-sm [&_strong]:font-medium">
-      {children}
-    </div>
-  );
-}
-function SettingDetail({
-  children,
-  variant = "default",
-  role,
-}: {
-  children: ReactNode;
-  variant?: "default" | "error" | "warning";
-  role?: "alert" | "status";
-}) {
-  return (
-    <div
-      className={cn(
-        "mx-5 my-3 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs",
-        variant === "default" && "border-border/60 bg-muted/20 text-muted-foreground",
-        variant === "error" && "border-destructive/30 bg-destructive/5 text-destructive",
-        variant === "warning" && "border-amber-500/30 bg-amber-500/5 text-amber-700",
-      )}
-      role={role}
-    >
-      {children}
-    </div>
-  );
-}
-function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="border-b border-border pb-2">
-      <header className="border-b border-border/70 py-4">
-        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-      </header>
-      <div className="[&>*:last-child]:border-b-0">{children}</div>
-    </section>
-  );
-}
 function SettingsListEmptyState({
   items,
   emptyText,
@@ -598,19 +403,6 @@ function SettingsListEmptyState({
     <>{children}</>
   ) : (
     <p className="px-5 py-5 text-sm text-muted-foreground">{emptyText}</p>
-  );
-}
-function StatusText({ active, children }: { active: boolean; children: ReactNode }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 justify-self-end text-xs font-medium",
-        active ? "text-emerald-600" : "text-muted-foreground",
-      )}
-    >
-      {active && <span className="size-1.5 rounded-full bg-current" />}
-      {children}
-    </span>
   );
 }
 
@@ -640,9 +432,9 @@ function FileAccessSettingsRow() {
         </Button>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
     </>
   );
@@ -653,7 +445,7 @@ function KeyboardShortcutsSetting() {
   const platform = currentAppPlatform();
   const definition = getShortcutDefinition("open-help");
   return (
-    <SettingGroup title={tr("settings.shortcutsTitle")}>
+    <SettingsSection title={tr("settings.shortcutsTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.shortcuts")}</strong>
@@ -669,7 +461,7 @@ function KeyboardShortcutsSetting() {
           {tr("settings.viewShortcuts")}
         </Button>
       </SettingsRow>
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -695,7 +487,7 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingGroup title={tr("settings.quotaTitle")}>
+    <SettingsSection title={tr("settings.quotaTitle")}>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>
@@ -709,11 +501,11 @@ function QuotaAutoRefreshSetting({
         </Label>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -771,7 +563,7 @@ function ConversationPrivacySettings({
     }
   };
   return (
-    <SettingGroup title={tr("conversations.settingsTitle")}>
+    <SettingsSection title={tr("conversations.settingsTitle")}>
       <SettingsRow>
         <SettingsCopy>
           <strong>{tr("conversations.indexSetting")}</strong>
@@ -798,11 +590,11 @@ function ConversationPrivacySettings({
         </Button>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -980,15 +772,16 @@ function AppIconSetting({
           <ToggleGroupItem
             key={icon}
             value={icon}
-            className="segmented-control-item inline-flex h-9 min-h-9 min-w-[90px] items-center justify-center gap-1.5 px-3 text-sm"
+            className="segmented-control-item inline-flex h-10 min-h-10 w-14 min-w-14 items-center justify-center px-4 py-0"
+            aria-label={tr(`settings.appIcon.${icon}`)}
+            title={tr(`settings.appIcon.${icon}`)}
           >
             <img
-              className="size-5 rounded-md object-cover"
+              className="size-6 shrink-0 rounded-md object-cover"
               src={appIconAssets[icon]}
               alt=""
               aria-hidden="true"
             />
-            {tr(`settings.appIcon.${icon}`)}
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
@@ -1068,11 +861,11 @@ function GitIdentitySettings() {
     }
   };
   return (
-    <SettingGroup title={tr("settings.gitIdentity")}>
+    <SettingsSection title={tr("settings.gitIdentity")}>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
       <div className="flex flex-col gap-2.5 border-b border-border/60 p-5 sm:flex-row">
         <Input
@@ -1119,7 +912,7 @@ function GitIdentitySettings() {
           </p>
         )}
       </div>
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 

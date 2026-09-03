@@ -479,6 +479,20 @@ function registerHomeIpc(): void {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listAgentInstallations, {});
   });
+  ipcMain.handle("agentkib:home:agent-tools", (event, force: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.agentToolsStatus, {
+      force: force === undefined ? false : requireBoolean(force, "force"),
+    });
+  });
+  ipcMain.handle("agentkib:home:execute-agent-tool", (event, agent: unknown, actionId: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.agentToolExecute, {
+      agent: requireString(agent, "agent"),
+      action_id: requireText(actionId, "actionId"),
+      confirmed: true,
+    });
+  });
   ipcMain.handle("agentkib:home:catalog-assets", (event, input: unknown) => {
     assertTrustedRenderer(event);
     const value = requireObject(input, "catalog query");

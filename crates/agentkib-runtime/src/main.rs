@@ -35,7 +35,8 @@ use agentkib_platform::path as platform_path;
 use agentkib_platform::process::{ProcessTree, configure_process_group};
 use agentkib_protocol::{
     ACHIEVEMENTS_METHOD, ADD_GIT_IDENTITY_ALIAS_METHOD, ADD_OBSIDIAN_VAULT_METHOD,
-    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, AGENT_USAGE_BREAKDOWN_METHOD, APPLY_CHANGES_METHOD,
+    ADD_SCAN_ROOT_METHOD, ADD_WORKSPACE_METHOD, AGENT_TOOL_EXECUTE_METHOD,
+    AGENT_TOOLS_STATUS_METHOD, AGENT_USAGE_BREAKDOWN_METHOD, APPLY_CHANGES_METHOD,
     APPLY_SKILL_OPERATION_METHOD, CANCEL_STORAGE_METHOD, CHECK_SKILL_UPDATES_METHOD,
     CLEAR_SESSION_INDEX_METHOD, CONTINUE_SESSION_HANDOFF_METHOD, DISCOVER_SKILLS_METHOD,
     DISCOVERY_REPORT_METHOD, EXCLUDE_WORKSPACE_METHOD, GET_MCP_SERVER_METHOD,
@@ -115,6 +116,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (events_tx, events_rx) = mpsc::channel();
     spawn_stdin_reader(events_tx.clone());
     let mut storage_scan: Option<StorageScan> = None;
+    let mut agent_tool_workers = AgentToolWorkers::default();
 
     while let Ok(event) = events_rx.recv() {
         match event {
@@ -173,6 +175,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     write_response(&mut stdout, response)?;
                     continue;
                 }
+                if request.method == AGENT_TOOL_EXECUTE_METHOD {
+                    if let Some(response) =
+                        start_agent_tool_execution(request, &events_tx, &mut agent_tool_workers)
+                    {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
+                if request.method == AGENT_TOOLS_STATUS_METHOD {
+                    if let Some(response) =
+                        start_agent_tools_status(request, &events_tx, &mut agent_tool_workers)
+                    {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
 
                 let starts_hub = request.method == HANDSHAKE_METHOD;
                 let (response, should_shutdown) = handle_request(request);
@@ -188,6 +206,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(scan) = storage_scan.take() {
                         scan.cancelled.store(true, Ordering::SeqCst);
                     }
+                    agent_tool_workers.cancel_and_join();
                     if let Some(hub) = MCP_HUB.get() {
                         hub.shutdown();
                     }
@@ -198,6 +217,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(scan) = storage_scan.take() {
                     scan.cancelled.store(true, Ordering::SeqCst);
                 }
+                agent_tool_workers.cancel_and_join();
                 if let Some(hub) = MCP_HUB.get() {
                     hub.shutdown();
                 }
@@ -211,6 +231,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 storage_scan = None;
+                write_response(&mut stdout, result_response(request_id, *result))?;
+            }
+            RuntimeEvent::AgentToolFinished {
+                worker_id,
+                request_id,
+                result,
+            } => {
+                if !agent_tool_workers.finish(worker_id) {
+                    continue;
+                }
+                write_response(&mut stdout, result_response(request_id, *result))?;
+            }
+            RuntimeEvent::AgentToolsStatusFinished {
+                worker_id,
+                request_id,
+                result,
+            } => {
+                if !agent_tool_workers.finish(worker_id) {
+                    continue;
+                }
                 write_response(&mut stdout, result_response(request_id, *result))?;
             }
         }
@@ -250,11 +290,83 @@ enum RuntimeEvent {
         request_id: Value,
         result: Box<anyhow::Result<RefreshReceipt>>,
     },
+    AgentToolFinished {
+        worker_id: u64,
+        request_id: Value,
+        result: Box<anyhow::Result<agentkib_core::AgentToolExecutionResult>>,
+    },
+    AgentToolsStatusFinished {
+        worker_id: u64,
+        request_id: Value,
+        result: Box<anyhow::Result<agentkib_core::AgentToolSnapshot>>,
+    },
 }
 
 struct StorageScan {
     request_id: Value,
     cancelled: Arc<AtomicBool>,
+}
+
+struct AgentToolWorker {
+    id: u64,
+    kind: AgentToolWorkerKind,
+    cancelled: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentToolWorkerKind {
+    Status,
+    Execute,
+}
+
+#[derive(Default)]
+struct AgentToolWorkers {
+    next_id: u64,
+    workers: Vec<AgentToolWorker>,
+}
+
+impl AgentToolWorkers {
+    fn allocate_id(&mut self) -> u64 {
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.next_id
+    }
+
+    fn push(&mut self, worker: AgentToolWorker) {
+        self.workers.push(worker);
+    }
+
+    fn contains(&self, kind: AgentToolWorkerKind) -> bool {
+        self.workers.iter().any(|worker| worker.kind == kind)
+    }
+
+    fn finish(&mut self, worker_id: u64) -> bool {
+        let Some(index) = self
+            .workers
+            .iter()
+            .position(|worker| worker.id == worker_id)
+        else {
+            return false;
+        };
+        let worker = self.workers.remove(index);
+        let _ = worker.handle.join();
+        true
+    }
+
+    fn cancel_and_join(&mut self) {
+        for worker in &self.workers {
+            worker.cancelled.store(true, Ordering::SeqCst);
+        }
+        for worker in self.workers.drain(..) {
+            let _ = worker.handle.join();
+        }
+    }
+}
+
+impl Drop for AgentToolWorkers {
+    fn drop(&mut self) {
+        self.cancel_and_join();
+    }
 }
 
 fn spawn_stdin_reader(events_tx: Sender<RuntimeEvent>) {
@@ -300,6 +412,78 @@ fn start_storage_scan(
     *active_scan = Some(StorageScan {
         request_id,
         cancelled,
+    });
+    None
+}
+
+fn start_agent_tool_execution(
+    request: RpcRequest,
+    events_tx: &Sender<RuntimeEvent>,
+    workers: &mut AgentToolWorkers,
+) -> Option<RpcResponse> {
+    let params = match serde_json::from_value::<AgentToolExecuteRequest>(request.params) {
+        Ok(params) => params,
+        Err(error) => return Some(invalid_params_response(request.id, error)),
+    };
+    let request_id = request.id;
+    let worker_request_id = request_id.clone();
+    let worker_events = events_tx.clone();
+    let worker_id = workers.allocate_id();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let handle = std::thread::spawn(move || {
+        let result = agent_tool_execute(params, &worker_cancelled);
+        let _ = worker_events.send(RuntimeEvent::AgentToolFinished {
+            worker_id,
+            request_id: worker_request_id,
+            result: Box::new(result),
+        });
+    });
+    workers.push(AgentToolWorker {
+        id: worker_id,
+        kind: AgentToolWorkerKind::Execute,
+        cancelled,
+        handle,
+    });
+    None
+}
+
+fn start_agent_tools_status(
+    request: RpcRequest,
+    events_tx: &Sender<RuntimeEvent>,
+    workers: &mut AgentToolWorkers,
+) -> Option<RpcResponse> {
+    let params = match serde_json::from_value::<AgentToolsStatusRequest>(request.params) {
+        Ok(params) => params,
+        Err(error) => return Some(invalid_params_response(request.id, error)),
+    };
+    let request_id = request.id;
+    if workers.contains(AgentToolWorkerKind::Status) {
+        return Some(RpcResponse::error(
+            request_id,
+            -32000,
+            "AgentKib command failed",
+            Some(json!({ "detail": "Agent tool inspection is already running" })),
+        ));
+    }
+    let worker_request_id = request_id.clone();
+    let worker_events = events_tx.clone();
+    let worker_id = workers.allocate_id();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let handle = std::thread::spawn(move || {
+        let result = agent_tools_status(params, &worker_cancelled);
+        let _ = worker_events.send(RuntimeEvent::AgentToolsStatusFinished {
+            worker_id,
+            request_id: worker_request_id,
+            result: Box::new(result),
+        });
+    });
+    workers.push(AgentToolWorker {
+        id: worker_id,
+        kind: AgentToolWorkerKind::Status,
+        cancelled,
+        handle,
     });
     None
 }
@@ -3289,6 +3473,43 @@ fn list_agent_installations(
     Store::open_default()?.list_agent_installations()
 }
 
+#[derive(Deserialize)]
+struct AgentToolsStatusRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+fn agent_tools_status(
+    request: AgentToolsStatusRequest,
+    cancelled: &AtomicBool,
+) -> anyhow::Result<agentkib_core::AgentToolSnapshot> {
+    let inspector =
+        agentkib_tools::ToolInspector::new(agentkib_store::default_data_dir()?.join("tool-cache"))?;
+    runtime_block_on(inspector.snapshot_cancellable(request.force, cancelled))
+}
+
+#[derive(Deserialize)]
+struct AgentToolExecuteRequest {
+    agent: AgentKind,
+    action_id: String,
+    #[serde(default)]
+    confirmed: bool,
+}
+
+fn agent_tool_execute(
+    request: AgentToolExecuteRequest,
+    cancelled: &AtomicBool,
+) -> anyhow::Result<agentkib_core::AgentToolExecutionResult> {
+    let inspector =
+        agentkib_tools::ToolInspector::new(agentkib_store::default_data_dir()?.join("tool-cache"))?;
+    runtime_block_on(inspector.execute_cancellable(
+        request.agent,
+        &request.action_id,
+        request.confirmed,
+        cancelled,
+    ))
+}
+
 fn search_catalog_assets(
     request: CatalogAssetsRequest,
 ) -> anyhow::Result<Vec<agentkib_core::CatalogAsset>> {
@@ -4353,6 +4574,46 @@ mod tests {
         assert!(response.error.is_none());
         assert!(!should_shutdown);
         assert!(MCP_HUB.get().is_none());
+    }
+
+    #[test]
+    fn agent_tool_worker_registry_cancels_and_joins_on_drop() {
+        let (finished_tx, finished_rx) = mpsc::channel();
+        {
+            let mut workers = AgentToolWorkers::default();
+            let id = workers.allocate_id();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let worker_cancelled = Arc::clone(&cancelled);
+            let handle = std::thread::spawn(move || {
+                while !worker_cancelled.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let _ = finished_tx.send(());
+            });
+            workers.push(AgentToolWorker {
+                id,
+                kind: AgentToolWorkerKind::Status,
+                cancelled,
+                handle,
+            });
+            assert!(workers.contains(AgentToolWorkerKind::Status));
+
+            let (events_tx, _events_rx) = mpsc::channel();
+            let response = start_agent_tools_status(
+                RpcRequest {
+                    jsonrpc: "2.0".to_owned(),
+                    id: json!(7),
+                    method: AGENT_TOOLS_STATUS_METHOD.to_owned(),
+                    params: json!({ "force": true }),
+                },
+                &events_tx,
+                &mut workers,
+            )
+            .expect("a second status request should be rejected");
+            assert!(response.error.is_some());
+        }
+
+        assert!(finished_rx.recv_timeout(Duration::from_secs(1)).is_ok());
     }
 
     #[test]

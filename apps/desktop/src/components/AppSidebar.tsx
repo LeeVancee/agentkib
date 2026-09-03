@@ -86,12 +86,11 @@ export function AppSidebar(props: {
   entries: SidebarEntry<GlobalPage>[];
   onNavigate: (page: GlobalPage) => void;
   onSettings: () => void;
-  onBrandClick: () => void;
   collapsed: boolean;
   context?: AppSidebarContext;
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { active, entries, onNavigate, onSettings, onBrandClick, collapsed, context } = props;
+  const { active, entries, onNavigate, onSettings, collapsed, context } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
@@ -213,12 +212,7 @@ export function AppSidebar(props: {
       >
         <div className="app-sidebar-content">
           <div className="app-sidebar-header">
-            <SidebarBrand
-              onClick={() => {
-                setMobileOpen(false);
-                onBrandClick();
-              }}
-            />
+            <SidebarBrand />
           </div>
           <nav className="app-sidebar-nav" aria-label={tr("common.primaryNavigation")}>
             <div className="app-sidebar-group">{primaryEntries.map(renderNavigationEntry)}</div>

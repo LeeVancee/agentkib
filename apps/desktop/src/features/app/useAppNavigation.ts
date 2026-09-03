@@ -8,6 +8,7 @@ import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
 import type { AppHistoryEntry } from "./useAppHistory";
@@ -246,8 +247,11 @@ export function useAppNavigation() {
   );
 
   useEffect(() => {
-    if (route.kind !== "workspace") workspaceOpenRequest.current += 1;
-  }, [route.kind]);
+    if (route.kind !== "workspace") {
+      workspaceOpenRequest.current += 1;
+      setBusy(false);
+    }
+  }, [route.kind, setBusy]);
   useEffect(() => {
     if (
       route.kind !== "workspace" ||
@@ -343,16 +347,23 @@ export function useAppNavigation() {
   };
 
   const refreshCurrentView = async () => {
-    if (selectedWorkspace && project && manifest) {
-      await load(project, manifest);
-      return;
-    }
     if (appMode === "settings") {
       if (settingsSection === "discovery") await requestRefreshKinds(["discovery"]);
-      else if (settingsSection === "integrations") await requestRefreshKinds(["gateways"]);
+      else if (settingsSection === "tools") {
+        setMessage("");
+        try {
+          await refreshAgentTools(queryClient);
+        } catch (error) {
+          setMessage(localizeMessage(error));
+        }
+      } else if (settingsSection === "integrations") await requestRefreshKinds(["gateways"]);
       else if (settingsSection === "diagnostics")
         await requestRefreshKinds(["discovery", "insights", "gateways", "quota"]);
       else await loadGlobal();
+      return;
+    }
+    if (route.kind === "workspace" && selectedWorkspace && project && manifest) {
+      await load(project, manifest);
       return;
     }
     if (globalPage === "quota") await requestRefreshKinds(["quota"]);

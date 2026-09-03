@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
 pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
@@ -25,6 +25,8 @@ pub const SESSION_EVENTS_METHOD: &str = "session.events";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
+pub const AGENT_TOOLS_STATUS_METHOD: &str = "agents.toolsStatus";
+pub const AGENT_TOOL_EXECUTE_METHOD: &str = "agents.toolExecute";
 pub const SEARCH_CATALOG_ASSETS_METHOD: &str = "catalog.searchAssets";
 pub const LIST_SKILL_CATALOG_METHOD: &str = "skills.listCatalog";
 pub const DISCOVER_SKILLS_METHOD: &str = "skills.discover";
@@ -222,6 +224,8 @@ export const RUNTIME_METHODS = {{
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",
+  agentToolsStatus: "{AGENT_TOOLS_STATUS_METHOD}",
+  agentToolExecute: "{AGENT_TOOL_EXECUTE_METHOD}",
   searchCatalogAssets: "{SEARCH_CATALOG_ASSETS_METHOD}",
   listSkillCatalog: "{LIST_SKILL_CATALOG_METHOD}",
   discoverSkills: "{DISCOVER_SKILLS_METHOD}",

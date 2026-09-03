@@ -42,7 +42,10 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-const appFlavor = process.env.AGENTKIB_DEV === "1" ? "ai.agentkib.dev" : "ai.agentkib";
+const isDevelopmentApp = process.env.AGENTKIB_DEV === "1" || !app.isPackaged;
+const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib";
+const appFlavor = isDevelopmentApp ? "ai.agentkib.dev" : "ai.agentkib";
+app.setName(appDisplayName);
 const electronDataPath =
   process.env.AGENTKIB_BENCHMARK_USER_DATA ??
   path.join(app.getPath("appData"), appFlavor, "electron");
@@ -121,7 +124,6 @@ nativeTheme.on("updated", () => {
 
 async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
-  if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
 
   runtimeHost = new DesktopRuntimeHost({
@@ -129,7 +131,7 @@ async function startApplication(): Promise<void> {
     clientVersion: app.getVersion(),
     environment: {
       AGENTKIB_APP_FLAVOR: appFlavor,
-      AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
+      AGENTKIB_APP_NAME: appDisplayName,
       AGENTKIB_APP_VERSION: app.getVersion(),
       AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
       AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",

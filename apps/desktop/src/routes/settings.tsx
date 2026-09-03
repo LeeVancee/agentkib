@@ -7,7 +7,7 @@ import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
 import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
-import { settingsTargetId } from "@/features/settings/components/SettingsLayout";
+import { focusSettingsTarget } from "@/features/settings/components/SettingsLayout";
 import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
@@ -50,11 +50,7 @@ function SettingsRoute() {
   useEffect(() => {
     if (!search.settingsTarget || (!runtime && workspacesPending)) return;
     const frame = window.requestAnimationFrame(() => {
-      const target = document.getElementById(settingsTargetId(search.settingsTarget!));
-      if (!target) return;
-      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
-      target.focus({ preventScroll: true });
+      focusSettingsTarget(search.settingsTarget!);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [runtime, search.settingsTarget, section, workspacesPending]);

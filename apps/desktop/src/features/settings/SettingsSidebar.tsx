@@ -17,6 +17,7 @@ import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
+import { focusSettingsTarget } from "./components/SettingsLayout";
 
 export type SettingsSection =
   | "general"
@@ -229,6 +230,9 @@ export function SettingsSidebar(props: {
 
   const select = (section: SettingsSection, target?: SettingsTarget) => {
     setMobileOpen(false);
+    if (target && active === section && activeTarget === target && focusSettingsTarget(target)) {
+      return;
+    }
     onSelect(section, target);
   };
 

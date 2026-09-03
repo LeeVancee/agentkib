@@ -58,6 +58,15 @@ export function settingsTargetId(target: SettingsTarget) {
   return `settings-target-${target}`;
 }
 
+export function focusSettingsTarget(target: SettingsTarget) {
+  const element = document.getElementById(settingsTargetId(target));
+  if (!element) return false;
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  element.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  element.focus({ preventScroll: true });
+  return true;
+}
+
 export function SettingsAnchor({
   target,
   children,

@@ -2826,7 +2826,22 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         .collect();
     let mut protected_home_roots = Vec::new();
     approved_home_files.extend(native_mcp_home_files());
-    let approved_application_files = if let Some(workspace_id) = project_id.as_deref() {
+    let application_workspace_id = if request
+        .change_set
+        .changes
+        .iter()
+        .any(|change| matches!(change.scope, agentkib_core::ChangeScope::ApplicationData))
+    {
+        let store = Store::open_default()?;
+        Some(application_data_workspace_id(
+            &store,
+            &request.change_set.project_root,
+        )?)
+    } else {
+        None
+    };
+    let approved_application_files = if let Some(workspace_id) = application_workspace_id.as_deref()
+    {
         validate_application_data_changes(&request.change_set, workspace_id)?
     } else {
         Vec::new()
@@ -2862,9 +2877,39 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         } else {
             "changeset.apply_failed"
         };
-        let _ = store.audit(project_id.as_deref(), action, &request.change_set.id);
+        let audit_workspace_id = application_workspace_id
+            .as_deref()
+            .or(project_id.as_deref());
+        let _ = store.audit(audit_workspace_id, action, &request.change_set.id);
     }
     result
+}
+
+fn application_data_workspace_id(store: &Store, project: &Path) -> anyhow::Result<String> {
+    let project = agentkib_core::canonical_project(project)?;
+    let manifest_path = agentkib_core::manifest_path(&project);
+    match agentkib_core::load_manifest(&project) {
+        Ok(manifest) => Ok(manifest.workspace.id),
+        Err(error) => match fs::symlink_metadata(&manifest_path) {
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {
+                let workspaces = store
+                    .list_workspaces()?
+                    .into_iter()
+                    .filter(|workspace| platform_path::equivalent(&workspace.path, &project))
+                    .collect::<Vec<_>>();
+                anyhow::ensure!(
+                    workspaces.len() == 1,
+                    "Application data changes require a registered workspace"
+                );
+                let workspace = workspaces
+                    .into_iter()
+                    .next()
+                    .expect("one workspace is present");
+                Ok(workspace.manifest_workspace_id.unwrap_or(workspace.id))
+            }
+            _ => Err(error),
+        },
+    }
 }
 
 fn validate_application_data_changes(
@@ -4979,6 +5024,47 @@ mod tests {
         use_continuation_workspace_id(&mut document, "manifest-workspace");
 
         assert_eq!(document.source.workspace_id, "manifest-workspace");
+    }
+
+    #[test]
+    fn application_data_uses_the_registered_workspace_when_manifest_is_missing() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+        let workspace = store.add_workspace(&project).unwrap();
+
+        assert_eq!(
+            application_data_workspace_id(&store, &project).unwrap(),
+            workspace.id
+        );
+    }
+
+    #[test]
+    fn application_data_rejects_an_invalid_manifest_instead_of_falling_back_to_store() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::create_dir_all(project.join(".agentkib")).unwrap();
+        fs::write(
+            project.join(".agentkib/manifest.yaml"),
+            "not: a valid manifest",
+        )
+        .unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+        store.add_workspace(&project).unwrap();
+
+        assert!(application_data_workspace_id(&store, &project).is_err());
+    }
+
+    #[test]
+    fn application_data_rejects_an_unregistered_manifestless_workspace() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+
+        assert!(application_data_workspace_id(&store, &project).is_err());
     }
 
     #[test]

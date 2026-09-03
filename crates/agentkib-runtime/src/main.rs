@@ -6,7 +6,7 @@ use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -97,6 +97,7 @@ use serde_json::{Value, json};
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
 static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
 static SESSION_INDEX_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SESSION_INDEX_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 struct McpInstallResult {
@@ -904,6 +905,7 @@ fn refresh_workspace_sessions(
     if !session_index_enabled(&data_dir) {
         return Ok(Vec::new());
     }
+    let refresh_epoch = session_index_epoch();
     let store = Store::open_default()?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
@@ -921,14 +923,14 @@ fn refresh_workspace_sessions(
         match source.list_sessions(&workspace) {
             Ok(sessions) => {
                 let _guard = session_index_write_lock()?;
-                if !session_index_enabled(&data_dir) {
+                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
                     return Ok(Vec::new());
                 }
                 store.sync_conversation_sessions(&request.workspace_id, agent, &sessions)?;
             }
             Err(_) => {
                 let _guard = session_index_write_lock()?;
-                if !session_index_enabled(&data_dir) {
+                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
                     return Ok(Vec::new());
                 }
                 store.record_conversation_index_failure(
@@ -941,7 +943,7 @@ fn refresh_workspace_sessions(
         }
     }
     let _guard = session_index_write_lock()?;
-    if !session_index_enabled(&data_dir) {
+    if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
         return Ok(Vec::new());
     }
     store.list_conversation_sessions(&request.workspace_id)
@@ -3061,11 +3063,13 @@ struct SessionIndexRequest {
 
 fn clear_session_index(request: SessionIndexRequest) -> anyhow::Result<()> {
     let _guard = session_index_write_lock()?;
+    invalidate_session_index_refreshes();
     Store::open_default()?.clear_conversation_index(request.workspace_id.as_deref())
 }
 
 fn set_session_index_enabled(request: BoolRequest) -> anyhow::Result<Value> {
     let _guard = session_index_write_lock()?;
+    invalidate_session_index_refreshes();
     let data_dir = agentkib_store::default_data_dir()?;
     let mut root = load_preferences_root(&data_dir);
     root["session_index_enabled"] = Value::Bool(request.value);
@@ -3091,6 +3095,30 @@ fn session_index_write_lock() -> anyhow::Result<std::sync::MutexGuard<'static, (
     SESSION_INDEX_WRITE_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("Session index write lock is unavailable"))
+}
+
+fn session_index_epoch() -> u64 {
+    SESSION_INDEX_EPOCH.load(Ordering::SeqCst)
+}
+
+fn invalidate_session_index_refreshes() {
+    SESSION_INDEX_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+fn session_index_refresh_is_current(refresh_epoch: u64, data_dir: &Path) -> bool {
+    session_index_refresh_matches(
+        refresh_epoch,
+        session_index_epoch(),
+        session_index_enabled(data_dir),
+    )
+}
+
+fn session_index_refresh_matches(
+    refresh_epoch: u64,
+    current_epoch: u64,
+    index_enabled: bool,
+) -> bool {
+    index_enabled && refresh_epoch == current_epoch
 }
 
 fn insights_heatmap(
@@ -4695,6 +4723,15 @@ mod tests {
         assert!(!session_index_enabled_from_preferences(&json!({
             "session_index_enabled": false
         })));
+    }
+
+    #[test]
+    fn stale_session_index_refreshes_cannot_write_after_an_invalidation() {
+        assert!(session_index_refresh_matches(7, 7, true));
+        assert!(!session_index_refresh_matches(7, 8, true));
+        assert!(!session_index_refresh_matches(7, 7, false));
+        assert!(!session_index_refresh_matches(7, 9, true));
+        assert!(session_index_refresh_matches(9, 9, true));
     }
 
     #[test]

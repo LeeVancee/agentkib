@@ -1496,8 +1496,25 @@ fn is_agentkib_claude_continuation(server: &JsonValue) -> bool {
     http_transport
         && port.parse::<u16>().is_ok_and(|value| value > 0)
         && decode_url_path_segment(workspace_segment).is_ok_and(|workspace_id| {
-            !workspace_id.trim().is_empty()
-                && encode_url_path_segment(&workspace_id) == workspace_segment
+            if workspace_id.trim().is_empty() {
+                return false;
+            }
+            let canonical_segment = encode_url_path_segment(&workspace_id);
+            canonical_segment == workspace_segment
+                || is_legacy_raw_unicode_workspace_segment(workspace_segment, &workspace_id)
+        })
+}
+
+/// AgentKib 0.7 and earlier wrote non-ASCII workspace IDs directly. Only recognize the old
+/// form when its ASCII characters are unreserved, so query and path delimiters cannot turn a
+/// user-managed endpoint into a continuation endpoint.
+fn is_legacy_raw_unicode_workspace_segment(segment: &str, workspace_id: &str) -> bool {
+    segment == workspace_id
+        && !segment.is_ascii()
+        && segment.chars().all(|character| {
+            !character.is_ascii()
+                || character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.' | '~')
         })
 }
 
@@ -2114,6 +2131,45 @@ mod tests {
             after["mcpServers"]["agentkib"]["url"],
             "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-9/agents/claude-code"
         );
+    }
+
+    #[test]
+    fn continuation_gateway_migrates_a_legacy_unescaped_claude_workspace_id() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"url":"http://127.0.0.1:47653/mcp/v1/workspaces/项目续接/agents/claude-code"}}}"#,
+        )
+        .unwrap();
+
+        let plan = plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目续接", 47653)
+            .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/%E9%A1%B9%E7%9B%AE%E7%BB%AD%E6%8E%A5/agents/claude-code"
+        );
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目续接", 47653)
+                .unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_legacy_unicode_claude_urls_with_query_delimiters() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"url":"http://127.0.0.1:47653/mcp/v1/workspaces/项目?next/agents/claude-code"}}}"#;
+        fs::write(&config, before).unwrap();
+
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目", 47653).is_err()
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), before);
     }
 
     #[test]

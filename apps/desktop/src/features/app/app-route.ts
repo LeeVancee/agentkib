@@ -1,6 +1,6 @@
 import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
-import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import type { AgentKind } from "@/core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
 
@@ -10,6 +10,7 @@ export type GlobalPage = "home" | "workspaces" | "catalog" | "agents" | "quota" 
 export type AppSearch = {
   assetSection?: AssetSection;
   settingsSection?: SettingsSection;
+  settingsTarget?: SettingsTarget;
   quotaProvider?: string;
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;

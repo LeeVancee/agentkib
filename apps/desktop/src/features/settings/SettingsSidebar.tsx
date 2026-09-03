@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
-import { useEffect, useId, useState, type ComponentType } from "react";
+import { Input } from "@/components/ui/input";
+import { useEffect, useId, useMemo, useState, type ComponentType } from "react";
 import {
   ArrowLeft,
   Database,
@@ -7,8 +8,10 @@ import {
   Menu,
   PackageSearch,
   PlugZap,
+  Search,
   Settings2,
   Stethoscope,
+  X,
 } from "lucide-react";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
@@ -23,6 +26,30 @@ export type SettingsSection =
   | "privacy"
   | "diagnostics";
 
+export const settingsTargets = [
+  "general-interface",
+  "general-shortcuts",
+  "general-quota",
+  "discovery-status",
+  "discovery-roots",
+  "discovery-excluded",
+  "tools-app",
+  "tools-environment",
+  "tools-actions",
+  "integrations-mcp",
+  "integrations-gateways",
+  "integrations-obsidian",
+  "privacy-local",
+  "privacy-sessions",
+  "privacy-git",
+  "diagnostics-overview",
+  "diagnostics-quota",
+  "diagnostics-providers",
+  "diagnostics-activity",
+] as const;
+
+export type SettingsTarget = (typeof settingsTargets)[number];
+
 const sections: Array<{
   id: SettingsSection;
   label: string;
@@ -36,16 +63,146 @@ const sections: Array<{
   { id: "diagnostics", label: "settings.section.diagnostics", icon: Stethoscope },
 ];
 
+const searchEntries: Array<{
+  section: SettingsSection;
+  target: SettingsTarget;
+  label: string;
+  keywords: string[];
+}> = [
+  {
+    section: "general",
+    target: "general-interface",
+    label: "settings.interface",
+    keywords: [
+      "settings.theme",
+      "settings.accentTheme",
+      "settings.appIcon",
+      "settings.language",
+      "settings.closeBehavior",
+    ],
+  },
+  {
+    section: "general",
+    target: "general-shortcuts",
+    label: "settings.shortcutsTitle",
+    keywords: ["settings.shortcuts", "settings.viewShortcuts"],
+  },
+  {
+    section: "general",
+    target: "general-quota",
+    label: "settings.quotaTitle",
+    keywords: ["settings.quotaAutoRefresh"],
+  },
+  {
+    section: "discovery",
+    target: "discovery-status",
+    label: "settings.discovery",
+    keywords: ["settings.discoveryStatus"],
+  },
+  {
+    section: "discovery",
+    target: "discovery-roots",
+    label: "settings.scanRoots",
+    keywords: ["settings.addFolder", "settings.maxDepth"],
+  },
+  {
+    section: "discovery",
+    target: "discovery-excluded",
+    label: "settings.excluded",
+    keywords: ["settings.noExcluded"],
+  },
+  {
+    section: "tools",
+    target: "tools-app",
+    label: "settings.updates",
+    keywords: ["settings.checkForUpdates"],
+  },
+  {
+    section: "tools",
+    target: "tools-environment",
+    label: "settings.tools.localEnvironment",
+    keywords: ["settings.tools.environmentDescription"],
+  },
+  {
+    section: "tools",
+    target: "tools-actions",
+    label: "settings.search.updateActions",
+    keywords: ["settings.tools.batchDescription", "settings.tools.manualCommand"],
+  },
+  {
+    section: "integrations",
+    target: "integrations-mcp",
+    label: "settings.search.localService",
+    keywords: ["mcp.network"],
+  },
+  {
+    section: "integrations",
+    target: "integrations-gateways",
+    label: "gateway.title",
+    keywords: ["gateway.add"],
+  },
+  {
+    section: "integrations",
+    target: "integrations-obsidian",
+    label: "obsidian.title",
+    keywords: ["obsidian.addVault"],
+  },
+  {
+    section: "privacy",
+    target: "privacy-local",
+    label: "settings.localData",
+    keywords: ["settings.dataLocation", "settings.appDataAccess"],
+  },
+  {
+    section: "privacy",
+    target: "privacy-sessions",
+    label: "conversations.settingsTitle",
+    keywords: ["conversations.indexSetting", "conversations.clearIndex"],
+  },
+  {
+    section: "privacy",
+    target: "privacy-git",
+    label: "settings.gitIdentity",
+    keywords: ["settings.addAlias"],
+  },
+  {
+    section: "diagnostics",
+    target: "diagnostics-overview",
+    label: "settings.search.overallHealth",
+    keywords: ["settings.section.diagnostics"],
+  },
+  {
+    section: "diagnostics",
+    target: "diagnostics-quota",
+    label: "quota.diagnostics",
+    keywords: ["quota.collector", "quota.sidecar"],
+  },
+  {
+    section: "diagnostics",
+    target: "diagnostics-providers",
+    label: "settings.providerStatus",
+    keywords: ["insights.noData"],
+  },
+  {
+    section: "diagnostics",
+    target: "diagnostics-activity",
+    label: "activity.title",
+    keywords: ["activity.emptyText"],
+  },
+];
+
 export function SettingsSidebar(props: {
   active: SettingsSection;
-  onSelect: (section: SettingsSection) => void;
+  activeTarget?: SettingsTarget;
+  onSelect: (section: SettingsSection, target?: SettingsTarget) => void;
   onBack: () => void;
   onSettings?: () => void;
   collapsed: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
-  const { active, onSelect, onBack, collapsed } = props;
+  const { active, activeTarget, onSelect, onBack, collapsed } = props;
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const sidebarId = useId();
@@ -70,10 +227,25 @@ export function SettingsSidebar(props: {
     scheduleSidebarPeekClose(setSidebarPeek);
   };
 
-  const select = (section: SettingsSection) => {
+  const select = (section: SettingsSection, target?: SettingsTarget) => {
     setMobileOpen(false);
-    onSelect(section);
+    onSelect(section, target);
   };
+
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const results = useMemo(() => {
+    if (!normalizedQuery) return [];
+    return searchEntries.filter((entry) =>
+      [
+        tr(`settings.section.${entry.section}`),
+        tr(entry.label),
+        ...entry.keywords.map((key) => tr(key)),
+      ]
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [normalizedQuery]);
 
   return (
     <>
@@ -130,26 +302,93 @@ export function SettingsSidebar(props: {
                 {tr("settings.backToApp")}
               </span>
             </Button>
+            <label className="relative block">
+              <Search
+                size={16}
+                aria-hidden="true"
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                className="h-10 rounded-xl border-transparent bg-muted/70 pl-9 pr-9 shadow-none focus-visible:border-input focus-visible:bg-background"
+                value={query}
+                type="search"
+                placeholder={tr("settings.search.placeholder")}
+                aria-label={tr("settings.search.placeholder")}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              {query && (
+                <Button
+                  variant="bare"
+                  size="content"
+                  className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                  type="button"
+                  aria-label={tr("settings.search.clear")}
+                  onClick={() => setQuery("")}
+                >
+                  <X size={14} />
+                </Button>
+              )}
+            </label>
           </div>
           <nav className="app-sidebar-nav" aria-label={tr("settings.navigation")}>
-            {sections.map(({ id, label, icon: Icon }) => (
-              <Button
-                key={id}
-                variant="bare"
-                size="content"
-                className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
-                aria-current={active === id ? "page" : undefined}
-                title={tr(label)}
-                onClick={() => select(id)}
-              >
-                <span className="app-sidebar-item-icon">
-                  <Icon size={18} />
-                </span>
-                <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                  {tr(label)}
-                </span>
-              </Button>
-            ))}
+            {!normalizedQuery &&
+              sections.map(({ id, label, icon: Icon }) => (
+                <Button
+                  key={id}
+                  variant="bare"
+                  size="content"
+                  className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
+                  aria-current={active === id ? "page" : undefined}
+                  title={tr(label)}
+                  onClick={() => select(id)}
+                >
+                  <span className="app-sidebar-item-icon">
+                    <Icon size={18} />
+                  </span>
+                  <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                    {tr(label)}
+                  </span>
+                </Button>
+              ))}
+            {normalizedQuery &&
+              sections.map(({ id, label }) => {
+                const sectionResults = results.filter((result) => result.section === id);
+                if (!sectionResults.length) return null;
+                return (
+                  <section className="app-sidebar-group mt-1" key={id}>
+                    <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                      {tr(label)}
+                    </p>
+                    {sectionResults.map((result) => (
+                      <Button
+                        key={result.target}
+                        variant="bare"
+                        size="content"
+                        className={cn(
+                          "app-sidebar-item min-h-10 pl-3",
+                          active === id &&
+                            activeTarget === result.target &&
+                            "app-sidebar-item-active",
+                        )}
+                        aria-current={
+                          active === id && activeTarget === result.target ? "location" : undefined
+                        }
+                        title={tr(result.label)}
+                        onClick={() => select(id, result.target)}
+                      >
+                        <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                          {tr(result.label)}
+                        </span>
+                      </Button>
+                    ))}
+                  </section>
+                );
+              })}
+            {normalizedQuery && !results.length && (
+              <p className="px-3 py-6 text-center text-xs leading-relaxed text-muted-foreground">
+                {tr("settings.search.empty")}
+              </p>
+            )}
           </nav>
         </div>
       </aside>

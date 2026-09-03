@@ -4,7 +4,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
-import { WindowNavigationControls } from "./AppShell";
+import { AppShell, WindowNavigationControls } from "./AppShell";
+
+vi.mock("@tanstack/react-router", () => ({
+  useLocation: () => "/settings",
+}));
 
 describe("WindowNavigationControls", () => {
   beforeAll(async () => initializeI18n("zh-CN"));
@@ -45,5 +49,27 @@ describe("WindowNavigationControls", () => {
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
     expect(onBack).toHaveBeenCalledOnce();
     expect(onForward).toHaveBeenCalledOnce();
+  });
+});
+
+describe("AppShell settings mode", () => {
+  beforeEach(() => useAppStore.getState().reset());
+  afterEach(cleanup);
+
+  it("removes the visible toolbar while retaining the window controls", () => {
+    const { container } = render(
+      <AppShell
+        sidebar={<aside>Settings navigation</aside>}
+        toolbar={<div>Visible toolbar</div>}
+        headerless
+      >
+        Settings content
+      </AppShell>,
+    );
+
+    expect(container.querySelector(".app-shell-headerless")).toBeTruthy();
+    expect(container.querySelector(".app-shell-header")).toBeNull();
+    expect(screen.queryByText("Visible toolbar")).toBeNull();
+    expect(screen.getByRole("button", { name: "收起侧栏" })).toBeTruthy();
   });
 });

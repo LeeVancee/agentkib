@@ -3,7 +3,11 @@ import { CircleAlert } from "lucide-react";
 import { z } from "zod";
 import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
-import { SettingsSidebar, settingsSectionLabel } from "@/features/settings/SettingsSidebar";
+import {
+  SettingsSidebar,
+  settingsTargets,
+  type SettingsTarget,
+} from "@/features/settings/SettingsSidebar";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
 import type { AgentKind, RefreshJobStatus } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
@@ -146,10 +150,11 @@ function AppShellRouter({
   );
   const agentFilter = search.agentFilter ?? "all";
 
-  const setSettingsSection = (section: SettingsSection) => {
+  const setSettingsSection = (section: SettingsSection, target?: SettingsTarget) => {
     void navigate({
       to: "/settings",
-      search: (current) => ({ ...current, settingsSection: section }) as never,
+      search: (current) =>
+        ({ ...current, settingsSection: section, settingsTarget: target }) as never,
     });
   };
 
@@ -178,6 +183,7 @@ function AppShellRouter({
   const sidebar = isSettings ? (
     <SettingsSidebar
       active={settingsSection}
+      activeTarget={search.settingsTarget}
       collapsed={sidebarCollapsed}
       onSelect={setSettingsSection}
       onBack={() => void navigate({ to: "/" })}
@@ -217,25 +223,26 @@ function AppShellRouter({
     />
   );
 
-  const breadcrumb = isSettings
-    ? [tr("nav.settings"), settingsSectionLabel(settingsSection)]
-    : isWorkspace
-      ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
-      : active === "home"
-        ? [tr("nav.workspaces"), tr("nav.home")]
-        : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
+  const breadcrumb = isWorkspace
+    ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
+    : active === "home"
+      ? [tr("nav.workspaces"), tr("nav.home")]
+      : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
 
   return (
     <AppShell
       sidebar={sidebar}
       sidebarMode={isSettings ? "settings" : "primary"}
+      headerless={isSettings}
       toolbar={
-        <AppToolbar
-          breadcrumb={breadcrumb}
-          onOpenSearch={onOpenSearch}
-          onRefresh={onRefresh}
-          onOpenHelp={onOpenHelp}
-        />
+        isSettings ? undefined : (
+          <AppToolbar
+            breadcrumb={breadcrumb}
+            onOpenSearch={onOpenSearch}
+            onRefresh={onRefresh}
+            onOpenHelp={onOpenHelp}
+          />
+        )
       }
       mainClassName={isSettings ? `settings-section-${settingsSection}` : undefined}
       canGoBack={canGoBack}
@@ -244,7 +251,12 @@ function AppShellRouter({
       onForward={onForward}
     >
       {message && (
-        <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className={cn(
+            "mx-7 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive",
+            isSettings ? "mt-10" : "mt-3",
+          )}
+        >
           <CircleAlert size={17} />
           {message}
         </div>
@@ -257,7 +269,7 @@ function AppShellRouter({
       <section
         className={cn(
           isSettings
-            ? "mx-auto grid w-full max-w-[1520px] gap-5 px-6 pb-10 pt-4 max-[640px]:px-4"
+            ? "settings-content mx-auto grid w-full gap-5 px-6 pb-10 pt-10 max-[640px]:px-4"
             : isWorkspace
               ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
               : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
@@ -306,6 +318,7 @@ const searchSchema = z.object({
     ] satisfies SettingsSection[])
     .optional()
     .catch(undefined),
+  settingsTarget: z.enum(settingsTargets).optional().catch(undefined),
   insightsSection: z
     .enum(["overview", "tokens", "commits", "milestones", "sources"] satisfies InsightsSection[])
     .optional()

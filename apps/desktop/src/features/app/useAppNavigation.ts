@@ -302,7 +302,8 @@ export function useAppNavigation() {
     }
     void navigate({
       to: "/settings",
-      search: (current) => ({ ...current, settingsSection: section }) as never,
+      search: (current) =>
+        ({ ...current, settingsSection: section, settingsTarget: undefined }) as never,
     });
   };
 

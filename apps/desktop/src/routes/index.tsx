@@ -9,6 +9,7 @@ import { useAppStore } from "../stores/app-store";
 import { desktopApi } from "../core/desktop";
 import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
 import {
+  continuationIndexingEnabled,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "../features/home/home-continuations";
@@ -37,7 +38,8 @@ function HomeRoute() {
     () => recentContinuationWorkspaces(workspaces),
     [workspaces],
   );
-  const continuationEnabled = runtime?.session_index_enabled !== false;
+  const continuationRuntimeReady = runtime !== undefined;
+  const continuationEnabled = continuationIndexingEnabled(runtime);
   const continuationQueries = useQueries({
     queries: continuationWorkspaces.map((workspace) => ({
       queryKey: homeKeys.continuations(workspace.id),
@@ -105,17 +107,19 @@ function HomeRoute() {
     continuationQueries.map((query) => query.data),
   );
   const cachedContinuationSessions = continuationQueries.flatMap((query) => query.data ?? []);
-  const continuationState: ContinuationHomeState = !continuationEnabled
-    ? "disabled"
-    : recentContinuations.length
-      ? "ready"
-      : continuationQueries.some((query) => query.isPending) || continuationsRefreshing
-        ? "loading"
-        : continuationsError
-          ? "error"
-          : cachedContinuationSessions.some((session) => session.availability === "metadata-only")
-            ? "metadata-only"
-            : "empty";
+  const continuationState: ContinuationHomeState = !continuationRuntimeReady
+    ? "loading"
+    : !continuationEnabled
+      ? "disabled"
+      : recentContinuations.length
+        ? "ready"
+        : continuationQueries.some((query) => query.isPending) || continuationsRefreshing
+          ? "loading"
+          : continuationsError
+            ? "error"
+            : cachedContinuationSessions.some((session) => session.availability === "metadata-only")
+              ? "metadata-only"
+              : "empty";
   const doctorSummariesQuery = useHomeDoctorSummaries(workspaces.map((workspace) => workspace.id));
   const installationsQuery = useHomeInstallations();
   const memoriesQuery = useHomeMemories();

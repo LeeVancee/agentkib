@@ -24,7 +24,7 @@ function WorkspaceSessionsRoute() {
   return (
     <WorkspaceSessionsPage
       workspace={selectedWorkspace}
-      enabled={runtime?.session_index_enabled !== false}
+      enabled={runtime?.session_index_enabled === true}
       targetAgents={targetAgents}
       onRuntimeChanged={async (enabled) => {
         setRuntime(await api.setSessionIndexEnabled(enabled));

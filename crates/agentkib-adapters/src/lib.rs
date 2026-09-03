@@ -704,7 +704,7 @@ pub fn plan_continuation_gateway(
         _ => unreachable!("unsupported continuation target was rejected above"),
     };
     let after = match target_agent {
-        AgentKind::Codex => merge_codex_config(&target, std::slice::from_ref(&connection))?,
+        AgentKind::Codex => merge_codex_continuation_config(&target, &connection)?,
         AgentKind::ClaudeCode => merge_claude_mcp(&target, std::slice::from_ref(&connection))?,
         _ => unreachable!("unsupported continuation target was rejected above"),
     };
@@ -1196,6 +1196,60 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
     merge_toml_mcp_config(path, connections, AgentKind::Codex, "Codex")
 }
 
+/// Adds the continuation gateway without changing other MCP servers that AgentKib already
+/// manages. Unlike workspace synchronization, continuation setup must be an incremental update.
+fn merge_codex_continuation_config(
+    path: &Path,
+    connection: &ConnectionDefinition,
+) -> Result<String> {
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let start_count = existing.matches(TOML_START).count();
+    let end_count = existing.matches(TOML_END).count();
+    match (start_count, end_count) {
+        (0, 0) => return merge_codex_config(path, std::slice::from_ref(connection)),
+        (1, 1) => {}
+        _ => anyhow::bail!("AgentKib-managed Codex MCP block is incomplete or ambiguous"),
+    }
+    let start = existing
+        .find(TOML_START)
+        .expect("managed Codex MCP block count was checked");
+    let content_start = start + TOML_START.len();
+    let end = existing[content_start..]
+        .find(TOML_END)
+        .map(|offset| content_start + offset)
+        .context("AgentKib-managed Codex MCP block is incomplete")?;
+    let config =
+        toml::from_str::<toml::Value>(&existing).context("Codex configuration is invalid")?;
+    let mut managed = toml::from_str::<toml::Table>(&existing[content_start..end])
+        .context("AgentKib-managed Codex MCP block is invalid")?;
+    let key = safe_key(&connection.name);
+    let servers = managed
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("AgentKib-managed Codex mcp_servers must be a table")?;
+    let configured_outside_managed_block = config
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|values| values.contains_key(&key))
+        && !servers.contains_key(&key);
+    anyhow::ensure!(
+        !configured_outside_managed_block,
+        "Codex configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
+        connection.name
+    );
+    servers.insert(key, codex_server_value(connection));
+    let managed = toml::to_string(&managed)?;
+    let block = format!("{TOML_START}\n{managed}{TOML_END}");
+    let after_end = end + TOML_END.len();
+    Ok(format!(
+        "{}{}{}",
+        &existing[..start],
+        block,
+        &existing[after_end..]
+    ))
+}
+
 fn merge_grok_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
     merge_toml_mcp_config(path, connections, AgentKind::GrokBuild, "Grok Build")
 }
@@ -1257,6 +1311,39 @@ fn merge_toml_mcp_config(
 
 fn toml_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn codex_server_value(connection: &ConnectionDefinition) -> toml::Value {
+    let mut server = toml::map::Map::new();
+    match &connection.transport {
+        ConnectionTransport::Stdio { command, args } => {
+            server.insert("command".into(), toml::Value::String(command.clone()));
+            server.insert(
+                "args".into(),
+                toml::Value::Array(args.iter().cloned().map(toml::Value::String).collect()),
+            );
+        }
+        ConnectionTransport::Http { url } => {
+            server.insert(
+                "url".into(),
+                toml::Value::String(agent_url(url, AgentKind::Codex)),
+            );
+        }
+    }
+    if !connection.allow_tools.is_empty() {
+        server.insert(
+            "enabled_tools".into(),
+            toml::Value::Array(
+                connection
+                    .allow_tools
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    toml::Value::Table(server)
 }
 fn safe_key(value: &str) -> String {
     value
@@ -1516,6 +1603,102 @@ mod tests {
         assert!(change.after.contains("[mcp_servers.other]"));
         assert!(change.after.contains("/workspace-1/agents/codex"));
         assert!(!plan.requires_home_approval);
+    }
+
+    #[test]
+    fn continuation_gateway_preserves_other_managed_codex_servers() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        fs::write(
+            &config,
+            "model = \"gpt-test\"\n\n[mcp_servers.unmanaged]\ncommand = \"keep\"\n\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\nargs = [\"check\"]\nfuture = 42\n\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\n# agentkib:managed:end\n",
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-3", 47653).unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let after: toml::Value = toml::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcp_servers"]["unmanaged"]["command"].as_str(),
+            Some("keep")
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["command"].as_str(),
+            Some("team")
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["args"].as_array(),
+            Some(&vec![toml::Value::String("check".into())])
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["future"].as_integer(),
+            Some(42)
+        );
+        assert_eq!(
+            after["mcp_servers"]["agentkib"]["url"].as_str(),
+            Some("http://127.0.0.1:47653/mcp/v1/workspaces/workspace-3/agents/codex")
+        );
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-3", 47653).unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_incomplete_managed_codex_block() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-4", 47653)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("block is incomplete"));
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_unmanaged_codex_name_collision_outside_the_block() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "[mcp_servers.agentkib]\ncommand = \"user-managed\"\n\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-5", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unmanaged MCP with the same name")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_ambiguous_managed_codex_markers() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:end\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-6", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("block is incomplete or ambiguous")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
     }
 
     #[test]

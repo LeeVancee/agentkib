@@ -53,6 +53,14 @@ export function activityPresentation(record: ActivityRecord): ActivityPresentati
         detail: tr(`activity.detail.memory.review.${statusKey}`),
       };
     }
+    case "skill.apply":
+    case "skill.rollback":
+    case "skill.uninstall":
+    case "skill.restore":
+      return {
+        title: tr(`activity.action.${record.action}`),
+        detail: tr(`activity.detail.${record.action}`, { name: record.detail }),
+      };
     default:
       return {
         title: tr("activity.action.unknown"),

@@ -1,8 +1,12 @@
-import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import type { ConversationSessionSummary, RuntimeInfo, WorkspaceSummary } from "@/core/types";
 
 export interface RecentContinuation {
   workspace: WorkspaceSummary;
   session: ConversationSessionSummary;
+}
+
+export function continuationIndexingEnabled(runtime?: Pick<RuntimeInfo, "session_index_enabled">) {
+  return runtime?.session_index_enabled === true;
 }
 
 export function recentContinuationWorkspaces(workspaces: WorkspaceSummary[], limit = 5) {

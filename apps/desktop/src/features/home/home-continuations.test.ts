@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { recentContinuationWorkspaces, selectRecentContinuations } from "./home-continuations";
+import {
+  continuationIndexingEnabled,
+  recentContinuationWorkspaces,
+  selectRecentContinuations,
+} from "./home-continuations";
 
 const workspaces = ["first", "second", "third", "fourth"].map(
   (id) => ({ id, name: id }) as WorkspaceSummary,
@@ -14,6 +18,12 @@ const readableSession = {
 } as ConversationSessionSummary;
 
 describe("selectRecentContinuations", () => {
+  it("waits for the runtime preference before enabling session indexing", () => {
+    expect(continuationIndexingEnabled()).toBe(false);
+    expect(continuationIndexingEnabled({ session_index_enabled: false })).toBe(false);
+    expect(continuationIndexingEnabled({ session_index_enabled: true })).toBe(true);
+  });
+
   it("limits background discovery to the five most recent workspaces", () => {
     const values = Array.from({ length: 7 }, (_, index) => ({
       id: `workspace-${index}`,

@@ -33,6 +33,18 @@ describe("activityPresentation", () => {
     );
   });
 
+  it.each(["skill.apply", "skill.rollback", "skill.uninstall", "skill.restore"])(
+    "presents %s with the skill name instead of an internal action key",
+    (action) => {
+      const presentation = activityPresentation(record(action, "reviewer"));
+
+      expect(presentation.title).not.toBe("Local activity");
+      expect(presentation.detail).toContain("reviewer");
+      expect(presentation.title).not.toContain(action);
+      expect(presentation.detail).not.toContain(action);
+    },
+  );
+
   it("does not expose unknown internal action keys or details", () => {
     expect(activityPresentation(record("future.internal.event", "raw internal detail"))).toEqual({
       title: "Local activity",
@@ -49,6 +61,19 @@ describe("activityPresentation", () => {
       expect(presentation.title).not.toContain("discovery.complete");
       expect(presentation.detail).not.toBe("37 workspaces, 0 errors");
       expect(presentation.detail).not.toContain("activity.detail");
+    }
+    await changeLocale("en-US");
+  });
+
+  it("localizes skill activity in every supported locale", async () => {
+    for (const locale of supportedLocales) {
+      await changeLocale(locale);
+      for (const action of ["skill.apply", "skill.rollback", "skill.uninstall", "skill.restore"]) {
+        const presentation = activityPresentation(record(action, "reviewer"));
+        expect(presentation.title).not.toContain("activity.action");
+        expect(presentation.detail).not.toContain("activity.detail");
+        expect(presentation.detail).toContain("reviewer");
+      }
     }
     await changeLocale("en-US");
   });

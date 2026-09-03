@@ -144,7 +144,10 @@ $uninstall = Start-Process -FilePath $uninstaller.FullName -ArgumentList "/S" -W
 if ($uninstall.ExitCode -ne 0) {
   throw "AgentKib uninstaller failed with exit code $($uninstall.ExitCode)"
 }
-$uninstallDeadline = (Get-Date).AddSeconds(30)
+# NSIS performs the final removal from a detached cleanup process after the
+# launcher exits. Hosted Windows runners can take longer than 30 seconds to
+# release the installed executable while antivirus scanning is active.
+$uninstallDeadline = (Get-Date).AddMinutes(2)
 while ((Test-Path -LiteralPath $executable.FullName) -and (Get-Date) -lt $uninstallDeadline) {
   Start-Sleep -Milliseconds 500
 }

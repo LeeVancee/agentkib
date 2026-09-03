@@ -90,8 +90,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
         (agent === "all" || asset.agents.includes(agent)) &&
         (kind === "all" || asset.kind === kind) &&
         (workspaceId === "all" || asset.workspace_id === workspaceId) &&
-        (ownership === "all" ||
-          (ownership === "shared" ? !asset.agents.length : asset.agents.length > 0))
+        (ownership === "all" || (ownership === "shared" ? asset.shared : asset.agents.length > 0))
       );
     });
   }, [agent, assets, kind, ownership, query, workspaceId]);
@@ -244,6 +243,9 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                 const allAgents = asset.agents
                   .map((value: AgentKind) => agentLabels[value])
                   .join(", ");
+                const allOwners = [allAgents, ...(asset.shared ? [tr("catalog.shared")] : [])]
+                  .filter(Boolean)
+                  .join(", ");
                 return (
                   <TableRow
                     key={asset.id}
@@ -292,23 +294,18 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                     <TableCell className="hidden lg:table-cell">
                       <div
                         className="flex flex-wrap items-center gap-1.5"
-                        aria-label={allAgents || tr("catalog.shared")}
-                        title={allAgents}
+                        aria-label={allOwners}
+                        title={allOwners}
                       >
-                        {asset.agents.length ? (
-                          <>
-                            {visibleAgents.map((value: AgentKind) => (
-                              <Badge key={value} variant="outline" className="font-medium">
-                                {agentLabels[value]}
-                              </Badge>
-                            ))}
-                            {hiddenAgentCount > 0 && (
-                              <Badge variant="secondary">+{hiddenAgentCount}</Badge>
-                            )}
-                          </>
-                        ) : (
-                          <Badge variant="secondary">{tr("catalog.shared")}</Badge>
+                        {visibleAgents.map((value: AgentKind) => (
+                          <Badge key={value} variant="outline" className="font-medium">
+                            {agentLabels[value]}
+                          </Badge>
+                        ))}
+                        {hiddenAgentCount > 0 && (
+                          <Badge variant="secondary">+{hiddenAgentCount}</Badge>
                         )}
+                        {asset.shared && <Badge variant="secondary">{tr("catalog.shared")}</Badge>}
                       </div>
                     </TableCell>
                     <TableCell className="hidden whitespace-nowrap text-sm tabular-nums text-muted-foreground sm:table-cell">
@@ -384,9 +381,10 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                   {tr("catalog.visibleAgents")}
                 </dt>
                 <dd className="text-sm font-medium text-foreground">
-                  {selected.agents.length
-                    ? selected.agents.map((value: AgentKind) => agentLabels[value]).join(" · ")
-                    : tr("catalog.shared")}
+                  {[
+                    ...selected.agents.map((value: AgentKind) => agentLabels[value]),
+                    ...(selected.shared ? [tr("catalog.shared")] : []),
+                  ].join(" · ")}
                 </dd>
               </div>
               <div className="grid gap-1">

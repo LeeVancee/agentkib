@@ -1,14 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use agentkib_core::{
-    AgentKind, AssetKind, MemoryProposal, MemoryStatus, MemoryType, load_manifest, resolve_context,
-    scan_workspace,
+    AgentKind, AssetKind, AssetRecord, MemoryProposal, MemoryStatus, MemoryType,
+    is_readable_skill_file, load_manifest, resolve_context, scan_workspace,
 };
 use agentkib_platform::path::{canonicalize, equivalent};
 use agentkib_store::Store;
 use anyhow::{Context, Result, bail};
 use rmcp::model::{CallToolResult, ContentBlock, Tool};
 use serde_json::{Value, json};
+
+const MAX_ASSET_READ_BYTES: u64 = 256 * 1024;
 
 pub const BUILTIN_TOOL_NAMES: [&str; 8] = [
     "workspace_get_context",
@@ -91,22 +97,17 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
         }
         "asset_list" => serde_json::to_value(scan_workspace(project)?.assets)?,
         "asset_get" => {
-            let requested = project.join(
+            let requested_input = project.join(
                 args.get("path")
                     .and_then(Value::as_str)
                     .context("Missing asset path")?,
             );
-            let requested = canonicalize(&requested)?;
+            let requested = canonicalize(&requested_input)?;
             let scan = scan_workspace(project)?;
-            if !scan.assets.iter().any(|asset| {
-                equivalent(&asset.path, &requested) && !matches!(asset.kind, AssetKind::Memory)
-            }) {
+            if !is_readable_asset_path(&scan.assets, &requested_input, &requested) {
                 bail!("The requested path is not in the readable asset inventory");
             }
-            let content = std::fs::read_to_string(&requested)?;
-            if content.len() > 256 * 1024 {
-                bail!("Asset exceeds the 256 KiB limit");
-            }
+            let content = read_bounded_asset_text(&requested)?;
             json!({"path":requested,"content":content})
         }
         "skill_list" => serde_json::to_value(manifest.skills)?,
@@ -184,6 +185,38 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
     Ok(CallToolResult::structured(payload))
 }
 
+fn is_readable_asset_path(
+    assets: &[AssetRecord],
+    requested_input: &Path,
+    requested: &Path,
+) -> bool {
+    assets
+        .iter()
+        .any(|asset| equivalent(&asset.path, requested) && !matches!(asset.kind, AssetKind::Memory))
+        || assets.iter().any(|asset| {
+            asset.kind == AssetKind::Skill && is_readable_skill_file(&asset.path, requested_input)
+        })
+}
+
+fn read_bounded_asset_text(path: &Path) -> Result<String> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        bail!("Asset must be a regular file");
+    }
+    if metadata.len() > MAX_ASSET_READ_BYTES {
+        bail!("Asset exceeds the 256 KiB limit");
+    }
+
+    let mut content = String::with_capacity(metadata.len() as usize);
+    file.take(MAX_ASSET_READ_BYTES + 1)
+        .read_to_string(&mut content)?;
+    if content.len() as u64 > MAX_ASSET_READ_BYTES {
+        bail!("Asset exceeds the 256 KiB limit");
+    }
+    Ok(content)
+}
+
 fn tool(name: &str, description: &str, input_schema: Value) -> Tool {
     serde_json::from_value(json!({
         "name": name,
@@ -210,4 +243,89 @@ fn parse_memory_type(value: &str) -> Result<MemoryType> {
 
 pub fn error_result(error: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(error.to_string())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn asset_get_allows_skill_supporting_files_but_not_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let guide = skill.join("references/guide.md");
+        fs::write(&guide, "Guide").unwrap();
+        let outside = dir.path().join("notes.md");
+        fs::write(&outside, "Notes").unwrap();
+        let private = skill.join("secret.txt");
+        fs::write(&private, "Private").unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(is_readable_asset_path(
+            &scan.assets,
+            &guide,
+            &canonicalize(&guide).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &outside,
+            &canonicalize(&outside).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &private,
+            &canonicalize(&private).unwrap()
+        ));
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &skill.join("references/../../../../notes.md"),
+            &canonicalize(&outside).unwrap()
+        ));
+    }
+
+    #[test]
+    fn asset_get_rejects_oversized_skill_supporting_files_before_reading_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("assets")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let oversized = skill.join("assets/large.txt");
+        fs::write(&oversized, vec![b'a'; MAX_ASSET_READ_BYTES as usize + 1]).unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(is_readable_asset_path(
+            &scan.assets,
+            &oversized,
+            &canonicalize(&oversized).unwrap()
+        ));
+        assert_eq!(
+            read_bounded_asset_text(&oversized).unwrap_err().to_string(),
+            "Asset exceeds the 256 KiB limit"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asset_get_rejects_skill_supporting_file_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(skill.join("references")).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let actual = skill.join("references/actual.md");
+        fs::write(&actual, "Guide").unwrap();
+        let link = skill.join("references/link.md");
+        symlink(&actual, &link).unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        assert!(!is_readable_asset_path(
+            &scan.assets,
+            &link,
+            &canonicalize(&link).unwrap()
+        ));
+    }
 }

@@ -3,13 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
+import { AgentIcon } from "@/features/agents/AgentIcon";
+import { SkillHubPage } from "@/features/skills/SkillHubPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,7 +27,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
-import { localizeMessage, tr } from "../core/i18n";
+import { formatDateTime, localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
@@ -37,13 +39,18 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
   Boxes,
   Brain,
+  Check,
   CircleAlert,
+  ExternalLink,
   FileCode2,
+  Library,
+  Pencil,
   PlugZap,
   RefreshCw,
   Search,
   Sparkles,
   Trash2,
+  X,
 } from "@octanejs/lucide";
 import type {
   AgentKind,
@@ -55,6 +62,7 @@ import type {
   McpRuntimeStatus,
   McpServerConfig,
   MemoryRecord,
+  MemoryType,
   RuntimeInfo,
   WorkspaceSummary,
 } from "../core/types";
@@ -309,7 +317,12 @@ function CatalogPage({
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
       {section === "skills" && (
-        <AssetPage assets={skillAssets} workspaces={workspaces} onOpen={onOpen} />
+        <SkillHubPage
+          workspaceAssets={skillAssets}
+          workspaces={workspaces}
+          onOpen={onOpen}
+          onReload={onReload}
+        />
       )}
       {section === "other" && (
         <AssetPage assets={otherAssets} workspaces={workspaces} onOpen={onOpen} />

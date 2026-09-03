@@ -67,6 +67,13 @@ import type {
   McpToolDescriptor,
   RemoteGatewayInput,
   RemoteGatewaySummary,
+  InstalledSkill,
+  RemovedSkill,
+  SkillCandidate,
+  SkillCatalogSnapshot,
+  SkillFilePreview,
+  SkillOperationPreview,
+  SkillSource,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
 } from "../../src/core/types";
@@ -115,6 +122,20 @@ export interface DesktopApi {
   sessions: {
     clearIndex(workspaceId?: string): Promise<void>;
     setIndexEnabled(enabled: boolean): Promise<RuntimeInfo>;
+  };
+  skills: {
+    catalog(force?: boolean): Promise<SkillCatalogSnapshot>;
+    discover(url: string): Promise<SkillCandidate[]>;
+    installed(): Promise<InstalledSkill[]>;
+    prepareInstall(source: SkillSource): Promise<SkillOperationPreview>;
+    applyOperation(token: string, allowModified?: boolean): Promise<InstalledSkill>;
+    checkUpdates(): Promise<InstalledSkill[]>;
+    prepareUpdate(name: string): Promise<SkillOperationPreview>;
+    rollback(name: string): Promise<InstalledSkill>;
+    uninstall(name: string): Promise<RemovedSkill>;
+    removed(): Promise<RemovedSkill[]>;
+    restore(id: string): Promise<InstalledSkill>;
+    readFile(name: string, path: string): Promise<SkillFilePreview>;
   };
   mcp: {
     hubStatus(): Promise<McpHubStatus>;

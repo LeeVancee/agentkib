@@ -15,6 +15,7 @@ members = [
   "crates/agentkib-store",
   "crates/agentkib-cli",
   "crates/agentkib-mcp",
+  "crates/agentkib-skills",
   "crates/agentkib-gateways",
 ]
 
@@ -35,6 +36,7 @@ agentkib-insights = { path = "crates/agentkib-insights" }
 agentkib-quota = { path = "crates/agentkib-quota" }
 agentkib-storage = { path = "crates/agentkib-storage" }
 agentkib-mcp = { path = "crates/agentkib-mcp" }
+agentkib-skills = { path = "crates/agentkib-skills" }
 agentkib-gateways = { path = "crates/agentkib-gateways" }
 agentkib-store = { path = "crates/agentkib-store" }
 anyhow = "1.0"

@@ -350,7 +350,7 @@ export interface AgentInstallation {
 }
 export interface CatalogAsset {
   id: string;
-  scope: "workspace" | "agent-home";
+  scope: "workspace" | "agent-home" | "agentkib-home";
   workspace_id?: string;
   agent?: AgentKind;
   kind: string;
@@ -361,6 +361,72 @@ export interface CatalogAsset {
   summary_params?: Record<string, string>;
   size: number;
   modified_at?: string;
+}
+export type SkillSourceKind = "openai-curated" | "github";
+export interface SkillSource {
+  kind: SkillSourceKind;
+  repository: string;
+  ref: string;
+  path: string;
+  resolved_commit: string;
+  tree_sha: string;
+}
+export interface SkillCandidate {
+  name: string;
+  description: string;
+  license?: string;
+  compatibility?: string;
+  source: SkillSource;
+}
+export interface SkillCatalogEntry extends SkillCandidate {
+  installed: boolean;
+}
+export interface SkillCatalogSnapshot {
+  entries: SkillCatalogEntry[];
+  cached_at: string;
+  stale: boolean;
+}
+export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
+export interface InstalledSkill {
+  name: string;
+  display_name: string;
+  description: string;
+  path: string;
+  size: number;
+  modified_at?: string;
+  status: InstalledSkillStatus;
+  source?: SkillSource;
+  installed_at?: string;
+  updated_at?: string;
+  can_rollback: boolean;
+}
+export interface SkillFileEntry {
+  path: string;
+  size: number;
+  executable: boolean;
+}
+export interface SkillOperationPreview {
+  token: string;
+  operation: "install" | "update";
+  skill: SkillCandidate;
+  files: SkillFileEntry[];
+  added: string[];
+  modified: string[];
+  removed: string[];
+  total_size: number;
+  local_modified: boolean;
+  expires_at: string;
+}
+export interface RemovedSkill {
+  id: string;
+  name: string;
+  display_name: string;
+  removed_at: string;
+  path: string;
+}
+export interface SkillFilePreview {
+  path: string;
+  content: string;
 }
 export interface DiscoveryReport {
   started_at: string;

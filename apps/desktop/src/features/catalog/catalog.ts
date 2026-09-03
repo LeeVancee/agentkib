@@ -15,6 +15,7 @@ export interface CatalogAssetGroup {
   size: number;
   modified_at?: string;
   agents: AgentKind[];
+  shared: boolean;
   records: CatalogAsset[];
 }
 
@@ -57,6 +58,7 @@ export function groupCatalogAssets(assets: CatalogAsset[]): CatalogAssetGroup[] 
         size: asset.size,
         modified_at: asset.modified_at,
         agents: asset.agent ? [asset.agent] : [],
+        shared: !asset.agent,
         records: [asset],
       });
       continue;
@@ -66,6 +68,7 @@ export function groupCatalogAssets(assets: CatalogAsset[]): CatalogAssetGroup[] 
     if (asset.modified_at && (!current.modified_at || asset.modified_at > current.modified_at))
       current.modified_at = asset.modified_at;
     if (asset.agent && !current.agents.includes(asset.agent)) current.agents.push(asset.agent);
+    if (!asset.agent) current.shared = true;
   }
   for (const asset of grouped.values())
     asset.agents.sort((a, b) => agentOrder.indexOf(a) - agentOrder.indexOf(b));

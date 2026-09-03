@@ -84,34 +84,7 @@ export function AgentsPage({
   const [agentSort, setAgentSort] = useState<"name" | "status">("status");
   const [assetQuery, setAssetQuery] = useState("");
   const [assetKind, setAssetKind] = useState("all");
-  const installation = installations.find((item) => item.agent === selected);
-  const provider = insightsStatus?.providers.find((item) => item.agent === selected);
-  const homeAssets = assets.filter((item) => item.agent === selected);
-  const assetKinds = [...new Set(homeAssets.map((item) => item.kind))].sort();
-  const visibleHomeAssets = homeAssets.filter(
-    (item) =>
-      `${item.name} ${item.path} ${item.kind}`.toLowerCase().includes(assetQuery.toLowerCase()) &&
-      (assetKind === "all" || item.kind === assetKind),
-  );
-  const linkedWorkspaces = workspaces.filter((workspace) =>
-    workspace.sources.some((source) => source.agent === selected),
-  );
-  const recentLinkedWorkspaces = [...linkedWorkspaces]
-    .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))
-    .slice(0, 5);
-  const homeAssetKinds = [
-    ...homeAssets
-      .reduce(
-        (counts, asset) => counts.set(asset.kind, (counts.get(asset.kind) ?? 0) + 1),
-        new Map<string, number>(),
-      )
-      .entries(),
-  ].sort((left, right) => right[1] - left[1]);
-  const selectedRemoteGateways = remoteGateways.filter((gateway) => gateway.kind === selected);
-  const remoteWorkspaceCount = selectedRemoteGateways.reduce(
-    (total, gateway) => total + gateway.workspaces.length,
-    0,
-  );
+
   const visibleAgentKinds = agentKinds
     .filter((agent: AgentKind) => {
       const item = installations.find((installation) => installation.agent === agent);
@@ -149,6 +122,34 @@ export function AgentsPage({
     (next, previous) => (next !== previous?.source ? "overview" : (previous?.value ?? "overview")),
   );
 
+  const installation = installations.find((item) => item.agent === selected);
+  const provider = insightsStatus?.providers.find((item) => item.agent === selected);
+  const homeAssets = assets.filter((item) => item.agent === selected);
+  const assetKinds = [...new Set(homeAssets.map((item) => item.kind))].sort();
+  const visibleHomeAssets = homeAssets.filter(
+    (item) =>
+      `${item.name} ${item.path} ${item.kind}`.toLowerCase().includes(assetQuery.toLowerCase()) &&
+      (assetKind === "all" || item.kind === assetKind),
+  );
+  const linkedWorkspaces = workspaces.filter((workspace) =>
+    workspace.sources.some((source) => source.agent === selected),
+  );
+  const recentLinkedWorkspaces = [...linkedWorkspaces]
+    .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))
+    .slice(0, 5);
+  const homeAssetKinds = [
+    ...homeAssets
+      .reduce(
+        (counts, asset) => counts.set(asset.kind, (counts.get(asset.kind) ?? 0) + 1),
+        new Map<string, number>(),
+      )
+      .entries(),
+  ].sort((left, right) => right[1] - left[1]);
+  const selectedRemoteGateways = remoteGateways.filter((gateway) => gateway.kind === selected);
+  const remoteWorkspaceCount = selectedRemoteGateways.reduce(
+    (total, gateway) => total + gateway.workspaces.length,
+    0,
+  );
   useEffect(() => {
     if (
       selectedAgent &&

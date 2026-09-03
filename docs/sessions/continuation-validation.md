@@ -93,3 +93,12 @@ The local `main` is fast-forwarded to `26969b15`; the remote PR remains open. Al
 - Local `main` was fast-forwarded to `upstream/main` at `98d28362`.
 - Phase 0 completion criteria are satisfied: merge completed, CI passed, and no unresolved P0/P1 review issue was found.
 - Native Codex ↔ Claude continuation remains a Phase 1 validation item.
+
+## Phase 1 automated fixture baseline — 2026-09-04
+
+- Fixture: `crates/agentkib-conversations/tests/phase1_continuation.rs`
+- Command: `cargo test -p agentkib-conversations --test phase1_continuation`
+- Result: 3 tests passed.
+- Coverage: all four source/target paths using synthetic data; native round-trip semantics; cross-agent JSON handoff preservation; re-sanitization after edits; source fingerprint invalidation; and bounded long-session windows.
+- Real Claude Code CLI launch and target-context visibility: not verified; maintainer validation is still required.
+- Capability matrix status remains `unverified` until corresponding real-machine records are attached.

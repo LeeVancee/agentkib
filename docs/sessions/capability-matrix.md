@@ -15,6 +15,10 @@ Do not mark a capability as `supported` without a corresponding entry in [contin
 
 | Source | Target | Platform / architecture | Agent version | `source_read` | `source_parse` | `native_resume` | `file_handoff` | `windowed_context` | `mcp_setup` | `interactive_launch` | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Codex | Codex | Maintainer environment | Record required | unverified | unverified | unverified | unverified | unverified | unverified | unverified | [Phase 1 guide](./phase1-maintainer-validation.md) |
+| Codex | Claude Code | Maintainer environment | Record required | unverified | unverified | unverified | unverified | unverified | unverified | unverified | [Phase 1 guide](./phase1-maintainer-validation.md) |
+| Claude Code | Codex | Maintainer environment | Record required | unverified | unverified | unverified | unverified | unverified | unverified | unverified | [Phase 1 guide](./phase1-maintainer-validation.md) |
+| Claude Code | Claude Code | Maintainer environment | Record required | unverified | unverified | unverified | unverified | unverified | unverified | unverified | [Phase 1 guide](./phase1-maintainer-validation.md) |
 
 ## Recognized agents
 

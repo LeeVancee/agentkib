@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, inspect_skill_entrypoint, manifest_path, opencode_managed_config_path,
-    opencode_managed_instruction_is_registered,
+    decode_url_path_segment, encode_url_path_segment, hash_content, inspect_skill_entrypoint,
+    manifest_path, opencode_managed_config_path, opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
 use anyhow::{Context, Result};
@@ -687,11 +687,12 @@ pub fn plan_continuation_gateway(
     anyhow::ensure!(port > 0, "AgentKib MCP Hub port is unavailable");
 
     let root = agentkib_core::canonical_project(project)?;
+    let workspace_segment = encode_url_path_segment(workspace_id);
     let connection = ConnectionDefinition {
         name: "agentkib".into(),
         transport: ConnectionTransport::Http {
             url: format!(
-                "http://127.0.0.1:{port}/mcp/v1/workspaces/{workspace_id}/agents/{{agent}}"
+                "http://127.0.0.1:{port}/mcp/v1/workspaces/{workspace_segment}/agents/{{agent}}"
             ),
         },
         env: BTreeMap::new(),
@@ -1421,7 +1422,7 @@ fn is_agentkib_claude_continuation(server: &JsonValue) -> bool {
     else {
         return false;
     };
-    let Some(workspace_id) = path
+    let Some(workspace_segment) = path
         .strip_prefix("mcp/v1/workspaces/")
         .and_then(|value| value.strip_suffix("/agents/claude-code"))
     else {
@@ -1434,10 +1435,10 @@ fn is_agentkib_claude_continuation(server: &JsonValue) -> bool {
     };
     http_transport
         && port.parse::<u16>().is_ok_and(|value| value > 0)
-        && !workspace_id.is_empty()
-        && workspace_id
-            .bytes()
-            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
+        && decode_url_path_segment(workspace_segment).is_ok_and(|workspace_id| {
+            !workspace_id.trim().is_empty()
+                && encode_url_path_segment(&workspace_id) == workspace_segment
+        })
 }
 
 fn merge_opencode_config(
@@ -1681,6 +1682,47 @@ mod tests {
         assert!(change.after.contains("[mcp_servers.other]"));
         assert!(change.after.contains("/workspace-1/agents/codex"));
         assert!(!plan.requires_home_approval);
+    }
+
+    #[test]
+    fn continuation_gateway_encodes_workspace_ids_as_one_path_segment() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+
+        let plan = plan_continuation_gateway(
+            dir.path(),
+            AgentKind::Codex,
+            "team/project?tag#one two",
+            47653,
+        )
+        .unwrap();
+
+        assert!(plan.changes[0].after.contains(
+            "http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/codex"
+        ));
+
+        let claude = plan_continuation_gateway(
+            dir.path(),
+            AgentKind::ClaudeCode,
+            "team/project?tag#one two",
+            47653,
+        )
+        .unwrap();
+        assert!(claude.changes[0].after.contains(
+            "http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/claude-code"
+        ));
+        fs::write(dir.path().join(".mcp.json"), &claude.changes[0].after).unwrap();
+        assert!(
+            plan_continuation_gateway(
+                dir.path(),
+                AgentKind::ClaudeCode,
+                "team/project?tag#one two",
+                47653,
+            )
+            .unwrap()
+            .changes
+            .is_empty()
+        );
     }
 
     #[test]

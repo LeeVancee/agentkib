@@ -22,7 +22,7 @@ use agentkib_conversations::{
     stats, validate_history_budget, validate_native_jsonl, validate_native_roundtrip,
     validate_session_archive, windowed_import_notice,
 };
-use agentkib_core::{AgentKind, McpNetworkSettings};
+use agentkib_core::{AgentKind, McpNetworkSettings, encode_url_path_segment};
 use agentkib_discovery::discover as discover_local_workspaces;
 use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage};
 use agentkib_platform::applications::{
@@ -2701,12 +2701,13 @@ fn update_onboarding(request: UpdateOnboardingRequest) -> anyhow::Result<Value> 
 }
 
 fn ensure_agentkib_connection(manifest: &mut agentkib_core::Manifest, port: u16) {
+    let workspace_segment = encode_url_path_segment(&manifest.workspace.id);
     let definition = agentkib_core::ConnectionDefinition {
         name: "agentkib".into(),
         transport: agentkib_core::ConnectionTransport::Http {
             url: format!(
                 "http://127.0.0.1:{port}/mcp/v1/workspaces/{}/agents/{{agent}}",
-                manifest.workspace.id
+                workspace_segment
             ),
         },
         env: Default::default(),
@@ -3503,10 +3504,11 @@ fn plan_mcp_migration(
     }
     let candidates = agentkib_mcp::native::scan_native_candidates(Some(&project))?;
     let manifest = agentkib_core::load_manifest(&project)?;
+    let workspace_segment = encode_url_path_segment(&manifest.workspace.id);
     let gateway_url = format!(
         "http://127.0.0.1:{}/mcp/v1/workspaces/{}/agents/{{agent}}",
         mcp_hub()?.settings().port,
-        manifest.workspace.id
+        workspace_segment
     );
     let effective = agentkib_mcp::config::load_effective_config(Some(&project))?;
     let mut servers = Vec::new();

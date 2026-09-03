@@ -397,10 +397,10 @@ impl HubService {
             .iter()
             .position(|value| *value == "workspaces")
             .context("MCP workspace path is invalid")?;
-        let workspace_id = segments
+        let workspace_segment = segments
             .get(workspace_index + 1)
-            .context("MCP workspace id is missing")?
-            .to_string();
+            .context("MCP workspace id is missing")?;
+        let workspace_id = agentkib_core::decode_url_path_segment(workspace_segment)?;
         let agent = segments
             .get(workspace_index + 3)
             .context("MCP Agent is missing")?;
@@ -692,5 +692,14 @@ mod tests {
             running.cancel().await.unwrap();
         });
         hub.shutdown();
+    }
+
+    #[test]
+    fn decodes_workspace_path_segments_before_store_lookup() {
+        assert_eq!(
+            agentkib_core::decode_url_path_segment("team%2Fproject%3Ftag%23one%20two").unwrap(),
+            "team/project?tag#one two"
+        );
+        assert!(agentkib_core::decode_url_path_segment("team%GG").is_err());
     }
 }

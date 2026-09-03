@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use agentkib_core::{
     AgentKind, ChangeScope, ChangeSet, FileChange, McpConfigDocument, McpMigrationCandidate,
-    McpServerConfig, McpServerTransport, RiskLevel, hash_content,
+    McpServerConfig, McpServerTransport, RiskLevel, encode_url_path_segment, hash_content,
 };
 use agentkib_platform::path::{canonicalize, starts_with as path_starts_with};
 use anyhow::{Context, Result, bail};
@@ -153,7 +153,8 @@ pub fn has_agentkib_gateway(
         AgentKind::ClaudeCode => "claude-code",
         _ => unreachable!(),
     };
-    let route = format!("/mcp/v1/workspaces/{workspace_id}/agents/{slug}");
+    let workspace_segment = encode_url_path_segment(workspace_id);
+    let route = format!("/mcp/v1/workspaces/{workspace_segment}/agents/{slug}");
     Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
         || endpoint == format!("http://localhost:{port}{route}"))
 }
@@ -994,6 +995,27 @@ mod tests {
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47654).unwrap());
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "other", 47653).unwrap());
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Cursor, "ws", 47653).unwrap());
+    }
+
+    #[test]
+    fn gateway_detection_encodes_workspace_id_path_segments() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        std::fs::write(
+            dir.path().join(".codex/config.toml"),
+            "[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/codex\"\n",
+        )
+        .unwrap();
+
+        assert!(
+            has_agentkib_gateway(
+                dir.path(),
+                AgentKind::Codex,
+                "team/project?tag#one two",
+                47653,
+            )
+            .unwrap()
+        );
     }
 
     #[test]

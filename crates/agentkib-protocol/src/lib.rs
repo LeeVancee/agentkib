@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
 pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
@@ -72,6 +72,7 @@ pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
+pub const PLAN_SESSION_MCP_CONNECTION_METHOD: &str = "sessions.planMcpConnection";
 pub const CONTINUE_SESSION_HANDOFF_METHOD: &str = "sessions.continueHandoff";
 pub const LAUNCH_SESSION_HANDOFF_METHOD: &str = "sessions.launchHandoff";
 pub const CLEAR_SESSION_INDEX_METHOD: &str = "sessions.clearIndex";
@@ -272,6 +273,7 @@ export const RUNTIME_METHODS = {{
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",
+  planSessionMcpConnection: "{PLAN_SESSION_MCP_CONNECTION_METHOD}",
   continueSessionHandoff: "{CONTINUE_SESSION_HANDOFF_METHOD}",
   launchSessionHandoff: "{LAUNCH_SESSION_HANDOFF_METHOD}",
   clearSessionIndex: "{CLEAR_SESSION_INDEX_METHOD}",

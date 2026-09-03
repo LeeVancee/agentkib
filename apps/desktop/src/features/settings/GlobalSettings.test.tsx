@@ -19,6 +19,7 @@ const baseProps: GlobalSettingsProps = {
   onRestore: noop,
   onCloseBehaviorChanged: noop,
   onLocaleChanged: () => undefined,
+  onSessionIndexCleared: () => undefined,
   onOnboardingRestarted: noop,
   onRemoteGatewaysChanged: noop,
   onRefreshDiagnostics: noop,

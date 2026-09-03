@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use agentkib_core::{
     AgentKind, ChangeScope, ChangeSet, FileChange, McpConfigDocument, McpMigrationCandidate,
-    McpServerConfig, McpServerTransport, RiskLevel, hash_content,
+    McpServerConfig, McpServerTransport, RiskLevel, encode_url_path_segment, hash_content,
 };
 use agentkib_platform::path::{canonicalize, starts_with as path_starts_with};
 use anyhow::{Context, Result, bail};
@@ -12,6 +12,8 @@ use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+const CONTINUATION_ARCHIVE_TOOLS: [&str; 2] = ["session_search", "session_read_chunk"];
 
 pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
     let grok_home = grok_home();
@@ -117,6 +119,9 @@ pub fn has_agentkib_gateway(
     workspace_id: &str,
     port: u16,
 ) -> Result<bool> {
+    if matches!(workspace_id, "." | "..") {
+        return Ok(false);
+    }
     let endpoint = match agent {
         AgentKind::Codex => {
             let path = project.join(".codex/config.toml");
@@ -128,6 +133,7 @@ pub fn has_agentkib_gateway(
                 .get("mcp_servers")
                 .and_then(toml::Value::as_table)
                 .and_then(|servers| servers.get("agentkib"))
+                .filter(|server| codex_continuation_archive_tools_enabled(server))
                 .and_then(|server| server.get("url"))
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned)
@@ -139,7 +145,9 @@ pub fn has_agentkib_gateway(
             }
             let value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             value
-                .pointer("/mcpServers/agentkib/url")
+                .pointer("/mcpServers/agentkib")
+                .filter(|server| claude_continuation_uses_http_transport(server))
+                .and_then(|server| server.get("url"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         }
@@ -153,9 +161,61 @@ pub fn has_agentkib_gateway(
         AgentKind::ClaudeCode => "claude-code",
         _ => unreachable!(),
     };
-    let route = format!("/mcp/v1/workspaces/{workspace_id}/agents/{slug}");
+    let workspace_segment = encode_url_path_segment(workspace_id);
+    let route = format!("/mcp/v1/workspaces/{workspace_segment}/agents/{slug}");
     Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
         || endpoint == format!("http://localhost:{port}{route}"))
+}
+
+fn claude_continuation_uses_http_transport(server: &Value) -> bool {
+    let Some(server) = server.as_object() else {
+        return false;
+    };
+    let http_transport = match server.get("type") {
+        None => true,
+        Some(Value::String(value)) => value == "http",
+        _ => false,
+    };
+    http_transport && !server.contains_key("command") && !server.contains_key("args")
+}
+
+fn codex_continuation_archive_tools_enabled(server: &toml::Value) -> bool {
+    let Some(server) = server.as_table() else {
+        return false;
+    };
+    if server
+        .get("enabled")
+        .is_some_and(|value| value.as_bool() != Some(true))
+    {
+        return false;
+    }
+    let enabled_tools = match server.get("enabled_tools") {
+        Some(value) => match value.as_array() {
+            Some(values) if values.iter().all(|value| value.as_str().is_some()) => values,
+            _ => return false,
+        },
+        None => return !disabled_continuation_archive_tool(server),
+    };
+    CONTINUATION_ARCHIVE_TOOLS.iter().all(|tool| {
+        enabled_tools
+            .iter()
+            .any(|value| value.as_str() == Some(*tool))
+            && !disabled_continuation_archive_tool(server)
+    })
+}
+
+fn disabled_continuation_archive_tool(server: &toml::map::Map<String, toml::Value>) -> bool {
+    let Some(disabled_tools) = server.get("disabled_tools") else {
+        return false;
+    };
+    let Some(disabled_tools) = disabled_tools.as_array() else {
+        return true;
+    };
+    disabled_tools.iter().any(|value| {
+        value
+            .as_str()
+            .is_none_or(|tool| CONTINUATION_ARCHIVE_TOOLS.contains(&tool))
+    })
 }
 
 pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
@@ -994,6 +1054,120 @@ mod tests {
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47654).unwrap());
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "other", 47653).unwrap());
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Cursor, "ws", 47653).unwrap());
+    }
+
+    #[test]
+    fn gateway_detection_encodes_workspace_id_path_segments() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        std::fs::write(
+            dir.path().join(".codex/config.toml"),
+            "[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/codex\"\n",
+        )
+        .unwrap();
+
+        assert!(
+            has_agentkib_gateway(
+                dir.path(),
+                AgentKind::Codex,
+                "team/project?tag#one two",
+                47653,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn gateway_detection_requires_unfiltered_continuation_archive_tools() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let endpoint = "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/codex";
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled = false\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled = \"yes\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\ndisabled_tools = [\"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!("[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = \"all\"\n"),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+    }
+
+    #[test]
+    fn claude_gateway_detection_requires_an_http_only_transport() {
+        let dir = tempdir().unwrap();
+        let endpoint = "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/claude-code";
+        let config = dir.path().join(".mcp.json");
+
+        for server in [
+            format!(r#"{{"url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}"}}"#),
+        ] {
+            std::fs::write(
+                &config,
+                format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#),
+            )
+            .unwrap();
+            assert!(has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        }
+
+        for server in [
+            format!(r#"{{"type":null,"url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"stdio","url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}","command":"stale"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}","args":["stale"]}}"#),
+        ] {
+            std::fs::write(
+                &config,
+                format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#),
+            )
+            .unwrap();
+            assert!(!has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        }
     }
 
     #[test]

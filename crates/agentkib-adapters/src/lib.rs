@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use agentkib_core::{
     AdapterState, AgentKind, ChangeScope, ChangeSet, ConnectionDefinition, ConnectionTransport,
     FileChange, Manifest, McpConfigDocument, McpServerConfig, McpServerTransport, RiskLevel,
-    hash_content, inspect_skill_entrypoint, manifest_path, opencode_managed_config_path,
-    opencode_managed_instruction_is_registered,
+    decode_url_path_segment, encode_url_path_segment, hash_content, inspect_skill_entrypoint,
+    manifest_path, opencode_managed_config_path, opencode_managed_instruction_is_registered,
 };
 use agentkib_platform::path::{canonicalize, is_safe_scan_entry, starts_with as path_starts_with};
 use anyhow::{Context, Result};
@@ -25,6 +25,7 @@ const MAX_HANDOFF_GITIGNORE_BYTES: u64 = 1024 * 1024;
 const MAX_SKILL_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SKILL_FILES: usize = 512;
 const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const CONTINUATION_ARCHIVE_TOOLS: [&str; 2] = ["session_search", "session_read_chunk"];
 
 #[derive(Debug, Clone, Default)]
 pub struct HomeTargets {
@@ -670,6 +671,76 @@ pub fn plan_workspace_changes(
     })
 }
 
+/// Plans the smallest project-local change needed to expose the AgentKib gateway to a
+/// continuation target. This intentionally bypasses the full manifest planner so connecting a
+/// continuation cannot rewrite instructions or another agent's configuration.
+pub fn plan_continuation_gateway(
+    project: &Path,
+    target_agent: AgentKind,
+    workspace_id: &str,
+    port: u16,
+) -> Result<ChangeSet> {
+    anyhow::ensure!(
+        matches!(target_agent, AgentKind::Codex | AgentKind::ClaudeCode),
+        "Continuation MCP setup only supports Codex and Claude Code"
+    );
+    anyhow::ensure!(!workspace_id.trim().is_empty(), "Workspace id is required");
+    anyhow::ensure!(
+        !matches!(workspace_id, "." | ".."),
+        "Workspace id cannot be `.` or `..`"
+    );
+    anyhow::ensure!(port > 0, "AgentKib MCP Hub port is unavailable");
+
+    let root = agentkib_core::canonical_project(project)?;
+    let workspace_segment = encode_url_path_segment(workspace_id);
+    let connection = ConnectionDefinition {
+        name: "agentkib".into(),
+        transport: ConnectionTransport::Http {
+            url: format!(
+                "http://127.0.0.1:{port}/mcp/v1/workspaces/{workspace_segment}/agents/{{agent}}"
+            ),
+        },
+        env: BTreeMap::new(),
+        allow_tools: Vec::new(),
+        targets: vec![target_agent],
+    };
+    let target = match target_agent {
+        AgentKind::Codex => root.join(".codex/config.toml"),
+        AgentKind::ClaudeCode => root.join(".mcp.json"),
+        _ => unreachable!("unsupported continuation target was rejected above"),
+    };
+    let after = match target_agent {
+        AgentKind::Codex => merge_codex_continuation_config(&target, &connection)?,
+        AgentKind::ClaudeCode => merge_claude_continuation_mcp(&target, &connection)?,
+        _ => unreachable!("unsupported continuation target was rejected above"),
+    };
+    let target_existed = target.exists();
+    let before = fs::read_to_string(&target).unwrap_or_default();
+    let mut changes = Vec::new();
+    if before != after {
+        push_change_with_before(
+            &mut changes,
+            target,
+            target_existed.then_some(before),
+            after,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            match target_agent {
+                AgentKind::Codex => "toml",
+                AgentKind::ClaudeCode => "json",
+                _ => unreachable!("unsupported continuation target was rejected above"),
+            },
+        )?;
+    }
+    Ok(ChangeSet {
+        id: Uuid::new_v4().to_string(),
+        project_root: root,
+        created_at: Utc::now(),
+        changes,
+        requires_home_approval: false,
+    })
+}
+
 pub fn plan_changeset(
     project: &Path,
     manifest: &Manifest,
@@ -1131,6 +1202,117 @@ fn merge_codex_config(path: &Path, connections: &[ConnectionDefinition]) -> Resu
     merge_toml_mcp_config(path, connections, AgentKind::Codex, "Codex")
 }
 
+/// Adds the continuation gateway without changing other MCP servers that AgentKib already
+/// manages. Unlike workspace synchronization, continuation setup must be an incremental update.
+fn merge_codex_continuation_config(
+    path: &Path,
+    connection: &ConnectionDefinition,
+) -> Result<String> {
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let start_count = existing.matches(TOML_START).count();
+    let end_count = existing.matches(TOML_END).count();
+    match (start_count, end_count) {
+        (0, 0) => return merge_codex_config(path, std::slice::from_ref(connection)),
+        (1, 1) => {}
+        _ => anyhow::bail!("AgentKib-managed Codex MCP block is incomplete or ambiguous"),
+    }
+    let start = existing
+        .find(TOML_START)
+        .expect("managed Codex MCP block count was checked");
+    let content_start = start + TOML_START.len();
+    let end = existing[content_start..]
+        .find(TOML_END)
+        .map(|offset| content_start + offset)
+        .context("AgentKib-managed Codex MCP block is incomplete")?;
+    let config =
+        toml::from_str::<toml::Value>(&existing).context("Codex configuration is invalid")?;
+    let mut managed = toml::from_str::<toml::Table>(&existing[content_start..end])
+        .context("AgentKib-managed Codex MCP block is invalid")?;
+    let key = safe_key(&connection.name);
+    let servers = managed
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("AgentKib-managed Codex mcp_servers must be a table")?;
+    let configured_outside_managed_block = config
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|values| values.contains_key(&key))
+        && !servers.contains_key(&key);
+    anyhow::ensure!(
+        !configured_outside_managed_block,
+        "Codex configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
+        connection.name
+    );
+    let generated = codex_server_value(connection);
+    let server = servers
+        .entry(key)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("AgentKib-managed Codex server must be a table")?;
+    let generated = generated
+        .as_table()
+        .expect("generated Codex server is always a table");
+    for (field, value) in generated {
+        server.insert(field.clone(), value.clone());
+    }
+    if matches!(connection.transport, ConnectionTransport::Http { .. }) {
+        for field in ["command", "args", "env", "cwd"] {
+            server.remove(field);
+        }
+    }
+    server.insert("enabled".into(), toml::Value::Boolean(true));
+    ensure_codex_continuation_archive_tools(server)?;
+    let managed = toml::to_string(&managed)?;
+    let block = format!("{TOML_START}\n{managed}{TOML_END}");
+    let after_end = end + TOML_END.len();
+    Ok(format!(
+        "{}{}{}",
+        &existing[..start],
+        block,
+        &existing[after_end..]
+    ))
+}
+
+/// Windowed continuations require these read-only archive tools. Existing Codex tool filters are
+/// preserved where possible, while the reviewed setup makes the archive explicitly reachable.
+fn ensure_codex_continuation_archive_tools(
+    server: &mut toml::map::Map<String, toml::Value>,
+) -> Result<()> {
+    if let Some(enabled_tools) = server.get_mut("enabled_tools") {
+        let enabled_tools = enabled_tools
+            .as_array_mut()
+            .context("Codex enabled_tools must be an array")?;
+        anyhow::ensure!(
+            enabled_tools.iter().all(|value| value.as_str().is_some()),
+            "Codex enabled_tools must contain only strings"
+        );
+        for tool in CONTINUATION_ARCHIVE_TOOLS {
+            if !enabled_tools
+                .iter()
+                .any(|value| value.as_str() == Some(tool))
+            {
+                enabled_tools.push(toml::Value::String(tool.into()));
+            }
+        }
+    }
+    if let Some(disabled_tools) = server.get_mut("disabled_tools") {
+        let disabled_tools = disabled_tools
+            .as_array_mut()
+            .context("Codex disabled_tools must be an array")?;
+        anyhow::ensure!(
+            disabled_tools.iter().all(|value| value.as_str().is_some()),
+            "Codex disabled_tools must contain only strings"
+        );
+        disabled_tools.retain(|value| {
+            !value
+                .as_str()
+                .is_some_and(|tool| CONTINUATION_ARCHIVE_TOOLS.contains(&tool))
+        });
+    }
+    Ok(())
+}
+
 fn merge_grok_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
     merge_toml_mcp_config(path, connections, AgentKind::GrokBuild, "Grok Build")
 }
@@ -1193,6 +1375,39 @@ fn merge_toml_mcp_config(
 fn toml_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
+
+fn codex_server_value(connection: &ConnectionDefinition) -> toml::Value {
+    let mut server = toml::map::Map::new();
+    match &connection.transport {
+        ConnectionTransport::Stdio { command, args } => {
+            server.insert("command".into(), toml::Value::String(command.clone()));
+            server.insert(
+                "args".into(),
+                toml::Value::Array(args.iter().cloned().map(toml::Value::String).collect()),
+            );
+        }
+        ConnectionTransport::Http { url } => {
+            server.insert(
+                "url".into(),
+                toml::Value::String(agent_url(url, AgentKind::Codex)),
+            );
+        }
+    }
+    if !connection.allow_tools.is_empty() {
+        server.insert(
+            "enabled_tools".into(),
+            toml::Value::Array(
+                connection
+                    .allow_tools
+                    .iter()
+                    .cloned()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    toml::Value::Table(server)
+}
 fn safe_key(value: &str) -> String {
     value
         .chars()
@@ -1208,6 +1423,99 @@ fn safe_key(value: &str) -> String {
 
 fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
+}
+
+/// Adds or updates only AgentKib's continuation endpoint. A same-named user-managed server is
+/// deliberately rejected instead of being merged into an incompatible stdio/HTTP configuration.
+fn merge_claude_continuation_mcp(path: &Path, connection: &ConnectionDefinition) -> Result<String> {
+    let mut root = read_json_object(path)?;
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .context("mcpServers must be an object")?;
+    let key = connection.name.as_str();
+    if let Some(existing) = servers.get(key)
+        && !is_agentkib_claude_continuation(existing)
+    {
+        anyhow::bail!(
+            "Claude configuration already contains an unmanaged MCP with the same name: {key}"
+        );
+    }
+    let generated = connection_json(connection, AgentKind::ClaudeCode);
+    if let Some(existing) = servers.get_mut(key) {
+        let existing = existing
+            .as_object_mut()
+            .context("recognized AgentKib Claude MCP must be an object")?;
+        let generated = generated
+            .as_object()
+            .context("generated AgentKib Claude MCP must be an object")?;
+        for field in ["type", "url"] {
+            existing.insert(field.into(), generated[field].clone());
+        }
+        // A continuation endpoint is HTTP-only. Preserve user options that Claude can still use,
+        // while removing the stdio transport fields that would make the configuration ambiguous.
+        existing.remove("command");
+        existing.remove("args");
+    } else {
+        servers.insert(key.into(), generated);
+    }
+    Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
+}
+
+fn is_agentkib_claude_continuation(server: &JsonValue) -> bool {
+    let Some(server) = server.as_object() else {
+        return false;
+    };
+    let Some(url) = server.get("url").and_then(JsonValue::as_str) else {
+        return false;
+    };
+    let Some((authority, path)) = url
+        .strip_prefix("http://")
+        .and_then(|value| value.split_once('/'))
+    else {
+        return false;
+    };
+    let Some(port) = authority
+        .strip_prefix("127.0.0.1:")
+        .or_else(|| authority.strip_prefix("localhost:"))
+    else {
+        return false;
+    };
+    let Some(workspace_segment) = path
+        .strip_prefix("mcp/v1/workspaces/")
+        .and_then(|value| value.strip_suffix("/agents/claude-code"))
+    else {
+        return false;
+    };
+    let http_transport = match server.get("type") {
+        None => true,
+        Some(JsonValue::String(value)) => value == "http",
+        _ => false,
+    };
+    http_transport
+        && port.parse::<u16>().is_ok_and(|value| value > 0)
+        && decode_url_path_segment(workspace_segment).is_ok_and(|workspace_id| {
+            if workspace_id.trim().is_empty() {
+                return false;
+            }
+            let canonical_segment = encode_url_path_segment(&workspace_id);
+            canonical_segment == workspace_segment
+                || is_legacy_raw_unicode_workspace_segment(workspace_segment, &workspace_id)
+        })
+}
+
+/// AgentKib 0.7 and earlier wrote non-ASCII workspace IDs directly. Only recognize the old
+/// form when its ASCII characters are unreserved, so query and path delimiters cannot turn a
+/// user-managed endpoint into a continuation endpoint.
+fn is_legacy_raw_unicode_workspace_segment(segment: &str, workspace_id: &str) -> bool {
+    segment == workspace_id
+        && !segment.is_ascii()
+        && segment.chars().all(|character| {
+            !character.is_ascii()
+                || character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.' | '~')
+        })
 }
 
 fn merge_opencode_config(
@@ -1429,6 +1737,448 @@ fn merge_hermes(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn continuation_gateway_only_changes_selected_codex_config() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        fs::write(
+            dir.path().join(".codex/config.toml"),
+            "model = \"gpt-test\"\n\n[mcp_servers.other]\nurl = \"http://example.test\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "keep me\n").unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-1", 47653).unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let change = &plan.changes[0];
+        assert!(change.target.ends_with(".codex/config.toml"));
+        assert!(change.after.contains("model = \"gpt-test\""));
+        assert!(change.after.contains("[mcp_servers.other]"));
+        assert!(change.after.contains("/workspace-1/agents/codex"));
+        let after: toml::Value = toml::from_str(&change.after).unwrap();
+        assert!(
+            after["mcp_servers"]["agentkib"]
+                .get("enabled_tools")
+                .is_none()
+        );
+        assert!(!plan.requires_home_approval);
+    }
+
+    #[test]
+    fn continuation_gateway_encodes_workspace_ids_as_one_path_segment() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+
+        let plan = plan_continuation_gateway(
+            dir.path(),
+            AgentKind::Codex,
+            "team/project?tag#one two",
+            47653,
+        )
+        .unwrap();
+
+        assert!(plan.changes[0].after.contains(
+            "http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/codex"
+        ));
+
+        let claude = plan_continuation_gateway(
+            dir.path(),
+            AgentKind::ClaudeCode,
+            "team/project?tag#one two",
+            47653,
+        )
+        .unwrap();
+        assert!(claude.changes[0].after.contains(
+            "http://127.0.0.1:47653/mcp/v1/workspaces/team%2Fproject%3Ftag%23one%20two/agents/claude-code"
+        ));
+        fs::write(dir.path().join(".mcp.json"), &claude.changes[0].after).unwrap();
+        assert!(
+            plan_continuation_gateway(
+                dir.path(),
+                AgentKind::ClaudeCode,
+                "team/project?tag#one two",
+                47653,
+            )
+            .unwrap()
+            .changes
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_workspace_ids_that_normalize_in_urls() {
+        let dir = tempdir().unwrap();
+        for workspace_id in [".", ".."] {
+            assert!(
+                plan_continuation_gateway(dir.path(), AgentKind::Codex, workspace_id, 47653)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot be `.` or `..`")
+            );
+        }
+    }
+
+    #[test]
+    fn continuation_gateway_preserves_other_managed_codex_servers() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        fs::write(
+            &config,
+            "model = \"gpt-test\"\n\n[mcp_servers.unmanaged]\ncommand = \"keep\"\n\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\nargs = [\"check\"]\nfuture = 42\n\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\n# agentkib:managed:end\n",
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-3", 47653).unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let after: toml::Value = toml::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcp_servers"]["unmanaged"]["command"].as_str(),
+            Some("keep")
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["command"].as_str(),
+            Some("team")
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["args"].as_array(),
+            Some(&vec![toml::Value::String("check".into())])
+        );
+        assert_eq!(
+            after["mcp_servers"]["team_tools"]["future"].as_integer(),
+            Some(42)
+        );
+        assert_eq!(
+            after["mcp_servers"]["agentkib"]["url"].as_str(),
+            Some("http://127.0.0.1:47653/mcp/v1/workspaces/workspace-3/agents/codex")
+        );
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-3", 47653).unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_enables_required_archive_tools() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        fs::write(
+            &config,
+            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\nenabled = false\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\", \"other\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653).unwrap();
+
+        let after: toml::Value = toml::from_str(&plan.changes[0].after).unwrap();
+        let server = &after["mcp_servers"]["agentkib"];
+        assert_eq!(
+            server["url"].as_str(),
+            Some("http://127.0.0.1:47653/mcp/v1/workspaces/workspace-7/agents/codex")
+        );
+        assert_eq!(server["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            server["enabled_tools"].as_array(),
+            Some(&vec![
+                toml::Value::String("session_search".into()),
+                toml::Value::String("session_read_chunk".into()),
+            ])
+        );
+        assert_eq!(
+            server["disabled_tools"].as_array(),
+            Some(&vec![toml::Value::String("other".into())])
+        );
+        assert_eq!(server["startup_timeout_sec"].as_integer(), Some(30));
+        assert_eq!(server["future"].as_integer(), Some(42));
+        for field in ["command", "args", "env", "cwd"] {
+            assert!(server.get(field).is_none());
+        }
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653).unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_malformed_codex_tool_filters() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\nenabled_tools = [\"session_search\", 7]\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("enabled_tools must contain only strings")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_a_non_table_managed_codex_server() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers]\nagentkib = \"invalid\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-8", 47653)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("server must be a table"));
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_incomplete_managed_codex_block() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-4", 47653)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("block is incomplete"));
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_unmanaged_codex_name_collision_outside_the_block() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "[mcp_servers.agentkib]\ncommand = \"user-managed\"\n\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-5", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unmanaged MCP with the same name")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_ambiguous_managed_codex_markers() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:end\n# agentkib:managed:start\n[mcp_servers.team_tools]\ncommand = \"team\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-6", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("block is incomplete or ambiguous")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_preserves_unknown_claude_configuration() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"custom":true,"mcpServers":{"other":{"command":"other"}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-2", 47653)
+                .unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let after: serde_json::Value = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(after["custom"], true);
+        assert_eq!(after["mcpServers"]["other"]["command"], "other");
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-2/agents/claude-code"
+        );
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_unmanaged_claude_name_collision() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"command":"user-managed","args":["serve"]}}}"#;
+        fs::write(&config, before).unwrap();
+
+        let error =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-7", 47653)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unmanaged MCP with the same name")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_claude_urls_that_only_resemble_agentkib() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:8080@evil.example/mcp/v1/workspaces/ws/agents/claude-code"}}}"#;
+        fs::write(&config, before).unwrap();
+
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-7", 47653)
+                .is_err()
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_ambiguous_claude_endpoint_fields() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        for (index, server) in [
+            r#"{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/ws?next=/agents/claude-code"}"#,
+            r#"{"type":null,"url":"http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/claude-code"}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#);
+            fs::write(&config, &before).unwrap();
+
+            assert!(
+                plan_continuation_gateway(
+                    dir.path(),
+                    AgentKind::ClaudeCode,
+                    &format!("workspace-{index}"),
+                    47653,
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read_to_string(&config).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn continuation_gateway_updates_a_known_claude_endpoint_without_stdio_fields() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/old/agents/claude-code","command":"stale","args":["stale"],"headers":{"X-Workspace":"keep"},"future":42}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-8", 47653)
+                .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-8/agents/claude-code"
+        );
+        assert!(after["mcpServers"]["agentkib"].get("command").is_none());
+        assert!(after["mcpServers"]["agentkib"].get("args").is_none());
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["headers"]["X-Workspace"],
+            "keep"
+        );
+        assert_eq!(after["mcpServers"]["agentkib"]["future"], 42);
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-8", 47653)
+                .unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_updates_a_legacy_localhost_claude_endpoint() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"url":"http://localhost:47653/mcp/v1/workspaces/old/agents/claude-code"}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-9", 47653)
+                .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-9/agents/claude-code"
+        );
+    }
+
+    #[test]
+    fn continuation_gateway_migrates_a_legacy_unescaped_claude_workspace_id() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"url":"http://127.0.0.1:47653/mcp/v1/workspaces/项目续接/agents/claude-code"}}}"#,
+        )
+        .unwrap();
+
+        let plan = plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目续接", 47653)
+            .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/%E9%A1%B9%E7%9B%AE%E7%BB%AD%E6%8E%A5/agents/claude-code"
+        );
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目续接", 47653)
+                .unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_legacy_unicode_claude_urls_with_query_delimiters() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"url":"http://127.0.0.1:47653/mcp/v1/workspaces/项目?next/agents/claude-code"}}}"#;
+        fs::write(&config, before).unwrap();
+
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "项目", 47653).is_err()
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_other_agents() {
+        let dir = tempdir().unwrap();
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::Cursor, "workspace", 47653).is_err()
+        );
+    }
 
     #[test]
     fn preserves_unmanaged_markdown() {

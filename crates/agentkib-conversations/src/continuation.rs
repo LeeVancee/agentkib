@@ -80,6 +80,12 @@ pub enum SessionLossCode {
     SourceContentTruncated,
 }
 
+impl SessionLossCode {
+    pub fn requires_acknowledgement(self) -> bool {
+        self != Self::ReasoningExcluded
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLoss {
     pub code: SessionLossCode,
@@ -165,6 +171,7 @@ pub fn read_codex_document(
     home: Option<&Path>,
 ) -> Result<SessionDocument> {
     let snapshot = read_snapshot(path)?;
+    let injected_context_lines = super::injected_codex_user_context_lines(&snapshot.records);
     let mut turns = Vec::new();
     let mut fallback_messages = Vec::new();
     let mut fallback_attachments = Vec::new();
@@ -226,6 +233,9 @@ pub fn read_codex_document(
                     Some("assistant") => SessionRole::Assistant,
                     _ => continue,
                 };
+                if role == SessionRole::User && injected_context_lines.contains(&line) {
+                    continue;
+                }
                 if let Some(text) = super::response_message_text(value.pointer("/payload/content"))
                     .filter(|text| !text.trim().is_empty())
                 {
@@ -1525,6 +1535,13 @@ mod tests {
     use super::*;
     use crate::{ConversationSessionSummary, SessionAvailability};
 
+    #[test]
+    fn reasoning_exclusion_does_not_require_loss_acknowledgement() {
+        assert!(!SessionLossCode::ReasoningExcluded.requires_acknowledgement());
+        assert!(SessionLossCode::DamagedRecord.requires_acknowledgement());
+        assert!(SessionLossCode::ExternalAttachment.requires_acknowledgement());
+    }
+
     fn source(agent: AgentKind) -> ConversationSessionSummary {
         ConversationSessionSummary {
             id: "hashed-session".into(),
@@ -1601,6 +1618,62 @@ mod tests {
                 .map(|loss| loss.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn codex_document_excludes_injected_user_context_blocks() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[
+                {"type":"input_text","text":"<recommended_plugins>private plugins</recommended_plugins>"},
+                {"type":"input_text","text":"# AGENTS.md instructions\nprivate instructions"},
+                {"type":"input_text","text":"<environment_context>private environment</environment_context>"}
+            ]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[{"type":"input_text","text":"continue the real task"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"continue the real task"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<path>user-visible assistant output</path>"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(!encoded.contains("private plugins"));
+        assert!(!encoded.contains("private instructions"));
+        assert!(!encoded.contains("private environment"));
+        assert_eq!(document.turns.len(), 2);
+        assert!(encoded.contains("continue the real task"));
+        assert!(encoded.contains("<path>user-visible assistant output</path>"));
+    }
+
+    #[test]
+    fn codex_document_keeps_a_real_user_message_that_starts_like_context() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-2"},"content":[{"type":"input_text","text":"<path>the user intentionally used this prefix</path>"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will preserve it"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(encoded.contains("<path>the user intentionally used this prefix</path>"));
+        assert!(encoded.contains("I will preserve it"));
     }
 
     #[test]

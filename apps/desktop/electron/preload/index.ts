@@ -172,6 +172,8 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
     prepareHandoff: (request: unknown) =>
       ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
+    planMcpConnection: (workspaceId: string, targetAgent: string) =>
+      ipcRenderer.invoke("agentkib:session:plan-mcp-connection", workspaceId, targetAgent),
     sanitizeHandoff: (format: string, editedContent: string) =>
       ipcRenderer.invoke("agentkib:session:sanitize-handoff", format, editedContent),
     planHandoff: (

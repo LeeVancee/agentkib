@@ -92,7 +92,12 @@ function SettingsRoute() {
       await queryClient.invalidateQueries({ queryKey: homeKeys.remoteGateways() });
     });
 
-  const changeRuntime = (nextRuntime: RuntimeInfo) => setRuntime(nextRuntime);
+  const clearContinuationCache = () =>
+    queryClient.removeQueries({ queryKey: homeKeys.continuationsRoot() });
+  const changeRuntime = (nextRuntime: RuntimeInfo) => {
+    if (nextRuntime.session_index_enabled === false) clearContinuationCache();
+    setRuntime(nextRuntime);
+  };
   const restartOnboarding = () =>
     run(async () => {
       setRuntime(await api.updateOnboarding({ event: "restarted" }));
@@ -134,6 +139,7 @@ function SettingsRoute() {
           onRestore={restoreExcluded}
           onCloseBehaviorChanged={changeCloseBehavior}
           onLocaleChanged={changeRuntime}
+          onSessionIndexCleared={clearContinuationCache}
           onOnboardingRestarted={restartOnboarding}
           onRemoteGatewaysChanged={refreshRemoteGateways}
           onRefreshDiagnostics={refreshDiagnostics}

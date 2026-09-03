@@ -6,7 +6,7 @@ use std::future::Future;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -22,7 +22,7 @@ use agentkib_conversations::{
     stats, validate_history_budget, validate_native_jsonl, validate_native_roundtrip,
     validate_session_archive, windowed_import_notice,
 };
-use agentkib_core::{AgentKind, McpNetworkSettings};
+use agentkib_core::{AgentKind, McpNetworkSettings, encode_url_path_segment};
 use agentkib_discovery::discover as discover_local_workspaces;
 use agentkib_insights::{InsightsCollectionPolicy, InsightsQuery, collect_git, collect_usage};
 use agentkib_platform::applications::{
@@ -51,9 +51,9 @@ use agentkib_protocol::{
     LIST_WORKSPACE_OPENERS_METHOD, LIST_WORKSPACES_METHOD, MCP_HUB_STATUS_METHOD,
     MODEL_USAGE_BREAKDOWN_METHOD, OBSIDIAN_INTEGRATION_METHOD, OPEN_OBSIDIAN_METHOD,
     OPEN_OBSIDIAN_WORKSPACE_METHOD, OPEN_WORKSPACE_WITH_APP_METHOD, PLAN_CHANGES_METHOD,
-    PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD, PREPARE_MANIFEST_METHOD,
-    PREPARE_SESSION_HANDOFF_METHOD, PREPARE_SKILL_INSTALL_METHOD, PREPARE_SKILL_UPDATE_METHOD,
-    PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
+    PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD, PLAN_SESSION_MCP_CONNECTION_METHOD,
+    PREPARE_MANIFEST_METHOD, PREPARE_SESSION_HANDOFF_METHOD, PREPARE_SKILL_INSTALL_METHOD,
+    PREPARE_SKILL_UPDATE_METHOD, PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
     QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD,
     READ_SKILL_FILE_METHOD, REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD,
     REFRESH_MCP_REGISTRY_METHOD, REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD,
@@ -96,6 +96,8 @@ use serde_json::{Value, json};
 
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
 static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
+static SESSION_INDEX_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SESSION_INDEX_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 struct McpInstallResult {
@@ -565,6 +567,9 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
         SANITIZE_SESSION_HANDOFF_METHOD => command_response(request, sanitize_session_handoff),
         PLAN_SESSION_HANDOFF_METHOD => command_response(request, plan_session_handoff),
+        PLAN_SESSION_MCP_CONNECTION_METHOD => {
+            command_response(request, plan_session_mcp_connection)
+        }
         CONTINUE_SESSION_HANDOFF_METHOD => command_response(request, continue_session_handoff),
         LAUNCH_SESSION_HANDOFF_METHOD => command_response(request, launch_session_handoff),
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
@@ -896,6 +901,11 @@ fn workspace_session_status(
 fn refresh_workspace_sessions(
     request: RefreshWorkspaceSessionsRequest,
 ) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    if !session_index_enabled(&data_dir) {
+        return Ok(Vec::new());
+    }
+    let refresh_epoch = session_index_epoch();
     let store = Store::open_default()?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
@@ -912,15 +922,29 @@ fn refresh_workspace_sessions(
         let agent = source.agent();
         match source.list_sessions(&workspace) {
             Ok(sessions) => {
+                let _guard = session_index_write_lock()?;
+                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+                    return Ok(Vec::new());
+                }
                 store.sync_conversation_sessions(&request.workspace_id, agent, &sessions)?;
             }
-            Err(_) => store.record_conversation_index_failure(
-                &request.workspace_id,
-                agent,
-                "errors.conversations.sourceUnavailable",
-                "Conversation source could not be read",
-            )?,
+            Err(_) => {
+                let _guard = session_index_write_lock()?;
+                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+                    return Ok(Vec::new());
+                }
+                store.record_conversation_index_failure(
+                    &request.workspace_id,
+                    agent,
+                    "errors.conversations.sourceUnavailable",
+                    "Conversation source could not be read",
+                )?;
+            }
         }
+    }
+    let _guard = session_index_write_lock()?;
+    if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+        return Ok(Vec::new());
     }
     store.list_conversation_sessions(&request.workspace_id)
 }
@@ -1310,6 +1334,36 @@ struct PlanSessionHandoffRequest {
     archive_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanSessionMcpConnectionRequest {
+    workspace_id: String,
+    target_agent: AgentKind,
+}
+
+fn plan_session_mcp_connection(
+    request: PlanSessionMcpConnectionRequest,
+) -> anyhow::Result<agentkib_core::ChangeSet> {
+    anyhow::ensure!(
+        matches!(
+            request.target_agent,
+            AgentKind::Codex | AgentKind::ClaudeCode
+        ),
+        "Continuation MCP setup only supports Codex and Claude Code"
+    );
+    let store = Store::open_default()?;
+    let project = store.workspace_path(&request.workspace_id)?;
+    let continuation_workspace_id = continuation_workspace_id(&store, &request.workspace_id)?;
+    let hub_status = mcp_hub()?.status();
+    anyhow::ensure!(hub_status.running, "AgentKib MCP Hub is not running");
+    agentkib_adapters::plan_continuation_gateway(
+        &project,
+        request.target_agent,
+        &continuation_workspace_id,
+        hub_status.port,
+    )
+}
+
 fn plan_session_handoff(
     request: PlanSessionHandoffRequest,
 ) -> anyhow::Result<PlannedSessionHandoff> {
@@ -1328,7 +1382,11 @@ fn plan_session_handoff(
         "Conversation changed after the continuation preview was prepared"
     );
     anyhow::ensure!(
-        document.losses.is_empty() || request.accept_losses,
+        !document
+            .losses
+            .iter()
+            .any(|loss| loss.code.requires_acknowledgement())
+            || request.accept_losses,
         "Continuation losses must be acknowledged"
     );
     validate_history_budget(request.history_budget_tokens)?;
@@ -2664,12 +2722,13 @@ fn update_onboarding(request: UpdateOnboardingRequest) -> anyhow::Result<Value> 
 }
 
 fn ensure_agentkib_connection(manifest: &mut agentkib_core::Manifest, port: u16) {
+    let workspace_segment = encode_url_path_segment(&manifest.workspace.id);
     let definition = agentkib_core::ConnectionDefinition {
         name: "agentkib".into(),
         transport: agentkib_core::ConnectionTransport::Http {
             url: format!(
                 "http://127.0.0.1:{port}/mcp/v1/workspaces/{}/agents/{{agent}}",
-                manifest.workspace.id
+                workspace_segment
             ),
         },
         env: Default::default(),
@@ -2767,7 +2826,22 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         .collect();
     let mut protected_home_roots = Vec::new();
     approved_home_files.extend(native_mcp_home_files());
-    let approved_application_files = if let Some(workspace_id) = project_id.as_deref() {
+    let application_workspace_id = if request
+        .change_set
+        .changes
+        .iter()
+        .any(|change| matches!(change.scope, agentkib_core::ChangeScope::ApplicationData))
+    {
+        let store = Store::open_default()?;
+        Some(application_data_workspace_id(
+            &store,
+            &request.change_set.project_root,
+        )?)
+    } else {
+        None
+    };
+    let approved_application_files = if let Some(workspace_id) = application_workspace_id.as_deref()
+    {
         validate_application_data_changes(&request.change_set, workspace_id)?
     } else {
         Vec::new()
@@ -2803,9 +2877,39 @@ fn apply_changes(request: ApplyChangesRequest) -> anyhow::Result<agentkib_core::
         } else {
             "changeset.apply_failed"
         };
-        let _ = store.audit(project_id.as_deref(), action, &request.change_set.id);
+        let audit_workspace_id = application_workspace_id
+            .as_deref()
+            .or(project_id.as_deref());
+        let _ = store.audit(audit_workspace_id, action, &request.change_set.id);
     }
     result
+}
+
+fn application_data_workspace_id(store: &Store, project: &Path) -> anyhow::Result<String> {
+    let project = agentkib_core::canonical_project(project)?;
+    let manifest_path = agentkib_core::manifest_path(&project);
+    match agentkib_core::load_manifest(&project) {
+        Ok(manifest) => Ok(manifest.workspace.id),
+        Err(error) => match fs::symlink_metadata(&manifest_path) {
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {
+                let workspaces = store
+                    .list_workspaces()?
+                    .into_iter()
+                    .filter(|workspace| platform_path::equivalent(&workspace.path, &project))
+                    .collect::<Vec<_>>();
+                anyhow::ensure!(
+                    workspaces.len() == 1,
+                    "Application data changes require a registered workspace"
+                );
+                let workspace = workspaces
+                    .into_iter()
+                    .next()
+                    .expect("one workspace is present");
+                Ok(workspace.manifest_workspace_id.unwrap_or(workspace.id))
+            }
+            _ => Err(error),
+        },
+    }
 }
 
 fn validate_application_data_changes(
@@ -3003,10 +3107,14 @@ struct SessionIndexRequest {
 }
 
 fn clear_session_index(request: SessionIndexRequest) -> anyhow::Result<()> {
+    let _guard = session_index_write_lock()?;
+    invalidate_session_index_refreshes();
     Store::open_default()?.clear_conversation_index(request.workspace_id.as_deref())
 }
 
 fn set_session_index_enabled(request: BoolRequest) -> anyhow::Result<Value> {
+    let _guard = session_index_write_lock()?;
+    invalidate_session_index_refreshes();
     let data_dir = agentkib_store::default_data_dir()?;
     let mut root = load_preferences_root(&data_dir);
     root["session_index_enabled"] = Value::Bool(request.value);
@@ -3015,6 +3123,47 @@ fn set_session_index_enabled(request: BoolRequest) -> anyhow::Result<Value> {
         Store::open_default()?.clear_conversation_index(None)?;
     }
     runtime_info(EmptyRequest {})
+}
+
+fn session_index_enabled(data_dir: &Path) -> bool {
+    session_index_enabled_from_preferences(&load_preferences_root(data_dir))
+}
+
+fn session_index_enabled_from_preferences(preferences: &Value) -> bool {
+    preferences
+        .get("session_index_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+fn session_index_write_lock() -> anyhow::Result<std::sync::MutexGuard<'static, ()>> {
+    SESSION_INDEX_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Session index write lock is unavailable"))
+}
+
+fn session_index_epoch() -> u64 {
+    SESSION_INDEX_EPOCH.load(Ordering::SeqCst)
+}
+
+fn invalidate_session_index_refreshes() {
+    SESSION_INDEX_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+fn session_index_refresh_is_current(refresh_epoch: u64, data_dir: &Path) -> bool {
+    session_index_refresh_matches(
+        refresh_epoch,
+        session_index_epoch(),
+        session_index_enabled(data_dir),
+    )
+}
+
+fn session_index_refresh_matches(
+    refresh_epoch: u64,
+    current_epoch: u64,
+    index_enabled: bool,
+) -> bool {
+    index_enabled && refresh_epoch == current_epoch
 }
 
 fn insights_heatmap(
@@ -3466,10 +3615,11 @@ fn plan_mcp_migration(
     }
     let candidates = agentkib_mcp::native::scan_native_candidates(Some(&project))?;
     let manifest = agentkib_core::load_manifest(&project)?;
+    let workspace_segment = encode_url_path_segment(&manifest.workspace.id);
     let gateway_url = format!(
         "http://127.0.0.1:{}/mcp/v1/workspaces/{}/agents/{{agent}}",
         mcp_hub()?.settings().port,
-        manifest.workspace.id
+        workspace_segment
     );
     let effective = agentkib_mcp::config::load_effective_config(Some(&project))?;
     let mut servers = Vec::new();
@@ -4610,6 +4760,26 @@ mod tests {
     }
 
     #[test]
+    fn session_index_preference_defaults_to_enabled_and_honors_false() {
+        assert!(session_index_enabled_from_preferences(&json!({})));
+        assert!(session_index_enabled_from_preferences(&json!({
+            "session_index_enabled": "invalid"
+        })));
+        assert!(!session_index_enabled_from_preferences(&json!({
+            "session_index_enabled": false
+        })));
+    }
+
+    #[test]
+    fn stale_session_index_refreshes_cannot_write_after_an_invalidation() {
+        assert!(session_index_refresh_matches(7, 7, true));
+        assert!(!session_index_refresh_matches(7, 8, true));
+        assert!(!session_index_refresh_matches(7, 7, false));
+        assert!(!session_index_refresh_matches(7, 9, true));
+        assert!(session_index_refresh_matches(9, 9, true));
+    }
+
+    #[test]
     fn quota_proxy_environment_uses_windows_proxy_when_process_has_none() {
         let environment =
             quota_proxy_environment(&BTreeMap::new(), Some("http://127.0.0.1:33210".to_string()));
@@ -4854,6 +5024,47 @@ mod tests {
         use_continuation_workspace_id(&mut document, "manifest-workspace");
 
         assert_eq!(document.source.workspace_id, "manifest-workspace");
+    }
+
+    #[test]
+    fn application_data_uses_the_registered_workspace_when_manifest_is_missing() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+        let workspace = store.add_workspace(&project).unwrap();
+
+        assert_eq!(
+            application_data_workspace_id(&store, &project).unwrap(),
+            workspace.id
+        );
+    }
+
+    #[test]
+    fn application_data_rejects_an_invalid_manifest_instead_of_falling_back_to_store() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::create_dir_all(project.join(".agentkib")).unwrap();
+        fs::write(
+            project.join(".agentkib/manifest.yaml"),
+            "not: a valid manifest",
+        )
+        .unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+        store.add_workspace(&project).unwrap();
+
+        assert!(application_data_workspace_id(&store, &project).is_err());
+    }
+
+    #[test]
+    fn application_data_rejects_an_unregistered_manifestless_workspace() {
+        let directory = tempdir().unwrap();
+        let project = directory.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        let store = Store::open(&directory.path().join("agentkib.db")).unwrap();
+
+        assert!(application_data_workspace_id(&store, &project).is_err());
     }
 
     #[test]

@@ -19,4 +19,17 @@ describe("workspaceSearchForPage", () => {
 
     expect(workspaceSearchForPage(current, "git")).toBe(current);
   });
+
+  it("keeps continuation recovery state only within sessions and changes", () => {
+    const current: AppSearch = {
+      handoffSession: "session",
+      handoffTarget: "claude-code",
+      handoffBudget: 120_000,
+      handoffFormat: "markdown",
+      handoffResume: "recheck",
+    };
+
+    expect(workspaceSearchForPage(current, "changes")).toMatchObject(current);
+    expect(workspaceSearchForPage(current, "overview")).toEqual({ gitSubview: undefined });
+  });
 });

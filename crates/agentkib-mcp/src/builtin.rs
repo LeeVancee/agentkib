@@ -72,11 +72,23 @@ pub fn definitions() -> Vec<Tool> {
     ]
 }
 
-pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Result<CallToolResult> {
+pub fn call(
+    project: &Path,
+    workspace_id: &str,
+    agent: AgentKind,
+    name: &str,
+    args: &Value,
+) -> Result<CallToolResult> {
     let store = Store::open_default()?;
-    let manifest = load_manifest(project)?;
+    let manifest = match name {
+        "session_search" | "session_read_chunk" => None,
+        _ => Some(load_manifest(project)?),
+    };
     let payload = match name {
         "workspace_get_context" => {
+            let manifest = manifest
+                .as_ref()
+                .expect("non-session tools load the manifest");
             let cwd = args
                 .get("cwd")
                 .and_then(Value::as_str)
@@ -87,7 +99,7 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
                 .into_iter()
                 .map(|value| value.content)
                 .collect();
-            let mut context = resolve_context(project, &cwd, agent, Some(&manifest), memories)?;
+            let mut context = resolve_context(project, &cwd, agent, Some(manifest), memories)?;
             context.visible_connections =
                 crate::config::load_visible_servers(Some(project), agent)?
                     .into_iter()
@@ -110,8 +122,16 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
             let content = read_bounded_asset_text(&requested)?;
             json!({"path":requested,"content":content})
         }
-        "skill_list" => serde_json::to_value(manifest.skills)?,
+        "skill_list" => serde_json::to_value(
+            &manifest
+                .as_ref()
+                .expect("non-session tools load the manifest")
+                .skills,
+        )?,
         "memory_search" => {
+            let manifest = manifest
+                .as_ref()
+                .expect("non-session tools load the manifest");
             let query = args.get("query").and_then(Value::as_str).unwrap_or("");
             let limit = args
                 .get("limit")
@@ -121,8 +141,11 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
             serde_json::to_value(store.search_approved(&manifest.workspace.id, query, limit)?)?
         }
         "memory_propose" => {
+            let manifest = manifest
+                .as_ref()
+                .expect("non-session tools load the manifest");
             let record = store.propose_memory(&MemoryProposal {
-                project_id: manifest.workspace.id,
+                project_id: manifest.workspace.id.clone(),
                 memory_type: parse_memory_type(
                     args.get("type")
                         .and_then(Value::as_str)
@@ -158,7 +181,7 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
                 .clamp(1, 20) as usize;
             serde_json::to_value(agentkib_conversations::search_session_archive(
                 &agentkib_store::default_data_dir()?,
-                &manifest.workspace.id,
+                workspace_id,
                 archive_id,
                 query,
                 limit,
@@ -175,7 +198,7 @@ pub fn call(project: &Path, agent: AgentKind, name: &str, args: &Value) -> Resul
                 .context("Missing chunk ID")?;
             serde_json::to_value(agentkib_conversations::read_session_archive_chunk(
                 &agentkib_store::default_data_dir()?,
-                &manifest.workspace.id,
+                workspace_id,
                 archive_id,
                 chunk_id,
             )?)?
@@ -305,6 +328,24 @@ mod tests {
             read_bounded_asset_text(&oversized).unwrap_err().to_string(),
             "Asset exceeds the 256 KiB limit"
         );
+    }
+
+    #[test]
+    fn session_tools_do_not_require_a_workspace_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = call(
+            dir.path(),
+            "unmanaged-workspace",
+            AgentKind::Codex,
+            "session_search",
+            &json!({
+                "archive_id": "00000000-0000-0000-0000-000000000000",
+                "query": "",
+            }),
+        )
+        .unwrap_err();
+
+        assert!(!error.to_string().contains("manifest"));
     }
 
     #[cfg(unix)]

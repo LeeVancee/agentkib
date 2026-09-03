@@ -14,6 +14,7 @@ import { SessionHandoffDialog } from "./SessionHandoffDialog";
 vi.mock("@/core/api", () => ({
   api: {
     prepareSessionHandoff: vi.fn(),
+    planSessionMcpConnection: vi.fn(),
     planSessionHandoff: vi.fn(),
     sanitizeSessionHandoff: vi.fn(),
   },
@@ -69,7 +70,10 @@ const draft: SessionHandoffDraft = {
 
 describe("SessionHandoffDialog", () => {
   beforeAll(() => initializeI18n("en-US"));
-  beforeEach(() => vi.mocked(api.prepareSessionHandoff).mockReset());
+  beforeEach(() => {
+    vi.mocked(api.prepareSessionHandoff).mockReset();
+    vi.mocked(api.planSessionMcpConnection).mockReset();
+  });
   afterEach(cleanup);
 
   it("uses the safe default budget and blocks a windowed import without MCP", async () => {
@@ -81,6 +85,7 @@ describe("SessionHandoffDialog", () => {
         targetAgents={["claude-code"]}
         onClose={vi.fn()}
         onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
       />,
     );
 
@@ -90,10 +95,180 @@ describe("SessionHandoffDialog", () => {
         expect.objectContaining({ history_budget_tokens: 120_000 }),
       ),
     );
-    expect(await screen.findByText("≈1000k Token")).toBeTruthy();
+    expect(await screen.findByText(/Full history ≈1000k Token/)).toBeTruthy();
     expect(screen.getByText(/not connected to AgentKib MCP/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect Claude Code MCP" })).toBeTruthy();
     expect(
       (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  it("plans an exact MCP connection change and preserves the continuation request", async () => {
+    const onMcpConnectionPlanned = vi.fn();
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+    vi.mocked(api.planSessionMcpConnection).mockResolvedValue({
+      id: "change-set",
+      project_root: "/workspace",
+      created_at: "2026-09-02T00:00:00Z",
+      changes: [
+        {
+          target: "/workspace/.mcp.json",
+          scope: "project",
+          before: "{}",
+          after: '{"mcpServers":{}}',
+          risk: "medium",
+          validator: "json",
+        },
+      ],
+      requires_home_approval: false,
+    });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["claude-code"]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={onMcpConnectionPlanned}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Claude Code MCP" }));
+
+    await waitFor(() =>
+      expect(onMcpConnectionPlanned).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "change-set" }),
+        {
+          sessionId: "session",
+          targetAgent: "claude-code",
+          historyBudgetTokens: 120_000,
+          format: "markdown",
+        },
+      ),
+    );
+  });
+
+  it("offers MCP setup for Codex", async () => {
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={[]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+    expect(await screen.findByRole("button", { name: "Connect Codex MCP" })).toBeTruthy();
+  });
+
+  it.each([
+    ["cursor", "Cursor"],
+    ["open-claw", "OpenClaw"],
+    ["hermes", "Hermes"],
+    ["deepseek-harness", "DeepSeek Harness"],
+  ] as const)(
+    "explains that %s cannot read a private archive instead of offering MCP setup",
+    async (targetAgent, agentLabel) => {
+      vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });
+      render(
+        <SessionHandoffDialog
+          workspace={workspace}
+          session={session}
+          targetAgents={[targetAgent]}
+          onClose={vi.fn()}
+          onPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+      expect(
+        await screen.findByText(
+          new RegExp(`${agentLabel} cannot retrieve AgentKib private archives yet`, "i"),
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Connect .* MCP/ })).toBeNull();
+      expect(
+        (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect(api.planSessionMcpConnection).not.toHaveBeenCalled();
+    },
+  );
+
+  it("treats excluded reasoning as privacy information without requiring acknowledgement", async () => {
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+      status: "ready",
+      draft: {
+        ...draft,
+        mcp_available: true,
+        losses: [{ code: "reasoning-excluded", count: 12 }],
+      },
+    });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["claude-code"]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+    expect(await screen.findByText(/For privacy, 12 internal reasoning records/)).toBeTruthy();
+    expect(screen.queryByText(/I understand that the items above/)).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("does not present a short non-empty session as zero tokens", async () => {
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+      status: "ready",
+      draft: {
+        ...draft,
+        window_strategy: "full",
+        window_stats: {
+          ...draft.window_stats,
+          estimated_total_tokens: 240,
+          estimated_active_tokens: 240,
+          estimated_deferred_tokens: 0,
+          deferred_turn_count: 0,
+          deferred_block_count: 0,
+        },
+        archive_id: undefined,
+        mcp_available: false,
+      },
+    });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["cursor"]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+
+    expect(await screen.findByText(/Full history <1k Token/)).toBeTruthy();
+    expect(screen.queryByText(/Full history ≈0k Token/)).toBeNull();
+    expect(screen.queryByText(/cannot retrieve AgentKib private archives yet/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Connect .* MCP/ })).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });

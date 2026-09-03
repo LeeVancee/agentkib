@@ -5,6 +5,7 @@ import {
   FileText,
   FolderGit2,
   History,
+  MessageSquareText,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -25,13 +26,18 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { GettingStartedCard } from "./GettingStartedCard";
+import type { RecentContinuation } from "./home-continuations";
+import { displaySessionTitle } from "@/features/workspace/session-title";
+import { activityPresentation } from "@/features/activity/activity-presentation";
 
 export type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
-export interface RecentContinuation {
-  workspace: WorkspaceSummary;
-  sessionCount: number;
-  agents: AgentKind[];
-}
+export type ContinuationHomeState =
+  | "ready"
+  | "disabled"
+  | "loading"
+  | "metadata-only"
+  | "empty"
+  | "error";
 
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -57,7 +63,13 @@ export function GlobalHome({
   onShowWorkspaces,
   onShowAgents,
   recentContinuations = [],
+  continuationState = recentContinuations.length ? "ready" : "empty",
+  continuationSlow = false,
+  continuationError,
   onContinue,
+  onEnableContinuations,
+  onRetryContinuations,
+  onOpenContinuationWorkspace,
   onOpen,
   onOpenDoctor,
   onOpenAssets,
@@ -79,7 +91,13 @@ export function GlobalHome({
   onShowWorkspaces: () => void;
   onShowAgents: () => void;
   recentContinuations?: RecentContinuation[];
-  onContinue?: (workspace: WorkspaceSummary) => Promise<void>;
+  continuationState?: ContinuationHomeState;
+  continuationSlow?: boolean;
+  continuationError?: string;
+  onContinue?: (continuation: RecentContinuation) => Promise<void>;
+  onEnableContinuations?: () => Promise<void>;
+  onRetryContinuations?: () => Promise<void>;
+  onOpenContinuationWorkspace?: () => Promise<void>;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
   onOpenAssets: (section: AssetSection) => void;
@@ -181,33 +199,43 @@ export function GlobalHome({
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                {recentContinuations.length ? (
+                {continuationState === "ready" && recentContinuations.length ? (
                   recentContinuations.map((item) => (
                     <Button
-                      key={item.workspace.id}
+                      key={item.session.id}
                       variant="bare"
                       size="content"
                       className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-5 py-4 text-left last:border-b-0 hover:bg-muted/40"
-                      onClick={() => void (onContinue ?? onOpen)(item.workspace)}
+                      onClick={() => void (onContinue ? onContinue(item) : onOpen(item.workspace))}
                     >
                       <span className="min-w-0">
-                        <strong className="block truncate text-sm">{item.workspace.name}</strong>
+                        <strong className="block truncate text-sm">
+                          {displaySessionTitle(item.session.title)}
+                        </strong>
                         <span className="mt-1 block text-xs text-muted-foreground">
-                          {tr("home.continueWorkMeta", {
-                            count: item.sessionCount,
-                            agents: item.agents.map((agent) => agentLabels[agent]).join(" · "),
+                          {tr("home.continueSessionMeta", {
+                            agent: agentLabels[item.session.agent],
+                            workspace: item.workspace.name,
+                            time: item.session.updated_at
+                              ? formatRelativeTime(item.session.updated_at)
+                              : tr("conversations.unknownTime"),
                           })}
                         </span>
                       </span>
                       <span className="text-xs font-medium text-blue-600">
-                        {tr("home.continue")}
+                        {tr("home.openSession")}
                       </span>
                     </Button>
                   ))
                 ) : (
-                  <div className="px-5 py-6 text-sm text-muted-foreground">
-                    {tr("home.noContinuations")}
-                  </div>
+                  <ContinuationEmptyState
+                    state={continuationState}
+                    slow={continuationSlow}
+                    error={continuationError}
+                    onEnable={onEnableContinuations}
+                    onRetry={onRetryContinuations}
+                    onOpenWorkspace={onOpenContinuationWorkspace}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -356,6 +384,66 @@ export function GlobalHome({
   );
 }
 
+function ContinuationEmptyState({
+  state,
+  slow,
+  error,
+  onEnable,
+  onRetry,
+  onOpenWorkspace,
+}: {
+  state: ContinuationHomeState;
+  slow: boolean;
+  error?: string;
+  onEnable?: () => Promise<void>;
+  onRetry?: () => Promise<void>;
+  onOpenWorkspace?: () => Promise<void>;
+}) {
+  if (state === "loading") {
+    return (
+      <div className="flex items-start gap-3 px-5 py-5 text-sm text-muted-foreground">
+        <RefreshCw className="mt-0.5 shrink-0 animate-spin" size={16} />
+        <span>
+          <strong className="block text-foreground">{tr("home.continuationsScanning")}</strong>
+          {slow && <small className="mt-1 block">{tr("home.continuationsScanningSlow")}</small>}
+        </span>
+      </div>
+    );
+  }
+  let title = tr("home.noContinuations");
+  let detail = tr("home.noContinuationsDetail");
+  let actionLabel = tr("home.openWorkspaceSessions");
+  let actionHandler = onOpenWorkspace;
+  if (state === "disabled") {
+    title = tr("home.continuationsDisabled");
+    detail = tr("home.continuationsDisabledDetail");
+    actionLabel = tr("home.enableContinuations");
+    actionHandler = onEnable;
+  } else if (state === "metadata-only") {
+    title = tr("home.continuationsMetadataOnly");
+    detail = tr("home.continuationsMetadataOnlyDetail");
+  } else if (state === "error") {
+    title = tr("home.continuationsError");
+    detail = error || tr("errors.generic");
+    actionLabel = tr("runtime.retry");
+    actionHandler = onRetry;
+  }
+  return (
+    <div className="flex min-h-24 items-center gap-4 px-5 py-5">
+      <MessageSquareText size={18} className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <strong className="block text-sm text-foreground">{title}</strong>
+        <small className="mt-1 block text-xs text-muted-foreground">{detail}</small>
+      </span>
+      {actionHandler && (
+        <Button variant="outline" onClick={() => void actionHandler()}>
+          {actionLabel}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function WorkspaceRow({
   workspace,
   assetCount,
@@ -408,18 +496,17 @@ function WorkspaceRow({
 }
 
 function ActivityRow({ record }: { record: ActivityRecord }) {
+  const presentation = activityPresentation(record);
   return (
     <div className="grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-2 text-sm">
       <FileText size={16} className="text-muted-foreground" />
       <div className="min-w-0">
-        <strong className="block truncate text-sm font-medium">
-          {tr(`activity.action.${record.action}`, { defaultValue: record.action })}
-        </strong>
+        <strong className="block truncate text-sm font-medium">{presentation.title}</strong>
         <small
           className="mt-0.5 block truncate text-xs text-muted-foreground"
-          title={record.detail}
+          title={presentation.detail}
         >
-          {record.detail}
+          {presentation.detail}
         </small>
       </div>
       <time className="whitespace-nowrap text-xs text-muted-foreground">

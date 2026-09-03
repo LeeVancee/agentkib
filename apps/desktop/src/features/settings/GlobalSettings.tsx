@@ -81,6 +81,7 @@ import type {
   ThemePreference,
   WorkspaceSummary,
 } from "@/core/types";
+import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
@@ -129,6 +130,7 @@ export type GlobalSettingsProps = {
   onRestore: (path: string) => Promise<void>;
   onCloseBehaviorChanged: (behavior?: CloseBehavior) => Promise<void>;
   onLocaleChanged: (runtime: RuntimeInfo) => void;
+  onSessionIndexCleared: () => void;
   onOnboardingRestarted: () => Promise<void>;
   onRemoteGatewaysChanged: () => Promise<void>;
   onRefreshDiagnostics: () => Promise<void>;
@@ -150,6 +152,7 @@ export function GlobalSettings({
   onRestore,
   onCloseBehaviorChanged,
   onLocaleChanged,
+  onSessionIndexCleared,
   onOnboardingRestarted,
   onRemoteGatewaysChanged,
   onRefreshDiagnostics,
@@ -349,6 +352,7 @@ export function GlobalSettings({
             runtime={runtime}
             workspaces={workspaces}
             onChanged={onLocaleChanged}
+            onIndexCleared={onSessionIndexCleared}
           />
         </SettingsAnchor>
         <SettingsAnchor target="privacy-git">
@@ -437,14 +441,14 @@ function ActivityPage({ records }: { records: ActivityRecord[] }) {
   );
 }
 function ActivityRow({ record }: { record: ActivityRecord }) {
-  const key = `activity.action.${record.action}`;
+  const presentation = activityPresentation(record);
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 px-5 py-4">
       <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" />
       <div className="grid min-w-0 gap-1">
-        <strong>{tr(key, { defaultValue: record.action })}</strong>
-        <small className="truncate text-xs text-muted-foreground" title={record.detail}>
-          {record.detail}
+        <strong>{presentation.title}</strong>
+        <small className="truncate text-xs text-muted-foreground" title={presentation.detail}>
+          {presentation.detail}
         </small>
       </div>
       <time className="text-right text-xs text-muted-foreground">
@@ -577,10 +581,12 @@ function ConversationPrivacySettings({
   runtime,
   workspaces,
   onChanged,
+  onIndexCleared,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   onChanged: (runtime: RuntimeInfo) => void;
+  onIndexCleared: () => void;
 }) {
   const dialogs = useAppDialogs();
   const [indexedCount, setIndexedCount] = useState(0);
@@ -619,6 +625,7 @@ function ConversationPrivacySettings({
     setError("");
     try {
       await api.clearSessionIndex();
+      onIndexCleared();
       setIndexedCount(0);
     } catch (reason) {
       setError(localizeMessage(reason));

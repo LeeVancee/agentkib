@@ -479,11 +479,15 @@ impl ServerHandler for HubService {
                 )
                 .into());
             }
-            return Ok(
-                builtin::call(&project, scope.agent, request.name.as_ref(), &arguments)
-                    .unwrap_or_else(builtin::error_result)
-                    .into(),
-            );
+            return Ok(builtin::call(
+                &project,
+                &scope.workspace_id,
+                scope.agent,
+                request.name.as_ref(),
+                &arguments,
+            )
+            .unwrap_or_else(builtin::error_result)
+            .into());
         }
         let Some((server_id, tool_name)) = request.name.split_once("__") else {
             return Ok(builtin::error_result("Unknown MCP tool").into());

@@ -233,6 +233,8 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:settings:set-locale", preference),
     setThemePreference: (preference: string) =>
       ipcRenderer.invoke("agentkib:settings:set-theme", preference),
+    setAccentThemePreference: (preference: string) =>
+      ipcRenderer.invoke("agentkib:settings:set-accent-theme", preference),
     setAppIconPreference: (preference: string) =>
       ipcRenderer.invoke("agentkib:settings:set-app-icon", preference),
   }),

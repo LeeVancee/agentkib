@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n } from "@/core/i18n";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
 import { SettingsSidebar } from "./SettingsSidebar";
 
-describe("SettingsSidebar v8 navigation", () => {
+describe("SettingsSidebar v9 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
   afterEach(cleanup);
 
@@ -72,5 +72,40 @@ describe("SettingsSidebar v8 navigation", () => {
     expect(screen.getByText("No matching settings")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Clear settings search" }));
     expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
+  });
+
+  it("recomputes search matches when the locale changes", async () => {
+    const view = render(
+      <ShortcutHelpProvider openShortcutHelp={() => undefined}>
+        <SettingsSidebar
+          active="general"
+          onSelect={() => undefined}
+          onBack={() => undefined}
+          collapsed={false}
+        />
+      </ShortcutHelpProvider>,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings…" }), {
+      target: { value: "Privacy" },
+    });
+    expect(screen.getByRole("button", { name: "Local Data" })).toBeTruthy();
+
+    try {
+      await act(() => changeLocale("zh-CN"));
+      view.rerender(
+        <ShortcutHelpProvider openShortcutHelp={() => undefined}>
+          <SettingsSidebar
+            active="general"
+            onSelect={() => undefined}
+            onBack={() => undefined}
+            collapsed={false}
+          />
+        </ShortcutHelpProvider>,
+      );
+      expect(screen.getByText("没有匹配的设置")).toBeTruthy();
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
   });
 });

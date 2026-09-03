@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useEffect, useId, useMemo, useState, type ComponentType } from "react";
+import { useEffect, useId, useState, type ComponentType } from "react";
 import {
   ArrowLeft,
   Database,
@@ -233,19 +233,18 @@ export function SettingsSidebar(props: {
   };
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const results = useMemo(() => {
-    if (!normalizedQuery) return [];
-    return searchEntries.filter((entry) =>
-      [
-        tr(`settings.section.${entry.section}`),
-        tr(entry.label),
-        ...entry.keywords.map((key) => tr(key)),
-      ]
-        .join(" ")
-        .toLocaleLowerCase()
-        .includes(normalizedQuery),
-    );
-  }, [normalizedQuery]);
+  const results = normalizedQuery
+    ? searchEntries.filter((entry) =>
+        [
+          tr(`settings.section.${entry.section}`),
+          tr(entry.label),
+          ...entry.keywords.map((key) => tr(key)),
+        ]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(normalizedQuery),
+      )
+    : [];
 
   return (
     <>

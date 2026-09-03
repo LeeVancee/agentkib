@@ -358,7 +358,11 @@ export function GlobalSettings({
     insightsStatus?.providers.filter(
       (provider) => agentSupportsInsights(provider.agent) && !provider.available,
     ).length ?? 0;
-  const diagnosticsHealthy = !quotaStatus?.error_key && providerIssues === 0;
+  const diagnosticsHealthy =
+    quotaStatus !== undefined &&
+    insightsStatus !== undefined &&
+    !quotaStatus.error_key &&
+    providerIssues === 0;
   return (
     <SettingsPage variant="management">
       <SettingsPageHeader

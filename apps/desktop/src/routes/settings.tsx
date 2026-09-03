@@ -1,13 +1,12 @@
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
 import { localizeMessage, tr } from "../core/i18n";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
-import { focusSettingsTarget } from "@/features/settings/components/SettingsLayout";
+import { useSettingsTargetFocus } from "@/features/settings/useSettingsTargetFocus";
 import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
@@ -46,14 +45,9 @@ function SettingsRoute() {
   const { data: excluded = [] } = useHomeExcluded();
   const { data: activity = [] } = useHomeActivity();
   const setMessage = useWorkspaceStore((state) => state.setMessage);
+  const contentPending = !runtime && workspacesPending;
 
-  useEffect(() => {
-    if (!search.settingsTarget || (!runtime && workspacesPending)) return;
-    const frame = window.requestAnimationFrame(() => {
-      focusSettingsTarget(search.settingsTarget!);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [runtime, search.settingsTarget, section, workspacesPending]);
+  useSettingsTargetFocus(search.settingsTarget, section, contentPending);
 
   const run = async (operation: () => Promise<void>) => {
     setMessage("");
@@ -121,7 +115,7 @@ function SettingsRoute() {
 
   return (
     <>
-      {!runtime && workspacesPending ? (
+      {contentPending ? (
         <SettingsContentSkeleton variant={layoutVariant} />
       ) : (
         <GlobalSettings

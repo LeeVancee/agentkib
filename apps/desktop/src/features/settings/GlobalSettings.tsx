@@ -130,6 +130,7 @@ export type GlobalSettingsProps = {
   onRestore: (path: string) => Promise<void>;
   onCloseBehaviorChanged: (behavior?: CloseBehavior) => Promise<void>;
   onLocaleChanged: (runtime: RuntimeInfo) => void;
+  onSessionIndexCleared: () => void;
   onOnboardingRestarted: () => Promise<void>;
   onRemoteGatewaysChanged: () => Promise<void>;
   onRefreshDiagnostics: () => Promise<void>;
@@ -151,6 +152,7 @@ export function GlobalSettings({
   onRestore,
   onCloseBehaviorChanged,
   onLocaleChanged,
+  onSessionIndexCleared,
   onOnboardingRestarted,
   onRemoteGatewaysChanged,
   onRefreshDiagnostics,
@@ -350,6 +352,7 @@ export function GlobalSettings({
             runtime={runtime}
             workspaces={workspaces}
             onChanged={onLocaleChanged}
+            onIndexCleared={onSessionIndexCleared}
           />
         </SettingsAnchor>
         <SettingsAnchor target="privacy-git">
@@ -578,10 +581,12 @@ function ConversationPrivacySettings({
   runtime,
   workspaces,
   onChanged,
+  onIndexCleared,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   onChanged: (runtime: RuntimeInfo) => void;
+  onIndexCleared: () => void;
 }) {
   const dialogs = useAppDialogs();
   const [indexedCount, setIndexedCount] = useState(0);
@@ -620,6 +625,7 @@ function ConversationPrivacySettings({
     setError("");
     try {
       await api.clearSessionIndex();
+      onIndexCleared();
       setIndexedCount(0);
     } catch (reason) {
       setError(localizeMessage(reason));

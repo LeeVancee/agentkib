@@ -92,6 +92,15 @@ describe("GlobalHome", () => {
 
   it("offers to enable session reading when indexing is disabled", () => {
     const onEnableContinuations = vi.fn().mockResolvedValue(undefined);
+    const cachedSession = {
+      id: "cached-session",
+      workspace_id: workspace.id,
+      agent: "codex",
+      title: "Cached private session",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    } as ConversationSessionSummary;
     render(
       <GlobalHome
         workspaces={[workspace]}
@@ -104,6 +113,7 @@ describe("GlobalHome", () => {
         onShowInsights={vi.fn()}
         onShowWorkspaces={vi.fn()}
         onShowAgents={vi.fn()}
+        recentContinuations={[{ workspace, session: cachedSession }]}
         continuationState="disabled"
         onEnableContinuations={onEnableContinuations}
         onOpen={vi.fn().mockResolvedValue(undefined)}
@@ -117,6 +127,43 @@ describe("GlobalHome", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Enable session reading" }));
     expect(onEnableContinuations).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Cached private session")).toBeNull();
+  });
+
+  it("does not reveal cached sessions while session indexing is loading", () => {
+    const cachedSession = {
+      id: "cached-session",
+      workspace_id: workspace.id,
+      agent: "codex",
+      title: "Cached private session",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    } as ConversationSessionSummary;
+    render(
+      <GlobalHome
+        workspaces={[workspace]}
+        doctorSummaries={{}}
+        installations={[]}
+        memories={[]}
+        activity={[]}
+        uniqueAssetCount={0}
+        assetCounts={new Map()}
+        onShowInsights={vi.fn()}
+        onShowWorkspaces={vi.fn()}
+        onShowAgents={vi.fn()}
+        recentContinuations={[{ workspace, session: cachedSession }]}
+        continuationState="loading"
+        onOpen={vi.fn().mockResolvedValue(undefined)}
+        onOpenDoctor={vi.fn().mockResolvedValue(undefined)}
+        onOpenAssets={vi.fn()}
+        onAddRoot={vi.fn().mockResolvedValue(undefined)}
+        onRefresh={vi.fn()}
+        onRuntimeChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("Cached private session")).toBeNull();
   });
 
   it("explains loading, metadata-only, empty, and error continuation states", () => {

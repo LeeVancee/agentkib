@@ -199,7 +199,7 @@ export function GlobalHome({
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                {recentContinuations.length ? (
+                {continuationState === "ready" && recentContinuations.length ? (
                   recentContinuations.map((item) => (
                     <Button
                       key={item.session.id}

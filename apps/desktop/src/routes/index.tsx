@@ -65,14 +65,17 @@ function HomeRoute() {
     const results = await Promise.allSettled(
       continuationWorkspaces.map(async (workspace) => {
         const sessions = await api.refreshWorkspaceSessions(workspace.id, false);
-        queryClient.setQueryData<ConversationSessionSummary[]>(
-          homeKeys.continuations(workspace.id),
-          sessions,
-        );
-        return sessions;
+        return { workspaceId: workspace.id, sessions };
       }),
     );
     if (generation !== continuationRefreshGeneration.current) return;
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      queryClient.setQueryData<ConversationSessionSummary[]>(
+        homeKeys.continuations(result.value.workspaceId),
+        result.value.sessions,
+      );
+    }
     const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
@@ -103,11 +106,15 @@ function HomeRoute() {
     },
     [],
   );
-  const recentContinuations = selectRecentContinuations(
-    continuationWorkspaces,
-    continuationQueries.map((query) => query.data),
-  );
-  const cachedContinuationSessions = continuationQueries.flatMap((query) => query.data ?? []);
+  const recentContinuations = continuationEnabled
+    ? selectRecentContinuations(
+        continuationWorkspaces,
+        continuationQueries.map((query) => query.data),
+      )
+    : [];
+  const cachedContinuationSessions = continuationEnabled
+    ? continuationQueries.flatMap((query) => query.data ?? [])
+    : [];
   const continuationState: ContinuationHomeState = !continuationRuntimeReady
     ? "loading"
     : !continuationEnabled

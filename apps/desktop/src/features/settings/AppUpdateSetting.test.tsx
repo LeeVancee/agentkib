@@ -122,5 +122,9 @@ describe("AppUpdateSetting", () => {
 
     expect(api.installAppUpdate).toHaveBeenCalledOnce();
     expect(api.installAppUpdate).toHaveBeenCalledWith("0.3.0", expect.any(Function));
+    expect(
+      await screen.findByText("Update downloaded. Quitting AgentKib to install and restart…"),
+    ).toBeTruthy();
+    expect(screen.queryByText("You're up to date (0.2.0)")).toBeNull();
   });
 });

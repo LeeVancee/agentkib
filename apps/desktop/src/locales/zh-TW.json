@@ -238,6 +238,7 @@
   "settings.updateAvailable": "發現新版本 {{version}}，目前為 {{current}}",
   "settings.updateDownloading": "正在下載並驗證更新…",
   "settings.updateDownloadingProgress": "正在下載並驗證更新… {{progress}}%",
+  "settings.updateInstalling": "更新已下載，正在結束 AgentKib 以完成安裝並重新啟動…",
   "settings.updateDownloadInstall": "下載並安裝",
   "settings.updateOpenRelease": "前往 Release 下載",
   "settings.updateRetry": "重新檢查",
@@ -1273,5 +1274,6 @@
   "settings.tools.appState.up-to-date": "已是最新",
   "settings.tools.appState.available": "發現更新",
   "settings.tools.appState.downloading": "下載中",
+  "settings.tools.appState.installing": "正在重新啟動",
   "settings.tools.appState.failed": "檢查失敗"
 }

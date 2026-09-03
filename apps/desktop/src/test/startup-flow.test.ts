@@ -69,6 +69,26 @@ describe("desktop startup flow", () => {
     expect(mainSource).toContain("event.sender !== mainWindow.webContents");
   });
 
+  it("approves update quits from Electron's native updater before the Renderer closes", () => {
+    const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
+
+    expect(source).toContain("autoUpdater as nativeAutoUpdater");
+    expect(source).toContain('nativeAutoUpdater.on("before-quit-for-update"');
+    expect(source).not.toContain(
+      '(autoUpdater as import("node:events").EventEmitter).on("before-quit-for-update"',
+    );
+  });
+
+  it("uses the product display name instead of the workspace package name", () => {
+    const source = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
+
+    expect(source).toContain(
+      'const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib"',
+    );
+    expect(source).toContain("app.setName(appDisplayName)");
+    expect(source).toContain("AGENTKIB_APP_NAME: appDisplayName");
+  });
+
   it("flushes the handshake response before initializing the MCP Hub", () => {
     const source = readFileSync(
       path.join(repositoryRoot, "crates/agentkib-runtime/src/main.rs"),

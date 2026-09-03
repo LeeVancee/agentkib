@@ -1428,7 +1428,7 @@ fn render_jsonl(records: &[Value]) -> Result<String> {
     Ok(output)
 }
 
-fn finish_document(
+pub(crate) fn finish_document(
     source: &ConversationSessionSummary,
     mut turns: Vec<SessionTurn>,
     loss_counts: BTreeMap<SessionLossCode, usize>,

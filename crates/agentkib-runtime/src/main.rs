@@ -910,7 +910,7 @@ fn refresh_workspace_sessions(
     let store = Store::open_default()?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
-        if statuses.len() == 2
+        if statuses.len() == providers().len()
             && statuses.iter().all(|status| {
                 status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
             })

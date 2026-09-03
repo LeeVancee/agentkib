@@ -169,6 +169,12 @@ fn codex_continuation_archive_tools_enabled(server: &toml::Value) -> bool {
     let Some(server) = server.as_table() else {
         return false;
     };
+    if server
+        .get("enabled")
+        .is_some_and(|value| value.as_bool() != Some(true))
+    {
+        return false;
+    }
     let enabled_tools = match server.get("enabled_tools") {
         Some(value) => match value.as_array() {
             Some(values) if values.iter().all(|value| value.as_str().is_some()) => values,
@@ -1081,6 +1087,24 @@ mod tests {
         )
         .unwrap();
         assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled = false\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled = \"yes\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
 
         std::fs::write(
             &config,

@@ -1261,6 +1261,7 @@ fn merge_codex_continuation_config(
             server.remove(field);
         }
     }
+    server.insert("enabled".into(), toml::Value::Boolean(true));
     ensure_codex_continuation_archive_tools(server)?;
     let managed = toml::to_string(&managed)?;
     let block = format!("{TOML_START}\n{managed}{TOML_END}");
@@ -1853,7 +1854,7 @@ mod tests {
         let config = dir.path().join(".codex/config.toml");
         fs::write(
             &config,
-            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\", \"other\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
+            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\nenabled = false\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\", \"other\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
         )
         .unwrap();
 
@@ -1866,6 +1867,7 @@ mod tests {
             server["url"].as_str(),
             Some("http://127.0.0.1:47653/mcp/v1/workspaces/workspace-7/agents/codex")
         );
+        assert_eq!(server["enabled"].as_bool(), Some(true));
         assert_eq!(
             server["enabled_tools"].as_array(),
             Some(&vec![

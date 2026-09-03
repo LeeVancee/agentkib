@@ -96,6 +96,7 @@ use serde_json::{Value, json};
 
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
 static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
+static SESSION_INDEX_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Serialize)]
 struct McpInstallResult {
@@ -899,6 +900,10 @@ fn workspace_session_status(
 fn refresh_workspace_sessions(
     request: RefreshWorkspaceSessionsRequest,
 ) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
+    let data_dir = agentkib_store::default_data_dir()?;
+    if !session_index_enabled(&data_dir) {
+        return Ok(Vec::new());
+    }
     let store = Store::open_default()?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
@@ -915,15 +920,29 @@ fn refresh_workspace_sessions(
         let agent = source.agent();
         match source.list_sessions(&workspace) {
             Ok(sessions) => {
+                let _guard = session_index_write_lock()?;
+                if !session_index_enabled(&data_dir) {
+                    return Ok(Vec::new());
+                }
                 store.sync_conversation_sessions(&request.workspace_id, agent, &sessions)?;
             }
-            Err(_) => store.record_conversation_index_failure(
-                &request.workspace_id,
-                agent,
-                "errors.conversations.sourceUnavailable",
-                "Conversation source could not be read",
-            )?,
+            Err(_) => {
+                let _guard = session_index_write_lock()?;
+                if !session_index_enabled(&data_dir) {
+                    return Ok(Vec::new());
+                }
+                store.record_conversation_index_failure(
+                    &request.workspace_id,
+                    agent,
+                    "errors.conversations.sourceUnavailable",
+                    "Conversation source could not be read",
+                )?;
+            }
         }
+    }
+    let _guard = session_index_write_lock()?;
+    if !session_index_enabled(&data_dir) {
+        return Ok(Vec::new());
     }
     store.list_conversation_sessions(&request.workspace_id)
 }
@@ -3041,10 +3060,12 @@ struct SessionIndexRequest {
 }
 
 fn clear_session_index(request: SessionIndexRequest) -> anyhow::Result<()> {
+    let _guard = session_index_write_lock()?;
     Store::open_default()?.clear_conversation_index(request.workspace_id.as_deref())
 }
 
 fn set_session_index_enabled(request: BoolRequest) -> anyhow::Result<Value> {
+    let _guard = session_index_write_lock()?;
     let data_dir = agentkib_store::default_data_dir()?;
     let mut root = load_preferences_root(&data_dir);
     root["session_index_enabled"] = Value::Bool(request.value);
@@ -3053,6 +3074,23 @@ fn set_session_index_enabled(request: BoolRequest) -> anyhow::Result<Value> {
         Store::open_default()?.clear_conversation_index(None)?;
     }
     runtime_info(EmptyRequest {})
+}
+
+fn session_index_enabled(data_dir: &Path) -> bool {
+    session_index_enabled_from_preferences(&load_preferences_root(data_dir))
+}
+
+fn session_index_enabled_from_preferences(preferences: &Value) -> bool {
+    preferences
+        .get("session_index_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+fn session_index_write_lock() -> anyhow::Result<std::sync::MutexGuard<'static, ()>> {
+    SESSION_INDEX_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Session index write lock is unavailable"))
 }
 
 fn insights_heatmap(
@@ -4646,6 +4684,17 @@ mod tests {
             preferences["accent_theme_preference"],
             json!("minimal-neutral")
         );
+    }
+
+    #[test]
+    fn session_index_preference_defaults_to_enabled_and_honors_false() {
+        assert!(session_index_enabled_from_preferences(&json!({})));
+        assert!(session_index_enabled_from_preferences(&json!({
+            "session_index_enabled": "invalid"
+        })));
+        assert!(!session_index_enabled_from_preferences(&json!({
+            "session_index_enabled": false
+        })));
     }
 
     #[test]

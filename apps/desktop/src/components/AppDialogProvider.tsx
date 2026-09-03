@@ -69,8 +69,11 @@ export function AppDialogProvider({ children }: { children: Renderable }) {
   const queueRef = useRef(queue);
   const secretRequestRef = useRef(secretRequest);
   const idRef = useRef(0);
-  queueRef.current = queue;
-  secretRequestRef.current = secretRequest;
+
+  useEffect(() => {
+    queueRef.current = queue;
+    secretRequestRef.current = secretRequest;
+  }, [queue, secretRequest]);
 
   useEffect(
     () => () => {

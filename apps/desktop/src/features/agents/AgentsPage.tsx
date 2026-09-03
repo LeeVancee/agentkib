@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useState } from "octane";
+import { useEffect, useLinkedState, useState } from "octane";
 import {
   ChevronRight,
   CircleAlert,
@@ -80,8 +80,6 @@ export function AgentsPage({
   selectedAgent?: AgentKind;
   onSelectedAgentChange: (agent: AgentKind) => void;
 }) {
-  const [selected, setSelected] = useState<AgentKind>(selectedAgent ?? "codex");
-  const [section, setSection] = useState<AgentDetailSection>("overview");
   const [agentQuery, setAgentQuery] = useState("");
   const [agentSort, setAgentSort] = useState<"name" | "status">("status");
   const [assetQuery, setAssetQuery] = useState("");
@@ -129,21 +127,38 @@ export function AgentsPage({
       return rightInstalled - leftInstalled;
     });
 
-  useEffect(() => {
-    if (selectedAgent && selectedAgent !== selected) {
-      setSelected(selectedAgent);
-      setSection("overview");
-    }
-  }, [selected, selectedAgent]);
+  const [selected, setSelected] = useLinkedState<
+    { selectedAgent: AgentKind | null; visibleAgentKinds: AgentKind[] },
+    AgentKind
+  >(
+    { selectedAgent: selectedAgent ?? null, visibleAgentKinds },
+    (source, previous) => {
+      const preferred = source.selectedAgent ?? previous?.value ?? "codex";
+      return source.visibleAgentKinds.length === 0 || source.visibleAgentKinds.includes(preferred)
+        ? preferred
+        : source.visibleAgentKinds[0];
+    },
+    {
+      sourceEqual: (previous, next) =>
+        previous.selectedAgent === next.selectedAgent &&
+        previous.visibleAgentKinds.join("|") === next.visibleAgentKinds.join("|"),
+    },
+  );
+  const [section, setSection] = useLinkedState<AgentKind, AgentDetailSection>(
+    selected,
+    (next, previous) => (next !== previous?.source ? "overview" : (previous?.value ?? "overview")),
+  );
 
   useEffect(() => {
-    if (visibleAgentKinds.length > 0 && !visibleAgentKinds.includes(selected)) {
-      const next = visibleAgentKinds[0];
-      setSelected(next);
-      setSection("overview");
-      onSelectedAgentChange(next);
+    if (
+      selectedAgent &&
+      visibleAgentKinds.length > 0 &&
+      !visibleAgentKinds.includes(selectedAgent) &&
+      selected !== selectedAgent
+    ) {
+      onSelectedAgentChange(selected);
     }
-  }, [onSelectedAgentChange, selected, visibleAgentKinds]);
+  }, [onSelectedAgentChange, selected, selectedAgent, visibleAgentKinds]);
 
   return (
     <div className="grid gap-3 pb-8">

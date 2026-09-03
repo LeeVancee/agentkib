@@ -122,7 +122,9 @@ export function AppRuntimeBridge() {
   const hasAnyUnsavedDraft =
     hasUnsavedDraft || Object.keys(workspaceStore.workspaceDrafts).length > 0;
   const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
-  quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
+  useEffect(() => {
+    quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
+  }, [applyingChanges, hasAnyUnsavedDraft]);
   useEffect(() => {
     const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;

@@ -76,6 +76,8 @@ import { useInsightsRefreshJob, useInsightsView } from "./insights-query.tsx";
 type HeatmapMetric = "tokens" | "my_commits" | "all_commits" | "attributed_commits" | "sessions";
 export type InsightsSection = "overview" | "tokens" | "commits" | "milestones" | "sources";
 
+const initialInsightsDate = new Date();
+
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -100,7 +102,7 @@ export function InsightsPage({
   const [range, setRange] = useState<"52w" | "year">("year");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
   const query = useMemo<InsightsQuery>(() => {
-    const today = new Date();
+    const today = initialInsightsDate;
     const from =
       range === "year"
         ? new Date(today.getFullYear(), 0, 1)

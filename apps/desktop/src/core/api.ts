@@ -37,7 +37,7 @@ export const api = {
   manifest: async (project: string) => {
     const manifest = await desktopApi().workspace.prepareManifest(project);
     // Empty legacy connections are omitted from manifest serialization.
-    // Keep the React model total at the IPC boundary without writing the field back to disk.
+    // Keep the renderer model total at the IPC boundary without writing the field back to disk.
     return { ...manifest, connections: manifest.connections ?? [] };
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>

@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useId, useState } from "octane";
+import { useEffect, useId, useLinkedState, useState } from "octane";
 import {
   Bot,
   Boxes,
@@ -98,12 +98,14 @@ export function AppSidebar(props: {
   const [mobileOpen, setMobileOpen] = useState(false);
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
-  const [toolsOpen, setToolsOpen] = useState(
-    () =>
-      active === "catalog" ||
-      active === "quota" ||
-      active === "insights" ||
-      context?.kind === "global",
+  const toolsEnabled =
+    active === "catalog" ||
+    active === "quota" ||
+    active === "insights" ||
+    context?.kind === "global";
+  const [toolsOpen, setToolsOpen] = useLinkedState<boolean, boolean>(
+    toolsEnabled,
+    (nextToolsEnabled) => nextToolsEnabled,
   );
   const sidebarId = useId();
   const platform = currentAppPlatform();
@@ -111,15 +113,6 @@ export function AppSidebar(props: {
   const toolIds: GlobalPage[] = ["catalog", "quota", "insights"];
   const primaryEntries = entries.filter((entry) => primaryIds.includes(entry.id));
   const toolEntries = entries.filter((entry) => toolIds.includes(entry.id));
-
-  useEffect(() => {
-    setToolsOpen(
-      active === "catalog" ||
-        active === "quota" ||
-        active === "insights" ||
-        context?.kind === "global",
-    );
-  }, [active, context?.kind]);
 
   const handleSidebarMouseEnter = () => {
     if (!collapsed) return;

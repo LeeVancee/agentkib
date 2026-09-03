@@ -91,22 +91,36 @@ export function WorkspaceStoragePage({
   const [expanding, setExpanding] = useState(false);
   const [error, setError] = useState("");
   const [refreshPending, setRefreshPending] = useState(false);
+  const [now, setNow] = useState<number>();
   const active = refreshPending || job?.state === "queued" || job?.state === "running";
 
   useEffect(() => {
+    const update = () => setNow(Date.now());
+    const timeout = window.setTimeout(update, 0);
+    const interval = window.setInterval(update, 60_000);
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     let disposed = false;
-    void (async () => {
-      try {
-        const cached = await api.storageOverview();
-        if (!disposed) setOverview(cached);
-      } catch (reason) {
-        if (!disposed) setError(localizeMessage(reason));
-      } finally {
-        if (!disposed) setLoaded(true);
-      }
-    })();
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const cached = await api.storageOverview();
+          if (!disposed) setOverview(cached);
+        } catch (reason) {
+          if (!disposed) setError(localizeMessage(reason));
+        } finally {
+          if (!disposed) setLoaded(true);
+        }
+      })();
+    }, 0);
     return () => {
       disposed = true;
+      window.clearTimeout(timeout);
     };
   }, []);
 
@@ -162,8 +176,9 @@ export function WorkspaceStoragePage({
     ? metricBytes(current.node, metric)
     : chartData.reduce((sum, item) => sum + item.size, 0);
   const stale = Boolean(
+    now !== undefined &&
     overview?.last_scanned_at &&
-    Date.now() - new Date(overview.last_scanned_at).getTime() > 86_400_000,
+    now - new Date(overview.last_scanned_at).getTime() > 86_400_000,
   );
   const legacy = Boolean(
     overview?.workspaces.some((storage) => storage.snapshot_version < 2 || !storage.root),
@@ -490,10 +505,13 @@ function StorageTreemapChart({
   useEffect(() => {
     if (!chartElement) return;
     const updateWidth = () => setWidth(Math.floor(chartElement.clientWidth));
-    updateWidth();
+    const timeout = window.setTimeout(updateWidth, 0);
     const observer = new ResizeObserver(updateWidth);
     observer.observe(chartElement);
-    return () => observer.disconnect();
+    return () => {
+      window.clearTimeout(timeout);
+      observer.disconnect();
+    };
   }, [chartElement]);
 
   const root = useMemo(() => {

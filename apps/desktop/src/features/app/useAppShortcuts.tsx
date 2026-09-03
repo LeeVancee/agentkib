@@ -60,19 +60,33 @@ export function useAppShortcuts({
     onOpenHelp,
     helpOpen,
   });
-  actionsRef.current = {
-    onNavigate,
-    onOpenSettings,
-    onRefreshCurrent,
-    onAddWorkspace,
+  useEffect(() => {
+    actionsRef.current = {
+      onNavigate,
+      onOpenSettings,
+      onRefreshCurrent,
+      onAddWorkspace,
+      onAddScanRoot,
+      onToggleSidebar,
+      onGoBack,
+      onGoForward,
+      onOpenSearch,
+      onOpenHelp,
+      helpOpen,
+    };
+  }, [
+    helpOpen,
     onAddScanRoot,
-    onToggleSidebar,
+    onAddWorkspace,
     onGoBack,
     onGoForward,
-    onOpenSearch,
+    onNavigate,
     onOpenHelp,
-    helpOpen,
-  };
+    onOpenSearch,
+    onOpenSettings,
+    onRefreshCurrent,
+    onToggleSidebar,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

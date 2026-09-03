@@ -5,7 +5,11 @@ import path from "node:path";
 import { octaneRouteGenerator } from "./route-generator.ts";
 
 const config = {
-  plugins: [octaneRouteGenerator(), octane({ requireDirective: true }), tailwindcss()],
+  plugins: [
+    octaneRouteGenerator(),
+    octane({ requireDirective: true, strong: true }),
+    tailwindcss(),
+  ],
   resolve: {
     conditions: ["module", "browser", "default"],
     extensions: [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json", ".tsrx"],

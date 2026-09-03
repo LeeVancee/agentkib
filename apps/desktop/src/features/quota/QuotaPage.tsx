@@ -107,8 +107,11 @@ export function QuotaPage({
       snapshot?.freshness === "fresh"
     )
       return;
-    requestedInitialRefresh.current = true;
-    void refreshMutation.mutateAsync().catch((reason) => setManualError(localizeMessage(reason)));
+    const timeout = window.setTimeout(() => {
+      requestedInitialRefresh.current = true;
+      void refreshMutation.mutateAsync().catch((reason) => setManualError(localizeMessage(reason)));
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [
     autoRefreshEnabled,
     refreshJob,
@@ -121,9 +124,12 @@ export function QuotaPage({
   const refreshActive = refreshJob?.state === "queued" || refreshJob?.state === "running";
 
   useEffect(() => {
-    if (initialProvider || initialWindow)
-      setSelectedId(initialProvider ?? initialWindow?.provider_id ?? "");
-    if (popoverSupported && configurePopoverRequest > 0) setShowPreferences(true);
+    const timeout = window.setTimeout(() => {
+      if (initialProvider || initialWindow)
+        setSelectedId(initialProvider ?? initialWindow?.provider_id ?? "");
+      if (popoverSupported && configurePopoverRequest > 0) setShowPreferences(true);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [configurePopoverRequest, initialProvider, initialWindow, popoverSupported]);
 
   const providers = useMemo(() => {
@@ -146,8 +152,11 @@ export function QuotaPage({
   }, [snapshot, query, filter]);
 
   useEffect(() => {
-    if (!providers.length) return;
-    if (!providers.some((provider) => provider.id === selectedId)) setSelectedId(providers[0].id);
+    const timeout = window.setTimeout(() => {
+      if (!providers.length) return;
+      if (!providers.some((provider) => provider.id === selectedId)) setSelectedId(providers[0].id);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [providers, selectedId]);
 
   useEffect(() => {

@@ -131,10 +131,13 @@ export function AppShell({
   useLayoutEffect(() => {
     if (previousSidebarMode.current === sidebarMode) return;
     previousSidebarMode.current = sidebarMode;
-    setSidebarMotion(sidebarMode === "settings" ? "to-settings" : "to-primary");
-
-    const timeout = window.setTimeout(() => setSidebarMotion(null), 280);
-    return () => window.clearTimeout(timeout);
+    const motion = sidebarMode === "settings" ? "to-settings" : "to-primary";
+    const startTimeout = window.setTimeout(() => setSidebarMotion(motion), 0);
+    const clearTimeout = window.setTimeout(() => setSidebarMotion(null), 280);
+    return () => {
+      window.clearTimeout(startTimeout);
+      window.clearTimeout(clearTimeout);
+    };
   }, [sidebarMode]);
 
   useEffect(() => {
@@ -144,7 +147,10 @@ export function AppShell({
   }, [locationKey]);
 
   useEffect(() => {
-    if (!sidebarCollapsed && sidebarPeek) setSidebarPeek(false);
+    if (!sidebarCollapsed && sidebarPeek) {
+      const timeout = window.setTimeout(() => setSidebarPeek(false), 0);
+      return () => window.clearTimeout(timeout);
+    }
   }, [sidebarCollapsed, sidebarPeek, setSidebarPeek]);
 
   const revealSidebar = () => {

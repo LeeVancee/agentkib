@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useMemo, useRef, useState } from "octane";
+import { useEffect, useLinkedState, useMemo, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "@octanejs/lucide";
 import { api } from "@/core/api";
@@ -39,7 +39,6 @@ export function QuotaPopover() {
   const snapshot = snapshotQuery.data;
   const preferences = preferencesQuery.data ?? DEFAULT_QUOTA_PREFERENCES;
   const refreshJob = refreshJobQuery.data;
-  const [selectedId, setSelectedId] = useState("");
   const [manualError, setManualError] = useState("");
   const initialRefreshRequested = useRef(false);
   const runtime = useAppStore((state) => state.runtime);
@@ -125,10 +124,12 @@ export function QuotaPopover() {
     [preferences, snapshot],
   );
 
-  useEffect(() => {
-    if (!providers.length) return;
-    if (!providers.some((provider) => provider.id === selectedId)) setSelectedId(providers[0].id);
-  }, [providers, selectedId]);
+  const [selectedId, setSelectedId] = useLinkedState(providers, (nextProviders, previous) => {
+    const previousId = previous?.value ?? "";
+    return nextProviders.some((provider) => provider.id === previousId)
+      ? previousId
+      : (nextProviders[0]?.id ?? "");
+  });
 
   const selected = providers.find((provider) => provider.id === selectedId);
   const windows = selected ? visibleQuotaWindows(selected, preferences) : [];

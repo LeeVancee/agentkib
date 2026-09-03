@@ -108,33 +108,36 @@ export function WorkspaceSessionsPage({
 
   useEffect(() => {
     let disposed = false;
-    if (!enabled) {
+    const timeout = window.setTimeout(() => {
+      if (!enabled) {
+        setSessions([]);
+        setStatuses([]);
+        return;
+      }
       setSessions([]);
       setStatuses([]);
-      return;
-    }
-    setSessions([]);
-    setStatuses([]);
-    setSelectedId(undefined);
-    setRefreshing(true);
-    setError("");
-    const sequence = ++cacheSequence.current;
-    void (async () => {
-      try {
-        const nextSessions = await api.refreshWorkspaceSessions(workspace.id, true);
-        if (disposed || sequence !== cacheSequence.current) return;
-        const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setSessions(nextSessions);
-        setStatuses(nextStatuses);
-      } catch (reason) {
-        if (!disposed && sequence === cacheSequence.current) setError(localizeMessage(reason));
-      } finally {
-        if (!disposed && sequence === cacheSequence.current) setRefreshing(false);
-      }
-    })();
+      setSelectedId(undefined);
+      setRefreshing(true);
+      setError("");
+      const sequence = ++cacheSequence.current;
+      void (async () => {
+        try {
+          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, true);
+          if (disposed || sequence !== cacheSequence.current) return;
+          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setSessions(nextSessions);
+          setStatuses(nextStatuses);
+        } catch (reason) {
+          if (!disposed && sequence === cacheSequence.current) setError(localizeMessage(reason));
+        } finally {
+          if (!disposed && sequence === cacheSequence.current) setRefreshing(false);
+        }
+      })();
+    }, 0);
     return () => {
       disposed = true;
+      window.clearTimeout(timeout);
       cacheSequence.current += 1;
       readSequence.current += 1;
     };
@@ -165,37 +168,43 @@ export function WorkspaceSessionsPage({
 
   const selected = sessions.find((session) => session.id === selectedId);
   useEffect(() => {
-    if (selectedId && filtered.some((session) => session.id === selectedId)) return;
-    setSelectedId(filtered[0]?.id);
-    setShowDetail(false);
+    const timeout = window.setTimeout(() => {
+      if (selectedId && filtered.some((session) => session.id === selectedId)) return;
+      setSelectedId(filtered[0]?.id);
+      setShowDetail(false);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [filtered, selectedId]);
 
   useEffect(() => {
-    const sequence = ++readSequence.current;
-    setEvents([]);
-    setLoadingEarlier(false);
-    setNextCursor(undefined);
-    setWarnings([]);
-    setError("");
-    if (!selected || selected.availability !== "readable") {
-      setReading(false);
-      return;
-    }
-    setReading(true);
-    void api
-      .sessionEvents(selected.id)
-      .then((page) => {
-        if (sequence !== readSequence.current) return;
-        setEvents(page.events);
-        setNextCursor(page.next_cursor);
-        setWarnings(page.warnings);
-      })
-      .catch((reason) => {
-        if (sequence === readSequence.current) setError(localizeMessage(reason));
-      })
-      .finally(() => {
-        if (sequence === readSequence.current) setReading(false);
-      });
+    const timeout = window.setTimeout(() => {
+      const sequence = ++readSequence.current;
+      setEvents([]);
+      setLoadingEarlier(false);
+      setNextCursor(undefined);
+      setWarnings([]);
+      setError("");
+      if (!selected || selected.availability !== "readable") {
+        setReading(false);
+        return;
+      }
+      setReading(true);
+      void api
+        .sessionEvents(selected.id)
+        .then((page) => {
+          if (sequence !== readSequence.current) return;
+          setEvents(page.events);
+          setNextCursor(page.next_cursor);
+          setWarnings(page.warnings);
+        })
+        .catch((reason) => {
+          if (sequence === readSequence.current) setError(localizeMessage(reason));
+        })
+        .finally(() => {
+          if (sequence === readSequence.current) setReading(false);
+        });
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [selected?.id, selected?.availability]);
 
   const loadEarlier = async () => {

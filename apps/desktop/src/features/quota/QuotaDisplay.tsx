@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useEffect, useState } from "octane";
 import { Button } from "@/components/ui/button";
 import { Gauge } from "@octanejs/lucide";
 import { tr } from "@/core/i18n";
@@ -68,7 +69,7 @@ export function QuotaWindowRow({
         <span>{tr("quota.remaining", { value: Math.round(remaining) })}</span>
         <span>
           {item.window.reset_at
-            ? tr("quota.resets", { time: relativeReset(item.window.reset_at) })
+            ? tr("quota.resets", { time: <RelativeReset value={item.window.reset_at} /> })
             : tr("quota.noReset")}
         </span>
       </div>
@@ -111,8 +112,24 @@ function providerAgent(id: string, name: string): AgentKind | undefined {
   return undefined;
 }
 
-function relativeReset(value: string) {
-  const seconds = Math.max(0, Math.round((new Date(value).getTime() - Date.now()) / 1000));
+function RelativeReset({ value }: { value: string }) {
+  const [now, setNow] = useState<number>();
+
+  useEffect(() => {
+    const update = () => setNow(Date.now());
+    const timeout = window.setTimeout(update, 0);
+    const interval = window.setInterval(update, 60_000);
+    return () => {
+      window.clearTimeout(timeout);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  return now === undefined ? "…" : relativeReset(value, now);
+}
+
+function relativeReset(value: string, now: number) {
+  const seconds = Math.max(0, Math.round((new Date(value).getTime() - now) / 1000));
   if (seconds < 3600)
     return tr("quota.duration.minutes", { value: Math.max(1, Math.round(seconds / 60)) });
   if (seconds < 86400) return tr("quota.duration.hours", { value: Math.round(seconds / 3600) });

@@ -9,7 +9,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useCallback, useEffect, useRef, useState } from "octane";
+import { useCallback, useEffect, useLinkedState, useRef, useState } from "octane";
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { localizeMessage, tr } from "@/core/i18n";
@@ -22,7 +22,10 @@ export function WorkspaceOpenWith({
   workspace: WorkspaceSummary;
   onError: (message: string) => void;
 }) {
-  const [openers, setOpeners] = useState<WorkspaceOpener[]>([]);
+  const [openers, setOpeners] = useLinkedState<string, WorkspaceOpener[]>(
+    workspace.id,
+    (_workspaceId, previous) => (previous?.source === workspace.id ? (previous.value ?? []) : []),
+  );
   const [opening, setOpening] = useState(false);
   const requestSequence = useRef(0);
 
@@ -37,7 +40,6 @@ export function WorkspaceOpenWith({
   }, [onError, workspace.id]);
 
   useEffect(() => {
-    setOpeners([]);
     void load();
     return () => {
       requestSequence.current += 1;

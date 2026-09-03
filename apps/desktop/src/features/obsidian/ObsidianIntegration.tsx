@@ -44,7 +44,6 @@ export function ObsidianSettingsCard() {
 
   const load = async () => {
     try {
-      setError("");
       setIntegration(await api.obsidianIntegration());
     } catch (cause) {
       setError(localizeMessage(cause));
@@ -52,7 +51,8 @@ export function ObsidianSettingsCard() {
   };
 
   useEffect(() => {
-    void load();
+    const timeout = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timeout);
   }, []);
 
   const openApp = async () => {
@@ -155,7 +155,6 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
 
   const load = async () => {
     try {
-      setError("");
       const next = await api.obsidianIntegration();
       setIntegration(next);
       setVaultPath((current) => current || next.vaults[0]?.path || "");
@@ -165,7 +164,8 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
   };
 
   useEffect(() => {
-    void load();
+    const timeout = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timeout);
   }, [workspaceId]);
   const link = integration?.workspace_links.find((item) => item.workspace_id === workspaceId);
 

@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "octane";
+import { useEffect, useLayoutEffect, useLinkedState, useMemo, useRef, useState } from "octane";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -135,7 +135,10 @@ function stableColor(value: string) {
 
 export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: WorkspaceGitPageProps) {
   const [section, setSection] = useState<GitSection>("history");
-  const [internalSubview, setInternalSubview] = useState<GitSubview | undefined>(subview);
+  const [internalSubview, setInternalSubview] = useLinkedState<
+    GitSubview | undefined,
+    GitSubview | undefined
+  >(subview, (nextSubview) => nextSubview);
   const [summary, setSummary] = useState<GitWorkspaceSummary>();
   const [historyPages, setHistoryPages] = useState<HistoryPage[]>([]);
   const [historyPageIndex, setHistoryPageIndex] = useState(0);
@@ -177,10 +180,6 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     setInternalSubview(next);
     onSubviewChange?.(next);
   };
-
-  useEffect(() => {
-    setInternalSubview(subview);
-  }, [subview]);
 
   const historyQuery = (): GitHistoryQuery => ({
     limit: historyPageSize,
@@ -224,7 +223,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   };
 
   useEffect(() => {
-    void load();
+    const timeout = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timeout);
   }, [workspace.id, appliedFilters]);
 
   useEffect(() => {
@@ -281,25 +281,31 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   };
 
   useEffect(() => {
-    setSelectedFile(undefined);
-    if (!detailOid) {
-      setFiles([]);
-      setFilesError("");
-      setFilesLoading(false);
-      return;
-    }
-    void loadCommitFiles(detailOid);
+    const timeout = window.setTimeout(() => {
+      setSelectedFile(undefined);
+      if (!detailOid) {
+        setFiles([]);
+        setFilesError("");
+        setFilesLoading(false);
+        return;
+      }
+      void loadCommitFiles(detailOid);
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [workspace.id, detailOid]);
 
   useEffect(() => {
-    if (activeSubview?.kind === "commit") {
-      setSection("history");
-      setSelectedOid(activeSubview.oid);
-      setSelectedFile(undefined);
-    } else if (activeSubview?.kind === "worktree") {
-      setSection("worktree");
-      setSelectedWorktree({ path: activeSubview.path, kind: activeSubview.diffKind });
-    }
+    const timeout = window.setTimeout(() => {
+      if (activeSubview?.kind === "commit") {
+        setSection("history");
+        setSelectedOid(activeSubview.oid);
+        setSelectedFile(undefined);
+      } else if (activeSubview?.kind === "worktree") {
+        setSection("worktree");
+        setSelectedWorktree({ path: activeSubview.path, kind: activeSubview.diffKind });
+      }
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [
     workspace.id,
     activeSubview?.kind,
@@ -355,7 +361,8 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   };
 
   useEffect(() => {
-    void loadDiff(diffRequest);
+    const timeout = window.setTimeout(() => void loadDiff(diffRequest), 0);
+    return () => window.clearTimeout(timeout);
   }, [workspace.id, diffRequest]);
 
   const showPreviousPage = () => {

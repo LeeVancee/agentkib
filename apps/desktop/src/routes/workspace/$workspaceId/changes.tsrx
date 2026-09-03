@@ -11,7 +11,7 @@ import {
   type WorkspaceFlowPage,
 } from "@/features/workspace/workspace-flow";
 import { homeKeys } from "@/features/home/home-query.tsx";
-import { useCallback, useEffect, useRef, useState } from "octane";
+import { useCallback, useEffect, useLinkedState, useRef, useState } from "octane";
 import { localizeMessage, tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -111,7 +111,11 @@ export function Changes({
   const [planningHome, setPlanningHome] = useState(false);
   const [error, setError] = useState("");
   const [homeApproved, setHomeApproved] = useState(false);
-  const [appliedLaunchFailure, setAppliedLaunchFailure] = useState("");
+  const [appliedLaunchFailure, setAppliedLaunchFailure] = useLinkedState(
+    changeSet?.id,
+    (changeSetId, previous) =>
+      changeSetId !== previous?.source ? "" : (previous?.value ?? ""),
+  );
   const applying = useRef(false);
   const active = useRef(true);
   const change = changeSet?.changes[selected];
@@ -124,9 +128,6 @@ export function Changes({
       active.current = false;
     };
   }, []);
-  useEffect(() => {
-    if (changeSet) setAppliedLaunchFailure("");
-  }, [changeSet?.id]);
   const runLocked = async (operation: () => Promise<void>) => {
     if (applying.current) return;
     applying.current = true;

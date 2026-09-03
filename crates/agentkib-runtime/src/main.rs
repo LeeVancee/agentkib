@@ -65,11 +65,11 @@ use agentkib_protocol::{
     RuntimePeer, SANITIZE_SESSION_HANDOFF_METHOD, SAVE_MCP_LOCAL_VALUES_METHOD,
     SAVE_MCP_SERVER_METHOD, SAVE_REMOTE_GATEWAY_METHOD, SCAN_NATIVE_MCP_METHOD,
     SCAN_WORKSPACE_METHOD, SEARCH_CATALOG_ASSETS_METHOD, SEARCH_MCP_REGISTRY_METHOD,
-    SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD, SET_APP_ICON_PREFERENCE_METHOD,
-    SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD, SET_LOCALE_METHOD,
-    SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD, SET_QUOTA_PROMPT_SEEN_METHOD,
-    SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD, SHUTDOWN_METHOD,
-    START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
+    SEARCH_MEMORIES_METHOD, SESSION_EVENTS_METHOD, SET_ACCENT_THEME_PREFERENCE_METHOD,
+    SET_APP_ICON_PREFERENCE_METHOD, SET_CLOSE_BEHAVIOR_METHOD, SET_GIT_IDENTITY_ENABLED_METHOD,
+    SET_LOCALE_METHOD, SET_QUOTA_AUTO_REFRESH_METHOD, SET_QUOTA_PREFERENCES_METHOD,
+    SET_QUOTA_PROMPT_SEEN_METHOD, SET_SESSION_INDEX_ENABLED_METHOD, SET_THEME_PREFERENCE_METHOD,
+    SHUTDOWN_METHOD, START_MCP_OAUTH_METHOD, STOP_MCP_RUNTIME_METHOD, STORAGE_CHILDREN_METHOD,
     STORAGE_OVERVIEW_METHOD, UNINSTALL_MCP_METHOD, UNINSTALL_SKILL_METHOD,
     UNLINK_OBSIDIAN_WORKSPACE_METHOD, UPDATE_MCP_METHOD, UPDATE_MCP_NETWORK_METHOD,
     UPDATE_ONBOARDING_METHOD, WORKSPACE_DOCTOR_REPORT_METHOD, WORKSPACE_DOCTOR_SUMMARIES_METHOD,
@@ -604,6 +604,9 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         SET_CLOSE_BEHAVIOR_METHOD => command_response(request, set_close_behavior),
         SET_LOCALE_METHOD => command_response(request, set_locale),
         SET_THEME_PREFERENCE_METHOD => command_response(request, set_theme_preference),
+        SET_ACCENT_THEME_PREFERENCE_METHOD => {
+            command_response(request, set_accent_theme_preference)
+        }
         SET_APP_ICON_PREFERENCE_METHOD => command_response(request, set_app_icon_preference),
         PLAN_CHANGES_METHOD => command_response(request, plan_changes),
         APPLY_CHANGES_METHOD => command_response(request, apply_changes),
@@ -2474,6 +2477,17 @@ enum ThemePreference {
     Dark,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+// Serialized variants are persisted user preference IDs and must remain stable.
+enum AccentThemeId {
+    MinimalNeutral,
+    Vtron,
+    Claude,
+    Sakura,
+    OceanBreeze,
+}
+
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum AppIconPreference {
@@ -2506,11 +2520,21 @@ fn stored_value<T: serde::de::DeserializeOwned>(root: &Value, key: &str, default
         .unwrap_or(default)
 }
 
+fn optional_stored_value<T: serde::de::DeserializeOwned>(root: &Value, key: &str) -> Option<T> {
+    root.get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn save_preference<T: Serialize>(data_dir: &Path, key: &str, value: T) -> anyhow::Result<()> {
+    let mut root = load_preferences_root(data_dir);
+    root[key] = serde_json::to_value(value)?;
+    save_preferences_root(data_dir, &root)
+}
+
 fn update_preference<T: Serialize>(key: &str, value: T) -> anyhow::Result<Value> {
     let data_dir = agentkib_store::default_data_dir()?;
-    let mut root = load_preferences_root(&data_dir);
-    root[key] = serde_json::to_value(value)?;
-    save_preferences_root(&data_dir, &root)?;
+    save_preference(&data_dir, key, value)?;
     runtime_info(EmptyRequest {})
 }
 
@@ -2528,6 +2552,10 @@ fn set_locale(request: PreferenceRequest<String>) -> anyhow::Result<Value> {
 
 fn set_theme_preference(request: PreferenceRequest<ThemePreference>) -> anyhow::Result<Value> {
     update_preference("theme_preference", request.preference)
+}
+
+fn set_accent_theme_preference(request: PreferenceRequest<AccentThemeId>) -> anyhow::Result<Value> {
+    update_preference("accent_theme_preference", request.preference)
 }
 
 fn set_app_icon_preference(request: PreferenceRequest<AppIconPreference>) -> anyhow::Result<Value> {
@@ -2560,6 +2588,8 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
     };
     let theme_preference: ThemePreference =
         stored_value(&preferences, "theme_preference", ThemePreference::default());
+    let accent_theme_preference: Option<AccentThemeId> =
+        optional_stored_value(&preferences, "accent_theme_preference");
     let effective_theme = match theme_preference {
         ThemePreference::System => {
             std::env::var("AGENTKIB_SYSTEM_THEME").unwrap_or_else(|_| "light".to_owned())
@@ -2601,6 +2631,7 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
         "effective_locale": locale,
         "theme_preference": theme_preference,
         "effective_theme": effective_theme,
+        "accent_theme_preference": accent_theme_preference,
         "app_icon_preference": app_icon_preference,
         "tray_available": false,
         "session_index_enabled": preferences
@@ -4524,6 +4555,59 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn accent_theme_preference_uses_stable_serialized_ids() {
+        for (preference, expected) in [
+            (AccentThemeId::MinimalNeutral, "minimal-neutral"),
+            (AccentThemeId::Vtron, "vtron"),
+            (AccentThemeId::Claude, "claude"),
+            (AccentThemeId::Sakura, "sakura"),
+            (AccentThemeId::OceanBreeze, "ocean-breeze"),
+        ] {
+            assert_eq!(serde_json::to_value(preference).unwrap(), json!(expected));
+        }
+    }
+
+    #[test]
+    fn accent_theme_preference_is_unconfigured_when_missing_or_invalid() {
+        let missing = json!({});
+        let invalid = json!({ "accent_theme_preference": "retired-theme" });
+
+        assert_eq!(
+            optional_stored_value::<AccentThemeId>(&missing, "accent_theme_preference"),
+            None
+        );
+        assert_eq!(
+            optional_stored_value::<AccentThemeId>(&invalid, "accent_theme_preference"),
+            None
+        );
+    }
+
+    #[test]
+    fn saving_accent_theme_preserves_unrelated_preferences() {
+        let directory = tempdir().unwrap();
+        fs::write(
+            directory.path().join("preferences.json"),
+            r#"{"locale_preference":"zh-CN","theme_preference":"dark"}"#,
+        )
+        .unwrap();
+
+        save_preference(
+            directory.path(),
+            "accent_theme_preference",
+            AccentThemeId::MinimalNeutral,
+        )
+        .unwrap();
+
+        let preferences = load_preferences_root(directory.path());
+        assert_eq!(preferences["locale_preference"], json!("zh-CN"));
+        assert_eq!(preferences["theme_preference"], json!("dark"));
+        assert_eq!(
+            preferences["accent_theme_preference"],
+            json!("minimal-neutral")
+        );
+    }
 
     #[test]
     fn quota_proxy_environment_uses_windows_proxy_when_process_has_none() {

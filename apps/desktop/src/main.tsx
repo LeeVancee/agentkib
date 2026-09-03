@@ -11,6 +11,7 @@ import {
   accentThemePreference,
   applyAccentTheme,
   applyTheme,
+  cacheAccentTheme,
   cachedEffectiveTheme,
 } from "./core/theme";
 import { createAppRouter } from "./router";
@@ -40,7 +41,9 @@ function BenchmarkCommitMarker() {
 async function bootstrap() {
   const locale = cachedEffectiveLocale(navigator.language);
   applyTheme(cachedEffectiveTheme());
-  applyAccentTheme(accentThemePreference());
+  const accentTheme = accentThemePreference();
+  applyAccentTheme(accentTheme);
+  cacheAccentTheme(accentTheme);
   await initializeI18n(locale);
   const surface = new URLSearchParams(window.location.search).get("surface");
   const app =

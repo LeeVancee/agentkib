@@ -26,6 +26,7 @@ import {
   optionalCloseBehavior,
   optionalPositiveInteger,
   optionalString,
+  requireAccentThemePreference,
   requireAppIconPreference,
   requireBoolean,
   requireObject,
@@ -78,6 +79,13 @@ interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
   app_icon_preference?: "white" | "black";
   theme_preference?: "system" | "light" | "dark";
+  accent_theme_preference?:
+    | "minimal-neutral"
+    | "vtron"
+    | "claude"
+    | "sakura"
+    | "ocean-breeze"
+    | null;
   effective_theme?: "light" | "dark";
   effective_locale?: SupportedLocale;
   quota_auto_refresh_enabled?: boolean;
@@ -453,6 +461,13 @@ function registerShellIpc(): void {
     nativeTheme.themeSource = next;
     return requireRuntime()
       .request(RUNTIME_METHODS.setThemePreference, { preference: next })
+      .then(withElectronRuntimeCapabilities);
+  });
+  ipcMain.handle("agentkib:settings:set-accent-theme", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    const next = requireAccentThemePreference(preference);
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setAccentThemePreference, { preference: next })
       .then(withElectronRuntimeCapabilities);
   });
   ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {

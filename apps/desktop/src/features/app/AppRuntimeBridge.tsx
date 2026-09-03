@@ -5,7 +5,13 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale, localizeMessage, tr } from "@/core/i18n";
-import { applyTheme, cacheEffectiveTheme } from "@/core/theme";
+import {
+  accentThemePreference,
+  applyAccentTheme,
+  applyTheme,
+  cacheAccentTheme,
+  cacheEffectiveTheme,
+} from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -36,11 +42,22 @@ export function AppRuntimeBridge() {
     let initialSyncPending = true;
     const desktop = desktopApi();
     const synchronizeRuntime = async () => {
-      const nextRuntime = await api.runtime();
+      let nextRuntime = await api.runtime();
+      if (disposed) return;
+      if (nextRuntime.accent_theme_preference == null) {
+        try {
+          nextRuntime = await api.setAccentThemePreference(accentThemePreference());
+        } catch (error) {
+          if (!disposed) setMessage(localizeMessage(error));
+        }
+      }
       if (disposed) return;
       setRuntime(nextRuntime);
       applyTheme(nextRuntime.effective_theme);
       cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+      const accentTheme = nextRuntime.accent_theme_preference ?? accentThemePreference();
+      applyAccentTheme(accentTheme);
+      cacheAccentTheme(accentTheme);
       cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
       await changeLocale(nextRuntime.effective_locale);
     };
@@ -99,10 +116,17 @@ export function AppRuntimeBridge() {
     const refreshRuntime = () => {
       void api
         .runtime()
-        .then(async (nextRuntime) => {
+        .then(async (runtime) => {
+          const nextRuntime =
+            runtime.accent_theme_preference == null
+              ? await api.setAccentThemePreference(accentThemePreference())
+              : runtime;
           setRuntime(nextRuntime);
           applyTheme(nextRuntime.effective_theme);
           cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          const accentTheme = nextRuntime.accent_theme_preference ?? accentThemePreference();
+          applyAccentTheme(accentTheme);
+          cacheAccentTheme(accentTheme);
           cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
           await changeLocale(nextRuntime.effective_locale);
         })

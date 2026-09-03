@@ -168,6 +168,7 @@ export type CloseBehavior = "minimize-to-tray" | "quit";
 export type SupportedLocale = "zh-CN" | "zh-TW" | "ja-JP" | "en-US";
 export type LocalePreference = "system" | SupportedLocale;
 export type ThemePreference = "system" | "light" | "dark";
+export type AccentThemeId = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";
 export type EffectiveTheme = "light" | "dark";
 export type AppIconPreference = "white" | "black";
 export interface LocalizedMessage {
@@ -284,6 +285,7 @@ export interface RuntimeInfo {
   effective_locale: SupportedLocale;
   theme_preference: ThemePreference;
   effective_theme: EffectiveTheme;
+  accent_theme_preference: AccentThemeId | null;
   app_icon_preference: AppIconPreference;
   tray_available: boolean;
   session_index_enabled: boolean;

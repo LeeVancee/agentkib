@@ -1,6 +1,7 @@
 import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import type {
   AgentKind,
+  AccentThemeId,
   AppMenuCommandRequest,
   AppNavigationRequest,
   AppUpdateInfo,
@@ -239,6 +240,7 @@ export interface DesktopApi {
     setCloseBehavior(value?: CloseBehavior): Promise<void>;
     setLocale(preference: LocalePreference): Promise<RuntimeInfo>;
     setThemePreference(preference: "system" | "light" | "dark"): Promise<RuntimeInfo>;
+    setAccentThemePreference(preference: AccentThemeId): Promise<RuntimeInfo>;
     setAppIconPreference(preference: AppIconPreference): Promise<RuntimeInfo>;
   };
   home: {

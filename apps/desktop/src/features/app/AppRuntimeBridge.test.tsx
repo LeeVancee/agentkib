@@ -8,15 +8,17 @@ import { useAppStore } from "@/stores/app-store";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 import { AppRuntimeBridge } from "./AppRuntimeBridge";
 
-const { runtimeInfo, addWorkspace } = vi.hoisted(() => ({
+const { runtimeInfo, addWorkspace, setAccentThemePreference } = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
   addWorkspace: vi.fn(),
+  setAccentThemePreference: vi.fn(),
 }));
 
 vi.mock("@/core/api", () => ({
   api: {
     runtime: runtimeInfo,
     addWorkspace,
+    setAccentThemePreference,
     quitApp: vi.fn(),
   },
 }));
@@ -25,6 +27,7 @@ describe("AppRuntimeBridge", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    document.documentElement.removeAttribute("data-accent-theme");
     useAppStore.getState().reset();
     await initializeI18n("zh-CN");
   });
@@ -35,6 +38,7 @@ describe("AppRuntimeBridge", () => {
     runtimeInfo.mockResolvedValue({
       effective_theme: "light",
       effective_locale: "zh-CN",
+      accent_theme_preference: "vtron",
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -84,9 +88,62 @@ describe("AppRuntimeBridge", () => {
     runtimeInfo.mockResolvedValue({
       effective_theme: "light",
       effective_locale: "zh-CN",
+      accent_theme_preference: "vtron",
     });
     statusListener?.({ state: "ready", restartCount: 0 });
     await waitFor(() => expect(runtimeInfo).toHaveBeenCalledTimes(2));
     expect(useAppStore.getState().runtime).toMatchObject({ effective_locale: "zh-CN" });
+  });
+
+  it("migrates a legacy cached accent when Runtime has no preference", async () => {
+    window.localStorage.setItem("agentkib.accent-theme", "black");
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "zh-CN",
+      accent_theme_preference: null,
+    });
+    setAccentThemePreference.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "zh-CN",
+      accent_theme_preference: "minimal-neutral",
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(setAccentThemePreference).toHaveBeenCalledWith("minimal-neutral"));
+    expect(useAppStore.getState().runtime).toMatchObject({
+      accent_theme_preference: "minimal-neutral",
+    });
+    expect(document.documentElement.dataset.accentTheme).toBe("minimal-neutral");
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("minimal-neutral");
+  });
+
+  it("uses the Runtime accent as authoritative over the startup cache", async () => {
+    window.localStorage.setItem("agentkib.accent-theme", "sakura");
+    runtimeInfo.mockResolvedValue({
+      effective_theme: "light",
+      effective_locale: "zh-CN",
+      accent_theme_preference: "ocean-breeze",
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AppDialogProvider>
+          <AppRuntimeBridge />
+        </AppDialogProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(document.documentElement.dataset.accentTheme).toBe("ocean-breeze"));
+    expect(setAccentThemePreference).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("ocean-breeze");
   });
 });

@@ -2,6 +2,7 @@ import { desktopApi } from "./desktop";
 import type {
   AgentKind,
   AgentToolExecutionResult,
+  AccentThemeId,
   AppIconPreference,
   AppUpdateProgress,
   ChangeSet,
@@ -73,6 +74,8 @@ export const api = {
   setLocale: (preference: LocalePreference) => desktopApi().settings.setLocale(preference),
   setThemePreference: (preference: ThemePreference) =>
     desktopApi().settings.setThemePreference(preference),
+  setAccentThemePreference: (preference: AccentThemeId) =>
+    desktopApi().settings.setAccentThemePreference(preference),
   setAppIconPreference: (preference: AppIconPreference) =>
     desktopApi().settings.setAppIconPreference(preference),
   checkAppUpdate: () => desktopApi().updates.check(),

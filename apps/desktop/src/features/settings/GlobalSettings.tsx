@@ -54,11 +54,13 @@ import {
   tr,
 } from "@/core/i18n";
 import {
+  ACCENT_THEME_IDS,
   accentThemePreference,
   applyAccentTheme,
   applyTheme,
+  cacheAccentTheme,
   cacheEffectiveTheme,
-  type AccentTheme,
+  isAccentThemeId,
 } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
 import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
@@ -158,7 +160,7 @@ export function GlobalSettings({
         <SettingsPageHeader title={tr("settings.section.general")} />
         <SettingsSection title={tr("settings.interface")} target="general-interface">
           <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
-          <AccentThemeSetting effectiveTheme={runtime?.effective_theme} />
+          <AccentThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
           <LanguageSetting runtime={runtime} onChanged={onLocaleChanged} />
           <SettingsRow>
@@ -753,53 +755,69 @@ function ThemeSetting({
 }
 
 export function AccentThemeSetting({
-  effectiveTheme,
+  runtime,
+  onChanged,
 }: {
-  effectiveTheme?: RuntimeInfo["effective_theme"];
+  runtime?: RuntimeInfo;
+  onChanged: (runtime: RuntimeInfo) => void;
 }) {
-  const [selected, setSelected] = useState<AccentTheme>(() => accentThemePreference());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const selected = runtime?.accent_theme_preference ?? accentThemePreference();
+  const update = async (preference: (typeof ACCENT_THEME_IDS)[number]) => {
+    setBusy(true);
+    setError("");
+    try {
+      const nextRuntime = await api.setAccentThemePreference(preference);
+      const nextAccent = nextRuntime.accent_theme_preference ?? preference;
+      applyAccentTheme(nextAccent);
+      cacheAccentTheme(nextAccent);
+      onChanged(nextRuntime);
+    } catch (reason) {
+      setError(localizeMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <SettingsRow>
-      <SettingsCopy>
-        <strong>{tr("settings.accentTheme")}</strong>
-        <small className="sr-only">
-          {tr(
-            effectiveTheme === "dark"
-              ? "settings.accentTheme.darkHint"
-              : "settings.accentTheme.description",
-          )}
-        </small>
-      </SettingsCopy>
-      <Select
-        value={selected}
-        onValueChange={(value) => {
-          if (value === null) return;
-          const theme = String(value);
-          if (
-            theme !== "minimal-neutral" &&
-            theme !== "vtron" &&
-            theme !== "claude" &&
-            theme !== "sakura" &&
-            theme !== "ocean-breeze"
-          )
-            return;
-          applyAccentTheme(theme);
-          setSelected(theme);
-        }}
-      >
-        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
-          <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
-            <SelectItem key={theme} value={theme}>
-              {tr(`settings.accentTheme.${theme}`)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </SettingsRow>
+    <>
+      <SettingsRow>
+        <SettingsCopy>
+          <strong>{tr("settings.accentTheme")}</strong>
+          <small className="sr-only">
+            {tr(
+              runtime?.effective_theme === "dark"
+                ? "settings.accentTheme.darkHint"
+                : "settings.accentTheme.description",
+            )}
+          </small>
+        </SettingsCopy>
+        <Select
+          value={selected}
+          disabled={busy || !runtime}
+          onValueChange={(value) => {
+            if (isAccentThemeId(value)) void update(value);
+          }}
+        >
+          <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
+            <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {ACCENT_THEME_IDS.map((theme) => (
+              <SelectItem key={theme} value={theme}>
+                {tr(`settings.accentTheme.${theme}`)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+      {error && (
+        <SettingsNotice tone="error" role="alert">
+          {error}
+        </SettingsNotice>
+      )}
+    </>
   );
 }
 

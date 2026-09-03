@@ -1,6 +1,21 @@
-import type { EffectiveTheme, ThemePreference } from "./types";
+import type { AccentThemeId, EffectiveTheme, ThemePreference } from "./types";
 
-export type AccentTheme = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";
+// These values are persisted user preference IDs. Keep them stable and migrate retired IDs.
+export const ACCENT_THEME_IDS = [
+  "minimal-neutral",
+  "vtron",
+  "claude",
+  "sakura",
+  "ocean-breeze",
+] as const satisfies readonly AccentThemeId[];
+
+const LEGACY_ACCENT_THEMES: Record<string, AccentThemeId> = {
+  black: "minimal-neutral",
+  sky: "vtron",
+  claude: "claude",
+  violet: "sakura",
+  emerald: "ocean-breeze",
+};
 
 const ACCENT_THEME_STORAGE_KEY = "agentkib.accent-theme";
 const EFFECTIVE_THEME_STORAGE_KEY = "agentkib.effective-theme";
@@ -37,20 +52,28 @@ export function cacheEffectiveTheme(theme: EffectiveTheme, preference?: ThemePre
   }
 }
 
-export function accentThemePreference(): AccentTheme {
-  const value = window.localStorage.getItem(ACCENT_THEME_STORAGE_KEY);
-  return value === "minimal-neutral" ||
-    value === "vtron" ||
-    value === "claude" ||
-    value === "sakura" ||
-    value === "ocean-breeze"
-    ? value
-    : "vtron";
+export function isAccentThemeId(value: unknown): value is AccentThemeId {
+  return typeof value === "string" && ACCENT_THEME_IDS.some((theme) => theme === value);
 }
 
-export function applyAccentTheme(theme: AccentTheme) {
-  document.documentElement.dataset.accentTheme = theme;
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(ACCENT_THEME_STORAGE_KEY, theme);
+export function accentThemePreference(): AccentThemeId {
+  try {
+    const value = window.localStorage.getItem(ACCENT_THEME_STORAGE_KEY);
+    if (isAccentThemeId(value)) return value;
+    return value ? (LEGACY_ACCENT_THEMES[value] ?? "vtron") : "vtron";
+  } catch {
+    return "vtron";
   }
+}
+
+export function cacheAccentTheme(theme: AccentThemeId) {
+  try {
+    window.localStorage.setItem(ACCENT_THEME_STORAGE_KEY, theme);
+  } catch {
+    // Startup appearance caching is best-effort.
+  }
+}
+
+export function applyAccentTheme(theme: AccentThemeId) {
+  document.documentElement.dataset.accentTheme = theme;
 }

@@ -10,6 +10,7 @@ import { desktopApi } from "../core/desktop";
 import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
 import {
   continuationIndexingEnabled,
+  continuationRefreshFailed,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "../features/home/home-continuations";
@@ -75,7 +76,7 @@ function HomeRoute() {
     const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
-    if (failures.length === results.length && failures[0]) {
+    if (continuationRefreshFailed(results) && failures[0]) {
       setContinuationsError(localizeMessage(failures[0].reason));
     }
     setContinuationsRefreshing(false);

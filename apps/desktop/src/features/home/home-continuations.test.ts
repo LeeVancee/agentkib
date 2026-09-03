@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   continuationIndexingEnabled,
+  continuationRefreshFailed,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "./home-continuations";
@@ -22,6 +23,16 @@ describe("selectRecentContinuations", () => {
     expect(continuationIndexingEnabled()).toBe(false);
     expect(continuationIndexingEnabled({ session_index_enabled: false })).toBe(false);
     expect(continuationIndexingEnabled({ session_index_enabled: true })).toBe(true);
+  });
+
+  it("retains a refresh error when only part of the workspace refresh succeeds", () => {
+    expect(
+      continuationRefreshFailed([
+        { status: "fulfilled", value: [] },
+        { status: "rejected", reason: new Error("unavailable") },
+      ]),
+    ).toBe(true);
+    expect(continuationRefreshFailed([{ status: "fulfilled", value: [] }])).toBe(false);
   });
 
   it("limits background discovery to the five most recent workspaces", () => {

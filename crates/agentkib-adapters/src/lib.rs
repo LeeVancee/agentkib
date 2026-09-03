@@ -705,7 +705,7 @@ pub fn plan_continuation_gateway(
     };
     let after = match target_agent {
         AgentKind::Codex => merge_codex_continuation_config(&target, &connection)?,
-        AgentKind::ClaudeCode => merge_claude_mcp(&target, std::slice::from_ref(&connection))?,
+        AgentKind::ClaudeCode => merge_claude_continuation_mcp(&target, &connection)?,
         _ => unreachable!("unsupported continuation target was rejected above"),
     };
     let target_existed = target.exists();
@@ -1362,6 +1362,68 @@ fn merge_claude_mcp(path: &Path, connections: &[ConnectionDefinition]) -> Result
     merge_mcp_json(path, connections, AgentKind::ClaudeCode)
 }
 
+/// Adds or updates only AgentKib's continuation endpoint. A same-named user-managed server is
+/// deliberately rejected instead of being merged into an incompatible stdio/HTTP configuration.
+fn merge_claude_continuation_mcp(path: &Path, connection: &ConnectionDefinition) -> Result<String> {
+    let mut root = read_json_object(path)?;
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .context("mcpServers must be an object")?;
+    let key = connection.name.as_str();
+    if let Some(existing) = servers.get(key)
+        && !is_agentkib_claude_continuation(existing)
+    {
+        anyhow::bail!(
+            "Claude configuration already contains an unmanaged MCP with the same name: {key}"
+        );
+    }
+    servers.insert(
+        key.into(),
+        connection_json(connection, AgentKind::ClaudeCode),
+    );
+    Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
+}
+
+fn is_agentkib_claude_continuation(server: &JsonValue) -> bool {
+    let Some(server) = server.as_object() else {
+        return false;
+    };
+    let Some(url) = server.get("url").and_then(JsonValue::as_str) else {
+        return false;
+    };
+    let Some((authority, path)) = url
+        .strip_prefix("http://")
+        .and_then(|value| value.split_once('/'))
+    else {
+        return false;
+    };
+    let Some(port) = authority
+        .strip_prefix("127.0.0.1:")
+        .or_else(|| authority.strip_prefix("localhost:"))
+    else {
+        return false;
+    };
+    let Some(workspace_id) = path
+        .strip_prefix("mcp/v1/workspaces/")
+        .and_then(|value| value.strip_suffix("/agents/claude-code"))
+    else {
+        return false;
+    };
+    let http_transport = match server.get("type") {
+        None => true,
+        Some(JsonValue::String(value)) => value == "http",
+        _ => false,
+    };
+    http_transport
+        && port.parse::<u16>().is_ok_and(|value| value > 0)
+        && !workspace_id.is_empty()
+        && workspace_id
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
+}
+
 fn merge_opencode_config(
     path: &Path,
     connections: &[ConnectionDefinition],
@@ -1721,6 +1783,116 @@ mod tests {
         assert_eq!(
             after["mcpServers"]["agentkib"]["url"],
             "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-2/agents/claude-code"
+        );
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_an_unmanaged_claude_name_collision() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"command":"user-managed","args":["serve"]}}}"#;
+        fs::write(&config, before).unwrap();
+
+        let error =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-7", 47653)
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unmanaged MCP with the same name")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_claude_urls_that_only_resemble_agentkib() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        let before = r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:8080@evil.example/mcp/v1/workspaces/ws/agents/claude-code"}}}"#;
+        fs::write(&config, before).unwrap();
+
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-7", 47653)
+                .is_err()
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_ambiguous_claude_endpoint_fields() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        for (index, server) in [
+            r#"{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/ws?next=/agents/claude-code"}"#,
+            r#"{"type":null,"url":"http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/claude-code"}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let before = format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#);
+            fs::write(&config, &before).unwrap();
+
+            assert!(
+                plan_continuation_gateway(
+                    dir.path(),
+                    AgentKind::ClaudeCode,
+                    &format!("workspace-{index}"),
+                    47653,
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read_to_string(&config).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn continuation_gateway_updates_a_known_claude_endpoint_without_stdio_fields() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/old/agents/claude-code","command":"stale","args":["stale"]}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-8", 47653)
+                .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-8/agents/claude-code"
+        );
+        assert!(after["mcpServers"]["agentkib"].get("command").is_none());
+        assert!(after["mcpServers"]["agentkib"].get("args").is_none());
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-8", 47653)
+                .unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_updates_a_legacy_localhost_claude_endpoint() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join(".mcp.json");
+        fs::write(
+            &config,
+            r#"{"mcpServers":{"agentkib":{"url":"http://localhost:47653/mcp/v1/workspaces/old/agents/claude-code"}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-9", 47653)
+                .unwrap();
+
+        let after: JsonValue = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-9/agents/claude-code"
         );
     }
 

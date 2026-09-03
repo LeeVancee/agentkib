@@ -9,6 +9,10 @@ export function continuationIndexingEnabled(runtime?: Pick<RuntimeInfo, "session
   return runtime?.session_index_enabled === true;
 }
 
+export function continuationRefreshFailed(results: PromiseSettledResult<unknown>[]) {
+  return results.some((result) => result.status === "rejected");
+}
+
 export function recentContinuationWorkspaces(workspaces: WorkspaceSummary[], limit = 5) {
   return [...workspaces]
     .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))

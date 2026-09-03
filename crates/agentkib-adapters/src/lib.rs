@@ -25,6 +25,7 @@ const MAX_HANDOFF_GITIGNORE_BYTES: u64 = 1024 * 1024;
 const MAX_SKILL_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SKILL_FILES: usize = 512;
 const MAX_SKILL_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const CONTINUATION_ARCHIVE_TOOLS: [&str; 2] = ["session_search", "session_read_chunk"];
 
 #[derive(Debug, Clone, Default)]
 pub struct HomeTargets {
@@ -1260,6 +1261,7 @@ fn merge_codex_continuation_config(
             server.remove(field);
         }
     }
+    ensure_codex_continuation_archive_tools(server)?;
     let managed = toml::to_string(&managed)?;
     let block = format!("{TOML_START}\n{managed}{TOML_END}");
     let after_end = end + TOML_END.len();
@@ -1269,6 +1271,45 @@ fn merge_codex_continuation_config(
         block,
         &existing[after_end..]
     ))
+}
+
+/// Windowed continuations require these read-only archive tools. Existing Codex tool filters are
+/// preserved where possible, while the reviewed setup makes the archive explicitly reachable.
+fn ensure_codex_continuation_archive_tools(
+    server: &mut toml::map::Map<String, toml::Value>,
+) -> Result<()> {
+    if let Some(enabled_tools) = server.get_mut("enabled_tools") {
+        let enabled_tools = enabled_tools
+            .as_array_mut()
+            .context("Codex enabled_tools must be an array")?;
+        anyhow::ensure!(
+            enabled_tools.iter().all(|value| value.as_str().is_some()),
+            "Codex enabled_tools must contain only strings"
+        );
+        for tool in CONTINUATION_ARCHIVE_TOOLS {
+            if !enabled_tools
+                .iter()
+                .any(|value| value.as_str() == Some(tool))
+            {
+                enabled_tools.push(toml::Value::String(tool.into()));
+            }
+        }
+    }
+    if let Some(disabled_tools) = server.get_mut("disabled_tools") {
+        let disabled_tools = disabled_tools
+            .as_array_mut()
+            .context("Codex disabled_tools must be an array")?;
+        anyhow::ensure!(
+            disabled_tools.iter().all(|value| value.as_str().is_some()),
+            "Codex disabled_tools must contain only strings"
+        );
+        disabled_tools.retain(|value| {
+            !value
+                .as_str()
+                .is_some_and(|tool| CONTINUATION_ARCHIVE_TOOLS.contains(&tool))
+        });
+    }
+    Ok(())
 }
 
 fn merge_grok_config(path: &Path, connections: &[ConnectionDefinition]) -> Result<String> {
@@ -1699,6 +1740,12 @@ mod tests {
         assert!(change.after.contains("model = \"gpt-test\""));
         assert!(change.after.contains("[mcp_servers.other]"));
         assert!(change.after.contains("/workspace-1/agents/codex"));
+        let after: toml::Value = toml::from_str(&change.after).unwrap();
+        assert!(
+            after["mcp_servers"]["agentkib"]
+                .get("enabled_tools")
+                .is_none()
+        );
         assert!(!plan.requires_home_approval);
     }
 
@@ -1800,13 +1847,13 @@ mod tests {
     }
 
     #[test]
-    fn continuation_gateway_preserves_managed_codex_server_options() {
+    fn continuation_gateway_enables_required_archive_tools() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".codex")).unwrap();
         let config = dir.path().join(".codex/config.toml");
         fs::write(
             &config,
-            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
+            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\", \"other\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
         )
         .unwrap();
 
@@ -1821,11 +1868,14 @@ mod tests {
         );
         assert_eq!(
             server["enabled_tools"].as_array(),
-            Some(&vec![toml::Value::String("session_search".into())])
+            Some(&vec![
+                toml::Value::String("session_search".into()),
+                toml::Value::String("session_read_chunk".into()),
+            ])
         );
         assert_eq!(
             server["disabled_tools"].as_array(),
-            Some(&vec![toml::Value::String("session_read_chunk".into())])
+            Some(&vec![toml::Value::String("other".into())])
         );
         assert_eq!(server["startup_timeout_sec"].as_integer(), Some(30));
         assert_eq!(server["future"].as_integer(), Some(42));
@@ -1837,6 +1887,25 @@ mod tests {
         let repeated =
             plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653).unwrap();
         assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_malformed_codex_tool_filters() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\nenabled_tools = [\"session_search\", 7]\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("enabled_tools must contain only strings")
+        );
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
     }
 
     #[test]

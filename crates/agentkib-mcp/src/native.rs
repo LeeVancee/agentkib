@@ -13,6 +13,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+const CONTINUATION_ARCHIVE_TOOLS: [&str; 2] = ["session_search", "session_read_chunk"];
+
 pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
     let grok_home = grok_home();
     scan_native_candidates_with_grok_home(project, grok_home.as_deref())
@@ -131,6 +133,7 @@ pub fn has_agentkib_gateway(
                 .get("mcp_servers")
                 .and_then(toml::Value::as_table)
                 .and_then(|servers| servers.get("agentkib"))
+                .filter(|server| codex_continuation_archive_tools_enabled(server))
                 .and_then(|server| server.get("url"))
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned)
@@ -160,6 +163,39 @@ pub fn has_agentkib_gateway(
     let route = format!("/mcp/v1/workspaces/{workspace_segment}/agents/{slug}");
     Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
         || endpoint == format!("http://localhost:{port}{route}"))
+}
+
+fn codex_continuation_archive_tools_enabled(server: &toml::Value) -> bool {
+    let Some(server) = server.as_table() else {
+        return false;
+    };
+    let enabled_tools = match server.get("enabled_tools") {
+        Some(value) => match value.as_array() {
+            Some(values) if values.iter().all(|value| value.as_str().is_some()) => values,
+            _ => return false,
+        },
+        None => return !disabled_continuation_archive_tool(server),
+    };
+    CONTINUATION_ARCHIVE_TOOLS.iter().all(|tool| {
+        enabled_tools
+            .iter()
+            .any(|value| value.as_str() == Some(*tool))
+            && !disabled_continuation_archive_tool(server)
+    })
+}
+
+fn disabled_continuation_archive_tool(server: &toml::map::Map<String, toml::Value>) -> bool {
+    let Some(disabled_tools) = server.get("disabled_tools") else {
+        return false;
+    };
+    let Some(disabled_tools) = disabled_tools.as_array() else {
+        return true;
+    };
+    disabled_tools.iter().any(|value| {
+        value
+            .as_str()
+            .is_none_or(|tool| CONTINUATION_ARCHIVE_TOOLS.contains(&tool))
+    })
 }
 
 pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
@@ -1019,6 +1055,48 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn gateway_detection_requires_unfiltered_continuation_archive_tools() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let endpoint = "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/codex";
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!(
+                "[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = [\"session_search\", \"session_read_chunk\"]\ndisabled_tools = [\"session_read_chunk\"]\n"
+            ),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+
+        std::fs::write(
+            &config,
+            format!("[mcp_servers.agentkib]\nurl = \"{endpoint}\"\nenabled_tools = \"all\"\n"),
+        )
+        .unwrap();
+        assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
     }
 
     #[test]

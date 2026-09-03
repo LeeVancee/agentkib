@@ -117,6 +117,9 @@ pub fn has_agentkib_gateway(
     workspace_id: &str,
     port: u16,
 ) -> Result<bool> {
+    if matches!(workspace_id, "." | "..") {
+        return Ok(false);
+    }
     let endpoint = match agent {
         AgentKind::Codex => {
             let path = project.join(".codex/config.toml");

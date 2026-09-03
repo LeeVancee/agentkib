@@ -684,6 +684,10 @@ pub fn plan_continuation_gateway(
         "Continuation MCP setup only supports Codex and Claude Code"
     );
     anyhow::ensure!(!workspace_id.trim().is_empty(), "Workspace id is required");
+    anyhow::ensure!(
+        !matches!(workspace_id, "." | ".."),
+        "Workspace id cannot be `.` or `..`"
+    );
     anyhow::ensure!(port > 0, "AgentKib MCP Hub port is unavailable");
 
     let root = agentkib_core::canonical_project(project)?;
@@ -1396,10 +1400,24 @@ fn merge_claude_continuation_mcp(path: &Path, connection: &ConnectionDefinition)
             "Claude configuration already contains an unmanaged MCP with the same name: {key}"
         );
     }
-    servers.insert(
-        key.into(),
-        connection_json(connection, AgentKind::ClaudeCode),
-    );
+    let generated = connection_json(connection, AgentKind::ClaudeCode);
+    if let Some(existing) = servers.get_mut(key) {
+        let existing = existing
+            .as_object_mut()
+            .context("recognized AgentKib Claude MCP must be an object")?;
+        let generated = generated
+            .as_object()
+            .context("generated AgentKib Claude MCP must be an object")?;
+        for field in ["type", "url"] {
+            existing.insert(field.into(), generated[field].clone());
+        }
+        // A continuation endpoint is HTTP-only. Preserve user options that Claude can still use,
+        // while removing the stdio transport fields that would make the configuration ambiguous.
+        existing.remove("command");
+        existing.remove("args");
+    } else {
+        servers.insert(key.into(), generated);
+    }
     Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
 }
 
@@ -1726,6 +1744,19 @@ mod tests {
     }
 
     #[test]
+    fn continuation_gateway_rejects_workspace_ids_that_normalize_in_urls() {
+        let dir = tempdir().unwrap();
+        for workspace_id in [".", ".."] {
+            assert!(
+                plan_continuation_gateway(dir.path(), AgentKind::Codex, workspace_id, 47653)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot be `.` or `..`")
+            );
+        }
+    }
+
+    #[test]
     fn continuation_gateway_preserves_other_managed_codex_servers() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".codex")).unwrap();
@@ -1965,7 +1996,7 @@ mod tests {
         let config = dir.path().join(".mcp.json");
         fs::write(
             &config,
-            r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/old/agents/claude-code","command":"stale","args":["stale"]}}}"#,
+            r#"{"mcpServers":{"agentkib":{"type":"http","url":"http://127.0.0.1:47653/mcp/v1/workspaces/old/agents/claude-code","command":"stale","args":["stale"],"headers":{"X-Workspace":"keep"},"future":42}}}"#,
         )
         .unwrap();
 
@@ -1980,6 +2011,11 @@ mod tests {
         );
         assert!(after["mcpServers"]["agentkib"].get("command").is_none());
         assert!(after["mcpServers"]["agentkib"].get("args").is_none());
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["headers"]["X-Workspace"],
+            "keep"
+        );
+        assert_eq!(after["mcpServers"]["agentkib"]["future"], 42);
 
         fs::write(&config, &plan.changes[0].after).unwrap();
         let repeated =

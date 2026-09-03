@@ -3,6 +3,7 @@ import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types"
 import {
   continuationIndexingEnabled,
   continuationRefreshFailed,
+  metadataOnlyContinuationWorkspace,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "./home-continuations";
@@ -83,5 +84,20 @@ describe("selectRecentContinuations", () => {
     );
 
     expect(result.map((item) => item.session.id)).toEqual(["session-2", "session-3"]);
+  });
+
+  it("returns the workspace that contains metadata-only sessions", () => {
+    expect(
+      metadataOnlyContinuationWorkspace(workspaces, [
+        [],
+        [],
+        [
+          {
+            ...readableSession,
+            availability: "metadata-only",
+          },
+        ],
+      ]),
+    ).toMatchObject({ id: "third" });
   });
 });

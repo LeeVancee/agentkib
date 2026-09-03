@@ -145,7 +145,9 @@ pub fn has_agentkib_gateway(
             }
             let value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             value
-                .pointer("/mcpServers/agentkib/url")
+                .pointer("/mcpServers/agentkib")
+                .filter(|server| claude_continuation_uses_http_transport(server))
+                .and_then(|server| server.get("url"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         }
@@ -163,6 +165,18 @@ pub fn has_agentkib_gateway(
     let route = format!("/mcp/v1/workspaces/{workspace_segment}/agents/{slug}");
     Ok(endpoint == format!("http://127.0.0.1:{port}{route}")
         || endpoint == format!("http://localhost:{port}{route}"))
+}
+
+fn claude_continuation_uses_http_transport(server: &Value) -> bool {
+    let Some(server) = server.as_object() else {
+        return false;
+    };
+    let http_transport = match server.get("type") {
+        None => true,
+        Some(Value::String(value)) => value == "http",
+        _ => false,
+    };
+    http_transport && !server.contains_key("command") && !server.contains_key("args")
 }
 
 fn codex_continuation_archive_tools_enabled(server: &toml::Value) -> bool {
@@ -1121,6 +1135,39 @@ mod tests {
         )
         .unwrap();
         assert!(!has_agentkib_gateway(dir.path(), AgentKind::Codex, "ws", 47653).unwrap());
+    }
+
+    #[test]
+    fn claude_gateway_detection_requires_an_http_only_transport() {
+        let dir = tempdir().unwrap();
+        let endpoint = "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/claude-code";
+        let config = dir.path().join(".mcp.json");
+
+        for server in [
+            format!(r#"{{"url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}"}}"#),
+        ] {
+            std::fs::write(
+                &config,
+                format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#),
+            )
+            .unwrap();
+            assert!(has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        }
+
+        for server in [
+            format!(r#"{{"type":null,"url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"stdio","url":"{endpoint}"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}","command":"stale"}}"#),
+            format!(r#"{{"type":"http","url":"{endpoint}","args":["stale"]}}"#),
+        ] {
+            std::fs::write(
+                &config,
+                format!(r#"{{"mcpServers":{{"agentkib":{server}}}}}"#),
+            )
+            .unwrap();
+            assert!(!has_agentkib_gateway(dir.path(), AgentKind::ClaudeCode, "ws", 47653).unwrap());
+        }
     }
 
     #[test]

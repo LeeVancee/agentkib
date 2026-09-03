@@ -38,6 +38,15 @@ export function selectRecentContinuations(
     .slice(0, limit);
 }
 
+export function metadataOnlyContinuationWorkspace(
+  workspaces: WorkspaceSummary[],
+  sessionsByWorkspace: Array<ConversationSessionSummary[] | undefined>,
+) {
+  return workspaces.find((_, index) =>
+    (sessionsByWorkspace[index] ?? []).some((session) => session.availability === "metadata-only"),
+  );
+}
+
 function sessionTimestamp(session: ConversationSessionSummary, workspace: WorkspaceSummary) {
   const value = session.updated_at ?? session.created_at ?? workspace.last_active_at;
   if (!value) return 0;

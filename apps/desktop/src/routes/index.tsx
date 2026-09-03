@@ -11,6 +11,7 @@ import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
 import {
   continuationIndexingEnabled,
   continuationRefreshFailed,
+  metadataOnlyContinuationWorkspace,
   recentContinuationWorkspaces,
   selectRecentContinuations,
 } from "../features/home/home-continuations";
@@ -115,6 +116,12 @@ function HomeRoute() {
   const cachedContinuationSessions = continuationEnabled
     ? continuationQueries.flatMap((query) => query.data ?? [])
     : [];
+  const metadataOnlyWorkspace = continuationEnabled
+    ? metadataOnlyContinuationWorkspace(
+        continuationWorkspaces,
+        continuationQueries.map((query) => query.data),
+      )
+    : undefined;
   const continuationState: ContinuationHomeState = !continuationRuntimeReady
     ? "loading"
     : !continuationEnabled
@@ -220,7 +227,7 @@ function HomeRoute() {
         await refreshContinuations();
       }}
       onOpenContinuationWorkspace={async () => {
-        const workspace = continuationWorkspaces[0];
+        const workspace = metadataOnlyWorkspace ?? continuationWorkspaces[0];
         if (workspace) await openWorkspace(workspace, "sessions");
       }}
       onOpen={openWorkspace}

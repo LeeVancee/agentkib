@@ -51,9 +51,9 @@ use agentkib_protocol::{
     LIST_WORKSPACE_OPENERS_METHOD, LIST_WORKSPACES_METHOD, MCP_HUB_STATUS_METHOD,
     MODEL_USAGE_BREAKDOWN_METHOD, OBSIDIAN_INTEGRATION_METHOD, OPEN_OBSIDIAN_METHOD,
     OPEN_OBSIDIAN_WORKSPACE_METHOD, OPEN_WORKSPACE_WITH_APP_METHOD, PLAN_CHANGES_METHOD,
-    PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD, PREPARE_MANIFEST_METHOD,
-    PREPARE_SESSION_HANDOFF_METHOD, PREPARE_SKILL_INSTALL_METHOD, PREPARE_SKILL_UPDATE_METHOD,
-    PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
+    PLAN_MCP_MIGRATION_METHOD, PLAN_SESSION_HANDOFF_METHOD, PLAN_SESSION_MCP_CONNECTION_METHOD,
+    PREPARE_MANIFEST_METHOD, PREPARE_SESSION_HANDOFF_METHOD, PREPARE_SKILL_INSTALL_METHOD,
+    PREPARE_SKILL_UPDATE_METHOD, PROBE_MCP_RUNTIME_METHOD, PROPOSE_MEMORY_METHOD, PROTOCOL_VERSION,
     QUOTA_COLLECTOR_STATUS_METHOD, QUOTA_PREFERENCES_METHOD, QUOTA_SNAPSHOT_METHOD,
     READ_SKILL_FILE_METHOD, REFRESH_DISCOVERY_METHOD, REFRESH_INSIGHTS_METHOD,
     REFRESH_MCP_REGISTRY_METHOD, REFRESH_QUOTA_METHOD, REFRESH_REMOTE_GATEWAY_METHOD,
@@ -565,6 +565,9 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
         SANITIZE_SESSION_HANDOFF_METHOD => command_response(request, sanitize_session_handoff),
         PLAN_SESSION_HANDOFF_METHOD => command_response(request, plan_session_handoff),
+        PLAN_SESSION_MCP_CONNECTION_METHOD => {
+            command_response(request, plan_session_mcp_connection)
+        }
         CONTINUE_SESSION_HANDOFF_METHOD => command_response(request, continue_session_handoff),
         LAUNCH_SESSION_HANDOFF_METHOD => command_response(request, launch_session_handoff),
         RUNTIME_INFO_METHOD => command_response(request, runtime_info),
@@ -1310,6 +1313,36 @@ struct PlanSessionHandoffRequest {
     archive_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanSessionMcpConnectionRequest {
+    workspace_id: String,
+    target_agent: AgentKind,
+}
+
+fn plan_session_mcp_connection(
+    request: PlanSessionMcpConnectionRequest,
+) -> anyhow::Result<agentkib_core::ChangeSet> {
+    anyhow::ensure!(
+        matches!(
+            request.target_agent,
+            AgentKind::Codex | AgentKind::ClaudeCode
+        ),
+        "Continuation MCP setup only supports Codex and Claude Code"
+    );
+    let store = Store::open_default()?;
+    let project = store.workspace_path(&request.workspace_id)?;
+    let continuation_workspace_id = continuation_workspace_id(&store, &request.workspace_id)?;
+    let hub_status = mcp_hub()?.status();
+    anyhow::ensure!(hub_status.running, "AgentKib MCP Hub is not running");
+    agentkib_adapters::plan_continuation_gateway(
+        &project,
+        request.target_agent,
+        &continuation_workspace_id,
+        hub_status.port,
+    )
+}
+
 fn plan_session_handoff(
     request: PlanSessionHandoffRequest,
 ) -> anyhow::Result<PlannedSessionHandoff> {
@@ -1328,7 +1361,11 @@ fn plan_session_handoff(
         "Conversation changed after the continuation preview was prepared"
     );
     anyhow::ensure!(
-        document.losses.is_empty() || request.accept_losses,
+        !document
+            .losses
+            .iter()
+            .any(|loss| loss.code.requires_acknowledgement())
+            || request.accept_losses,
         "Continuation losses must be acknowledged"
     );
     validate_history_budget(request.history_budget_tokens)?;

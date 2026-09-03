@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../../../core/api";
@@ -360,6 +360,7 @@ function WorkspaceChangesRoute() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/changes" });
+  const search = useSearch({ strict: false });
   const {
     project,
     changeSet,
@@ -394,6 +395,31 @@ function WorkspaceChangesRoute() {
       });
     },
     [navigate, workspaceId],
+  );
+  const navigateToContinuation = useCallback(
+    (autoPrepare: boolean) => {
+      void navigate({
+        to: "/workspace/$workspaceId/sessions",
+        params: { workspaceId },
+        replace: true,
+        search: (current) => ({
+          ...current,
+          handoffSession: search.handoffSession,
+          handoffTarget: search.handoffTarget,
+          handoffBudget: search.handoffBudget,
+          handoffFormat: search.handoffFormat,
+          handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
+        }),
+      });
+    },
+    [
+      navigate,
+      search.handoffBudget,
+      search.handoffFormat,
+      search.handoffSession,
+      search.handoffTarget,
+      workspaceId,
+    ],
   );
   useEffect(
     () => () => {
@@ -451,6 +477,7 @@ function WorkspaceChangesRoute() {
       onApplied={async (keepLaunchRequest) => {
         const targetProject = project;
         const appliedDoctorRepair = changeSetOrigin === "doctor";
+        const appliedHandoffSetup = changeSetOrigin === "handoff-setup";
         const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
@@ -471,7 +498,10 @@ function WorkspaceChangesRoute() {
           )
             setMessage(localizeMessage(error));
         } finally {
-          if (!keepLaunchRequest) navigateTo(returnPage, appliedDoctorRepair);
+          if (!keepLaunchRequest) {
+            if (appliedHandoffSetup) navigateToContinuation(true);
+            else navigateTo(returnPage, appliedDoctorRepair);
+          }
         }
       }}
       onLaunchCompleted={() => {
@@ -482,7 +512,8 @@ function WorkspaceChangesRoute() {
         const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         setHandoffLaunchRequest(undefined);
-        navigateTo(returnPage);
+        if (changeSetOrigin === "handoff-setup") navigateToContinuation(false);
+        else navigateTo(returnPage);
       }}
       onApplyingChange={setApplyingChanges}
     />

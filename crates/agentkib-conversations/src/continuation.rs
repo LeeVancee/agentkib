@@ -80,6 +80,12 @@ pub enum SessionLossCode {
     SourceContentTruncated,
 }
 
+impl SessionLossCode {
+    pub fn requires_acknowledgement(self) -> bool {
+        self != Self::ReasoningExcluded
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLoss {
     pub code: SessionLossCode,
@@ -1525,6 +1531,13 @@ mod tests {
     use super::*;
     use crate::{ConversationSessionSummary, SessionAvailability};
 
+    #[test]
+    fn reasoning_exclusion_does_not_require_loss_acknowledgement() {
+        assert!(!SessionLossCode::ReasoningExcluded.requires_acknowledgement());
+        assert!(SessionLossCode::DamagedRecord.requires_acknowledgement());
+        assert!(SessionLossCode::ExternalAttachment.requires_acknowledgement());
+    }
+
     fn source(agent: AgentKind) -> ConversationSessionSummary {
         ConversationSessionSummary {
             id: "hashed-session".into(),
@@ -1601,6 +1614,39 @@ mod tests {
                 .map(|loss| loss.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn codex_document_excludes_injected_user_context_blocks() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[
+                {"type":"input_text","text":"<recommended_plugins>private plugins</recommended_plugins>"},
+                {"type":"input_text","text":"# AGENTS.md instructions\nprivate instructions"},
+                {"type":"input_text","text":"<environment_context>private environment</environment_context>"}
+            ]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue the real task"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"continue the real task"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(!encoded.contains("private plugins"));
+        assert!(!encoded.contains("private instructions"));
+        assert!(!encoded.contains("private environment"));
+        assert_eq!(document.turns.len(), 2);
+        assert!(encoded.contains("continue the real task"));
+        assert!(encoded.contains("done"));
     }
 
     #[test]

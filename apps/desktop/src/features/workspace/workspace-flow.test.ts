@@ -6,6 +6,7 @@ describe("workspace changes flow", () => {
     expect(changesReturnPage("standard")).toBe("overview");
     expect(changesReturnPage("doctor")).toBe("doctor");
     expect(changesReturnPage("handoff")).toBe("sessions");
+    expect(changesReturnPage("handoff-setup")).toBe("sessions");
   });
 
   it("only exposes Changes while transient state exists", () => {

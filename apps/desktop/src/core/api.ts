@@ -167,6 +167,8 @@ export const api = {
     desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
+  planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().workspace.planMcpConnection(workspaceId, targetAgent),
   sanitizeSessionHandoff: (format: HandoffFormat, editedContent: string) =>
     desktopApi().workspace.sanitizeHandoff(format, editedContent),
   planSessionHandoff: (

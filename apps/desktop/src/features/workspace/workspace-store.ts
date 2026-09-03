@@ -7,7 +7,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 
-export type ChangeSetOrigin = "standard" | "doctor" | "handoff";
+export type ChangeSetOrigin = "standard" | "doctor" | "handoff" | "handoff-setup";
 type Updater<T> = T | ((current: T) => T);
 
 interface WorkspaceState {

@@ -980,7 +980,7 @@ export interface ConversationSessionSummary {
   title?: string;
   created_at?: string;
   updated_at?: string;
-  message_count?: number;
+  message_count?: number | null;
   git_branch?: string;
   archived: boolean;
   sidechain: boolean;
@@ -1003,7 +1003,7 @@ export interface ConversationEvent {
   content?: string;
   tool_name?: string;
   tool_status?: string;
-  duration_ms?: number;
+  duration_ms?: number | null;
   attachment_count: number;
   truncated: boolean;
 }

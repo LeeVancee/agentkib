@@ -670,6 +670,71 @@ pub fn plan_workspace_changes(
     })
 }
 
+/// Plans the smallest project-local change needed to expose the AgentKib gateway to a
+/// continuation target. This intentionally bypasses the full manifest planner so connecting a
+/// continuation cannot rewrite instructions or another agent's configuration.
+pub fn plan_continuation_gateway(
+    project: &Path,
+    target_agent: AgentKind,
+    workspace_id: &str,
+    port: u16,
+) -> Result<ChangeSet> {
+    anyhow::ensure!(
+        matches!(target_agent, AgentKind::Codex | AgentKind::ClaudeCode),
+        "Continuation MCP setup only supports Codex and Claude Code"
+    );
+    anyhow::ensure!(!workspace_id.trim().is_empty(), "Workspace id is required");
+    anyhow::ensure!(port > 0, "AgentKib MCP Hub port is unavailable");
+
+    let root = agentkib_core::canonical_project(project)?;
+    let connection = ConnectionDefinition {
+        name: "agentkib".into(),
+        transport: ConnectionTransport::Http {
+            url: format!(
+                "http://127.0.0.1:{port}/mcp/v1/workspaces/{workspace_id}/agents/{{agent}}"
+            ),
+        },
+        env: BTreeMap::new(),
+        allow_tools: Vec::new(),
+        targets: vec![target_agent],
+    };
+    let target = match target_agent {
+        AgentKind::Codex => root.join(".codex/config.toml"),
+        AgentKind::ClaudeCode => root.join(".mcp.json"),
+        _ => unreachable!("unsupported continuation target was rejected above"),
+    };
+    let after = match target_agent {
+        AgentKind::Codex => merge_codex_config(&target, std::slice::from_ref(&connection))?,
+        AgentKind::ClaudeCode => merge_claude_mcp(&target, std::slice::from_ref(&connection))?,
+        _ => unreachable!("unsupported continuation target was rejected above"),
+    };
+    let target_existed = target.exists();
+    let before = fs::read_to_string(&target).unwrap_or_default();
+    let mut changes = Vec::new();
+    if before != after {
+        push_change_with_before(
+            &mut changes,
+            target,
+            target_existed.then_some(before),
+            after,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            match target_agent {
+                AgentKind::Codex => "toml",
+                AgentKind::ClaudeCode => "json",
+                _ => unreachable!("unsupported continuation target was rejected above"),
+            },
+        )?;
+    }
+    Ok(ChangeSet {
+        id: Uuid::new_v4().to_string(),
+        project_root: root,
+        created_at: Utc::now(),
+        changes,
+        requires_home_approval: false,
+    })
+}
+
 pub fn plan_changeset(
     project: &Path,
     manifest: &Manifest,
@@ -1429,6 +1494,60 @@ fn merge_hermes(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn continuation_gateway_only_changes_selected_codex_config() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        fs::write(
+            dir.path().join(".codex/config.toml"),
+            "model = \"gpt-test\"\n\n[mcp_servers.other]\nurl = \"http://example.test\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "keep me\n").unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-1", 47653).unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let change = &plan.changes[0];
+        assert!(change.target.ends_with(".codex/config.toml"));
+        assert!(change.after.contains("model = \"gpt-test\""));
+        assert!(change.after.contains("[mcp_servers.other]"));
+        assert!(change.after.contains("/workspace-1/agents/codex"));
+        assert!(!plan.requires_home_approval);
+    }
+
+    #[test]
+    fn continuation_gateway_preserves_unknown_claude_configuration() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"custom":true,"mcpServers":{"other":{"command":"other"}}}"#,
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::ClaudeCode, "workspace-2", 47653)
+                .unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        let after: serde_json::Value = serde_json::from_str(&plan.changes[0].after).unwrap();
+        assert_eq!(after["custom"], true);
+        assert_eq!(after["mcpServers"]["other"]["command"], "other");
+        assert_eq!(
+            after["mcpServers"]["agentkib"]["url"],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/workspace-2/agents/claude-code"
+        );
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_other_agents() {
+        let dir = tempdir().unwrap();
+        assert!(
+            plan_continuation_gateway(dir.path(), AgentKind::Cursor, "workspace", 47653).is_err()
+        );
+    }
 
     #[test]
     fn preserves_unmanaged_markdown() {

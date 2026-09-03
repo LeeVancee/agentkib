@@ -35,6 +35,7 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { formatDateTime, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
 import type {
   AgentKind,
+  ChangeSet,
   ConversationEvent,
   ConversationIndexStatus,
   ConversationSessionSummary,
@@ -42,7 +43,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { SessionHandoffDialog } from "./SessionHandoffDialog";
-import { WorkspaceSessionsSkeleton } from "./WorkspaceSkeleton";
+import { displaySessionTitle } from "./session-title";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
@@ -59,12 +60,22 @@ export function WorkspaceSessionsPage({
   enabled,
   onRuntimeChanged,
   onHandoffPlanned,
+  onMcpConnectionPlanned,
+  initialSessionId,
+  onInitialSessionConsumed,
+  resumeContinuation,
+  onResumeConsumed,
   targetAgents,
 }: {
   workspace: WorkspaceSummary;
   enabled: boolean;
   onRuntimeChanged: (enabled: boolean) => Promise<void>;
   onHandoffPlanned: (handoff: PlannedSessionHandoff) => void;
+  onMcpConnectionPlanned: (changeSet: ChangeSet, request: SessionContinuationResume) => void;
+  initialSessionId?: string;
+  onInitialSessionConsumed?: () => void;
+  resumeContinuation?: SessionContinuationResume & { autoPrepare: boolean };
+  onResumeConsumed?: () => void;
   targetAgents: AgentKind[];
 }) {
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
@@ -78,13 +89,18 @@ export function WorkspaceSessionsPage({
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
   const [refreshing, setRefreshing] = useState(false);
+  const [slowLoading, setSlowLoading] = useState(false);
   const [reading, setReading] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [error, setError] = useState("");
   const [showDetail, setShowDetail] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
+  const [resumedRequest, setResumedRequest] = useState<
+    (SessionContinuationResume & { autoPrepare: boolean }) | undefined
+  >();
   const readSequence = useRef(0);
   const cacheSequence = useRef(0);
+  const consumedInitialSession = useRef<string | undefined>(undefined);
 
   const refresh = async (force: boolean) => {
     const sequence = ++cacheSequence.current;
@@ -115,15 +131,23 @@ export function WorkspaceSessionsPage({
     setStatuses([]);
     setSelectedId(undefined);
     setRefreshing(true);
+    setSlowLoading(false);
     setError("");
     const sequence = ++cacheSequence.current;
     void (async () => {
       try {
-        const nextSessions = await api.refreshWorkspaceSessions(workspace.id, true);
+        const [cachedSessions, cachedStatuses] = await Promise.all([
+          api.workspaceSessions(workspace.id).catch(() => []),
+          api.workspaceSessionStatus(workspace.id).catch(() => []),
+        ]);
         if (disposed || sequence !== cacheSequence.current) return;
-        const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+        setSessions(cachedSessions);
+        setStatuses(cachedStatuses);
+        const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
         if (disposed || sequence !== cacheSequence.current) return;
         setSessions(nextSessions);
+        const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+        if (disposed || sequence !== cacheSequence.current) return;
         setStatuses(nextStatuses);
       } catch (reason) {
         if (!disposed && sequence === cacheSequence.current) setError(localizeMessage(reason));
@@ -137,6 +161,15 @@ export function WorkspaceSessionsPage({
       readSequence.current += 1;
     };
   }, [workspace.id, enabled]);
+
+  useEffect(() => {
+    if (!refreshing || sessions.length > 0) {
+      setSlowLoading(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowLoading(true), 3000);
+    return () => window.clearTimeout(timer);
+  }, [refreshing, sessions.length]);
 
   const scopedSessions = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -167,6 +200,28 @@ export function WorkspaceSessionsPage({
     setSelectedId(filtered[0]?.id);
     setShowDetail(false);
   }, [filtered, selectedId]);
+
+  useEffect(() => {
+    if (!initialSessionId || consumedInitialSession.current === initialSessionId) return;
+    if (!sessions.some(({ id }) => id === initialSessionId)) return;
+    consumedInitialSession.current = initialSessionId;
+    setFilter("all");
+    setSelectedId(initialSessionId);
+    setShowDetail(true);
+    onInitialSessionConsumed?.();
+  }, [initialSessionId, onInitialSessionConsumed, sessions]);
+
+  useEffect(() => {
+    if (!resumeContinuation || !sessions.some(({ id }) => id === resumeContinuation.sessionId)) {
+      return;
+    }
+    setFilter("all");
+    setSelectedId(resumeContinuation.sessionId);
+    setResumedRequest(resumeContinuation);
+    setShowDetail(true);
+    setShowHandoff(true);
+    onResumeConsumed?.();
+  }, [onResumeConsumed, resumeContinuation, sessions]);
 
   useEffect(() => {
     const sequence = ++readSequence.current;
@@ -236,7 +291,19 @@ export function WorkspaceSessionsPage({
     );
   }
 
-  if (refreshing && !sessions.length && !error) return <WorkspaceSessionsSkeleton />;
+  if (refreshing && !sessions.length && !error) {
+    return (
+      <div className="grid min-h-[calc(100vh-220px)] place-content-center justify-items-center gap-3 p-6 text-center">
+        <RefreshCw className="animate-spin text-muted-foreground" size={22} />
+        <strong className="text-sm text-foreground">{tr("conversations.scanning")}</strong>
+        {slowLoading && (
+          <span className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+            {tr("conversations.scanningSlow")}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -394,7 +461,7 @@ export function WorkspaceSessionsPage({
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-2">
                     <strong className="truncate text-sm">
-                      {session.title || tr("conversations.untitled")}
+                      {displaySessionTitle(session.title)}
                     </strong>
                     {session.availability === "metadata-only" && (
                       <Badge
@@ -409,7 +476,7 @@ export function WorkspaceSessionsPage({
                     {session.updated_at
                       ? formatRelativeTime(session.updated_at)
                       : tr("conversations.unknownTime")}
-                    {session.message_count !== undefined
+                    {session.message_count != null
                       ? ` · ${tr("conversations.messageCount", { count: session.message_count })}`
                       : ""}
                   </small>
@@ -477,7 +544,7 @@ export function WorkspaceSessionsPage({
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-2">
                       <h2 className="truncate text-base font-semibold tracking-tight text-foreground">
-                        {selected.title || tr("conversations.untitled")}
+                        {displaySessionTitle(selected.title)}
                       </h2>
                       {selected.availability === "metadata-only" && (
                         <Badge
@@ -529,15 +596,12 @@ export function WorkspaceSessionsPage({
                 {error}
               </div>
             )}
-            {warnings.map((warning) => (
-              <div
-                className="mx-5 mt-4 flex items-start gap-2 rounded-xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-xs text-amber-800"
-                key={warning}
-              >
+            {warnings.length > 0 && (
+              <div className="mx-5 mt-4 flex items-start gap-2 rounded-xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 text-xs text-amber-800">
                 <CircleAlert size={15} className="mt-0.5 shrink-0" />
                 <span>{tr("conversations.damagedLines")}</span>
               </div>
-            ))}
+            )}
             {!selected && (
               <div className="grid min-h-[420px] place-content-center justify-items-center gap-3 p-8 text-center text-muted-foreground">
                 <span className="grid size-12 place-items-center rounded-2xl bg-background shadow-sm ring-1 ring-border/70">
@@ -602,11 +666,17 @@ export function WorkspaceSessionsPage({
           workspace={workspace}
           session={selected}
           targetAgents={targetAgents}
-          onClose={() => setShowHandoff(false)}
+          onClose={() => {
+            setShowHandoff(false);
+            setResumedRequest(undefined);
+          }}
           onPlanned={(changeSet) => {
             setShowHandoff(false);
+            setResumedRequest(undefined);
             onHandoffPlanned(changeSet);
           }}
+          onMcpConnectionPlanned={onMcpConnectionPlanned}
+          initialRequest={resumedRequest?.sessionId === selected.id ? resumedRequest : undefined}
         />
       )}
     </>
@@ -622,11 +692,11 @@ function ConversationEventRow({ event }: { event: ConversationEvent }) {
         </span>
         <strong className="text-foreground">{event.tool_name || tr("conversations.tool")}</strong>
         <span>{tr(`conversations.toolStatus.${event.tool_status ?? "unknown"}`)}</span>
-        {(event.timestamp || event.duration_ms !== undefined) && (
+        {(event.timestamp || event.duration_ms != null) && (
           <time className="ml-auto text-[11px]">
             {event.timestamp ? formatDateTime(event.timestamp) : ""}
-            {event.timestamp && event.duration_ms !== undefined ? " · " : ""}
-            {event.duration_ms !== undefined ? formatDuration(event.duration_ms) : ""}
+            {event.timestamp && event.duration_ms != null ? " · " : ""}
+            {event.duration_ms != null ? formatDuration(event.duration_ms) : ""}
           </time>
         )}
       </div>
@@ -662,6 +732,13 @@ function ConversationEventRow({ event }: { event: ConversationEvent }) {
       )}
     </article>
   );
+}
+
+export interface SessionContinuationResume {
+  sessionId: string;
+  targetAgent: AgentKind;
+  historyBudgetTokens: number;
+  format: import("@/core/types").HandoffFormat;
 }
 
 function formatDuration(milliseconds: number) {

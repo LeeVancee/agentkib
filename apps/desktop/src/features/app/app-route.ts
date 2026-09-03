@@ -15,6 +15,12 @@ export type AppSearch = {
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;
   doctorVerification?: "applied";
+  sessionId?: string;
+  handoffSession?: string;
+  handoffTarget?: AgentKind;
+  handoffBudget?: 64_000 | 120_000 | 180_000;
+  handoffFormat?: "markdown" | "json";
+  handoffResume?: "return" | "recheck";
   agent?: AgentKind;
   agentFilter?: AgentFilter;
 };
@@ -25,7 +31,27 @@ export type ParsedRoute =
   | { kind: "workspace"; workspaceId: string; page: Page };
 
 export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
-  return page === "git" ? current : { ...current, gitSubview: undefined };
+  const next = page === "git" ? current : { ...current, gitSubview: undefined };
+  if (page === "sessions" || page === "changes") return next;
+  if (
+    page === "git" &&
+    !next.handoffSession &&
+    !next.handoffTarget &&
+    !next.handoffBudget &&
+    !next.handoffFormat &&
+    !next.handoffResume
+  ) {
+    return current;
+  }
+  const {
+    handoffSession: _handoffSession,
+    handoffTarget: _handoffTarget,
+    handoffBudget: _handoffBudget,
+    handoffFormat: _handoffFormat,
+    handoffResume: _handoffResume,
+    ...rest
+  } = next;
+  return rest;
 }
 
 export function parseRoute(pathname: string): ParsedRoute {

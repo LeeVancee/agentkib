@@ -330,6 +330,15 @@ const searchSchema = z.object({
   agentFilter: z.enum(["all", "enabled", "available"]).optional().catch(undefined),
   configure: z.boolean().optional().catch(undefined),
   doctorVerification: z.enum(["applied"]).optional().catch(undefined),
+  sessionId: z.string().optional().catch(undefined),
+  handoffSession: z.string().optional().catch(undefined),
+  handoffTarget: z.custom<AgentKind>().optional().catch(undefined),
+  handoffBudget: z
+    .union([z.literal(64_000), z.literal(120_000), z.literal(180_000)])
+    .optional()
+    .catch(undefined),
+  handoffFormat: z.enum(["markdown", "json"]).optional().catch(undefined),
+  handoffResume: z.enum(["return", "recheck"]).optional().catch(undefined),
 });
 
 export const Route = createRootRoute({

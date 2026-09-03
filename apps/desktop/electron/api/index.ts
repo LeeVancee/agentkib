@@ -204,6 +204,7 @@ export interface DesktopApi {
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
+    planMcpConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
     planHandoff(
       sessionId: string,

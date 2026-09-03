@@ -1,5 +1,15 @@
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import type { RecentContinuation } from "./GlobalHome";
+
+export interface RecentContinuation {
+  workspace: WorkspaceSummary;
+  session: ConversationSessionSummary;
+}
+
+export function recentContinuationWorkspaces(workspaces: WorkspaceSummary[], limit = 5) {
+  return [...workspaces]
+    .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))
+    .slice(0, limit);
+}
 
 export function selectRecentContinuations(
   workspaces: WorkspaceSummary[],
@@ -8,17 +18,21 @@ export function selectRecentContinuations(
 ): RecentContinuation[] {
   return workspaces
     .flatMap((workspace, index) => {
-      const sessions = (sessionsByWorkspace[index] ?? []).filter(
-        (session) => session.availability === "readable",
-      );
-      if (!sessions.length) return [];
-      return [
-        {
-          workspace,
-          sessionCount: sessions.length,
-          agents: [...new Set(sessions.map((session) => session.agent))],
-        },
-      ];
+      return (sessionsByWorkspace[index] ?? [])
+        .filter((session) => session.availability === "readable")
+        .map((session) => ({ workspace, session }));
     })
+    .sort(
+      (left, right) =>
+        sessionTimestamp(right.session, right.workspace) -
+        sessionTimestamp(left.session, left.workspace),
+    )
     .slice(0, limit);
+}
+
+function sessionTimestamp(session: ConversationSessionSummary, workspace: WorkspaceSummary) {
+  const value = session.updated_at ?? session.created_at ?? workspace.last_active_at;
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

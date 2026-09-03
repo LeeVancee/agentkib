@@ -2026,6 +2026,7 @@ fn response_message_text(value: Option<&Value>) -> Option<String> {
             )
         })
         .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .filter(|text| !looks_like_internal_context(text))
         .collect::<Vec<_>>()
         .join("\n");
     (!text.is_empty()).then_some(text)
@@ -2071,7 +2072,27 @@ fn sanitize_title(value: Option<&str>) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     let title = normalized.chars().take(MAX_TITLE_CHARS).collect::<String>();
-    (!title.is_empty()).then_some(title)
+    if title.is_empty() || looks_like_internal_context(&title) {
+        None
+    } else {
+        Some(title)
+    }
+}
+
+fn looks_like_internal_context(value: &str) -> bool {
+    let value = value.trim_start();
+    [
+        "<path>",
+        "<content>",
+        "<recommended_plugins>",
+        "<available_skills>",
+        "<app-context>",
+        "<skills_instructions>",
+        "<environment_context>",
+        "# AGENTS.md instructions",
+    ]
+    .iter()
+    .any(|prefix| value.starts_with(prefix))
 }
 
 fn sanitize_metadata(value: Option<String>) -> Option<String> {
@@ -2627,6 +2648,26 @@ mod tests {
         let (truncated, was_truncated) = truncate_utf8(&message, MAX_MESSAGE_BYTES);
         assert!(was_truncated);
         assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn internal_context_is_not_used_as_a_session_title() {
+        assert_eq!(
+            sanitize_title(Some("<path>SKILL.md</path>\n<content>rules")),
+            None
+        );
+        assert_eq!(
+            sanitize_title(Some("<recommended_plugins>...</recommended_plugins>")),
+            None
+        );
+        assert_eq!(
+            sanitize_title(Some("# AGENTS.md instructions\nprivate")),
+            None
+        );
+        assert_eq!(
+            sanitize_title(Some("Fix the <path> label")),
+            Some("Fix the <path> label".into())
+        );
     }
 
     fn handoff_source(agent: AgentKind) -> ConversationSessionSummary {

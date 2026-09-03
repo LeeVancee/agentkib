@@ -29,6 +29,7 @@ export const homeKeys = {
   catalog: () => [...homeKeys.all, "catalog"] as const,
   memories: () => [...homeKeys.all, "memories"] as const,
   activity: () => [...homeKeys.all, "activity"] as const,
+  continuations: (workspaceId: string) => [...homeKeys.all, "continuations", workspaceId] as const,
   discovery: () => [...homeKeys.all, "discovery"] as const,
   insightsSummary: () => [...homeKeys.all, "insights-summary"] as const,
   refreshJobs: () => [...homeKeys.all, "refresh-jobs"] as const,

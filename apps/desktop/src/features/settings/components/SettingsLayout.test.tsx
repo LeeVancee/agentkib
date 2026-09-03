@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   SettingsNotice,
   SettingsPage,
+  SettingsPageHeader,
   SettingsPanel,
   SettingsSection,
   SettingsStatus,
@@ -15,14 +16,31 @@ describe("SettingsLayout", () => {
   afterEach(cleanup);
 
   it.each([
-    ["form", "max-w-[888px]"],
-    ["management", "max-w-[1080px]"],
-    ["workspace", "max-w-[1520px]"],
+    ["form", "max-w-[920px]"],
+    ["management", "max-w-[920px]"],
+    ["workspace", "max-w-[1080px]"],
   ] as const)("applies the %s page width", (variant, widthClass) => {
     const { container } = render(<SettingsPage variant={variant}>Content</SettingsPage>);
     const page = container.querySelector(`[data-settings-layout="${variant}"]`);
 
     expect(page?.className).toContain(widthClass);
+  });
+
+  it("uses one page-level heading and exposes searchable anchors", () => {
+    const { container } = render(
+      <SettingsPage>
+        <SettingsPageHeader title="General" description="Preferences" />
+        <SettingsSection title="Interface" target="general-interface">
+          Content
+        </SettingsSection>
+      </SettingsPage>,
+    );
+
+    expect(screen.getByRole("heading", { name: "General", level: 1 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Interface", level: 2 })).toBeTruthy();
+    expect(
+      container.querySelector("#settings-target-general-interface")?.getAttribute("tabindex"),
+    ).toBe("-1");
   });
 
   it("uses the same heading and action hierarchy for sections and panels", () => {

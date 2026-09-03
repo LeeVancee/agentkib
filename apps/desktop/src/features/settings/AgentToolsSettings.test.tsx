@@ -339,6 +339,56 @@ describe("AgentToolsSettings", () => {
     expect(screen.getByText("~/.local/bin/codex")).toBeTruthy();
   });
 
+  it("explains every warning on an unknown tool in its environment row", () => {
+    const primary = tool("codex").installations[0];
+    const unknown = tool("codex", {
+      state: "unknown",
+      channel: "unknown",
+      current_version: undefined,
+      latest_version: undefined,
+      warnings: [
+        "multiple-executables",
+        "installation-not-runnable",
+        "version-unavailable",
+        "latest-unavailable",
+        "version-uncomparable",
+        "channel-unverified",
+      ],
+      installations: [
+        primary,
+        {
+          ...primary,
+          id: "codex:secondary",
+          path: "/opt/homebrew/bin/codex",
+          resolved_path: "/opt/homebrew/bin/codex",
+          runnable: false,
+          is_path_default: false,
+        },
+      ],
+    });
+    vi.mocked(useAgentTools).mockReturnValue({
+      data: {
+        ...snapshot,
+        tools: [unknown, ...snapshot.tools.slice(1)],
+      },
+      error: null,
+      isPending: false,
+    } as ReturnType<typeof useAgentTools>);
+
+    renderSettings();
+
+    expect(screen.getByText("2 installations found; updates target the PATH default")).toBeTruthy();
+    expect(
+      screen.getByText("Installation channel is unverified; automatic updates are disabled"),
+    ).toBeTruthy();
+    expect(screen.getByText("The installation exists but is not runnable")).toBeTruthy();
+    expect(screen.getByText("Installed version could not be read")).toBeTruthy();
+    expect(screen.getByText("Latest version could not be verified")).toBeTruthy();
+    expect(
+      screen.getByText("Version formats cannot be compared reliably; no update was inferred"),
+    ).toBeTruthy();
+  });
+
   it("confirms before executing an official channel action", async () => {
     const user = userEvent.setup();
     renderSettings();

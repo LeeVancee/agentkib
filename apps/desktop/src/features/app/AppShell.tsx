@@ -15,7 +15,7 @@ import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "lucide-rea
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const mainClassName =
-  "app-shell-main !col-start-2 !row-start-3 !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
+  "app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
 
 export function WindowNavigationControls({
   canGoBack = false,
@@ -102,6 +102,7 @@ export function AppShell({
   sidebarMode = "primary",
   children,
   toolbar,
+  headerless = false,
   mainClassName: additionalMainClassName,
   canGoBack = false,
   canGoForward = false,
@@ -112,6 +113,7 @@ export function AppShell({
   sidebarMode?: "primary" | "settings";
   children: ReactNode;
   toolbar?: ReactNode;
+  headerless?: boolean;
   mainClassName?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -160,6 +162,7 @@ export function AppShell({
     <div
       className={cn(
         "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
+        headerless && "app-shell-headerless",
         sidebarCollapsed && "app-shell-sidebar-collapsed",
         sidebarMotion && `app-shell-sidebar-motion-${sidebarMotion}`,
       )}
@@ -177,7 +180,7 @@ export function AppShell({
         onBack={onBack}
         onForward={onForward}
       />
-      <AppShellHeader>{toolbar}</AppShellHeader>
+      {!headerless && <AppShellHeader>{toolbar}</AppShellHeader>}
       {sidebar}
       <main className={cn(mainClassName, additionalMainClassName)}>
         <div ref={scrollContainerRef} className="page-scroll-container min-h-0 flex-1">

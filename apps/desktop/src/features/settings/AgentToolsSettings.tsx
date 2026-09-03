@@ -21,7 +21,6 @@ import {
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -54,7 +53,12 @@ import type {
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
-import { SettingsNotice } from "./components/SettingsLayout";
+import {
+  SettingsAnchor,
+  SettingsNotice,
+  SettingsPanel,
+  settingsTargetId,
+} from "./components/SettingsLayout";
 
 const PROJECT_URL = "https://github.com/starroyhq/agentkib";
 const RELEASES_URL = `${PROJECT_URL}/releases`;
@@ -277,10 +281,17 @@ export function AgentToolsSettings({
   };
 
   return (
-    <div className="grid gap-3">
-      <AppUpdateSetting currentVersion={currentVersion} updatesEnabled={updatesEnabled} />
+    <div className="grid gap-5">
+      <SettingsAnchor target="tools-app">
+        <AppUpdateSetting currentVersion={currentVersion} updatesEnabled={updatesEnabled} />
+      </SettingsAnchor>
 
-      <section className="grid gap-3" aria-labelledby="agent-tools-heading">
+      <section
+        id={settingsTargetId("tools-environment")}
+        tabIndex={-1}
+        className="grid scroll-mt-6 gap-3 outline-none"
+        aria-labelledby="agent-tools-heading"
+      >
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -361,7 +372,7 @@ export function AgentToolsSettings({
         {toolsQuery.isPending ? (
           <AgentToolsLoading />
         ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="overflow-hidden rounded-xl border border-border/70 bg-card">
             {tools.map((tool) => (
               <AgentToolCard
                 key={tool.agent}
@@ -375,24 +386,20 @@ export function AgentToolsSettings({
         )}
       </section>
 
-      <div className="grid gap-3 xl:grid-cols-2">
-        <Card className="flex min-h-[136px] flex-col justify-between p-4 shadow-none">
-          <div className="flex items-start gap-3">
-            <PackageCheck size={20} className="mt-0.5" />
-            <div>
-              <h3 className="font-heading font-semibold">
-                {tr("settings.tools.upgradeCount", { count: upgrades.length })}
-              </h3>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {tr("settings.tools.batchDescription")}
-              </p>
+      <SettingsAnchor target="tools-actions">
+        <SettingsPanel title={tr("settings.search.updateActions")}>
+          <div className="grid min-h-20 grid-cols-[minmax(0,1fr)_auto] items-center gap-6 border-b border-border/60 px-5 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3">
+            <div className="flex items-start gap-3">
+              <PackageCheck size={19} className="mt-0.5" />
+              <div>
+                <h3 className="font-heading font-semibold">
+                  {tr("settings.tools.upgradeCount", { count: upgrades.length })}
+                </h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {tr("settings.tools.batchDescription")}
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <span className="flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-300">
-              <ShieldAlert size={15} />
-              {tr("settings.tools.safeExecutionOnly")}
-            </span>
             <Button
               disabled={!upgrades.length || Boolean(executingAgent)}
               onClick={() => setBatchOpen(true)}
@@ -401,69 +408,74 @@ export function AgentToolsSettings({
               {tr("settings.tools.reviewUpdates", { count: upgrades.length })}
             </Button>
           </div>
-        </Card>
-
-        <Card className="min-h-[136px] p-4 shadow-none">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="flex items-center gap-2 font-heading font-semibold">
-              <TerminalSquare size={18} />
-              {tr("settings.tools.manualCommand")}
-            </h3>
-            <Select
-              value={selectedAgent || "none"}
-              onValueChange={(value) =>
-                setSelectedAgent(
-                  value === "none" || value === null ? "" : (String(value) as AgentKind),
-                )
-              }
-            >
-              <SelectTrigger className="h-8 min-w-44" aria-label={tr("settings.tools.selectAgent")}>
-                <SelectValue>
-                  {selectedAgent ? agentLabels[selectedAgent] : tr("settings.tools.selectAgent")}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">{tr("settings.tools.selectAgent")}</SelectItem>
-                {tools.map((tool) => (
-                  <SelectItem key={tool.agent} value={tool.agent}>
-                    {agentLabels[tool.agent]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="mt-3 flex min-h-16 items-center justify-between gap-3 rounded-xl border bg-muted/35 px-3 py-2">
-            {selectedCommandAction?.command ? (
-              <>
-                <code className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs">
-                  {selectedCommandAction.command}
-                </code>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void copyCommand(selectedCommandAction.command ?? "")}
-                >
-                  <Copy size={14} />
-                  {tr("common.copy")}
-                </Button>
-              </>
-            ) : selectedTool ? (
-              <Button
-                variant="link"
-                onClick={() => void api.openExternal(selectedTool.official_url)}
+          <div className="grid min-h-20 grid-cols-[minmax(0,1fr)_auto] items-start gap-6 px-5 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3">
+            <div>
+              <h3 className="flex items-center gap-2 font-heading font-semibold">
+                <TerminalSquare size={18} />
+                {tr("settings.tools.manualCommand")}
+              </h3>
+              <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+                <ShieldAlert size={14} />
+                {tr("settings.tools.safeExecutionOnly")}
+              </p>
+            </div>
+            <div className="grid min-w-[320px] gap-2 max-[640px]:min-w-0">
+              <Select
+                value={selectedAgent || "none"}
+                onValueChange={(value) =>
+                  setSelectedAgent(
+                    value === "none" || value === null ? "" : (String(value) as AgentKind),
+                  )
+                }
               >
-                {tr("settings.tools.openDocumentation")}
-                <ExternalLink size={14} />
-              </Button>
-            ) : (
-              <span className="text-sm text-muted-foreground">
-                {tr("settings.tools.selectAgentHint")}
-              </span>
-            )}
+                <SelectTrigger className="h-9 w-full" aria-label={tr("settings.tools.selectAgent")}>
+                  <SelectValue>
+                    {selectedAgent ? agentLabels[selectedAgent] : tr("settings.tools.selectAgent")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">{tr("settings.tools.selectAgent")}</SelectItem>
+                  {tools.map((tool) => (
+                    <SelectItem key={tool.agent} value={tool.agent}>
+                      {agentLabels[tool.agent]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex min-h-12 items-center justify-between gap-3 rounded-lg bg-muted/35 px-3 py-2">
+                {selectedCommandAction?.command ? (
+                  <>
+                    <code className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs">
+                      {selectedCommandAction.command}
+                    </code>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void copyCommand(selectedCommandAction.command ?? "")}
+                    >
+                      <Copy size={14} />
+                      {tr("common.copy")}
+                    </Button>
+                  </>
+                ) : selectedTool ? (
+                  <Button
+                    variant="link"
+                    onClick={() => void api.openExternal(selectedTool.official_url)}
+                  >
+                    {tr("settings.tools.openDocumentation")}
+                    <ExternalLink size={14} />
+                  </Button>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    {tr("settings.tools.selectAgentHint")}
+                  </span>
+                )}
+              </div>
+              {copyNotice && <p className="text-xs text-muted-foreground">{copyNotice}</p>}
+            </div>
           </div>
-          {copyNotice && <p className="mt-2 text-xs text-muted-foreground">{copyNotice}</p>}
-        </Card>
-      </div>
+        </SettingsPanel>
+      </SettingsAnchor>
 
       <InstallationDiagnosticsDialog
         open={conflictsOpen}
@@ -503,6 +515,10 @@ function AgentToolCard({
   const StateIcon = stateIcons[tool.state];
   const hasMultipleInstallations = tool.warnings.includes("multiple-executables");
   const DetailIcon = hasMultipleInstallations ? CircleAlert : StateIcon;
+  const warningDetails =
+    tool.state === "conflict" || tool.state === "unknown" || hasMultipleInstallations
+      ? toolWarnings(tool)
+      : [];
   const stateClass = {
     current: "border-emerald-500/35 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
     "update-available": "border-amber-500/35 bg-amber-500/8 text-amber-700 dark:text-amber-300",
@@ -525,95 +541,66 @@ function AgentToolCard({
         : tr("settings.tools.openDocumentation");
 
   return (
-    <Card
+    <div
       className={cn(
-        "flex min-h-[178px] flex-col border p-3 shadow-none",
-        tool.state === "conflict" && "border-destructive/45",
+        "grid min-h-16 grid-cols-[minmax(180px,1.3fr)_minmax(150px,0.8fr)_auto_auto] items-center gap-4 border-b border-border/60 px-5 py-3 last:border-b-0 max-[760px]:grid-cols-[minmax(0,1fr)_auto]",
+        tool.state === "conflict" && "bg-destructive/5",
       )}
     >
-      <div className="flex items-start justify-between gap-1.5">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 [&>div]:size-6 [&>div]:rounded-md [&>div]:p-0.5">
-            <AgentIcon agent={tool.agent} />
-          </span>
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="shrink-0 [&>div]:size-7 [&>div]:rounded-md [&>div]:p-0.5">
+          <AgentIcon agent={tool.agent} />
+        </span>
+        <span className="min-w-0">
           <h3 className="truncate font-heading text-sm font-semibold">{agentLabels[tool.agent]}</h3>
-        </div>
-        <Badge className={cn("gap-1 border px-1.5", stateClass)} variant="outline">
-          <StateIcon size={12} />
-          {tr(`settings.tools.state.${tool.state}`)}
-        </Badge>
+          <p className="truncate font-mono text-[11px] text-muted-foreground" title={path}>
+            {path ?? tr("settings.tools.executableMissing")}
+          </p>
+        </span>
       </div>
-
-      <dl className="mt-2 grid gap-0.5 text-xs">
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">{tr("settings.tools.currentVersion")}</dt>
-          <dd className="truncate font-medium">{tool.current_version ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">{tr("settings.tools.channelLatestVersion")}</dt>
-          <dd className="truncate font-medium">
-            {tool.recommended_version ?? tr("common.unknown")}
-          </dd>
-        </div>
-        {tool.upstream_version && tool.upstream_version !== tool.latest_version && (
-          <div className="flex justify-between gap-3">
-            <dt className="text-muted-foreground">{tr("settings.tools.upstreamLatestVersion")}</dt>
-            <dd className="truncate font-medium">{tool.upstream_version}</dd>
-          </div>
-        )}
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">{tr("settings.tools.channel")}</dt>
-          <dd className="truncate">
-            {channelLabel(action?.channel ?? tool.channel)}
-            {installation && ` · ${environmentLabel(installation.environment)}`}
-          </dd>
-        </div>
-      </dl>
-      {tool.actions.length > 1 && (
-        <Select
-          value={action?.id ?? ""}
-          onValueChange={(value) => {
-            if (value !== null) setSelectedActionId(String(value));
-          }}
-        >
-          <SelectTrigger
-            size="sm"
-            className="mt-1 h-7 w-full text-xs"
-            aria-label={tr("settings.tools.selectChannel")}
+      <div className="min-w-0 text-xs max-[760px]:col-span-2 max-[760px]:pl-9">
+        <p className="truncate font-medium">
+          {tool.current_version ?? "—"}
+          {tool.recommended_version && tool.recommended_version !== tool.current_version
+            ? ` → ${tool.recommended_version}`
+            : ""}
+        </p>
+        <p className="truncate text-muted-foreground">
+          {channelLabel(action?.channel ?? tool.channel)}
+          {installation && ` · ${environmentLabel(installation.environment)}`}
+        </p>
+      </div>
+      <Badge className={cn("gap-1 border px-1.5", stateClass)} variant="outline">
+        <StateIcon size={12} />
+        {tr(`settings.tools.state.${tool.state}`)}
+      </Badge>
+      <div className="flex items-center justify-end gap-2 max-[760px]:col-span-2">
+        {tool.actions.length > 1 && (
+          <Select
+            value={action?.id ?? ""}
+            onValueChange={(value) => {
+              if (value !== null) setSelectedActionId(String(value));
+            }}
           >
-            <SelectValue>{channelLabel(action?.channel ?? tool.channel)}</SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {tool.actions.map((candidate) => (
-              <SelectItem key={candidate.id} value={candidate.id}>
-                {channelLabel(candidate.channel)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-      <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={path}>
-        {path ?? tr("settings.tools.executableMissing")}
-      </p>
-      <p
-        className={cn(
-          "mt-1 flex min-h-4 items-start gap-1 text-[11px]",
-          tool.state === "conflict"
-            ? "text-destructive"
-            : hasMultipleInstallations
-              ? "text-amber-700 dark:text-amber-300"
-              : tool.state === "current"
-                ? "text-emerald-700 dark:text-emerald-300"
-                : "text-muted-foreground",
+            <SelectTrigger
+              size="sm"
+              className="h-8 w-32 text-xs"
+              aria-label={tr("settings.tools.selectChannel")}
+            >
+              <SelectValue>{channelLabel(action?.channel ?? tool.channel)}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {tool.actions.map((candidate) => (
+                <SelectItem key={candidate.id} value={candidate.id}>
+                  {channelLabel(candidate.channel)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
-      >
-        <DetailIcon size={12} className="mt-0.5" />
-        {toolWarning(tool)}
-      </p>
-      <div className="mt-auto flex justify-end pt-1">
         <Button
           size="sm"
-          className="h-7 px-2 text-xs"
+          className="h-8 px-2.5 text-xs"
           variant={tool.state === "current" ? "outline" : "default"}
           disabled={executing}
           onClick={() => {
@@ -635,7 +622,22 @@ function AgentToolCard({
           {actionLabel}
         </Button>
       </div>
-    </Card>
+      {warningDetails.length > 0 && (
+        <div
+          className={cn(
+            "col-span-full flex items-start gap-1 pl-9 text-[11px]",
+            tool.state === "conflict" ? "text-destructive" : "text-amber-700 dark:text-amber-300",
+          )}
+        >
+          <DetailIcon size={12} className="mt-0.5" />
+          <ul className="space-y-0.5">
+            {warningDetails.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -734,93 +736,98 @@ function AppUpdateSetting({
   }, [contentLength, currentVersion, error, progress, status, update, updatesEnabled]);
 
   return (
-    <Card className="overflow-hidden p-4 shadow-none">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="grid size-11 shrink-0 place-items-center rounded-xl border bg-background">
-            <PackageCheck size={22} />
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-heading text-lg font-semibold">
-                AgentKib {currentVersion ? `v${currentVersion}` : ""}
-              </h2>
-              <Badge
-                variant="outline"
+    <SettingsPanel title={tr("settings.updates")}>
+      <div className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid size-11 shrink-0 place-items-center rounded-xl border bg-background">
+              <PackageCheck size={22} />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-heading text-lg font-semibold">
+                  AgentKib {currentVersion ? `v${currentVersion}` : ""}
+                </h2>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "gap-1",
+                    status === "failed"
+                      ? "border-destructive/30 text-destructive"
+                      : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  {status === "failed" ? (
+                    <CircleAlert size={12} />
+                  ) : busy ? (
+                    <RefreshCw className="animate-spin" size={12} />
+                  ) : (
+                    <Check size={12} />
+                  )}
+                  {tr(`settings.tools.appState.${status}`)}
+                </Badge>
+              </div>
+              <p
                 className={cn(
-                  "gap-1",
-                  status === "failed"
-                    ? "border-destructive/30 text-destructive"
-                    : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
+                  "mt-1 text-sm text-muted-foreground",
+                  status === "failed" && "text-destructive",
                 )}
               >
-                {status === "failed" ? (
-                  <CircleAlert size={12} />
-                ) : busy ? (
-                  <RefreshCw className="animate-spin" size={12} />
-                ) : (
-                  <Check size={12} />
-                )}
-                {tr(`settings.tools.appState.${status}`)}
-              </Badge>
+                {description}
+              </p>
             </div>
-            <p
-              className={cn(
-                "mt-1 text-sm text-muted-foreground",
-                status === "failed" && "text-destructive",
-              )}
-            >
-              {description}
-            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => void api.openExternal(PROJECT_URL)}>
+              <Github size={15} /> GitHub
+            </Button>
+            <Button variant="outline" onClick={() => void api.openExternal(RELEASES_URL)}>
+              <ScrollText size={15} />
+              {tr("settings.tools.releaseNotes")}
+            </Button>
+            {status === "available" && update ? (
+              <Button disabled={busy} onClick={() => void install()}>
+                {update.install_mode === "manual" ? (
+                  <ExternalLink size={15} />
+                ) : (
+                  <Download size={15} />
+                )}
+                {tr(
+                  update.install_mode === "manual"
+                    ? "settings.updateOpenRelease"
+                    : "settings.updateDownloadInstall",
+                )}
+              </Button>
+            ) : (
+              <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
+                <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
+                {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
+              </Button>
+            )}
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => void api.openExternal(PROJECT_URL)}>
-            <Github size={15} /> GitHub
-          </Button>
-          <Button variant="outline" onClick={() => void api.openExternal(RELEASES_URL)}>
-            <ScrollText size={15} />
-            {tr("settings.tools.releaseNotes")}
-          </Button>
-          {status === "available" && update ? (
-            <Button disabled={busy} onClick={() => void install()}>
-              {update.install_mode === "manual" ? (
-                <ExternalLink size={15} />
-              ) : (
-                <Download size={15} />
-              )}
-              {tr(
-                update.install_mode === "manual"
-                  ? "settings.updateOpenRelease"
-                  : "settings.updateDownloadInstall",
-              )}
-            </Button>
-          ) : (
-            <Button disabled={busy || !updatesEnabled} onClick={() => void check()}>
-              <RefreshCw className={busy ? "animate-spin" : undefined} size={15} />
-              {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-            </Button>
-          )}
-        </div>
+        {status === "downloading" && (
+          <div
+            className="mt-4 h-1 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-valuenow={progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="h-full bg-primary transition-[width]"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        )}
+        {update?.notes && status !== "failed" && (
+          <div className="mt-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+            <strong className="mb-1 block text-foreground">{tr("settings.updateNotes")}</strong>
+            <span className="whitespace-pre-wrap break-words">{update.notes}</span>
+          </div>
+        )}
       </div>
-      {status === "downloading" && (
-        <div
-          className="mt-4 h-1 overflow-hidden rounded-full bg-muted"
-          role="progressbar"
-          aria-valuenow={progress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
-        </div>
-      )}
-      {update?.notes && status !== "failed" && (
-        <div className="mt-3 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-          <strong className="mb-1 block text-foreground">{tr("settings.updateNotes")}</strong>
-          <span className="whitespace-pre-wrap break-words">{update.notes}</span>
-        </div>
-      )}
-    </Card>
+    </SettingsPanel>
   );
 }
 
@@ -977,21 +984,43 @@ function executionResultDescription(result: AgentToolExecutionResult) {
     .join("\n");
 }
 
-function toolWarning(tool: AgentToolStatus) {
-  if (tool.state === "conflict")
-    return tr("settings.tools.multipleExecutables", { count: tool.installations.length });
-  if (tool.warnings.includes("multiple-executables"))
-    return tr("settings.tools.multipleInstallationsNotice", { count: tool.installations.length });
-  if (tool.state === "current") return tr("settings.tools.noIssues");
-  if (tool.state === "update-available") return tr("settings.tools.updateSuggested");
-  if (tool.state === "uninstalled") return tr("settings.tools.executableMissing");
-  if (tool.warnings.includes("channel-unverified")) return tr("settings.tools.channelUnverified");
-  if (tool.warnings.includes("installation-not-runnable"))
-    return tr("settings.tools.installationNotRunnable");
-  if (tool.warnings.includes("version-unavailable")) return tr("settings.tools.versionUnavailable");
-  if (tool.warnings.includes("version-uncomparable"))
-    return tr("settings.tools.versionUncomparable");
-  return tr("settings.tools.latestUnavailable");
+function toolWarnings(tool: AgentToolStatus) {
+  const warnings: string[] = [];
+  if (tool.state === "conflict") {
+    warnings.push(tr("settings.tools.multipleExecutables", { count: tool.installations.length }));
+  } else if (tool.warnings.includes("multiple-executables")) {
+    warnings.push(
+      tr("settings.tools.multipleInstallationsNotice", { count: tool.installations.length }),
+    );
+  }
+
+  for (const warning of tool.warnings) {
+    const message = toolWarningMessage(warning);
+    if (message) warnings.push(message);
+  }
+
+  if (warnings.length > 0) return [...new Set(warnings)];
+  if (tool.state === "current") return [tr("settings.tools.noIssues")];
+  if (tool.state === "update-available") return [tr("settings.tools.updateSuggested")];
+  if (tool.state === "uninstalled") return [tr("settings.tools.executableMissing")];
+  return [tr("settings.tools.latestUnavailable")];
+}
+
+function toolWarningMessage(warning: string) {
+  switch (warning) {
+    case "channel-unverified":
+      return tr("settings.tools.channelUnverified");
+    case "installation-not-runnable":
+      return tr("settings.tools.installationNotRunnable");
+    case "version-unavailable":
+      return tr("settings.tools.versionUnavailable");
+    case "version-uncomparable":
+      return tr("settings.tools.versionUncomparable");
+    case "latest-unavailable":
+      return tr("settings.tools.latestUnavailable");
+    default:
+      return undefined;
+  }
 }
 
 export { AppUpdateSetting };

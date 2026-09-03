@@ -477,6 +477,12 @@ button {
 .app-shell-sidebar-collapsed {
   --sidebar-width: 0px;
 }
+.app-shell-headerless {
+  --sidebar-expanded-width: 256px;
+}
+.app-shell-headerless:not(.app-shell-sidebar-collapsed) {
+  --sidebar-width: 256px;
+}
 .app-shell::before {
   grid-column: 1;
   grid-row: 1;
@@ -492,6 +498,11 @@ button {
 .app-shell > .app-window-toolbar {
   pointer-events: none;
   -webkit-app-region: no-drag;
+}
+.app-shell-headerless > .app-window-toolbar {
+  height: 2.25rem;
+  pointer-events: auto;
+  -webkit-app-region: drag;
 }
 
 .app-sidebar {
@@ -881,6 +892,19 @@ button {
   backdrop-filter: blur(16px);
   -webkit-app-region: no-drag;
 }
+.app-shell-main {
+  grid-column: 2;
+  grid-row: 3;
+}
+.app-shell-headerless .app-shell-main {
+  grid-row: 1 / -1;
+}
+.app-shell-headerless .settings-content {
+  padding-top: 2.5rem;
+}
+.app-shell-headerless.app-shell-sidebar-collapsed .settings-content {
+  padding-top: 4rem;
+}
 :root[data-platform="windows"] .app-shell-sidebar-collapsed .app-toolbar-content,
 :root[data-platform="linux"] .app-shell-sidebar-collapsed .app-toolbar-content {
   padding-left: 7.5rem;
@@ -1144,6 +1168,12 @@ button {
     grid-column: 1 !important;
     grid-row: 3 !important;
   }
+  .app-shell-headerless .app-shell-main {
+    grid-row: 1 / -1 !important;
+  }
+  .app-shell-headerless .settings-content {
+    padding-top: 4rem;
+  }
   .app-shell-header {
     grid-column: 1;
     display: flex;
@@ -1159,6 +1189,9 @@ button {
     box-shadow: 0 1.5rem 3rem color-mix(in srgb, var(--foreground) 20%, transparent);
     transform: translateX(-105%);
     transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .app-shell-headerless .app-sidebar {
+    width: min(86vw, 16rem);
   }
   .app-shell-sidebar-collapsed {
     grid-template-columns: minmax(0, 1fr);

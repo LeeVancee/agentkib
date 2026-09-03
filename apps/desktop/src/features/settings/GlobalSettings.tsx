@@ -10,6 +10,7 @@ import {
   Keyboard,
   Monitor,
   Moon,
+  RefreshCw,
   Sun,
   Trash2,
   X,
@@ -34,8 +35,10 @@ import { RemoteGatewaysSettings } from "./RemoteGateways";
 import { AgentToolsSettings } from "./AgentToolsSettings";
 import {
   SettingsCopy,
+  SettingsAnchor,
   SettingsNotice,
   SettingsPage,
+  SettingsPageHeader,
   SettingsPanel,
   SettingsRow,
   SettingsSection,
@@ -126,6 +129,7 @@ export type GlobalSettingsProps = {
   onLocaleChanged: (runtime: RuntimeInfo) => void;
   onOnboardingRestarted: () => Promise<void>;
   onRemoteGatewaysChanged: () => Promise<void>;
+  onRefreshDiagnostics: () => Promise<void>;
 };
 
 export function GlobalSettings({
@@ -146,11 +150,13 @@ export function GlobalSettings({
   onLocaleChanged,
   onOnboardingRestarted,
   onRemoteGatewaysChanged,
+  onRefreshDiagnostics,
 }: GlobalSettingsProps) {
   if (section === "general")
     return (
       <SettingsPage variant="form">
-        <SettingsSection title={tr("settings.interface")}>
+        <SettingsPageHeader title={tr("settings.section.general")} />
+        <SettingsSection title={tr("settings.interface")} target="general-interface">
           <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
           <AccentThemeSetting effectiveTheme={runtime?.effective_theme} />
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
@@ -187,6 +193,10 @@ export function GlobalSettings({
   if (section === "tools")
     return (
       <SettingsPage variant="workspace">
+        <SettingsPageHeader
+          title={tr("settings.section.tools")}
+          description={tr("settings.page.tools.description")}
+        />
         <AgentToolsSettings
           currentVersion={runtime?.app_version}
           updatesEnabled={runtime?.updates_enabled ?? false}
@@ -196,8 +206,12 @@ export function GlobalSettings({
   if (section === "discovery")
     return (
       <SettingsPage variant="management">
-        <div className="grid gap-5 lg:grid-cols-[minmax(240px,0.75fr)_minmax(0,1.25fr)]">
-          <SettingsSection title={tr("settings.discovery")}>
+        <SettingsPageHeader
+          title={tr("settings.section.discovery")}
+          description={tr("settings.page.discovery.description")}
+        />
+        <div className="grid gap-5">
+          <SettingsSection title={tr("settings.discovery")} target="discovery-status">
             <SettingsRow>
               <SettingsCopy>
                 <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
@@ -221,6 +235,7 @@ export function GlobalSettings({
           </SettingsSection>
           <SettingsSection
             title={tr("settings.scanRoots")}
+            target="discovery-roots"
             action={
               <Button className="gap-2" onClick={() => void onAddRoot()}>
                 <FolderPlus size={15} />
@@ -257,7 +272,7 @@ export function GlobalSettings({
             </SettingsListEmptyState>
           </SettingsSection>
         </div>
-        <SettingsSection title={tr("settings.excluded")}>
+        <SettingsSection title={tr("settings.excluded")} target="discovery-excluded">
           <SettingsListEmptyState items={excluded.length} emptyText={tr("settings.noExcluded")}>
             <div className="divide-y divide-border/60">
               {excluded.map((item) => (
@@ -285,7 +300,11 @@ export function GlobalSettings({
   if (section === "integrations")
     return (
       <SettingsPage variant="management">
-        <SettingsSection title="AgentKib MCP Hub">
+        <SettingsPageHeader
+          title={tr("settings.section.integrations")}
+          description={tr("settings.page.integrations.description")}
+        />
+        <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -298,14 +317,19 @@ export function GlobalSettings({
             </SettingsStatus>
           </SettingsRow>
         </SettingsSection>
-        <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />
-        <ObsidianSettingsCard />
+        <SettingsAnchor target="integrations-gateways">
+          <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />
+        </SettingsAnchor>
+        <SettingsAnchor target="integrations-obsidian">
+          <ObsidianSettingsCard />
+        </SettingsAnchor>
       </SettingsPage>
     );
   if (section === "privacy")
     return (
       <SettingsPage variant="form">
-        <SettingsSection title={tr("settings.localData")}>
+        <SettingsPageHeader title={tr("settings.section.privacy")} />
+        <SettingsSection title={tr("settings.localData")} target="privacy-local">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("settings.dataLocation")}</strong>
@@ -318,40 +342,78 @@ export function GlobalSettings({
           </SettingsRow>
           {hasFileAccessSettings && <FileAccessSettingsRow />}
         </SettingsSection>
-        <ConversationPrivacySettings
-          runtime={runtime}
-          workspaces={workspaces}
-          onChanged={onLocaleChanged}
-        />
-        <GitIdentitySettings />
+        <SettingsAnchor target="privacy-sessions">
+          <ConversationPrivacySettings
+            runtime={runtime}
+            workspaces={workspaces}
+            onChanged={onLocaleChanged}
+          />
+        </SettingsAnchor>
+        <SettingsAnchor target="privacy-git">
+          <GitIdentitySettings />
+        </SettingsAnchor>
       </SettingsPage>
     );
+  const providerIssues =
+    insightsStatus?.providers.filter(
+      (provider) => agentSupportsInsights(provider.agent) && !provider.available,
+    ).length ?? 0;
+  const diagnosticsHealthy =
+    quotaStatus !== undefined &&
+    insightsStatus !== undefined &&
+    !quotaStatus.error_key &&
+    providerIssues === 0;
   return (
     <SettingsPage variant="management">
-      <div className="grid gap-5 lg:grid-cols-2">
-        <SettingsPanel title={tr("quota.diagnostics")}>
-          <QuotaDiagnostics status={quotaStatus} />
-        </SettingsPanel>
-        <SettingsPanel title={tr("settings.providerStatus")}>
-          {insightsStatus?.providers
-            .filter((provider) => agentSupportsInsights(provider.agent))
-            .map((provider) => (
-              <SettingsRow className="px-5" key={provider.agent}>
-                <div className="flex items-center gap-3">
-                  <AgentIcon agent={provider.agent} />
-                  <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
-                </div>
-                <SettingsStatus tone={provider.available ? "success" : "neutral"}>
-                  {tr(provider.available ? "quota.available" : "insights.noData")}
-                </SettingsStatus>
-              </SettingsRow>
-            ))}
-          {!insightsStatus?.providers.length && (
-            <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
-          )}
-        </SettingsPanel>
-      </div>
-      <ActivityPage records={activity} />
+      <SettingsPageHeader
+        title={tr("settings.section.diagnostics")}
+        description={tr("settings.page.diagnostics.description")}
+        action={
+          <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
+            <RefreshCw size={15} />
+            {tr("menu.refreshCurrent")}
+          </Button>
+        }
+      />
+      <SettingsSection title={tr("settings.search.overallHealth")} target="diagnostics-overview">
+        <SettingsRow border={false}>
+          <SettingsCopy>
+            <strong>{tr("settings.diagnostics.healthStatus")}</strong>
+            <small>{tr("settings.diagnostics.healthDescription")}</small>
+          </SettingsCopy>
+          <SettingsStatus tone={diagnosticsHealthy ? "success" : "warning"}>
+            {tr(
+              diagnosticsHealthy
+                ? "settings.diagnostics.healthy"
+                : "settings.diagnostics.needsAttention",
+            )}
+          </SettingsStatus>
+        </SettingsRow>
+      </SettingsSection>
+      <SettingsPanel title={tr("quota.diagnostics")} target="diagnostics-quota">
+        <QuotaDiagnostics status={quotaStatus} />
+      </SettingsPanel>
+      <SettingsPanel title={tr("settings.providerStatus")} target="diagnostics-providers">
+        {insightsStatus?.providers
+          .filter((provider) => agentSupportsInsights(provider.agent))
+          .map((provider) => (
+            <SettingsRow className="px-5" key={provider.agent}>
+              <div className="flex items-center gap-3">
+                <AgentIcon agent={provider.agent} />
+                <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
+              </div>
+              <SettingsStatus tone={provider.available ? "success" : "neutral"}>
+                {tr(provider.available ? "quota.available" : "insights.noData")}
+              </SettingsStatus>
+            </SettingsRow>
+          ))}
+        {!insightsStatus?.providers.length && (
+          <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
+        )}
+      </SettingsPanel>
+      <SettingsAnchor target="diagnostics-activity">
+        <ActivityPage records={activity} />
+      </SettingsAnchor>
     </SettingsPage>
   );
 }
@@ -445,7 +507,7 @@ function KeyboardShortcutsSetting() {
   const platform = currentAppPlatform();
   const definition = getShortcutDefinition("open-help");
   return (
-    <SettingsSection title={tr("settings.shortcutsTitle")}>
+    <SettingsSection title={tr("settings.shortcutsTitle")} target="general-shortcuts">
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.shortcuts")}</strong>
@@ -487,7 +549,7 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingsSection title={tr("settings.quotaTitle")}>
+    <SettingsSection title={tr("settings.quotaTitle")} target="general-quota">
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -322,7 +323,7 @@ function registerUpdateIpc(): void {
   const updaterChannel =
     process.platform === "darwin" || process.platform === "win32" ? process.arch : undefined;
   if (updaterChannel) autoUpdater.channel = updaterChannel;
-  (autoUpdater as import("node:events").EventEmitter).on("before-quit-for-update", () => {
+  nativeAutoUpdater.on("before-quit-for-update", () => {
     quitApproved = true;
   });
   autoUpdater.autoDownload = false;

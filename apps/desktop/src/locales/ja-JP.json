@@ -238,6 +238,7 @@
   "settings.updateAvailable": "新しいバージョン {{version}} があります。現在は {{current}} です",
   "settings.updateDownloading": "アップデートをダウンロードして検証しています…",
   "settings.updateDownloadingProgress": "アップデートをダウンロードして検証しています… {{progress}}%",
+  "settings.updateInstalling": "アップデートをダウンロードしました。インストールして再起動するため AgentKib を終了しています…",
   "settings.updateDownloadInstall": "ダウンロードしてインストール",
   "settings.updateOpenRelease": "Release ページを開く",
   "settings.updateRetry": "もう一度確認",
@@ -1273,5 +1274,6 @@
   "settings.tools.appState.up-to-date": "最新版",
   "settings.tools.appState.available": "更新あり",
   "settings.tools.appState.downloading": "ダウンロード中",
+  "settings.tools.appState.installing": "再起動中",
   "settings.tools.appState.failed": "確認失敗"
 }

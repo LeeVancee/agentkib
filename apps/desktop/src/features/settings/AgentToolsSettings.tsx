@@ -648,13 +648,13 @@ function AppUpdateSetting({
 }) {
   const dialogs = useAppDialogs();
   const [status, setStatus] = useState<
-    "idle" | "checking" | "up-to-date" | "available" | "downloading" | "failed"
+    "idle" | "checking" | "up-to-date" | "available" | "downloading" | "installing" | "failed"
   >("idle");
   const [update, setUpdate] = useState<AppUpdateInfo>();
   const [error, setError] = useState("");
   const [downloaded, setDownloaded] = useState(0);
   const [contentLength, setContentLength] = useState<number>();
-  const busy = status === "checking" || status === "downloading";
+  const busy = status === "checking" || status === "downloading" || status === "installing";
   const progress = contentLength
     ? Math.min(100, Math.round((downloaded / contentLength) * 100))
     : 0;
@@ -703,8 +703,11 @@ function AppUpdateSetting({
           setDownloaded(event.data.downloaded);
           setContentLength(event.data.content_length);
         }
+        if (event.event === "finished") setStatus("installing");
       });
-      setStatus("up-to-date");
+      // quitAndInstall returns after handing off to the native updater. The old
+      // process cannot claim success until the updated application starts.
+      setStatus("installing");
     } catch (reason) {
       setError(localizeMessage(reason));
       setStatus("failed");
@@ -725,6 +728,7 @@ function AppUpdateSetting({
       return contentLength
         ? tr("settings.updateDownloadingProgress", { progress })
         : tr("settings.updateDownloading");
+    if (status === "installing") return tr("settings.updateInstalling");
     if (status === "failed") return error;
     return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
   }, [contentLength, currentVersion, error, progress, status, update, updatesEnabled]);
@@ -750,7 +754,13 @@ function AppUpdateSetting({
                     : "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
                 )}
               >
-                {status === "failed" ? <CircleAlert size={12} /> : <Check size={12} />}
+                {status === "failed" ? (
+                  <CircleAlert size={12} />
+                ) : busy ? (
+                  <RefreshCw className="animate-spin" size={12} />
+                ) : (
+                  <Check size={12} />
+                )}
                 {tr(`settings.tools.appState.${status}`)}
               </Badge>
             </div>

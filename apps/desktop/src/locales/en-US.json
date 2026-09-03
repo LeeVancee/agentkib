@@ -238,6 +238,7 @@
   "settings.updateAvailable": "Version {{version}} is available; current version is {{current}}",
   "settings.updateDownloading": "Downloading and verifying the update…",
   "settings.updateDownloadingProgress": "Downloading and verifying the update… {{progress}}%",
+  "settings.updateInstalling": "Update downloaded. Quitting AgentKib to install and restart…",
   "settings.updateDownloadInstall": "Download and install",
   "settings.updateOpenRelease": "Open Release download",
   "settings.updateRetry": "Check again",
@@ -1273,5 +1274,6 @@
   "settings.tools.appState.up-to-date": "Up to date",
   "settings.tools.appState.available": "Update available",
   "settings.tools.appState.downloading": "Downloading",
+  "settings.tools.appState.installing": "Restarting",
   "settings.tools.appState.failed": "Check failed"
 }

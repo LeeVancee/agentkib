@@ -7,6 +7,7 @@ export interface ActivityPresentation {
 }
 
 const discoveryDetailPattern = /^(\d+) workspaces, (\d+) errors$/;
+const insightsDetailPattern = /^(\d+) providers, (\d+) repositories$/;
 
 export function activityPresentation(record: ActivityRecord): ActivityPresentation {
   switch (record.action) {
@@ -27,6 +28,18 @@ export function activityPresentation(record: ActivityRecord): ActivityPresentati
         title: tr("activity.action.discovery.refresh"),
         detail: tr("activity.detail.discovery.refresh"),
       };
+    case "insights.refresh": {
+      const match = insightsDetailPattern.exec(record.detail);
+      return {
+        title: tr("activity.action.insights.refresh"),
+        detail: match
+          ? tr("activity.detail.insights.refresh", {
+              providers: Number(match[1]),
+              repositories: Number(match[2]),
+            })
+          : tr("activity.detail.insights.refreshGeneric"),
+      };
+    }
     case "changeset.apply":
       return {
         title: tr("activity.action.changeset.apply"),

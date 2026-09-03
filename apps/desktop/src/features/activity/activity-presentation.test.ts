@@ -24,6 +24,28 @@ describe("activityPresentation", () => {
     });
   });
 
+  it("localizes insight refresh counts instead of falling back to generic activity", () => {
+    expect(
+      activityPresentation(record("insights.refresh", "3 providers, 17 repositories")),
+    ).toEqual({
+      title: "Insights refreshed",
+      detail: "Collected data from 3 providers and 17 repositories",
+    });
+  });
+
+  it("keeps zero insight refresh counts", () => {
+    expect(
+      activityPresentation(record("insights.refresh", "0 providers, 0 repositories")).detail,
+    ).toBe("Collected data from 0 providers and 0 repositories");
+  });
+
+  it("does not expose malformed insight refresh details", () => {
+    expect(activityPresentation(record("insights.refresh", "provider=3 repositories=17"))).toEqual({
+      title: "Insights refreshed",
+      detail: "Insights were refreshed",
+    });
+  });
+
   it("does not expose opaque identifiers for changes and memories", () => {
     expect(activityPresentation(record("changeset.apply", "opaque-change-id")).detail).toBe(
       "The reviewed changes were applied successfully",
@@ -60,6 +82,19 @@ describe("activityPresentation", () => {
       );
       expect(presentation.title).not.toContain("discovery.complete");
       expect(presentation.detail).not.toBe("37 workspaces, 0 errors");
+      expect(presentation.detail).not.toContain("activity.detail");
+    }
+    await changeLocale("en-US");
+  });
+
+  it("has localized insight refresh presentation in every supported locale", async () => {
+    for (const locale of supportedLocales) {
+      await changeLocale(locale);
+      const presentation = activityPresentation(
+        record("insights.refresh", "3 providers, 17 repositories"),
+      );
+      expect(presentation.title).not.toContain("insights.refresh");
+      expect(presentation.detail).not.toBe("3 providers, 17 repositories");
       expect(presentation.detail).not.toContain("activity.detail");
     }
     await changeLocale("en-US");

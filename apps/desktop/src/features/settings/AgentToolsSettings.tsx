@@ -515,6 +515,10 @@ function AgentToolCard({
   const StateIcon = stateIcons[tool.state];
   const hasMultipleInstallations = tool.warnings.includes("multiple-executables");
   const DetailIcon = hasMultipleInstallations ? CircleAlert : StateIcon;
+  const warningDetails =
+    tool.state === "conflict" || tool.state === "unknown" || hasMultipleInstallations
+      ? toolWarnings(tool)
+      : [];
   const stateClass = {
     current: "border-emerald-500/35 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
     "update-available": "border-amber-500/35 bg-amber-500/8 text-amber-700 dark:text-amber-300",
@@ -618,16 +622,20 @@ function AgentToolCard({
           {actionLabel}
         </Button>
       </div>
-      {(tool.state === "conflict" || hasMultipleInstallations) && (
-        <p
+      {warningDetails.length > 0 && (
+        <div
           className={cn(
             "col-span-full flex items-start gap-1 pl-9 text-[11px]",
             tool.state === "conflict" ? "text-destructive" : "text-amber-700 dark:text-amber-300",
           )}
         >
           <DetailIcon size={12} className="mt-0.5" />
-          {toolWarning(tool)}
-        </p>
+          <ul className="space-y-0.5">
+            {warningDetails.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -976,21 +984,43 @@ function executionResultDescription(result: AgentToolExecutionResult) {
     .join("\n");
 }
 
-function toolWarning(tool: AgentToolStatus) {
-  if (tool.state === "conflict")
-    return tr("settings.tools.multipleExecutables", { count: tool.installations.length });
-  if (tool.warnings.includes("multiple-executables"))
-    return tr("settings.tools.multipleInstallationsNotice", { count: tool.installations.length });
-  if (tool.state === "current") return tr("settings.tools.noIssues");
-  if (tool.state === "update-available") return tr("settings.tools.updateSuggested");
-  if (tool.state === "uninstalled") return tr("settings.tools.executableMissing");
-  if (tool.warnings.includes("channel-unverified")) return tr("settings.tools.channelUnverified");
-  if (tool.warnings.includes("installation-not-runnable"))
-    return tr("settings.tools.installationNotRunnable");
-  if (tool.warnings.includes("version-unavailable")) return tr("settings.tools.versionUnavailable");
-  if (tool.warnings.includes("version-uncomparable"))
-    return tr("settings.tools.versionUncomparable");
-  return tr("settings.tools.latestUnavailable");
+function toolWarnings(tool: AgentToolStatus) {
+  const warnings: string[] = [];
+  if (tool.state === "conflict") {
+    warnings.push(tr("settings.tools.multipleExecutables", { count: tool.installations.length }));
+  } else if (tool.warnings.includes("multiple-executables")) {
+    warnings.push(
+      tr("settings.tools.multipleInstallationsNotice", { count: tool.installations.length }),
+    );
+  }
+
+  for (const warning of tool.warnings) {
+    const message = toolWarningMessage(warning);
+    if (message) warnings.push(message);
+  }
+
+  if (warnings.length > 0) return [...new Set(warnings)];
+  if (tool.state === "current") return [tr("settings.tools.noIssues")];
+  if (tool.state === "update-available") return [tr("settings.tools.updateSuggested")];
+  if (tool.state === "uninstalled") return [tr("settings.tools.executableMissing")];
+  return [tr("settings.tools.latestUnavailable")];
+}
+
+function toolWarningMessage(warning: string) {
+  switch (warning) {
+    case "channel-unverified":
+      return tr("settings.tools.channelUnverified");
+    case "installation-not-runnable":
+      return tr("settings.tools.installationNotRunnable");
+    case "version-unavailable":
+      return tr("settings.tools.versionUnavailable");
+    case "version-uncomparable":
+      return tr("settings.tools.versionUncomparable");
+    case "latest-unavailable":
+      return tr("settings.tools.latestUnavailable");
+    default:
+      return undefined;
+  }
 }
 
 export { AppUpdateSetting };

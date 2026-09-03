@@ -477,9 +477,11 @@ button {
 .app-shell-sidebar-collapsed {
   --sidebar-width: 0px;
 }
+.app-shell-headerless {
+  --sidebar-expanded-width: 256px;
+}
 .app-shell-headerless:not(.app-shell-sidebar-collapsed) {
   --sidebar-width: 256px;
-  --sidebar-expanded-width: 256px;
 }
 .app-shell::before {
   grid-column: 1;

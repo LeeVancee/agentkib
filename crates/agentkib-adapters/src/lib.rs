@@ -1238,7 +1238,23 @@ fn merge_codex_continuation_config(
         "Codex configuration already contains an unmanaged MCP with the same name: {}. Rename one entry or migrate it to AgentKib to preserve platform-specific fields.",
         connection.name
     );
-    servers.insert(key, codex_server_value(connection));
+    let generated = codex_server_value(connection);
+    let server = servers
+        .entry(key)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("AgentKib-managed Codex server must be a table")?;
+    let generated = generated
+        .as_table()
+        .expect("generated Codex server is always a table");
+    for (field, value) in generated {
+        server.insert(field.clone(), value.clone());
+    }
+    if matches!(connection.transport, ConnectionTransport::Http { .. }) {
+        for field in ["command", "args", "env", "cwd"] {
+            server.remove(field);
+        }
+    }
     let managed = toml::to_string(&managed)?;
     let block = format!("{TOML_START}\n{managed}{TOML_END}");
     let after_end = end + TOML_END.len();
@@ -1708,6 +1724,61 @@ mod tests {
         let repeated =
             plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-3", 47653).unwrap();
         assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_preserves_managed_codex_server_options() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        fs::write(
+            &config,
+            "# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = \"http://127.0.0.1:1234/old\"\ncommand = \"stale\"\nargs = [\"stale\"]\nenv = { TOKEN = \"stale\" }\ncwd = \"/tmp\"\nenabled_tools = [\"session_search\"]\ndisabled_tools = [\"session_read_chunk\"]\nstartup_timeout_sec = 30\nfuture = 42\n# agentkib:managed:end\n",
+        )
+        .unwrap();
+
+        let plan =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653).unwrap();
+
+        let after: toml::Value = toml::from_str(&plan.changes[0].after).unwrap();
+        let server = &after["mcp_servers"]["agentkib"];
+        assert_eq!(
+            server["url"].as_str(),
+            Some("http://127.0.0.1:47653/mcp/v1/workspaces/workspace-7/agents/codex")
+        );
+        assert_eq!(
+            server["enabled_tools"].as_array(),
+            Some(&vec![toml::Value::String("session_search".into())])
+        );
+        assert_eq!(
+            server["disabled_tools"].as_array(),
+            Some(&vec![toml::Value::String("session_read_chunk".into())])
+        );
+        assert_eq!(server["startup_timeout_sec"].as_integer(), Some(30));
+        assert_eq!(server["future"].as_integer(), Some(42));
+        for field in ["command", "args", "env", "cwd"] {
+            assert!(server.get(field).is_none());
+        }
+
+        fs::write(&config, &plan.changes[0].after).unwrap();
+        let repeated =
+            plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-7", 47653).unwrap();
+        assert!(repeated.changes.is_empty());
+    }
+
+    #[test]
+    fn continuation_gateway_rejects_a_non_table_managed_codex_server() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config = dir.path().join(".codex/config.toml");
+        let before = "# agentkib:managed:start\n[mcp_servers]\nagentkib = \"invalid\"\n# agentkib:managed:end\n";
+        fs::write(&config, before).unwrap();
+
+        let error = plan_continuation_gateway(dir.path(), AgentKind::Codex, "workspace-8", 47653)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("server must be a table"));
+        assert_eq!(fs::read_to_string(config).unwrap(), before);
     }
 
     #[test]

@@ -113,8 +113,7 @@ export function Changes({
   const applying = useRef(false);
   const active = useRef(true);
   const change = changeSet?.changes[selected];
-  const launchSupported =
-    launchRequest?.capabilities?.interactive_launch.status === "supported";
+  const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
   const targetAgentName = launchRequest ? agentLabels[launchRequest.target_agent] : "";
   useEffect(() => {
     active.current = true;

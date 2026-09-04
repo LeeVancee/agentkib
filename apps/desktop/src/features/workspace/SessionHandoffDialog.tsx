@@ -367,9 +367,9 @@ export function SessionHandoffDialog({
                         })
                       : mcpSetupStatus === "unavailable"
                         ? tr("handoff.window.mcpUnavailable")
-                      : tr("handoff.window.mcpUnsupported", {
-                          agent: agentName(targetAgent),
-                        })}
+                        : tr("handoff.window.mcpUnsupported", {
+                            agent: agentName(targetAgent),
+                          })}
                 </span>
                 {!draft.mcp_available && mcpSetupStatus === "supported" && (
                   <Button

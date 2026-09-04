@@ -405,9 +405,10 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
               ) : (
                 <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3">
                   {paginated.map((asset) => (
-                    <button
+                    <Button
                       key={asset.id}
-                      type="button"
+                      variant="bare"
+                      size="content"
                       className={cn(
                         "grid min-w-0 gap-3 rounded-xl border border-border bg-background p-4 text-left transition-colors hover:border-primary/35 hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         selectedId === asset.id && "border-primary bg-primary/[0.06]",
@@ -436,7 +437,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                         <span className="truncate">{workspaceName(asset.workspace_id)}</span>
                         <span className="shrink-0 tabular-nums">{formatBytes(asset.size)}</span>
                       </div>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
@@ -492,12 +493,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
         </Card>
 
         {selected && (
-          <aside
-            className="sticky top-4 grid h-fit max-h-[calc(100vh-6rem)] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl border border-border bg-card text-sm text-card-foreground shadow-sm"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="catalog-asset-title"
-          >
+          <aside className="sticky top-4 grid h-fit max-h-[calc(100vh-6rem)] w-full grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-2xl border border-border bg-card text-sm text-card-foreground shadow-sm">
             <header className="relative border-b border-border px-5 py-4 pr-12">
               <div className="flex min-w-0 items-center gap-3">
                 <AssetIcon />

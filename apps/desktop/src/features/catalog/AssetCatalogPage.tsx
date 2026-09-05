@@ -126,8 +126,13 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
   );
   const pageStart = filtered.length ? (activePage - 1) * ASSETS_PER_PAGE + 1 : 0;
   const pageEnd = Math.min(activePage * ASSETS_PER_PAGE, filtered.length);
-  const selected = paginated.find((asset) => asset.id === selectedId) ?? paginated[0];
+  const selected = paginated.find((asset) => asset.id === selectedId);
   const activeSelectedId = selected?.id;
+  const goToPage = (nextPage: number) => {
+    const nextActivePage = Math.min(Math.max(1, nextPage), totalPages);
+    setPage(nextActivePage);
+    setSelectedId(filtered[(nextActivePage - 1) * ASSETS_PER_PAGE]?.id);
+  };
   const workspaceName = (id?: string) =>
     workspaces.find((workspace) => workspace.id === id)?.name ?? "—";
   const controlClass = "h-10 w-[136px] min-w-0";
@@ -265,7 +270,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                 variant="ghost"
                 size="icon-sm"
                 className={viewMode === "table" ? "bg-muted text-foreground" : ""}
-                aria-label="表格视图"
+                aria-label={tr("catalog.viewTable")}
                 aria-pressed={viewMode === "table"}
                 onClick={() => setViewMode("table")}
               >
@@ -275,7 +280,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                 variant="ghost"
                 size="icon-sm"
                 className={viewMode === "grid" ? "bg-muted text-foreground" : ""}
-                aria-label="网格视图"
+                aria-label={tr("catalog.viewGrid")}
                 aria-pressed={viewMode === "grid"}
                 onClick={() => setViewMode("grid")}
               >
@@ -464,13 +469,13 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                   {pageStart}–{pageEnd} / {filtered.length}
                 </span>
                 {totalPages > 1 && (
-                  <div className="flex items-center gap-1" aria-label="资产分页">
+                  <div className="flex items-center gap-1" aria-label={tr("catalog.pagination")}>
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="上一页"
+                      aria-label={tr("catalog.previousPage")}
                       disabled={activePage === 1}
-                      onClick={() => setPage((value) => Math.max(1, value - 1))}
+                      onClick={() => goToPage(activePage - 1)}
                     >
                       <ChevronLeft size={15} />
                     </Button>
@@ -480,9 +485,9 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="下一页"
+                      aria-label={tr("catalog.nextPage")}
                       disabled={activePage === totalPages}
-                      onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                      onClick={() => goToPage(activePage + 1)}
                     >
                       <ChevronRight size={15} />
                     </Button>

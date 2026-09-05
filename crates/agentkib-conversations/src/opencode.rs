@@ -468,14 +468,26 @@ fn parse_exported_session(
                         name,
                         input,
                     });
-                    if let Some(state) = state
-                        && state.get("status").and_then(Value::as_str) == Some("completed")
-                    {
-                        blocks.push(SessionBlock::ToolResult {
-                            call_id,
-                            output: state.get("output").map(json_text).unwrap_or_default(),
-                            is_error: false,
-                        });
+                    if let Some(state) = state {
+                        let Some(status) = state.get("status").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let is_error = matches!(status, "error" | "failed");
+                        if status == "completed" || is_error {
+                            let output = state
+                                .get("output")
+                                .or_else(|| state.get("error"))
+                                .or_else(|| state.get("message"))
+                                .map(json_text)
+                                .unwrap_or_else(|| {
+                                    format!("OpenCode tool result status: {status}")
+                                });
+                            blocks.push(SessionBlock::ToolResult {
+                                call_id,
+                                output,
+                                is_error,
+                            });
+                        }
                     }
                 }
                 Some("file") => {

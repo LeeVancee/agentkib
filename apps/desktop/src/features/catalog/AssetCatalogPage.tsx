@@ -126,7 +126,12 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
   );
   const pageStart = filtered.length ? (activePage - 1) * ASSETS_PER_PAGE + 1 : 0;
   const pageEnd = Math.min(activePage * ASSETS_PER_PAGE, filtered.length);
-  const selected = assets.find((asset) => asset.id === selectedId);
+  useEffect(() => {
+    if (!paginated.some((asset) => asset.id === selectedId)) {
+      setSelectedId(paginated[0]?.id);
+    }
+  }, [paginated, selectedId]);
+  const selected = paginated.find((asset) => asset.id === selectedId);
   const workspaceName = (id?: string) =>
     workspaces.find((workspace) => workspace.id === id)?.name ?? "—";
   const controlClass = "h-10 w-[136px] min-w-0";

@@ -51,6 +51,7 @@ import {
   formatDateTime,
   formatRelativeTime,
   localizeMessage,
+  currentLocale,
   tr,
 } from "@/core/i18n";
 import {
@@ -102,7 +103,7 @@ export function InsightsPage({
     const from =
       range === "year"
         ? new Date(today.getFullYear(), 0, 1)
-        : new Date(today.getFullYear() - 1, today.getMonth(), 1);
+        : new Date(today.getFullYear(), today.getMonth(), today.getDate() - 363);
     const tokenView = section === "overview" || section === "tokens";
     const commitView = section === "overview" || section === "commits";
     return {
@@ -416,7 +417,7 @@ export function InsightsPage({
               </Card>
             </div>
             <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]">
-              <TokenTrendCard points={points} metric={metric} />
+              <TokenTrendCard points={points} metric={metric} metricLabel={metricLabels[metric]} />
               <AgentUsageSummary agents={agents} />
             </div>
           </div>
@@ -1047,7 +1048,15 @@ function ProviderRow({ provider }: { provider: NonNullable<InsightsStatus["provi
   );
 }
 
-function TokenTrendCard({ points, metric }: { points: HeatmapPoint[]; metric: HeatmapMetric }) {
+function TokenTrendCard({
+  points,
+  metric,
+  metricLabel,
+}: {
+  points: HeatmapPoint[];
+  metric: HeatmapMetric;
+  metricLabel: string;
+}) {
   const monthly = new Map<string, number>();
   for (const point of points) {
     const key = point.date.slice(0, 7);
@@ -1063,16 +1072,16 @@ function TokenTrendCard({ points, metric }: { points: HeatmapPoint[]; metric: He
       return `${x},${y}`;
     })
     .join(" ");
+  const trendLabel = tr("insights.trend", { metric: metricLabel });
+  const monthFormatter = new Intl.DateTimeFormat(currentLocale(), { month: "short" });
   return (
     <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
       <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
         <div>
-          <h2 className="m-0 text-base font-semibold">Token 趋势</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {metric === "tokens" ? "Token" : metric}
-          </p>
+          <h2 className="m-0 text-base font-semibold">{trendLabel}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{metricLabel}</p>
         </div>
-        <Badge variant="outline">按月</Badge>
+        <Badge variant="outline">{tr("insights.byMonth")}</Badge>
       </CardHeader>
       <CardContent className="px-5 pb-4 pt-5">
         {series.length ? (
@@ -1082,7 +1091,7 @@ function TokenTrendCard({ points, metric }: { points: HeatmapPoint[]; metric: He
               className="h-[170px] w-full overflow-visible"
               preserveAspectRatio="none"
               role="img"
-              aria-label="Token 趋势"
+              aria-label={trendLabel}
             >
               {[26, 67, 108, 150].map((y) => (
                 <line
@@ -1120,7 +1129,7 @@ function TokenTrendCard({ points, metric }: { points: HeatmapPoint[]; metric: He
             </svg>
             <div className="mt-1 flex justify-between gap-2 text-[11px] text-muted-foreground">
               {series.map(([key]) => (
-                <span key={key}>{Number(key.slice(5))}月</span>
+                <span key={key}>{monthFormatter.format(new Date(`${key}-01T00:00:00`))}</span>
               ))}
             </div>
           </>

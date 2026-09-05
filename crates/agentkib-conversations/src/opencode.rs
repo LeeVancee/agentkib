@@ -1,10 +1,15 @@
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use agentkib_core::AgentKind;
 use agentkib_platform::command;
+use agentkib_platform::process::{ProcessTree, configure_process_group};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
@@ -17,6 +22,9 @@ use crate::{
 };
 
 const MAX_EXPORT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_SESSION_LIST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STDERR_BYTES: usize = 64 * 1024;
+const OPENCODE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct OpenCodeProvider {
     workspace: Mutex<Option<std::path::PathBuf>>,
@@ -77,11 +85,13 @@ impl ConversationProvider for OpenCodeProvider {
         let Some(executable) = command::resolve("opencode") else {
             return Ok(Vec::new());
         };
-        let output = Command::new(executable)
-            .current_dir(workspace)
-            .args(["session", "list", "--format", "json"])
-            .output()
-            .context("Unable to inspect OpenCode sessions")?;
+        let output = run_opencode_command(
+            &executable,
+            &["session", "list", "--format", "json"],
+            Some(workspace),
+            MAX_SESSION_LIST_BYTES,
+        )
+        .context("Unable to inspect OpenCode sessions")?;
         if !output.status.success() {
             bail!(
                 "OpenCode session listing failed: {}",
@@ -202,16 +212,14 @@ impl OpenCodeProvider {
     fn export(&self, native_ref: &str) -> Result<ExportedSession> {
         let executable = command::resolve("opencode")
             .context("OpenCode CLI is not installed or is not available on PATH")?;
-        let mut process = Command::new(executable);
-        process.args(["export", native_ref]);
-        if let Ok(workspace) = self.workspace.lock()
-            && let Some(workspace) = workspace.as_deref()
-        {
-            process.current_dir(workspace);
-        }
-        let output = process
-            .output()
-            .context("Unable to export OpenCode session")?;
+        let workspace = self.workspace.lock().ok().and_then(|value| value.clone());
+        let output = run_opencode_command(
+            &executable,
+            &["export", native_ref],
+            workspace.as_deref(),
+            MAX_EXPORT_BYTES,
+        )
+        .context("Unable to export OpenCode session")?;
         if !output.status.success() {
             bail!("OpenCode session export failed: {}", stderr(&output.stderr));
         }
@@ -221,6 +229,191 @@ impl OpenCodeProvider {
         serde_json::from_slice(&output.stdout)
             .context("OpenCode returned an invalid session export")
     }
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+struct OutputMessage {
+    stream: OutputStream,
+    result: std::result::Result<Vec<u8>, String>,
+}
+
+struct OpenCodeOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_opencode_command(
+    executable: &Path,
+    args: &[&str],
+    workspace: Option<&Path>,
+    stdout_limit: usize,
+) -> Result<OpenCodeOutput> {
+    let mut process = Command::new(executable);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(workspace) = workspace {
+        process.current_dir(workspace);
+    }
+    configure_process_group(&mut process);
+    let mut child = process
+        .spawn()
+        .with_context(|| format!("Could not run {}", executable.display()))?;
+    let process_tree = match ProcessTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("Could not supervise OpenCode process tree");
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            stop_process(&mut child, &process_tree);
+            bail!("OpenCode stdout was unavailable");
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            stop_process(&mut child, &process_tree);
+            bail!("OpenCode stderr was unavailable");
+        }
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    let stdout_thread = spawn_output_reader(stdout, OutputStream::Stdout, stdout_limit, &sender);
+    let stderr_thread =
+        spawn_output_reader(stderr, OutputStream::Stderr, MAX_STDERR_BYTES, &sender);
+    let mut stdout_result = None;
+    let mut stderr_result = None;
+    let started = Instant::now();
+    let status = loop {
+        drain_output_messages(&receiver, &mut stdout_result, &mut stderr_result);
+        if let Some(error) = output_error(&stdout_result).or_else(|| output_error(&stderr_result)) {
+            stop_process(&mut child, &process_tree);
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            bail!("{error}");
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                stop_process(&mut child, &process_tree);
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(error).context("Unable to wait for OpenCode process");
+            }
+        }
+        if started.elapsed() >= OPENCODE_COMMAND_TIMEOUT {
+            stop_process(&mut child, &process_tree);
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            bail!("OpenCode command timed out after 30 seconds");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    // A wrapper can exit while a descendant still owns stdout or stderr. End the process tree
+    // before waiting for the reader threads so a leaked descendant cannot block this call.
+    let _ = process_tree.terminate();
+    let _ = child.wait();
+    receive_output_messages(&receiver, &mut stdout_result, &mut stderr_result);
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    receive_output_messages(&receiver, &mut stdout_result, &mut stderr_result);
+
+    Ok(OpenCodeOutput {
+        status,
+        stdout: finish_output(stdout_result, "stdout")?,
+        stderr: finish_output(stderr_result, "stderr")?,
+    })
+}
+
+fn spawn_output_reader<R: Read + Send + 'static>(
+    reader: R,
+    stream: OutputStream,
+    limit: usize,
+    sender: &mpsc::Sender<OutputMessage>,
+) -> thread::JoinHandle<()> {
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let result = read_limited(reader, limit);
+        let _ = sender.send(OutputMessage { stream, result });
+    })
+}
+
+fn read_limited(reader: impl Read, limit: usize) -> std::result::Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    reader
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut output)
+        .map_err(|error| format!("Unable to read OpenCode output: {error}"))?;
+    if output.len() > limit {
+        return Err(format!("OpenCode output exceeds the {limit}-byte limit"));
+    }
+    Ok(output)
+}
+
+fn drain_output_messages(
+    receiver: &Receiver<OutputMessage>,
+    stdout: &mut Option<std::result::Result<Vec<u8>, String>>,
+    stderr: &mut Option<std::result::Result<Vec<u8>, String>>,
+) {
+    while let Ok(message) = receiver.try_recv() {
+        match message.stream {
+            OutputStream::Stdout => *stdout = Some(message.result),
+            OutputStream::Stderr => *stderr = Some(message.result),
+        }
+    }
+}
+
+fn receive_output_messages(
+    receiver: &Receiver<OutputMessage>,
+    stdout: &mut Option<std::result::Result<Vec<u8>, String>>,
+    stderr: &mut Option<std::result::Result<Vec<u8>, String>>,
+) {
+    while stdout.is_none() || stderr.is_none() {
+        let Ok(message) = receiver.recv() else { break };
+        match message.stream {
+            OutputStream::Stdout => *stdout = Some(message.result),
+            OutputStream::Stderr => *stderr = Some(message.result),
+        }
+    }
+}
+
+fn output_error(output: &Option<std::result::Result<Vec<u8>, String>>) -> Option<String> {
+    output
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .cloned()
+}
+
+fn finish_output(
+    output: Option<std::result::Result<Vec<u8>, String>>,
+    stream: &str,
+) -> Result<Vec<u8>> {
+    match output {
+        Some(Ok(output)) => Ok(output),
+        Some(Err(error)) => bail!("OpenCode {stream} {error}"),
+        None => bail!("OpenCode {stream} reader did not finish"),
+    }
+}
+
+fn stop_process(child: &mut Child, process_tree: &ProcessTree) {
+    let _ = process_tree.terminate();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn parse_exported_session(

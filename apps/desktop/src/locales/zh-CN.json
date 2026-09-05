@@ -698,6 +698,8 @@
   "insights.recordedSessions": "{{count}} 个已记录会话",
   "insights.longestStreak": "最长 {{count}} 天",
   "insights.heatmap": "活动热力图",
+  "insights.trend": "{{metric}}趋势",
+  "insights.byMonth": "按月",
   "insights.waiting": "等待首次本地采集",
   "insights.less": "少",
   "insights.more": "多",

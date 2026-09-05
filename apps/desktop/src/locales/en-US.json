@@ -701,6 +701,8 @@
   "insights.recordedSessions": "{{count}} recorded sessions",
   "insights.longestStreak": "Longest: {{count}} days",
   "insights.heatmap": "Activity Heatmap",
+  "insights.trend": "{{metric}} Trend",
+  "insights.byMonth": "By month",
   "insights.waiting": "Waiting for the first local import",
   "insights.less": "Less",
   "insights.more": "More",

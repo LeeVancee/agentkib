@@ -225,8 +225,13 @@ function WorkspacesPage({
   );
   const pageStart = filtered.length ? (activePage - 1) * WORKSPACES_PER_PAGE + 1 : 0;
   const pageEnd = Math.min(activePage * WORKSPACES_PER_PAGE, filtered.length);
+  useEffect(() => {
+    if (!paginatedWorkspaces.some((workspace) => workspace.id === selectedId)) {
+      setSelectedId(paginatedWorkspaces[0]?.id ?? "");
+    }
+  }, [paginatedWorkspaces, selectedId]);
   const selectedWorkspace =
-    filtered.find((workspace) => workspace.id === selectedId) ?? filtered[0];
+    paginatedWorkspaces.find((workspace) => workspace.id === selectedId) ?? paginatedWorkspaces[0];
   const viewControls = (
     <ToggleGroup
       spacing={0}

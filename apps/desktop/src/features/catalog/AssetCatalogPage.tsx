@@ -126,12 +126,8 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
   );
   const pageStart = filtered.length ? (activePage - 1) * ASSETS_PER_PAGE + 1 : 0;
   const pageEnd = Math.min(activePage * ASSETS_PER_PAGE, filtered.length);
-  useEffect(() => {
-    if (!paginated.some((asset) => asset.id === selectedId)) {
-      setSelectedId(paginated[0]?.id);
-    }
-  }, [paginated, selectedId]);
-  const selected = paginated.find((asset) => asset.id === selectedId);
+  const selected = paginated.find((asset) => asset.id === selectedId) ?? paginated[0];
+  const activeSelectedId = selected?.id;
   const workspaceName = (id?: string) =>
     workspaces.find((workspace) => workspace.id === id)?.name ?? "—";
   const controlClass = "h-10 w-[136px] min-w-0";
@@ -324,11 +320,11 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                           key={asset.id}
                           tabIndex={0}
                           role="button"
-                          aria-selected={selectedId === asset.id}
-                          data-state={selectedId === asset.id ? "selected" : undefined}
+                          aria-selected={activeSelectedId === asset.id}
+                          data-state={activeSelectedId === asset.id ? "selected" : undefined}
                           className={cn(
                             "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                            selectedId === asset.id && "bg-muted/60 hover:bg-muted/70",
+                            activeSelectedId === asset.id && "bg-muted/60 hover:bg-muted/70",
                           )}
                           onClick={() => setSelectedId(asset.id)}
                           onKeyDown={(event) => {
@@ -416,7 +412,7 @@ export function AssetCatalogPage({ assets, workspaces, onOpen }: AssetCatalogPag
                       size="content"
                       className={cn(
                         "grid min-w-0 gap-3 rounded-xl border border-border bg-background p-4 text-left transition-colors hover:border-primary/35 hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        selectedId === asset.id && "border-primary bg-primary/[0.06]",
+                        activeSelectedId === asset.id && "border-primary bg-primary/[0.06]",
                       )}
                       onClick={() => setSelectedId(asset.id)}
                     >

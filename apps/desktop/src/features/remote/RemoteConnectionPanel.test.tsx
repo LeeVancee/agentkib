@@ -5,6 +5,7 @@ import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
 import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnectionPanel";
 import { useRemoteStore } from "./remote-store";
+import { QuickConnect } from "./QuickConnect";
 
 const status: RemoteStatus = {
   local: { id: "local", name: "Desk", enabled: false, address: null },
@@ -20,7 +21,7 @@ const run = vi.fn();
 vi.mock("./WebAccessSettings", () => ({ WebAccessSettings: () => null }));
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
-  run.mockReset();
+  run.mockReset().mockResolvedValue(null);
   useRemoteStore.setState({
     snapshot: status,
     loading: false,
@@ -33,6 +34,137 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+
+describe("quick connection flow", () => {
+  const now = Date.now();
+  const pairing = {
+    id: "host",
+    verification: "123 456",
+    status: "pending" as const,
+    expires_at: now / 1000 + 300,
+  };
+  const host = {
+    id: "host",
+    name: "Laptop",
+    address: "192.168.1.5:42987",
+    status: "pending" as const,
+    last_seen: null,
+    error: null,
+  };
+  async function openManual() {
+    const button = screen.getByRole("button", { name: tr("remote.quick.manual") });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+  }
+  it("discovers once per opening and keeps manual inputs out of the initial view", async () => {
+    const { rerender } = render(<QuickConnect now={now} onDone={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText(tr("remote.quick.empty"))).toBeTruthy());
+    expect(screen.queryByLabelText(tr("remote.address"))).toBeNull();
+    expect(screen.queryByText(tr("remote.quick.saved"))).toBeNull();
+    await openManual();
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.back") }));
+    rerender(<QuickConnect now={now + 2000} onDone={vi.fn()} />);
+    expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.searchAgain") }));
+    await waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+  });
+  it("selects a nearby computer, requires eight digits, and returns without pairing", async () => {
+    useRemoteStore.setState({ snapshot: { ...status, discovered: [host] } });
+    render(<QuickConnect now={now} onDone={vi.fn()} />);
+    const device = await screen.findByRole("button", { name: /Laptop/ });
+    fireEvent.click(device);
+    expect(screen.queryByLabelText(tr("remote.address"))).toBeNull();
+    const input = screen.getByLabelText(tr("remote.code"));
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: "1234567" } });
+    expect(
+      (screen.getByRole("button", { name: tr("remote.pair") }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.change(input, { target: { value: "12345678" } });
+    expect(
+      (screen.getByRole("button", { name: tr("remote.pair") }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.back") }));
+    expect(run.mock.calls).toEqual([[{ operation: "discover" }]]);
+  });
+  it("shows reconnect success only after the host is authoritatively online", async () => {
+    useRemoteStore.setState({
+      snapshot: { ...status, connections: [{ ...host, status: "offline" }] },
+    });
+    run.mockImplementation(async (request) => {
+      if (request.operation !== "connect") return null;
+      const snapshot: RemoteStatus = { ...status, connections: [{ ...host, status: "online" }] };
+      useRemoteStore.setState({ snapshot });
+      return snapshot;
+    });
+    const onDone = vi.fn();
+    render(<QuickConnect now={now} onDone={onDone} />);
+    const connect = screen.getByRole("button", { name: tr("remote.connect") });
+    await waitFor(() => expect((connect as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(connect);
+    await screen.findByRole("button", { name: tr("remote.quick.done") });
+    expect(onDone).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.done") }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith({ operation: "connect", id: host.id });
+  });
+  it("restores pending verification after reopening and tracks rejection without retrying", () => {
+    useRemoteStore.setState({ pairing, snapshot: { ...status, connections: [host] } });
+    const first = render(<QuickConnect now={now} onDone={vi.fn()} />);
+    expect(screen.getByText(pairing.verification)).toBeTruthy();
+    first.unmount();
+    render(<QuickConnect now={now} onDone={vi.fn()} />);
+    expect(screen.getByText(tr("remote.waitApproval"))).toBeTruthy();
+    act(() =>
+      useRemoteStore.setState({
+        snapshot: { ...status, connections: [{ ...host, status: "rejected" }] },
+      }),
+    );
+    expect(screen.getByText(tr("remote.state.rejected"))).toBeTruthy();
+    expect(screen.queryByText(pairing.verification)).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+  it("expires waiting verification and never reports success before an online snapshot", () => {
+    useRemoteStore.setState({ pairing, snapshot: { ...status, connections: [host] } });
+    const { rerender } = render(<QuickConnect now={now} onDone={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: tr("remote.quick.done") })).toBeNull();
+    rerender(<QuickConnect now={now + 301000} onDone={vi.fn()} />);
+    expect(screen.getByText(tr("remote.expired"))).toBeTruthy();
+    expect(screen.queryByText(pairing.verification)).toBeNull();
+    act(() =>
+      useRemoteStore.setState({
+        snapshot: { ...status, connections: [{ ...host, status: "online" }] },
+      }),
+    );
+    expect(screen.getByRole("button", { name: tr("remote.quick.done") })).toBeTruthy();
+  });
+  it("submits once while pending and does not close or navigate when completion arrives after unmount", async () => {
+    let finish!: (value: typeof pairing) => void;
+    run.mockImplementation((request) =>
+      request.operation === "pair"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(null),
+    );
+    const onDone = vi.fn();
+    const { unmount } = render(<QuickConnect now={now} onDone={onDone} />);
+    await openManual();
+    fireEvent.change(screen.getByLabelText(tr("remote.address")), {
+      target: { value: host.address },
+    });
+    fireEvent.change(screen.getByLabelText(tr("remote.code")), { target: { value: "12345678" } });
+    const form = screen.getByLabelText(tr("remote.code")).closest("form")!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(run.mock.calls.filter(([request]) => request.operation === "pair")).toEqual([
+      [{ operation: "pair", address: host.address, code: "12345678" }],
+    ]);
+    unmount();
+    await act(async () => finish(pairing));
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
 
 describe("remote connections UI", () => {
   it("shows friendly feedback for a real wrapped IPC error in the quick panel", () => {
@@ -73,12 +205,19 @@ describe("remote connections UI", () => {
   });
   it("translates an open pairing panel immediately without losing address/code input", async () => {
     render(<RemoteConnectionPanel open onOpenChange={vi.fn()} onSettings={vi.fn()} />);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: tr("remote.quick.manual") }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.manual") }));
     const address = screen.getByRole("textbox", { name: tr("remote.address") });
     fireEvent.change(address, { target: { value: "192.168.1.20:42987" } });
     try {
       for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
-        expect(screen.getByRole("heading", { name: tr("settings.section.remote") })).toBeTruthy();
+        expect(screen.getByRole("heading", { name: tr("remote.quick.title") })).toBeTruthy();
         expect(screen.getByRole("textbox", { name: tr("remote.address") })).toBe(address);
         expect((address as HTMLInputElement).value).toBe("192.168.1.20:42987");
       }
@@ -190,6 +329,13 @@ describe("remote connections UI", () => {
       expires_at: Date.now() / 1000 + 300,
     });
     render(<RemoteConnectionPanel open onOpenChange={vi.fn()} onSettings={vi.fn()} />);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: tr("remote.quick.manual") }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: tr("remote.quick.manual") }));
     fireEvent.change(screen.getByLabelText("Host IPv4 address and port"), {
       target: { value: "192.168.1.5:42987" },
     });

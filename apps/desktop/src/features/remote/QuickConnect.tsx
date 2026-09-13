@@ -172,11 +172,13 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
                 {snapshot?.discovered
                   .filter((h) => !snapshot.connections.some((saved) => saved.id === h.id))
                   .map((item) => (
-                    <button
+                    <Button
+                      variant="outline"
+                      size="content"
                       key={item.id}
                       data-focus-key={`discover:${item.id}`}
                       disabled={disabled || pending}
-                      className="flex w-full items-center gap-3 rounded-lg border p-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                      className="flex w-full items-center justify-start gap-3 whitespace-normal rounded-lg p-3 text-left"
                       onClick={(event) => {
                         returnFocus.current = event.currentTarget.dataset.focusKey ?? "";
                         setTarget(item);
@@ -192,7 +194,7 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
                           {item.address}
                         </span>
                       </span>
-                    </button>
+                    </Button>
                   ))}
               </>
             )}

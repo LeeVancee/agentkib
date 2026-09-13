@@ -23,3 +23,9 @@
 ## 限制
 
 未进行真实跨设备配对、安装版 Electron 或 Safari 验收。此次前端预览不代表已安装 v0.11.0 已更新。无提交、推送、部署或发布。
+
+## PR #72 修复复验
+
+- CI 失败来自 `ui-source-constraints.test.ts`：设备行直接使用原生 button。已改用共享 Button，保留整行点击、长名称换行和稳定焦点标识；未放宽约束测试。
+- Review 评论 3998258877：成功删除待确认主机时同步清理匹配 pairing。删除失败、其他主机及 disconnect 不清理；新增回归验证删除完成前保留、完成后清除以及旧状态回执不能恢复。
+- 全量 `pnpm test`、`pnpm typecheck`、`pnpm build` 通过；相关格式、lint 和 diff 检查通过。真实设备未追加测试。

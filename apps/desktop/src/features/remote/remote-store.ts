@@ -56,7 +56,13 @@ export const useRemoteStore = create<RemoteState>((set, get) => ({
       const result = await api.remoteRequest(request);
       if (ticket !== revision) return null;
       if ("local" in result)
-        set({ snapshot: sameStatus(get().snapshot, result) ? get().snapshot : result });
+        set({
+          snapshot: sameStatus(get().snapshot, result) ? get().snapshot : result,
+          pairing:
+            request.operation === "remove" && get().pairing?.id === request.id
+              ? null
+              : get().pairing,
+        });
       else set({ pairing: result });
       return result;
     } catch (error) {

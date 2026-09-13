@@ -171,4 +171,68 @@ describe("remote connection state", () => {
     expect(useRemoteStore.getState().pairing).toEqual(pairing);
     expect(api.remoteRequest).toHaveBeenLastCalledWith({ operation: "status" });
   });
+
+  it("clears matching pairing only after removal succeeds and ignores an older status read", async () => {
+    const pairing = {
+      id: "host",
+      verification: "123 456",
+      status: "pending" as const,
+      expires_at: 2_000_000_000,
+    };
+    const pending: RemoteStatus = {
+      ...status,
+      connections: [
+        {
+          id: "host",
+          name: "Host",
+          address: "192.168.1.2:42987",
+          status: "pending",
+          last_seen: null,
+          error: null,
+        },
+      ],
+    };
+    useRemoteStore.setState({ pairing, snapshot: pending });
+    const old = deferred<RemoteStatus>();
+    const removal = deferred<RemoteStatus>();
+    vi.mocked(api.remoteRequest)
+      .mockImplementationOnce(() => old.promise)
+      .mockImplementationOnce(() => removal.promise)
+      .mockResolvedValue(status);
+
+    const read = useRemoteStore.getState().refresh();
+    const operation = useRemoteStore.getState().run({ operation: "remove", id: "host" });
+    expect(useRemoteStore.getState().pairing).toBe(pairing);
+    removal.resolve(status);
+    await operation;
+    expect(useRemoteStore.getState().pairing).toBeNull();
+    old.resolve(pending);
+    await read;
+    expect(useRemoteStore.getState().snapshot).toEqual(status);
+    expect(useRemoteStore.getState().pairing).toBeNull();
+  });
+
+  it.each(["failed removal", "different connection", "disconnect"])(
+    "retains pairing for %s",
+    async (scenario) => {
+      const pairing = {
+        id: "host",
+        verification: "123 456",
+        status: "pending" as const,
+        expires_at: 2_000_000_000,
+      };
+      useRemoteStore.setState({ pairing });
+      if (scenario === "failed removal") {
+        vi.mocked(api.remoteRequest).mockRejectedValueOnce(new Error("remove failed"));
+      } else {
+        vi.mocked(api.remoteRequest).mockResolvedValueOnce(status);
+      }
+      vi.mocked(api.remoteRequest).mockResolvedValue(status);
+      await useRemoteStore.getState().run({
+        operation: scenario === "disconnect" ? "disconnect" : "remove",
+        id: scenario === "different connection" ? "other-host" : "host",
+      });
+      expect(useRemoteStore.getState().pairing).toBe(pairing);
+    },
+  );
 });

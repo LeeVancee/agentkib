@@ -30,6 +30,7 @@ import { useI18n } from "@/core/useI18n";
 import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
 import { RemoteErrorDetails } from "./RemoteErrorDetails";
 import { WebAccessSettings } from "./WebAccessSettings";
+import { QuickConnect } from "./QuickConnect";
 
 function useRemoteStatus() {
   const store = useRemoteStore();
@@ -267,16 +268,20 @@ export function RemoteConnectionPanel({
   const { now } = useRemoteStatus();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>{tr("settings.section.remote")}</DialogTitle>
-          <DialogDescription>{tr("remote.readonly")}</DialogDescription>
+          <DialogTitle>{tr("remote.quick.title")}</DialogTitle>
+          <DialogDescription>{tr("remote.quick.description")}</DialogDescription>
+          <span className="text-xs text-muted-foreground">{tr("remote.quick.readonly")}</span>
         </DialogHeader>
         <RemoteFeedback />
-        <RemoteConnections />
-        <PairHost now={now} />
-        <Button variant="outline" onClick={onSettings}>
-          {tr("remote.fullSettings")}
+        {open && <QuickConnect now={now} onDone={() => onOpenChange(false)} />}
+        <Button
+          variant="ghost"
+          className="justify-self-start text-muted-foreground"
+          onClick={onSettings}
+        >
+          {tr("remote.quick.settings")}
         </Button>
       </DialogContent>
     </Dialog>

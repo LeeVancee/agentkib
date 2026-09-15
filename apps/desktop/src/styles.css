@@ -1393,6 +1393,8 @@ button {
 .theme-choice-card {
   display: grid;
   width: 100%;
+  align-items: stretch;
+  justify-content: stretch;
   overflow: hidden;
   appearance: none;
   cursor: pointer;

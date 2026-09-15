@@ -1,11 +1,11 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { useState } from "octane";
 import { Check, ChevronRight, Circle, ShieldCheck, X } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { api } from "@/core/api";
-import { localizeMessage, tr } from "@/core/i18n";
 import type { ContextDoctorSummary, OnboardingState, WorkspaceSummary } from "@/core/types";
 
 export function GettingStartedCard({
@@ -23,8 +23,10 @@ export function GettingStartedCard({
   onAddRoot: () => Promise<void>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
 }) {
+  const { tr, localizeMessage } = useI18n();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ reason: unknown }>();
+  const errorMessage = error === undefined ? "" : localizeMessage(error.reason);
   if (!onboarding || onboarding.acknowledged_version >= onboarding.version) return null;
 
   const selectedWorkspace =
@@ -46,11 +48,11 @@ export function GettingStartedCard({
   const run = async (operation: () => Promise<void>) => {
     if (busy) return;
     setBusy(true);
-    setError("");
+    setError(undefined);
     try {
       await operation();
     } catch (reason) {
-      setError(localizeMessage(reason));
+      setError({ reason });
     } finally {
       setBusy(false);
     }
@@ -96,9 +98,9 @@ export function GettingStartedCard({
           <ChevronRight size={15} />
         </Button>
       </div>
-      {error && (
+      {errorMessage && (
         <div className="border-t border-destructive/20 bg-destructive/5 px-5 py-2.5 text-xs text-destructive">
-          {error}
+          {errorMessage}
         </div>
       )}
     </Card>

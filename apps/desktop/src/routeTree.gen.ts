@@ -14,6 +14,7 @@ import { Route as AgentsRouteImport } from './routes/agents'
 import { Route as CatalogRouteImport } from './routes/catalog'
 import { Route as InsightsRouteImport } from './routes/insights'
 import { Route as QuotaRouteImport } from './routes/quota'
+import { Route as SessionsRouteImport } from './routes/sessions'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as WorkspacesRouteImport } from './routes/workspaces'
 import { Route as WorkspaceWorkspaceIdRouteRouteImport } from './routes/workspace/$workspaceId/route'
@@ -48,6 +49,11 @@ const InsightsRoute = InsightsRouteImport.update({
 const QuotaRoute = QuotaRouteImport.update({
   id: '/quota',
   path: '/quota',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SessionsRoute = SessionsRouteImport.update({
+  id: '/sessions',
+  path: '/sessions',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -114,6 +120,7 @@ export interface FileRoutesByFullPath {
   '/catalog': typeof CatalogRoute
   '/insights': typeof InsightsRoute
   '/quota': typeof QuotaRoute
+  '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
   '/workspaces': typeof WorkspacesRoute
   '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRouteRouteWithChildren
@@ -131,6 +138,7 @@ export interface FileRoutesByTo {
   '/catalog': typeof CatalogRoute
   '/insights': typeof InsightsRoute
   '/quota': typeof QuotaRoute
+  '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
   '/workspaces': typeof WorkspacesRoute
   '/workspace/$workspaceId/assets': typeof WorkspaceWorkspaceIdAssetsRoute
@@ -148,6 +156,7 @@ export interface FileRoutesById {
   '/catalog': typeof CatalogRoute
   '/insights': typeof InsightsRoute
   '/quota': typeof QuotaRoute
+  '/sessions': typeof SessionsRoute
   '/settings': typeof SettingsRoute
   '/workspaces': typeof WorkspacesRoute
   '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRouteRouteWithChildren
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
     | '/catalog'
     | '/insights'
     | '/quota'
+    | '/sessions'
     | '/settings'
     | '/workspaces'
     | '/workspace/$workspaceId'
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
     | '/catalog'
     | '/insights'
     | '/quota'
+    | '/sessions'
     | '/settings'
     | '/workspaces'
     | '/workspace/$workspaceId/assets'
@@ -200,6 +211,7 @@ export interface FileRouteTypes {
     | '/catalog'
     | '/insights'
     | '/quota'
+    | '/sessions'
     | '/settings'
     | '/workspaces'
     | '/workspace/$workspaceId'
@@ -218,6 +230,7 @@ export interface RootRouteChildren {
   CatalogRoute: typeof CatalogRoute
   InsightsRoute: typeof InsightsRoute
   QuotaRoute: typeof QuotaRoute
+  SessionsRoute: typeof SessionsRoute
   SettingsRoute: typeof SettingsRoute
   WorkspacesRoute: typeof WorkspacesRoute
   WorkspaceWorkspaceIdRouteRoute: typeof WorkspaceWorkspaceIdRouteRouteWithChildren
@@ -258,6 +271,13 @@ declare module '@octanejs/tanstack-router' {
       path: '/quota'
       fullPath: '/quota'
       preLoaderRoute: typeof QuotaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sessions': {
+      id: '/sessions'
+      path: '/sessions'
+      fullPath: '/sessions'
+      preLoaderRoute: typeof SessionsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -365,6 +385,7 @@ const rootRouteChildren: RootRouteChildren = {
   CatalogRoute: CatalogRoute,
   InsightsRoute: InsightsRoute,
   QuotaRoute: QuotaRoute,
+  SessionsRoute: SessionsRoute,
   SettingsRoute: SettingsRoute,
   WorkspacesRoute: WorkspacesRoute,
   WorkspaceWorkspaceIdRouteRoute: WorkspaceWorkspaceIdRouteRouteWithChildren,

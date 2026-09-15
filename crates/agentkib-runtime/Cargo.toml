@@ -8,7 +8,9 @@ license.workspace = true
 dev-app = ["agentkib-store/dev-app"]
 
 [dependencies]
+agentkib-codex-bridge.workspace = true
 agentkib-protocol.workspace = true
+agentkib-remote.workspace = true
 agentkib-adapters.workspace = true
 agentkib-conversations.workspace = true
 agentkib-core.workspace = true
@@ -22,6 +24,7 @@ agentkib-quota.workspace = true
 agentkib-storage.workspace = true
 agentkib-skills.workspace = true
 agentkib-store.workspace = true
+agentkib-tools.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 dirs.workspace = true

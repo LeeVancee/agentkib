@@ -170,6 +170,7 @@ export type CloseBehavior = "minimize-to-tray" | "quit";
 export type SupportedLocale = "zh-CN" | "zh-TW" | "ja-JP" | "en-US";
 export type LocalePreference = "system" | SupportedLocale;
 export type ThemePreference = "system" | "light" | "dark";
+export type AccentThemeId = "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze";
 export type EffectiveTheme = "light" | "dark";
 export type AppIconPreference = "white" | "black";
 export interface LocalizedMessage {
@@ -286,9 +287,12 @@ export interface RuntimeInfo {
   effective_locale: SupportedLocale;
   theme_preference: ThemePreference;
   effective_theme: EffectiveTheme;
+  accent_theme_preference: AccentThemeId | null;
+  sidebar_width_preference: number | null;
   app_icon_preference: AppIconPreference;
   tray_available: boolean;
   session_index_enabled: boolean;
+  local_auto_refresh_enabled: boolean;
   quota_auto_refresh_enabled: boolean;
   quota_auto_refresh_prompt_seen: boolean;
   onboarding: OnboardingState;
@@ -322,12 +326,22 @@ export type AppUpdateProgress =
 export type WorkspaceStatus = "healthy" | "attention";
 export type DiscoveryEvidence = "session-cwd" | "configured-workspace" | "scan-marker" | "manual";
 export interface WorkspaceSource {
+  session_cwds?: string[] | null;
   agent?: AgentKind;
   evidence: DiscoveryEvidence;
   session_count: number;
   last_active_at?: string;
 }
+// Controller-only provenance. Never written back into the local workspace/session index.
+export interface RemoteRecordSource {
+  host_id: string;
+  host_name: string;
+  original_id: string;
+  online: boolean;
+  last_synced_at: string;
+}
 export interface WorkspaceSummary {
+  remote?: RemoteRecordSource;
   id: string;
   path: string;
   name: string;
@@ -347,6 +361,113 @@ export interface AgentInstallation {
   version?: string;
   home?: string;
   warnings: string[];
+  /** Optional in protocol v15; absent on older runtimes. */
+  support?: AgentSupport;
+}
+
+export type AgentControlCapability = "none" | "experimental";
+
+/** Static feature support, separate from whether an Agent is installed/configured. */
+export interface AgentSupport {
+  workspace_discovery: boolean;
+  session_list: boolean;
+  history_read: boolean;
+  continuation: boolean;
+  control: AgentControlCapability;
+}
+export type AgentToolState =
+  | "current"
+  | "update-available"
+  | "uninstalled"
+  | "conflict"
+  | "unknown";
+export type AgentToolChannel =
+  | "official-installer"
+  | "npm"
+  | "pnpm"
+  | "bun"
+  | "yarn"
+  | "homebrew"
+  | "volta"
+  | "desktop-app"
+  | "nix"
+  | "local"
+  | "unknown";
+export type AgentToolEnvironment =
+  | "system"
+  | "standalone"
+  | "nvm"
+  | "fnm"
+  | "mise"
+  | "volta"
+  | "unknown";
+export interface AgentToolInstallation {
+  id: string;
+  path: string;
+  resolved_path: string;
+  version?: string;
+  runnable: boolean;
+  error?: string;
+  channel: AgentToolChannel;
+  environment: AgentToolEnvironment;
+  manager_path?: string;
+  is_path_default: boolean;
+}
+export type AgentToolActionKind = "install" | "update" | "open-documentation";
+export type AgentToolActionMode = "execute" | "copy-command" | "open-documentation";
+export type AgentToolShell = "posix" | "powershell";
+export interface AgentToolAction {
+  id: string;
+  kind: AgentToolActionKind;
+  mode: AgentToolActionMode;
+  channel: AgentToolChannel;
+  shell?: AgentToolShell;
+  command?: string;
+  url?: string;
+  target_version?: string;
+  installation_id?: string;
+  manager_path?: string;
+}
+export interface AgentToolStatus {
+  agent: AgentKind;
+  installed: boolean;
+  current_version?: string;
+  latest_version?: string;
+  recommended_version?: string;
+  upstream_version?: string;
+  state: AgentToolState;
+  channel: AgentToolChannel;
+  installations: AgentToolInstallation[];
+  warnings: string[];
+  official_url: string;
+  release_url?: string;
+  actions: AgentToolAction[];
+}
+export type AgentToolExecutionStatus =
+  | "succeeded"
+  | "failed"
+  | "timed-out"
+  | "busy"
+  | "unchanged"
+  | "verification-failed";
+export interface AgentToolExecutionResult {
+  agent: AgentKind;
+  action_id: string;
+  status: AgentToolExecutionStatus;
+  exit_code?: number;
+  output: string;
+  installation_id?: string;
+  before_version?: string;
+  after_version?: string;
+  completed_at: string;
+}
+export type AgentToolCacheStatus = "fresh" | "cached" | "unavailable";
+export interface AgentToolSnapshot {
+  tools: AgentToolStatus[];
+  checked_at: string;
+  latest_checked_at?: string;
+  cache_status: AgentToolCacheStatus;
+  errors: string[];
 }
 export interface CatalogAsset {
   id: string;
@@ -434,6 +555,31 @@ export interface DiscoveryReport {
   discovered_count: number;
   removed_count: number;
   errors: string[];
+  /** Optional in protocol v15; older reports remain valid without details. */
+  source_diagnostics?: DiscoverySourceDiagnostic[];
+}
+
+export type DiscoverySourceStatus =
+  | "not-configured"
+  | "missing"
+  | "empty"
+  | "succeeded"
+  | "partial"
+  | "permission-denied"
+  | "unsupported"
+  | "failed";
+
+export interface DiscoverySourceDiagnostic {
+  agent?: AgentKind;
+  source: string;
+  path?: string;
+  status: DiscoverySourceStatus | string;
+  started_at?: string;
+  finished_at?: string;
+  candidate_count?: number;
+  included_count?: number;
+  skipped_count?: number;
+  reasons?: string[];
 }
 export interface ScanRoot {
   id: string;
@@ -877,24 +1023,30 @@ export interface AppNavigationRequest {
 }
 
 export type SessionAvailability = "readable" | "metadata-only";
+export type SessionOrigin = "interactive" | "auxiliary" | "unknown";
 export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
 export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
+export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
+  remote?: RemoteRecordSource;
   id: string;
   workspace_id: string;
-  agent: "codex" | "claude-code";
+  agent: AgentKind;
   title?: string;
   created_at?: string;
   updated_at?: string;
-  message_count?: number;
+  message_count?: number | null;
   git_branch?: string;
   archived: boolean;
   sidechain: boolean;
+  origin?: SessionOrigin;
+  spawned_by_session_id?: string;
+  forked_from_session_id?: string;
   availability: SessionAvailability;
 }
 export interface ConversationIndexStatus {
   workspace_id: string;
-  agent: "codex" | "claude-code";
+  agent: AgentKind;
   freshness: SessionIndexFreshness;
   session_count: number;
   last_attempt_at?: string;
@@ -905,11 +1057,13 @@ export interface ConversationIndexStatus {
 export interface ConversationEvent {
   id: string;
   kind: ConversationEventKind;
+  turn_id?: string;
+  message_phase?: MessagePhase;
   timestamp?: string;
   content?: string;
   tool_name?: string;
   tool_status?: string;
-  duration_ms?: number;
+  duration_ms?: number | null;
   attachment_count: number;
   truncated: boolean;
 }
@@ -936,6 +1090,26 @@ export interface NativeImportCapability {
   supported: boolean;
   beta: boolean;
   reason?: string;
+}
+export type ContinuationCapabilityStatus =
+  | "supported"
+  | "unavailable"
+  | "unsupported"
+  | "unverified";
+export interface ContinuationCapability {
+  status: ContinuationCapabilityStatus;
+  reason?: string | null;
+}
+export interface ContinuationCapabilities {
+  source_agent: AgentKind;
+  target_agent: AgentKind;
+  source_read: ContinuationCapability;
+  source_parse: ContinuationCapability;
+  native_resume: ContinuationCapability;
+  file_handoff: ContinuationCapability;
+  windowed_context: ContinuationCapability;
+  mcp_setup: ContinuationCapability;
+  interactive_launch: ContinuationCapability;
 }
 export interface SessionImportStats {
   turn_count: number;
@@ -967,6 +1141,7 @@ export interface SessionHandoffDraft {
   source_fingerprint: string;
   mode: SessionContinuationMode;
   native_capability: NativeImportCapability;
+  capabilities: ContinuationCapabilities;
   stats: SessionImportStats;
   history_budget_tokens: number;
   window_strategy: SessionWindowStrategy;
@@ -985,6 +1160,7 @@ export type SessionHandoffLaunchRequest =
       target_path: string;
       archive_id?: string;
       archive_hash?: string;
+      capabilities?: ContinuationCapabilities;
     }
   | {
       mode: "handoff-file";
@@ -993,6 +1169,7 @@ export type SessionHandoffLaunchRequest =
       target_agent: AgentKind;
       archive_id?: string;
       archive_hash?: string;
+      capabilities?: ContinuationCapabilities;
     };
 export interface PlannedSessionHandoff {
   change_set: ChangeSet;

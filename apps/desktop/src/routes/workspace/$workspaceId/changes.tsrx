@@ -1,6 +1,7 @@
 /** @jsxImportSource octane */
 
-import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
+import { useI18n } from "@/core/useI18n";
+import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { api } from "../../../core/api";
@@ -10,9 +11,8 @@ import {
   hasActiveChangesFlow,
   type WorkspaceFlowPage,
 } from "@/features/workspace/workspace-flow";
-import { homeKeys } from "@/features/home/home-query.tsx";
-import { useCallback, useEffect, useLinkedState, useRef, useState } from "octane";
-import { localizeMessage, tr } from "../../../core/i18n";
+import { homeKeys } from "@/features/home/home-query";
+import { useCallback, useEffect, useRef, useState } from "octane";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -106,6 +106,7 @@ export function Changes({
   onRejected: () => void;
   onApplyingChange: (applying: boolean) => void;
 }) {
+  const { localizeMessage, tr } = useI18n();
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState(false);
   const [planningHome, setPlanningHome] = useState(false);
@@ -119,8 +120,7 @@ export function Changes({
   const applying = useRef(false);
   const active = useRef(true);
   const change = changeSet?.changes[selected];
-  const launchSupported =
-    launchRequest?.target_agent === "codex" || launchRequest?.target_agent === "claude-code";
+  const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
   const targetAgentName = launchRequest ? agentLabels[launchRequest.target_agent] : "";
   useEffect(() => {
     active.current = true;
@@ -360,9 +360,11 @@ export function Changes({
 }
 
 function WorkspaceChangesRoute() {
+  const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/changes" });
+  const search = useSearch({ strict: false });
   const {
     project,
     changeSet,
@@ -397,6 +399,31 @@ function WorkspaceChangesRoute() {
       });
     },
     [navigate, workspaceId],
+  );
+  const navigateToContinuation = useCallback(
+    (autoPrepare: boolean) => {
+      void navigate({
+        to: "/workspace/$workspaceId/sessions",
+        params: { workspaceId },
+        replace: true,
+        search: (current) => ({
+          ...current,
+          handoffSession: search.handoffSession,
+          handoffTarget: search.handoffTarget,
+          handoffBudget: search.handoffBudget,
+          handoffFormat: search.handoffFormat,
+          handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
+        }),
+      });
+    },
+    [
+      navigate,
+      search.handoffBudget,
+      search.handoffFormat,
+      search.handoffSession,
+      search.handoffTarget,
+      workspaceId,
+    ],
   );
   useEffect(
     () => () => {
@@ -454,6 +481,7 @@ function WorkspaceChangesRoute() {
       onApplied={async (keepLaunchRequest) => {
         const targetProject = project;
         const appliedDoctorRepair = changeSetOrigin === "doctor";
+        const appliedHandoffSetup = changeSetOrigin === "handoff-setup";
         const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         if (!keepLaunchRequest) setHandoffLaunchRequest(undefined);
@@ -474,7 +502,10 @@ function WorkspaceChangesRoute() {
           )
             setMessage(localizeMessage(error));
         } finally {
-          if (!keepLaunchRequest) navigateTo(returnPage, appliedDoctorRepair);
+          if (!keepLaunchRequest) {
+            if (appliedHandoffSetup) navigateToContinuation(true);
+            else navigateTo(returnPage, appliedDoctorRepair);
+          }
         }
       }}
       onLaunchCompleted={() => {
@@ -485,7 +516,8 @@ function WorkspaceChangesRoute() {
         const returnPage = changesReturnPage(changeSetOrigin);
         setChangeSet(undefined);
         setHandoffLaunchRequest(undefined);
-        navigateTo(returnPage);
+        if (changeSetOrigin === "handoff-setup") navigateToContinuation(false);
+        else navigateTo(returnPage);
       }}
       onApplyingChange={setApplyingChanges}
     />

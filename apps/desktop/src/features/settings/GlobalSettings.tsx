@@ -1,21 +1,19 @@
 /** @jsxImportSource octane */
 
+import { useTranslation } from "@octanejs/i18next";
+import type { TFunction } from "i18next";
+import { useI18n } from "@/core/useI18n";
 import { useEffect, useState } from "octane";
-import type { Renderable } from "@/lib/octane-types";
 import {
   Check,
   CircleAlert,
-  Download,
   ExternalLink,
   FolderGit2,
   FolderPlus,
   GitCommitHorizontal,
   History,
   Keyboard,
-  Monitor,
-  Moon,
   RefreshCw,
-  Sun,
   Trash2,
   X,
 } from "@octanejs/lucide";
@@ -31,35 +29,36 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { ObsidianSettingsCard } from "@/features/obsidian/ObsidianIntegration";
 import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
+import { AgentToolsSettings } from "./AgentToolsSettings";
+import { AppearanceSettings } from "./AppearanceSettings";
+import { RemoteConnectionSettings } from "@/features/remote/RemoteConnectionPanel";
+import {
+  SettingsCopy,
+  SettingsAnchor,
+  SettingsNotice,
+  SettingsPage,
+  SettingsPageHeader,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
+  SettingsStatus,
+} from "./components/SettingsLayout";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import {
-  cacheEffectiveLocale,
-  changeLocale,
-  formatDateTime,
-  localizeMessage,
-  tr,
-} from "@/core/i18n";
-import {
-  accentThemePreference,
-  applyAccentTheme,
-  applyTheme,
-  cacheEffectiveTheme,
-  type AccentTheme,
-} from "@/core/theme";
+import { cacheEffectiveLocale, changeLocale, localizeMessage } from "@/core/i18n";
+import { cacheEffectiveTheme } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
-import type { SettingsSection } from "./SettingsSidebar";
+import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
   ActivityRecord,
   AgentKind,
   AppIconPreference,
-  AppUpdateInfo,
   CloseBehavior,
   DiscoveryReport,
   ExcludedWorkspace,
@@ -70,11 +69,12 @@ import type {
   RemoteGatewaySummary,
   RuntimeInfo,
   ScanRoot,
-  ThemePreference,
   WorkspaceSummary,
 } from "@/core/types";
+import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
+import type { Renderable } from "@/lib/octane-types";
 import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
@@ -106,7 +106,7 @@ const agentLabels: Record<AgentKind, string> = {
 };
 
 export type GlobalSettingsProps = {
-  section: SettingsSection;
+  section: SettingsSectionId;
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   discovery?: DiscoveryReport;
@@ -121,8 +121,10 @@ export type GlobalSettingsProps = {
   onRestore: (path: string) => Promise<void>;
   onCloseBehaviorChanged: (behavior?: CloseBehavior) => Promise<void>;
   onLocaleChanged: (runtime: RuntimeInfo) => void;
+  onSessionIndexCleared: () => void;
   onOnboardingRestarted: () => Promise<void>;
   onRemoteGatewaysChanged: () => Promise<void>;
+  onRefreshDiagnostics: () => Promise<void>;
 };
 
 export function GlobalSettings({
@@ -141,15 +143,31 @@ export function GlobalSettings({
   onRestore,
   onCloseBehaviorChanged,
   onLocaleChanged,
+  onSessionIndexCleared,
   onOnboardingRestarted,
   onRemoteGatewaysChanged,
+  onRefreshDiagnostics,
 }: GlobalSettingsProps) {
+  const { tr, formatDateTime } = useI18n();
+  if (section === "remote") return <RemoteConnectionSettings />;
+
+  if (section === "appearance") {
+    return (
+      <AppearanceSettings
+        runtime={runtime}
+        onChanged={(nextRuntime) => {
+          cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          onLocaleChanged(nextRuntime);
+        }}
+      />
+    );
+  }
+
   if (section === "general")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title={tr("settings.interface")}>
-          <ThemeSetting runtime={runtime} onChanged={onLocaleChanged} />
-          <AccentThemeSetting effectiveTheme={runtime?.effective_theme} />
+      <SettingsPage variant="form">
+        <SettingsPageHeader title={tr("settings.section.general")} />
+        <SettingsSection title={tr("settings.interface")} target="general-interface">
           <AppIconSetting runtime={runtime} onChanged={onLocaleChanged} />
           <LanguageSetting runtime={runtime} onChanged={onLocaleChanged} />
           <SettingsRow>
@@ -162,10 +180,6 @@ export function GlobalSettings({
               onChange={onCloseBehaviorChanged}
             />
           </SettingsRow>
-          <AppUpdateSetting
-            currentVersion={runtime?.app_version}
-            updatesEnabled={runtime?.updates_enabled ?? false}
-          />
           <SettingsRow>
             <SettingsCopy>
               <strong>{tr("settings.onboarding")}</strong>
@@ -175,21 +189,38 @@ export function GlobalSettings({
             </Button>
           </SettingsRow>
           {runtime?.tray_available === false && (
-            <SettingDetail variant="warning" role="status">
+            <SettingsNotice tone="warning" role="status">
               <CircleAlert size={14} />
               {tr("settings.trayUnavailable")}
-            </SettingDetail>
+            </SettingsNotice>
           )}
-        </SettingGroup>
+        </SettingsSection>
         <KeyboardShortcutsSetting />
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
-      </div>
+      </SettingsPage>
+    );
+  if (section === "tools")
+    return (
+      <SettingsPage variant="workspace">
+        <SettingsPageHeader
+          title={tr("settings.section.tools")}
+          description={tr("settings.page.tools.description")}
+        />
+        <AgentToolsSettings
+          currentVersion={runtime?.app_version}
+          updatesEnabled={runtime?.updates_enabled ?? false}
+        />
+      </SettingsPage>
     );
   if (section === "discovery")
     return (
-      <div className="grid gap-5">
-        <div className="grid gap-5 xl:grid-cols-2">
-          <SettingGroup title={tr("settings.discovery")}>
+      <SettingsPage variant="management">
+        <SettingsPageHeader
+          title={tr("settings.section.discovery")}
+          description={tr("settings.page.discovery.description")}
+        />
+        <div className="grid gap-5">
+          <SettingsSection title={tr("settings.discovery")} target="discovery-status">
             <SettingsRow>
               <SettingsCopy>
                 <strong className="whitespace-nowrap">{tr("settings.discoveryStatus")}</strong>
@@ -206,18 +237,22 @@ export function GlobalSettings({
               </span>
             </SettingsRow>
             {discovery?.errors.map((error) => (
-              <SettingDetail variant="error" key={error}>
+              <SettingsNotice tone="error" key={error}>
                 {error}
-              </SettingDetail>
+              </SettingsNotice>
             ))}
-          </SettingGroup>
-          <SettingGroup title={tr("settings.scanRoots")}>
-            <div className="flex justify-end border-b border-border/60 px-5 py-3">
+          </SettingsSection>
+          <DiscoveryDiagnostics discovery={discovery} />
+          <SettingsSection
+            title={tr("settings.scanRoots")}
+            target="discovery-roots"
+            action={
               <Button className="gap-2" onClick={() => void onAddRoot()}>
                 <FolderPlus size={15} />
                 {tr("settings.addFolder")}
               </Button>
-            </div>
+            }
+          >
             <SettingsListEmptyState items={scanRoots.length} emptyText={tr("settings.noScanRoots")}>
               <div className="divide-y divide-border/60">
                 {scanRoots.map((root) => (
@@ -245,9 +280,9 @@ export function GlobalSettings({
                 ))}
               </div>
             </SettingsListEmptyState>
-          </SettingGroup>
+          </SettingsSection>
         </div>
-        <SettingGroup title={tr("settings.excluded")}>
+        <SettingsSection title={tr("settings.excluded")} target="discovery-excluded">
           <SettingsListEmptyState items={excluded.length} emptyText={tr("settings.noExcluded")}>
             <div className="divide-y divide-border/60">
               {excluded.map((item) => (
@@ -269,13 +304,17 @@ export function GlobalSettings({
               ))}
             </div>
           </SettingsListEmptyState>
-        </SettingGroup>
-      </div>
+        </SettingsSection>
+      </SettingsPage>
     );
   if (section === "integrations")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title="AgentKib MCP Hub">
+      <SettingsPage variant="management">
+        <SettingsPageHeader
+          title={tr("settings.section.integrations")}
+          description={tr("settings.page.integrations.description")}
+        />
+        <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("mcp.network")}</strong>
@@ -283,247 +322,259 @@ export function GlobalSettings({
                 {runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}
               </code>
             </SettingsCopy>
-            <StatusText active={Boolean(runtime?.mcp_hub?.running)}>
+            <SettingsStatus tone={runtime?.mcp_hub?.running ? "success" : "neutral"}>
               {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
-            </StatusText>
+            </SettingsStatus>
           </SettingsRow>
-        </SettingGroup>
-        <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />
-        <ObsidianSettingsCard />
-      </div>
+        </SettingsSection>
+        <SettingsAnchor target="integrations-gateways">
+          <RemoteGatewaysSettings gateways={remoteGateways} onChanged={onRemoteGatewaysChanged} />
+        </SettingsAnchor>
+        <SettingsAnchor target="integrations-obsidian">
+          <ObsidianSettingsCard />
+        </SettingsAnchor>
+      </SettingsPage>
     );
   if (section === "privacy")
     return (
-      <div className="grid gap-5">
-        <SettingGroup title={tr("settings.localData")}>
+      <SettingsPage variant="form">
+        <SettingsPageHeader title={tr("settings.section.privacy")} />
+        <SettingsSection title={tr("settings.localData")} target="privacy-local">
           <SettingsRow border={false}>
             <SettingsCopy>
               <strong>{tr("settings.dataLocation")}</strong>
               <code>{runtime?.data_dir ?? "—"}</code>
             </SettingsCopy>
-            <StatusText active>
+            <SettingsStatus tone="success" indicator={false}>
               <Check size={14} />
               {tr("common.localOnly")}
-            </StatusText>
+            </SettingsStatus>
           </SettingsRow>
           {hasFileAccessSettings && <FileAccessSettingsRow />}
-        </SettingGroup>
-        <ConversationPrivacySettings
-          runtime={runtime}
-          workspaces={workspaces}
-          onChanged={onLocaleChanged}
-        />
-        <GitIdentitySettings />
-      </div>
+        </SettingsSection>
+        <SettingsAnchor target="privacy-sessions">
+          <ConversationPrivacySettings
+            runtime={runtime}
+            workspaces={workspaces}
+            onChanged={onLocaleChanged}
+            onIndexCleared={onSessionIndexCleared}
+          />
+        </SettingsAnchor>
+        <SettingsAnchor target="privacy-git">
+          <GitIdentitySettings />
+        </SettingsAnchor>
+      </SettingsPage>
     );
+  const providerIssues =
+    insightsStatus?.providers.filter(
+      (provider) => agentSupportsInsights(provider.agent) && !provider.available,
+    ).length ?? 0;
+  const diagnosticsHealthy =
+    quotaStatus !== undefined &&
+    insightsStatus !== undefined &&
+    !quotaStatus.error_key &&
+    providerIssues === 0;
   return (
-    <div className="grid gap-5">
-      <div className="grid gap-5 xl:grid-cols-2">
-        <SettingGroup title={tr("quota.diagnostics")}>
-          <QuotaDiagnostics status={quotaStatus} />
-        </SettingGroup>
-        <SettingGroup title={tr("settings.providerStatus")}>
-          {insightsStatus?.providers
-            .filter((provider) => agentSupportsInsights(provider.agent))
-            .map((provider) => (
-              <SettingsRow key={provider.agent}>
-                <div className="flex items-center gap-3">
-                  <AgentIcon agent={provider.agent} />
-                  <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
-                </div>
-                <StatusText active={provider.available}>
-                  {tr(provider.available ? "quota.available" : "insights.noData")}
-                </StatusText>
-              </SettingsRow>
-            ))}
-          {!insightsStatus?.providers.length && (
-            <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
-          )}
-        </SettingGroup>
-      </div>
-      <ActivityPage records={activity} />
-    </div>
+    <SettingsPage variant="management">
+      <SettingsPageHeader
+        title={tr("settings.section.diagnostics")}
+        description={tr("settings.page.diagnostics.description")}
+        action={
+          <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
+            <RefreshCw size={15} />
+            {tr("menu.refreshCurrent")}
+          </Button>
+        }
+      />
+      <SettingsSection title={tr("settings.search.overallHealth")} target="diagnostics-overview">
+        <SettingsRow border={false}>
+          <SettingsCopy>
+            <strong>{tr("settings.diagnostics.healthStatus")}</strong>
+            <small>{tr("settings.diagnostics.healthDescription")}</small>
+          </SettingsCopy>
+          <SettingsStatus tone={diagnosticsHealthy ? "success" : "warning"}>
+            {tr(
+              diagnosticsHealthy
+                ? "settings.diagnostics.healthy"
+                : "settings.diagnostics.needsAttention",
+            )}
+          </SettingsStatus>
+        </SettingsRow>
+      </SettingsSection>
+      <SettingsPanel title={tr("quota.diagnostics")} target="diagnostics-quota">
+        <QuotaDiagnostics status={quotaStatus} />
+      </SettingsPanel>
+      <SettingsPanel title={tr("settings.providerStatus")} target="diagnostics-providers">
+        {insightsStatus?.providers
+          .filter((provider) => agentSupportsInsights(provider.agent))
+          .map((provider) => (
+            <SettingsRow className="px-5" key={provider.agent}>
+              <div className="flex items-center gap-3">
+                <AgentIcon agent={provider.agent} />
+                <strong className="text-sm font-medium">{agentLabels[provider.agent]}</strong>
+              </div>
+              <SettingsStatus tone={provider.available ? "success" : "neutral"}>
+                {tr(provider.available ? "quota.available" : "insights.noData")}
+              </SettingsStatus>
+            </SettingsRow>
+          ))}
+        {!insightsStatus?.providers.length && (
+          <div className="px-5 py-4 text-sm text-muted-foreground">{tr("insights.noData")}</div>
+        )}
+      </SettingsPanel>
+      <SettingsAnchor target="diagnostics-activity">
+        <ActivityPage records={activity} />
+      </SettingsAnchor>
+    </SettingsPage>
   );
 }
 
-type AppUpdateStatus = "idle" | "checking" | "up-to-date" | "available" | "downloading" | "failed";
-
-export function AppUpdateSetting({
-  currentVersion,
-  updatesEnabled = true,
-}: {
-  currentVersion?: string;
-  updatesEnabled?: boolean;
-}) {
-  const dialogs = useAppDialogs();
-  const [status, setStatus] = useState<AppUpdateStatus>("idle");
-  const [update, setUpdate] = useState<AppUpdateInfo>();
-  const [error, setError] = useState("");
-  const [downloaded, setDownloaded] = useState(0);
-  const [contentLength, setContentLength] = useState<number>();
-  const busy = status === "checking" || status === "downloading";
-  const progress = contentLength
-    ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-    : 0;
-
-  const check = async () => {
-    if (busy || !updatesEnabled) return;
-    setStatus("checking");
-    setError("");
-    setUpdate(undefined);
-    try {
-      const available = await api.checkAppUpdate();
-      setUpdate(available);
-      setStatus(available ? "available" : "up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const install = async () => {
-    if (!update || busy) return;
-    if (update.install_mode === "manual") {
-      try {
-        await api.openExternal(update.release_url);
-      } catch (reason) {
-        setError(localizeMessage(reason));
-        setStatus("failed");
-      }
-      return;
-    }
-    if (
-      !(await dialogs.confirm({
-        title: tr("settings.updateInstallTitle"),
-        description: tr("settings.updateInstallConfirm", { version: update.version }),
-      }))
-    )
-      return;
-
-    setStatus("downloading");
-    setError("");
-    setDownloaded(0);
-    setContentLength(undefined);
-    try {
-      await api.installAppUpdate(update.version, (event) => {
-        if (event.event === "started") {
-          setContentLength(event.data.content_length);
-        } else if (event.event === "progress") {
-          setDownloaded(event.data.downloaded);
-          setContentLength(event.data.content_length);
-        }
-      });
-      setStatus("up-to-date");
-    } catch (reason) {
-      setError(localizeMessage(reason));
-      setStatus("failed");
-    }
-  };
-
-  const description = (() => {
-    if (!updatesEnabled) return tr("settings.updateUnavailableInDevelopment");
-    if (status === "checking") return tr("settings.updateChecking");
-    if (status === "up-to-date")
-      return tr("settings.updateUpToDate", { version: currentVersion ?? "—" });
-    if (status === "available" && update)
-      return tr("settings.updateAvailable", {
-        current: update.current_version,
-        version: update.version,
-      });
-    if (status === "downloading")
-      return contentLength
-        ? tr("settings.updateDownloadingProgress", { progress })
-        : tr("settings.updateDownloading");
-    if (status === "failed") return error;
-    return tr("settings.updateCurrentVersion", { version: currentVersion ?? "—" });
-  })();
-
+function DiscoveryDiagnostics({ discovery }: { discovery?: DiscoveryReport }) {
+  const { tr, formatDateTime } = useI18n();
+  const sources = discovery?.source_diagnostics ?? [];
   return (
-    <>
-      <SettingsRow
-        border={Boolean(update?.notes || status === "failed" || status === "downloading")}
-      >
-        <SettingsCopy>
-          <strong>{tr("settings.updates")}</strong>
-          <small className={status === "failed" ? "!text-destructive" : undefined}>
-            {description}
-          </small>
-        </SettingsCopy>
-        {status === "available" && update ? (
-          <Button type="button" disabled={busy} onClick={() => void install()}>
-            {update.install_mode === "manual" ? <ExternalLink size={14} /> : <Download size={14} />}
-            {tr(
-              update.install_mode === "manual"
-                ? "settings.updateOpenRelease"
-                : "settings.updateDownloadInstall",
-            )}
-          </Button>
-        ) : (
-          <Button type="button" disabled={busy || !updatesEnabled} onClick={() => void check()}>
-            <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
-            {tr(status === "failed" ? "settings.updateRetry" : "settings.checkForUpdates")}
-          </Button>
-        )}
-      </SettingsRow>
-      {status === "downloading" && (
-        <div
-          className="h-1 bg-muted"
-          role="progressbar"
-          aria-valuenow={progress}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
+    <SettingsSection
+      title={tr("settings.discoverySources")}
+      description={tr("settings.discoveryDetails")}
+      target="discovery-sources"
+    >
+      {sources.length ? (
+        <div className="divide-y divide-border/60">
+          {sources.map((source, index) => (
+            <Collapsible
+              className="group px-5 py-3"
+              key={`${source.agent ?? "unknown"}:${source.source}:${index}`}
+            >
+              <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-3 bg-transparent p-0 text-left">
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-muted/50 text-muted-foreground">
+                  <FolderGit2 size={15} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <strong className="block truncate text-sm font-medium">
+                    {source.agent ? agentLabels[source.agent] : tr("agents.capability.unknown")}
+                    {` · ${source.source}`}
+                  </strong>
+                  <small className="mt-1 block truncate text-xs text-muted-foreground">
+                    {source.path ?? tr("settings.discoveryPathUnavailable")}
+                  </small>
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 text-xs font-medium",
+                    source.status === "succeeded" || source.status === "empty"
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : source.status === "partial"
+                        ? "text-amber-700 dark:text-amber-300"
+                        : "text-destructive",
+                  )}
+                >
+                  {discoverySourceStatusLabel(source.status, tr)}
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3 grid gap-3 border-t border-border/60 pt-3 text-xs">
+                <div className="grid gap-1">
+                  <span className="text-muted-foreground">{tr("settings.discoveryDetails")}</span>
+                  <code className="break-all rounded-md bg-muted/40 px-2 py-1 text-[11px] text-foreground">
+                    {source.path ?? tr("settings.discoveryPathUnavailable")}
+                  </code>
+                </div>
+                <div className="grid gap-x-5 gap-y-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <DiscoveryMetric
+                    label={tr("settings.discoveryCandidates")}
+                    value={source.candidate_count}
+                  />
+                  <DiscoveryMetric
+                    label={tr("settings.discoveryWorkspaces")}
+                    value={source.included_count}
+                  />
+                  <DiscoveryMetric
+                    label={tr("settings.discoverySkipped")}
+                    value={source.skipped_count}
+                  />
+                  <DiscoveryMetric
+                    label={tr("settings.discoveryStarted")}
+                    value={source.started_at ? formatDateTime(source.started_at) : undefined}
+                  />
+                  <DiscoveryMetric
+                    label={tr("settings.discoveryFinished")}
+                    value={source.finished_at ? formatDateTime(source.finished_at) : undefined}
+                  />
+                </div>
+                {source.reasons?.length ? (
+                  <div className="grid gap-1.5">
+                    <strong className="font-medium">{tr("settings.discoveryReasons")}</strong>
+                    <ul className="grid gap-1 text-muted-foreground">
+                      {source.reasons.map((reason, reasonIndex) => (
+                        <li className="flex flex-wrap gap-x-2" key={`${reason}:${reasonIndex}`}>
+                          <span>{discoveryReasonLabel(reason, tr)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <span className="text-muted-foreground">{tr("settings.discoveryNoReasons")}</span>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
+          ))}
         </div>
+      ) : (
+        <SettingsNotice inset={false} className="m-0 rounded-none border-0">
+          {discovery ? tr("settings.discoveryDetailsUnavailable") : tr("home.discovering")}
+        </SettingsNotice>
       )}
-      {update?.notes && status !== "failed" && (
-        <SettingDetail>
-          <span className="whitespace-pre-wrap break-words">
-            <strong className="mb-1 block text-foreground">{tr("settings.updateNotes")}</strong>
-            {update.notes}
-          </span>
-        </SettingDetail>
-      )}
-    </>
+    </SettingsSection>
   );
+}
+
+function discoveryReasonLabel(reason: string, translate: (key: string) => string) {
+  const key = `settings.discovery.reason.${reason}`;
+  const translated = String(translate(key));
+  return translated === key ? translate("settings.discovery.reason.unknown") : translated;
+}
+
+function DiscoveryMetric({ label, value }: { label: string; value?: number | string }) {
+  return (
+    <span className="grid gap-1">
+      <span className="text-muted-foreground">{label}</span>
+      <strong className="font-medium text-foreground">{value ?? "—"}</strong>
+    </span>
+  );
+}
+
+function discoverySourceStatusLabel(status: string, translate: (key: string) => string) {
+  const key = `settings.discovery.status.${status}`;
+  const translated = translate(key);
+  return translated === key ? status : translated;
 }
 
 function ActivityPage({ records }: { records: ActivityRecord[] }) {
+  const { t: tr } = useTranslation();
   return (
-    <Card className="rounded-xl border border-border bg-card shadow-sm">
-      <CardHeader className="flex items-start justify-between gap-3 border-b border-border px-4 py-4 text-left">
-        <div>
-          <h2>{tr("activity.title")}</h2>
+    <SettingsPanel title={tr("activity.title")} contentClassName="divide-y divide-border/60">
+      {records.map((record) => (
+        <ActivityRow key={record.id} record={record} />
+      ))}
+      {!records.length && (
+        <div className="grid min-h-[260px] place-content-center justify-items-center gap-1.5 p-[30px] text-center text-muted-foreground">
+          <History size={28} className="mb-1.5" />
+          <h3 className="m-0 text-[13px] font-semibold text-foreground">{tr("home.noActivity")}</h3>
+          <p className="m-0 max-w-[380px] leading-relaxed">{tr("activity.emptyText")}</p>
         </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="divide-y divide-border/60">
-          {records.map((record) => (
-            <ActivityRow key={record.id} record={record} />
-          ))}
-          {!records.length && (
-            <div className="grid min-h-[260px] place-content-center justify-items-center gap-1.5 p-[30px] text-center text-muted-foreground">
-              <History size={28} className="mb-1.5" />
-              <h3 className="m-0 text-[13px] font-semibold text-foreground">
-                {tr("home.noActivity")}
-              </h3>
-              <p className="m-0 max-w-[380px] leading-relaxed">{tr("activity.emptyText")}</p>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      )}
+    </SettingsPanel>
   );
 }
 function ActivityRow({ record }: { record: ActivityRecord }) {
-  const key = `activity.action.${record.action}`;
+  const { tr, formatDateTime } = useI18n();
+  const presentation = activityPresentation(record, tr);
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 px-5 py-4">
       <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" />
       <div className="grid min-w-0 gap-1">
-        <strong>{tr(key, { defaultValue: record.action })}</strong>
-        <small className="truncate text-xs text-muted-foreground" title={record.detail}>
-          {record.detail}
+        <strong>{presentation.title}</strong>
+        <small className="truncate text-xs text-muted-foreground" title={presentation.detail}>
+          {presentation.detail}
         </small>
       </div>
       <time className="text-right text-xs text-muted-foreground">
@@ -533,58 +584,6 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
   );
 }
 
-function SettingsRow({ children, border = true }: { children: Renderable; border?: boolean }) {
-  return (
-    <div
-      className={cn(
-        "grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(180px,max-content)] items-center gap-8 py-3 max-[640px]:grid-cols-1 max-[640px]:gap-3",
-        border && "border-b border-border/60",
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-function SettingsCopy({ children }: { children: Renderable }) {
-  return (
-    <div className="grid min-w-0 gap-1 [&_code]:max-w-full [&_code]:truncate [&_code]:font-mono [&_code]:text-xs [&_code]:text-muted-foreground [&_small]:max-w-[62ch] [&_small]:text-xs [&_small]:leading-relaxed [&_small]:text-muted-foreground [&_strong]:text-sm [&_strong]:font-medium">
-      {children}
-    </div>
-  );
-}
-function SettingDetail({
-  children,
-  variant = "default",
-  role,
-}: {
-  children: Renderable;
-  variant?: "default" | "error" | "warning";
-  role?: "alert" | "status";
-}) {
-  return (
-    <div
-      className={cn(
-        "mx-5 my-3 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs",
-        variant === "default" && "border-border/60 bg-muted/20 text-muted-foreground",
-        variant === "error" && "border-destructive/30 bg-destructive/5 text-destructive",
-        variant === "warning" && "border-amber-500/30 bg-amber-500/5 text-amber-700",
-      )}
-      role={role}
-    >
-      {children}
-    </div>
-  );
-}
-function SettingGroup({ title, children }: { title: string; children: Renderable }) {
-  return (
-    <section className="border-b border-border pb-2">
-      <header className="border-b border-border/70 py-4">
-        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-      </header>
-      <div className="[&>*:last-child]:border-b-0">{children}</div>
-    </section>
-  );
-}
 function SettingsListEmptyState({
   items,
   emptyText,
@@ -600,21 +599,9 @@ function SettingsListEmptyState({
     <p className="px-5 py-5 text-sm text-muted-foreground">{emptyText}</p>
   );
 }
-function StatusText({ active, children }: { active: boolean; children: Renderable }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 justify-self-end text-xs font-medium",
-        active ? "text-emerald-600" : "text-muted-foreground",
-      )}
-    >
-      {active && <span className="size-1.5 rounded-full bg-current" />}
-      {children}
-    </span>
-  );
-}
 
 function FileAccessSettingsRow() {
+  const { t: tr } = useTranslation();
   const [error, setError] = useState("");
   const openSettings = async () => {
     setError("");
@@ -640,20 +627,21 @@ function FileAccessSettingsRow() {
         </Button>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
     </>
   );
 }
 
 function KeyboardShortcutsSetting() {
+  const { t: tr } = useTranslation();
   const { openShortcutHelp } = useShortcutHelp();
   const platform = currentAppPlatform();
   const definition = getShortcutDefinition("open-help");
   return (
-    <SettingGroup title={tr("settings.shortcutsTitle")}>
+    <SettingsSection title={tr("settings.shortcutsTitle")} target="general-shortcuts">
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.shortcuts")}</strong>
@@ -669,7 +657,7 @@ function KeyboardShortcutsSetting() {
           {tr("settings.viewShortcuts")}
         </Button>
       </SettingsRow>
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -680,13 +668,18 @@ function QuotaAutoRefreshSetting({
   runtime?: RuntimeInfo;
   onChanged: (runtime: RuntimeInfo) => void;
 }) {
+  const { t: tr } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const toggle = async (enabled: boolean) => {
+  const toggle = async (enabled: boolean, local = false) => {
     setBusy(true);
     setError("");
     try {
-      onChanged(await api.setQuotaAutoRefreshEnabled(enabled));
+      onChanged(
+        await (local
+          ? api.setLocalAutoRefreshEnabled(enabled)
+          : api.setQuotaAutoRefreshEnabled(enabled)),
+      );
     } catch (reason) {
       setError(localizeMessage(reason));
     } finally {
@@ -695,7 +688,19 @@ function QuotaAutoRefreshSetting({
   };
 
   return (
-    <SettingGroup title={tr("settings.quotaTitle")}>
+    <SettingsSection title={tr("settings.automaticUpdates")} target="general-quota">
+      <SettingsRow border={false}>
+        <SettingsCopy>
+          <strong>{tr("settings.localAutoRefresh")}</strong>
+        </SettingsCopy>
+        <Label className="inline-flex items-center justify-self-end">
+          <Switch
+            checked={runtime?.local_auto_refresh_enabled !== false}
+            disabled={busy || !runtime}
+            onCheckedChange={(checked) => void toggle(checked, true)}
+          />
+        </Label>
+      </SettingsRow>
       <SettingsRow border={false}>
         <SettingsCopy>
           <strong>{tr("settings.quotaAutoRefresh")}</strong>
@@ -709,11 +714,11 @@ function QuotaAutoRefreshSetting({
         </Label>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -721,11 +726,14 @@ function ConversationPrivacySettings({
   runtime,
   workspaces,
   onChanged,
+  onIndexCleared,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
   onChanged: (runtime: RuntimeInfo) => void;
+  onIndexCleared: () => void;
 }) {
+  const { t: tr } = useTranslation();
   const dialogs = useAppDialogs();
   const [indexedCount, setIndexedCount] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -763,6 +771,7 @@ function ConversationPrivacySettings({
     setError("");
     try {
       await api.clearSessionIndex();
+      onIndexCleared();
       setIndexedCount(0);
     } catch (reason) {
       setError(localizeMessage(reason));
@@ -771,7 +780,7 @@ function ConversationPrivacySettings({
     }
   };
   return (
-    <SettingGroup title={tr("conversations.settingsTitle")}>
+    <SettingsSection title={tr("conversations.settingsTitle")}>
       <SettingsRow>
         <SettingsCopy>
           <strong>{tr("conversations.indexSetting")}</strong>
@@ -798,11 +807,11 @@ function ConversationPrivacySettings({
         </Button>
       </SettingsRow>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
@@ -813,6 +822,7 @@ function LanguageSetting({
   runtime?: RuntimeInfo;
   onChanged: (runtime: RuntimeInfo) => void;
 }) {
+  const { t: tr } = useTranslation();
   const update = async (preference: LocalePreference) => {
     const nextRuntime = await api.setLocale(preference);
     cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
@@ -847,108 +857,6 @@ function LanguageSetting({
   );
 }
 
-function ThemeSetting({
-  runtime,
-  onChanged,
-}: {
-  runtime?: RuntimeInfo;
-  onChanged: (runtime: RuntimeInfo) => void;
-}) {
-  const update = async (preference: ThemePreference) => {
-    const nextRuntime = await api.setThemePreference(preference);
-    applyTheme(nextRuntime.effective_theme);
-    cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
-    onChanged(nextRuntime);
-  };
-  const selected = runtime?.theme_preference ?? "system";
-  return (
-    <SettingsRow>
-      <SettingsCopy>
-        <strong>{tr("settings.theme")}</strong>
-      </SettingsCopy>
-      <ToggleGroup
-        spacing={0}
-        variant="outline"
-        className="segmented-control w-max max-w-none shrink-0 justify-self-end max-[640px]:w-full max-[640px]:max-w-full"
-        value={[selected]}
-        onValueChange={(values: any) => {
-          const theme = values[0];
-          if (theme === "light" || theme === "dark" || theme === "system") void update(theme);
-        }}
-        aria-label={tr("settings.theme")}
-      >
-        {(["light", "dark", "system"] as ThemePreference[]).map((theme) => (
-          <ToggleGroupItem
-            key={theme}
-            value={theme}
-            className="segmented-control-item h-9 min-h-9 min-w-[82px] px-3 text-sm"
-          >
-            {theme === "light" ? (
-              <Sun size={16} aria-hidden="true" />
-            ) : theme === "dark" ? (
-              <Moon size={16} aria-hidden="true" />
-            ) : (
-              <Monitor size={16} aria-hidden="true" />
-            )}
-            {tr(`settings.theme.${theme}`)}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-    </SettingsRow>
-  );
-}
-
-export function AccentThemeSetting({
-  effectiveTheme,
-}: {
-  effectiveTheme?: RuntimeInfo["effective_theme"];
-}) {
-  const [selected, setSelected] = useState<AccentTheme>(() => accentThemePreference());
-
-  return (
-    <SettingsRow>
-      <SettingsCopy>
-        <strong>{tr("settings.accentTheme")}</strong>
-        <small className="sr-only">
-          {tr(
-            effectiveTheme === "dark"
-              ? "settings.accentTheme.darkHint"
-              : "settings.accentTheme.description",
-          )}
-        </small>
-      </SettingsCopy>
-      <Select
-        value={selected}
-        onValueChange={(value: any) => {
-          if (value === null) return;
-          const theme = String(value);
-          if (
-            theme !== "minimal-neutral" &&
-            theme !== "vtron" &&
-            theme !== "claude" &&
-            theme !== "sakura" &&
-            theme !== "ocean-breeze"
-          )
-            return;
-          applyAccentTheme(theme);
-          setSelected(theme);
-        }}
-      >
-        <SelectTrigger className={settingsControlClass} aria-label={tr("settings.accentTheme")}>
-          <SelectValue>{tr(`settings.accentTheme.${selected}`)}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {["minimal-neutral", "vtron", "claude", "sakura", "ocean-breeze"].map((theme) => (
-            <SelectItem key={theme} value={theme}>
-              {tr(`settings.accentTheme.${theme}`)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </SettingsRow>
-  );
-}
-
 function AppIconSetting({
   runtime,
   onChanged,
@@ -956,6 +864,7 @@ function AppIconSetting({
   runtime?: RuntimeInfo;
   onChanged: (runtime: RuntimeInfo) => void;
 }) {
+  const { t: tr } = useTranslation();
   const update = async (preference: AppIconPreference) => {
     onChanged(await api.setAppIconPreference(preference));
   };
@@ -980,15 +889,16 @@ function AppIconSetting({
           <ToggleGroupItem
             key={icon}
             value={icon}
-            className="segmented-control-item inline-flex h-9 min-h-9 min-w-[90px] items-center justify-center gap-1.5 px-3 text-sm"
+            className="segmented-control-item inline-flex h-10 min-h-10 w-14 min-w-14 items-center justify-center px-4 py-0"
+            aria-label={tr(`settings.appIcon.${icon}`)}
+            title={tr(`settings.appIcon.${icon}`)}
           >
             <img
-              className="size-5 rounded-md object-cover"
+              className="size-6 shrink-0 rounded-md object-cover"
               src={appIconAssets[icon]}
               alt=""
               aria-hidden="true"
             />
-            {tr(`settings.appIcon.${icon}`)}
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
@@ -1005,6 +915,7 @@ function CloseBehaviorSelect({
   trayAvailable?: boolean;
   onChange: (behavior?: CloseBehavior) => Promise<void>;
 }) {
+  const { t: tr } = useTranslation();
   const modifier = primaryShortcutModifier(buildPlatform);
   const trayKey = usesSystemTrayWording(buildPlatform)
     ? "settings.close.systemTray"
@@ -1043,6 +954,7 @@ function CloseBehaviorSelect({
 }
 
 function GitIdentitySettings() {
+  const { t: tr } = useTranslation();
   const [identities, setIdentities] = useState<GitIdentitySummary[]>([]);
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
@@ -1069,11 +981,11 @@ function GitIdentitySettings() {
     }
   };
   return (
-    <SettingGroup title={tr("settings.gitIdentity")}>
+    <SettingsSection title={tr("settings.gitIdentity")}>
       {error && (
-        <SettingDetail variant="error" role="alert">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </SettingDetail>
+        </SettingsNotice>
       )}
       <div className="flex flex-col gap-2.5 border-b border-border/60 p-5 sm:flex-row">
         <Input
@@ -1099,7 +1011,7 @@ function GitIdentitySettings() {
             <GitCommitHorizontal size={15} className="text-muted-foreground" />
             <span className="min-w-0">
               <strong className="block break-all text-sm font-medium">
-                {metadataLabel(identity.label)}
+                {metadataLabel(identity.label, tr)}
               </strong>
               <small className="mt-1 block text-xs text-muted-foreground">
                 {identity.source} · {identity.id.slice(0, 10)}…
@@ -1120,11 +1032,11 @@ function GitIdentitySettings() {
           </p>
         )}
       </div>
-    </SettingGroup>
+    </SettingsSection>
   );
 }
 
-function metadataLabel(value: string) {
+function metadataLabel(value: string, tr: TFunction) {
   if (value === "__unknown_model__") return tr("insights.unknownModel");
   if (value === "__unlinked_workspace__") return tr("insights.unlinkedWorkspace");
   if (value === "仓庫 Git 身份") return tr("settings.gitIdentityRepository");

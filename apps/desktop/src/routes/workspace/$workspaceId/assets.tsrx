@@ -1,12 +1,12 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { WorkspaceAssetsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useMemo, useState } from "octane";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { tr } from "../../../core/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -52,6 +52,7 @@ function Assets({
   manifest: Manifest;
   onChange: (manifest: Manifest) => void;
 }) {
+  const { tr } = useI18n();
   const [query, setQuery] = useState("");
   const [skillName, setSkillName] = useState("");
   const [skillPath, setSkillPath] = useState("");

@@ -85,27 +85,27 @@ export function tr(key: string, options?: Record<string, unknown>): string {
   return String(translate(key, options as TOptions | undefined));
 }
 
-export function formatCompactNumber(value: number) {
-  return new Intl.NumberFormat(currentLocale(), {
+export function formatCompactNumber(value: number, locale = currentLocale()) {
+  return new Intl.NumberFormat(locale, {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
 }
 
-export function formatNumber(value: number) {
-  return new Intl.NumberFormat(currentLocale()).format(value);
+export function formatNumber(value: number, locale = currentLocale()) {
+  return new Intl.NumberFormat(locale).format(value);
 }
 
-export function formatDateTime(value: string | Date) {
-  return new Intl.DateTimeFormat(currentLocale(), {
+export function formatDateTime(value: string | Date, locale = currentLocale()) {
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
 }
 
-export function formatRelativeTime(value: string | Date) {
+export function formatRelativeTime(value: string | Date, locale = currentLocale()) {
   const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
-  const formatter = new Intl.RelativeTimeFormat(currentLocale(), { numeric: "auto" });
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
   if (Math.abs(seconds) < 60) return formatter.format(seconds, "second");
   const minutes = Math.round(seconds / 60);
   if (Math.abs(minutes) < 60) return formatter.format(minutes, "minute");
@@ -114,12 +114,15 @@ export function formatRelativeTime(value: string | Date) {
   return formatter.format(Math.round(hours / 24), "day");
 }
 
-export function localizeMessage(message: LocalizedMessage | string | unknown): string {
+export function localizeMessage(
+  message: LocalizedMessage | string | unknown,
+  translate = tr,
+): string {
   if (typeof message === "object" && message !== null && "key" in message) {
     const value = message as LocalizedMessage;
-    const translated = tr(value.key, value.params);
+    const translated = translate(value.key, value.params);
     return value.detail
-      ? tr("errors.withDetail", { message: translated, detail: value.detail })
+      ? translate("errors.withDetail", { message: translated, detail: value.detail })
       : translated;
   }
   return String(message);

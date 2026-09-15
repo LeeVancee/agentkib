@@ -11,7 +11,7 @@ import {
 
 export function CatalogSkeleton() {
   return (
-    <SkeletonPage className="pb-8" label="Loading assets">
+    <SkeletonPage className="pb-8" labelKey="loading.assets">
       <SkeletonToolbar />
       <SkeletonPanel>
         <div className="border-b border-border/70 px-4 py-3">

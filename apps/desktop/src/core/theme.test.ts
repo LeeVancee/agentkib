@@ -4,6 +4,7 @@ import {
   accentThemePreference,
   applyAccentTheme,
   applyTheme,
+  cacheAccentTheme,
   cacheEffectiveTheme,
   cachedEffectiveTheme,
   systemTheme,
@@ -33,18 +34,38 @@ describe("theme runtime", () => {
     expect(document.documentElement.style.colorScheme).toBe("dark");
   });
 
-  it("restores a valid saved accent and falls back for an unknown value", () => {
+  it("restores a valid saved accent and falls back without overwriting an unknown value", () => {
     window.localStorage.setItem("agentkib.accent-theme", "sakura");
     expect(accentThemePreference()).toBe("sakura");
 
     window.localStorage.setItem("agentkib.accent-theme", "unknown");
     expect(accentThemePreference()).toBe("vtron");
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("unknown");
   });
 
-  it("applies and persists the selected accent", () => {
+  it.each([
+    ["black", "minimal-neutral"],
+    ["sky", "vtron"],
+    ["claude", "claude"],
+    ["violet", "sakura"],
+    ["emerald", "ocean-breeze"],
+  ] as const)("migrates the legacy accent %s to %s", (legacy, current) => {
+    window.localStorage.setItem("agentkib.accent-theme", legacy);
+
+    const migrated = accentThemePreference();
+    cacheAccentTheme(migrated);
+
+    expect(migrated).toBe(current);
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBe(current);
+  });
+
+  it("applies and caches the selected accent independently", () => {
     applyAccentTheme("ocean-breeze");
 
     expect(document.documentElement.dataset.accentTheme).toBe("ocean-breeze");
+    expect(window.localStorage.getItem("agentkib.accent-theme")).toBeNull();
+
+    cacheAccentTheme("ocean-breeze");
     expect(window.localStorage.getItem("agentkib.accent-theme")).toBe("ocean-breeze");
   });
 

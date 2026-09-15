@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
 import { cleanup, render } from "@octanejs/testing-library";
@@ -7,6 +9,14 @@ import { AgentIcon } from "./AgentIcon";
 afterEach(cleanup);
 
 describe("AgentIcon", () => {
+  it("keeps the Hermes icon dark in light mode and inverts it in dark mode", () => {
+    const { container } = render(<AgentIcon agent="hermes" />);
+    const icon = container.querySelector("img");
+
+    expect(icon?.classList.contains("invert")).toBe(false);
+    expect(icon?.classList.contains("ak-agent-invert")).toBe(true);
+  });
+
   it("renders the OpenCode asset", () => {
     const { container } = render(<AgentIcon agent="opencode" />);
 
@@ -18,6 +28,6 @@ describe("AgentIcon", () => {
     const image = container.querySelector("img");
 
     expect(image?.getAttribute("src")).toContain("Grok");
-    expect(image?.classList.contains("dark:invert")).toBe(true);
+    expect(image?.classList.contains("ak-agent-invert")).toBe(true);
   });
 });

@@ -1,12 +1,12 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { lazy, Suspense, useState } from "octane";
 import { CircleAlert, RefreshCw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
-import { localizeMessage, tr } from "../core/i18n";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
 import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
 import {
@@ -23,6 +23,7 @@ const InsightsPageLazy = lazy(() =>
 type InsightsSearch = { insightsSection?: InsightsSection };
 
 function InsightsRoute() {
+  const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as InsightsSearch;
   const section = search.insightsSection ?? "overview";

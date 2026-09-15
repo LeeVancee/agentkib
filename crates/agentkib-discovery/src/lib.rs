@@ -9,7 +9,8 @@ use std::time::SystemTime;
 
 use agentkib_core::{
     AgentInstallation, AgentKind, AssetKind, CatalogAsset, CatalogScope, DiscoveryCandidate,
-    DiscoveryEvidence, hash_content, inspect_skill_entrypoint,
+    DiscoveryDiagnosticStatus, DiscoveryEvidence, DiscoverySourceDiagnostic, hash_content,
+    inspect_skill_entrypoint,
 };
 use agentkib_platform::{command, path as platform_path};
 use anyhow::{Context, Result};
@@ -23,6 +24,42 @@ const MAX_GROK_SUMMARY_BYTES: u64 = 256 * 1024;
 pub trait WorkspaceDiscoveryProvider: Send {
     fn installation(&self) -> AgentInstallation;
     fn discover(&self) -> Result<Vec<DiscoveryCandidate>>;
+    fn discover_with_diagnostics(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        let installation = self.installation();
+        let started_at = Utc::now();
+        let candidates = self.discover()?;
+        let finished_at = Utc::now();
+        let status = if !installation.configured {
+            if installation
+                .home
+                .as_ref()
+                .is_some_and(|path| !path.exists())
+            {
+                DiscoveryDiagnosticStatus::Missing
+            } else {
+                DiscoveryDiagnosticStatus::NotConfigured
+            }
+        } else if candidates.is_empty() {
+            DiscoveryDiagnosticStatus::Empty
+        } else {
+            DiscoveryDiagnosticStatus::Succeeded
+        };
+        Ok((
+            candidates.clone(),
+            vec![source_diagnostic(
+                Some(installation.agent),
+                source_name(installation.agent),
+                installation.home,
+                started_at,
+                finished_at,
+                Some(candidates.len()),
+                status,
+                Vec::new(),
+            )],
+        ))
+    }
     fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>>;
 }
 
@@ -31,6 +68,7 @@ pub struct DiscoverySnapshot {
     pub installations: Vec<AgentInstallation>,
     pub home_assets: Vec<CatalogAsset>,
     pub errors: Vec<String>,
+    pub source_diagnostics: Vec<DiscoverySourceDiagnostic>,
 }
 
 fn providers() -> Vec<Box<dyn WorkspaceDiscoveryProvider>> {
@@ -65,30 +103,49 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         let installation = provider.installation();
         let label = installation.agent.as_str();
         let mut errors = Vec::new();
-        let candidates = provider.discover().unwrap_or_else(|error| {
-            errors.push(format!("{label} workspace discovery failed: {error}"));
-            Vec::new()
-        });
+        let (candidates, diagnostics) =
+            provider
+                .discover_with_diagnostics()
+                .unwrap_or_else(|error| {
+                    errors.push(format!("{label} workspace discovery failed: {error}"));
+                    (
+                        Vec::new(),
+                        vec![source_diagnostic(
+                            Some(installation.agent),
+                            source_name(installation.agent),
+                            installation.home.clone(),
+                            Utc::now(),
+                            Utc::now(),
+                            None,
+                            source_error_status(&error),
+                            vec![diagnostic_reason(&error.to_string())],
+                        )],
+                    )
+                });
         let home_assets = provider.scan_home_assets().unwrap_or_else(|error| {
             errors.push(format!("{label} Home asset scan failed: {error}"));
             Vec::new()
         });
-        (installation, candidates, home_assets, errors)
+        (installation, candidates, home_assets, errors, diagnostics)
     });
     let scan_results = parallel_map_bounded(scan_roots.to_vec(), 4, |(root, depth)| {
+        let started_at = Utc::now();
         let result = discover_scan_root(&root, depth);
-        (root, result)
+        let finished_at = Utc::now();
+        (root, started_at, finished_at, result)
     });
 
     let mut candidates = Vec::new();
     let mut installations = Vec::new();
     let mut home_assets = Vec::new();
     let mut errors = Vec::new();
-    for (installation, discovered, assets, provider_errors) in provider_results {
+    let mut source_diagnostics = Vec::new();
+    for (installation, discovered, assets, provider_errors, diagnostics) in provider_results {
         installations.push(installation);
         candidates.extend(discovered);
         home_assets.extend(assets);
         errors.extend(provider_errors);
+        source_diagnostics.extend(diagnostics);
     }
     match agentkib_skills::default_home_dir()
         .and_then(|home| agentkib_skills::scan_library_assets(&home))
@@ -96,15 +153,58 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         Ok(assets) => home_assets.extend(assets),
         Err(error) => errors.push(format!("AgentKib Skill library scan failed: {error}")),
     }
-    for (root, result) in scan_results {
+    for (root, started_at, finished_at, result) in scan_results {
         match result {
             Ok((discovered, scan_errors)) => {
+                let status = if scan_errors.is_empty() {
+                    if discovered.is_empty() {
+                        DiscoveryDiagnosticStatus::Empty
+                    } else {
+                        DiscoveryDiagnosticStatus::Succeeded
+                    }
+                } else {
+                    DiscoveryDiagnosticStatus::Partial
+                };
+                source_diagnostics.push(source_diagnostic(
+                    None,
+                    "scan-root",
+                    Some(root.clone()),
+                    started_at,
+                    finished_at,
+                    Some(discovered.len()),
+                    status,
+                    if scan_errors.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec!["scan-entry-failed".into()]
+                    },
+                ));
                 candidates.extend(discovered);
                 errors.extend(scan_errors.into_iter().map(|error| {
                     format!("Scan root {} partially failed: {error}", root.display())
                 }));
             }
-            Err(error) => errors.push(format!("Scan root {} failed: {error}", root.display())),
+            Err(error) => {
+                source_diagnostics.push(source_diagnostic(
+                    None,
+                    "scan-root",
+                    Some(root.clone()),
+                    started_at,
+                    finished_at,
+                    None,
+                    if error
+                        .to_string()
+                        .to_ascii_lowercase()
+                        .contains("permission")
+                    {
+                        DiscoveryDiagnosticStatus::PermissionDenied
+                    } else {
+                        DiscoveryDiagnosticStatus::Failed
+                    },
+                    vec![diagnostic_reason(&error.to_string())],
+                ));
+                errors.push(format!("Scan root {} failed: {error}", root.display()))
+            }
         }
     }
     let mut candidates = normalize_and_merge(candidates);
@@ -114,6 +214,69 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
         installations,
         home_assets,
         errors,
+        source_diagnostics,
+    }
+}
+
+fn source_name(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Codex => "state-db",
+        AgentKind::ClaudeCode => "history-and-index",
+        AgentKind::Cursor => "workspace-storage",
+        AgentKind::OpenCode => "sqlite-and-legacy",
+        AgentKind::OpenClaw => "config-and-sessions",
+        AgentKind::Hermes => "profiles-and-state",
+        AgentKind::GrokBuild => "sessions-and-archives",
+        AgentKind::DeepSeekHarness => "workspace-storage",
+    }
+}
+
+fn diagnostic_reason(error: &str) -> String {
+    if error.to_ascii_lowercase().contains("permission") {
+        "permission-denied".into()
+    } else if error.to_ascii_lowercase().contains("unsupported") {
+        "unsupported-schema".into()
+    } else {
+        "source-read-failed".into()
+    }
+}
+
+fn source_error_status(error: &anyhow::Error) -> DiscoveryDiagnosticStatus {
+    let error = error.to_string().to_ascii_lowercase();
+    if error.contains("permission") {
+        DiscoveryDiagnosticStatus::PermissionDenied
+    } else if error.contains("unsupported") {
+        DiscoveryDiagnosticStatus::Unsupported
+    } else {
+        DiscoveryDiagnosticStatus::Failed
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn source_diagnostic(
+    agent: Option<AgentKind>,
+    source: impl Into<String>,
+    path: Option<PathBuf>,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    candidate_count: Option<usize>,
+    status: DiscoveryDiagnosticStatus,
+    reasons: Vec<String>,
+) -> DiscoverySourceDiagnostic {
+    DiscoverySourceDiagnostic {
+        agent,
+        source: source.into(),
+        path,
+        started_at,
+        finished_at,
+        candidate_count,
+        // Inclusion happens after all provider results are normalized and
+        // filtered against managed/excluded paths. Source providers cannot
+        // know that count without making this helper infer downstream state.
+        included_count: None,
+        skipped_count: None,
+        status,
+        reasons,
     }
 }
 
@@ -516,22 +679,13 @@ impl WorkspaceDiscoveryProvider for OpenCodeProvider {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
-        let Some(data_home) = self.data_home().filter(|path| path.is_dir()) else {
-            return Ok(Vec::new());
-        };
-        let mut output = discover_opencode_database(&data_home.join("opencode.db"))?;
-        let database_paths: BTreeSet<_> = output
-            .iter()
-            .map(|candidate| platform_path::identity(&candidate.path))
-            .collect();
-        output.extend(
-            discover_legacy_opencode_projects(&data_home)?
-                .into_iter()
-                .filter(|candidate| {
-                    !database_paths.contains(&platform_path::identity(&candidate.path))
-                }),
-        );
-        Ok(output)
+        self.discover_sources().map(|(candidates, _)| candidates)
+    }
+
+    fn discover_with_diagnostics(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        self.discover_sources()
     }
 
     fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
@@ -556,6 +710,153 @@ impl WorkspaceDiscoveryProvider for OpenCodeProvider {
             })
             .transpose()?
             .unwrap_or_default())
+    }
+}
+
+impl OpenCodeProvider {
+    fn discover_sources(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        let Some(data_home) = self.data_home().filter(|path| path.is_dir()) else {
+            let now = Utc::now();
+            let data_home = self.data_home();
+            return Ok((
+                Vec::new(),
+                vec![
+                    source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "sqlite",
+                        data_home.as_ref().map(|path| path.join("opencode.db")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                    source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "legacy-json",
+                        data_home.map(|path| path.join("storage/project")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                ],
+            ));
+        };
+        // The current SQLite store and the legacy JSON store are independent
+        // sources. A damaged/migrating SQLite file must not hide usable legacy
+        // projects, and vice versa.
+        let mut diagnostics = Vec::new();
+        let database = data_home.join("opencode.db");
+        let sqlite_started = Utc::now();
+        let mut output = if !database.is_file() {
+            diagnostics.push(source_diagnostic(
+                Some(AgentKind::OpenCode),
+                "sqlite",
+                Some(database.clone()),
+                sqlite_started,
+                Utc::now(),
+                None,
+                DiscoveryDiagnosticStatus::Missing,
+                vec!["missing-file".into()],
+            ));
+            Vec::new()
+        } else {
+            match discover_opencode_database(&database) {
+                Ok(value) => {
+                    let status = if value.is_empty() {
+                        DiscoveryDiagnosticStatus::Empty
+                    } else {
+                        DiscoveryDiagnosticStatus::Succeeded
+                    };
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "sqlite",
+                        Some(database.clone()),
+                        sqlite_started,
+                        Utc::now(),
+                        Some(value.len()),
+                        status,
+                        Vec::new(),
+                    ));
+                    value
+                }
+                Err(error) => {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "sqlite",
+                        Some(database.clone()),
+                        sqlite_started,
+                        Utc::now(),
+                        None,
+                        source_error_status(&error),
+                        vec![diagnostic_reason(&error.to_string())],
+                    ));
+                    Vec::new()
+                }
+            }
+        };
+        let database_paths: BTreeSet<_> = output
+            .iter()
+            .map(|candidate| platform_path::identity(&candidate.path))
+            .collect();
+        let legacy_root = data_home.join("storage/project");
+        let legacy_started = Utc::now();
+        if !legacy_root.is_dir() {
+            diagnostics.push(source_diagnostic(
+                Some(AgentKind::OpenCode),
+                "legacy-json",
+                Some(legacy_root),
+                legacy_started,
+                Utc::now(),
+                None,
+                DiscoveryDiagnosticStatus::Missing,
+                vec!["missing-directory".into()],
+            ));
+        } else {
+            match discover_legacy_opencode_projects(&data_home) {
+                Ok(legacy) => {
+                    let legacy = legacy
+                        .into_iter()
+                        .filter(|candidate| {
+                            !database_paths.contains(&platform_path::identity(&candidate.path))
+                        })
+                        .collect::<Vec<_>>();
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "legacy-json",
+                        Some(legacy_root),
+                        legacy_started,
+                        Utc::now(),
+                        Some(legacy.len()),
+                        if legacy.is_empty() {
+                            DiscoveryDiagnosticStatus::Empty
+                        } else {
+                            DiscoveryDiagnosticStatus::Succeeded
+                        },
+                        Vec::new(),
+                    ));
+                    output.extend(legacy);
+                }
+                Err(error) => {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenCode),
+                        "legacy-json",
+                        Some(legacy_root),
+                        legacy_started,
+                        Utc::now(),
+                        None,
+                        source_error_status(&error),
+                        vec![diagnostic_reason(&error.to_string())],
+                    ));
+                }
+            }
+        }
+        // Keep per-source failures even when no source yielded a candidate.
+        Ok((output, diagnostics))
     }
 }
 
@@ -718,46 +1019,13 @@ impl WorkspaceDiscoveryProvider for OpenClawProvider {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
-        let Some(home) = self.home().filter(|path| path.is_dir()) else {
-            return Ok(Vec::new());
-        };
-        let config = home.join("openclaw.json");
-        if !config.is_file() {
-            return Ok(Vec::new());
-        }
-        let value: JsonValue = json5::from_str(&fs::read_to_string(config)?)?;
-        let mut paths = Vec::new();
-        if let Some(path) = value
-            .pointer("/agents/defaults/workspace")
-            .and_then(JsonValue::as_str)
-        {
-            paths.push(resolve_config_path(&home, path));
-        }
-        for key in ["list", "entries"] {
-            for item in value
-                .pointer(&format!("/agents/{key}"))
-                .and_then(JsonValue::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(path) = item.get("workspace").and_then(JsonValue::as_str) {
-                    paths.push(resolve_config_path(&home, path));
-                }
-            }
-        }
-        Ok(paths
-            .into_iter()
-            .map(|path| {
-                candidate(
-                    path,
-                    Some(AgentKind::OpenClaw),
-                    DiscoveryEvidence::ConfiguredWorkspace,
-                    None,
-                    0,
-                    true,
-                )
-            })
-            .collect())
+        self.discover_sources().map(|(candidates, _)| candidates)
+    }
+
+    fn discover_with_diagnostics(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        self.discover_sources()
     }
 
     fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
@@ -780,6 +1048,165 @@ impl WorkspaceDiscoveryProvider for OpenClawProvider {
             })
             .transpose()?
             .unwrap_or_default())
+    }
+}
+
+impl OpenClawProvider {
+    fn discover_sources(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        let Some(home) = self.home().filter(|path| path.is_dir()) else {
+            let now = Utc::now();
+            let home = self.home();
+            return Ok((
+                Vec::new(),
+                vec![
+                    source_diagnostic(
+                        Some(AgentKind::OpenClaw),
+                        "config",
+                        home.as_ref().map(|path| path.join("openclaw.json")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                    source_diagnostic(
+                        Some(AgentKind::OpenClaw),
+                        "sessions-jsonl",
+                        home.map(|path| path.join("agents")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                ],
+            ));
+        };
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        let config = home.join("openclaw.json");
+        let config_started = Utc::now();
+        if config.is_file() {
+            match fs::read_to_string(&config)
+                .map_err(anyhow::Error::from)
+                .and_then(|content| json5::from_str::<JsonValue>(&content).map_err(Into::into))
+            {
+                Ok(value) => {
+                    let mut paths = Vec::new();
+                    if let Some(path) = value
+                        .pointer("/agents/defaults/workspace")
+                        .and_then(JsonValue::as_str)
+                    {
+                        paths.push(resolve_config_path(&home, path));
+                    }
+                    for key in ["list", "entries"] {
+                        for item in value
+                            .pointer(&format!("/agents/{key}"))
+                            .and_then(JsonValue::as_array)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if let Some(path) = item.get("workspace").and_then(JsonValue::as_str) {
+                                paths.push(resolve_config_path(&home, path));
+                            }
+                        }
+                    }
+                    let count = paths.len();
+                    output.extend(paths.into_iter().map(|path| {
+                        candidate(
+                            path,
+                            Some(AgentKind::OpenClaw),
+                            DiscoveryEvidence::ConfiguredWorkspace,
+                            None,
+                            0,
+                            true,
+                        )
+                    }));
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenClaw),
+                        "config",
+                        Some(config),
+                        config_started,
+                        Utc::now(),
+                        Some(count),
+                        if count == 0 {
+                            DiscoveryDiagnosticStatus::Empty
+                        } else {
+                            DiscoveryDiagnosticStatus::Succeeded
+                        },
+                        Vec::new(),
+                    ));
+                }
+                Err(error) => {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::OpenClaw),
+                        "config",
+                        Some(config),
+                        config_started,
+                        Utc::now(),
+                        None,
+                        source_error_status(&error),
+                        vec![diagnostic_reason(&error.to_string())],
+                    ));
+                }
+            }
+        } else {
+            diagnostics.push(source_diagnostic(
+                Some(AgentKind::OpenClaw),
+                "config",
+                Some(config),
+                config_started,
+                Utc::now(),
+                None,
+                DiscoveryDiagnosticStatus::Missing,
+                vec!["missing-file".into()],
+            ));
+        }
+
+        let sessions_root = home.join("agents");
+        let sessions_started = Utc::now();
+        match discover_jsonl_cwds(&sessions_root, 3, AgentKind::OpenClaw) {
+            Ok(discovery) => {
+                let count = discovery.candidates.len();
+                let reasons = discovery.reasons.into_iter().collect::<Vec<_>>();
+                output.extend(discovery.candidates);
+                diagnostics.push(source_diagnostic(
+                    Some(AgentKind::OpenClaw),
+                    "sessions-jsonl",
+                    Some(sessions_root.clone()),
+                    sessions_started,
+                    Utc::now(),
+                    Some(count),
+                    if !reasons.is_empty() {
+                        DiscoveryDiagnosticStatus::Partial
+                    } else if count == 0 {
+                        if sessions_root.is_dir() {
+                            DiscoveryDiagnosticStatus::Empty
+                        } else {
+                            DiscoveryDiagnosticStatus::Missing
+                        }
+                    } else {
+                        DiscoveryDiagnosticStatus::Succeeded
+                    },
+                    reasons,
+                ));
+            }
+            Err(error) => {
+                diagnostics.push(source_diagnostic(
+                    Some(AgentKind::OpenClaw),
+                    "sessions-jsonl",
+                    Some(sessions_root),
+                    sessions_started,
+                    Utc::now(),
+                    None,
+                    source_error_status(&error),
+                    vec![diagnostic_reason(&error.to_string())],
+                ));
+            }
+        }
+        Ok((output, diagnostics))
     }
 }
 
@@ -821,52 +1248,13 @@ impl WorkspaceDiscoveryProvider for HermesProvider {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
-        let mut output = Vec::new();
-        for home in self.homes().into_iter().filter(|path| path.is_dir()) {
-            let config = home.join("config.yaml");
-            if let Ok(content) = fs::read_to_string(config)
-                && let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content)
-                && let Some(path) = value
-                    .get("terminal")
-                    .and_then(|value| value.get("cwd"))
-                    .and_then(serde_yaml::Value::as_str)
-            {
-                output.push(candidate(
-                    resolve_config_path(&home, path),
-                    Some(AgentKind::Hermes),
-                    DiscoveryEvidence::ConfiguredWorkspace,
-                    None,
-                    0,
-                    true,
-                ));
-            }
-            let database = home.join("state.db");
-            if database.is_file() {
-                let connection = open_read_only(&database)?;
-                if table_has_column(&connection, "sessions", "cwd")? {
-                    let mut statement = connection.prepare("SELECT cwd, COUNT(*), MAX(started_at) FROM sessions WHERE cwd IS NOT NULL AND cwd != '' GROUP BY cwd")?;
-                    let rows = statement.query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, Option<f64>>(2)?,
-                        ))
-                    })?;
-                    for row in rows {
-                        let (path, count, timestamp) = row?;
-                        output.push(candidate(
-                            PathBuf::from(path),
-                            Some(AgentKind::Hermes),
-                            DiscoveryEvidence::SessionCwd,
-                            timestamp.and_then(timestamp_from_float),
-                            count.max(0) as u64,
-                            false,
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(output)
+        self.discover_sources().map(|(candidates, _)| candidates)
+    }
+
+    fn discover_with_diagnostics(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        self.discover_sources()
     }
 
     fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
@@ -887,6 +1275,268 @@ impl WorkspaceDiscoveryProvider for HermesProvider {
         }
         Ok(assets)
     }
+}
+
+impl HermesProvider {
+    fn discover_sources(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        let homes = self.homes();
+        if homes.is_empty() {
+            let now = Utc::now();
+            return Ok((
+                Vec::new(),
+                vec![source_diagnostic(
+                    Some(AgentKind::Hermes),
+                    "profiles",
+                    None,
+                    now,
+                    now,
+                    None,
+                    DiscoveryDiagnosticStatus::NotConfigured,
+                    Vec::new(),
+                )],
+            ));
+        }
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        for home in homes {
+            if !home.is_dir() {
+                let finished_at = Utc::now();
+                for (source, path) in [
+                    ("config", home.join("config.yaml")),
+                    ("state-db", home.join("state.db")),
+                    ("sessions-jsonl", home.join("sessions")),
+                ] {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::Hermes),
+                        source,
+                        Some(path),
+                        finished_at,
+                        finished_at,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ));
+                }
+                continue;
+            }
+            let config = home.join("config.yaml");
+            let config_started = Utc::now();
+            if config.is_file() {
+                match fs::read_to_string(&config)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|content| {
+                        serde_yaml::from_str::<serde_yaml::Value>(&content).map_err(Into::into)
+                    }) {
+                    Ok(value) => {
+                        let path = value
+                            .get("terminal")
+                            .and_then(|value| value.get("cwd"))
+                            .and_then(serde_yaml::Value::as_str)
+                            .map(|path| resolve_config_path(&home, path));
+                        if let Some(path) = path.clone() {
+                            output.push(candidate(
+                                path,
+                                Some(AgentKind::Hermes),
+                                DiscoveryEvidence::ConfiguredWorkspace,
+                                None,
+                                0,
+                                true,
+                            ));
+                        }
+                        diagnostics.push(source_diagnostic(
+                            Some(AgentKind::Hermes),
+                            "config",
+                            Some(config),
+                            config_started,
+                            Utc::now(),
+                            Some(usize::from(path.is_some())),
+                            if path.is_some() {
+                                DiscoveryDiagnosticStatus::Succeeded
+                            } else {
+                                DiscoveryDiagnosticStatus::Empty
+                            },
+                            Vec::new(),
+                        ));
+                    }
+                    Err(error) => {
+                        diagnostics.push(source_diagnostic(
+                            Some(AgentKind::Hermes),
+                            "config",
+                            Some(config),
+                            config_started,
+                            Utc::now(),
+                            None,
+                            source_error_status(&error),
+                            vec![diagnostic_reason(&error.to_string())],
+                        ));
+                    }
+                }
+            } else {
+                diagnostics.push(source_diagnostic(
+                    Some(AgentKind::Hermes),
+                    "config",
+                    Some(config),
+                    config_started,
+                    Utc::now(),
+                    None,
+                    DiscoveryDiagnosticStatus::Missing,
+                    vec!["missing-file".into()],
+                ));
+            }
+
+            let database = home.join("state.db");
+            let db_started = Utc::now();
+            if database.is_file() {
+                match discover_hermes_database(&database) {
+                    Ok(sessions) => {
+                        let count = sessions.len();
+                        output.extend(sessions);
+                        diagnostics.push(source_diagnostic(
+                            Some(AgentKind::Hermes),
+                            "state-db",
+                            Some(database),
+                            db_started,
+                            Utc::now(),
+                            Some(count),
+                            if count == 0 {
+                                DiscoveryDiagnosticStatus::Empty
+                            } else {
+                                DiscoveryDiagnosticStatus::Succeeded
+                            },
+                            Vec::new(),
+                        ));
+                    }
+                    Err(error) => {
+                        diagnostics.push(source_diagnostic(
+                            Some(AgentKind::Hermes),
+                            "state-db",
+                            Some(database),
+                            db_started,
+                            Utc::now(),
+                            None,
+                            source_error_status(&error),
+                            vec![diagnostic_reason(&error.to_string())],
+                        ));
+                    }
+                }
+            } else {
+                diagnostics.push(source_diagnostic(
+                    Some(AgentKind::Hermes),
+                    "state-db",
+                    Some(database),
+                    db_started,
+                    Utc::now(),
+                    None,
+                    DiscoveryDiagnosticStatus::Missing,
+                    vec!["missing-file".into()],
+                ));
+            }
+
+            let sessions_root = home.join("sessions");
+            let sessions_started = Utc::now();
+            match discover_jsonl_cwds(&sessions_root, 3, AgentKind::Hermes) {
+                Ok(discovery) => {
+                    let count = discovery.candidates.len();
+                    let reasons = discovery.reasons.into_iter().collect::<Vec<_>>();
+                    output.extend(discovery.candidates);
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::Hermes),
+                        "sessions-jsonl",
+                        Some(sessions_root.clone()),
+                        sessions_started,
+                        Utc::now(),
+                        Some(count),
+                        if !reasons.is_empty() {
+                            DiscoveryDiagnosticStatus::Partial
+                        } else if count == 0 {
+                            if sessions_root.is_dir() {
+                                DiscoveryDiagnosticStatus::Empty
+                            } else {
+                                DiscoveryDiagnosticStatus::Missing
+                            }
+                        } else {
+                            DiscoveryDiagnosticStatus::Succeeded
+                        },
+                        reasons,
+                    ));
+                }
+                Err(error) => {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::Hermes),
+                        "sessions-jsonl",
+                        Some(sessions_root),
+                        sessions_started,
+                        Utc::now(),
+                        None,
+                        source_error_status(&error),
+                        vec![diagnostic_reason(&error.to_string())],
+                    ));
+                }
+            }
+        }
+        Ok((output, diagnostics))
+    }
+}
+
+fn discover_hermes_database(path: &Path) -> Result<Vec<DiscoveryCandidate>> {
+    let connection = open_read_only(path)?;
+    let columns = table_columns(&connection, "sessions")?;
+    let cwd_column = ["cwd", "directory", "project_dir"]
+        .into_iter()
+        .find(|column| columns.contains(*column));
+    let Some(cwd_column) = cwd_column else {
+        return Ok(Vec::new());
+    };
+    let timestamp_column = ["started_at", "created_at", "updated_at"]
+        .into_iter()
+        .find(|column| columns.contains(*column));
+    let timestamp_expression = timestamp_column
+        .map(|column| format!("CAST(MAX({column}) AS TEXT)"))
+        .unwrap_or_else(|| "NULL".into());
+    let sql = format!(
+        "SELECT {cwd_column}, COUNT(*), {timestamp_expression} FROM sessions \
+         WHERE {cwd_column} IS NOT NULL AND {cwd_column} != '' GROUP BY {cwd_column}"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut output = Vec::new();
+    for row in rows {
+        let (path, count, timestamp) = row?;
+        output.push(candidate(
+            PathBuf::from(path),
+            Some(AgentKind::Hermes),
+            DiscoveryEvidence::SessionCwd,
+            timestamp.as_deref().and_then(|value| {
+                serde_json::from_str::<JsonValue>(value)
+                    .ok()
+                    .and_then(|value| parse_json_timestamp(&value))
+                    .or_else(|| value.parse::<i64>().ok().and_then(timestamp_from_integer))
+                    .or_else(|| {
+                        value.parse::<f64>().ok().and_then(|value| {
+                            (value.is_finite() && value > 0.0 && value < i64::MAX as f64)
+                                .then(|| timestamp_from_integer(value as i64))
+                                .flatten()
+                        })
+                    })
+                    .or_else(|| {
+                        DateTime::parse_from_rfc3339(value)
+                            .ok()
+                            .map(|value| value.with_timezone(&Utc))
+                    })
+            }),
+            count.max(0) as u64,
+            false,
+        ));
+    }
+    Ok(output)
 }
 
 #[derive(Default)]
@@ -914,50 +1564,13 @@ impl WorkspaceDiscoveryProvider for GrokBuildProvider {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
-        let Some(sessions) = self
-            .home()
-            .map(|home| home.join("sessions"))
-            .filter(|path| path.is_dir())
-        else {
-            return Ok(Vec::new());
-        };
-        let mut output = Vec::new();
-        for entry in WalkDir::new(sessions)
-            .min_depth(3)
-            .max_depth(3)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| platform_path::is_safe_scan_entry(entry.path()))
-        {
-            let Ok(entry) = entry else { continue };
-            if !entry.file_type().is_file() || entry.file_name() != "summary.json" {
-                continue;
-            }
-            let Ok(value) = read_bounded_json(entry.path(), MAX_GROK_SUMMARY_BYTES) else {
-                continue;
-            };
-            let Some(cwd) = value.pointer("/info/cwd").and_then(JsonValue::as_str) else {
-                continue;
-            };
-            if cwd.trim().is_empty() {
-                continue;
-            }
-            let timestamp = value
-                .get("updated_at")
-                .or_else(|| value.get("updatedAt"))
-                .or_else(|| value.get("created_at"))
-                .or_else(|| value.get("createdAt"))
-                .and_then(parse_json_timestamp);
-            output.push(candidate(
-                PathBuf::from(cwd),
-                Some(AgentKind::GrokBuild),
-                DiscoveryEvidence::SessionCwd,
-                timestamp,
-                1,
-                false,
-            ));
-        }
-        Ok(output)
+        self.discover_sources().map(|(candidates, _)| candidates)
+    }
+
+    fn discover_with_diagnostics(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        self.discover_sources()
     }
 
     fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
@@ -987,6 +1600,161 @@ impl WorkspaceDiscoveryProvider for GrokBuildProvider {
     }
 }
 
+impl GrokBuildProvider {
+    fn discover_sources(
+        &self,
+    ) -> Result<(Vec<DiscoveryCandidate>, Vec<DiscoverySourceDiagnostic>)> {
+        let Some(home) = self.home().filter(|path| path.is_dir()) else {
+            let now = Utc::now();
+            let home = self.home();
+            return Ok((
+                Vec::new(),
+                vec![
+                    source_diagnostic(
+                        Some(AgentKind::GrokBuild),
+                        "sessions",
+                        home.as_ref().map(|path| path.join("sessions")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                    source_diagnostic(
+                        Some(AgentKind::GrokBuild),
+                        "archived-sessions",
+                        home.map(|path| path.join("archived_sessions")),
+                        now,
+                        now,
+                        None,
+                        DiscoveryDiagnosticStatus::Missing,
+                        vec!["missing-directory".into()],
+                    ),
+                ],
+            ));
+        };
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        for (source, root) in [
+            ("sessions", home.join("sessions")),
+            ("archived-sessions", home.join("archived_sessions")),
+        ] {
+            let started_at = Utc::now();
+            if !root.is_dir() {
+                diagnostics.push(source_diagnostic(
+                    Some(AgentKind::GrokBuild),
+                    source,
+                    Some(root),
+                    started_at,
+                    Utc::now(),
+                    None,
+                    DiscoveryDiagnosticStatus::Missing,
+                    vec!["missing-directory".into()],
+                ));
+                continue;
+            }
+            match discover_grok_root(&root) {
+                Ok(discovery) => {
+                    let count = discovery.candidates.len();
+                    let reasons = discovery.reasons.into_iter().collect::<Vec<_>>();
+                    output.extend(discovery.candidates);
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::GrokBuild),
+                        source,
+                        Some(root),
+                        started_at,
+                        Utc::now(),
+                        Some(count),
+                        if !reasons.is_empty() {
+                            DiscoveryDiagnosticStatus::Partial
+                        } else if count == 0 {
+                            DiscoveryDiagnosticStatus::Empty
+                        } else {
+                            DiscoveryDiagnosticStatus::Succeeded
+                        },
+                        reasons,
+                    ));
+                }
+                Err(error) => {
+                    diagnostics.push(source_diagnostic(
+                        Some(AgentKind::GrokBuild),
+                        source,
+                        Some(root),
+                        started_at,
+                        Utc::now(),
+                        None,
+                        source_error_status(&error),
+                        vec![diagnostic_reason(&error.to_string())],
+                    ));
+                }
+            }
+        }
+        Ok((output, diagnostics))
+    }
+}
+
+struct GrokDiscovery {
+    candidates: Vec<DiscoveryCandidate>,
+    reasons: BTreeSet<String>,
+}
+
+fn discover_grok_root(root: &Path) -> Result<GrokDiscovery> {
+    let mut output = Vec::new();
+    let mut reasons = BTreeSet::new();
+    for entry in WalkDir::new(root)
+        .min_depth(3)
+        .max_depth(3)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            platform_path::is_safe_scan_entry(entry.path())
+                && !platform_path::is_reparse_or_symlink(entry.path()).unwrap_or(true)
+        })
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                reasons.insert("scan-entry-failed".into());
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() || entry.file_name() != "summary.json" {
+            continue;
+        }
+        let value = match read_bounded_json(entry.path(), MAX_GROK_SUMMARY_BYTES) {
+            Ok(value) => value,
+            Err(_) => {
+                reasons.insert("source-read-failed".into());
+                continue;
+            }
+        };
+        let Some(cwd) = value.pointer("/info/cwd").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        if cwd.trim().is_empty() {
+            continue;
+        }
+        let timestamp = value
+            .get("updated_at")
+            .or_else(|| value.get("updatedAt"))
+            .or_else(|| value.get("created_at"))
+            .or_else(|| value.get("createdAt"))
+            .and_then(parse_json_timestamp);
+        output.push(candidate(
+            PathBuf::from(cwd),
+            Some(AgentKind::GrokBuild),
+            DiscoveryEvidence::SessionCwd,
+            timestamp,
+            1,
+            false,
+        ));
+    }
+    Ok(GrokDiscovery {
+        candidates: output,
+        reasons,
+    })
+}
+
 fn read_bounded_json(path: &Path, limit: u64) -> Result<JsonValue> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() || metadata.len() > limit {
@@ -1000,6 +1768,142 @@ fn read_bounded_json(path: &Path, limit: u64) -> Result<JsonValue> {
         anyhow::bail!("JSON file exceeds the read limit");
     }
     Ok(serde_json::from_str(&content)?)
+}
+
+/// Extract only the small session header needed for workspace discovery. The
+/// body is never retained, and symlinked files are rejected by the bounded
+/// regular-file check.
+struct JsonlCwdDiscovery {
+    candidates: Vec<DiscoveryCandidate>,
+    reasons: BTreeSet<String>,
+}
+
+fn discover_jsonl_cwds(
+    root: &Path,
+    max_depth: usize,
+    agent: AgentKind,
+) -> Result<JsonlCwdDiscovery> {
+    if !root.is_dir() {
+        return Ok(JsonlCwdDiscovery {
+            candidates: Vec::new(),
+            reasons: BTreeSet::new(),
+        });
+    }
+    let mut output = Vec::new();
+    let mut reasons = BTreeSet::new();
+    for entry in WalkDir::new(root)
+        .max_depth(max_depth.max(1))
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| platform_path::is_safe_scan_entry(entry.path()))
+    {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                reasons.insert("scan-entry-failed".into());
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !entry.file_type().is_file()
+            || path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+        {
+            continue;
+        }
+        if platform_path::is_reparse_or_symlink(path).unwrap_or(true) {
+            reasons.insert("source-read-failed".into());
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                reasons.insert("source-read-failed".into());
+                continue;
+            }
+        };
+        if !metadata.file_type().is_file() {
+            reasons.insert("source-read-failed".into());
+            continue;
+        }
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(_) => {
+                reasons.insert("source-read-failed".into());
+                continue;
+            }
+        };
+        let mut cwd = None;
+        let mut updated_at = None;
+        const HEADER_BYTES: usize = 256 * 1024;
+        let mut bytes = Vec::new();
+        if file
+            .take((HEADER_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            reasons.insert("source-read-failed".into());
+            continue;
+        }
+        let byte_limited = bytes.len() > HEADER_BYTES;
+        if byte_limited {
+            bytes.truncate(HEADER_BYTES);
+            // Never parse the partial record at the byte boundary as a header.
+            let end = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |i| i + 1);
+            bytes.truncate(end);
+        }
+        let mut lines = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty());
+        for line in lines.by_ref().take(32) {
+            let value = match serde_json::from_slice::<JsonValue>(line) {
+                Ok(value) => value,
+                Err(_) => {
+                    reasons.insert("unsupported-schema".into());
+                    continue;
+                }
+            };
+            if updated_at.is_none() {
+                updated_at = value
+                    .get("timestamp")
+                    .or_else(|| value.get("updated_at"))
+                    .or_else(|| value.get("updatedAt"))
+                    .and_then(parse_json_timestamp);
+            }
+            if cwd.is_none() {
+                cwd = value
+                    .get("cwd")
+                    .or_else(|| value.get("directory"))
+                    .or_else(|| value.get("project_dir"))
+                    .or_else(|| value.pointer("/session/cwd"))
+                    .and_then(JsonValue::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(PathBuf::from);
+            }
+            if cwd.is_some() && updated_at.is_some() {
+                break;
+            }
+        }
+        if (cwd.is_none() || updated_at.is_none()) && (byte_limited || lines.next().is_some()) {
+            reasons.insert("scan-budget-exceeded".into());
+        }
+        if let Some(cwd) = cwd {
+            output.push(candidate(
+                cwd,
+                Some(agent),
+                DiscoveryEvidence::SessionCwd,
+                updated_at,
+                1,
+                false,
+            ));
+        }
+    }
+    Ok(JsonlCwdDiscovery {
+        candidates: output,
+        reasons,
+    })
 }
 
 #[derive(Default)]
@@ -1177,7 +2081,16 @@ fn normalize_and_merge(candidates: Vec<DiscoveryCandidate>) -> Vec<DiscoveryCand
     let mut grouped: BTreeMap<(String, Option<AgentKind>, DiscoveryEvidence), DiscoveryCandidate> =
         BTreeMap::new();
     for mut candidate in candidates {
-        let Some(path) = normalize_workspace(&candidate.path, candidate.explicit_workspace) else {
+        let session_root = matches!(candidate.evidence, DiscoveryEvidence::SessionCwd)
+            && matches!(
+                candidate.source_agent,
+                Some(AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::GrokBuild)
+            );
+        let Some(path) = (if session_root {
+            platform_path::session_workspace_root(&candidate.path, dirs::home_dir().as_deref())
+        } else {
+            normalize_workspace(&candidate.path, candidate.explicit_workspace)
+        }) else {
             continue;
         };
         candidate.repository_group_id = repository_group_id(&path);
@@ -1197,10 +2110,28 @@ fn normalize_and_merge(candidates: Vec<DiscoveryCandidate>) -> Vec<DiscoveryCand
                     .session_count
                     .saturating_add(candidate.session_count);
                 existing.last_active_at = latest(existing.last_active_at, candidate.last_active_at);
+                merge_session_cwds(&mut existing.session_cwds, candidate.session_cwds.as_ref());
             })
             .or_insert(candidate);
     }
     grouped.into_values().collect()
+}
+
+fn merge_session_cwds(target: &mut Option<Vec<PathBuf>>, incoming: Option<&Vec<PathBuf>>) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    let target = target.get_or_insert_with(Vec::new);
+    for path in incoming {
+        let identity = platform_path::identity(path);
+        if !target
+            .iter()
+            .any(|existing| platform_path::identity(existing) == identity)
+        {
+            target.push(path.clone());
+        }
+    }
+    target.sort_by_key(|path| platform_path::identity(path));
 }
 
 fn exclude_agent_home_candidates(
@@ -1447,6 +2378,7 @@ fn installation(agent: AgentKind, home: Option<PathBuf>, installed: bool) -> Age
         version: None,
         home,
         warnings: Vec::new(),
+        support: Some(agentkib_core::AgentSupportCapabilities::for_agent(agent)),
     }
 }
 
@@ -1558,6 +2490,14 @@ fn candidate(
     session_count: u64,
     explicit_workspace: bool,
 ) -> DiscoveryCandidate {
+    let session_cwds = matches!(
+        (source_agent, evidence),
+        (
+            Some(AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::GrokBuild),
+            DiscoveryEvidence::SessionCwd
+        )
+    )
+    .then(|| vec![path.clone()]);
     DiscoveryCandidate {
         path,
         display_name: None,
@@ -1567,6 +2507,7 @@ fn candidate(
         session_count,
         explicit_workspace,
         repository_group_id: None,
+        session_cwds,
     }
 }
 
@@ -1577,10 +2518,6 @@ fn open_read_only(path: &Path) -> Result<Connection> {
     )?;
     connection.busy_timeout(std::time::Duration::from_secs(2))?;
     Ok(connection)
-}
-
-fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
-    Ok(table_columns(connection, table)?.contains(column))
 }
 
 fn table_columns(connection: &Connection, table: &str) -> Result<BTreeSet<String>> {
@@ -1602,10 +2539,6 @@ fn timestamp_from_integer(value: i64) -> Option<DateTime<Utc>> {
     } else {
         Utc.timestamp_opt(value, 0).single()
     }
-}
-
-fn timestamp_from_float(value: f64) -> Option<DateTime<Utc>> {
-    timestamp_from_integer(value as i64)
 }
 
 fn parse_json_timestamp(value: &JsonValue) -> Option<DateTime<Utc>> {
@@ -1692,6 +2625,147 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
+
+    #[test]
+    fn jsonl_discovery_reads_large_transcript_headers_with_a_bounded_prefix() {
+        for agent in [AgentKind::OpenClaw, AgentKind::Hermes] {
+            let dir = tempdir().unwrap();
+            let header =
+                serde_json::json!({"cwd":"/workspace", "timestamp":"2026-09-01T12:00:00Z"});
+            fs::write(
+                dir.path().join("large.jsonl"),
+                format!("{header}\n{}", "x".repeat(300 * 1024)),
+            )
+            .unwrap();
+            let result = discover_jsonl_cwds(dir.path(), 1, agent).unwrap();
+            assert_eq!(result.candidates.len(), 1);
+            assert_eq!(result.candidates[0].path, PathBuf::from("/workspace"));
+            assert!(result.reasons.is_empty());
+        }
+    }
+
+    #[test]
+    fn jsonl_discovery_does_not_parse_records_beyond_byte_or_line_budget() {
+        for prefix in [" ".repeat(256 * 1024), "{}\n".repeat(32)] {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("limited.jsonl"),
+                format!("{prefix}{{\"cwd\":\"/hidden\"}}\n"),
+            )
+            .unwrap();
+            let result = discover_jsonl_cwds(dir.path(), 1, AgentKind::OpenClaw).unwrap();
+            assert!(result.candidates.is_empty());
+            assert!(result.reasons.contains("scan-budget-exceeded"));
+        }
+    }
+
+    #[test]
+    fn hermes_database_preserves_real_integer_and_rfc3339_timestamps() {
+        for (kind, value, expected) in [
+            ("REAL", "1788860000.5", 1788860000),
+            ("INTEGER", "1788860000", 1788860000),
+            ("INTEGER", "1788860000000", 1788860000),
+            ("TEXT", "2026-09-08T10:53:20Z", 1788864800),
+        ] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(&format!(
+                "CREATE TABLE sessions(cwd TEXT, started_at {kind});"
+            ))
+            .unwrap();
+            db.execute("INSERT INTO sessions VALUES('/workspace', ?1)", [value])
+                .unwrap();
+            drop(db);
+            let candidates = discover_hermes_database(&path).unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(
+                candidates[0].last_active_at.unwrap().timestamp(),
+                expected,
+                "{kind}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_sources_keep_diagnostics_without_candidates() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("opencode.db"), "not sqlite").unwrap();
+        fs::write(dir.path().join("openclaw.json"), "{broken").unwrap();
+        fs::write(dir.path().join("state.db"), "not sqlite").unwrap();
+        let providers: Vec<(Box<dyn WorkspaceDiscoveryProvider>, &str, &str)> = vec![
+            (
+                Box::new(OpenCodeProvider {
+                    config_home: Some(dir.path().to_path_buf()),
+                    data_home: Some(dir.path().to_path_buf()),
+                }),
+                "sqlite",
+                "opencode.db",
+            ),
+            (
+                Box::new(OpenClawProvider {
+                    home: Some(dir.path().to_path_buf()),
+                }),
+                "config",
+                "openclaw.json",
+            ),
+            (
+                Box::new(HermesProvider {
+                    home: Some(dir.path().to_path_buf()),
+                }),
+                "state-db",
+                "state.db",
+            ),
+        ];
+        for (provider, source, file) in providers {
+            let (candidates, diagnostics) = provider.discover_with_diagnostics().unwrap();
+            assert!(candidates.is_empty());
+            let failure = diagnostics.iter().find(|d| d.source == source).unwrap();
+            assert_eq!(
+                failure.path.as_deref(),
+                Some(dir.path().join(file).as_path())
+            );
+            assert_eq!(failure.status, DiscoveryDiagnosticStatus::Failed);
+            assert!(!failure.reasons.is_empty());
+            assert!(diagnostics.len() > 1);
+        }
+    }
+
+    #[test]
+    fn source_failure_keeps_other_source_candidates_and_missing_sources_stay_missing() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("openclaw");
+        let provider = OpenClawProvider {
+            home: Some(home.clone()),
+        };
+        let (candidates, diagnostics) = provider.discover_with_diagnostics().unwrap();
+        assert!(candidates.is_empty());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.status == DiscoveryDiagnosticStatus::Missing)
+        );
+
+        let sessions = home.join("agents/default/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(home.join("openclaw.json"), "{broken").unwrap();
+        fs::write(
+            sessions.join("session.jsonl"),
+            "{\"cwd\":\"/workspace\",\"timestamp\":\"2026-09-01T12:00:00Z\"}\n",
+        )
+        .unwrap();
+        let (candidates, diagnostics) = provider.discover_with_diagnostics().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.source == "config" && d.status == DiscoveryDiagnosticStatus::Failed)
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.source == "sessions-jsonl"
+                && d.status == DiscoveryDiagnosticStatus::Succeeded)
+        );
+    }
 
     #[test]
     fn bounded_parallel_map_preserves_input_order() {
@@ -1914,6 +2988,45 @@ mod tests {
         fs::create_dir(dir.path().join(".git")).unwrap();
         let result = normalize_workspace(&dir.path().join("packages/api/src"), false).unwrap();
         assert_eq!(result, platform_path::canonicalize(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn session_cwd_normalization_preserves_all_original_nested_paths() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("packages/api");
+        let second = dir.path().join("packages/web");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+
+        let candidates = normalize_and_merge(vec![
+            candidate(
+                first.clone(),
+                Some(AgentKind::OpenClaw),
+                DiscoveryEvidence::SessionCwd,
+                None,
+                1,
+                false,
+            ),
+            candidate(
+                second.clone(),
+                Some(AgentKind::OpenClaw),
+                DiscoveryEvidence::SessionCwd,
+                None,
+                2,
+                false,
+            ),
+        ]);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].path,
+            platform_path::canonicalize(dir.path()).unwrap()
+        );
+        let mut session_cwds = candidates[0].session_cwds.clone().unwrap();
+        session_cwds.sort();
+        assert_eq!(session_cwds, vec![first, second]);
+        assert_eq!(candidates[0].session_count, 3);
     }
 
     #[test]
@@ -2230,6 +3343,43 @@ mod tests {
     }
 
     #[test]
+    fn openclaw_discovers_session_cwd_without_configuration() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("session-workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let sessions = dir.path().join("openclaw/agents/default/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("session-1.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type": "session",
+                    "id": "private-session-id",
+                    "cwd": workspace,
+                    "timestamp": "2026-09-01T12:00:00Z"
+                }),
+                serde_json::json!({
+                    "type": "message",
+                    "message": {"role": "user", "content": "private prompt"}
+                })
+            ),
+        )
+        .unwrap();
+
+        let candidates = OpenClawProvider {
+            home: Some(dir.path().join("openclaw")),
+        }
+        .discover()
+        .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, workspace);
+        assert_eq!(candidates[0].session_count, 1);
+        assert!(!format!("{candidates:?}").contains("private-session-id"));
+        assert!(!format!("{candidates:?}").contains("private prompt"));
+    }
+
+    #[test]
     fn hermes_discovers_default_and_profile_workspaces() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("first");
@@ -2255,6 +3405,57 @@ mod tests {
         .discover()
         .unwrap();
         assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn hermes_merges_profile_jsonl_cwds_with_database_sources() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("jsonl-workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let home = dir.path().join("hermes");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("session.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "session",
+                    "cwd": workspace,
+                    "timestamp": "2026-09-01T12:00:00Z"
+                })
+            ),
+        )
+        .unwrap();
+
+        let candidates = HermesProvider { home: Some(home) }.discover().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, workspace);
+        assert_eq!(candidates[0].session_count, 1);
+    }
+
+    #[test]
+    fn grok_build_discovers_archived_session_summaries() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let home = dir.path().join("grok");
+        let session = home.join("archived_sessions/encoded/session-archived");
+        fs::create_dir_all(&session).unwrap();
+        fs::write(
+            session.join("summary.json"),
+            serde_json::json!({
+                "info": {"cwd": workspace},
+                "created_at": "2026-09-01T12:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let candidates = GrokBuildProvider { home: Some(home) }.discover().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, workspace);
+        assert_eq!(candidates[0].session_count, 1);
     }
 
     #[test]
@@ -2426,6 +3627,9 @@ mod tests {
             version: None,
             home: Some(home.clone()),
             warnings: Vec::new(),
+            support: Some(agentkib_core::AgentSupportCapabilities::for_agent(
+                AgentKind::Codex,
+            )),
         }];
 
         exclude_agent_home_candidates(&mut candidates, &installations);

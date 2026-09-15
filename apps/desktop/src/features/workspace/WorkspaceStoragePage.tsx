@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -27,7 +28,7 @@ import {
   X,
 } from "@octanejs/lucide";
 import { api } from "@/core/api";
-import { currentLocale, formatDateTime, localizeMessage, tr } from "@/core/i18n";
+
 import type {
   AgentKind,
   RefreshJobStatus,
@@ -81,6 +82,7 @@ export function WorkspaceStoragePage({
   workspaces: WorkspaceSummary[];
   job?: RefreshJobStatus;
 }) {
+  const { formatDateTime, locale, localizeMessage, tr } = useI18n();
   const [overview, setOverview] = useState<StorageOverview>();
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -89,7 +91,10 @@ export function WorkspaceStoragePage({
   const [trail, setTrail] = useState<StorageLocation[]>([]);
   const [selected, setSelected] = useState<StorageSelection>();
   const [expanding, setExpanding] = useState(false);
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<{ reason: unknown; expanding?: boolean }>();
+  const error = failure
+    ? `${failure.expanding ? `${tr("storage.expandFailed")}: ` : ""}${localizeMessage(failure.reason)}`
+    : "";
   const [refreshPending, setRefreshPending] = useState(false);
   const [now, setNow] = useState<number>();
   const active = refreshPending || job?.state === "queued" || job?.state === "running";
@@ -106,21 +111,19 @@ export function WorkspaceStoragePage({
 
   useEffect(() => {
     let disposed = false;
-    const timeout = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const cached = await api.storageOverview();
-          if (!disposed) setOverview(cached);
-        } catch (reason) {
-          if (!disposed) setError(localizeMessage(reason));
-        } finally {
-          if (!disposed) setLoaded(true);
-        }
-      })();
-    }, 0);
+    void (async () => {
+      await Promise.resolve();
+      try {
+        const cached = await api.storageOverview();
+        if (!disposed) setOverview(cached);
+      } catch (reason) {
+        if (!disposed) setFailure({ reason });
+      } finally {
+        if (!disposed) setLoaded(true);
+      }
+    })();
     return () => {
       disposed = true;
-      window.clearTimeout(timeout);
     };
   }, []);
 
@@ -155,9 +158,9 @@ export function WorkspaceStoragePage({
         })
         .map((storage) => ({
           workspaceId: storage.workspace_id,
-          node: storage.root ?? legacyRoot(storage),
+          node: storage.root ?? legacyRoot(storage, tr),
         })),
-    [agent, overview, workspaceById],
+    [agent, overview, workspaceById, tr],
   );
   const current = trail.at(-1);
   const displayed = current
@@ -166,7 +169,7 @@ export function WorkspaceStoragePage({
   const chartData: StorageChartItem[] = displayed
     .map((item) => ({
       id: `${item.workspaceId}:${item.node.id}`,
-      name: nodeLabel(item.node),
+      name: nodeLabel(item.node, tr),
       size: metricBytes(item.node, metric),
       storageNode: item.node,
       workspaceId: item.workspaceId,
@@ -194,13 +197,13 @@ export function WorkspaceStoragePage({
   const progressValue = Math.round((progressCurrent / progressTotal) * 100);
 
   const start = async () => {
-    setError("");
+    setFailure(undefined);
     setRefreshPending(true);
     try {
       const receipt = await api.requestRefresh("storage", true);
       if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
     } catch (reason) {
-      setError(localizeMessage(reason));
+      setFailure({ reason });
     } finally {
       setRefreshPending(false);
     }
@@ -222,7 +225,7 @@ export function WorkspaceStoragePage({
         ? (current?.node.relative_path ?? "")
         : location.node.relative_path;
     setExpanding(true);
-    setError("");
+    setFailure(undefined);
     try {
       const node = await api.workspaceStorageChildren(location.workspaceId, relativePath);
       if (location.node.kind === "aggregate" && current) {
@@ -234,7 +237,7 @@ export function WorkspaceStoragePage({
         setTrail((value: any) => [...value, { workspaceId: location.workspaceId, node }]);
       }
     } catch (reason) {
-      setError(`${tr("storage.expandFailed")}: ${localizeMessage(reason)}`);
+      setFailure({ reason, expanding: true });
     } finally {
       setExpanding(false);
     }
@@ -336,16 +339,16 @@ export function WorkspaceStoragePage({
         <Card className="grid grid-cols-2 divide-x divide-border overflow-hidden p-0 lg:grid-cols-4">
           <Metric
             label={tr("storage.allocated")}
-            value={formatBytes(overview?.allocated_bytes ?? 0)}
+            value={formatBytes(overview?.allocated_bytes ?? 0, locale)}
             meta={estimated ? tr("storage.estimated") : undefined}
           />
           <Metric
             label={tr("storage.regenerable")}
-            value={formatBytes(overview?.regenerable_bytes ?? 0)}
+            value={formatBytes(overview?.regenerable_bytes ?? 0, locale)}
           />
           <Metric
             label={tr("storage.agentAssets")}
-            value={formatBytes(overview?.agent_asset_bytes ?? 0)}
+            value={formatBytes(overview?.agent_asset_bytes ?? 0, locale)}
           />
           <Metric
             label={tr("storage.coverage")}
@@ -434,7 +437,7 @@ export function WorkspaceStoragePage({
                         setSelected(undefined);
                       }}
                     >
-                      {nodeLabel(item.node)}
+                      {nodeLabel(item.node, tr)}
                     </Button>
                   </span>
                 ))}
@@ -472,7 +475,7 @@ export function WorkspaceStoragePage({
               workspace={workspaceById.get(selected.workspaceId)}
               metric={metric}
               onClose={() => setSelected(undefined)}
-              onError={(reason) => setError(localizeMessage(reason))}
+              onError={(reason) => setFailure({ reason })}
             />
           )}
         </div>
@@ -498,6 +501,7 @@ function StorageTreemapChart({
   onSelect: (location: StorageLocation) => void;
   onEnter: (location: StorageLocation) => Promise<void>;
 }) {
+  const { tr } = useI18n();
   const [width, setWidth] = useState(0);
   const [hovered, setHovered] = useState<StorageHover>();
   const [chartElement, setChartElement] = useState<HTMLDivElement | null>(null);
@@ -616,6 +620,7 @@ function StorageTreemapContent({
   ) => void;
   onHoverEnd: () => void;
 }) {
+  const { locale, tr } = useI18n();
   const node = rawStorageNode as StorageNode | undefined;
   const workspaceId = typeof rawWorkspaceId === "string" ? rawWorkspaceId : undefined;
   if (!node || !workspaceId) return <g />;
@@ -640,13 +645,13 @@ function StorageTreemapContent({
   const location = { workspaceId, node };
   const labelSize = detail === "rich" ? 14 : detail === "medium" ? 12 : 11;
   const isSelected = selected?.workspaceId === workspaceId && selected.node.id === node.id;
-  const label = fitTreemapLabel(nodeLabel(node), Math.max(0, width - 18), labelSize);
+  const label = fitTreemapLabel(nodeLabel(node, tr), Math.max(0, width - 18), labelSize);
 
   return (
     <g
       role="treeitem"
       tabIndex={0}
-      aria-label={`${nodeLabel(node)}, ${formatBytes(bytes)}, ${formatPercent(ratio)}`}
+      aria-label={`${nodeLabel(node, tr)}, ${formatBytes(bytes, locale)}, ${formatPercent(ratio, locale)}`}
       aria-selected={isSelected}
       opacity={opacity}
       onClick={() => onSelect(location)}
@@ -701,7 +706,7 @@ function StorageTreemapContent({
           textAnchor="middle"
           dominantBaseline="middle"
         >
-          {formatBytes(bytes)}
+          {formatBytes(bytes, locale)}
         </text>
       )}
       {detail === "rich" && (
@@ -714,7 +719,7 @@ function StorageTreemapContent({
           textAnchor="middle"
           dominantBaseline="middle"
         >
-          {formatPercent(ratio)} · {tr(`storage.type.${kind}`)}
+          {formatPercent(ratio, locale)} · {tr(`storage.type.${kind}`)}
         </text>
       )}
     </g>
@@ -724,6 +729,7 @@ function StorageTreemapContent({
 type StorageKind = "normal" | "regenerable" | "agent" | "git" | "aggregate";
 
 function StorageLegend() {
+  const { tr } = useI18n();
   const items: Array<{ kind: StorageKind; label: string }> = [
     { kind: "normal", label: tr("storage.type.normal") },
     { kind: "regenerable", label: tr("storage.type.regenerable") },
@@ -747,6 +753,7 @@ function StorageLegend() {
 }
 
 function StorageTreemapTooltip({ hover, chartWidth }: { hover: StorageHover; chartWidth: number }) {
+  const { locale, tr } = useI18n();
   const nearLeft = hover.left < 170;
   const nearRight = chartWidth > 0 && hover.left > chartWidth - 170;
   const above = hover.top > 94;
@@ -765,10 +772,10 @@ function StorageTreemapTooltip({ hover, chartWidth }: { hover: StorageHover; cha
         ...(above ? { transform: `${horizontalStyle.transform ?? ""} translateY(-100%)` } : {}),
       }}
     >
-      <div className="truncate font-semibold">{nodeLabel(hover.node)}</div>
+      <div className="truncate font-semibold">{nodeLabel(hover.node, tr)}</div>
       <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground">
-        <span>{formatBytes(hover.bytes)}</span>
-        <span className="text-right">{formatPercent(hover.ratio)}</span>
+        <span>{formatBytes(hover.bytes, locale)}</span>
+        <span className="text-right">{formatPercent(hover.ratio, locale)}</span>
         <span className="col-span-2 truncate">
           {tr(`storage.type.${semanticKind(hover.node)}`)}
         </span>
@@ -788,6 +795,7 @@ function EmptyState({
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }) {
+  const { tr } = useI18n();
   return (
     <Card className="grid min-h-[340px] place-content-center justify-items-center gap-2 p-6 text-center">
       <HardDrive size={32} />
@@ -845,6 +853,7 @@ function StorageInspector({
   onClose: () => void;
   onError: (reason: unknown) => void;
 }) {
+  const { locale, tr } = useI18n();
   const { node } = selection;
   const agents =
     workspace?.sources
@@ -866,7 +875,7 @@ function StorageInspector({
     <Card className="min-w-0 overflow-hidden lg:max-h-full">
       <div className="flex min-h-12 items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
         <div className="flex items-center gap-2">
-          <h2 className="m-0 text-base font-semibold">{nodeLabel(node)}</h2>
+          <h2 className="m-0 text-base font-semibold">{nodeLabel(node, tr)}</h2>
           {node.partial && <Badge variant="outline">{tr("storage.partialNode")}</Badge>}
         </div>
         <Button variant="ghost" size="icon" aria-label={tr("common.close")} onClick={onClose}>
@@ -874,26 +883,34 @@ function StorageInspector({
         </Button>
       </div>
       <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-3 border-b border-border-subtle px-4 py-3">
-        <Fact label={tr("storage.allocated")} value={formatBytes(node.allocated_bytes)} />
-        <Fact label={tr("storage.logical")} value={formatBytes(node.logical_bytes)} />
+        <Fact label={tr("storage.allocated")} value={formatBytes(node.allocated_bytes, locale)} />
+        <Fact label={tr("storage.logical")} value={formatBytes(node.logical_bytes, locale)} />
         <Fact
           label={tr("storage.parentShare")}
           value={formatPercent(
             selection.parentBytes ? metricBytes(node, metric) / selection.parentBytes : 0,
+            locale,
           )}
         />
         <Fact
           label={tr("storage.workspaceShare")}
           value={formatPercent(
             selection.workspaceBytes ? metricBytes(node, metric) / selection.workspaceBytes : 0,
+            locale,
           )}
         />
-        <Fact label={tr("storage.regenerable")} value={formatBytes(node.regenerable_bytes)} />
-        <Fact label={tr("storage.agentAssets")} value={formatBytes(node.agent_asset_bytes)} />
-        <Fact label={tr("storage.files")} value={node.file_count.toLocaleString(currentLocale())} />
+        <Fact
+          label={tr("storage.regenerable")}
+          value={formatBytes(node.regenerable_bytes, locale)}
+        />
+        <Fact
+          label={tr("storage.agentAssets")}
+          value={formatBytes(node.agent_asset_bytes, locale)}
+        />
+        <Fact label={tr("storage.files")} value={node.file_count.toLocaleString(locale)} />
         <Fact
           label={tr("storage.directories")}
-          value={node.directory_count.toLocaleString(currentLocale())}
+          value={node.directory_count.toLocaleString(locale)}
         />
         <Fact label={tr("storage.sourceAgents")} value={agents} />
         <Fact label={tr("storage.itemType")} value={tr(`storage.type.${semanticKind(node)}`)} />
@@ -938,7 +955,7 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function legacyRoot(storage: WorkspaceStorage): StorageNode {
+function legacyRoot(storage: WorkspaceStorage, tr: ReturnType<typeof useI18n>["tr"]): StorageNode {
   const children = storage.breakdown.map((item) => ({
     id: `legacy:${storage.workspace_id}:${item.relative_path || "root"}`,
     name: item.kind === "root-files" ? tr("storage.rootFiles") : item.name,
@@ -973,7 +990,7 @@ function legacyRoot(storage: WorkspaceStorage): StorageNode {
   };
 }
 
-function nodeLabel(node: StorageNode) {
+function nodeLabel(node: StorageNode, tr: ReturnType<typeof useI18n>["tr"]) {
   if (node.kind === "root-files") return tr("storage.rootFiles");
   if (node.kind === "aggregate") return tr("storage.otherCount", { count: node.child_count });
   return node.name;
@@ -1031,8 +1048,8 @@ function containsMatch(node: StorageNode, query: string): boolean {
   return matchesNode(node, query) || node.children.some((child) => containsMatch(child, query));
 }
 
-function formatPercent(value: number) {
-  return new Intl.NumberFormat(currentLocale(), {
+function formatPercent(value: number, locale: ReturnType<typeof useI18n>["locale"]) {
+  return new Intl.NumberFormat(locale, {
     style: "percent",
     maximumFractionDigits: value < 0.01 ? 1 : 0,
   }).format(Math.max(0, value));
@@ -1044,10 +1061,10 @@ function displayPath(root: string, relativePath: string) {
   return `${root.replace(/[\\/]$/, "")}${separator}${relativePath.replaceAll(/[\\/]/g, separator)}`;
 }
 
-function formatBytes(value: number) {
+function formatBytes(value: number, locale: ReturnType<typeof useI18n>["locale"]) {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   const amount = value / 1024 ** index;
-  return `${new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: amount >= 100 ? 0 : amount >= 10 ? 1 : 2 }).format(amount)} ${units[index]}`;
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: amount >= 100 ? 0 : amount >= 10 ? 1 : 2 }).format(amount)} ${units[index]}`;
 }

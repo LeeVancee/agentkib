@@ -9,7 +9,7 @@ import {
 
 export function AgentsSkeleton() {
   return (
-    <SkeletonPage className="pb-8" label="Loading agents">
+    <SkeletonPage className="pb-8" labelKey="loading.agents">
       <SkeletonPanel>
         <SkeletonPanelHeader />
         <SkeletonListRows count={2} />

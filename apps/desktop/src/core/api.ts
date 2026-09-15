@@ -1,8 +1,12 @@
 /** @jsxImportSource octane */
 
 import { desktopApi } from "./desktop";
+import { DEFAULT_SESSION_PAGE_SIZE } from "./session-history";
+import type { RemoteRequest } from "./remote-types";
 import type {
   AgentKind,
+  AgentToolExecutionResult,
+  AccentThemeId,
   AppIconPreference,
   AppUpdateProgress,
   ChangeSet,
@@ -33,6 +37,7 @@ import type {
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
 export const api = {
+  remoteRequest: <T extends RemoteRequest>(request: T) => desktopApi().remote.request(request),
   scan: (project: string) => desktopApi().workspace.scan(project),
   manifest: async (project: string) => {
     const manifest = await desktopApi().workspace.prepareManifest(project);
@@ -63,6 +68,9 @@ export const api = {
   reviewMemory: (id: string, status: MemoryStatus, editedContent?: string) =>
     desktopApi().memories.review(id, status, editedContent),
   runtime: () => desktopApi().home.runtime(),
+  agentTools: (force = false) => desktopApi().home.agentTools(force),
+  executeAgentTool: (agent: AgentKind, actionId: string): Promise<AgentToolExecutionResult> =>
+    desktopApi().home.executeAgentTool(agent, actionId),
   updateOnboarding: (event: OnboardingEvent) => desktopApi().home.updateOnboarding(event),
   openFilesAndFoldersSettings: () => desktopApi().shell.openFilesAndFoldersSettings(),
   openExternal: (url: string) => desktopApi().shell.openExternal(url),
@@ -71,6 +79,10 @@ export const api = {
   setLocale: (preference: LocalePreference) => desktopApi().settings.setLocale(preference),
   setThemePreference: (preference: ThemePreference) =>
     desktopApi().settings.setThemePreference(preference),
+  setAccentThemePreference: (preference: AccentThemeId) =>
+    desktopApi().settings.setAccentThemePreference(preference),
+  setSidebarWidthPreference: (preference: number) =>
+    desktopApi().settings.setSidebarWidthPreference(preference),
   setAppIconPreference: (preference: AppIconPreference) =>
     desktopApi().settings.setAppIconPreference(preference),
   checkAppUpdate: () => desktopApi().updates.check(),
@@ -158,10 +170,12 @@ export const api = {
   workspaceSessions: (workspaceId: string) => desktopApi().workspace.sessions(workspaceId),
   refreshWorkspaceSessions: (workspaceId: string, force = false) =>
     desktopApi().workspace.refreshSessions(workspaceId, force),
-  sessionEvents: (sessionId: string, cursor?: string, limit = 100) =>
+  sessionEvents: (sessionId: string, cursor?: string, limit = DEFAULT_SESSION_PAGE_SIZE) =>
     desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
+  planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().workspace.planMcpConnection(workspaceId, targetAgent),
   sanitizeSessionHandoff: (format: HandoffFormat, editedContent: string) =>
     desktopApi().workspace.sanitizeHandoff(format, editedContent),
   planSessionHandoff: (
@@ -201,6 +215,7 @@ export const api = {
     desktopApi().workspace.sessionStatus(workspaceId),
   clearSessionIndex: (workspaceId?: string) => desktopApi().sessions.clearIndex(workspaceId),
   setSessionIndexEnabled: (enabled: boolean) => desktopApi().sessions.setIndexEnabled(enabled),
+  setLocalAutoRefreshEnabled: (enabled: boolean) => desktopApi().home.setLocalAutoRefresh(enabled),
   setQuotaAutoRefreshEnabled: (enabled: boolean) => desktopApi().home.setQuotaAutoRefresh(enabled),
   setQuotaAutoRefreshPromptSeen: (seen: boolean) => desktopApi().home.setQuotaPromptSeen(seen),
   addWorkspace: (path: string) => desktopApi().workspace.add(path),
@@ -255,7 +270,7 @@ export const api = {
   setGitIdentityEnabled: (id: string, enabled: boolean) =>
     desktopApi().insights.setGitIdentityEnabled(id, enabled),
   quotaSnapshot: () => desktopApi().home.quotaSnapshot(),
-  refreshQuota: () => desktopApi().home.refreshQuota(),
+  refreshQuota: () => desktopApi().home.refreshQuota(true),
   quotaCollectorStatus: () => desktopApi().home.quotaCollectorStatus(),
   quotaPopoverPreferences: () => desktopApi().home.quotaPreferences(),
   setQuotaPopoverPreferences: (preferences: QuotaPopoverPreferences) =>

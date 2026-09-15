@@ -9,5 +9,7 @@ declare module "@octanejs/markdown/src/markdown-hooks.tsrx" {
 declare module "*.tsrx" {
   const component: any;
   export default component;
+  export const Route: any;
+  export const discoveryStatusSummary: any;
   export const MarkdownHooks: any;
 }

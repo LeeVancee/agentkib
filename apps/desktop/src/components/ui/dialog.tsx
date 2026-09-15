@@ -1,5 +1,7 @@
 /** @jsxImportSource octane */
 
+import * as React from "octane";
+import { useTranslation } from "@octanejs/i18next";
 import type { PropsOf } from "@/lib/octane-types";
 import { Dialog as DialogPrimitive } from "@octanejs/base-ui/dialog";
 import { cn } from "@/lib/utils";
@@ -31,15 +33,18 @@ function DialogOverlay({ className, ...props }: PropsOf<typeof DialogPrimitive.B
 }
 function DialogContent({
   className,
+  overlayClassName,
   children,
   showCloseButton = true,
   ...props
 }: PropsOf<typeof DialogPrimitive.Popup> & {
   showCloseButton?: boolean;
+  overlayClassName?: string;
 }) {
+  const { t: tr } = useTranslation();
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
@@ -55,7 +60,7 @@ function DialogContent({
             render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{tr("common.close")}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>
@@ -75,6 +80,7 @@ function DialogFooter({
 }: PropsOf<"div"> & {
   showCloseButton?: boolean;
 }) {
+  const { t: tr } = useTranslation();
   return (
     <div
       data-slot="dialog-footer"
@@ -86,7 +92,9 @@ function DialogFooter({
     >
       {children}
       {showCloseButton && (
-        <DialogPrimitive.Close render={<Button variant="outline" />}>Close</DialogPrimitive.Close>
+        <DialogPrimitive.Close render={<Button variant="outline" />}>
+          {tr("common.close")}
+        </DialogPrimitive.Close>
       )}
     </div>
   );

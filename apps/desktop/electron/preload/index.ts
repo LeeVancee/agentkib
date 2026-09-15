@@ -17,6 +17,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 const desktopApi = Object.freeze({
   platform: process.platform,
   events: Object.freeze({
+    onWindowActivity: (listener: (active: boolean) => void) =>
+      subscribe("agentkib:window-activity", listener),
     onQuitRequested: (listener: () => void) =>
       subscribe("agentkib:quit-requested", () => listener()),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
@@ -172,6 +174,8 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
     prepareHandoff: (request: unknown) =>
       ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
+    planMcpConnection: (workspaceId: string, targetAgent: string) =>
+      ipcRenderer.invoke("agentkib:session:plan-mcp-connection", workspaceId, targetAgent),
     sanitizeHandoff: (format: string, editedContent: string) =>
       ipcRenderer.invoke("agentkib:session:sanitize-handoff", format, editedContent),
     planHandoff: (
@@ -226,6 +230,12 @@ const desktopApi = Object.freeze({
     hideWindow: () => ipcRenderer.invoke("agentkib:shell:hide-window"),
     quit: () => ipcRenderer.invoke("agentkib:shell:quit"),
   }),
+  remote: Object.freeze({
+    request: (request: unknown) => ipcRenderer.invoke("agentkib:remote:request", request),
+  }),
+  web: Object.freeze({
+    request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),
+  }),
   settings: Object.freeze({
     setCloseBehavior: (value: unknown) =>
       ipcRenderer.invoke("agentkib:settings:set-close-behavior", value),
@@ -233,6 +243,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:settings:set-locale", preference),
     setThemePreference: (preference: string) =>
       ipcRenderer.invoke("agentkib:settings:set-theme", preference),
+    setAccentThemePreference: (preference: string) =>
+      ipcRenderer.invoke("agentkib:settings:set-accent-theme", preference),
+    setSidebarWidthPreference: (preference: number) =>
+      ipcRenderer.invoke("agentkib:settings:set-sidebar-width", preference),
     setAppIconPreference: (preference: string) =>
       ipcRenderer.invoke("agentkib:settings:set-app-icon", preference),
   }),
@@ -240,6 +254,9 @@ const desktopApi = Object.freeze({
     runtime: () => ipcRenderer.invoke("agentkib:home:runtime"),
     workspaces: () => ipcRenderer.invoke("agentkib:home:workspaces"),
     agentInstallations: () => ipcRenderer.invoke("agentkib:home:agent-installations"),
+    agentTools: (force?: boolean) => ipcRenderer.invoke("agentkib:home:agent-tools", force),
+    executeAgentTool: (agent: string, actionId: string) =>
+      ipcRenderer.invoke("agentkib:home:execute-agent-tool", agent, actionId),
     catalogAssets: (input: unknown) => ipcRenderer.invoke("agentkib:home:catalog-assets", input),
     globalMemories: (status?: string) =>
       ipcRenderer.invoke("agentkib:home:global-memories", status),
@@ -273,6 +290,8 @@ const desktopApi = Object.freeze({
     setQuotaPreferences: (preferences: unknown) =>
       ipcRenderer.invoke("agentkib:home:set-quota-preferences", preferences),
     refreshQuota: (force?: boolean) => ipcRenderer.invoke("agentkib:home:refresh-quota", force),
+    setLocalAutoRefresh: (enabled: boolean) =>
+      ipcRenderer.invoke("agentkib:home:set-local-auto-refresh", enabled),
     setQuotaAutoRefresh: (enabled: boolean) =>
       ipcRenderer.invoke("agentkib:home:set-quota-auto-refresh", enabled),
     setQuotaPromptSeen: (seen: boolean) =>

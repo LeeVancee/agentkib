@@ -16,6 +16,10 @@ electronLanguages:
   - zh-TW
 compression: normal
 extraResources:
+  - from: ../../LICENSE
+    to: licenses/AgentKib-LICENSE
+  - from: ../web/dist
+    to: web
   - from: build/runtime
     to: bin
   - from: build/quota

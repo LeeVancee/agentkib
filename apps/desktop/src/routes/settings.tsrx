@@ -1,12 +1,14 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { api } from "../core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
-import { localizeMessage, tr } from "../core/i18n";
-import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
+import { useSettingsTargetFocus } from "@/features/settings/useSettingsTargetFocus";
 import { useAppStore } from "../stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
@@ -18,16 +20,23 @@ import {
   useHomeRemoteGateways,
   useHomeScanRoots,
   useHomeWorkspaces,
-} from "@/features/home/home-query.tsx";
-import { useQuotaStatus } from "@/features/quota/quota-query.tsx";
-import type { CloseBehavior, RuntimeInfo } from "../core/types";
+} from "@/features/home/home-query";
+import { useQuotaStatus } from "@/features/quota/quota-query";
+import type { CloseBehavior, RefreshKind, RuntimeInfo } from "../core/types";
 
-type SettingsSearch = { settingsSection?: SettingsSection };
+type SettingsSearch = { settingsSection?: SettingsSection; settingsTarget?: SettingsTarget };
 
 function SettingsRoute() {
+  const { localizeMessage, tr } = useI18n();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as SettingsSearch;
   const section = search.settingsSection ?? "general";
+  const layoutVariant: SettingsPageVariant =
+    section === "tools"
+      ? "workspace"
+      : section === "general" || section === "appearance" || section === "privacy"
+        ? "form"
+        : "management";
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
@@ -38,7 +47,10 @@ function SettingsRoute() {
   const { data: scanRoots = [] } = useHomeScanRoots();
   const { data: excluded = [] } = useHomeExcluded();
   const { data: activity = [] } = useHomeActivity();
-  const { setMessage } = useWorkspaceStore();
+  const setMessage = useWorkspaceStore((state) => state.setMessage);
+  const contentPending = !runtime && workspacesPending;
+
+  useSettingsTargetFocus(search.settingsTarget, section, contentPending);
 
   const run = async (operation: () => Promise<void>) => {
     setMessage("");
@@ -83,16 +95,36 @@ function SettingsRoute() {
       await queryClient.invalidateQueries({ queryKey: homeKeys.remoteGateways() });
     });
 
-  const changeRuntime = (nextRuntime: RuntimeInfo) => setRuntime(nextRuntime);
+  const clearContinuationCache = () =>
+    queryClient.removeQueries({ queryKey: homeKeys.continuationsRoot() });
+  const changeRuntime = (nextRuntime: RuntimeInfo) => {
+    if (nextRuntime.session_index_enabled === false) clearContinuationCache();
+    setRuntime(nextRuntime);
+  };
   const restartOnboarding = () =>
     run(async () => {
       setRuntime(await api.updateOnboarding({ event: "restarted" }));
     });
 
+  const refreshDiagnostics = () =>
+    run(async () => {
+      await Promise.all(
+        (["discovery", "insights", "gateways", "quota"] satisfies RefreshKind[]).map((kind) =>
+          api.requestRefresh(kind, true),
+        ),
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: homeKeys.discovery() }),
+        queryClient.invalidateQueries({ queryKey: homeKeys.insightsStatus() }),
+        queryClient.invalidateQueries({ queryKey: homeKeys.remoteGateways() }),
+        queryClient.invalidateQueries({ queryKey: homeKeys.activity() }),
+      ]);
+    });
+
   return (
     <>
-      {!runtime && workspacesPending ? (
-        <SettingsContentSkeleton />
+      {contentPending ? (
+        <SettingsContentSkeleton variant={layoutVariant} />
       ) : (
         <GlobalSettings
           section={section}
@@ -110,8 +142,10 @@ function SettingsRoute() {
           onRestore={restoreExcluded}
           onCloseBehaviorChanged={changeCloseBehavior}
           onLocaleChanged={changeRuntime}
+          onSessionIndexCleared={clearContinuationCache}
           onOnboardingRestarted={restartOnboarding}
           onRemoteGatewaysChanged={refreshRemoteGateways}
+          onRefreshDiagnostics={refreshDiagnostics}
         />
       )}
     </>

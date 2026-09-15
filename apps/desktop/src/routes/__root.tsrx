@@ -1,11 +1,17 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { createRootRoute, Outlet, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { CircleAlert } from "@octanejs/lucide";
 import { z } from "zod";
 import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar";
+import { RemoteCatalogBridge } from "@/features/remote/remote-catalog-store";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
-import { SettingsSidebar, settingsSectionLabel } from "@/features/settings/SettingsSidebar";
+import {
+  SettingsSidebar,
+  settingsTargets,
+  type SettingsTarget,
+} from "@/features/settings/SettingsSidebar";
 import type { InsightsSection } from "@/features/insights/InsightsPage";
 import type { AgentKind, RefreshJobStatus } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
@@ -27,9 +33,11 @@ import { useState } from "octane";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { AppToolbar } from "@/features/app/AppToolbar";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
-import { tr } from "@/core/i18n";
 import type { WorkspaceSummary } from "@/core/types";
 import { useAppDialogs } from "@/components/AppDialogProvider";
+import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
+import { useSessionViewStore } from "@/features/sessions/session-view-store";
+import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar";
 
 function RootLayout() {
   const {
@@ -69,7 +77,9 @@ function RootLayout() {
   return (
     <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
       <AppRuntimeBridge />
+      <RemoteCatalogBridge />
       <AppShellRouter
+        searchOpen={searchOpen}
         route={route}
         active={globalPage}
         entries={navigation}
@@ -94,6 +104,11 @@ function RootLayout() {
         workspaces={workspaces}
         onNavigate={navigateGlobal}
         onOpenWorkspace={(workspace) => void openWorkspace(workspace)}
+        onOpenSession={(session) => {
+          useSessionViewStore.getState().revealSession(session);
+          navigateGlobal("sessions", false, { sessionId: session.id });
+        }}
+        onSessionSettings={() => openSettings("privacy")}
       />
       <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
     </ShortcutHelpProvider>
@@ -101,6 +116,7 @@ function RootLayout() {
 }
 
 function AppShellRouter({
+  searchOpen,
   route,
   active,
   entries,
@@ -118,6 +134,7 @@ function AppShellRouter({
   onBack,
   onForward,
 }: {
+  searchOpen: boolean;
   route: ParsedRoute;
   active: GlobalPage;
   entries: SidebarEntry<GlobalPage>[];
@@ -135,6 +152,7 @@ function AppShellRouter({
   onBack: () => void;
   onForward: () => void;
 }) {
+  const { tr } = useI18n();
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
   const search = useSearch({ strict: false }) as AppSearch;
@@ -143,15 +161,17 @@ function AppShellRouter({
   const settingsSection = search.settingsSection ?? "general";
   const isSettings = route.kind === "settings";
   const isWorkspace = route.kind === "workspace";
+  const isSessions = route.kind === "global" && route.page === "sessions";
   const discoveryFailure = refreshJobs.find(
     (job) => job.kind === "discovery" && job.state === "failed",
   );
   const agentFilter = search.agentFilter ?? "all";
 
-  const setSettingsSection = (section: SettingsSection) => {
+  const setSettingsSection = (section: SettingsSection, target?: SettingsTarget) => {
     void navigate({
       to: "/settings",
-      search: (current) => ({ ...current, settingsSection: section }) as never,
+      search: (current) =>
+        ({ ...current, settingsSection: section, settingsTarget: target }) as never,
     });
   };
 
@@ -179,19 +199,26 @@ function AppShellRouter({
 
   const sidebar = isSettings ? (
     <SettingsSidebar
+      searchOpen={searchOpen}
+      onOpenSearch={onOpenSearch}
       active={settingsSection}
+      activeTarget={search.settingsTarget}
       collapsed={sidebarCollapsed}
       onSelect={setSettingsSection}
       onBack={() => void navigate({ to: "/" })}
     />
   ) : (
     <AppSidebar
+      searchOpen={searchOpen}
+      onOpenSearch={onOpenSearch}
       active={isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
       onNavigate={onNavigate}
       onSettings={onSettings}
-      onBrandClick={() => onNavigate("home")}
+      onRemoteSettings={() =>
+        void navigate({ to: "/settings", search: { settingsSection: "remote" } })
+      }
       context={
         isWorkspace
           ? {
@@ -205,49 +232,60 @@ function AppShellRouter({
                 (workspaceState.handoffLaunchRequest ? 1 : 0),
               onWorkspaceNavigate: navigateWorkspace,
             }
-          : active === "agents"
-            ? { kind: "agents", filter: agentFilter, onFilterChange: setAgentFilter }
-            : {
-                kind: "global",
-                recentWorkspaces: [...workspaces]
-                  .sort((left, right) =>
-                    (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
-                  )
-                  .slice(0, 2),
-                onOpenWorkspace,
-              }
+          : isSessions
+            ? { kind: "sessions" }
+            : active === "agents"
+              ? { kind: "agents", filter: agentFilter, onFilterChange: setAgentFilter }
+              : {
+                  kind: "global",
+                  recentWorkspaces: [...workspaces]
+                    .sort((left, right) =>
+                      (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
+                    )
+                    .slice(0, 2),
+                  onOpenWorkspace,
+                }
       }
     />
   );
 
-  const breadcrumb = isSettings
-    ? [tr("nav.settings"), settingsSectionLabel(settingsSection)]
-    : isWorkspace
-      ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
-      : active === "home"
-        ? [tr("nav.workspaces"), tr("nav.home")]
-        : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
+  const breadcrumb = isWorkspace
+    ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
+    : active === "home"
+      ? [tr("nav.workspaces"), tr("nav.home")]
+      : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
 
-  return (
+  const shell = (
     <AppShell
       sidebar={sidebar}
       sidebarMode={isSettings ? "settings" : "primary"}
+      headerless={isSettings}
       toolbar={
-        <AppToolbar
-          breadcrumb={breadcrumb}
-          onOpenSearch={onOpenSearch}
-          onRefresh={onRefresh}
-          onOpenHelp={onOpenHelp}
-        />
+        isSettings ? undefined : isSessions ? (
+          <SessionWindowToolbar />
+        ) : (
+          <AppToolbar breadcrumb={breadcrumb} onRefresh={onRefresh} onOpenHelp={onOpenHelp} />
+        )
       }
-      mainClassName={isSettings ? `settings-section-${settingsSection}` : undefined}
+      mainClassName={
+        isSettings
+          ? `settings-section-${settingsSection}`
+          : isSessions
+            ? "app-sessions-main"
+            : undefined
+      }
       canGoBack={canGoBack}
       canGoForward={canGoForward}
       onBack={onBack}
       onForward={onForward}
     >
       {message && (
-        <div className="mx-7 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <div
+          className={cn(
+            "mx-7 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive",
+            isSettings ? "mt-10" : "mt-3",
+          )}
+        >
           <CircleAlert size={17} />
           {message}
         </div>
@@ -260,17 +298,21 @@ function AppShellRouter({
       <section
         className={cn(
           isSettings
-            ? "mx-auto grid w-full max-w-[888px] gap-5 px-6 pb-10 pt-6 max-[640px]:px-4"
-            : isWorkspace
-              ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
-              : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
-          isSettings && settingsSection === "general" && "pt-4",
+            ? "settings-content mx-auto grid w-full gap-5 px-6 pb-10 pt-10 max-[640px]:px-4"
+            : isSessions
+              ? "app-sessions-content h-full min-h-0"
+              : isWorkspace
+                ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
+                : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
         )}
       >
         <Outlet />
       </section>
     </AppShell>
   );
+  // Router location and the retained Outlet can update in different commits.
+  // Keep context mounted while old session content exits; pause indexing elsewhere.
+  return <SessionHubProvider active={isSessions}>{shell}</SessionHubProvider>;
 }
 
 const quotaWindowSchema = z.object({
@@ -302,13 +344,17 @@ const searchSchema = z.object({
   settingsSection: z
     .enum([
       "general",
+      "appearance",
       "discovery",
+      "tools",
+      "remote",
       "integrations",
       "privacy",
       "diagnostics",
     ] satisfies SettingsSection[])
     .optional()
     .catch(undefined),
+  settingsTarget: z.enum(settingsTargets).optional().catch(undefined),
   insightsSection: z
     .enum(["overview", "tokens", "commits", "milestones", "sources"] satisfies InsightsSection[])
     .optional()
@@ -320,10 +366,24 @@ const searchSchema = z.object({
   agentFilter: z.enum(["all", "enabled", "available"]).optional().catch(undefined),
   configure: z.boolean().optional().catch(undefined),
   doctorVerification: z.enum(["applied"]).optional().catch(undefined),
+  sessionId: z.string().optional().catch(undefined),
+  handoffSession: z.string().optional().catch(undefined),
+  handoffTarget: z.custom<AgentKind>().optional().catch(undefined),
+  handoffBudget: z
+    .union([z.literal(64_000), z.literal(120_000), z.literal(180_000)])
+    .optional()
+    .catch(undefined),
+  handoffFormat: z.enum(["markdown", "json"]).optional().catch(undefined),
+  handoffResume: z.enum(["return", "recheck"]).optional().catch(undefined),
 });
 
 export const Route = createRootRoute({
   validateSearch: searchSchema,
   component: RootLayout,
-  notFoundComponent: () => <div>Not found</div>,
+  notFoundComponent: NotFound,
 });
+
+function NotFound() {
+  const { tr } = useI18n();
+  return <div>{tr("common.notFound")}</div>;
+}

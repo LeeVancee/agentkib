@@ -152,6 +152,16 @@ export function registerRuntimeIpc({
       });
     });
     ipcMain.handle(
+      "agentkib:session:plan-mcp-connection",
+      (event, workspaceId: unknown, targetAgent: unknown) => {
+        assertTrustedRenderer(event);
+        return runtimeRequest(event, RUNTIME_METHODS.planSessionMcpConnection, {
+          workspaceId: requireString(workspaceId, "workspaceId"),
+          targetAgent: requireString(targetAgent, "targetAgent"),
+        });
+      },
+    );
+    ipcMain.handle(
       "agentkib:session:sanitize-handoff",
       (event, format: unknown, editedContent: unknown) => {
         assertTrustedRenderer(event);

@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import {
   SkeletonListRows,
   SkeletonPage,
@@ -11,10 +12,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { InsightsSection } from "./InsightsPage";
 
 export function InsightsSkeleton({ section = "overview" }: { section?: InsightsSection }) {
+  const { tr } = useI18n();
   if (section === "milestones") return <AchievementWallSkeleton />;
 
   return (
-    <SkeletonPage className="pb-8" label="Loading insights">
+    <SkeletonPage className="pb-8" label={`${tr("common.loading")} ${tr("nav.insights")}`}>
       <div className="flex flex-wrap gap-2">
         {Array.from({ length: 4 }, (_, index) => (
           <SkeletonText className="h-9 w-24 rounded-lg" key={index} />
@@ -42,8 +44,12 @@ export function InsightsSkeleton({ section = "overview" }: { section?: InsightsS
 }
 
 function AchievementWallSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage className="pb-8" label="Loading achievements">
+    <SkeletonPage
+      className="pb-8"
+      label={`${tr("common.loading")} ${tr("insights.section.milestones")}`}
+    >
       <SkeletonPanel>
         <div className="flex min-h-[58px] items-center justify-between gap-3 border-b border-border/70 px-5 py-4 max-[520px]:items-end max-[520px]:flex-col">
           <div className="grid gap-2">

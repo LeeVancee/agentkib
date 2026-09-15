@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";

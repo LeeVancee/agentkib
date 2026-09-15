@@ -1,6 +1,4 @@
-/** @jsxImportSource octane */
-
-import { Award, Bot, FolderGit2, Gauge, Home, Library } from "@octanejs/lucide";
+import { Award, Bot, FolderGit2, Gauge, Home, Library, MessageSquareText } from "@octanejs/lucide";
 import type { SidebarEntry } from "@/components/AppSidebar";
 import type { GlobalPage } from "./app-route";
 
@@ -14,6 +12,7 @@ const globalNav: SidebarEntry<GlobalPage>[] = [
   },
   { id: "catalog", label: "nav.catalog", icon: Library, shortcut: "navigate-catalog" },
   { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
+  { id: "sessions", label: "sessions.nav", icon: MessageSquareText },
   { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },
   { id: "insights", label: "nav.insights", icon: Award, shortcut: "navigate-insights" },
 ];

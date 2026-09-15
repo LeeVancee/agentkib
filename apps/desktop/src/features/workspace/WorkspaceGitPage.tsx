@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -33,7 +34,7 @@ import {
   Tags,
 } from "@octanejs/lucide";
 import { api } from "@/core/api";
-import { formatDateTime, localizeMessage, tr } from "@/core/i18n";
+
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
 import type {
   GitCommitSummary,
@@ -134,6 +135,7 @@ function stableColor(value: string) {
 }
 
 export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: WorkspaceGitPageProps) {
+  const { formatDateTime, localizeMessage, tr } = useI18n();
   const [section, setSection] = useState<GitSection>("history");
   const [internalSubview, setInternalSubview] = useLinkedState<
     GitSubview | undefined,
@@ -157,8 +159,10 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
   const [loading, setLoading] = useState(false);
   const [loadingPage, setLoadingPage] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [filesError, setFilesError] = useState("");
-  const [error, setError] = useState("");
+  const [rawFilesError, setFilesError] = useState<unknown>("");
+  const filesError = rawFilesError === "" ? "" : localizeMessage(rawFilesError);
+  const [rawError, setError] = useState<unknown>("");
+  const error = rawError === "" ? "" : localizeMessage(rawError);
   const [mobileDetailPane, setMobileDetailPane] = useState<"files" | "diff">("files");
   const historySequence = useRef(0);
   const filesSequence = useRef(0);
@@ -216,7 +220,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
         commits.some((commit) => commit.oid === current) ? current : commits[0]?.oid,
       );
     } catch (reason) {
-      if (sequence === historySequence.current) setError(localizeMessage(reason));
+      if (sequence === historySequence.current) setError(reason);
     } finally {
       if (sequence === historySequence.current) setLoading(false);
     }
@@ -274,7 +278,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       const nextFiles = await api.gitCommitFiles(workspace.id, oid);
       if (sequence === filesSequence.current) setFiles(nextFiles ?? []);
     } catch (reason) {
-      if (sequence === filesSequence.current) setFilesError(localizeMessage(reason));
+      if (sequence === filesSequence.current) setFilesError(reason);
     } finally {
       if (sequence === filesSequence.current) setFilesLoading(false);
     }
@@ -401,7 +405,7 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
       setSelectedOid(commits[0]?.oid);
       historyListRef.current?.scrollTo({ top: 0 });
     } catch (reason) {
-      if (sequence === historySequence.current) setError(localizeMessage(reason));
+      if (sequence === historySequence.current) setError(reason);
     } finally {
       if (sequence === historySequence.current) setLoadingPage(false);
     }
@@ -987,6 +991,7 @@ function GitDiffPane({
   onBackToFiles: () => void;
   mobileVisible: boolean;
 }) {
+  const { tr } = useI18n();
   const diff = diffState.status === "ready" ? diffState.value : undefined;
   return (
     <div

@@ -1,11 +1,11 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { useState } from "octane";
 import { Check, Pencil, X } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { formatDateTime, tr } from "@/core/i18n";
 import type { MemoryRecord } from "@/core/types";
 
 export function MemoryCard({
@@ -19,6 +19,7 @@ export function MemoryCard({
     editedContent?: string,
   ) => Promise<void>;
 }) {
+  const { tr, formatDateTime } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(record.content);
   return (

@@ -1,13 +1,18 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
+import { WebAccessService, createWebControlState } from "./web/service";
+import { acceptanceSession } from "./web/acceptance";
+import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
   protocol,
+  powerMonitor,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
@@ -25,10 +30,12 @@ import {
   optionalCloseBehavior,
   optionalPositiveInteger,
   optionalString,
+  requireAccentThemePreference,
   requireAppIconPreference,
   requireBoolean,
   requireObject,
   requirePositiveInteger,
+  requireSidebarWidthPreference,
   requireString,
   requireText,
   requireThemePreference,
@@ -41,7 +48,10 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-const appFlavor = process.env.AGENTKIB_DEV === "1" ? "ai.agentkib.dev" : "ai.agentkib";
+const isDevelopmentApp = process.env.AGENTKIB_DEV === "1" || !app.isPackaged;
+const appDisplayName = isDevelopmentApp ? "AgentKib Dev" : "AgentKib";
+const appFlavor = isDevelopmentApp ? "ai.agentkib.dev" : "ai.agentkib";
+app.setName(appDisplayName);
 const electronDataPath =
   process.env.AGENTKIB_BENCHMARK_USER_DATA ??
   path.join(app.getPath("appData"), appFlavor, "electron");
@@ -49,9 +59,13 @@ app.setPath("userData", electronDataPath);
 app.setPath("sessionData", electronDataPath);
 
 let mainWindow: BrowserWindow | undefined;
+let systemSuspended = false;
+let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
+let webAccess: WebAccessService | undefined;
+let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -74,9 +88,18 @@ interface ElectronRuntimeInfo {
   close_behavior?: "minimize-to-tray" | "quit";
   app_icon_preference?: "white" | "black";
   theme_preference?: "system" | "light" | "dark";
+  accent_theme_preference?:
+    | "minimal-neutral"
+    | "vtron"
+    | "claude"
+    | "sakura"
+    | "ocean-breeze"
+    | null;
+  sidebar_width_preference?: number | null;
   effective_theme?: "light" | "dark";
   effective_locale?: SupportedLocale;
   quota_auto_refresh_enabled?: boolean;
+  local_auto_refresh_enabled?: boolean;
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -111,7 +134,13 @@ app.on("before-quit", (event) => {
   shutdownStarted = true;
   refreshCoordinator?.stop();
   nativeShell?.destroy();
-  void runtimeHost.stop().finally(() => app.quit());
+  void (async () => {
+    try {
+      await Promise.allSettled([webAccess?.shutdown(), lanWebAccess?.shutdown()]);
+    } finally {
+      await runtimeHost?.stop();
+    }
+  })().finally(() => app.quit());
 });
 
 nativeTheme.on("updated", () => {
@@ -120,7 +149,6 @@ nativeTheme.on("updated", () => {
 
 async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
-  if (process.env.AGENTKIB_DEV === "1") app.setName("AgentKib Dev");
   await registerRendererProtocol();
 
   runtimeHost = new DesktopRuntimeHost({
@@ -128,7 +156,7 @@ async function startApplication(): Promise<void> {
     clientVersion: app.getVersion(),
     environment: {
       AGENTKIB_APP_FLAVOR: appFlavor,
-      AGENTKIB_APP_NAME: process.env.AGENTKIB_DEV === "1" ? "AgentKib Dev" : "AgentKib",
+      AGENTKIB_APP_NAME: appDisplayName,
       AGENTKIB_APP_VERSION: app.getVersion(),
       AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
       AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -149,6 +177,8 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
+    webAccess?.runtimeUnavailable();
+    lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
   });
   runtimeHost.on("restart-error", (error: unknown) => {
@@ -158,14 +188,80 @@ async function startApplication(): Promise<void> {
     process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
   });
 
+  const sharedControl = createWebControlState();
+  webAccess = new WebAccessService({
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
+    acceptanceSessionId: acceptanceSession(process.env),
+    dataDir: path.join(electronDataPath, "web"),
+    staticDir: app.isPackaged
+      ? path.join(process.resourcesPath, "web")
+      : path.resolve(app.getAppPath(), "../web/dist"),
+    runtimeRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
+    },
+  });
+  await webAccess.initialize();
+  lanWebAccess = new WebAccessService({
+    mode: "lan",
+    sharedControl,
+    verifiedClaudeManaged: process.platform === "darwin",
+    dataDir: path.join(electronDataPath, "web-lan"),
+    staticDir: "",
+    runtimeRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
+    },
+  });
+  await lanWebAccess.initialize();
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
+    loadQuotaSchedule: async () =>
+      JSON.parse(await readFile(path.join(electronDataPath, "refresh-state.json"), "utf8")),
+    saveQuotaSchedule: async (state) => {
+      await mkdir(electronDataPath, { recursive: true });
+      const destination = path.join(electronDataPath, "refresh-state.json");
+      await writeFile(`${destination}.tmp`, JSON.stringify(state), { mode: 0o600 });
+      await rename(`${destination}.tmp`, destination);
+    },
     isMainWindowVisible: () =>
-      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      Boolean(
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isVisible() &&
+        !mainWindow.isMinimized(),
+      ),
     onStatus: emitElectronRefreshState,
     onQuotaSnapshot: (snapshot: QuotaSnapshot) =>
       sendRendererEvent("agentkib:quota-updated", snapshot),
+  });
+
+  const updatePowerActivity = () => {
+    const paused = systemSuspended || screenLocked;
+    refreshCoordinator?.setSuspended(paused);
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !paused && Boolean(mainWindow?.isVisible() && !mainWindow?.isMinimized()),
+    );
+    if (!paused) void lanWebAccess?.checkLanAddress();
+  };
+  powerMonitor.on("suspend", () => {
+    systemSuspended = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("lock-screen", () => {
+    screenLocked = true;
+    updatePowerActivity();
+  });
+  powerMonitor.on("resume", () => {
+    systemSuspended = false;
+    updatePowerActivity();
+  });
+  powerMonitor.on("unlock-screen", () => {
+    screenLocked = false;
+    updatePowerActivity();
   });
 
   startupBenchmark.mark("runtime-spawn");
@@ -322,7 +418,7 @@ function registerUpdateIpc(): void {
   const updaterChannel =
     process.platform === "darwin" || process.platform === "win32" ? process.arch : undefined;
   if (updaterChannel) autoUpdater.channel = updaterChannel;
-  (autoUpdater as import("node:events").EventEmitter).on("before-quit-for-update", () => {
+  nativeAutoUpdater.on("before-quit-for-update", () => {
     quitApproved = true;
   });
   autoUpdater.autoDownload = false;
@@ -452,6 +548,13 @@ function registerShellIpc(): void {
       .request(RUNTIME_METHODS.setThemePreference, { preference: next })
       .then(withElectronRuntimeCapabilities);
   });
+  ipcMain.handle("agentkib:settings:set-accent-theme", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    const next = requireAccentThemePreference(preference);
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setAccentThemePreference, { preference: next })
+      .then(withElectronRuntimeCapabilities);
+  });
   ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {
     assertTrustedRenderer(event);
     const next = requireAppIconPreference(preference);
@@ -463,9 +566,29 @@ function registerShellIpc(): void {
         return withElectronRuntimeCapabilities(runtime);
       });
   });
+  ipcMain.handle("agentkib:settings:set-sidebar-width", (event, preference: unknown) => {
+    assertTrustedRenderer(event);
+    const next = requireSidebarWidthPreference(preference);
+    return requireRuntime()
+      .request(RUNTIME_METHODS.setSidebarWidthPreference, { preference: next })
+      .then(withElectronRuntimeCapabilities);
+  });
 }
 
 function registerHomeIpc(): void {
+  ipcMain.handle("agentkib:remote:request", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.remoteRequest, requireRemoteRequest(input));
+  });
+  ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    const request = input as Parameters<WebAccessService["request"]>[0];
+    if (request?.target !== undefined && request.target !== "lan")
+      throw new Error("invalid_web_target");
+    const service = request?.target === "lan" ? lanWebAccess : webAccess;
+    if (!service) throw new Error("web_unavailable");
+    return service.request(request);
+  });
   ipcMain.handle("agentkib:home:runtime", async (event) => {
     assertTrustedRenderer(event);
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
@@ -478,6 +601,20 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:home:agent-installations", (event) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.listAgentInstallations, {});
+  });
+  ipcMain.handle("agentkib:home:agent-tools", (event, force: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.agentToolsStatus, {
+      force: force === undefined ? false : requireBoolean(force, "force"),
+    });
+  });
+  ipcMain.handle("agentkib:home:execute-agent-tool", (event, agent: unknown, actionId: unknown) => {
+    assertTrustedRenderer(event);
+    return requireRuntime().request(RUNTIME_METHODS.agentToolExecute, {
+      agent: requireString(agent, "agent"),
+      action_id: requireText(actionId, "actionId"),
+      confirmed: true,
+    });
   });
   ipcMain.handle("agentkib:home:catalog-assets", (event, input: unknown) => {
     assertTrustedRenderer(event);
@@ -610,6 +747,17 @@ function registerHomeIpc(): void {
       "quota",
       force === undefined ? true : requireBoolean(force, "force"),
     );
+  });
+  ipcMain.handle("agentkib:home:set-local-auto-refresh", async (event, enabled: unknown) => {
+    assertTrustedRenderer(event);
+    const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
+      RUNTIME_METHODS.setLocalAutoRefresh,
+      {
+        value: requireBoolean(enabled, "enabled"),
+      },
+    );
+    requireRefreshCoordinator().activityChanged();
+    return withElectronRuntimeCapabilities(runtime);
   });
   ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
     assertTrustedRenderer(event);
@@ -785,7 +933,17 @@ async function createMainWindow(): Promise<void> {
     }
     void showFirstClosePrompt(window);
   });
-  window.on("focus", () => void refreshCoordinator?.refreshIfDue());
+  const updateWindowActivity = () => {
+    refreshCoordinator?.activityChanged();
+    sendRendererEvent(
+      "agentkib:window-activity",
+      !systemSuspended && !screenLocked && window.isVisible() && !window.isMinimized(),
+    );
+  };
+  window.on("show", updateWindowActivity);
+  window.on("hide", updateWindowActivity);
+  window.on("minimize", updateWindowActivity);
+  window.on("restore", updateWindowActivity);
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

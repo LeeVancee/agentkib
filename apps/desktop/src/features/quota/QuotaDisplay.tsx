@@ -1,9 +1,10 @@
 /** @jsxImportSource octane */
 
-import { useEffect, useState } from "octane";
+import { useI18n } from "@/core/useI18n";
+import { useState } from "octane";
 import { Button } from "@/components/ui/button";
 import { Gauge } from "@octanejs/lucide";
-import { tr } from "@/core/i18n";
+
 import { quotaSeverity, type QuotaDisplayWindow } from "@/features/quota/quota";
 import type { AgentKind, QuotaProvider } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -29,6 +30,8 @@ export function QuotaWindowRow({
   target?: boolean;
   onOpen?: (item: QuotaDisplayWindow) => void;
 }) {
+  const { tr } = useI18n();
+  const [now] = useState(() => Date.now());
   const remaining = item.window.remaining_percent;
   const severity = quotaSeverity(remaining);
   const content = (
@@ -69,7 +72,7 @@ export function QuotaWindowRow({
         <span>{tr("quota.remaining", { value: Math.round(remaining) })}</span>
         <span>
           {item.window.reset_at
-            ? tr("quota.resets", { time: <RelativeReset value={item.window.reset_at} /> })
+            ? tr("quota.resets", { time: relativeReset(item.window.reset_at, tr, now) })
             : tr("quota.noReset")}
         </span>
       </div>
@@ -81,8 +84,8 @@ export function QuotaWindowRow({
       size="content"
       type="button"
       className={cn(
-        "grid w-full gap-2.5 border-0 border-b border-border bg-transparent px-0 py-5 text-left text-foreground hover:bg-muted/60 hover:px-2.5",
-        target && "my-1 rounded-lg border border-primary/55 bg-primary/[0.08] px-3",
+        "grid w-full gap-2.5 rounded-xl border border-border bg-background px-4 py-4 text-left text-foreground transition-colors hover:border-primary/35 hover:bg-muted/45",
+        target && "border-primary/55 bg-primary/[0.08]",
       )}
       data-quota-target={target || undefined}
       onClick={() => onOpen(item)}
@@ -92,8 +95,8 @@ export function QuotaWindowRow({
   ) : (
     <article
       className={cn(
-        "grid w-full gap-2.5 border-0 border-b border-border bg-transparent px-0 py-5 text-left text-foreground",
-        target && "my-1 rounded-lg border border-primary/55 bg-primary/[0.08] px-3",
+        "grid w-full gap-2.5 rounded-xl border border-border bg-background px-4 py-4 text-left text-foreground",
+        target && "border-primary/55 bg-primary/[0.08]",
       )}
       data-quota-target={target || undefined}
     >
@@ -112,23 +115,7 @@ function providerAgent(id: string, name: string): AgentKind | undefined {
   return undefined;
 }
 
-function RelativeReset({ value }: { value: string }) {
-  const [now, setNow] = useState<number>();
-
-  useEffect(() => {
-    const update = () => setNow(Date.now());
-    const timeout = window.setTimeout(update, 0);
-    const interval = window.setInterval(update, 60_000);
-    return () => {
-      window.clearTimeout(timeout);
-      window.clearInterval(interval);
-    };
-  }, []);
-
-  return now === undefined ? "…" : relativeReset(value, now);
-}
-
-function relativeReset(value: string, now: number) {
+function relativeReset(value: string, tr: ReturnType<typeof useI18n>["tr"], now: number) {
   const seconds = Math.max(0, Math.round((new Date(value).getTime() - now) / 1000));
   if (seconds < 3600)
     return tr("quota.duration.minutes", { value: Math.max(1, Math.round(seconds / 60)) });

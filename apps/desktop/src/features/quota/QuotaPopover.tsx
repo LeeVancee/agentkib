@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -8,7 +9,7 @@ import { useQueryClient } from "@octanejs/tanstack-query";
 import { ExternalLink, Gauge, RefreshCw, Settings2 } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import { changeLocale, formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
+import { changeLocale } from "@/core/i18n";
 import {
   compareQuotaProviders,
   isQuotaProviderSupported,
@@ -32,6 +33,7 @@ import {
 import { useAppStore } from "@/stores/app-store";
 
 export function QuotaPopover() {
+  const { formatRelativeTime, localizeMessage, tr } = useI18n();
   const snapshotQuery = useQuotaSnapshot();
   const preferencesQuery = useQuotaPreferences();
   const refreshJobQuery = useQuotaRefreshJob();
@@ -39,7 +41,8 @@ export function QuotaPopover() {
   const snapshot = snapshotQuery.data;
   const preferences = preferencesQuery.data ?? DEFAULT_QUOTA_PREFERENCES;
   const refreshJob = refreshJobQuery.data;
-  const [manualError, setManualError] = useState("");
+  const [rawManualError, setManualError] = useState<unknown>("");
+  const manualError = rawManualError === "" ? "" : localizeMessage(rawManualError);
   const initialRefreshRequested = useRef(false);
   const runtime = useAppStore((state) => state.runtime);
   const autoRefreshEnabled = runtime?.quota_auto_refresh_enabled === true;
@@ -81,7 +84,7 @@ export function QuotaPopover() {
     )
       return;
     initialRefreshRequested.current = true;
-    void refreshMutation.mutateAsync().catch((reason) => setManualError(localizeMessage(reason)));
+    void refreshMutation.mutateAsync().catch((reason) => setManualError(reason));
   }, [
     autoRefreshEnabled,
     refreshJob,
@@ -139,7 +142,7 @@ export function QuotaPopover() {
     try {
       await refreshMutation.mutateAsync();
     } catch (reason) {
-      setManualError(localizeMessage(reason));
+      setManualError(reason);
     }
   };
   const markPromptSeen = async () => {

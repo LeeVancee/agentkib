@@ -1,12 +1,13 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { useRouter, type ErrorComponentProps } from "@octanejs/tanstack-router";
 import { AlertTriangle, Home, RefreshCw, RotateCcw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { tr } from "@/core/i18n";
 
 export function AppErrorFallback({ error, reset }: ErrorComponentProps) {
+  const { tr } = useI18n();
   const router = useRouter();
   const detail = error instanceof Error ? error.message : String(error);
 

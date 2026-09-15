@@ -1,10 +1,12 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { tr } from "@/core/i18n";
+
 import type { QuotaCollectorStatus, QuotaSnapshot } from "@/core/types";
 
 export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) {
+  const { locale, tr } = useI18n();
   if (!status)
     return (
       <div className="px-4 py-3 text-xs text-muted-foreground">{tr("quota.statusUnavailable")}</div>
@@ -25,7 +27,7 @@ export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) 
       />
       <DiagnosticRow
         label={tr("quota.lastSuccess")}
-        value={status.last_success_at ? formatDateTime(status.last_success_at) : "—"}
+        value={status.last_success_at ? formatDateTime(status.last_success_at, locale) : "—"}
       />
       {status.error_key && (
         <div className="flex flex-col gap-2 bg-destructive/5 px-5 py-4 text-sm text-destructive">
@@ -59,11 +61,11 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
 function backendLabel(backend: QuotaSnapshot["backend"], version?: string) {
   return `${backend === "codex-bar-cli" ? "CodexBarCLI" : "Win-CodexBar"}${version ? ` · ${version}` : ""}`;
 }
-function formatDateTime(value: string) {
+function formatDateTime(value: string, locale: ReturnType<typeof useI18n>["locale"]) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : new Intl.DateTimeFormat(document.documentElement.lang || "en-US", {
+    : new Intl.DateTimeFormat(locale, {
         dateStyle: "medium",
         timeStyle: "short",
       }).format(date);

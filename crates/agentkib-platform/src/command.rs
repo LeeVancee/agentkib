@@ -9,6 +9,52 @@ pub fn resolve(command: &str) -> Option<PathBuf> {
     resolve_in(command, directories.iter().map(PathBuf::as_path))
 }
 
+/// Resolve every distinct executable matching a command in search order.
+/// Symlink aliases that point at the same physical file are returned once.
+pub fn resolve_all(command: &str) -> Vec<PathBuf> {
+    let directories = search_directories();
+    resolve_all_in(command, directories.iter().map(PathBuf::as_path))
+}
+
+pub fn resolve_all_in<'a>(
+    command: &str,
+    directories: impl IntoIterator<Item = &'a Path>,
+) -> Vec<PathBuf> {
+    resolve_all_in_with_extensions(command, directories, &executable_extensions())
+}
+
+pub fn resolve_all_in_with_extensions<'a>(
+    command: &str,
+    directories: impl IntoIterator<Item = &'a Path>,
+    extensions: &[String],
+) -> Vec<PathBuf> {
+    let command_path = Path::new(command);
+    let has_parent = command_path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    let candidates = if command_path.is_absolute() || has_parent {
+        executable_candidates(command_path, extensions)
+    } else {
+        directories
+            .into_iter()
+            .filter_map(|directory| absolutize(directory.to_path_buf()))
+            .flat_map(|directory| executable_candidates(&directory.join(command), extensions))
+            .collect()
+    };
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter_map(absolutize)
+        .filter(|path| is_executable_file(path, !extensions.is_empty()))
+        .filter(|path| {
+            let identity = fs::canonicalize(path)
+                .map(|value| crate::path::identity(&value))
+                .unwrap_or_else(|_| crate::path::identity(path));
+            seen.insert(identity)
+        })
+        .collect()
+}
+
 /// Return whether a path is a regular executable file on the current platform.
 pub fn is_executable(path: &Path) -> bool {
     is_executable_file(path, cfg!(windows))
@@ -125,6 +171,215 @@ pub fn search_directories() -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     directories.retain(|path| seen.insert(crate::path::identity(path)));
     directories
+}
+
+/// Search roots used only by Agent tool diagnostics. This deliberately stays
+/// separate from [`search_directories`] so registry and version-manager paths
+/// cannot change command resolution for MCP servers or workspace discovery.
+pub fn agent_tool_search_directories() -> Vec<PathBuf> {
+    let mut directories = process_path_directories();
+
+    #[cfg(windows)]
+    directories.extend(windows_registry_path_directories());
+
+    #[cfg(target_os = "macos")]
+    extend_macos_node_manager_directories(&mut directories);
+
+    directories.extend(search_directories());
+    directories.retain(|path| !is_windows_app_execution_alias_path(path));
+    dedupe_directories(&mut directories);
+    directories
+}
+
+/// PATH roots in command lookup order. On Windows, the registry copy is a
+/// fallback for GUI processes whose inherited environment is stale.
+pub fn agent_tool_default_directories() -> Vec<PathBuf> {
+    let mut directories = process_path_directories();
+    #[cfg(windows)]
+    directories.extend(windows_registry_path_directories());
+    directories.retain(|path| !is_windows_app_execution_alias_path(path));
+    dedupe_directories(&mut directories);
+    directories
+}
+
+fn process_path_directories() -> Vec<PathBuf> {
+    env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect())
+        .unwrap_or_default()
+}
+
+fn dedupe_directories(directories: &mut Vec<PathBuf>) {
+    dedupe_directories_for_platform(directories, cfg!(windows));
+}
+
+fn dedupe_directories_for_platform(directories: &mut Vec<PathBuf>, windows: bool) {
+    let mut seen = HashSet::new();
+    directories.retain(|path| {
+        let identity = if windows {
+            path.to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_ascii_lowercase()
+        } else {
+            crate::path::identity(path)
+        };
+        seen.insert(identity)
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn extend_macos_node_manager_directories(directories: &mut Vec<PathBuf>) {
+    let Some(home) = home_dir() else {
+        return;
+    };
+    directories.extend([
+        home.join(".nvm/current/bin"),
+        home.join(".volta/bin"),
+        home.join(".local/share/mise/shims"),
+        home.join(".config/mise/shims"),
+    ]);
+    extend_child_directories(directories, &home.join(".nvm/versions/node"), "bin");
+    extend_child_directories(
+        directories,
+        &home.join(".local/share/fnm/node-versions"),
+        "installation/bin",
+    );
+    extend_child_directories(
+        directories,
+        &home.join("Library/Application Support/fnm/node-versions"),
+        "installation/bin",
+    );
+    extend_child_directories(
+        directories,
+        &home.join(".local/share/mise/installs/node"),
+        "bin",
+    );
+    push_env_join(directories, "VOLTA_HOME", "bin");
+    push_env_join(directories, "NVM_DIR", "current/bin");
+    if let Some(root) = env::var_os("NVM_DIR").map(PathBuf::from) {
+        extend_child_directories(directories, &root.join("versions/node"), "bin");
+    }
+    if let Some(root) = env::var_os("FNM_DIR").map(PathBuf::from) {
+        extend_child_directories(directories, &root.join("node-versions"), "installation/bin");
+    }
+    if let Some(root) = env::var_os("MISE_DATA_DIR").map(PathBuf::from) {
+        directories.push(root.join("shims"));
+        extend_child_directories(directories, &root.join("installs/node"), "bin");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn extend_child_directories(directories: &mut Vec<PathBuf>, root: &Path, suffix: &str) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut children = entries
+        .flatten()
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            (kind.is_dir() && !kind.is_symlink()).then(|| entry.path().join(suffix))
+        })
+        .collect::<Vec<_>>();
+    children.sort();
+    directories.extend(children);
+}
+
+#[cfg(windows)]
+fn windows_registry_path_directories() -> Vec<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+        .ok()
+        .and_then(|key| key.get_value::<String, _>("Path").ok());
+    let user = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Environment")
+        .ok()
+        .and_then(|key| key.get_value::<String, _>("Path").ok());
+    windows_path_values(machine.as_deref(), user.as_deref(), |key| env::var_os(key))
+}
+
+#[cfg(any(windows, test))]
+fn windows_path_values(
+    machine: Option<&str>,
+    user: Option<&str>,
+    resolve: impl Fn(&str) -> Option<std::ffi::OsString> + Copy,
+) -> Vec<PathBuf> {
+    [machine, user]
+        .into_iter()
+        .flatten()
+        .flat_map(|value| {
+            let expanded = expand_windows_environment(value, resolve);
+            expanded
+                .to_string_lossy()
+                .split(';')
+                .filter_map(|entry| {
+                    let entry = entry.trim().trim_matches('"');
+                    (!entry.is_empty()).then(|| PathBuf::from(entry))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[cfg(any(windows, test))]
+fn expand_windows_environment(
+    value: &str,
+    resolve: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::ffi::OsString {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        output.push_str(&rest[..start]);
+        let tail = &rest[start + 1..];
+        let Some(end) = tail.find('%') else {
+            output.push_str(&rest[start..]);
+            return output.into();
+        };
+        let key = &tail[..end];
+        if let Some(replacement) = resolve(key) {
+            output.push_str(&replacement.to_string_lossy());
+        } else {
+            output.push('%');
+            output.push_str(key);
+            output.push('%');
+        }
+        rest = &tail[end + 1..];
+    }
+    output.push_str(rest);
+    output.into()
+}
+
+/// WindowsApps contains App Execution Alias reparse points. They are launch
+/// indirections, not physical CLI installations suitable for version probing.
+pub fn is_windows_app_execution_alias_path(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Some(root) = env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
+            return false;
+        };
+        is_path_within_windows_apps(path, &root)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+#[cfg(any(windows, test))]
+fn is_path_within_windows_apps(path: &Path, local_app_data: &Path) -> bool {
+    let normalize = |value: &Path| {
+        value
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    let path = normalize(path);
+    let root = format!("{}/microsoft/windowsapps", normalize(local_app_data));
+    path == root || path.starts_with(&format!("{root}/"))
 }
 
 /// Known Cursor desktop executable locations. Command-line installation is
@@ -446,7 +701,7 @@ fn push_env(paths: &mut Vec<PathBuf>, name: &str) {
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn push_env_join(paths: &mut Vec<PathBuf>, name: &str, suffix: &str) {
     if let Some(value) = env::var_os(name) {
         paths.push(PathBuf::from(value).join(suffix));
@@ -474,6 +729,24 @@ mod tests {
             &[".EXE".into(), ".CMD".into(), ".BAT".into()],
         );
         assert_eq!(result, Some(directory.path().join("codex.CMD")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_all_distinct_executables_and_deduplicates_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let executable = first.path().join("codex");
+        fs::write(&executable, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&executable, second.path().join("codex")).unwrap();
+
+        assert_eq!(
+            resolve_all_in("codex", [first.path(), second.path()]),
+            vec![executable]
+        );
     }
 
     #[cfg(unix)]
@@ -549,5 +822,71 @@ mod tests {
             desktop_entry_executable(&desktop, &[directory.path().to_path_buf()]).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn recognizes_windows_app_execution_alias_directory() {
+        let local = Path::new(r"C:\Users\tester\AppData\Local");
+        assert!(is_path_within_windows_apps(
+            Path::new(r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\codex.exe"),
+            local,
+        ));
+        assert!(!is_path_within_windows_apps(
+            Path::new(r"C:\Users\tester\AppData\Roaming\npm\codex.cmd"),
+            local,
+        ));
+    }
+
+    #[test]
+    fn expands_and_orders_windows_registry_paths() {
+        let paths = windows_path_values(
+            Some(r#"%SystemRoot%\System32;"C:\Program Files\Agent\bin""#),
+            Some(r"%USERPROFILE%\bin;%UNKNOWN%\bin"),
+            |key| match key {
+                "SystemRoot" => Some(r"C:\Windows".into()),
+                "USERPROFILE" => Some(r"C:\Users\tester".into()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(r"C:\Windows\System32"),
+                PathBuf::from(r"C:\Program Files\Agent\bin"),
+                PathBuf::from(r"C:\Users\tester\bin"),
+                PathBuf::from(r"%UNKNOWN%\bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_directory_deduplication_is_case_insensitive() {
+        let mut paths = vec![
+            PathBuf::from(r"C:\Tools\bin"),
+            PathBuf::from(r"c:/tools/bin/"),
+            PathBuf::from(r"C:\Other\bin"),
+        ];
+
+        dedupe_directories_for_platform(&mut paths, true);
+
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from(r"C:\Tools\bin"),
+                PathBuf::from(r"C:\Other\bin")
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discovers_bounded_node_version_install_bins() {
+        let root = tempdir().unwrap();
+        let bin = root.path().join("v22.0.0/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let mut paths = Vec::new();
+        extend_child_directories(&mut paths, root.path(), "bin");
+        assert_eq!(paths, vec![bin]);
     }
 }

@@ -1,5 +1,8 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
+import type { ReactNode } from "octane";
 import { act, cleanup, renderHook } from "@octanejs/testing-library";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,14 +10,9 @@ import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, WorkspaceSummary } from "@/core/types";
-import { useAppNavigation } from "./useAppNavigation.tsx";
-import type { AppHistoryEntry } from "./useAppHistory.tsx";
-
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-function QueryWrapper({ children }: { children: unknown }) {
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-}
+import { useAppNavigation } from "./useAppNavigation";
+import type { AppHistoryEntry } from "./useAppHistory";
+import { SESSION_REFRESH_EVENT } from "@/features/sessions/session-refresh";
 
 const testDoubles = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -22,6 +20,10 @@ const testDoubles = vi.hoisted(() => ({
   confirm: vi.fn().mockResolvedValue(false),
   requestSecrets: vi.fn(),
   open: vi.fn(),
+  agentTools: vi.fn(),
+  requestRefresh: vi.fn(),
+  location: { pathname: "/" },
+  search: {} as Record<string, string>,
 }));
 
 const homeHistoryEntry: AppHistoryEntry = {
@@ -34,9 +36,9 @@ const homeHistoryEntry: AppHistoryEntry = {
 };
 
 vi.mock("@octanejs/tanstack-router", () => ({
-  useLocation: () => ({ pathname: "/" }),
+  useLocation: () => testDoubles.location,
   useNavigate: () => testDoubles.navigate,
-  useSearch: () => ({}),
+  useSearch: () => testDoubles.search,
 }));
 
 vi.mock("@/components/AppDialogProvider", () => ({
@@ -47,13 +49,22 @@ vi.mock("@/components/AppDialogProvider", () => ({
   }),
 }));
 
-vi.mock("@/features/home/home-query.tsx", () => ({
-  homeKeys: { all: ["home"] },
-  useOptionalQueryClient: () => ({ invalidateQueries: vi.fn() }),
-  useHomeMemories: () => ({ data: [] }),
-  useHomeRefreshJobs: () => ({ data: [] }),
-  useHomeWorkspaces: () => ({ data: [], isPending: false }),
-}));
+vi.mock("@/features/home/home-query.tsx", async () => {
+  const actual = await vi.importActual<typeof import("@/features/home/home-query.tsx")>(
+    "@/features/home/home-query.tsx",
+  );
+  return {
+    ...actual,
+    useHomeMemories: () => ({ data: [] }),
+    useHomeRefreshJobs: () => ({ data: [] }),
+    useHomeWorkspaces: () => ({ data: [], isPending: false }),
+  };
+});
+
+const QueryWrapper = ({ children }: { children: ReactNode }) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+};
 
 describe("useAppNavigation guards", () => {
   beforeAll(async () => initializeI18n("en-US"));
@@ -61,7 +72,13 @@ describe("useAppNavigation guards", () => {
   beforeEach(() => {
     Object.defineProperty(window, "agentkibDesktop", {
       configurable: true,
-      value: { shell: { openDirectory: testDoubles.open } },
+      value: {
+        shell: { openDirectory: testDoubles.open },
+        home: {
+          agentTools: testDoubles.agentTools,
+          refreshDiscovery: testDoubles.requestRefresh,
+        },
+      },
     });
     useAppStore.getState().reset();
     useWorkspaceStore.getState().resetWorkspace();
@@ -69,9 +86,27 @@ describe("useAppNavigation guards", () => {
     testDoubles.notify.mockReset().mockResolvedValue(undefined);
     testDoubles.confirm.mockReset().mockResolvedValue(false);
     testDoubles.open.mockReset();
+    testDoubles.agentTools.mockReset();
+    testDoubles.requestRefresh.mockReset().mockResolvedValue(undefined);
+    testDoubles.location.pathname = "/";
+    testDoubles.search = {};
   });
 
   afterEach(cleanup);
+
+  it("routes session refresh to the mounted hub instead of starting discovery", async () => {
+    testDoubles.location.pathname = "/sessions";
+    const listener = vi.fn();
+    window.addEventListener(SESSION_REFRESH_EVENT, listener);
+    try {
+      const { result } = renderHook(() => useAppNavigation());
+      await act(async () => result.current.refreshCurrentView());
+      expect(listener).toHaveBeenCalledOnce();
+      expect(testDoubles.requestRefresh).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(SESSION_REFRESH_EVENT, listener);
+    }
+  });
 
   it("opens settings without discarding the current workspace draft", () => {
     const workspace: WorkspaceSummary = {
@@ -241,5 +276,125 @@ describe("useAppNavigation guards", () => {
     expect(useWorkspaceStore.getState().selectedWorkspace).toBeUndefined();
     expect(useWorkspaceStore.getState().project).toBe("");
     expect(testDoubles.navigate).not.toHaveBeenCalled();
+  });
+
+  it("reports tool refresh failures without rejecting the toolbar action", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    testDoubles.agentTools.mockRejectedValueOnce(new Error("refresh unavailable"));
+    const { result } = renderHook(() => useAppNavigation(), { wrapper });
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(testDoubles.agentTools).toHaveBeenCalledWith(true);
+    expect(useWorkspaceStore.getState().message).toContain("refresh unavailable");
+    queryClient.clear();
+  });
+
+  it("prioritizes a tools settings refresh over retained workspace state", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const snapshot = { tools: [], detected_at: "2026-09-03T00:00:00Z" };
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    testDoubles.agentTools.mockResolvedValueOnce(snapshot);
+    const manifest = {} as Manifest;
+    useWorkspaceStore.setState({
+      message: "previous error",
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+    });
+    const { result } = renderHook(() => useAppNavigation(), { wrapper });
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(useWorkspaceStore.getState().message).toBe("");
+    expect(queryClient.getQueryData(["settings", "agent-tools"])).toBe(snapshot);
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
+    expect(useWorkspaceStore.getState().project).toBe(workspace.path);
+    expect(useWorkspaceStore.getState().manifest).toBe(manifest);
+    queryClient.clear();
+  });
+
+  it("clears stale workspace busy state when opening settings without discarding the draft", () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const manifest = {} as Manifest;
+    const draft = {} as Manifest;
+    useWorkspaceStore.setState({
+      busy: true,
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+      baselineManifest: '{"version":0}',
+      workspaceDrafts: { [workspace.id]: draft },
+    });
+    testDoubles.location.pathname = "/workspace/workspace-1";
+    const { rerender } = renderHook(() => useAppNavigation());
+
+    testDoubles.location.pathname = "/settings";
+    testDoubles.search = { settingsSection: "tools" };
+    rerender();
+
+    const state = useWorkspaceStore.getState();
+    expect(state.busy).toBe(false);
+    expect(state.selectedWorkspace).toBe(workspace);
+    expect(state.project).toBe(workspace.path);
+    expect(state.manifest).toBe(manifest);
+    expect(state.baselineManifest).toBe('{"version":0}');
+    expect(state.workspaceDrafts[workspace.id]).toBe(draft);
+  });
+
+  it("refreshes the home route instead of retained workspace state", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const manifest = {} as Manifest;
+    useWorkspaceStore.setState({
+      selectedWorkspace: workspace,
+      project: workspace.path,
+      manifest,
+    });
+    testDoubles.location.pathname = "/";
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => result.current.refreshCurrentView());
+
+    expect(testDoubles.requestRefresh).toHaveBeenCalledWith(true);
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBe(workspace);
+    expect(useWorkspaceStore.getState().manifest).toBe(manifest);
   });
 });

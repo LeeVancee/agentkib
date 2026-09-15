@@ -6,6 +6,45 @@ pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path).map(strip_verbatim_prefix)
 }
 
+/// Assign session cwd to one project only, using the same rule in discovery and history.
+/// The caller supplies its resolved user home so global instruction files do not
+/// turn every unmarked directory into one home-wide workspace.
+pub fn session_workspace_root(path: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let cwd = canonicalize(path).ok()?;
+    let home = home.and_then(|value| canonicalize(value).ok());
+    if !cwd.is_dir() || cwd.parent().is_none() || home.as_ref() == Some(&cwd) {
+        return None;
+    }
+    for parent in cwd.ancestors() {
+        if parent.parent().is_none() || home.as_deref() == Some(parent) {
+            break;
+        }
+        if [
+            ".agentkib",
+            ".git",
+            "AGENTS.md",
+            "CLAUDE.md",
+            ".codex",
+            ".claude",
+            ".cursor",
+            ".opencode",
+            "opencode.json",
+            "opencode.jsonc",
+            ".grok",
+            ".dsh",
+        ]
+        .iter()
+        .any(|marker| parent.join(marker).exists())
+        {
+            return Some(parent.to_path_buf());
+        }
+    }
+    Some(cwd)
+}
+
 /// Resolve an existing path prefix and append only ordinary missing components.
 /// This avoids trusting lexical `..` components in paths that do not exist yet.
 pub fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
@@ -53,8 +92,32 @@ pub fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
 
 /// Stable path identity used for deduplication and containment comparisons.
 pub fn identity(path: &Path) -> String {
-    let path = canonicalize(path).unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()));
+    let path = identity_base(path);
     identity_for_platform(&path.to_string_lossy(), cfg!(windows))
+}
+
+/// Path-shaped identity for salted keys. Preserve Unix OS bytes while applying
+/// Windows comparison rules, including when the final directory no longer exists.
+pub fn identity_path(path: &Path) -> PathBuf {
+    let normalized = identity_base(path);
+    #[cfg(windows)]
+    {
+        PathBuf::from(identity_for_platform(&normalized.to_string_lossy(), true))
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
+fn identity_base(path: &Path) -> PathBuf {
+    let resolved = canonicalize(path);
+    // A removed child still needs its existing ancestor resolved: Windows may
+    // expose that ancestor through an 8.3 alias or a junction. Lexical fallback
+    // alone would no longer match the canonical identity of its workspace.
+    #[cfg(windows)]
+    let resolved = resolved.or_else(|_| canonicalize_allow_missing(path));
+    resolved.unwrap_or_else(|_| strip_verbatim_prefix(path.to_path_buf()))
 }
 
 pub fn equivalent(left: &Path, right: &Path) -> bool {
@@ -258,6 +321,39 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn missing_child_identity_resolves_existing_short_path_ancestor() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("Long Workspace Name");
+        fs::create_dir(&project).unwrap();
+        let canonical = canonicalize(&project).unwrap();
+        let input: Vec<u16> = canonical.as_os_str().encode_wide().chain(Some(0)).collect();
+        let required = unsafe { GetShortPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+        assert!(required > 0, "{}", io::Error::last_os_error());
+        let mut output = vec![0u16; required as usize];
+        let written = unsafe { GetShortPathNameW(input.as_ptr(), output.as_mut_ptr(), required) };
+        assert!(written > 0 && written < required);
+        let alias = PathBuf::from(std::ffi::OsString::from_wide(&output[..written as usize]));
+        let child = canonical.join("removed-child").join("nested");
+        let lexical = alias.join("removed-child").join("nested");
+        let lexical = lexical.to_string_lossy().to_lowercase();
+        for spelling in [
+            lexical.clone(),
+            lexical.replace('\\', "/"),
+            format!(r"\\?\{}", lexical),
+        ] {
+            let path = Path::new(&spelling);
+            assert_eq!(identity(path), identity(&child), "{spelling}");
+            assert_eq!(identity_path(path), identity_path(&child), "{spelling}");
+            assert!(starts_with(path, &project), "{spelling}");
+            assert!(!starts_with(path, &project.join("removed")), "{spelling}");
+        }
+    }
+
     #[test]
     fn parses_unix_file_uri() {
         assert_eq!(
@@ -273,5 +369,33 @@ mod tests {
 
         fs::write(directory.path().join(".codexbar-session-id"), "probe").unwrap();
         assert!(is_known_agent_probe_workspace(directory.path()));
+    }
+
+    #[test]
+    fn session_workspace_uses_nearest_project_and_keeps_unmarked_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("project");
+        let child = parent.join("nested");
+        let cwd = child.join("src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(parent.join("AGENTS.md"), "").unwrap();
+        fs::write(child.join("CLAUDE.md"), "").unwrap();
+        assert_eq!(
+            session_workspace_root(&cwd, Some(dir.path())),
+            Some(canonicalize(&child).unwrap())
+        );
+        let plain = dir.path().join("plain");
+        fs::create_dir(&plain).unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "").unwrap();
+        assert_eq!(
+            session_workspace_root(&plain, Some(dir.path())),
+            Some(canonicalize(&plain).unwrap())
+        );
+        assert_eq!(session_workspace_root(dir.path(), Some(dir.path())), None);
+        assert_eq!(session_workspace_root(Path::new("relative"), None), None);
+        assert_eq!(
+            session_workspace_root(&dir.path().join("missing"), None),
+            None
+        );
     }
 }

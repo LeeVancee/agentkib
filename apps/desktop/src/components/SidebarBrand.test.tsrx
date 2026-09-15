@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@octanejs/testing-library";
@@ -16,9 +18,10 @@ describe("SidebarBrand", () => {
   it("uses the runtime application name", () => {
     useAppStore.getState().setRuntime({ app_name: "AgentKib Dev" } as RuntimeInfo);
 
-    const { container } = render(<SidebarBrand onClick={() => undefined} />);
+    const { container } = render(<SidebarBrand />);
 
-    expect(screen.getByRole("button", { name: "AgentKib Dev" })).toBeTruthy();
+    expect(screen.getByText("AgentKib Dev")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "AgentKib Dev" })).toBeNull();
     expect(container.querySelector("img")).toBeNull();
   });
 

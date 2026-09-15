@@ -46,6 +46,9 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
     if manifest.workspace.id.trim().is_empty() || manifest.workspace.name.trim().is_empty() {
         bail!("workspace.id and workspace.name cannot be empty");
     }
+    if matches!(manifest.workspace.id.as_str(), "." | "..") {
+        bail!("workspace.id cannot be `.` or `..`");
+    }
     let mut skill_names = BTreeSet::new();
     for skill in &manifest.skills {
         reject_read_only_target(&skill.targets)?;
@@ -182,6 +185,20 @@ mod tests {
             targets: vec![],
         });
         assert!(validate_manifest(&value).is_err());
+    }
+
+    #[test]
+    fn rejects_workspace_ids_that_normalize_away_in_urls() {
+        for id in [".", ".."] {
+            let mut value = manifest();
+            value.workspace.id = id.into();
+            assert!(
+                validate_manifest(&value)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cannot be `.` or `..`")
+            );
+        }
     }
 
     #[test]

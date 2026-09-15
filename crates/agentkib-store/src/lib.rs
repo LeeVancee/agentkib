@@ -5,14 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use agentkib_conversations::{
     ConversationIndexStatus, ConversationSessionSummary, NativeSessionSummary,
-    SessionIndexFreshness,
+    SessionIndexFreshness, SessionOrigin,
 };
 use agentkib_core::{
     ActivityRecord, AgentInstallation, AgentKind, AssetKind, AssetRecord, CatalogAsset,
-    CatalogScope, DiscoveryCandidate, DiscoveryEvidence, DiscoveryReport, ExcludedWorkspace,
-    McpInstallation, McpRegistryEntry, McpRuntimeStatus, McpToolDescriptor, MemoryProposal,
-    MemoryRecord, MemoryStatus, ScanRoot, WorkspaceSource, WorkspaceStatus, WorkspaceSummary,
-    hash_content, inspect_skill_entrypoint, load_manifest, scan_workspace,
+    CatalogScope, DiscoveryCandidate, DiscoveryEvidence, DiscoveryReport,
+    DiscoverySourceDiagnostic, ExcludedWorkspace, McpInstallation, McpRegistryEntry,
+    McpRuntimeStatus, McpToolDescriptor, MemoryProposal, MemoryRecord, MemoryStatus, ScanRoot,
+    WorkspaceSource, WorkspaceStatus, WorkspaceSummary, hash_content, inspect_skill_entrypoint,
+    load_manifest, scan_workspace,
 };
 use agentkib_insights::{
     Achievement, AgentUsageBreakdown, GitIdentitySummary, GitRepositorySnapshot, HeatmapPoint,
@@ -30,6 +31,34 @@ use uuid::Uuid;
 
 pub struct Store {
     connection: Connection,
+}
+
+mod incremental_insights;
+
+fn enable_wal(connection: &Connection, budget: std::time::Duration) -> Result<()> {
+    let deadline = std::time::Instant::now() + budget;
+    // Journal-mode conversion can return BUSY immediately instead of invoking SQLite's
+    // busy handler when two fresh connections race. Retry only this pre-migration step.
+    connection.busy_timeout(std::time::Duration::ZERO)?;
+    let result = loop {
+        match connection.execute_batch("PRAGMA journal_mode = WAL;") {
+            Ok(()) => break Ok(()),
+            Err(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(
+                    std::time::Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
+            Err(error) => break Err(error),
+        }
+    };
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    result.context("enable store WAL journal")
 }
 
 #[cfg(not(feature = "dev-app"))]
@@ -57,12 +86,16 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        self.connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;",
+        self.connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        enable_wal(&self.connection, std::time::Duration::from_secs(5))?;
+        // Hold the write lock before reading the version. Multiple Runtime requests can
+        // open the store during startup; each migration must observe the version left by
+        // the previous opener instead of replaying a stale migration plan.
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        let current_version = self
-            .connection
+        let current_version = transaction
             .query_row(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'",
                 [],
@@ -73,8 +106,8 @@ impl Store {
             .flatten()
             .and_then(|value| value.parse::<u32>().ok());
         if current_version.is_none_or(|version| version < 2) {
-            self.connection.execute_batch(
-            "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+            "
              CREATE TABLE IF NOT EXISTS memories (
                id TEXT PRIMARY KEY,
                project_id TEXT NOT NULL,
@@ -174,12 +207,12 @@ impl Store {
                errors TEXT NOT NULL
              );
              INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '2');
-             COMMIT;"
+             "
             )?;
         }
         if current_version.is_none_or(|version| version < 3) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS usage_events (
                    source_key TEXT PRIMARY KEY,
                    surface_agent TEXT NOT NULL,
@@ -257,12 +290,12 @@ impl Store {
                    rule_version INTEGER NOT NULL
                  );
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 4) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  ALTER TABLE catalog_assets ADD COLUMN summary_key TEXT;
                  ALTER TABLE catalog_assets ADD COLUMN summary_params TEXT NOT NULL DEFAULT '{}';
                  ALTER TABLE insight_cursors ADD COLUMN error_key TEXT;
@@ -273,12 +306,12 @@ impl Store {
                    WHEN '公共 MCP Connection' THEN 'assets.summary.sharedConnection'
                    ELSE summary_key END;
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 5) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS mcp_installations (
                    id TEXT PRIMARY KEY,
                    name TEXT NOT NULL,
@@ -311,12 +344,12 @@ impl Store {
                    updated_at TEXT NOT NULL
                  );
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 6) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS workspaces (
                    id TEXT PRIMARY KEY,
                    canonical_path TEXT NOT NULL UNIQUE,
@@ -332,12 +365,12 @@ impl Store {
                  );
                  UPDATE workspaces SET status = 'healthy' WHERE status = 'needs-import';
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 7) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS quota_snapshot (
                    id INTEGER PRIMARY KEY CHECK (id = 1),
                    snapshot_json TEXT,
@@ -352,12 +385,12 @@ impl Store {
                    error_detail TEXT
                  );
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '7');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 8) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS workspace_storage (
                    workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
                    snapshot_json TEXT,
@@ -367,12 +400,12 @@ impl Store {
                    error_detail TEXT
                  );
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '8');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 9) {
-            self.connection.execute_batch(
-                "BEGIN IMMEDIATE;
+            transaction.execute_batch(
+                "
                  CREATE TABLE IF NOT EXISTS conversation_sessions (
                    id TEXT PRIMARY KEY,
                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -401,19 +434,117 @@ impl Store {
                    PRIMARY KEY(workspace_id, agent)
                  );
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '9');
-                 COMMIT;",
+                 ",
             )?;
         }
         if current_version.is_none_or(|version| version < 10) {
-            let transaction = self.connection.unchecked_transaction()?;
             normalize_legacy_workspace_timestamps(&transaction)?;
             transaction.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '10')",
                 [],
             )?;
-            transaction.commit()?;
         }
-        let has_usage_events: bool = self.connection.query_row(
+        if current_version.is_none_or(|version| version < 11) {
+            transaction.execute_batch(
+                "ALTER TABLE conversation_sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown';
+                     ALTER TABLE conversation_sessions ADD COLUMN spawned_by_session_id TEXT;
+                     ALTER TABLE conversation_sessions ADD COLUMN forked_from_session_id TEXT;
+                     UPDATE conversation_index_status SET last_success_at = NULL;
+                     INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '11');",
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 12) {
+            let has_discovery_runs: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'discovery_runs')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_discovery_runs {
+                transaction.execute_batch(
+                    "CREATE TABLE discovery_runs (
+                       id TEXT PRIMARY KEY,
+                       started_at TEXT NOT NULL,
+                       finished_at TEXT NOT NULL,
+                       discovered_count INTEGER NOT NULL,
+                       removed_count INTEGER NOT NULL,
+                       errors TEXT NOT NULL,
+                       source_diagnostics TEXT NOT NULL DEFAULT '[]'
+                     );",
+                )?;
+            } else {
+                let has_source_diagnostics: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('discovery_runs') WHERE name = 'source_diagnostics')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if !has_source_diagnostics {
+                    transaction.execute(
+                        "ALTER TABLE discovery_runs ADD COLUMN source_diagnostics TEXT NOT NULL DEFAULT '[]'",
+                        [],
+                    )?;
+                }
+            }
+            transaction.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '12')",
+                [],
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 13) {
+            // Some older databases contain only the subsystems initialized by
+            // that release. Create the source table before adding evidence.
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS workspace_sources (
+                   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                   agent TEXT NOT NULL,
+                   evidence TEXT NOT NULL,
+                   session_count INTEGER NOT NULL DEFAULT 0,
+                   last_active_at TEXT,
+                   PRIMARY KEY(workspace_id, agent, evidence)
+                 );",
+            )?;
+            let has_session_cwds: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('workspace_sources') WHERE name = 'session_cwds')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_session_cwds {
+                transaction.execute(
+                    "ALTER TABLE workspace_sources ADD COLUMN session_cwds TEXT NOT NULL DEFAULT '[]'",
+                    [],
+                )?;
+            }
+            transaction.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '13')",
+                [],
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 14) {
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS codex_incremental_state (
+                   id INTEGER PRIMARY KEY CHECK(id = 1),
+                   state_json TEXT NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS insight_source_events (
+                   source_id TEXT NOT NULL,
+                   source_key TEXT NOT NULL REFERENCES usage_events(source_key) ON DELETE CASCADE,
+                   PRIMARY KEY(source_id, source_key)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_insight_source_events_key ON insight_source_events(source_key);
+                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '14');",
+            )?;
+        }
+        if current_version.is_none_or(|version| version < 15) {
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS codex_source_checkpoints (
+                   source_kind TEXT NOT NULL CHECK(source_kind IN ('files', 'databases')),
+                   source_id TEXT NOT NULL,
+                   state_json TEXT NOT NULL,
+                   PRIMARY KEY(source_kind, source_id)
+                 );
+                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '15');",
+            )?;
+        }
+        let has_usage_events: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_events')",
             [],
             |row| row.get(0),
@@ -421,11 +552,12 @@ impl Store {
         if has_usage_events {
             // Detailed Token events replace session-level aggregate fallbacks by session hash.
             // Without this index a first import performs a full table scan for every event.
-            self.connection.execute_batch(
+            transaction.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_usage_events_session_precision
                  ON usage_events(session_hash, date_precision);",
             )?;
         }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -590,6 +722,25 @@ impl Store {
         started_at: DateTime<Utc>,
         errors: &[String],
     ) -> Result<DiscoveryReport> {
+        self.sync_discovery_with_diagnostics(
+            candidates,
+            installations,
+            home_assets,
+            started_at,
+            errors,
+            &[],
+        )
+    }
+
+    pub fn sync_discovery_with_diagnostics(
+        &self,
+        candidates: &[DiscoveryCandidate],
+        installations: &[AgentInstallation],
+        home_assets: &[CatalogAsset],
+        started_at: DateTime<Utc>,
+        errors: &[String],
+        source_diagnostics: &[DiscoverySourceDiagnostic],
+    ) -> Result<DiscoveryReport> {
         let transaction = self.connection.unchecked_transaction()?;
         let excluded = excluded_paths(&transaction)?;
         let agent_homes: BTreeSet<_> = installations
@@ -679,10 +830,11 @@ impl Store {
             discovered_count: discovered_paths.len(),
             removed_count: stale.len(),
             errors: discovery_errors.clone(),
+            source_diagnostics: source_diagnostics.to_vec(),
         };
         transaction.execute(
-            "INSERT INTO discovery_runs(id, started_at, finished_at, discovered_count, removed_count, errors) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![Uuid::new_v4().to_string(), report.started_at.to_rfc3339(), report.finished_at.to_rfc3339(), report.discovered_count as i64, report.removed_count as i64, serde_json::to_string(&discovery_errors)?],
+            "INSERT INTO discovery_runs(id, started_at, finished_at, discovered_count, removed_count, errors, source_diagnostics) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![Uuid::new_v4().to_string(), report.started_at.to_rfc3339(), report.finished_at.to_rfc3339(), report.discovered_count as i64, report.removed_count as i64, serde_json::to_string(&discovery_errors)?, serde_json::to_string(source_diagnostics)?],
         )?;
         transaction.execute(
             "INSERT INTO audit_events(id, project_id, action, detail, created_at) VALUES (?1, NULL, 'discovery.complete', ?2, ?3)",
@@ -724,7 +876,30 @@ impl Store {
         agent: AgentKind,
         sessions: &[NativeSessionSummary],
     ) -> Result<Vec<ConversationSessionSummary>> {
-        if !matches!(agent, AgentKind::Codex | AgentKind::ClaudeCode) {
+        self.sync_conversation_sessions_inner(workspace_id, agent, sessions, true)
+    }
+
+    /// Merge sessions from a source that completed only partially. Existing
+    /// rows are retained so a transient source error cannot erase history.
+    /// Callers should record the source failure afterwards to mark freshness
+    /// stale while keeping this last known-good content readable.
+    pub fn sync_conversation_sessions_partial(
+        &self,
+        workspace_id: &str,
+        agent: AgentKind,
+        sessions: &[NativeSessionSummary],
+    ) -> Result<Vec<ConversationSessionSummary>> {
+        self.sync_conversation_sessions_inner(workspace_id, agent, sessions, false)
+    }
+
+    fn sync_conversation_sessions_inner(
+        &self,
+        workspace_id: &str,
+        agent: AgentKind,
+        sessions: &[NativeSessionSummary],
+        replace_existing: bool,
+    ) -> Result<Vec<ConversationSessionSummary>> {
+        if agentkib_conversations::provider(agent).is_none() {
             bail!("Conversation indexing is not supported for this Agent");
         }
         self.get_workspace(workspace_id)?
@@ -733,10 +908,34 @@ impl Store {
         let agent_value = enum_string(agent)?;
         let indexed_at = Utc::now();
         let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute(
-            "DELETE FROM conversation_sessions WHERE workspace_id = ?1 AND agent = ?2",
-            params![workspace_id, agent_value],
-        )?;
+        let (owner_id, aliases) = if matches!(
+            agent,
+            AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::GrokBuild
+        ) {
+            self.normalized_session_owner(workspace_id)?
+        } else {
+            (workspace_id.to_owned(), Vec::new())
+        };
+        // Preserve cached history when a newly registered root supersedes an
+        // alias, including partial scans before that root has ever refreshed.
+        for alias in aliases.iter().filter(|id| **id != owner_id) {
+            transaction.execute(
+                "UPDATE conversation_sessions SET workspace_id = ?1 WHERE workspace_id = ?2 AND agent = ?3",
+                params![owner_id, alias, agent_value],
+            )?;
+            transaction.execute(
+                "UPDATE conversation_index_status SET session_count = 0 WHERE workspace_id = ?1 AND agent = ?2",
+                params![alias, agent_value],
+            )?;
+        }
+        // Only the owner's complete scan may remove absent sessions. Alias
+        // scans can contribute records but cannot erase the owner's cache.
+        if replace_existing && owner_id == workspace_id {
+            transaction.execute(
+                "DELETE FROM conversation_sessions WHERE workspace_id = ?1 AND agent = ?2",
+                params![workspace_id, agent_value],
+            )?;
+        }
         for session in sessions {
             if session.agent != agent {
                 bail!("Conversation batch contains a different Agent");
@@ -745,11 +944,27 @@ impl Store {
             transaction.execute(
                 "INSERT INTO conversation_sessions(
                    id, workspace_id, agent, title, created_at, updated_at, message_count,
-                   git_branch, archived, sidechain, availability, last_indexed_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                   git_branch, archived, sidechain, availability, last_indexed_at,
+                   origin, spawned_by_session_id, forked_from_session_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 ON CONFLICT(id) DO UPDATE SET
+                   workspace_id = excluded.workspace_id,
+                   agent = excluded.agent,
+                   title = excluded.title,
+                   created_at = excluded.created_at,
+                   updated_at = excluded.updated_at,
+                   message_count = excluded.message_count,
+                   git_branch = excluded.git_branch,
+                   archived = excluded.archived,
+                   sidechain = excluded.sidechain,
+                   availability = excluded.availability,
+                   last_indexed_at = excluded.last_indexed_at,
+                   origin = excluded.origin,
+                   spawned_by_session_id = excluded.spawned_by_session_id,
+                   forked_from_session_id = excluded.forked_from_session_id",
                 params![
                     id,
-                    workspace_id,
+                    owner_id,
                     &agent_value,
                     session.title.as_deref(),
                     session.created_at.map(|value| value.to_rfc3339()),
@@ -760,9 +975,35 @@ impl Store {
                     session.sidechain,
                     enum_string(session.availability)?,
                     indexed_at.to_rfc3339(),
+                    enum_string(session.origin)?,
+                    session
+                        .spawned_by_session_id
+                        .as_deref()
+                        .filter(|parent| !parent.is_empty() && *parent != session.native_ref)
+                        .map(|parent| conversation_identifier(&salt, agent, parent)),
+                    session
+                        .forked_from_session_id
+                        .as_deref()
+                        .filter(|parent| !parent.is_empty() && *parent != session.native_ref)
+                        .map(|parent| conversation_identifier(&salt, agent, parent)),
                 ],
             )?;
         }
+        if owner_id != workspace_id {
+            // Moving cache is not a successful owner refresh. Keep its existing
+            // freshness/error metadata rather than claiming a fresh snapshot.
+            transaction.execute(
+                "UPDATE conversation_index_status SET session_count = (
+                   SELECT COUNT(*) FROM conversation_sessions WHERE workspace_id = ?1 AND agent = ?2
+                 ) WHERE workspace_id = ?1 AND agent = ?2",
+                params![owner_id, agent_value],
+            )?;
+        }
+        let session_count = transaction.query_row(
+            "SELECT COUNT(*) FROM conversation_sessions WHERE workspace_id = ?1 AND agent = ?2",
+            params![workspace_id, &agent_value],
+            |row| row.get::<_, i64>(0),
+        )? as u64;
         transaction.execute(
             "INSERT INTO conversation_index_status(
                workspace_id, agent, session_count, last_attempt_at, last_success_at, error_key, error_detail
@@ -773,10 +1014,44 @@ impl Store {
                last_success_at = excluded.last_success_at,
                error_key = NULL,
                error_detail = NULL",
-            params![workspace_id, agent_value, to_i64(sessions.len() as u64), indexed_at.to_rfc3339()],
+            params![workspace_id, agent_value, to_i64(session_count), indexed_at.to_rfc3339()],
         )?;
         transaction.commit()?;
         self.list_conversation_sessions(workspace_id)
+    }
+
+    /// These providers normalize both cwd and registered workspace paths. Pick
+    /// one registered representative before writing their globally stable IDs;
+    /// otherwise aliases can steal each other's sessions on every refresh.
+    fn normalized_session_owner(&self, workspace_id: &str) -> Result<(String, Vec<String>)> {
+        let home = dirs::home_dir();
+        let workspace = self.workspace_path(workspace_id)?;
+        let Some(root) = platform_path::session_workspace_root(&workspace, home.as_deref()) else {
+            return Ok((workspace_id.to_owned(), Vec::new()));
+        };
+        let mut candidates = self
+            .workspace_path_index()?
+            .into_iter()
+            .filter(|(path, _)| {
+                platform_path::session_workspace_root(path, home.as_deref())
+                    .is_some_and(|candidate| platform_path::equivalent(&candidate, &root))
+            })
+            .collect::<Vec<_>>();
+        // Prefer the project root itself, then a stable shallow alias when only
+        // subdirectories were registered. Activity/refresh order is irrelevant.
+        candidates.sort_by_key(|(path, id)| {
+            (
+                !platform_path::equivalent(path, &root),
+                path.components().count(),
+                platform_path::identity(path),
+                id.clone(),
+            )
+        });
+        let owner = candidates
+            .first()
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| workspace_id.to_owned());
+        Ok((owner, candidates.into_iter().map(|(_, id)| id).collect()))
     }
 
     pub fn record_conversation_index_failure(
@@ -807,7 +1082,8 @@ impl Store {
     ) -> Result<Vec<ConversationSessionSummary>> {
         let mut statement = self.connection.prepare(
             "SELECT id, workspace_id, agent, title, created_at, updated_at, message_count,
-                    git_branch, archived, sidechain, availability
+                    git_branch, archived, sidechain, availability, origin,
+                    spawned_by_session_id, forked_from_session_id
              FROM conversation_sessions WHERE workspace_id = ?1
              ORDER BY COALESCE(updated_at, created_at) DESC, id DESC",
         )?;
@@ -821,7 +1097,8 @@ impl Store {
         self.connection
             .query_row(
                 "SELECT id, workspace_id, agent, title, created_at, updated_at, message_count,
-                        git_branch, archived, sidechain, availability
+                        git_branch, archived, sidechain, availability, origin,
+                        spawned_by_session_id, forked_from_session_id
                  FROM conversation_sessions WHERE id = ?1",
                 [id],
                 row_to_conversation_session,
@@ -938,6 +1215,7 @@ impl Store {
             session_count: 0,
             explicit_workspace: true,
             repository_group_id: None,
+            session_cwds: None,
         };
         let transaction = self.connection.unchecked_transaction()?;
         if let Some(stored) = matching_stored_path(&transaction, "excluded_workspaces", &path)? {
@@ -1049,15 +1327,17 @@ impl Store {
         let mut statement = self.connection.prepare("SELECT agent, installed, configured, version, home, warnings FROM agent_installations ORDER BY agent")?;
         let rows = statement.query_map([], |row| {
             let agent: String = row.get(0)?;
+            let agent = parse_enum(&agent).map_err(sql_error)?;
             let warnings: String = row.get(5)?;
             Ok(AgentInstallation {
-                agent: parse_enum(&agent).map_err(sql_error)?,
+                agent,
                 installed: row.get(1)?,
                 configured: row.get(2)?,
                 version: row.get(3)?,
                 home: row.get::<_, Option<String>>(4)?.map(PathBuf::from),
                 warnings: serde_json::from_str(&warnings)
                     .map_err(|error| sql_error(error.into()))?,
+                support: Some(agentkib_core::AgentSupportCapabilities::for_agent(agent)),
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1138,23 +1418,31 @@ impl Store {
     }
 
     pub fn latest_discovery_report(&self) -> Result<Option<DiscoveryReport>> {
-        let row: Option<(String, String, i64, i64, String)> = self
+        let row: Option<(String, String, i64, i64, String, String)> = self
             .connection
             .query_row(
-                "SELECT started_at, finished_at, discovered_count, removed_count, errors FROM discovery_runs ORDER BY finished_at DESC LIMIT 1",
+                "SELECT started_at, finished_at, discovered_count, removed_count, errors, COALESCE(source_diagnostics, '[]') FROM discovery_runs ORDER BY finished_at DESC LIMIT 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .optional()?;
 
         row.map(
-            |(started_at, finished_at, discovered_count, removed_count, errors)| {
+            |(
+                started_at,
+                finished_at,
+                discovered_count,
+                removed_count,
+                errors,
+                source_diagnostics,
+            )| {
                 Ok(DiscoveryReport {
                     started_at: parse_time(&started_at)?,
                     finished_at: parse_time(&finished_at)?,
                     discovered_count: usize::try_from(discovered_count)?,
                     removed_count: usize::try_from(removed_count)?,
                     errors: serde_json::from_str(&errors)?,
+                    source_diagnostics: serde_json::from_str(&source_diagnostics)?,
                 })
             },
         )
@@ -1568,12 +1856,29 @@ impl Store {
                 params![provider, repository.fingerprint, to_i64(repository.commits.len() as u64), now],
             )?;
         }
-        transaction.execute(
-            "UPDATE git_commits SET is_mine = EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)",
+        let changed_providers = usage_batches
+            .iter()
+            .filter(|batch| {
+                !batch.unchanged && (batch.status.available || !batch.events.is_empty())
+            })
+            .map(|batch| enum_string(batch.status.agent))
+            .collect::<Result<BTreeSet<_>>>()?;
+        for provider in &changed_providers {
+            rebuild_provider_usage_daily(&transaction, provider)?;
+        }
+        let git_changed = repositories
+            .iter()
+            .any(|repository| repository.changed && repository.error.is_none());
+        // Identity discovery can change without a new commit (e.g. git user.email).
+        // Reclassify only affected rows so an unchanged refresh performs no writes here.
+        let identities_changed = transaction.execute(
+            "UPDATE git_commits SET is_mine = EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)
+             WHERE is_mine != EXISTS(SELECT 1 FROM git_identities WHERE identity_hash = git_commits.author_identity_hash AND enabled = 1)",
             [],
-        )?;
-        rebuild_usage_daily(&transaction)?;
-        rebuild_commit_attributions(&transaction)?;
+        )? > 0;
+        if git_changed || identities_changed || !changed_providers.is_empty() {
+            rebuild_commit_attributions(&transaction)?;
+        }
         transaction.execute(
             "INSERT INTO audit_events(id, project_id, action, detail, created_at) VALUES (?1, NULL, 'insights.refresh', ?2, ?3)",
             params![
@@ -1583,7 +1888,9 @@ impl Store {
             ],
         )?;
         transaction.commit()?;
-        self.refresh_achievement_unlocks()?;
+        if git_changed || identities_changed || !changed_providers.is_empty() {
+            self.refresh_achievement_unlocks()?;
+        }
         Ok(())
     }
 
@@ -2492,11 +2799,14 @@ impl Store {
 
     fn workspace_sources(&self, id: &str) -> Result<Vec<WorkspaceSource>> {
         let mut statement = self.connection.prepare(
-            "SELECT agent, evidence, session_count, last_active_at FROM workspace_sources WHERE workspace_id = ?1 ORDER BY last_active_at DESC",
+            "SELECT agent, evidence, session_count, last_active_at, session_cwds FROM workspace_sources WHERE workspace_id = ?1 ORDER BY last_active_at DESC",
         )?;
         let rows = statement.query_map(params![id], |row| {
             let agent: String = row.get(0)?;
             let evidence: String = row.get(1)?;
+            let session_cwds: String = row.get(4)?;
+            let session_cwds: Vec<PathBuf> =
+                serde_json::from_str(&session_cwds).map_err(|error| sql_error(error.into()))?;
             Ok(WorkspaceSource {
                 agent: if agent.is_empty() {
                     None
@@ -2506,6 +2816,7 @@ impl Store {
                 evidence: parse_enum(&evidence).map_err(sql_error)?,
                 session_count: row.get::<_, i64>(2)?.max(0) as u64,
                 last_active_at: row_optional_time(row, 3)?,
+                session_cwds: (!session_cwds.is_empty()).then_some(session_cwds),
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -2528,15 +2839,18 @@ impl Store {
     }
 }
 
-fn rebuild_usage_daily(connection: &Connection) -> Result<()> {
-    connection.execute("DELETE FROM usage_daily", [])?;
+fn rebuild_provider_usage_daily(connection: &Connection, provider: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM usage_daily WHERE surface_agent = ?1",
+        [provider],
+    )?;
     connection.execute(
         "INSERT INTO usage_daily(day, surface_agent, workspace_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, total_tokens, session_count, quality)
          SELECT day, surface_agent, COALESCE(workspace_id, ''), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(total_tokens), SUM(session_count),
                 CASE MAX(CASE quality WHEN 'incomplete' THEN 2 WHEN 'estimated' THEN 1 ELSE 0 END) WHEN 2 THEN 'incomplete' WHEN 1 THEN 'estimated' ELSE 'exact' END
-         FROM usage_events WHERE day IS NOT NULL AND date_precision != 'aggregate'
+         FROM usage_events WHERE day IS NOT NULL AND date_precision != 'aggregate' AND surface_agent = ?1
          GROUP BY day, surface_agent, COALESCE(workspace_id, '')",
-        [],
+        [provider],
     )?;
     Ok(())
 }
@@ -2841,9 +3155,10 @@ fn upsert_workspace(
             .transpose()?
             .unwrap_or_default();
         let evidence = enum_string(source.evidence)?;
+        let session_cwds = serde_json::to_string(&source.session_cwds.clone().unwrap_or_default())?;
         connection.execute(
-            "INSERT INTO workspace_sources(workspace_id, agent, evidence, session_count, last_active_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(workspace_id, agent, evidence) DO UPDATE SET session_count = excluded.session_count, last_active_at = excluded.last_active_at",
-            params![workspace_id, agent, evidence, source.session_count as i64, source.last_active_at.map(|value| value.to_rfc3339())],
+            "INSERT INTO workspace_sources(workspace_id, agent, evidence, session_count, last_active_at, session_cwds) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(workspace_id, agent, evidence) DO UPDATE SET session_count = excluded.session_count, last_active_at = excluded.last_active_at, session_cwds = excluded.session_cwds",
+            params![workspace_id, agent, evidence, source.session_count as i64, source.last_active_at.map(|value| value.to_rfc3339()), session_cwds],
         )?;
     }
     Ok(workspace_id)
@@ -3155,6 +3470,9 @@ fn row_to_conversation_session(row: &Row<'_>) -> rusqlite::Result<ConversationSe
         archived: row.get(8)?,
         sidechain: row.get(9)?,
         availability: parse_enum(&row.get::<_, String>(10)?).map_err(sql_error)?,
+        origin: parse_enum(&row.get::<_, String>(11)?).unwrap_or(SessionOrigin::Unknown),
+        spawned_by_session_id: row.get(12)?,
+        forked_from_session_id: row.get(13)?,
     })
 }
 
@@ -3420,6 +3738,7 @@ mod tests {
             session_count: 2,
             explicit_workspace: false,
             repository_group_id: Some("repository".into()),
+            session_cwds: None,
         }
     }
 
@@ -3538,6 +3857,108 @@ mod tests {
     }
 
     #[test]
+    fn discovery_source_diagnostics_are_additive_and_round_trip() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(workspace.join(".git")).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let started_at = Utc::now();
+        let diagnostics = vec![DiscoverySourceDiagnostic {
+            agent: Some(AgentKind::OpenCode),
+            source: "sqlite".into(),
+            path: Some(dir.path().join("opencode.db")),
+            started_at,
+            finished_at: started_at,
+            candidate_count: Some(2),
+            included_count: Some(1),
+            skipped_count: None,
+            status: agentkib_core::DiscoveryDiagnosticStatus::Partial,
+            reasons: vec!["source-read-failed".into()],
+        }];
+        store
+            .sync_discovery_with_diagnostics(
+                &[candidate(&workspace)],
+                &[],
+                &[],
+                started_at,
+                &[],
+                &diagnostics,
+            )
+            .unwrap();
+
+        let report = store.latest_discovery_report().unwrap().unwrap();
+        assert_eq!(report.source_diagnostics.len(), 1);
+        assert_eq!(report.source_diagnostics[0].source, "sqlite");
+        assert_eq!(report.source_diagnostics[0].candidate_count, Some(2));
+        assert_eq!(report.source_diagnostics[0].skipped_count, None);
+        assert_eq!(report.source_diagnostics[0].reasons, ["source-read-failed"]);
+    }
+
+    #[test]
+    fn workspace_source_round_trips_original_session_cwds_and_legacy_none() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let first = workspace.join("packages/api");
+        let second = workspace.join("packages/web");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::create_dir(workspace.join(".git")).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let mut session_candidate = candidate(&workspace);
+        session_candidate.source_agent = Some(AgentKind::OpenClaw);
+        session_candidate.session_cwds = Some(vec![first.clone(), second.clone()]);
+        store
+            .sync_discovery(&[session_candidate], &[], &[], Utc::now(), &[])
+            .unwrap();
+
+        let sources = store.list_workspaces().unwrap()[0].sources.clone();
+        assert_eq!(sources.len(), 1);
+        let mut session_cwds = sources[0].session_cwds.clone().unwrap();
+        session_cwds.sort();
+        assert_eq!(session_cwds, vec![first, second]);
+
+        let mut legacy_candidate = candidate(&workspace);
+        legacy_candidate.source_agent = Some(AgentKind::Codex);
+        store
+            .sync_discovery(&[legacy_candidate], &[], &[], Utc::now(), &[])
+            .unwrap();
+        assert_eq!(
+            store.list_workspaces().unwrap()[0].sources[0].session_cwds,
+            None
+        );
+    }
+
+    #[test]
+    fn old_workspace_sources_without_session_cwds_migrate_to_empty_json() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let store = Store::open(&database).unwrap();
+        store
+            .connection
+            .execute("ALTER TABLE workspace_sources DROP COLUMN session_cwds", [])
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE schema_meta SET value = '12' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+
+        let migrated = Store::open(&database).unwrap();
+        let has_column: bool = migrated
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('workspace_sources') WHERE name = 'session_cwds')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_column);
+    }
+
+    #[test]
     fn discovered_workspace_without_manifest_is_healthy() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");
@@ -3623,6 +4044,9 @@ mod tests {
                     git_branch: None,
                     archived: false,
                     sidechain: false,
+                    origin: SessionOrigin::Unknown,
+                    spawned_by_session_id: None,
+                    forked_from_session_id: None,
                     availability: agentkib_conversations::SessionAvailability::MetadataOnly,
                 }],
             )
@@ -3678,6 +4102,9 @@ mod tests {
             version: None,
             home: Some(agent_home.clone()),
             warnings: Vec::new(),
+            support: Some(agentkib_core::AgentSupportCapabilities::for_agent(
+                AgentKind::Codex,
+            )),
         };
         let report = store
             .sync_discovery(
@@ -3718,6 +4145,9 @@ mod tests {
                     version: None,
                     home: Some(agent_home.clone()),
                     warnings: Vec::new(),
+                    support: Some(agentkib_core::AgentSupportCapabilities::for_agent(
+                        AgentKind::Codex,
+                    )),
                 }],
                 &[],
                 Utc::now(),
@@ -3835,6 +4265,94 @@ mod tests {
     }
 
     #[test]
+    fn conversation_index_accepts_every_registered_provider() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let registered = store.add_workspace(&workspace).unwrap();
+        let providers = agentkib_conversations::providers();
+
+        for provider in &providers {
+            assert!(
+                store
+                    .sync_conversation_sessions(&registered.id, provider.agent(), &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
+        let statuses = store.conversation_index_status(&registered.id).unwrap();
+        assert_eq!(statuses.len(), providers.len());
+        for provider in providers {
+            assert!(statuses.iter().any(|status| {
+                status.agent == provider.agent() && status.freshness == SessionIndexFreshness::Fresh
+            }));
+        }
+    }
+
+    #[test]
+    fn conversation_index_round_trips_opencode_and_rejects_unsupported_agents() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let registered = store.add_workspace(&workspace).unwrap();
+        let timestamp = Utc::now();
+        let native_ref = "opencode-native-session";
+        let session = NativeSessionSummary {
+            native_ref: native_ref.into(),
+            agent: AgentKind::OpenCode,
+            title: Some("OpenCode cached session".into()),
+            created_at: Some(timestamp),
+            updated_at: Some(timestamp),
+            message_count: Some(3),
+            git_branch: Some("main".into()),
+            archived: false,
+            sidechain: false,
+            origin: SessionOrigin::Unknown,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
+            availability: agentkib_conversations::SessionAvailability::Readable,
+        };
+        let indexed = store
+            .sync_conversation_sessions(&registered.id, AgentKind::OpenCode, &[session])
+            .unwrap();
+        assert_eq!(indexed.len(), 1);
+        let stored = store
+            .get_conversation_session(&indexed[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.agent, AgentKind::OpenCode);
+        assert_eq!(stored.workspace_id, registered.id);
+        assert_eq!(stored.title.as_deref(), Some("OpenCode cached session"));
+        assert_eq!(stored.message_count, Some(3));
+        assert_eq!(stored.updated_at, Some(timestamp));
+        assert_ne!(stored.id, native_ref);
+        assert_eq!(
+            stored.id,
+            store
+                .conversation_id(AgentKind::OpenCode, native_ref)
+                .unwrap()
+        );
+
+        let error = store
+            .sync_conversation_sessions(&registered.id, AgentKind::Cursor, &[])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Conversation indexing is not supported for this Agent"
+        );
+        assert_eq!(
+            store
+                .list_conversation_sessions(&registered.id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn conversation_index_hashes_native_ids_and_preserves_last_good_on_failure() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");
@@ -3852,6 +4370,9 @@ mod tests {
             git_branch: Some("main".into()),
             archived: false,
             sidechain: false,
+            origin: SessionOrigin::Unknown,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
             availability: agentkib_conversations::SessionAvailability::Readable,
         };
 
@@ -3906,6 +4427,310 @@ mod tests {
     }
 
     #[test]
+    fn conversation_provenance_is_independent_hashed_and_not_title_deduplicated() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let registered = store.add_workspace(&workspace).unwrap();
+        let base = NativeSessionSummary {
+            native_ref: "private-parent".into(),
+            agent: AgentKind::Codex,
+            title: Some("Same title".into()),
+            created_at: None,
+            updated_at: None,
+            message_count: None,
+            git_branch: Some("main".into()),
+            archived: false,
+            sidechain: false,
+            origin: SessionOrigin::Interactive,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
+            availability: agentkib_conversations::SessionAvailability::Readable,
+        };
+        let fork = NativeSessionSummary {
+            native_ref: "private-fork".into(),
+            forked_from_session_id: Some(base.native_ref.clone()),
+            ..base.clone()
+        };
+        let child = NativeSessionSummary {
+            native_ref: "private-child".into(),
+            origin: SessionOrigin::Auxiliary,
+            spawned_by_session_id: Some(base.native_ref.clone()),
+            forked_from_session_id: Some("private-absent-source".into()),
+            ..base.clone()
+        };
+        let records = store
+            .sync_conversation_sessions(
+                &registered.id,
+                AgentKind::Codex,
+                &[base.clone(), fork.clone(), child.clone()],
+            )
+            .unwrap();
+        assert_eq!(records.len(), 3);
+        let parent_id = store
+            .conversation_id(AgentKind::Codex, &base.native_ref)
+            .unwrap();
+        let child_id = store
+            .conversation_id(AgentKind::Codex, &child.native_ref)
+            .unwrap();
+        let saved = store.get_conversation_session(&child_id).unwrap().unwrap();
+        assert_eq!(saved.origin, SessionOrigin::Auxiliary);
+        assert!(!saved.sidechain);
+        assert_eq!(
+            saved.spawned_by_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            saved.forked_from_session_id,
+            Some(
+                store
+                    .conversation_id(AgentKind::Codex, "private-absent-source")
+                    .unwrap()
+            )
+        );
+        assert!(
+            !serde_json::to_string(&records)
+                .unwrap()
+                .contains("private-")
+        );
+        let fork_id = store
+            .conversation_id(AgentKind::Codex, &fork.native_ref)
+            .unwrap();
+        let saved_fork = store.get_conversation_session(&fork_id).unwrap().unwrap();
+        assert_eq!(saved_fork.origin, SessionOrigin::Interactive);
+        assert_eq!(
+            saved_fork.forked_from_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert!(saved_fork.spawned_by_session_id.is_none());
+        let remaining = store
+            .sync_conversation_sessions(&registered.id, AgentKind::Codex, &[child])
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0].spawned_by_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+    }
+
+    #[test]
+    fn normalized_session_ownership_is_independent_of_refresh_order() {
+        for agent in [AgentKind::OpenClaw, AgentKind::Hermes, AgentKind::GrokBuild] {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("project");
+            let child = root.join("child");
+            let sibling = root.join("sibling");
+            fs::create_dir_all(&child).unwrap();
+            fs::create_dir_all(&sibling).unwrap();
+            fs::create_dir(root.join(".git")).unwrap();
+            let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+            let child = store.add_workspace(&child).unwrap();
+            let sibling = store.add_workspace(&sibling).unwrap();
+            let native = NativeSessionSummary {
+                native_ref: "stable-native-session".into(),
+                agent,
+                title: Some("History".into()),
+                created_at: None,
+                updated_at: None,
+                message_count: None,
+                git_branch: None,
+                archived: false,
+                sidechain: false,
+                origin: SessionOrigin::Unknown,
+                spawned_by_session_id: None,
+                forked_from_session_id: None,
+                availability: agentkib_conversations::SessionAvailability::Readable,
+            };
+            let id = store.conversation_id(agent, &native.native_ref).unwrap();
+            // With no root registered, one stable alias owns the session.
+            for workspace in [&sibling, &child, &sibling] {
+                store
+                    .sync_conversation_sessions(&workspace.id, agent, std::slice::from_ref(&native))
+                    .unwrap();
+            }
+            assert_eq!(
+                store
+                    .get_conversation_session(&id)
+                    .unwrap()
+                    .unwrap()
+                    .workspace_id,
+                child.id
+            );
+            let root = store.add_workspace(&root).unwrap();
+            // A partial alias refresh must migrate, not delete, the sole cache
+            // even when the new preferred root has not been scanned yet.
+            store
+                .sync_conversation_sessions_partial(&child.id, agent, &[])
+                .unwrap();
+            assert_eq!(
+                store
+                    .get_conversation_session(&id)
+                    .unwrap()
+                    .unwrap()
+                    .workspace_id,
+                root.id
+            );
+            assert!(
+                store
+                    .conversation_index_status(&root.id)
+                    .unwrap()
+                    .is_empty()
+            );
+            store
+                .record_conversation_index_failure(&root.id, agent, "source_failed", "offline")
+                .unwrap();
+            store
+                .sync_conversation_sessions_partial(&child.id, agent, std::slice::from_ref(&native))
+                .unwrap();
+            let status = store.conversation_index_status(&root.id).unwrap();
+            assert_eq!(status[0].session_count, 1);
+            assert_eq!(status[0].error_key.as_deref(), Some("source_failed"));
+            assert!(status[0].last_success_at.is_none());
+
+            let nested_path = store.workspace_path(&root.id).unwrap().join("nested");
+            fs::create_dir_all(nested_path.join(".git")).unwrap();
+            let nested = store.add_workspace(&nested_path).unwrap();
+            let mut nested_native = native.clone();
+            nested_native.native_ref = "independent-nested-session".into();
+            let nested_id = store
+                .conversation_id(agent, &nested_native.native_ref)
+                .unwrap();
+            store
+                .sync_conversation_sessions(&nested.id, agent, &[nested_native])
+                .unwrap();
+            for order in [[&root, &child, &sibling], [&sibling, &child, &root]] {
+                for workspace in order {
+                    store
+                        .sync_conversation_sessions(
+                            &workspace.id,
+                            agent,
+                            std::slice::from_ref(&native),
+                        )
+                        .unwrap();
+                    store
+                        .sync_conversation_sessions_partial(
+                            &workspace.id,
+                            agent,
+                            std::slice::from_ref(&native),
+                        )
+                        .unwrap();
+                }
+                assert_eq!(
+                    store
+                        .get_conversation_session(&id)
+                        .unwrap()
+                        .unwrap()
+                        .workspace_id,
+                    root.id
+                );
+                assert!(
+                    store
+                        .list_conversation_sessions(&child.id)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(
+                    store
+                        .list_conversation_sessions(&sibling.id)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert_eq!(
+                    store.conversation_index_status(&child.id).unwrap()[0].session_count,
+                    0
+                );
+                assert_eq!(
+                    store
+                        .get_conversation_session(&nested_id)
+                        .unwrap()
+                        .unwrap()
+                        .workspace_id,
+                    nested.id
+                );
+            }
+            // Removing the preferred root restores the same deterministic alias.
+            store.exclude_workspace(&root.id).unwrap();
+            store
+                .sync_conversation_sessions(&sibling.id, agent, std::slice::from_ref(&native))
+                .unwrap();
+            store
+                .sync_conversation_sessions(&child.id, agent, &[native])
+                .unwrap();
+            assert_eq!(
+                store
+                    .get_conversation_session(&id)
+                    .unwrap()
+                    .unwrap()
+                    .workspace_id,
+                child.id
+            );
+        }
+    }
+
+    #[test]
+    fn version_eleven_retains_cached_sessions_and_reclassifies_after_refresh() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = Store::open(&database).unwrap();
+        let registered = store.add_workspace(&workspace).unwrap();
+        store.connection.execute(
+            "INSERT INTO conversation_sessions(id,workspace_id,agent,title,archived,sidechain,availability,last_indexed_at)
+             VALUES ('old',?1,'codex','Kept',0,0,'readable','2026-09-07T00:00:00Z')",
+            [&registered.id],
+        ).unwrap();
+        store.connection.execute(
+            "INSERT INTO conversation_index_status(workspace_id,agent,session_count,last_attempt_at,last_success_at)
+             VALUES (?1,'codex',1,'2026-09-07T00:00:00Z','2026-09-07T00:00:00Z')",
+            [&registered.id],
+        ).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "ALTER TABLE conversation_sessions DROP COLUMN origin;
+             ALTER TABLE conversation_sessions DROP COLUMN spawned_by_session_id;
+             ALTER TABLE conversation_sessions DROP COLUMN forked_from_session_id;
+             UPDATE schema_meta SET value='10' WHERE key='schema_version';",
+            )
+            .unwrap();
+        drop(store);
+        let migrated = Store::open(&database).unwrap();
+        let records = migrated.list_conversation_sessions(&registered.id).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "old");
+        assert_eq!(records[0].origin, SessionOrigin::Unknown);
+        assert!(records[0].spawned_by_session_id.is_none());
+        assert!(
+            migrated.conversation_index_status(&registered.id).unwrap()[0]
+                .last_success_at
+                .is_none()
+        );
+        migrated
+            .connection
+            .execute(
+                "UPDATE conversation_index_status SET last_success_at=?1",
+                [Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        drop(migrated);
+        let reopened = Store::open(&database).unwrap();
+        assert!(
+            reopened.conversation_index_status(&registered.id).unwrap()[0]
+                .last_success_at
+                .is_some()
+        );
+        assert_eq!(
+            reopened
+                .list_conversation_sessions(&registered.id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn version_nine_adds_conversation_index_and_version_ten_preserves_existing_data() {
         let dir = tempdir().unwrap();
         let database = dir.path().join("db.sqlite");
@@ -3946,9 +4771,107 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "10");
+        assert_eq!(version, "15");
         assert_eq!(tables, 2);
         assert_eq!(kept, 1);
+    }
+
+    #[test]
+    fn version_nine_migration_is_safe_for_concurrent_open() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let seeded = Store::open(&database).unwrap();
+        seeded
+            .connection
+            .execute_batch(
+                "ALTER TABLE conversation_sessions DROP COLUMN origin;
+                 ALTER TABLE conversation_sessions DROP COLUMN spawned_by_session_id;
+                 ALTER TABLE conversation_sessions DROP COLUMN forked_from_session_id;
+                 UPDATE schema_meta SET value='9' WHERE key='schema_version';",
+            )
+            .unwrap();
+        drop(seeded);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let database = database.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = Store::open(&database)?;
+                    let version = store.connection.query_row(
+                        "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    Ok::<String, anyhow::Error>(version)
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), "15");
+        }
+    }
+
+    #[test]
+    fn wal_conversion_retries_reader_contention_and_has_a_deadline() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let reader = Connection::open(&database).unwrap();
+        reader
+            .execute_batch("CREATE TABLE sample(value); BEGIN; SELECT * FROM sample;")
+            .unwrap();
+        let writer = Connection::open(&database).unwrap();
+        let started = std::time::Instant::now();
+        let error = enable_wal(&writer, std::time::Duration::from_millis(30)).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rusqlite::Error>()
+                .unwrap()
+                .sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let handle =
+            std::thread::spawn(move || enable_wal(&writer, std::time::Duration::from_secs(2)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        reader.execute_batch("ROLLBACK;").unwrap();
+        handle.join().unwrap().unwrap();
+        // An already-open connection can cache its previous journal mode.
+        let reopened = Connection::open(&database).unwrap();
+        assert_eq!(
+            reopened
+                .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "wal"
+        );
+    }
+
+    #[test]
+    fn new_database_is_safe_for_concurrent_open() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let database = database.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = Store::open(&database)?;
+                    let version = store.connection.query_row(
+                        "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )?;
+                    Ok::<String, anyhow::Error>(version)
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), "15");
+        }
     }
 
     #[test]
@@ -3980,6 +4903,24 @@ mod tests {
             )
             .unwrap();
         let workspace_seconds = 1_700_000_000_i64;
+        // Version 9 also includes the session tables, even though this fixture only
+        // exercises workspace timestamps. Later additive migrations require them.
+        connection
+            .execute_batch(
+                "CREATE TABLE conversation_sessions(
+               id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent TEXT NOT NULL,
+               title TEXT, created_at TEXT, updated_at TEXT, message_count INTEGER,
+               git_branch TEXT, archived INTEGER NOT NULL DEFAULT 0,
+               sidechain INTEGER NOT NULL DEFAULT 0, availability TEXT NOT NULL,
+               last_indexed_at TEXT NOT NULL
+             );
+             CREATE TABLE conversation_index_status(
+               workspace_id TEXT NOT NULL, agent TEXT NOT NULL, session_count INTEGER NOT NULL,
+               last_attempt_at TEXT NOT NULL, last_success_at TEXT, error_key TEXT,
+               error_detail TEXT, PRIMARY KEY(workspace_id,agent)
+             );",
+            )
+            .unwrap();
         let source_milliseconds = 1_700_000_123_456_i64;
         let updated_at = Utc::now().to_rfc3339();
 
@@ -4050,7 +4991,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "10");
+        assert_eq!(version, "15");
 
         let workspace_type: String = store
             .connection
@@ -4401,6 +5342,14 @@ mod tests {
         )
         .unwrap();
         store.save_quota_snapshot(&snapshot).unwrap();
+        let last_success: String = store
+            .connection
+            .query_row(
+                "SELECT last_success_at FROM quota_snapshot WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         store
             .record_quota_failure(
                 QuotaBackend::CodexBarCli,
@@ -4412,6 +5361,15 @@ mod tests {
         let retained = store.quota_snapshot().unwrap().unwrap();
         assert_eq!(retained.providers[0].id, "codex");
         assert_eq!(retained.freshness, agentkib_quota::QuotaFreshness::Stale);
+        let retained_success: String = store
+            .connection
+            .query_row(
+                "SELECT last_success_at FROM quota_snapshot WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_success, retained_success);
         let diagnostic: String = store
             .connection
             .query_row(

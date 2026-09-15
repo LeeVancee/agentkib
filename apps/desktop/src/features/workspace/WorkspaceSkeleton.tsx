@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import {
   SkeletonListRows,
   SkeletonMetricCard,
@@ -13,8 +14,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function WorkspaceLayoutSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage className="gap-4 pt-5" label="Loading workspace">
+    <SkeletonPage className="gap-4 pt-5" label={`${tr("common.loading")} ${tr("nav.workspaces")}`}>
       <SkeletonPanel className="flex min-h-[86px] items-center justify-between gap-4 px-5 py-4">
         <div className="flex min-w-0 items-center gap-3">
           <Skeleton className="size-11 shrink-0 rounded-xl" />
@@ -57,8 +59,9 @@ export function WorkspaceSummaryStripSkeleton() {
 }
 
 export function WorkspaceOverviewSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading workspace overview">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.overview")}`}>
       <div className="grid gap-4 lg:grid-cols-2">
         <SkeletonPanel>
           <SkeletonPanelHeader />
@@ -78,8 +81,9 @@ export function WorkspaceOverviewSkeleton() {
 }
 
 export function WorkspaceAssetsSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading workspace assets">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.assets")}`}>
       <SkeletonToolbar />
       <SkeletonPanel>
         <div className="border-b border-border/70 px-4 py-3">
@@ -96,8 +100,9 @@ export function WorkspaceAssetsSkeleton() {
 }
 
 export function WorkspaceChangesSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading changes">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.changes")}`}>
       <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(240px,.35fr)_minmax(0,1fr)]">
         <SkeletonPanel>
           <SkeletonPanelHeader />
@@ -117,8 +122,9 @@ export function WorkspaceChangesSkeleton() {
 }
 
 export function WorkspaceContextSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading context">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.context")}`}>
       <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(260px,.35fr)_minmax(0,1fr)]">
         <SkeletonPanel>
           <SkeletonPanelHeader />
@@ -143,8 +149,9 @@ export function WorkspaceContextSkeleton() {
 }
 
 export function WorkspaceGitSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading git">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.git")}`}>
       <SkeletonToolbar />
       <SkeletonTable rows={5} columns={4} />
     </SkeletonPage>
@@ -152,8 +159,9 @@ export function WorkspaceGitSkeleton() {
 }
 
 export function WorkspaceSessionsSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading sessions">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.sessions")}`}>
       <SkeletonPanel>
         <SkeletonPanelHeader />
         <SkeletonListRows count={5} />
@@ -163,8 +171,9 @@ export function WorkspaceSessionsSkeleton() {
 }
 
 export function WorkspaceDoctorSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading workspace diagnostics">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("nav.doctor")}`}>
       <SkeletonPanel>
         <SkeletonPanelHeader />
         <SkeletonListRows count={4} />
@@ -174,8 +183,9 @@ export function WorkspaceDoctorSkeleton() {
 }
 
 export function WorkspaceStorageSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage label="Loading storage">
+    <SkeletonPage label={`${tr("common.loading")} ${tr("storage.allocated")}`}>
       <SkeletonToolbar />
       <SkeletonPanel>
         <SkeletonPanelHeader />
@@ -186,10 +196,11 @@ export function WorkspaceStorageSkeleton() {
 }
 
 export function WorkspacesSkeleton({ view }: { view: "list" | "storage" }) {
+  const { tr } = useI18n();
   return view === "storage" ? (
     <WorkspaceStorageSkeleton />
   ) : (
-    <SkeletonPage className="pb-8" label="Loading workspaces">
+    <SkeletonPage className="pb-8" label={`${tr("common.loading")} ${tr("nav.workspaces")}`}>
       <SkeletonToolbar />
       <SkeletonTable rows={5} columns={4} />
     </SkeletonPage>

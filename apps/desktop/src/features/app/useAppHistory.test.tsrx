@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { describe, expect, it } from "vitest";
 import {
   createAppHistoryState,

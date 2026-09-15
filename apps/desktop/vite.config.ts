@@ -4,10 +4,11 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { octaneRouteGenerator } from "./route-generator.ts";
 
+const isVitest = Boolean(process.env.VITEST);
 const config = {
   plugins: [
     octaneRouteGenerator(),
-    octane({ requireDirective: true, strong: true }),
+    octane({ requireDirective: true, strong: !isVitest }),
     tailwindcss(),
   ],
   resolve: {

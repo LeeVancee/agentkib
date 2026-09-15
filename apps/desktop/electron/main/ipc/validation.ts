@@ -52,9 +52,31 @@ export function requireThemePreference(value: unknown): "system" | "light" | "da
   return value;
 }
 
+export function requireAccentThemePreference(
+  value: unknown,
+): "minimal-neutral" | "vtron" | "claude" | "sakura" | "ocean-breeze" {
+  if (
+    value !== "minimal-neutral" &&
+    value !== "vtron" &&
+    value !== "claude" &&
+    value !== "sakura" &&
+    value !== "ocean-breeze"
+  ) {
+    throw new TypeError("accent theme preference is not supported");
+  }
+  return value;
+}
+
 export function requireAppIconPreference(value: unknown): "white" | "black" {
   if (value !== "white" && value !== "black") {
     throw new TypeError("app icon preference must be white or black");
+  }
+  return value;
+}
+
+export function requireSidebarWidthPreference(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 250 || value > 400) {
+    throw new TypeError("sidebar width preference must be an integer between 250 and 400");
   }
   return value;
 }

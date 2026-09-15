@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 15;
+pub const WEB_REQUEST_METHOD: &str = "web.request";
+pub const REMOTE_REQUEST_METHOD: &str = "remote.request";
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
 pub const SHUTDOWN_METHOD: &str = "agentkib.shutdown";
 pub const SCAN_WORKSPACE_METHOD: &str = "workspace.scan";
@@ -25,6 +27,8 @@ pub const SESSION_EVENTS_METHOD: &str = "session.events";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
+pub const AGENT_TOOLS_STATUS_METHOD: &str = "agents.toolsStatus";
+pub const AGENT_TOOL_EXECUTE_METHOD: &str = "agents.toolExecute";
 pub const SEARCH_CATALOG_ASSETS_METHOD: &str = "catalog.searchAssets";
 pub const LIST_SKILL_CATALOG_METHOD: &str = "skills.listCatalog";
 pub const DISCOVER_SKILLS_METHOD: &str = "skills.discover";
@@ -59,6 +63,8 @@ pub const OPEN_OBSIDIAN_WORKSPACE_METHOD: &str = "obsidian.openWorkspace";
 pub const SET_CLOSE_BEHAVIOR_METHOD: &str = "settings.setCloseBehavior";
 pub const SET_LOCALE_METHOD: &str = "settings.setLocale";
 pub const SET_THEME_PREFERENCE_METHOD: &str = "settings.setThemePreference";
+pub const SET_ACCENT_THEME_PREFERENCE_METHOD: &str = "settings.setAccentThemePreference";
+pub const SET_SIDEBAR_WIDTH_PREFERENCE_METHOD: &str = "settings.setSidebarWidthPreference";
 pub const SET_APP_ICON_PREFERENCE_METHOD: &str = "settings.setAppIconPreference";
 pub const PLAN_CHANGES_METHOD: &str = "changes.plan";
 pub const APPLY_CHANGES_METHOD: &str = "changes.apply";
@@ -69,6 +75,7 @@ pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
+pub const PLAN_SESSION_MCP_CONNECTION_METHOD: &str = "sessions.planMcpConnection";
 pub const CONTINUE_SESSION_HANDOFF_METHOD: &str = "sessions.continueHandoff";
 pub const LAUNCH_SESSION_HANDOFF_METHOD: &str = "sessions.launchHandoff";
 pub const CLEAR_SESSION_INDEX_METHOD: &str = "sessions.clearIndex";
@@ -113,6 +120,7 @@ pub const QUOTA_PREFERENCES_METHOD: &str = "quota.preferences";
 pub const SET_QUOTA_PREFERENCES_METHOD: &str = "quota.setPreferences";
 pub const REFRESH_QUOTA_METHOD: &str = "quota.refresh";
 pub const SET_QUOTA_AUTO_REFRESH_METHOD: &str = "quota.setAutoRefresh";
+pub const SET_LOCAL_AUTO_REFRESH_METHOD: &str = "set_local_auto_refresh";
 pub const SET_QUOTA_PROMPT_SEEN_METHOD: &str = "quota.setPromptSeen";
 pub const STORAGE_OVERVIEW_METHOD: &str = "storage.overview";
 pub const STORAGE_CHILDREN_METHOD: &str = "storage.children";
@@ -185,6 +193,7 @@ pub struct HandshakeResult {
     pub protocol_version: u32,
     pub runtime: RuntimePeer,
     pub pid: u32,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -222,6 +231,8 @@ export const RUNTIME_METHODS = {{
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",
+  agentToolsStatus: "{AGENT_TOOLS_STATUS_METHOD}",
+  agentToolExecute: "{AGENT_TOOL_EXECUTE_METHOD}",
   searchCatalogAssets: "{SEARCH_CATALOG_ASSETS_METHOD}",
   listSkillCatalog: "{LIST_SKILL_CATALOG_METHOD}",
   discoverSkills: "{DISCOVER_SKILLS_METHOD}",
@@ -256,6 +267,10 @@ export const RUNTIME_METHODS = {{
   setCloseBehavior: "{SET_CLOSE_BEHAVIOR_METHOD}",
   setLocale: "{SET_LOCALE_METHOD}",
   setThemePreference: "{SET_THEME_PREFERENCE_METHOD}",
+  setAccentThemePreference: "{SET_ACCENT_THEME_PREFERENCE_METHOD}",
+  setSidebarWidthPreference: "{SET_SIDEBAR_WIDTH_PREFERENCE_METHOD}",
+  remoteRequest: "{REMOTE_REQUEST_METHOD}",
+  webRequest: "{WEB_REQUEST_METHOD}",
   setAppIconPreference: "{SET_APP_ICON_PREFERENCE_METHOD}",
   planChanges: "{PLAN_CHANGES_METHOD}",
   applyChanges: "{APPLY_CHANGES_METHOD}",
@@ -266,6 +281,7 @@ export const RUNTIME_METHODS = {{
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",
+  planSessionMcpConnection: "{PLAN_SESSION_MCP_CONNECTION_METHOD}",
   continueSessionHandoff: "{CONTINUE_SESSION_HANDOFF_METHOD}",
   launchSessionHandoff: "{LAUNCH_SESSION_HANDOFF_METHOD}",
   clearSessionIndex: "{CLEAR_SESSION_INDEX_METHOD}",
@@ -310,6 +326,7 @@ export const RUNTIME_METHODS = {{
   setQuotaPreferences: "{SET_QUOTA_PREFERENCES_METHOD}",
   refreshQuota: "{REFRESH_QUOTA_METHOD}",
   setQuotaAutoRefresh: "{SET_QUOTA_AUTO_REFRESH_METHOD}",
+  setLocalAutoRefresh: "{SET_LOCAL_AUTO_REFRESH_METHOD}",
   setQuotaPromptSeen: "{SET_QUOTA_PROMPT_SEEN_METHOD}",
   storageOverview: "{STORAGE_OVERVIEW_METHOD}",
   storageChildren: "{STORAGE_CHILDREN_METHOD}",
@@ -333,6 +350,7 @@ export interface RuntimeHandshakeResult {{
   protocolVersion: typeof PROTOCOL_VERSION;
   runtime: RuntimePeer;
   pid: number;
+  capabilities: string[];
 }}
 
 export interface RuntimeRpcError {{

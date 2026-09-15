@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,7 +23,7 @@ import {
 } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import { formatRelativeTime, localizeMessage, tr } from "@/core/i18n";
+
 import { normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
 import { cn } from "@/lib/utils";
@@ -67,6 +68,7 @@ export function QuotaPage({
   configurePopoverRequest?: number;
   popoverSupported?: boolean;
 }) {
+  const { locale, localizeMessage, tr } = useI18n();
   const snapshotQuery = useQuotaSnapshot();
   const statusQuery = useQuotaStatus();
   const preferencesQuery = useQuotaPreferences();
@@ -83,7 +85,8 @@ export function QuotaPage({
     popoverSupported && configurePopoverRequest > 0,
   );
   const [requestPending, setRequestPending] = useState(false);
-  const [manualError, setManualError] = useState("");
+  const [rawManualError, setManualError] = useState<unknown>("");
+  const manualError = rawManualError === "" ? "" : localizeMessage(rawManualError);
   const autoRefreshEnabled = useAppStore(
     (state) => state.runtime?.quota_auto_refresh_enabled === true,
   );
@@ -107,11 +110,8 @@ export function QuotaPage({
       snapshot?.freshness === "fresh"
     )
       return;
-    const timeout = window.setTimeout(() => {
-      requestedInitialRefresh.current = true;
-      void refreshMutation.mutateAsync().catch((reason) => setManualError(localizeMessage(reason)));
-    }, 0);
-    return () => window.clearTimeout(timeout);
+    requestedInitialRefresh.current = true;
+    void refreshMutation.mutateAsync().catch((reason) => setManualError(reason));
   }, [
     autoRefreshEnabled,
     refreshJob,
@@ -177,7 +177,7 @@ export function QuotaPage({
     try {
       await refreshMutation.mutateAsync();
     } catch (reason) {
-      setManualError(localizeMessage(reason));
+      setManualError(reason);
     } finally {
       setRequestPending(false);
     }
@@ -200,7 +200,7 @@ export function QuotaPage({
       : refreshJob?.state === "running"
         ? tr("quota.refreshRunning")
         : refreshJob?.state === "backoff" && refreshJob.next_allowed_at
-          ? tr("quota.refreshBackoff", { time: formatDateTime(refreshJob.next_allowed_at) })
+          ? tr("quota.refreshBackoff", { time: formatDateTime(refreshJob.next_allowed_at, locale) })
           : refreshJob?.state === "failed"
             ? tr("quota.refreshFailed")
             : status?.error_key
@@ -309,26 +309,30 @@ export function QuotaPage({
       )}
       {snapshot && (
         <>
-          <section className="grid gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm max-[900px]:p-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold tracking-tight">{tr("quota.providers")}</h2>
+          <div className="grid gap-4 lg:grid-cols-[minmax(250px,0.36fr)_minmax(0,1fr)]">
+            <section className="grid content-start gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm max-[900px]:p-3">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold tracking-tight">{tr("quota.providers")}</h2>
+                <Badge variant="outline">{tr(`quota.freshness.${snapshot.freshness}`)}</Badge>
               </div>
-              <Badge variant="outline">{tr(`quota.freshness.${snapshot.freshness}`)}</Badge>
-            </div>
-            <ProviderTabs providers={providers} selectedId={selectedId} onSelect={setSelectedId} />
-          </section>
+              <ProviderTabs
+                providers={providers}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            </section>
+            {selected && (
+              <QuotaProviderDetail
+                provider={selected}
+                snapshot={snapshot}
+                targetWindow={initialWindow}
+              />
+            )}
+          </div>
           {!providers.length && (
             <div className="grid min-h-[180px] place-content-center text-sm text-muted-foreground">
               {tr("quota.noMatch")}
             </div>
-          )}
-          {selected && (
-            <QuotaProviderDetail
-              provider={selected}
-              snapshot={snapshot}
-              targetWindow={initialWindow}
-            />
           )}
         </>
       )}
@@ -345,10 +349,11 @@ function ProviderTabs({
   selectedId: string;
   onSelect: (id: string) => void;
 }) {
+  const { tr } = useI18n();
   return (
     <Tabs value={selectedId} onValueChange={onSelect}>
       <TabsList
-        className="segmented-control !h-auto !gap-3 min-h-[92px] w-full items-stretch justify-start overflow-x-auto overflow-y-hidden"
+        className="grid !h-auto w-full grid-flow-col auto-cols-[minmax(210px,1fr)] items-stretch gap-2 overflow-x-auto overflow-y-hidden bg-transparent p-0 lg:grid-flow-row lg:grid-cols-1 lg:auto-cols-auto"
         variant="default"
         aria-label={tr("quota.providers")}
       >
@@ -362,7 +367,7 @@ function ProviderTabs({
               key={provider.id}
               value={provider.id}
               className={cn(
-                "relative grid h-auto min-h-[92px] min-w-[210px] flex-none grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
+                "relative grid h-auto min-h-[86px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_auto] items-start gap-x-2.5 gap-y-0.5 justify-start rounded-xl border border-border bg-background px-3.5 py-3.5 text-left transition-colors hover:border-foreground/25 hover:bg-muted/30 data-active:!border-primary data-active:!bg-background data-active:!text-foreground data-active:!shadow-[0_0_0_1px_var(--primary)]",
                 unavailable && "opacity-60",
               )}
             >
@@ -430,6 +435,7 @@ function QuotaProviderDetail({
   snapshot: QuotaSnapshot;
   targetWindow?: QuotaWindowSelector;
 }) {
+  const { formatRelativeTime, locale, tr } = useI18n();
   const windows = flattenQuotaWindows(provider);
   const direct = windows.filter((item) => !item.account);
   const accountGroups = provider.accounts.map((account) => ({
@@ -439,7 +445,7 @@ function QuotaProviderDetail({
   const targetKey = targetWindow ? quotaWindowKey(targetWindow) : undefined;
   const unavailable = providerIsUnavailable(provider);
   return (
-    <section className="w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
+    <section className="h-full w-full max-w-none overflow-hidden rounded-2xl border border-border bg-card px-5 pb-5 shadow-sm max-[900px]:px-4">
       <header className="-mx-5 grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border px-5 max-[900px]:mx-[-16px] max-[900px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[900px]:px-4">
         <ProviderIcon provider={provider} />
         <div className="min-w-0">
@@ -463,13 +469,13 @@ function QuotaProviderDetail({
         </div>
         {provider.credits && provider.credits.remaining > 0 && (
           <span className="inline-flex h-[30px] items-center rounded-md border border-border px-2.5 text-xs text-muted-foreground max-[900px]:hidden">
-            {formatNumber(provider.credits.remaining)} {provider.credits.unit}
+            {formatNumber(provider.credits.remaining, locale)} {provider.credits.unit}
           </span>
         )}
       </header>
 
       {direct.length > 0 && (
-        <div className="grid px-1">
+        <div className="grid gap-3 px-1 pt-5">
           {direct.map((item) => (
             <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
           ))}
@@ -499,7 +505,7 @@ function QuotaProviderDetail({
                   </time>
                 )}
               </header>
-              <div className="grid">
+              <div className="grid gap-3">
                 {accountWindows.map((item) => (
                   <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
                 ))}
@@ -559,7 +565,9 @@ function QuotaDisplaySettings({
   onChange?: (preferences: QuotaPopoverPreferences) => void;
   onClose: () => void;
 }) {
-  const [saveError, setSaveError] = useState("");
+  const { localizeMessage, tr } = useI18n();
+  const [rawSaveError, setSaveError] = useState<unknown>("");
+  const saveError = rawSaveError === "" ? "" : localizeMessage(rawSaveError);
   const preferencesMutation = useSetQuotaPreferencesMutation();
   const currentPreferences = useRef(preferences);
   const saveSequence = useRef(0);
@@ -582,7 +590,7 @@ function QuotaDisplaySettings({
       if (sequence === saveSequence.current) {
         currentPreferences.current = previous;
         onChange?.(previous);
-        setSaveError(localizeMessage(reason));
+        setSaveError(reason);
       }
     }
   };
@@ -670,6 +678,7 @@ function QuotaDisplayProviderOption({
   onToggleProvider: (providerId: string) => void;
   onToggleWindow: (selector: QuotaWindowSelector) => void;
 }) {
+  const { tr } = useI18n();
   const windows = flattenQuotaWindows(provider);
   const providerVisible = !preferences.hidden_providers.includes(provider.id);
   const [expanded, setExpanded] = useState(providerVisible && windows.length > 0);
@@ -741,18 +750,18 @@ function matchesFilter(provider: QuotaProvider, filter: QuotaFilter) {
   return filter === "warning" ? remaining <= 20 : remaining > 20;
 }
 
-function formatDateTime(value: string) {
+function formatDateTime(value: string, locale: ReturnType<typeof useI18n>["locale"]) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? value
-    : new Intl.DateTimeFormat(document.documentElement.lang || "en-US", {
+    : new Intl.DateTimeFormat(locale, {
         dateStyle: "medium",
         timeStyle: "short",
       }).format(date);
 }
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat(document.documentElement.lang || "en-US", {
+function formatNumber(value: number, locale: ReturnType<typeof useI18n>["locale"]) {
+  return new Intl.NumberFormat(locale, {
     maximumFractionDigits: 2,
   }).format(value);
 }

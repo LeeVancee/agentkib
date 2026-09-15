@@ -1,15 +1,23 @@
 /** @jsxImportSource octane */
 
-import { useEffect, useRef, useState } from "octane";
+import { useI18n } from "@/core/useI18n";
+import { useCallback, useEffect, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { AlertTriangle, RefreshCw } from "@octanejs/lucide";
 import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
-import { cacheEffectiveLocale, changeLocale, localizeMessage, tr } from "@/core/i18n";
-import { applyTheme, cacheEffectiveTheme } from "@/core/theme";
+import { cacheEffectiveLocale, changeLocale } from "@/core/i18n";
+import {
+  accentThemePreference,
+  applyAccentTheme,
+  applyTheme,
+  cacheAccentTheme,
+  cacheEffectiveTheme,
+} from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { useAppStore } from "@/stores/app-store";
+import { synchronizeSidebarWidth, useSidebarWidthStore } from "./sidebar-width-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useHomeQueryEvents } from "@/features/home/home-query.tsx";
 import { useInsightsQueryEvents } from "@/features/insights/insights-query.tsx";
@@ -18,6 +26,7 @@ import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 
 export function AppRuntimeBridge() {
+  const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const appStore = useAppStore();
@@ -28,6 +37,13 @@ export function AppRuntimeBridge() {
   const previousRuntimeState = useRef<DesktopRuntimeStatus["state"] | undefined>(undefined);
   const [runtimeStatus, setRuntimeStatus] = useState<DesktopRuntimeStatus>();
   const [retrying, setRetrying] = useState(false);
+  const runtimeErrorMessage = useRef<string | undefined>(undefined);
+  const clearRuntimeError = useCallback(() => {
+    const previous = runtimeErrorMessage.current;
+    runtimeErrorMessage.current = undefined;
+    // A recovered Runtime must not dismiss a newer workspace/action error.
+    if (previous !== undefined) setMessage((current) => (current === previous ? "" : current));
+  }, [setMessage]);
 
   useQuotaQueryEvents();
   useHomeQueryEvents();
@@ -37,12 +53,32 @@ export function AppRuntimeBridge() {
     let disposed = false;
     let initialSyncPending = true;
     const desktop = desktopApi();
-    const synchronizeRuntime = async () => {
-      const nextRuntime = await api.runtime();
+    const reportRuntimeError = (error: unknown) => {
       if (disposed) return;
+      const message = localizeMessage(error);
+      runtimeErrorMessage.current = message;
+      setMessage(message);
+    };
+    const synchronizeRuntime = async () => {
+      const widthRevision = useSidebarWidthStore.getState().revision;
+      let nextRuntime = await api.runtime();
+      if (disposed) return;
+      clearRuntimeError();
+      if (nextRuntime.accent_theme_preference == null) {
+        try {
+          nextRuntime = await api.setAccentThemePreference(accentThemePreference());
+        } catch (error) {
+          if (!disposed) setMessage(localizeMessage(error));
+        }
+      }
+      if (disposed) return;
+      nextRuntime = synchronizeSidebarWidth(nextRuntime, widthRevision);
       setRuntime(nextRuntime);
       applyTheme(nextRuntime.effective_theme);
       cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+      const accentTheme = nextRuntime.accent_theme_preference ?? accentThemePreference();
+      applyAccentTheme(accentTheme);
+      cacheAccentTheme(accentTheme);
       cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
       await changeLocale(nextRuntime.effective_locale);
     };
@@ -61,9 +97,7 @@ export function AppRuntimeBridge() {
       if (status.state === "ready" && previous && previous !== "ready" && !initialSyncPending) {
         void synchronizeRuntime()
           .then(() => queryClient.invalidateQueries())
-          .catch((error: unknown) => {
-            if (!disposed) setMessage(localizeMessage(error));
-          });
+          .catch(reportRuntimeError);
       }
     };
     const unsubscribers = [
@@ -86,7 +120,7 @@ export function AppRuntimeBridge() {
         }
         await synchronizeRuntime();
       } catch (error) {
-        if (!disposed) setMessage(localizeMessage(error));
+        reportRuntimeError(error);
       } finally {
         initialSyncPending = false;
       }
@@ -95,16 +129,33 @@ export function AppRuntimeBridge() {
       disposed = true;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [queryClient, setMenuCommand, setMessage, setNavigationRequest, setRuntime]);
+  }, [
+    clearRuntimeError,
+    queryClient,
+    setMenuCommand,
+    setMessage,
+    setNavigationRequest,
+    setRuntime,
+  ]);
 
   useEffect(() => {
     const refreshRuntime = () => {
+      const widthRevision = useSidebarWidthStore.getState().revision;
       void api
         .runtime()
-        .then(async (nextRuntime) => {
+        .then(async (runtime) => {
+          clearRuntimeError();
+          let nextRuntime =
+            runtime.accent_theme_preference == null
+              ? await api.setAccentThemePreference(accentThemePreference())
+              : runtime;
+          nextRuntime = synchronizeSidebarWidth(nextRuntime, widthRevision);
           setRuntime(nextRuntime);
           applyTheme(nextRuntime.effective_theme);
           cacheEffectiveTheme(nextRuntime.effective_theme, nextRuntime.theme_preference);
+          const accentTheme = nextRuntime.accent_theme_preference ?? accentThemePreference();
+          applyAccentTheme(accentTheme);
+          cacheAccentTheme(accentTheme);
           cacheEffectiveLocale(nextRuntime.effective_locale, nextRuntime.locale_preference);
           await changeLocale(nextRuntime.effective_locale);
         })
@@ -112,7 +163,7 @@ export function AppRuntimeBridge() {
     };
     window.addEventListener("focus", refreshRuntime);
     return () => window.removeEventListener("focus", refreshRuntime);
-  }, [setRuntime]);
+  }, [clearRuntimeError, setRuntime]);
 
   const hasUnsavedDraft = Boolean(
     workspaceStore.manifest &&
@@ -148,7 +199,7 @@ export function AppRuntimeBridge() {
       }
     };
     return desktopApi().events.onQuitRequested(() => void handleQuitRequest());
-  }, [dialogs]);
+  }, [dialogs, tr]);
 
   if (runtimeStatus?.state !== "failed") return null;
 
@@ -172,7 +223,11 @@ export function AppRuntimeBridge() {
           setRetrying(true);
           void desktopApi()
             .runtime.retry()
-            .catch((error: unknown) => setMessage(localizeMessage(error)))
+            .catch((error: unknown) => {
+              const message = localizeMessage(error);
+              runtimeErrorMessage.current = message;
+              setMessage(message);
+            })
             .finally(() => setRetrying(false));
         }}
       >

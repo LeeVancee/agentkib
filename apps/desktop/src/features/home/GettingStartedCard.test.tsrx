@@ -1,10 +1,12 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@octanejs/testing-library";
+import { act, cleanup, render, screen } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
-import { initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n, localizeMessage } from "@/core/i18n";
 import type { OnboardingState, RuntimeInfo, WorkspaceSummary } from "@/core/types";
 import { GettingStartedCard } from "./GettingStartedCard";
 
@@ -34,8 +36,29 @@ function renderCard(onboarding = baseOnboarding, workspaces: WorkspaceSummary[] 
 
 describe("GettingStartedCard", () => {
   beforeAll(() => initializeI18n("en-US"));
-  beforeEach(() => vi.mocked(api.updateOnboarding).mockReset());
+  beforeEach(() => {
+    vi.mocked(api.updateOnboarding).mockReset();
+  });
   afterEach(cleanup);
+
+  it("translates an existing operation error when the locale changes", async () => {
+    const failure = { key: "errors.providerUnavailable", detail: "offline" };
+    vi.mocked(api.updateOnboarding).mockRejectedValue(failure);
+    const user = userEvent.setup();
+    renderCard();
+    await user.click(screen.getByRole("button", { name: "Dismiss getting started guide" }));
+    const englishError = localizeMessage(failure);
+    const message = await screen.findByText(englishError);
+
+    try {
+      await act(() => changeLocale("zh-CN"));
+      expect(screen.getByText(localizeMessage(failure))).toBe(message);
+      expect(screen.queryByText(englishError)).toBeNull();
+      expect(api.updateOnboarding).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
+  });
 
   it("starts with workspace discovery and advances to Doctor", () => {
     const { rerender } = renderCard();

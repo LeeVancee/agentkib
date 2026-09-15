@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
 import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -12,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { CircleAlert, Copy } from "@octanejs/lucide";
-import { formatRelativeTime, tr } from "../../../core/i18n";
+import { formatRelativeTime } from "../../../core/i18n";
 import type { AgentKind, Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
@@ -44,6 +45,7 @@ function Overview({
   pendingDoctorReview: boolean;
   doctorSummary?: import("@/core/types").ContextDoctorSummary;
 }) {
+  const { tr } = useI18n();
   const configuredAgents = scan.agents.filter(
     (agent: any) => agent.detected || agent.warnings.length > 0,
   );

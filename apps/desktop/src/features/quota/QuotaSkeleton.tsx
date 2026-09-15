@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import {
   SkeletonListRows,
   SkeletonMetricCard,
@@ -11,8 +12,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function QuotaSkeleton() {
+  const { tr } = useI18n();
   return (
-    <SkeletonPage className="pb-8" label="Loading quota">
+    <SkeletonPage className="pb-8" label={`${tr("common.loading")} ${tr("nav.quota")}`}>
       <SkeletonPanel className="p-3">
         <div className="flex flex-wrap items-center gap-2">
           <Skeleton className="h-10 min-w-[220px] flex-1 rounded-xl" />

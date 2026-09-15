@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
@@ -16,10 +17,12 @@ import { Card } from "@/components/ui/card";
 import { useEffect, useState } from "octane";
 import { ExternalLink, FolderOpen, Link2, Unlink } from "@octanejs/lucide";
 import { api } from "@/core/api";
-import { localizeMessage, tr } from "@/core/i18n";
+
 import type { ObsidianIntegration } from "@/core/types";
+import { SettingsNotice, SettingsPanel } from "@/features/settings/components/SettingsLayout";
 
 function InstallationStatus({ integration }: { integration: ObsidianIntegration }) {
+  const { tr } = useI18n();
   const { installation } = integration;
   return (
     <div className="flex items-center gap-2.5 px-5 pb-2 pt-4">
@@ -39,14 +42,16 @@ function InstallationStatus({ integration }: { integration: ObsidianIntegration 
 }
 
 export function ObsidianSettingsCard() {
+  const { localizeMessage, tr } = useI18n();
   const [integration, setIntegration] = useState<ObsidianIntegration>();
-  const [error, setError] = useState("");
+  const [rawError, setError] = useState<unknown>("");
+  const error = rawError === "" ? "" : localizeMessage(rawError);
 
   const load = async () => {
     try {
       setIntegration(await api.obsidianIntegration());
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -60,7 +65,7 @@ export function ObsidianSettingsCard() {
       setError("");
       await api.openObsidian();
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -71,19 +76,14 @@ export function ObsidianSettingsCard() {
       setError("");
       setIntegration(await api.addObsidianVault(selected));
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
   return (
-    <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
-      <div className="flex min-h-16 items-center justify-between gap-4 border-b border-border/60 bg-muted/20 px-5 py-3">
-        <div className="flex items-center gap-3.5">
-          <div className="grid size-10 place-items-center rounded-xl border border-border bg-muted text-muted-foreground">
-            <Link2 size={18} />
-          </div>
-          <h2>{tr("obsidian.title")}</h2>
-        </div>
+    <SettingsPanel
+      title={tr("obsidian.title")}
+      action={
         <div className="flex items-center gap-2">
           {integration?.installation.installed && (
             <Button variant="outline" onClick={() => void openApp()}>
@@ -96,7 +96,8 @@ export function ObsidianSettingsCard() {
             {tr("obsidian.addVault")}
           </Button>
         </div>
-      </div>
+      }
+    >
       {integration ? (
         <InstallationStatus integration={integration} />
       ) : (
@@ -104,7 +105,7 @@ export function ObsidianSettingsCard() {
           className="grid gap-2 px-5 py-4"
           role="status"
           aria-busy="true"
-          aria-label="Loading Obsidian integration"
+          aria-label={tr("common.loading")}
         >
           <Skeleton className="h-3.5 w-40" />
           <Skeleton className="h-3 w-64" />
@@ -116,9 +117,9 @@ export function ObsidianSettingsCard() {
         </code>
       )}
       {error && (
-        <div className="mx-5 my-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+        <SettingsNotice tone="error" role="alert">
           {error}
-        </div>
+        </SettingsNotice>
       )}
       <div className="px-5 pb-5 pt-2.5">
         <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
@@ -143,15 +144,17 @@ export function ObsidianSettingsCard() {
           <p className="text-sm text-muted-foreground">{tr("obsidian.noVaults")}</p>
         )}
       </div>
-    </Card>
+    </SettingsPanel>
   );
 }
 
 export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) {
+  const { localizeMessage, tr } = useI18n();
   const [integration, setIntegration] = useState<ObsidianIntegration>();
   const [vaultPath, setVaultPath] = useState("");
   const [relativeTarget, setRelativeTarget] = useState("");
-  const [error, setError] = useState("");
+  const [rawError, setError] = useState<unknown>("");
+  const error = rawError === "" ? "" : localizeMessage(rawError);
 
   const load = async () => {
     try {
@@ -159,7 +162,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
       setIntegration(next);
       setVaultPath((current) => current || next.vaults[0]?.path || "");
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -176,7 +179,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
       await api.linkWorkspaceToObsidian(workspaceId, vaultPath, relativeTarget);
       await load();
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -186,7 +189,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
       await api.unlinkWorkspaceFromObsidian(workspaceId);
       await load();
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -195,7 +198,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
       setError("");
       await api.openWorkspaceInObsidian(workspaceId);
     } catch (cause) {
-      setError(localizeMessage(cause));
+      setError(cause);
     }
   };
 
@@ -222,7 +225,7 @@ export function WorkspaceObsidianCard({ workspaceId }: { workspaceId: string }) 
           className="grid gap-2 px-5 py-4"
           role="status"
           aria-busy="true"
-          aria-label="Loading Obsidian integration"
+          aria-label={tr("common.loading")}
         >
           <Skeleton className="h-3.5 w-40" />
           <Skeleton className="h-3 w-64" />

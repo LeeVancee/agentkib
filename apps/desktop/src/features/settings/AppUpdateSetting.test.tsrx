@@ -1,13 +1,15 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@octanejs/testing-library";
+import { act, cleanup, render, screen } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
-import { initializeI18n } from "@/core/i18n";
-import { AppUpdateSetting } from "./GlobalSettings";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
+import { AppUpdateSetting } from "./AgentToolsSettings";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -40,6 +42,22 @@ describe("AppUpdateSetting", () => {
     vi.mocked(api.checkAppUpdate).mockReset();
     vi.mocked(api.openExternal).mockReset();
     vi.mocked(api.installAppUpdate).mockReset();
+  });
+
+  it("updates the memoized description and buttons when the locale changes", async () => {
+    renderSetting();
+    expect(screen.getByText("Current version 0.2.0")).toBeTruthy();
+
+    try {
+      await act(() => changeLocale("zh-CN"));
+      expect(
+        screen.getByText(tr("settings.updateCurrentVersion", { version: "0.2.0" })),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: tr("settings.checkForUpdates") })).toBeTruthy();
+      expect(screen.queryByText("Current version 0.2.0")).toBeNull();
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
   });
 
   it("locks repeated checks and reports an up-to-date version", async () => {
@@ -93,6 +111,22 @@ describe("AppUpdateSetting", () => {
     expect(api.installAppUpdate).not.toHaveBeenCalled();
   });
 
+  it("reports an error when a manual Release page cannot be opened", async () => {
+    vi.mocked(api.checkAppUpdate).mockResolvedValue({
+      ...availableUpdate,
+      install_mode: "manual",
+    });
+    vi.mocked(api.openExternal).mockRejectedValue(new Error("Could not open the Release page"));
+    const user = userEvent.setup();
+    renderSetting();
+
+    await user.click(screen.getByRole("button", { name: "Check for updates" }));
+    await user.click(await screen.findByRole("button", { name: "Open Release download" }));
+
+    expect(await screen.findByText(/Could not open the Release page/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
   it("requires confirmation before installing an in-app update", async () => {
     vi.mocked(api.checkAppUpdate).mockResolvedValue(availableUpdate);
     vi.mocked(api.installAppUpdate).mockResolvedValue(undefined);
@@ -106,5 +140,9 @@ describe("AppUpdateSetting", () => {
 
     expect(api.installAppUpdate).toHaveBeenCalledOnce();
     expect(api.installAppUpdate).toHaveBeenCalledWith("0.3.0", expect.any(Function));
+    expect(
+      await screen.findByText("Update downloaded. Quitting AgentKib to install and restart…"),
+    ).toBeTruthy();
+    expect(screen.queryByText("You're up to date (0.2.0)")).toBeNull();
   });
 });

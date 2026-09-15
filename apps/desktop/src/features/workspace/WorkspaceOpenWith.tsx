@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,10 +10,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useCallback, useEffect, useLinkedState, useRef, useState } from "octane";
+import { useCallback, useEffect, useRef, useState } from "octane";
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "@octanejs/lucide";
 import { api } from "@/core/api";
-import { localizeMessage, tr } from "@/core/i18n";
+import { localizeMessage } from "@/core/i18n";
 import type { WorkspaceOpener, WorkspaceSummary } from "@/core/types";
 
 export function WorkspaceOpenWith({
@@ -22,10 +23,8 @@ export function WorkspaceOpenWith({
   workspace: WorkspaceSummary;
   onError: (message: string) => void;
 }) {
-  const [openers, setOpeners] = useLinkedState<string, WorkspaceOpener[]>(
-    workspace.id,
-    (_workspaceId, previous) => (previous?.source === workspace.id ? (previous.value ?? []) : []),
-  );
+  const { tr } = useI18n();
+  const [openers, setOpeners] = useState<WorkspaceOpener[]>([]);
   const [opening, setOpening] = useState(false);
   const requestSequence = useRef(0);
 

@@ -80,6 +80,12 @@ pub enum SessionLossCode {
     SourceContentTruncated,
 }
 
+impl SessionLossCode {
+    pub fn requires_acknowledgement(self) -> bool {
+        self != Self::ReasoningExcluded
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLoss {
     pub code: SessionLossCode,
@@ -119,6 +125,34 @@ pub struct NativeImportCapability {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuationCapabilityStatus {
+    Supported,
+    Unavailable,
+    Unsupported,
+    Unverified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationCapability {
+    pub status: ContinuationCapabilityStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationCapabilities {
+    pub source_agent: AgentKind,
+    pub target_agent: AgentKind,
+    pub source_read: ContinuationCapability,
+    pub source_parse: ContinuationCapability,
+    pub native_resume: ContinuationCapability,
+    pub file_handoff: ContinuationCapability,
+    pub windowed_context: ContinuationCapability,
+    pub mcp_setup: ContinuationCapability,
+    pub interactive_launch: ContinuationCapability,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionImportStats {
     pub turn_count: usize,
@@ -137,6 +171,7 @@ pub struct SessionHandoffDraftV2 {
     pub source_fingerprint: String,
     pub mode: SessionContinuationMode,
     pub native_capability: NativeImportCapability,
+    pub capabilities: ContinuationCapabilities,
     pub stats: SessionImportStats,
     pub history_budget_tokens: usize,
     pub window_strategy: SessionWindowStrategy,
@@ -165,6 +200,7 @@ pub fn read_codex_document(
     home: Option<&Path>,
 ) -> Result<SessionDocument> {
     let snapshot = read_snapshot(path)?;
+    let injected_context_lines = super::injected_codex_user_context_lines(&snapshot.records);
     let mut turns = Vec::new();
     let mut fallback_messages = Vec::new();
     let mut fallback_attachments = Vec::new();
@@ -226,6 +262,9 @@ pub fn read_codex_document(
                     Some("assistant") => SessionRole::Assistant,
                     _ => continue,
                 };
+                if role == SessionRole::User && injected_context_lines.contains(&line) {
+                    continue;
+                }
                 if let Some(text) = super::response_message_text(value.pointer("/payload/content"))
                     .filter(|text| !text.trim().is_empty())
                 {
@@ -1389,7 +1428,7 @@ fn render_jsonl(records: &[Value]) -> Result<String> {
     Ok(output)
 }
 
-fn finish_document(
+pub(crate) fn finish_document(
     source: &ConversationSessionSummary,
     mut turns: Vec<SessionTurn>,
     loss_counts: BTreeMap<SessionLossCode, usize>,
@@ -1525,12 +1564,22 @@ mod tests {
     use super::*;
     use crate::{ConversationSessionSummary, SessionAvailability};
 
+    #[test]
+    fn reasoning_exclusion_does_not_require_loss_acknowledgement() {
+        assert!(!SessionLossCode::ReasoningExcluded.requires_acknowledgement());
+        assert!(SessionLossCode::DamagedRecord.requires_acknowledgement());
+        assert!(SessionLossCode::ExternalAttachment.requires_acknowledgement());
+    }
+
     fn source(agent: AgentKind) -> ConversationSessionSummary {
         ConversationSessionSummary {
             id: "hashed-session".into(),
             workspace_id: "workspace".into(),
             agent,
             title: Some("Continue project".into()),
+            origin: crate::SessionOrigin::Unknown,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
             created_at: None,
             updated_at: None,
             message_count: None,
@@ -1601,6 +1650,62 @@ mod tests {
                 .map(|loss| loss.count),
             Some(1)
         );
+    }
+
+    #[test]
+    fn codex_document_excludes_injected_user_context_blocks() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[
+                {"type":"input_text","text":"<recommended_plugins>private plugins</recommended_plugins>"},
+                {"type":"input_text","text":"# AGENTS.md instructions\nprivate instructions"},
+                {"type":"input_text","text":"<environment_context>private environment</environment_context>"}
+            ]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},"content":[{"type":"input_text","text":"continue the real task"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"continue the real task"}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<path>user-visible assistant output</path>"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(!encoded.contains("private plugins"));
+        assert!(!encoded.contains("private instructions"));
+        assert!(!encoded.contains("private environment"));
+        assert_eq!(document.turns.len(), 2);
+        assert!(encoded.contains("continue the real task"));
+        assert!(encoded.contains("<path>user-visible assistant output</path>"));
+    }
+
+    #[test]
+    fn codex_document_keeps_a_real_user_message_that_starts_like_context() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let records = [
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","internal_chat_message_metadata_passthrough":{"turn_id":"turn-2"},"content":[{"type":"input_text","text":"<path>the user intentionally used this prefix</path>"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will preserve it"}]}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                .collect::<String>(),
+        )
+        .unwrap();
+
+        let document = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let encoded = serde_json::to_string(&document).unwrap();
+        assert!(encoded.contains("<path>the user intentionally used this prefix</path>"));
+        assert!(encoded.contains("I will preserve it"));
     }
 
     #[test]

@@ -1,10 +1,11 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
-import { useEffect, useState } from "octane";
-import { cleanup, render, screen, waitFor } from "@octanejs/testing-library";
+import { act, cleanup, render, screen, waitFor } from "@octanejs/testing-library";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
-import { initializeI18n } from "@/core/i18n";
+import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { ContextDoctorReport, WorkspaceSummary } from "@/core/types";
 import { WorkspaceDoctorPage } from "./WorkspaceDoctorPage";
 
@@ -36,7 +37,10 @@ const report: ContextDoctorReport = {
 
 describe("WorkspaceDoctorPage", () => {
   beforeAll(() => initializeI18n("en-US"));
-  beforeEach(() => vi.mocked(api.workspaceDoctorReport).mockReset());
+  beforeEach(async () => {
+    await changeLocale("en-US");
+    vi.mocked(api.workspaceDoctorReport).mockReset();
+  });
   afterEach(cleanup);
 
   it("records a successful diagnosis", async () => {
@@ -49,6 +53,23 @@ describe("WorkspaceDoctorPage", () => {
 
     await waitFor(() => expect(onDiagnosed).toHaveBeenCalledWith(report.summary));
     expect(await screen.findByText("No deterministic configuration issues found")).toBeTruthy();
+  });
+
+  it("updates a mounted diagnosis and matrix headings without fetching again", async () => {
+    vi.mocked(api.workspaceDoctorReport).mockResolvedValue(report);
+    const onDiagnosed = vi.fn().mockResolvedValue(undefined);
+    render(
+      <WorkspaceDoctorPage workspace={workspace} onRepair={vi.fn()} onDiagnosed={onDiagnosed} />,
+    );
+    const heading = await screen.findByText(tr("assets.instructions"));
+    expect(screen.getByText(tr("assets.skills"))).toBeTruthy();
+
+    await act(() => changeLocale("zh-CN"));
+
+    expect(screen.getByText(tr("assets.instructions"))).toBe(heading);
+    expect(screen.getByText(tr("assets.skills"))).toBeTruthy();
+    expect(api.workspaceDoctorReport).toHaveBeenCalledOnce();
+    expect(onDiagnosed).toHaveBeenCalledOnce();
   });
 
   it("renders OpenCode in the diagnostics matrix", async () => {

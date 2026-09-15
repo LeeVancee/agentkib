@@ -1,12 +1,13 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage } from "@/features/skills/SkillHubPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
-import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
 import { Badge } from "@/components/ui/badge";
@@ -27,7 +28,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
-import { formatDateTime, localizeMessage, tr } from "../core/i18n";
 import { useAppStore } from "../stores/app-store";
 import {
   homeKeys,
@@ -82,6 +82,7 @@ const agentLabels: Record<AgentKind, string> = {
 type CatalogSearch = { assetSection?: AssetSection };
 
 function CatalogRoute() {
+  const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as CatalogSearch;
@@ -218,6 +219,7 @@ function CatalogPage({
   onOpen: (id: string) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
 }) {
+  const { tr } = useI18n();
   const pending = memories.filter((item) => item.status === "pending").length;
   const workspaceAssets = useMemo(
     () => groupCatalogAssets(assets.filter((asset) => asset.scope === "workspace")),
@@ -351,6 +353,7 @@ function GlobalMemoryInbox({
   workspaces: WorkspaceSummary[];
   onReload: () => Promise<void>;
 }) {
+  const { tr } = useI18n();
   const review = async (
     id: string,
     status: "approved" | "rejected" | "invalidated",
@@ -402,6 +405,7 @@ function McpHubPage({
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
   onMigrationPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
 }) {
+  const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [installations, setInstallations] = useState<McpInstallation[]>([]);
@@ -856,6 +860,7 @@ function McpHubPage({
 }
 
 function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () => Promise<void> }) {
+  const { tr, localizeMessage } = useI18n();
   const defaultConfig = JSON.stringify(
     {
       id: "my-server",
@@ -974,6 +979,7 @@ function McpMigrationInventory({
   project?: string;
   onPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
 }) {
+  const { tr, localizeMessage } = useI18n();
   const dialogs = useAppDialogs();
   const [candidates, setCandidates] = useState<import("../core/types").McpMigrationCandidate[]>([]);
   const [scanned, setScanned] = useState(false);

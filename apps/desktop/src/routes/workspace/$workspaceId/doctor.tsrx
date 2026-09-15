@@ -1,20 +1,21 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { useCallback, useEffect, useRef } from "octane";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
 import { api } from "../../../core/api";
-import { localizeMessage } from "../../../core/i18n";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
 import type { ContextDoctorSummary } from "@/core/types";
 
 function WorkspaceDoctorRoute() {
+  const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/doctor" });
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
-  const verification = useRef(search.doctorVerification).current;
+  const verification = search.doctorVerification;
   const setRuntime = useAppStore((state) => state.setRuntime);
   const {
     project,

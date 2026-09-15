@@ -52,6 +52,13 @@ interface Deferred<T> {
   settled: boolean;
 }
 
+export class RuntimeUnavailableError extends Error {
+  constructor(cause: Error) {
+    super(cause.message, { cause });
+    this.name = "RuntimeUnavailableError";
+  }
+}
+
 export class RuntimeRequestError extends Error {
   readonly code: number;
   readonly data: unknown;
@@ -140,9 +147,12 @@ export class DesktopRuntimeHost extends EventEmitter {
       await this.#readiness.promise;
     }
     if (this.#state === "failed") {
-      throw this.#lastError ?? new Error("AgentKib runtime failed to start");
+      throw new RuntimeUnavailableError(
+        this.#lastError ?? new Error("AgentKib runtime failed to start"),
+      );
     }
-    if (this.#state !== "ready") throw new Error("AgentKib runtime is stopping");
+    if (this.#state !== "ready")
+      throw new RuntimeUnavailableError(new Error("AgentKib runtime is stopping"));
     return this.#requestNow<TResult>(method, params);
   }
 
@@ -192,6 +202,10 @@ export class DesktopRuntimeHost extends EventEmitter {
     });
     this.#child = child;
 
+    // Writable write callbacks do not consume the stream's subsequent error event.
+    // Keep this listener on the old stream too: a late EPIPE after exit is expected.
+    child.stdin.on("error", (error: Error) => this.#handleProcessFailure(child, error));
+
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => process.stderr.write(`[agentkib-runtime] ${chunk}`));
 
@@ -225,21 +239,31 @@ export class DesktopRuntimeHost extends EventEmitter {
       this.emit("ready", handshake);
     } catch (error) {
       const runtimeError = toError(error);
-      if (this.#child === child) {
-        this.#child = undefined;
-        this.#lines?.close();
-        this.#lines = undefined;
-        this.#rejectPending(runtimeError);
-        if (child.exitCode === null) child.kill();
-        this.#scheduleRestart(runtimeError);
-      }
+      this.#handleProcessFailure(child, runtimeError);
       throw runtimeError;
     }
   }
 
+  #handleProcessFailure(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.#child !== child) return;
+    const wasReady = this.#state === "ready";
+    this.#child = undefined;
+    this.#lines?.close();
+    this.#lines = undefined;
+    this.#handshake = undefined;
+    if (wasReady) this.#readiness = deferred<RuntimeHandshakeResult>();
+    this.#rejectPending(error);
+    // Consumers must invalidate runtime-backed services immediately, even when
+    // the OS process has not delivered its exit event yet.
+    this.emit("exit", { code: child.exitCode, signal: null, expected: this.#state === "stopping" });
+    if (child.exitCode === null) child.kill();
+    this.#scheduleRestart(error);
+  }
+
   #requestNow<TResult>(method: string, params: unknown): Promise<TResult> {
     const child = this.#child;
-    if (!child || child.exitCode !== null) throw new Error("AgentKib runtime is not running");
+    if (!child || child.exitCode !== null)
+      throw new RuntimeUnavailableError(new Error("AgentKib runtime is not running"));
 
     const id = this.#nextRequestId++;
     const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
@@ -249,11 +273,19 @@ export class DesktopRuntimeHost extends EventEmitter {
         resolve: resolve as (value: unknown) => void,
         reject,
       });
-      child.stdin.write(`${payload}\n`, (error) => {
-        if (!error) return;
+      try {
+        child.stdin.write(`${payload}\n`, (error) => {
+          if (!error) return;
+          this.#pending.delete(id);
+          reject(new RuntimeUnavailableError(error));
+          this.#handleProcessFailure(child, error);
+        });
+      } catch (error) {
         this.#pending.delete(id);
-        reject(error);
-      });
+        const runtimeError = toError(error);
+        reject(new RuntimeUnavailableError(runtimeError));
+        this.#handleProcessFailure(child, runtimeError);
+      }
     });
   }
 
@@ -341,11 +373,12 @@ export class DesktopRuntimeHost extends EventEmitter {
   #rejectReadiness(error: Error): void {
     if (this.#readiness.settled) return;
     this.#readiness.settled = true;
-    this.#readiness.reject(error);
+    this.#readiness.reject(new RuntimeUnavailableError(error));
   }
 
   #rejectPending(error: Error): void {
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values())
+      pending.reject(new RuntimeUnavailableError(error));
     this.#pending.clear();
   }
 }

@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import {
   Select,
   SelectContent,
@@ -49,19 +50,14 @@ import {
   type AchievementTrack,
   type AchievementWallItem,
 } from "@/features/insights/achievements";
-import {
-  formatCompactNumber,
-  formatDateTime,
-  formatRelativeTime,
-  localizeMessage,
-  tr,
-} from "@/core/i18n";
+
 import {
   agentSupportsInsights,
   buildHeatmapMonthMarkers,
   insightsAgentKinds,
 } from "@/features/insights/insights";
 import type {
+  AgentUsageBreakdown,
   Achievement,
   AgentKind,
   HeatmapPoint,
@@ -96,10 +92,11 @@ export function InsightsPage({
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
 }) {
+  const { formatCompactNumber, formatRelativeTime, localizeMessage, tr } = useI18n();
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
-  const [range, setRange] = useState<"52w" | "year">("year");
+  const [range, setRange] = useState<"52w" | "year">("52w");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
   const query = useMemo<InsightsQuery>(() => {
     const today = initialInsightsDate;
@@ -146,7 +143,14 @@ export function InsightsPage({
     sessions: tr("common.sessions"),
   };
   const max = Math.max(1, ...points.map((point) => point[metric]));
-  const padding = points.length ? new Date(`${points[0].date}T00:00:00`).getDay() : 0;
+  const padding = points.length ? (new Date(`${points[0].date}T00:00:00`).getDay() + 6) % 7 : 0;
+  const heatmapYear = points.length
+    ? Number(points[0].date.slice(0, 4))
+    : initialInsightsDate.getFullYear();
+  const heatmapPadding =
+    range === "year" ? (new Date(heatmapYear, 0, 1).getDay() + 6) % 7 : padding;
+  const heatmapDays = range === "year" ? new Date(heatmapYear + 1, 0, 0).getDate() : points.length;
+  const heatmapColumns = Math.max(1, Math.ceil((heatmapPadding + heatmapDays) / 7));
   const repositoryOptions = [
     ...new Map(
       workspaces
@@ -303,13 +307,13 @@ export function InsightsPage({
       )}
       {summary && section === "overview" && (
         <>
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.85fr)]">
-            <div className="grid grid-cols-2 gap-3 max-[560px]:grid-cols-1 lg:col-start-2 lg:row-start-1">
+          <div className="grid gap-4">
+            <div className="grid grid-cols-4 gap-3 max-[900px]:grid-cols-2 max-[560px]:grid-cols-1">
               <AchievementMetric
                 icon={Sparkles}
                 tone="blue"
                 label={tr("insights.totalToken")}
-                value={formatCompact(summary.total_tokens)}
+                value={formatCompactNumber(summary.total_tokens)}
                 detail={
                   summary.coverage_from ? `${summary.coverage_from} — ${summary.coverage_to}` : ""
                 }
@@ -318,8 +322,10 @@ export function InsightsPage({
                 icon={GitCommitHorizontal}
                 tone="violet"
                 label={tr("insights.myCommits")}
-                value={formatCompact(summary.my_commits)}
-                detail={tr("insights.allActivity", { count: formatCompact(summary.all_commits) })}
+                value={formatCompactNumber(summary.my_commits)}
+                detail={tr("insights.allActivity", {
+                  count: formatCompactNumber(summary.all_commits),
+                })}
               />
               <AchievementMetric
                 icon={CalendarDays}
@@ -327,7 +333,7 @@ export function InsightsPage({
                 label={tr("insights.activeDays")}
                 value={`${summary.active_days} ${tr("common.days")}`}
                 detail={tr("insights.recordedSessions", {
-                  count: formatCompact(summary.session_count),
+                  count: formatCompactNumber(summary.session_count),
                 })}
               />
               <AchievementMetric
@@ -338,54 +344,86 @@ export function InsightsPage({
                 detail={tr("insights.longestStreak", { count: summary.longest_streak })}
               />
             </div>
-            <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm lg:col-start-1 lg:row-start-1">
-              <CardHeader className="flex min-h-[62px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-3">
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">
-                    {tr("insights.heatmap")}
-                  </h2>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{metricLabels[metric]}</p>
-                </div>
-                <Badge variant="outline">
-                  {showRange
-                    ? range === "year"
-                      ? tr("insights.rangeYear")
-                      : tr("insights.range52w")
-                    : tr("nav.insights")}
-                </Badge>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto px-5 pb-4 pt-4">
-                  <HeatmapMonths points={points} padding={padding} />
-                  <div className="grid w-max grid-flow-col grid-rows-[repeat(7,11px)] auto-cols-[11px] gap-1">
-                    {Array.from({ length: padding }, (_, index) => (
-                      <span
-                        className="invisible block size-[11px] rounded-[3px]"
-                        key={`padding-${index}`}
-                      />
-                    ))}
-                    {points.map((point) => {
-                      const value = point[metric];
-                      const level = value ? Math.max(1, Math.ceil((value / max) * 4)) : 0;
-                      return (
-                        <span
-                          key={point.date}
-                          className={heatmapCellClass(level)}
-                          title={`${point.date} · ${metricLabels[metric]} ${formatCompact(value)}`}
-                        />
-                      );
-                    })}
+            <div>
+              <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
+                <CardHeader className="flex min-h-[62px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-3">
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">
+                      {tr("insights.heatmap")}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{metricLabels[metric]}</p>
                   </div>
-                </div>
-                <div className="flex items-center justify-end gap-1 border-t border-border px-5 py-3 text-[10px] text-muted-foreground">
-                  <span>{tr("insights.less")}</span>
-                  {[0, 1, 2, 3, 4].map((level) => (
-                    <i key={level} className={heatmapCellClass(level)} />
-                  ))}
-                  <span>{tr("insights.more")}</span>
-                </div>
-              </CardContent>
-            </Card>
+                  <Badge variant="outline">
+                    {showRange
+                      ? range === "year"
+                        ? tr("insights.rangeYear")
+                        : tr("insights.range52w")
+                      : tr("nav.insights")}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="px-5 pb-4 pt-4">
+                    <div className="flex items-start gap-2">
+                      <HeatmapWeekdays />
+                      <div className="min-w-0 flex-1 overflow-x-auto">
+                        <HeatmapMonths
+                          points={points}
+                          padding={heatmapPadding}
+                          columns={heatmapColumns}
+                          year={range === "year" ? heatmapYear : undefined}
+                        />
+                        <div
+                          className="[--heatmap-cell-size:11px] grid w-full grid-flow-col grid-rows-[repeat(7,11px)] auto-cols-[11px] gap-1 max-[1200px]:[--heatmap-cell-size:8px] max-[1200px]:grid-rows-[repeat(7,8px)] max-[1200px]:auto-cols-[8px] max-[1200px]:gap-[2px]"
+                          style={{
+                            gridTemplateColumns: `repeat(${heatmapColumns}, var(--heatmap-cell-size))`,
+                            justifyContent: "space-between",
+                          }}
+                        >
+                          {Array.from({ length: heatmapPadding }, (_, index) => (
+                            <span
+                              className="invisible block size-[11px] rounded-[3px]"
+                              key={`padding-${index}`}
+                            />
+                          ))}
+                          {points.map((point) => {
+                            const value = point[metric];
+                            const level = value ? Math.max(1, Math.ceil((value / max) * 4)) : 0;
+                            return (
+                              <span
+                                key={point.date}
+                                className={heatmapCellClass(level)}
+                                title={`${point.date} · ${metricLabels[metric]} ${formatCompactNumber(value)}`}
+                              />
+                            );
+                          })}
+                          {Array.from(
+                            { length: Math.max(0, heatmapDays - points.length) },
+                            (_, index) => (
+                              <span
+                                className={heatmapCellClass(0)}
+                                key={`future-${index}`}
+                                aria-hidden="true"
+                              />
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-1 border-t border-border px-5 py-3 text-[10px] text-muted-foreground">
+                    <span>{tr("insights.less")}</span>
+                    {[0, 1, 2, 3, 4].map((level) => (
+                      <i key={level} className={heatmapCellClass(level)} />
+                    ))}
+                    <span>{tr("insights.more")}</span>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+            <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]">
+              <TokenTrendCard points={points} metric={metric} metricLabel={metricLabels[metric]} />
+              <AgentUsageSummary agents={agents} />
+            </div>
           </div>
         </>
       )}
@@ -411,7 +449,7 @@ export function InsightsPage({
                     </span>
                     <div className="grid justify-items-end">
                       <strong className="text-sm tabular-nums">
-                        {formatCompact(value.total_tokens)}
+                        {formatCompactNumber(value.total_tokens)}
                       </strong>
                       <small className="text-xs text-muted-foreground">Token</small>
                     </div>
@@ -506,23 +544,75 @@ export function InsightsPage({
   );
 }
 
-function HeatmapMonths({ points, padding }: { points: HeatmapPoint[]; padding: number }) {
-  const columns = Math.max(1, Math.ceil((padding + points.length) / 7));
-  const markers = buildHeatmapMonthMarkers(
-    points,
-    padding,
-    document.documentElement.lang || "en-US",
+function HeatmapWeekdays() {
+  const { locale } = useI18n();
+  const labels = Array.from({ length: 7 }, (_, index) =>
+    new Intl.DateTimeFormat(locale, { weekday: "short", timeZone: "UTC" }).format(
+      new Date(Date.UTC(2024, 0, 1 + index)),
+    ),
   );
   return (
+    <div className="grid w-7 shrink-0 grid-rows-[repeat(7,11px)] gap-1 pt-[18px] text-[10px] leading-[11px] text-muted-foreground max-[1200px]:grid-rows-[repeat(7,8px)] max-[1200px]:gap-[2px] max-[1200px]:leading-[8px]">
+      {labels.map((label) => (
+        <span key={label}>{label}</span>
+      ))}
+    </div>
+  );
+}
+
+function HeatmapMonths({
+  points,
+  padding,
+  columns,
+  year,
+}: {
+  points: HeatmapPoint[];
+  padding: number;
+  columns: number;
+  year?: number;
+}) {
+  const { locale } = useI18n();
+  const markers = year
+    ? Array.from({ length: 12 }, (_, month) => {
+        const date = new Date(year, month, 1);
+        const dayOfYear = (Date.UTC(year, month, 1) - Date.UTC(year, 0, 1)) / (24 * 60 * 60 * 1000);
+        return {
+          key: `${year}-${month}`,
+          label: new Intl.DateTimeFormat(locale, { month: "short" }).format(date),
+          column: Math.floor((padding + dayOfYear) / 7) + 1,
+        };
+      })
+    : buildHeatmapMonthMarkers(points, padding, locale).slice(0, 12);
+  return (
     <div
-      className="mb-2 grid min-h-3.5 w-max grid-flow-col auto-cols-[11px] gap-1 text-[10px] text-muted-foreground"
-      style={{ gridTemplateColumns: `repeat(${columns}, 11px)` }}
+      className={cn(
+        "[--heatmap-cell-size:11px] mb-2 min-h-3.5 w-full text-[10px] text-muted-foreground max-[1200px]:[--heatmap-cell-size:8px]",
+        year
+          ? "grid grid-cols-12"
+          : "grid grid-flow-col auto-cols-[11px] gap-1 max-[1200px]:auto-cols-[8px] max-[1200px]:gap-[2px]",
+      )}
+      style={
+        year
+          ? undefined
+          : {
+              gridTemplateColumns: `repeat(${columns}, var(--heatmap-cell-size))`,
+              justifyContent: "space-between",
+            }
+      }
     >
-      {markers.map((marker) => (
+      {markers.map((marker, index) => (
         <span
           className="whitespace-nowrap"
           key={marker.key}
-          style={{ gridColumn: marker.column, gridRow: 1 }}
+          style={
+            year
+              ? {
+                  gridColumn: index + 1,
+                  justifySelf:
+                    index === 0 ? "start" : index === markers.length - 1 ? "end" : "center",
+                }
+              : { gridColumn: marker.column, gridRow: 1 }
+          }
         >
           {marker.label}
         </span>
@@ -533,7 +623,7 @@ function HeatmapMonths({ points, padding }: { points: HeatmapPoint[]; padding: n
 
 function heatmapCellClass(level: number) {
   return cn(
-    "block size-[11px] rounded-[3px]",
+    "block size-[11px] rounded-[3px] max-[1200px]:size-[8px] max-[1200px]:rounded-[2px]",
     level === 0 && "bg-muted",
     level === 1 && "bg-[color-mix(in_srgb,var(--blue)_18%,transparent)]",
     level === 2 && "bg-[color-mix(in_srgb,var(--blue)_38%,transparent)]",
@@ -563,6 +653,7 @@ const specialAchievementIcons: Record<string, typeof Activity> = {
 };
 
 function AchievementWall({ achievements }: { achievements: Achievement[] }) {
+  const { tr } = useI18n();
   const [selected, setSelected] = useState<AchievementWallItem>();
   if (!achievements.length)
     return (
@@ -577,7 +668,7 @@ function AchievementWall({ achievements }: { achievements: Achievement[] }) {
   const milestoneCount = tracks.reduce((count, item) => count + item.track.milestones.length, 0);
   const completedSpecials = specials.filter((item) => item.unlocked).length;
   return (
-    <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
+    <Card className="h-full overflow-hidden rounded-2xl border-border bg-card shadow-sm">
       <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
         <div>
           <div className="m-0 text-base font-semibold">{tr("insights.milestones")}</div>
@@ -619,6 +710,7 @@ function AchievementWall({ achievements }: { achievements: Achievement[] }) {
 }
 
 function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOpen: () => void }) {
+  const { formatCompactNumber, formatDateTime, tr } = useI18n();
   if (item.kind === "track") {
     const Icon = milestoneIcons[item.track.category];
     const title = tr(`achievements.${achievementTranslationKey(item.cover.code)}.title`);
@@ -650,7 +742,7 @@ function AchievementWallCard({ item, onOpen }: { item: AchievementWallItem; onOp
         </span>
         <strong className="self-start truncate text-base text-foreground">{title}</strong>
         <small className="col-span-full self-center truncate text-xs">
-          {formatMilestoneValue(item.track.category, item.cover.threshold)}
+          {formatMilestoneValue(item.track.category, item.cover.threshold, formatCompactNumber, tr)}
         </small>
         <span
           className={cn(
@@ -726,6 +818,7 @@ function AchievementDetailDialog({
   item: AchievementWallItem;
   onClose: () => void;
 }) {
+  const { tr } = useI18n();
   const title =
     item.kind === "track"
       ? tr(`milestones.category.${item.track.category}`)
@@ -767,6 +860,7 @@ function AchievementDetailDialog({
 }
 
 function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
+  const { formatCompactNumber, formatDateTime, tr } = useI18n();
   const [selected, setSelected] = useState(() => selectDefaultTrackMilestone(track));
   const progressPercent = Math.round(track.progressRatio * 100);
   const selectedReached = achievementReached(selected);
@@ -778,7 +872,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
         {[
           [
             tr("achievementWall.currentValue"),
-            formatMilestoneValue(track.category, track.progress),
+            formatMilestoneValue(track.category, track.progress, formatCompactNumber, tr),
           ],
           [
             tr("achievementWall.completedStages"),
@@ -787,7 +881,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
           [
             tr("achievementWall.nextTarget"),
             track.next
-              ? formatMilestoneValue(track.category, track.next.threshold)
+              ? formatMilestoneValue(track.category, track.next.threshold, formatCompactNumber, tr)
               : tr("milestones.highest"),
           ],
         ].map(([label, value], index) => (
@@ -845,7 +939,12 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
                   {reached ? <Check size={13} /> : ""}
                 </span>
                 <strong className="max-w-full whitespace-normal text-xs leading-tight">
-                  {formatMilestoneValue(track.category, milestone.threshold)}
+                  {formatMilestoneValue(
+                    track.category,
+                    milestone.threshold,
+                    formatCompactNumber,
+                    tr,
+                  )}
                 </strong>
                 <small className="max-w-full whitespace-normal text-xs leading-tight">
                   {tr(`achievements.${achievementTranslationKey(milestone.code)}.title`)}
@@ -876,7 +975,7 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
           </div>
         </div>
         <strong className="text-sm text-foreground">
-          {formatMilestoneValue(track.category, selected.threshold)}
+          {formatMilestoneValue(track.category, selected.threshold, formatCompactNumber, tr)}
         </strong>
         <p className="col-span-full m-0 pl-[41px] text-xs text-muted-foreground max-[760px]:pl-[41px]">
           {selected.unlocked_at
@@ -885,7 +984,12 @@ function AchievementTrackDetail({ track }: { track: AchievementTrack }) {
               ? tr("special.reachedDateUnknown")
               : selectedCurrent
                 ? tr("milestones.currentProgress", {
-                    progress: formatMilestoneValue(track.category, track.progress),
+                    progress: formatMilestoneValue(
+                      track.category,
+                      track.progress,
+                      formatCompactNumber,
+                      tr,
+                    ),
                   })
                 : tr("milestones.locked")}
         </p>
@@ -899,6 +1003,7 @@ function SpecialAchievementDetail({
 }: {
   item: Extract<AchievementWallItem, { kind: "special" }>;
 }) {
+  const { formatDateTime, tr } = useI18n();
   const { achievement, secret, unlocked } = item.special;
   const hidden = secret && !unlocked;
   const key = achievementTranslationKey(achievement.code);
@@ -930,6 +1035,7 @@ function SpecialAchievementDetail({
 }
 
 function ProviderRow({ provider }: { provider: NonNullable<InsightsStatus["providers"]>[number] }) {
+  const { localizeMessage, tr } = useI18n();
   const summary = provider.coverage_from
     ? `${provider.coverage_from} — ${provider.coverage_to}`
     : provider.error_key
@@ -962,6 +1068,145 @@ function ProviderRow({ provider }: { provider: NonNullable<InsightsStatus["provi
   );
 }
 
+function TokenTrendCard({
+  points,
+  metric,
+  metricLabel,
+}: {
+  points: HeatmapPoint[];
+  metric: HeatmapMetric;
+  metricLabel: string;
+}) {
+  const { locale, tr } = useI18n();
+  const monthly = new Map<string, number>();
+  for (const point of points) {
+    const key = point.date.slice(0, 7);
+    monthly.set(key, (monthly.get(key) ?? 0) + point[metric]);
+  }
+  const series = [...monthly.entries()].slice(-9);
+  const values = series.map(([, value]) => value);
+  const max = Math.max(1, ...values);
+  const chartPoints = values
+    .map((value, index) => {
+      const x = series.length === 1 ? 260 : (index / (series.length - 1)) * 520;
+      const y = 150 - (value / max) * 124;
+      return `${x},${y}`;
+    })
+    .join(" ");
+  const trendLabel = tr("insights.trend", { metric: metricLabel });
+  const monthFormatter = new Intl.DateTimeFormat(locale, { month: "short" });
+  return (
+    <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
+      <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
+        <div>
+          <h2 className="m-0 text-base font-semibold">{trendLabel}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{metricLabel}</p>
+        </div>
+        <Badge variant="outline">{tr("insights.byMonth")}</Badge>
+      </CardHeader>
+      <CardContent className="px-5 pb-4 pt-5">
+        {series.length ? (
+          <>
+            <svg
+              viewBox="0 0 520 170"
+              className="h-[170px] w-full overflow-visible"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={trendLabel}
+            >
+              {[26, 67, 108, 150].map((y) => (
+                <line
+                  key={y}
+                  x1="0"
+                  x2="520"
+                  y1={y}
+                  y2={y}
+                  stroke="currentColor"
+                  strokeOpacity=".12"
+                  strokeDasharray="3 4"
+                />
+              ))}
+              <polyline
+                points={chartPoints}
+                fill="none"
+                stroke="var(--primary)"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {values.map((value, index) => {
+                const x = series.length === 1 ? 260 : (index / (series.length - 1)) * 520;
+                const y = 150 - (value / max) * 124;
+                return (
+                  <circle
+                    key={`${series[index][0]}-${value}`}
+                    cx={x}
+                    cy={y}
+                    r="4"
+                    fill="var(--primary)"
+                  />
+                );
+              })}
+            </svg>
+            <div className="mt-1 flex justify-between gap-2 text-[11px] text-muted-foreground">
+              {series.map(([key]) => (
+                <span key={key}>{monthFormatter.format(new Date(`${key}-01T00:00:00`))}</span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="grid min-h-[170px] place-items-center text-sm text-muted-foreground">
+            {tr("insights.noRecords")}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AgentUsageSummary({ agents }: { agents: AgentUsageBreakdown[] }) {
+  const { formatCompactNumber, tr } = useI18n();
+  const values = [...agents]
+    .sort((left, right) => right.total_tokens - left.total_tokens)
+    .slice(0, 5);
+  const max = Math.max(1, ...values.map((value) => value.total_tokens));
+  return (
+    <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
+      <CardHeader className="flex min-h-[58px] flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
+        <h2 className="m-0 text-base font-semibold">{tr("insights.agentUsage")}</h2>
+        <span className="text-xs text-muted-foreground">Token</span>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="divide-y divide-border">
+          {values.map((value) => (
+            <div
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3"
+              key={value.agent}
+            >
+              <AgentIcon agent={value.agent} />
+              <span className="grid min-w-0 gap-1">
+                <strong className="truncate text-sm">{agentLabels[value.agent]}</strong>
+                <span className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <span
+                    className="block h-full rounded-full bg-primary"
+                    style={{ width: `${(value.total_tokens / max) * 100}%` }}
+                  />
+                </span>
+              </span>
+              <strong className="text-sm tabular-nums">
+                {formatCompactNumber(value.total_tokens)}
+              </strong>
+            </div>
+          ))}
+          {!values.length && (
+            <p className="px-4 py-6 text-sm text-muted-foreground">{tr("insights.noToken")}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function AchievementMetric({
   icon: Icon,
   tone,
@@ -977,20 +1222,20 @@ function AchievementMetric({
 }) {
   const toneClasses = {
     blue: {
-      icon: "bg-[color-mix(in_srgb,var(--blue)_12%,transparent)] text-[var(--blue)]",
-      border: "hover:border-[color-mix(in_srgb,var(--blue)_38%,var(--border))]",
+      icon: "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-primary",
+      border: "hover:border-[color-mix(in_srgb,var(--primary)_38%,var(--border))]",
     },
     violet: {
-      icon: "bg-[color-mix(in_srgb,#8b5cf6_12%,transparent)] text-[#7c3aed]",
-      border: "hover:border-[color-mix(in_srgb,#8b5cf6_38%,var(--border))]",
+      icon: "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-primary",
+      border: "hover:border-[color-mix(in_srgb,var(--primary)_38%,var(--border))]",
     },
     green: {
-      icon: "bg-[color-mix(in_srgb,var(--green)_12%,transparent)] text-[var(--green)]",
-      border: "hover:border-[color-mix(in_srgb,var(--green)_38%,var(--border))]",
+      icon: "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-primary",
+      border: "hover:border-[color-mix(in_srgb,var(--primary)_38%,var(--border))]",
     },
     amber: {
-      icon: "bg-[color-mix(in_srgb,var(--amber)_14%,transparent)] text-[var(--amber)]",
-      border: "hover:border-[color-mix(in_srgb,var(--amber)_42%,var(--border))]",
+      icon: "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-primary",
+      border: "hover:border-[color-mix(in_srgb,var(--primary)_38%,var(--border))]",
     },
   }[tone];
   return (
@@ -1020,6 +1265,7 @@ function BreakdownPanel({
   title: string;
   values: Array<{ key: string; label: string; detail: string; value: number }>;
 }) {
+  const { formatCompactNumber, tr } = useI18n();
   return (
     <Card className="overflow-hidden rounded-2xl border-border bg-card shadow-sm">
       <CardHeader className="flex min-h-[58px] items-center border-b border-border px-5 py-4">
@@ -1030,10 +1276,10 @@ function BreakdownPanel({
           {values.slice(0, 10).map((item) => (
             <div className="flex items-center justify-between gap-4 px-4 py-3" key={item.key}>
               <span className="grid min-w-0 gap-0.5">
-                <strong className="truncate text-sm">{metadataLabel(item.label)}</strong>
+                <strong className="truncate text-sm">{metadataLabel(item.label, tr)}</strong>
                 <small className="text-xs text-muted-foreground">{item.detail}</small>
               </span>
-              <strong className="text-sm tabular-nums">{formatCompact(item.value)}</strong>
+              <strong className="text-sm tabular-nums">{formatCompactNumber(item.value)}</strong>
             </div>
           ))}
           {!values.length && (
@@ -1061,11 +1307,13 @@ function Empty({
     </div>
   );
 }
-function formatMilestoneValue(category: AchievementCategory, value: number) {
-  return tr(`milestones.value.${category}`, { value: formatCompact(value) });
-}
-function formatCompact(value: number) {
-  return formatCompactNumber(value);
+function formatMilestoneValue(
+  category: AchievementCategory,
+  value: number,
+  formatCompactNumber: ReturnType<typeof useI18n>["formatCompactNumber"],
+  tr: ReturnType<typeof useI18n>["tr"],
+) {
+  return tr(`milestones.value.${category}`, { value: formatCompactNumber(value) });
 }
 function localDate(value: Date) {
   const year = value.getFullYear();
@@ -1073,7 +1321,7 @@ function localDate(value: Date) {
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
-function metadataLabel(value: string) {
+function metadataLabel(value: string, tr: ReturnType<typeof useI18n>["tr"]) {
   if (value === "__unknown_model__") return tr("insights.unknownModel");
   if (value === "__unlinked_workspace__") return tr("insights.unlinkedWorkspace");
   if (value === "仓库 Git 身份") return tr("settings.gitIdentityRepository");

@@ -2,20 +2,34 @@
 
 import type { AssetSection } from "@/features/home/GlobalHome";
 import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
-import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import type { AgentKind } from "@/core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
 
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
-export type GlobalPage = "home" | "workspaces" | "catalog" | "agents" | "quota" | "insights";
+export type GlobalPage =
+  | "home"
+  | "workspaces"
+  | "catalog"
+  | "agents"
+  | "sessions"
+  | "quota"
+  | "insights";
 
 export type AppSearch = {
   assetSection?: AssetSection;
   settingsSection?: SettingsSection;
+  settingsTarget?: SettingsTarget;
   quotaProvider?: string;
   quotaWindow?: import("@/core/types").QuotaWindowSelector;
   gitSubview?: GitSubview;
   doctorVerification?: "applied";
+  sessionId?: string;
+  handoffSession?: string;
+  handoffTarget?: AgentKind;
+  handoffBudget?: 64_000 | 120_000 | 180_000;
+  handoffFormat?: "markdown" | "json";
+  handoffResume?: "return" | "recheck";
   agent?: AgentKind;
   agentFilter?: AgentFilter;
 };
@@ -26,7 +40,27 @@ export type ParsedRoute =
   | { kind: "workspace"; workspaceId: string; page: Page };
 
 export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
-  return page === "git" ? current : { ...current, gitSubview: undefined };
+  const next = page === "git" ? current : { ...current, gitSubview: undefined };
+  if (page === "sessions" || page === "changes") return next;
+  if (
+    page === "git" &&
+    !next.handoffSession &&
+    !next.handoffTarget &&
+    !next.handoffBudget &&
+    !next.handoffFormat &&
+    !next.handoffResume
+  ) {
+    return current;
+  }
+  const {
+    handoffSession: _handoffSession,
+    handoffTarget: _handoffTarget,
+    handoffBudget: _handoffBudget,
+    handoffFormat: _handoffFormat,
+    handoffResume: _handoffResume,
+    ...rest
+  } = next;
+  return rest;
 }
 
 export function parseRoute(pathname: string): ParsedRoute {
@@ -50,6 +84,7 @@ export function parseRoute(pathname: string): ParsedRoute {
     page === "workspaces" ||
     page === "catalog" ||
     page === "agents" ||
+    page === "sessions" ||
     page === "quota" ||
     page === "insights"
       ? page

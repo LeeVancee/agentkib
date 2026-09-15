@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function HomeSkeleton() {
   return (
-    <SkeletonPage className="pb-8" label="Loading home">
+    <SkeletonPage className="pb-8" labelKey="loading.home">
       <div className="grid grid-cols-4 gap-3 max-[800px]:grid-cols-2">
         {Array.from({ length: 4 }, (_, index) => (
           <SkeletonMetricCard key={index} />

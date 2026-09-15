@@ -1,7 +1,8 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
-import { localizeMessage, tr } from "@/core/i18n";
+
 import { cn } from "@/lib/utils";
 import { Gauge } from "@octanejs/lucide";
 import { useState } from "octane";
@@ -15,8 +16,10 @@ export function QuotaAutoRefreshPrompt({
   onEnableAutoRefresh: () => Promise<void>;
   onNotNow: () => Promise<void>;
 }) {
+  const { localizeMessage, tr } = useI18n();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [rawError, setError] = useState<unknown>("");
+  const error = rawError === "" ? "" : localizeMessage(rawError);
 
   const run = async (action: () => Promise<void>) => {
     if (busy) return;
@@ -25,7 +28,7 @@ export function QuotaAutoRefreshPrompt({
     try {
       await action();
     } catch (reason) {
-      setError(localizeMessage(reason));
+      setError(reason);
     } finally {
       setBusy(false);
     }

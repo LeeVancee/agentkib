@@ -1,6 +1,9 @@
 import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
+import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
+import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
 import type {
   AgentKind,
+  AccentThemeId,
   AppMenuCommandRequest,
   AppNavigationRequest,
   AppUpdateInfo,
@@ -30,6 +33,8 @@ import type {
   WorkspaceScan,
   WorkspaceSummary,
   AgentInstallation,
+  AgentToolSnapshot,
+  AgentToolExecutionResult,
   ActivityRecord,
   GitCommitPage,
   GitDiff,
@@ -87,8 +92,10 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface DesktopApi {
+  web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
   platform: NodeJS.Platform;
   events: {
+    onWindowActivity(listener: (active: boolean) => void): DesktopEventUnsubscribe;
     onQuitRequested(listener: () => void): DesktopEventUnsubscribe;
     onThemeChanged(listener: (theme: EffectiveTheme) => void): DesktopEventUnsubscribe;
     onRefreshState(listener: (status: RefreshJobStatus) => void): DesktopEventUnsubscribe;
@@ -201,6 +208,7 @@ export interface DesktopApi {
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
+    planMcpConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
     planHandoff(
       sessionId: string,
@@ -233,16 +241,23 @@ export interface DesktopApi {
     hideWindow(): Promise<void>;
     quit(): Promise<void>;
   };
+  remote: {
+    request<T extends RemoteRequest>(request: T): Promise<RemoteResponse<T>>;
+  };
   settings: {
     setCloseBehavior(value?: CloseBehavior): Promise<void>;
     setLocale(preference: LocalePreference): Promise<RuntimeInfo>;
     setThemePreference(preference: "system" | "light" | "dark"): Promise<RuntimeInfo>;
+    setAccentThemePreference(preference: AccentThemeId): Promise<RuntimeInfo>;
+    setSidebarWidthPreference(preference: number): Promise<RuntimeInfo>;
     setAppIconPreference(preference: AppIconPreference): Promise<RuntimeInfo>;
   };
   home: {
     runtime(): Promise<RuntimeInfo>;
     workspaces(): Promise<WorkspaceSummary[]>;
     agentInstallations(): Promise<AgentInstallation[]>;
+    agentTools(force?: boolean): Promise<AgentToolSnapshot>;
+    executeAgentTool(agent: AgentKind, actionId: string): Promise<AgentToolExecutionResult>;
     catalogAssets(input: {
       query?: string;
       agent?: AgentKind;
@@ -271,6 +286,7 @@ export interface DesktopApi {
     quotaPreferences(): Promise<QuotaPopoverPreferences>;
     setQuotaPreferences(preferences: QuotaPopoverPreferences): Promise<QuotaPopoverPreferences>;
     refreshQuota(force?: boolean): Promise<RefreshReceipt>;
+    setLocalAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaAutoRefresh(enabled: boolean): Promise<RuntimeInfo>;
     setQuotaPromptSeen(seen: boolean): Promise<RuntimeInfo>;
     refreshStatus(): Promise<RefreshJobStatus[]>;

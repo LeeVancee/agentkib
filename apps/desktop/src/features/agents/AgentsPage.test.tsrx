@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@octanejs/testing-library";

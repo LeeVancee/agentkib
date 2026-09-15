@@ -1,6 +1,7 @@
 /** @jsxImportSource octane */
 
-import { useEffect, useMemo, useRef, useState } from "octane";
+import { useI18n } from "@/core/useI18n";
+import { useEffect, useLinkedState, useMemo, useRef, useState } from "octane";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { Badge } from "@/components/ui/badge";
@@ -18,22 +19,25 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
+import { AgentIcon } from "@/features/agents/AgentIcon";
 import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
-import { formatRelativeTime, localizeMessage, tr } from "../core/i18n";
+import { formatRelativeTime, tr } from "../core/i18n";
 import {
   homeKeys,
   useHomeCatalog,
+  useHomeDiscovery,
   useHomeRefreshJobs,
   useHomeWorkspaces,
 } from "@/features/home/home-query.tsx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "@octanejs/lucide";
-import type { AgentKind, RefreshJobStatus, WorkspaceSummary } from "../core/types";
+import { ChevronLeft, ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "@octanejs/lucide";
+import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "../core/types";
 import { cn } from "@/lib/utils";
 
 type WorkspaceView = "list" | "storage";
 type WorkspacesSearch = { workspaceView?: WorkspaceView };
+const WORKSPACES_PER_PAGE = 8;
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
@@ -46,12 +50,14 @@ const agentLabels: Record<AgentKind, string> = {
 };
 
 function WorkspacesRoute() {
+  const { tr, localizeMessage } = useI18n();
   const navigate = useNavigate();
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const search = useSearch({ strict: false }) as WorkspacesSearch;
   const view = search.workspaceView ?? "list";
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const { data: discovery } = useHomeDiscovery();
   const { data: catalog = [], isPending: catalogPending } = useHomeCatalog();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const openRequest = useRef(0);
@@ -166,12 +172,19 @@ function WorkspacesRoute() {
       view={view}
       storageJob={storageJob}
       workspaces={workspaces}
+      discovery={discovery}
       assetCounts={assetCounts}
       discoveryRefreshing={discoveryRefreshing}
       onAddWorkspace={() => void addWorkspace()}
       onViewChange={setView}
       onOpen={openWorkspace}
       onRefreshDiscovery={refreshDiscovery}
+      onOpenDiscoveryDetails={() =>
+        void navigate({
+          to: "/settings",
+          search: { settingsSection: "discovery", settingsTarget: "discovery-status" },
+        })
+      }
       onRefreshWorkspace={refreshWorkspace}
       onExclude={excludeWorkspace}
     />
@@ -182,39 +195,67 @@ function WorkspacesPage({
   view,
   storageJob,
   workspaces,
+  discovery,
   assetCounts,
   discoveryRefreshing,
   onAddWorkspace,
   onViewChange,
   onOpen,
   onRefreshDiscovery,
+  onOpenDiscoveryDetails,
   onRefreshWorkspace,
   onExclude,
 }: {
   view: WorkspaceView;
   storageJob?: RefreshJobStatus;
   workspaces: WorkspaceSummary[];
+  discovery?: DiscoveryReport;
   assetCounts: Map<string, number>;
   discoveryRefreshing: boolean;
   onAddWorkspace: () => void;
   onViewChange: (view: WorkspaceView) => void;
   onOpen: (workspace: WorkspaceSummary) => Promise<void>;
   onRefreshDiscovery: () => Promise<void>;
+  onOpenDiscoveryDetails: () => void;
   onRefreshWorkspace: (id: string) => Promise<void>;
   onExclude: (id: string) => Promise<void>;
 }) {
+  const { tr, formatRelativeTime } = useI18n();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"all" | WorkspaceSummary["status"]>("all");
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [selectedId, setSelectedId] = useState(workspaces[0]?.id ?? "");
+  const [page, setPage] = useLinkedState(
+    { agent, query, status },
+    (next, previous) =>
+      next.agent === previous?.source.agent &&
+      next.query === previous?.source.query &&
+      next.status === previous?.source.status
+        ? previous.value
+        : 1,
+    {
+      sourceEqual: (previous, next) =>
+        previous.agent === next.agent &&
+        previous.query === next.query &&
+        previous.status === next.status,
+    },
+  );
   const filtered = workspaces.filter(
     (item) =>
       `${item.name} ${item.path}`.toLowerCase().includes(query.toLowerCase()) &&
       (status === "all" || item.status === status) &&
       (agent === "all" || item.sources.some((source) => source.agent === agent)),
   );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / WORKSPACES_PER_PAGE));
+  const activePage = Math.min(page, totalPages);
+  const paginatedWorkspaces = filtered.slice(
+    (activePage - 1) * WORKSPACES_PER_PAGE,
+    activePage * WORKSPACES_PER_PAGE,
+  );
+  const pageStart = filtered.length ? (activePage - 1) * WORKSPACES_PER_PAGE + 1 : 0;
+  const pageEnd = Math.min(activePage * WORKSPACES_PER_PAGE, filtered.length);
   const selectedWorkspace =
-    filtered.find((workspace) => workspace.id === selectedId) ?? filtered[0];
+    paginatedWorkspaces.find((workspace) => workspace.id === selectedId) ?? paginatedWorkspaces[0];
   const viewControls = (
     <ToggleGroup
       spacing={0}
@@ -335,6 +376,12 @@ function WorkspacesPage({
       </CardContent>
     </Card>
   );
+  const discoveryStatus = discoveryStatusSummary(
+    discovery,
+    discoveryRefreshing,
+    tr,
+    formatRelativeTime,
+  );
   if (view === "storage")
     return (
       <div className="grid gap-5">
@@ -346,50 +393,114 @@ function WorkspacesPage({
     <div className="grid gap-4">
       {pageIntro}
       {filterBar}
-      <div className="grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
-        <section className="overflow-hidden rounded-xl border border-border bg-card">
-          <header className="border-b border-border px-4 py-3 text-xs font-medium text-muted-foreground">
-            {tr("workspace.resultCount", { count: filtered.length })}
+      <Button
+        variant="ghost"
+        className="h-auto min-h-8 justify-start gap-2 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+        onClick={onOpenDiscoveryDetails}
+        aria-label={tr("workspace.discoveryDetailsLink")}
+      >
+        <span
+          className={cn(
+            "size-1.5 rounded-full",
+            discoveryStatus.tone === "error"
+              ? "bg-destructive"
+              : discoveryStatus.tone === "warning"
+                ? "bg-amber-500"
+                : discoveryStatus.tone === "success"
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground",
+          )}
+        />
+        <span>{discoveryStatus.label}</span>
+        {discoveryStatus.reportedAt && (
+          <span className="text-muted-foreground/70">{discoveryStatus.reportedAt}</span>
+        )}
+        <span className="text-muted-foreground/70">·</span>
+        <span>{tr("workspace.discoveryDetailsLink")}</span>
+      </Button>
+      <div className="grid items-start gap-5 min-[1024px]:grid-cols-[minmax(360px,1fr)_minmax(0,1.25fr)]">
+        <section className="flex max-h-[680px] min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+          <header className="flex min-h-[58px] items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">{tr("nav.workspaces")}</h2>
+              <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                {tr("workspace.resultCount", { count: filtered.length })}
+              </p>
+            </div>
+            <span className="grid size-8 place-items-center rounded-lg bg-muted/70 text-muted-foreground">
+              <FolderGit2 size={15} />
+            </span>
           </header>
-          <div className="max-h-[620px] overflow-y-auto p-2">
-            {filtered.map((workspace) => {
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {paginatedWorkspaces.map((workspace) => {
               const sourceAgents = workspace.sources
                 .flatMap((source) => (source.agent ? [source.agent] : []))
                 .filter((value, index, values) => values.indexOf(value) === index);
+              const sourceLabel = sourceAgents.length
+                ? sourceAgents.map((value) => agentLabels[value]).join(" · ")
+                : tr("workspace.source.manual");
               return (
                 <Button
                   key={workspace.id}
                   variant="bare"
                   size="content"
                   className={cn(
-                    "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-left",
+                    "group grid min-h-[72px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-3 py-2.5 text-left",
                     selectedWorkspace?.id === workspace.id
-                      ? "bg-muted text-foreground"
+                      ? "bg-muted text-foreground shadow-xs"
                       : "text-muted-foreground hover:bg-muted/55 hover:text-foreground",
                   )}
                   onClick={() => setSelectedId(workspace.id)}
                   onDoubleClick={() => void onOpen(workspace)}
                 >
-                  <span className="grid size-9 place-items-center rounded-lg border border-border bg-background">
+                  <span className="grid size-9 place-items-center rounded-xl border border-border bg-background text-foreground transition-colors group-hover:border-primary/30">
                     <FolderGit2 size={16} />
                   </span>
                   <span className="min-w-0">
-                    <strong className="block truncate text-sm text-foreground">
+                    <strong
+                      className="block truncate text-sm font-semibold text-foreground"
+                      title={workspace.name}
+                    >
                       {workspace.name}
                     </strong>
                     <small className="mt-1 block truncate text-xs" title={workspace.path}>
                       {workspace.path}
                     </small>
                   </span>
-                  <span className="grid justify-items-end gap-1">
+                  <span className="grid justify-items-end gap-1.5">
                     {workspace.status === "attention" ? (
-                      <Badge variant="destructive">{workspaceStatusLabel("attention")}</Badge>
-                    ) : null}
-                    <small className="text-[11px]">
-                      {sourceAgents.length
-                        ? sourceAgents.map((value: AgentKind) => agentLabels[value]).join(" · ")
-                        : tr("workspace.source.manual")}
-                    </small>
+                      <Badge variant="destructive" className="text-[10px]">
+                        {workspaceStatusLabel("attention")}
+                      </Badge>
+                    ) : (
+                      <span
+                        className="size-1.5 rounded-full bg-[var(--green)]"
+                        title={workspaceStatusLabel("healthy")}
+                      />
+                    )}
+                    <span
+                      className="flex items-center gap-0.5"
+                      aria-label={sourceLabel}
+                      title={sourceLabel}
+                    >
+                      {sourceAgents.length ? (
+                        sourceAgents.slice(0, 3).map((value) => (
+                          <span
+                            className="grid size-5 place-items-center rounded-md border border-border bg-background"
+                            key={value}
+                          >
+                            <AgentIcon agent={value} compact />
+                          </span>
+                        ))
+                      ) : (
+                        <small className="text-[11px]">{tr("workspace.source.manual")}</small>
+                      )}
+                      {sourceAgents.length > 3 && (
+                        <span className="grid size-5 place-items-center rounded-md bg-muted text-[9px] font-semibold">
+                          +{sourceAgents.length - 3}
+                        </span>
+                      )}
+                    </span>
                   </span>
                 </Button>
               );
@@ -401,20 +512,67 @@ function WorkspacesPage({
               />
             )}
           </div>
+          {filtered.length > 0 && (
+            <footer className="flex min-h-[58px] items-center justify-between gap-3 border-t border-border px-4 py-3">
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {pageStart}–{pageEnd} / {filtered.length}
+              </span>
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1" aria-label={tr("workspace.pagination")}>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={tr("workspace.previousPage")}
+                    disabled={activePage === 1}
+                    onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  >
+                    <ChevronLeft size={15} />
+                  </Button>
+                  <span className="min-w-[52px] text-center text-xs tabular-nums text-muted-foreground">
+                    {activePage} / {totalPages}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={tr("workspace.nextPage")}
+                    disabled={activePage === totalPages}
+                    onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                  >
+                    <ChevronRight size={15} />
+                  </Button>
+                </div>
+              )}
+            </footer>
+          )}
         </section>
         {selectedWorkspace && (
-          <section className="overflow-hidden rounded-xl border border-border bg-card">
+          <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
             <header className="flex items-start justify-between gap-4 border-b border-border p-5">
-              <div className="min-w-0">
-                <h2 className="truncate text-lg font-semibold">{selectedWorkspace.name}</h2>
-                <code
-                  className="mt-1 block truncate text-xs text-muted-foreground"
-                  title={selectedWorkspace.path}
-                >
-                  {selectedWorkspace.path}
-                </code>
+              <div className="flex min-w-0 items-start gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border bg-muted/50 text-foreground">
+                  <FolderGit2 size={18} />
+                </span>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="truncate text-lg font-semibold">{selectedWorkspace.name}</h2>
+                    {selectedWorkspace.status === "attention" && (
+                      <Badge variant="destructive" className="text-[10px]">
+                        {workspaceStatusLabel("attention")}
+                      </Badge>
+                    )}
+                  </div>
+                  <code
+                    className="mt-1 block truncate text-xs text-muted-foreground"
+                    title={selectedWorkspace.path}
+                  >
+                    {selectedWorkspace.path}
+                  </code>
+                </div>
               </div>
-              <Button className="shrink-0" onClick={() => void onOpen(selectedWorkspace)}>
+              <Button
+                className="shrink-0 rounded-lg"
+                onClick={() => void onOpen(selectedWorkspace)}
+              >
                 {tr("common.details")}
                 <ChevronRight size={15} />
               </Button>
@@ -485,6 +643,63 @@ function WorkspaceEmptyState({ title, text }: { title: string; text: string }) {
     </div>
   );
 }
+
+export function discoveryStatusSummary(
+  discovery: DiscoveryReport | undefined,
+  refreshing: boolean,
+  translate: typeof tr,
+  relativeTime: (value: string | Date) => string,
+) {
+  if (!discovery) {
+    return {
+      label: translate(
+        refreshing ? "workspace.discoveryScanning" : "workspace.discoveryNotScanned",
+      ),
+      tone: "neutral" as const,
+    };
+  }
+  const reportedAt = discovery.finished_at || discovery.started_at;
+  const reportedLabel = reportedAt
+    ? translate("workspace.discoveryReportedAt", { time: relativeTime(reportedAt) })
+    : undefined;
+  if (refreshing) {
+    return {
+      label: translate("workspace.discoveryScanning"),
+      reportedAt: reportedLabel,
+      tone: "neutral" as const,
+    };
+  }
+  const sourceFailures =
+    discovery.source_diagnostics?.filter((source) =>
+      ["failed", "permission-denied"].includes(source.status),
+    ).length ?? 0;
+  if (discovery.errors.length || sourceFailures > 0) {
+    return {
+      label: translate("workspace.discoveryAttention", {
+        count: discovery.errors.length + sourceFailures,
+      }),
+      reportedAt: reportedLabel,
+      tone: "error" as const,
+    };
+  }
+  if (
+    discovery.source_diagnostics?.some((source) =>
+      ["not-configured", "missing", "partial", "unsupported"].includes(source.status),
+    )
+  ) {
+    return {
+      label: translate("workspace.discoveryPartial"),
+      reportedAt: reportedLabel,
+      tone: "warning" as const,
+    };
+  }
+  return {
+    label: translate("workspace.discoveryComplete"),
+    reportedAt: reportedLabel,
+    tone: "success" as const,
+  };
+}
+
 function workspaceStatusLabel(status: WorkspaceSummary["status"]) {
   return tr(`status.workspace.${status}`);
 }

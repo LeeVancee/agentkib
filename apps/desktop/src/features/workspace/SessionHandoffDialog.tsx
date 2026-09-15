@@ -1,5 +1,6 @@
 /** @jsxImportSource octane */
 
+import { useI18n } from "@/core/useI18n";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -14,11 +15,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useEffect, useMemo, useRef, useState } from "octane";
-import { CircleAlert, Copy, FileOutput, ShieldCheck, X } from "@octanejs/lucide";
+import { CircleAlert, Copy, FileOutput, PlugZap, ShieldCheck, X } from "@octanejs/lucide";
 import { api } from "@/core/api";
-import { localizeMessage, tr } from "@/core/i18n";
+
 import type {
   AgentKind,
+  ContinuationCapabilityStatus,
   ConversationSessionSummary,
   HandoffFormat,
   PlannedSessionHandoff,
@@ -26,6 +28,7 @@ import type {
   SessionHandoffRequest,
   WorkspaceSummary,
 } from "@/core/types";
+import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 
 export function SessionHandoffDialog({
@@ -34,13 +37,23 @@ export function SessionHandoffDialog({
   targetAgents,
   onClose,
   onPlanned,
+  onMcpConnectionPlanned,
+  initialRequest,
 }: {
   workspace: WorkspaceSummary;
   session: ConversationSessionSummary;
   targetAgents: AgentKind[];
   onClose: () => void;
   onPlanned: (handoff: PlannedSessionHandoff) => void;
+  onMcpConnectionPlanned: (
+    changeSet: import("@/core/types").ChangeSet,
+    request: import("./WorkspaceSessionsPage").SessionContinuationResume,
+  ) => void;
+  initialRequest?: import("./WorkspaceSessionsPage").SessionContinuationResume & {
+    autoPrepare: boolean;
+  };
 }) {
+  const { localizeMessage, tr } = useI18n();
   const availableTargets = useMemo(
     () =>
       sessionHandoffTargets.filter(
@@ -48,22 +61,29 @@ export function SessionHandoffDialog({
       ),
     [session.agent, targetAgents],
   );
+  const sourceCanContinue = canContinueFromHistory(session.agent);
   const defaultTarget =
     availableTargets.find(([agent]) => agent !== session.agent)?.[0] ??
     availableTargets[0]?.[0] ??
     session.agent;
-  const [targetAgent, setTargetAgent] = useState<AgentKind>(defaultTarget);
-  const [format, setFormat] = useState<HandoffFormat>("markdown");
-  const [historyBudget, setHistoryBudget] = useState(120_000);
+  const [targetAgent, setTargetAgent] = useState<AgentKind>(
+    initialRequest?.targetAgent ?? defaultTarget,
+  );
+  const [format, setFormat] = useState<HandoffFormat>(initialRequest?.format ?? "markdown");
+  const [historyBudget, setHistoryBudget] = useState(
+    initialRequest?.historyBudgetTokens ?? 120_000,
+  );
   const [draft, setDraft] = useState<SessionHandoffDraft>();
   const [content, setContent] = useState("");
   const [acceptLosses, setAcceptLosses] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState("");
+  const [rawError, setError] = useState<unknown>("");
+  const error = rawError === "" ? "" : localizeMessage(rawError);
   const activeRef = useRef(true);
   const requestGenerationRef = useRef(0);
   const identityRef = useRef({ workspaceId: workspace.id, sessionId: session.id });
+  const autoPreparedRef = useRef(false);
 
   useEffect(() => {
     identityRef.current = { workspaceId: workspace.id, sessionId: session.id };
@@ -96,14 +116,25 @@ export function SessionHandoffDialog({
     history_budget_tokens: historyBudget,
   });
 
+  const acknowledgementLosses = useMemo(
+    () => draft?.losses.filter((loss) => loss.code !== "reasoning-excluded") ?? [],
+    [draft?.losses],
+  );
+  const reasoningExcluded = draft?.losses.find((loss) => loss.code === "reasoning-excluded");
+  const mcpSetupStatus = draft?.capabilities?.mcp_setup.status;
+  const nativeCapabilityReason =
+    draft?.capabilities?.native_resume.reason ?? draft?.native_capability.reason;
+
   const showDraft = (nextDraft: SessionHandoffDraft) => {
     setDraft(nextDraft);
     setContent(nextDraft.content);
-    setAcceptLosses(nextDraft.losses.length === 0);
+    setAcceptLosses(nextDraft.losses.every((loss) => loss.code === "reasoning-excluded"));
   };
 
   const prepare = async () => {
+    if (!sourceCanContinue) return;
     const identity = captureIdentity();
+    await Promise.resolve();
     setBusy(true);
     setError("");
     try {
@@ -111,11 +142,17 @@ export function SessionHandoffDialog({
       if (!isCurrent(identity)) return;
       showDraft(preparation.draft);
     } catch (reason) {
-      if (isCurrent(identity)) setError(localizeMessage(reason));
+      if (isCurrent(identity)) setError(reason);
     } finally {
       if (isLatest(identity)) setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (!sourceCanContinue || !initialRequest?.autoPrepare || autoPreparedRef.current) return;
+    autoPreparedRef.current = true;
+    void prepare();
+  }, [initialRequest?.autoPrepare, sourceCanContinue]);
 
   const plan = async () => {
     if (!draft) return;
@@ -138,7 +175,33 @@ export function SessionHandoffDialog({
       );
       if (isCurrent(identity)) onPlanned(planned);
     } catch (reason) {
-      if (isCurrent(identity)) setError(localizeMessage(reason));
+      if (isCurrent(identity)) setError(reason);
+    } finally {
+      if (isLatest(identity)) setBusy(false);
+    }
+  };
+
+  const planMcpConnection = async () => {
+    if (mcpSetupStatus !== "supported") return;
+    const identity = captureIdentity();
+    setBusy(true);
+    setError("");
+    try {
+      const changeSet = await api.planSessionMcpConnection(workspace.id, targetAgent);
+      if (!isCurrent(identity)) return;
+      if (changeSet.changes.length === 0) {
+        const preparation = await api.prepareSessionHandoff(request());
+        if (isCurrent(identity)) showDraft(preparation.draft);
+        return;
+      }
+      onMcpConnectionPlanned(changeSet, {
+        sessionId: session.id,
+        targetAgent,
+        historyBudgetTokens: historyBudget,
+        format,
+      });
+    } catch (reason) {
+      if (isCurrent(identity)) setError(reason);
     } finally {
       if (isLatest(identity)) setBusy(false);
     }
@@ -158,7 +221,7 @@ export function SessionHandoffDialog({
         if (activeRef.current) setCopied(false);
       }, 1200);
     } catch (reason) {
-      if (isCurrent(identity)) setError(localizeMessage(reason));
+      if (isCurrent(identity)) setError(reason);
     } finally {
       if (isLatest(identity)) setBusy(false);
     }
@@ -185,13 +248,13 @@ export function SessionHandoffDialog({
       }}
     >
       <DialogContent
-        className="w-[min(660px,calc(100vw-2rem))] max-h-[min(820px,calc(100vh-2rem))] gap-0 overflow-hidden p-0 shadow-2xl"
+        className="w-[min(840px,calc(100vw-2rem))] max-h-[min(820px,calc(100vh-2rem))] gap-0 overflow-hidden p-0 shadow-2xl sm:max-w-[840px]"
         showCloseButton={false}
       >
         <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-[18px]">
           <div>
             <span className="mb-2 block text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
-              Session Continuation
+              {tr("handoff.label")}
             </span>
             <DialogTitle className="mt-0 text-xl">{tr("handoff.title")}</DialogTitle>
           </div>
@@ -205,7 +268,20 @@ export function SessionHandoffDialog({
             {error}
           </div>
         )}
-        {draft ? (
+        {busy && !draft ? (
+          <div className="grid min-h-[360px] place-content-center gap-4 px-6 py-8 text-center">
+            <div className="mx-auto size-5 animate-spin rounded-full border-2 border-muted border-t-foreground" />
+            <strong className="text-sm text-foreground">{tr("handoff.preparingLocal")}</strong>
+            <div className="grid gap-2 text-left text-xs text-muted-foreground">
+              {(["read", "sanitize", "window"] as const).map((step) => (
+                <span className="flex items-center gap-2" key={step}>
+                  <span className="size-1.5 rounded-full bg-muted-foreground/50" />
+                  {tr(`handoff.prepareStep.${step}`)}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : draft ? (
           <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto px-5 py-4">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <ShieldCheck className="shrink-0 text-green-600" size={16} />
@@ -215,6 +291,11 @@ export function SessionHandoffDialog({
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>{tr(`handoff.mode.${draft.mode}`)}</span>
               <span>
+                {tr("handoff.fullEstimate", {
+                  tokens: formatEstimatedTokens(draft.window_stats.estimated_total_tokens),
+                })}
+              </span>
+              <span>
                 {tr("handoff.stats", {
                   turns: draft.stats.turn_count,
                   tools: draft.stats.tool_call_count,
@@ -222,48 +303,108 @@ export function SessionHandoffDialog({
                 })}
               </span>
             </div>
-            <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs max-[620px]:grid-cols-1">
-              <div>
-                <span className="block text-muted-foreground">{tr("handoff.window.total")}</span>
-                <strong>{formatEstimatedTokens(draft.window_stats.estimated_total_tokens)}</strong>
-              </div>
-              <div>
-                <span className="block text-muted-foreground">{tr("handoff.window.active")}</span>
-                <strong>{formatEstimatedTokens(draft.window_stats.estimated_active_tokens)}</strong>
-              </div>
-              <div>
-                <span className="block text-muted-foreground">{tr("handoff.window.deferred")}</span>
-                <strong>
-                  {formatEstimatedTokens(draft.window_stats.estimated_deferred_tokens)}
-                </strong>
-              </div>
+            <div className="grid gap-2 md:grid-cols-3">
+              <DecisionCard
+                title={tr("handoff.section.direct")}
+                value={formatEstimatedTokens(draft.window_stats.estimated_active_tokens)}
+                detail={tr("handoff.section.directDetail", {
+                  turns: draft.window_stats.active.turn_count,
+                  tools: draft.window_stats.active.tool_call_count,
+                })}
+              />
+              <DecisionCard
+                title={tr("handoff.section.deferred")}
+                value={formatEstimatedTokens(draft.window_stats.estimated_deferred_tokens)}
+                detail={tr("handoff.section.deferredDetail", {
+                  turns: draft.window_stats.deferred_turn_count,
+                  blocks: draft.window_stats.deferred_block_count,
+                })}
+              />
+              <DecisionCard
+                title={tr("handoff.section.excluded")}
+                value={tr("handoff.section.excludedValue", {
+                  count: acknowledgementLosses.reduce((sum, loss) => sum + loss.count, 0),
+                })}
+                detail={tr("handoff.section.excludedDetail")}
+              />
             </div>
+            <p className="m-0 text-xs leading-relaxed text-muted-foreground">
+              {tr("handoff.historyBudgetOutcome", {
+                budget: formatEstimatedTokens(draft.history_budget_tokens),
+                active: formatEstimatedTokens(draft.window_stats.estimated_active_tokens),
+              })}
+            </p>
+            {draft.capabilities && (
+              <div className="grid gap-2 rounded-lg border border-border/70 bg-muted/20 p-3">
+                <strong className="text-xs uppercase tracking-[.08em] text-muted-foreground">
+                  {tr("handoff.capabilities.title")}
+                </strong>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(Object.keys(capabilityLabels) as Array<keyof typeof capabilityLabels>).map(
+                    (capability) => (
+                      <div
+                        className="flex items-center justify-between gap-3 rounded-md bg-background px-2.5 py-2 text-xs"
+                        key={capability}
+                      >
+                        <span>{tr(capabilityLabels[capability])}</span>
+                        <CapabilityStatus status={draft.capabilities[capability].status} />
+                      </div>
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
             {draft.window_strategy === "windowed" && (
               <div
-                className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
                   draft.mcp_available
                     ? "border-blue-500/25 bg-blue-500/5 text-foreground"
                     : "border-destructive/30 bg-destructive/5 text-destructive"
                 }`}
               >
                 <CircleAlert className="mt-0.5 shrink-0" size={14} />
-                {tr(
-                  draft.mcp_available
-                    ? "handoff.window.archiveReady"
-                    : "handoff.window.mcpRequired",
-                  {
-                    turns: draft.window_stats.deferred_turn_count,
-                    blocks: draft.window_stats.deferred_block_count,
-                  },
+                <span>
+                  {draft.mcp_available
+                    ? tr("handoff.window.archiveReady", {
+                        turns: draft.window_stats.deferred_turn_count,
+                        blocks: draft.window_stats.deferred_block_count,
+                      })
+                    : mcpSetupStatus === "supported"
+                      ? tr("handoff.window.mcpRequired", {
+                          turns: draft.window_stats.deferred_turn_count,
+                          blocks: draft.window_stats.deferred_block_count,
+                        })
+                      : mcpSetupStatus === "unavailable"
+                        ? tr("handoff.window.mcpUnavailable")
+                        : tr("handoff.window.mcpUnsupported", {
+                            agent: agentName(targetAgent),
+                          })}
+                </span>
+                {!draft.mcp_available && mcpSetupStatus === "supported" && (
+                  <Button
+                    size="sm"
+                    className="shrink-0"
+                    disabled={busy}
+                    onClick={() => void planMcpConnection()}
+                  >
+                    <PlugZap size={14} />
+                    {tr("handoff.connectMcp", { agent: agentName(targetAgent) })}
+                  </Button>
                 )}
               </div>
             )}
-            {draft.native_capability.reason && (
+            {nativeCapabilityReason && (
               <p className="m-0 text-xs text-muted-foreground">
-                {tr(`handoff.capabilityReason.${draft.native_capability.reason}`)}
+                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
               </p>
             )}
-            {draft.losses.map((loss) => (
+            {reasoningExcluded && (
+              <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-sm text-foreground">
+                <ShieldCheck className="mt-0.5 shrink-0 text-blue-600" size={14} />
+                {tr("handoff.reasoningPrivacy", { count: reasoningExcluded.count })}
+              </div>
+            )}
+            {acknowledgementLosses.map((loss) => (
               <div
                 className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700"
                 key={loss.code}
@@ -272,7 +413,7 @@ export function SessionHandoffDialog({
                 {tr(`handoff.loss.${loss.code}`, { count: loss.count })}
               </div>
             ))}
-            {draft.losses.length > 0 && (
+            {acknowledgementLosses.length > 0 && (
               <Label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
                 <Checkbox
                   checked={acceptLosses}
@@ -281,16 +422,23 @@ export function SessionHandoffDialog({
                 {tr("handoff.acceptLosses")}
               </Label>
             )}
-            <Textarea
-              className="min-h-[320px] flex-1 resize-none font-mono text-xs leading-relaxed"
-              aria-label={tr("handoff.preview")}
-              value={content}
-              onChange={(event) => setContent((event.target as HTMLInputElement).value)}
-              readOnly={draft.mode === "native-session" || draft.window_strategy === "windowed"}
-              spellCheck={false}
-            />
+            <Collapsible>
+              <CollapsibleTrigger className="w-fit cursor-pointer bg-transparent text-xs font-medium text-muted-foreground hover:text-foreground">
+                {tr("handoff.technicalPreview")}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="pt-2.5">
+                <Textarea
+                  className="min-h-[280px] resize-y font-mono text-xs leading-relaxed"
+                  aria-label={tr("handoff.preview")}
+                  value={content}
+                  onChange={(event: any) => setContent((event.target as HTMLTextAreaElement).value)}
+                  readOnly={draft.mode === "native-session" || draft.window_strategy === "windowed"}
+                  spellCheck={false}
+                />
+              </CollapsibleContent>
+            </Collapsible>
           </div>
-        ) : (
+        ) : sourceCanContinue ? (
           <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
             <div className="grid grid-cols-2 gap-3 max-[820px]:grid-cols-1">
               <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
@@ -378,6 +526,15 @@ export function SessionHandoffDialog({
               </Collapsible>
             </div>
           </div>
+        ) : (
+          <div className="grid min-h-[360px] place-content-center px-6 py-8 text-center">
+            <div
+              role="alert"
+              className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
+            >
+              {tr("handoff.sourceReadOnly")}
+            </div>
+          </div>
         )}
         <footer className="flex min-h-16 items-center justify-end gap-2 border-t border-border px-5 py-3">
           {draft ? (
@@ -402,7 +559,7 @@ export function SessionHandoffDialog({
               </Button>
             </>
           ) : (
-            <Button disabled={busy} onClick={() => void prepare()}>
+            <Button disabled={busy || !sourceCanContinue} onClick={() => void prepare()}>
               <FileOutput size={14} />
               {tr(busy ? "common.loading" : "handoff.prepare")}
             </Button>
@@ -413,6 +570,51 @@ export function SessionHandoffDialog({
   );
 }
 
+function DecisionCard({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return (
+    <div className="grid content-start gap-1 rounded-lg border border-border bg-muted/25 p-3 text-xs">
+      <span className="text-muted-foreground">{title}</span>
+      <strong className="text-sm text-foreground">{value}</strong>
+      <span className="leading-relaxed text-muted-foreground">{detail}</span>
+    </div>
+  );
+}
+
 function formatEstimatedTokens(value: number) {
+  if (value === 0) return "0 Token";
+  if (value < 1000) return "<1k Token";
   return `≈${Math.round(value / 1000)}k Token`;
+}
+
+function agentName(agent: AgentKind) {
+  return sessionHandoffTargets.find(([value]) => value === agent)?.[1] ?? agent;
+}
+
+const capabilityLabels = {
+  source_read: "handoff.capabilities.sourceRead",
+  source_parse: "handoff.capabilities.sourceParse",
+  native_resume: "handoff.capabilities.nativeResume",
+  file_handoff: "handoff.capabilities.fileHandoff",
+  windowed_context: "handoff.capabilities.windowedContext",
+  mcp_setup: "handoff.capabilities.mcpSetup",
+  interactive_launch: "handoff.capabilities.interactiveLaunch",
+} as const;
+
+function CapabilityStatus({ status }: { status: ContinuationCapabilityStatus }) {
+  const { tr } = useI18n();
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        status === "supported"
+          ? "bg-emerald-500/10 text-emerald-700"
+          : status === "unavailable"
+            ? "bg-amber-500/10 text-amber-700"
+            : status === "unsupported"
+              ? "bg-muted text-muted-foreground"
+              : "bg-blue-500/10 text-blue-700"
+      }`}
+    >
+      {tr(`handoff.capabilities.status.${status}`)}
+    </span>
+  );
 }

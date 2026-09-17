@@ -6,6 +6,8 @@ directories:
 files:
   - dist/**
   - dist-electron/**
+  # Renderer and main-process dependencies are bundled by Vite.
+  - "!node_modules/**"
   - "!**/*.map"
   - "!**/*.tsbuildinfo"
   - "!**/.DS_Store"

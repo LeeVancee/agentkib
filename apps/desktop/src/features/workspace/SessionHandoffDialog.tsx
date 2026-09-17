@@ -30,6 +30,7 @@ import type {
 } from "@/core/types";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { sessionHandoffTargets } from "./session-handoff-targets";
+import { withAsyncCleanup } from "@/lib/utils";
 
 export function SessionHandoffDialog({
   workspace,
@@ -137,15 +138,20 @@ export function SessionHandoffDialog({
     await Promise.resolve();
     setBusy(true);
     setError("");
-    try {
-      const preparation = await api.prepareSessionHandoff(request());
-      if (!isCurrent(identity)) return;
-      showDraft(preparation.draft);
-    } catch (reason) {
-      if (isCurrent(identity)) setError(reason);
-    } finally {
-      if (isLatest(identity)) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const preparation = await api.prepareSessionHandoff(request());
+          if (!isCurrent(identity)) return;
+          showDraft(preparation.draft);
+        } catch (reason) {
+          if (isCurrent(identity)) setError(reason);
+        }
+      },
+      () => {
+        if (isLatest(identity)) setBusy(false);
+      },
+    );
   };
 
   useEffect(() => {
@@ -159,26 +165,31 @@ export function SessionHandoffDialog({
     const identity = captureIdentity();
     setBusy(true);
     setError("");
-    try {
-      const planned = await api.planSessionHandoff(
-        session.id,
-        workspace.id,
-        draft.filename,
-        draft.format,
-        draft.mode === "handoff-file" && draft.window_strategy === "full" ? content : undefined,
-        targetAgent,
-        draft.mode,
-        draft.source_fingerprint,
-        acceptLosses,
-        draft.history_budget_tokens,
-        draft.archive_id,
-      );
-      if (isCurrent(identity)) onPlanned(planned);
-    } catch (reason) {
-      if (isCurrent(identity)) setError(reason);
-    } finally {
-      if (isLatest(identity)) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const planned = await api.planSessionHandoff(
+            session.id,
+            workspace.id,
+            draft.filename,
+            draft.format,
+            draft.mode === "handoff-file" && draft.window_strategy === "full" ? content : undefined,
+            targetAgent,
+            draft.mode,
+            draft.source_fingerprint,
+            acceptLosses,
+            draft.history_budget_tokens,
+            draft.archive_id,
+          );
+          if (isCurrent(identity)) onPlanned(planned);
+        } catch (reason) {
+          if (isCurrent(identity)) setError(reason);
+        }
+      },
+      () => {
+        if (isLatest(identity)) setBusy(false);
+      },
+    );
   };
 
   const planMcpConnection = async () => {
@@ -186,45 +197,55 @@ export function SessionHandoffDialog({
     const identity = captureIdentity();
     setBusy(true);
     setError("");
-    try {
-      const changeSet = await api.planSessionMcpConnection(workspace.id, targetAgent);
-      if (!isCurrent(identity)) return;
-      if (changeSet.changes.length === 0) {
-        const preparation = await api.prepareSessionHandoff(request());
-        if (isCurrent(identity)) showDraft(preparation.draft);
-        return;
-      }
-      onMcpConnectionPlanned(changeSet, {
-        sessionId: session.id,
-        targetAgent,
-        historyBudgetTokens: historyBudget,
-        format,
-      });
-    } catch (reason) {
-      if (isCurrent(identity)) setError(reason);
-    } finally {
-      if (isLatest(identity)) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const changeSet = await api.planSessionMcpConnection(workspace.id, targetAgent);
+          if (!isCurrent(identity)) return;
+          if (changeSet.changes.length === 0) {
+            const preparation = await api.prepareSessionHandoff(request());
+            if (isCurrent(identity)) showDraft(preparation.draft);
+            return;
+          }
+          onMcpConnectionPlanned(changeSet, {
+            sessionId: session.id,
+            targetAgent,
+            historyBudgetTokens: historyBudget,
+            format,
+          });
+        } catch (reason) {
+          if (isCurrent(identity)) setError(reason);
+        }
+      },
+      () => {
+        if (isLatest(identity)) setBusy(false);
+      },
+    );
   };
 
   const copy = async () => {
     const identity = captureIdentity();
     setBusy(true);
     setError("");
-    try {
-      const sanitized = await api.sanitizeSessionHandoff(format, content);
-      if (!isCurrent(identity)) return;
-      await navigator.clipboard?.writeText(sanitized);
-      if (!isCurrent(identity)) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        if (activeRef.current) setCopied(false);
-      }, 1200);
-    } catch (reason) {
-      if (isCurrent(identity)) setError(reason);
-    } finally {
-      if (isLatest(identity)) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const sanitized = await api.sanitizeSessionHandoff(format, content);
+          if (!isCurrent(identity)) return;
+          await navigator.clipboard?.writeText(sanitized);
+          if (!isCurrent(identity)) return;
+          setCopied(true);
+          window.setTimeout(() => {
+            if (activeRef.current) setCopied(false);
+          }, 1200);
+        } catch (reason) {
+          if (isCurrent(identity)) setError(reason);
+        }
+      },
+      () => {
+        if (isLatest(identity)) setBusy(false);
+      },
+    );
   };
 
   const reset = () => {

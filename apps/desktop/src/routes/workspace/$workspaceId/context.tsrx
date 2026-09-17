@@ -10,6 +10,7 @@ import { tr } from "../../../core/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { withAsyncCleanup } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -78,14 +79,19 @@ function ContextPage({
     const sequence = ++requestSequence.current;
     setResolving(true);
     setError("");
-    try {
-      const next = await api.context(project, cwd, agent);
-      if (sequence === requestSequence.current) setPreview(next);
-    } catch (value) {
-      if (sequence === requestSequence.current) setError(localizeMessage(value));
-    } finally {
-      if (sequence === requestSequence.current) setResolving(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const next = await api.context(project, cwd, agent);
+          if (sequence === requestSequence.current) setPreview(next);
+        } catch (value) {
+          if (sequence === requestSequence.current) setError(localizeMessage(value));
+        }
+      },
+      () => {
+        if (sequence === requestSequence.current) setResolving(false);
+      },
+    );
   };
   useEffect(() => {
     const timeout = window.setTimeout(() => {

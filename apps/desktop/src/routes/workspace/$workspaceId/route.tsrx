@@ -27,7 +27,7 @@ import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { tr } from "../../../core/i18n";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import type { Manifest, WorkspaceSummary } from "../../../core/types";
 import {
   DropdownMenu,
@@ -157,34 +157,47 @@ function WorkspaceLayout() {
       useWorkspaceStore.getState().project === targetProject;
     setBusy(true);
     setMessage("");
-    try {
-      const [scanResult, manifestResult, runtimeResult] = await Promise.allSettled([
-        api.scan(targetProject),
-        api.manifest(targetProject),
-        api.runtime(),
-      ]);
-      if (!isCurrentRequest()) return;
-      if (scanResult.status === "rejected") throw scanResult.reason;
-      if (runtimeResult.status === "rejected") throw runtimeResult.reason;
-      const nextScan = scanResult.value;
-      const nextManifest = manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
-      const resolvedManifest = draft ?? nextManifest;
-      if (manifestResult.status === "rejected") setMessage(localizeMessage(manifestResult.reason));
-      setScan(nextScan);
-      setManifest(resolvedManifest);
-      setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-      setRuntime(runtimeResult.value);
-      if (!resolvedManifest && currentPage !== "doctor") {
-        void navigate({
-          to: "/workspace/$workspaceId/doctor",
-          params: { workspaceId },
-        });
-      }
-    } catch (error) {
-      if (isCurrentRequest()) setMessage(localizeMessage(error));
-    } finally {
-      if (isCurrentRequest()) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const [scanResult, manifestResult, runtimeResult] = await Promise.allSettled([
+            api.scan(targetProject),
+            api.manifest(targetProject),
+            api.runtime(),
+          ]);
+          if (!isCurrentRequest()) return;
+          if (scanResult.status === "rejected") {
+            setMessage(localizeMessage(scanResult.reason));
+            return;
+          }
+          if (runtimeResult.status === "rejected") {
+            setMessage(localizeMessage(runtimeResult.reason));
+            return;
+          }
+          const nextScan = scanResult.value;
+          const nextManifest =
+            manifestResult.status === "fulfilled" ? manifestResult.value : undefined;
+          const resolvedManifest = draft ?? nextManifest;
+          if (manifestResult.status === "rejected")
+            setMessage(localizeMessage(manifestResult.reason));
+          setScan(nextScan);
+          setManifest(resolvedManifest);
+          setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+          setRuntime(runtimeResult.value);
+          if (!resolvedManifest && currentPage !== "doctor") {
+            void navigate({
+              to: "/workspace/$workspaceId/doctor",
+              params: { workspaceId },
+            });
+          }
+        } catch (error) {
+          if (isCurrentRequest()) setMessage(localizeMessage(error));
+        }
+      },
+      () => {
+        if (isCurrentRequest()) setBusy(false);
+      },
+    );
   };
 
   useEffect(() => {
@@ -211,21 +224,26 @@ function WorkspaceLayout() {
       useWorkspaceStore.getState().project === targetProject;
     setBusy(true);
     setMessage("");
-    try {
-      const nextChangeSet = await api.plan(targetProject, targetManifest, includeHome);
-      if (!isCurrentRequest()) return;
-      setChangeSet(nextChangeSet);
-      setChangeSetOrigin("standard");
-      setHandoffLaunchRequest(undefined);
-      void navigate({
-        to: "/workspace/$workspaceId/changes",
-        params: { workspaceId },
-      });
-    } catch (error) {
-      if (isCurrentRequest()) setMessage(localizeMessage(error));
-    } finally {
-      if (isCurrentRequest()) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextChangeSet = await api.plan(targetProject, targetManifest, includeHome);
+          if (!isCurrentRequest()) return;
+          setChangeSet(nextChangeSet);
+          setChangeSetOrigin("standard");
+          setHandoffLaunchRequest(undefined);
+          void navigate({
+            to: "/workspace/$workspaceId/changes",
+            params: { workspaceId },
+          });
+        } catch (error) {
+          if (isCurrentRequest()) setMessage(localizeMessage(error));
+        }
+      },
+      () => {
+        if (isCurrentRequest()) setBusy(false);
+      },
+    );
   };
 
   if (!activeWorkspace) {

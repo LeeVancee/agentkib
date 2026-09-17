@@ -16,6 +16,7 @@ import {
 import type { AccentThemeId, EffectiveTheme, RuntimeInfo, ThemePreference } from "@/core/types";
 import { localizeMessage } from "@/core/i18n";
 import { Button } from "@/components/ui/button";
+import { withAsyncCleanup } from "@/lib/utils";
 
 import {
   SettingsNotice,
@@ -166,32 +167,38 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
     if (preference === selectedMode || busy) return;
     setBusy(true);
     setError("");
-    try {
-      const nextRuntime = await api.setThemePreference(preference);
-      applyTheme(nextRuntime.effective_theme);
-      onChanged(nextRuntime);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextRuntime = await api.setThemePreference(preference);
+          applyTheme(nextRuntime.effective_theme);
+          onChanged(nextRuntime);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   const updateAccent = async (preference: AccentThemeId) => {
     if (preference === selectedAccent || busy) return;
     setBusy(true);
     setError("");
-    try {
-      const nextRuntime = await api.setAccentThemePreference(preference);
-      const nextAccent = nextRuntime.accent_theme_preference ?? preference;
-      applyAccentTheme(nextAccent);
-      cacheAccentTheme(nextAccent);
-      onChanged(nextRuntime);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextRuntime = await api.setAccentThemePreference(preference);
+          const nextAccent = nextRuntime.accent_theme_preference ?? preference;
+          applyAccentTheme(nextAccent);
+          cacheAccentTheme(nextAccent);
+          onChanged(nextRuntime);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   return (

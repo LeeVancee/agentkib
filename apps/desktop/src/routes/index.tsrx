@@ -90,7 +90,7 @@ function HomeRoute() {
       setContinuationsError(localizeMessage(failures[0].reason));
     }
     setContinuationsRefreshing(false);
-  }, [continuationEnabled, continuationWorkspaces, queryClient]);
+  }, [continuationEnabled, continuationWorkspaces, localizeMessage, queryClient]);
   useEffect(() => {
     if (!continuationEnabled) {
       continuationRefreshGeneration.current += 1;

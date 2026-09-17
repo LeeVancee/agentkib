@@ -34,6 +34,7 @@ import {
   Tags,
 } from "@octanejs/lucide";
 import { api } from "@/core/api";
+import { withAsyncCleanup } from "@/lib/utils";
 
 import { WorkspaceGitSkeleton } from "./WorkspaceSkeleton";
 import type {
@@ -202,28 +203,33 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     setError("");
     setSelectedFile(undefined);
     setDiffState({ status: "idle" });
-    try {
-      const nextSummary = await api.workspaceGitSummary(workspace.id);
-      if (sequence !== historySequence.current) return;
-      setSummary(nextSummary);
-      if (!nextSummary) {
-        setHistoryPages([]);
-        setHistoryPageIndex(0);
-        return;
-      }
-      const page = await api.workspaceGitHistory(workspace.id, historyQuery());
-      if (sequence !== historySequence.current) return;
-      const commits = page?.commits ?? [];
-      setHistoryPages([{ commits, nextCursor: page?.next_cursor }]);
-      setHistoryPageIndex(0);
-      setSelectedOid((current) =>
-        commits.some((commit) => commit.oid === current) ? current : commits[0]?.oid,
-      );
-    } catch (reason) {
-      if (sequence === historySequence.current) setError(reason);
-    } finally {
-      if (sequence === historySequence.current) setLoading(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextSummary = await api.workspaceGitSummary(workspace.id);
+          if (sequence !== historySequence.current) return;
+          setSummary(nextSummary);
+          if (!nextSummary) {
+            setHistoryPages([]);
+            setHistoryPageIndex(0);
+            return;
+          }
+          const page = await api.workspaceGitHistory(workspace.id, historyQuery());
+          if (sequence !== historySequence.current) return;
+          const commits = page?.commits ?? [];
+          setHistoryPages([{ commits, nextCursor: page?.next_cursor }]);
+          setHistoryPageIndex(0);
+          setSelectedOid((current) =>
+            commits.some((commit) => commit.oid === current) ? current : commits[0]?.oid,
+          );
+        } catch (reason) {
+          if (sequence === historySequence.current) setError(reason);
+        }
+      },
+      () => {
+        if (sequence === historySequence.current) setLoading(false);
+      },
+    );
   };
 
   useEffect(() => {
@@ -274,14 +280,19 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     setFiles([]);
     setFilesError("");
     setFilesLoading(true);
-    try {
-      const nextFiles = await api.gitCommitFiles(workspace.id, oid);
-      if (sequence === filesSequence.current) setFiles(nextFiles ?? []);
-    } catch (reason) {
-      if (sequence === filesSequence.current) setFilesError(reason);
-    } finally {
-      if (sequence === filesSequence.current) setFilesLoading(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextFiles = await api.gitCommitFiles(workspace.id, oid);
+          if (sequence === filesSequence.current) setFiles(nextFiles ?? []);
+        } catch (reason) {
+          if (sequence === filesSequence.current) setFilesError(reason);
+        }
+      },
+      () => {
+        if (sequence === filesSequence.current) setFilesLoading(false);
+      },
+    );
   };
 
   useEffect(() => {
@@ -390,25 +401,30 @@ export function WorkspaceGitPage({ workspace, subview, onSubviewChange }: Worksp
     const sequence = historySequence.current;
     const cursor = nextCursor;
     setLoadingPage(true);
-    try {
-      const page = await api.workspaceGitHistory(workspace.id, {
-        ...historyQuery(),
-        cursor,
-      });
-      if (sequence !== historySequence.current) return;
-      const commits = page?.commits ?? [];
-      setHistoryPages((current) => [
-        ...current.slice(0, historyPageIndex + 1),
-        { commits, nextCursor: page?.next_cursor },
-      ]);
-      setHistoryPageIndex((current) => current + 1);
-      setSelectedOid(commits[0]?.oid);
-      historyListRef.current?.scrollTo({ top: 0 });
-    } catch (reason) {
-      if (sequence === historySequence.current) setError(reason);
-    } finally {
-      if (sequence === historySequence.current) setLoadingPage(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const page = await api.workspaceGitHistory(workspace.id, {
+            ...historyQuery(),
+            cursor,
+          });
+          if (sequence !== historySequence.current) return;
+          const commits = page?.commits ?? [];
+          setHistoryPages((current) => [
+            ...current.slice(0, historyPageIndex + 1),
+            { commits, nextCursor: page?.next_cursor },
+          ]);
+          setHistoryPageIndex((current) => current + 1);
+          setSelectedOid(commits[0]?.oid);
+          historyListRef.current?.scrollTo({ top: 0 });
+        } catch (reason) {
+          if (sequence === historySequence.current) setError(reason);
+        }
+      },
+      () => {
+        if (sequence === historySequence.current) setLoadingPage(false);
+      },
+    );
   };
 
   const worktreeEntries = useMemo(() => worktreeRows(summary?.changes ?? []), [summary?.changes]);

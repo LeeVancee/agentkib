@@ -66,7 +66,7 @@ import type {
   RuntimeInfo,
   WorkspaceSummary,
 } from "../core/types";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 
 type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 const agentLabels: Record<AgentKind, string> = {
@@ -128,40 +128,48 @@ function CatalogRoute() {
     const requestId = ++openRequest.current;
     setBusy(true);
     setMessage("");
-    try {
-      const runtimePromise = useAppStore.getState().runtime
-        ? Promise.resolve(useAppStore.getState().runtime)
-        : api.runtime();
-      const [nextScan, nextRuntime] = await Promise.all([api.scan(workspace.path), runtimePromise]);
-      if (requestId !== openRequest.current) return false;
-      let nextManifest: Manifest | undefined;
-      try {
-        nextManifest = await api.manifest(workspace.path);
-      } catch (error) {
-        if (requestId === openRequest.current) setMessage(localizeMessage(error));
-      }
-      if (requestId !== openRequest.current) return false;
-      setChangeSet(undefined);
-      setChangeSetOrigin("standard");
-      setHandoffLaunchRequest(undefined);
-      setProject(workspace.path);
-      setScan(nextScan);
-      setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
-      setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
-      setRuntime(nextRuntime);
-      setSelectedWorkspace(workspace);
-      setBusy(false);
-      await navigate({
-        to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
-        params: { workspaceId: workspace.id },
-      });
-      return Boolean(nextManifest);
-    } catch (error) {
-      if (requestId === openRequest.current) setMessage(localizeMessage(error));
-      return false;
-    } finally {
-      if (requestId === openRequest.current) setBusy(false);
-    }
+    return withAsyncCleanup(
+      async () => {
+        try {
+          const runtimePromise = useAppStore.getState().runtime
+            ? Promise.resolve(useAppStore.getState().runtime)
+            : api.runtime();
+          const [nextScan, nextRuntime] = await Promise.all([
+            api.scan(workspace.path),
+            runtimePromise,
+          ]);
+          if (requestId !== openRequest.current) return false;
+          let nextManifest: Manifest | undefined;
+          try {
+            nextManifest = await api.manifest(workspace.path);
+          } catch (error) {
+            if (requestId === openRequest.current) setMessage(localizeMessage(error));
+          }
+          if (requestId !== openRequest.current) return false;
+          setChangeSet(undefined);
+          setChangeSetOrigin("standard");
+          setHandoffLaunchRequest(undefined);
+          setProject(workspace.path);
+          setScan(nextScan);
+          setManifest(nextManifest ? (workspaceDrafts[workspace.id] ?? nextManifest) : undefined);
+          setBaselineManifest(nextManifest ? JSON.stringify(nextManifest) : "");
+          setRuntime(nextRuntime);
+          setSelectedWorkspace(workspace);
+          setBusy(false);
+          await navigate({
+            to: nextManifest ? "/workspace/$workspaceId" : "/workspace/$workspaceId/doctor",
+            params: { workspaceId: workspace.id },
+          });
+          return Boolean(nextManifest);
+        } catch (error) {
+          if (requestId === openRequest.current) setMessage(localizeMessage(error));
+          return false;
+        }
+      },
+      () => {
+        if (requestId === openRequest.current) setBusy(false);
+      },
+    );
   };
   const openWorkspaceById = async (id: string) => {
     const workspace = workspaces.find((item) => item.id === id);
@@ -434,13 +442,16 @@ function McpHubPage({
   const searchRegistry = async () => {
     setBusy(true);
     setError("");
-    try {
-      setRegistry(await api.searchMcpRegistry(query));
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          setRegistry(await api.searchMcpRegistry(query));
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   const install = async (entry: McpRegistryEntry) => {
     const command =
@@ -452,15 +463,19 @@ function McpHubPage({
     if (env === null) return;
     setBusy(true);
     setError("");
-    try {
-      const result = await api.installMcp(entry, project);
-      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
-      await load();
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const result = await api.installMcp(entry, project);
+          if (Object.keys(env).length)
+            await api.saveMcpLocalValues(result.server.id, env, {}, project);
+          await load();
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   const updateInstallation = async (installation: McpInstallation, entry: McpRegistryEntry) => {
     if (
@@ -473,15 +488,19 @@ function McpHubPage({
     if (env === null) return;
     setBusy(true);
     setError("");
-    try {
-      const result = await api.updateMcp(installation.id, entry, project);
-      if (Object.keys(env).length) await api.saveMcpLocalValues(result.server.id, env, {}, project);
-      await load();
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const result = await api.updateMcp(installation.id, entry, project);
+          if (Object.keys(env).length)
+            await api.saveMcpLocalValues(result.server.id, env, {}, project);
+          await load();
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   const updateNetwork = async (lanEnabled: boolean) => {
     if (
@@ -896,26 +915,34 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
   const save = async () => {
     setSaving(true);
     setError("");
-    try {
-      const server = JSON.parse(config) as McpServerConfig;
-      if (!server.id || !server.name || !server.transport)
-        throw new Error(tr("mcp.configRequired"));
-      if (server.transport === "sse") throw new Error(tr("mcp.sseImportOnly"));
-      await api.saveMcpServer(server, project);
-      await api.saveMcpLocalValues(
-        server.id,
-        parseSecretLines(env),
-        parseSecretLines(headers),
-        project,
-      );
-      setEnv("");
-      setHeaders("");
-      await onSaved();
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setSaving(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const server = JSON.parse(config) as McpServerConfig;
+          if (!server.id || !server.name || !server.transport) {
+            setError(tr("mcp.configRequired"));
+            return;
+          }
+          if (server.transport === "sse") {
+            setError(tr("mcp.sseImportOnly"));
+            return;
+          }
+          await api.saveMcpServer(server, project);
+          await api.saveMcpLocalValues(
+            server.id,
+            parseSecretLines(env),
+            parseSecretLines(headers),
+            project,
+          );
+          setEnv("");
+          setHeaders("");
+          await onSaved();
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setSaving(false),
+    );
   };
   return (
     <Card className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
@@ -995,13 +1022,16 @@ function McpMigrationInventory({
     if (!(await dialogs.confirm(tr("mcp.migrationConfirm", { count: selected.length })))) return;
     setBusy(true);
     setError("");
-    try {
-      await onPlanned(project, await api.planMcpMigration(project, selected));
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await onPlanned(project, await api.planMcpMigration(project, selected));
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   const toggle = (id: string, checked: boolean) =>
     setSelected((current) =>

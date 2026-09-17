@@ -14,6 +14,7 @@ import {
 import type { AccentThemeId, EffectiveTheme, RuntimeInfo, ThemePreference } from "@/core/types";
 import { localizeMessage } from "@/core/i18n";
 import { Button } from "@/components/ui/button";
+import { withAsyncCleanup } from "@/lib/utils";
 
 import {
   SettingsNotice,
@@ -121,12 +122,7 @@ function AccentThemePreview({ theme, mode }: { theme: AccentThemeId; mode: Effec
   } as CSSProperties;
 
   return (
-    <div
-      className="theme-accent-preview"
-      data-preview-mode={mode}
-      style={style}
-      aria-hidden="true"
-    >
+    <div className="theme-accent-preview" data-preview-mode={mode} style={style} aria-hidden="true">
       <span className="theme-preview-chrome" />
       <div className="theme-accent-preview-sidebar">
         <span className="theme-preview-logo" />
@@ -169,42 +165,45 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
     if (preference === selectedMode || busy) return;
     setBusy(true);
     setError("");
-    try {
-      const nextRuntime = await api.setThemePreference(preference);
-      applyTheme(nextRuntime.effective_theme);
-      onChanged(nextRuntime);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextRuntime = await api.setThemePreference(preference);
+          applyTheme(nextRuntime.effective_theme);
+          onChanged(nextRuntime);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   const updateAccent = async (preference: AccentThemeId) => {
     if (preference === selectedAccent || busy) return;
     setBusy(true);
     setError("");
-    try {
-      const nextRuntime = await api.setAccentThemePreference(preference);
-      const nextAccent = nextRuntime.accent_theme_preference ?? preference;
-      applyAccentTheme(nextAccent);
-      cacheAccentTheme(nextAccent);
-      onChanged(nextRuntime);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextRuntime = await api.setAccentThemePreference(preference);
+          const nextAccent = nextRuntime.accent_theme_preference ?? preference;
+          applyAccentTheme(nextAccent);
+          cacheAccentTheme(nextAccent);
+          onChanged(nextRuntime);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   return (
     <SettingsPage variant="form">
       <SettingsPageHeader title={tr("settings.section.appearance")} />
 
-      <SettingsSection
-        title={tr("settings.theme")}
-        target="appearance-mode"
-      >
+      <SettingsSection title={tr("settings.theme")} target="appearance-mode">
         <div className="grid gap-3 p-4 sm:grid-cols-3">
           {themePreferences.map((mode) => {
             const Icon = themeIcons[mode];
@@ -234,10 +233,7 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
         </div>
       </SettingsSection>
 
-      <SettingsSection
-        title={tr("settings.accentTheme")}
-        target="appearance-theme"
-      >
+      <SettingsSection title={tr("settings.accentTheme")} target="appearance-theme">
         <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
           {ACCENT_THEME_IDS.map((theme) => {
             const selected = selectedAccent === theme;

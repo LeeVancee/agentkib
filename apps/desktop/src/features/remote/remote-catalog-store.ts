@@ -7,6 +7,7 @@ import type { ConversationEventPage, ConversationSessionSummary } from "@/core/t
 import { subscribeRemoteStatus, useRemoteStore } from "./remote-store";
 import { isRemoteViewActive } from "./visible-polling";
 import { parseRemoteCatalog, parseRemoteEvents } from "./remote-payload";
+import { withAsyncCleanup } from "@/lib/utils";
 
 interface CachedCatalog extends RemoteCatalog {
   syncedAt: string;
@@ -218,17 +219,20 @@ export function RemoteCatalogBridge() {
     const tick = async () => {
       if (disposed || running || !isRemoteViewActive()) return;
       running = true;
-      try {
-        const hosts = useRemoteStore.getState().snapshot?.connections ?? [];
-        // Keep controller reads bounded even with many paired hosts.
-        for (let offset = 0; offset < hosts.length && !disposed; offset += 4) {
-          await Promise.all(
-            hosts.slice(offset, offset + 4).map((host) => refreshRemoteCatalog(host.id)),
-          );
-        }
-      } finally {
-        running = false;
-      }
+      await withAsyncCleanup(
+        async () => {
+          const hosts = useRemoteStore.getState().snapshot?.connections ?? [];
+          // Keep controller reads bounded even with many paired hosts.
+          for (let offset = 0; offset < hosts.length && !disposed; offset += 4) {
+            await Promise.all(
+              hosts.slice(offset, offset + 4).map((host) => refreshRemoteCatalog(host.id)),
+            );
+          }
+        },
+        () => {
+          running = false;
+        },
+      );
     };
     const unsubscribe = subscribeRemoteStatus(tick);
     return () => {

@@ -45,12 +45,10 @@ function useRemoteStatus() {
 
 function RemoteFeedback() {
   const { tr } = useI18n();
-  const { loading, error: rawError, refresh, clearError } = useRemoteStore();
+  const { loading, error: rawError, refresh, clearError, snapshot } = useRemoteStore();
   return (
     <>
-      {loading && !useRemoteStore.getState().snapshot && (
-        <p role="status">{tr("remote.loading")}</p>
-      )}
+      {loading && !snapshot && <p role="status">{tr("remote.loading")}</p>}
       {rawError !== "" && (
         <SettingsNotice tone="error" inset={false} role="alert">
           <RemoteErrorDetails error={rawError} />

@@ -2,6 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "@/core/api";
 import { readRemoteHistory } from "@/features/remote/remote-catalog-store";
+import { withAsyncCleanup } from "@/lib/utils";
 import type { ConversationEvent, ConversationSessionSummary } from "@/core/types";
 
 interface HistoryState {
@@ -34,7 +35,9 @@ export function useSessionHistory(
 ) {
   const { localizeMessage } = useI18n();
   const sessionRef = useRef(session);
-  sessionRef.current = session;
+  useLayoutEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
   const sessionId = enabled && session?.availability === "readable" ? session.id : "";
   const key = sessionId ? JSON.stringify([session?.workspace_id, sessionId, revision]) : "";
   const [state, setState] = useState<HistoryState>(() => emptyHistory(key, !!key));
@@ -62,24 +65,29 @@ export function useSessionHistory(
     availableCursor.current = undefined;
     setState(emptyHistory(key, true));
     const isCurrent = () => activeKey.current === key && sequence.current === request;
-    try {
-      const currentSession = sessionRef.current;
-      const page = currentSession?.remote
-        ? await readRemoteHistory(currentSession)
-        : await api.sessionEvents(sessionId);
-      if (!isCurrent()) return;
-      availableCursor.current = page.next_cursor;
-      setState({
-        ...emptyHistory(key),
-        events: uniqueEvents(page.events),
-        warnings: [...new Set(page.warnings)],
-        nextCursor: page.next_cursor,
-      });
-    } catch (reason) {
-      if (isCurrent()) setState({ ...emptyHistory(key), error: reason });
-    } finally {
-      if (isCurrent()) pending.current.initial = false;
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const currentSession = sessionRef.current;
+          const page = currentSession?.remote
+            ? await readRemoteHistory(currentSession)
+            : await api.sessionEvents(sessionId);
+          if (!isCurrent()) return;
+          availableCursor.current = page.next_cursor;
+          setState({
+            ...emptyHistory(key),
+            events: uniqueEvents(page.events),
+            warnings: [...new Set(page.warnings)],
+            nextCursor: page.next_cursor,
+          });
+        } catch (reason) {
+          if (isCurrent()) setState({ ...emptyHistory(key), error: reason });
+        }
+      },
+      () => {
+        if (isCurrent()) pending.current.initial = false;
+      },
+    );
   }, [key, sessionId]);
 
   useEffect(() => {
@@ -107,37 +115,42 @@ export function useSessionHistory(
     pending.current.earlier = true;
     setState((current) => ({ ...current, loadingEarlier: true, error: "" }));
     const isCurrent = () => activeKey.current === key && sequence.current === request;
-    try {
-      const currentSession = sessionRef.current;
-      const page = currentSession?.remote
-        ? await readRemoteHistory(currentSession, cursor)
-        : await api.sessionEvents(sessionId, cursor);
-      if (!isCurrent()) return;
-      availableCursor.current = page.next_cursor;
-      setState((current) => ({
-        ...current,
-        events: uniqueEvents([...page.events, ...current.events]),
-        // A scan-budget notice describes the current cursor window, not permanent damage.
-        warnings: [
-          ...new Set([
-            ...page.warnings,
-            ...current.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
-          ]),
-        ],
-        nextCursor: page.next_cursor,
-        loadingEarlier: false,
-      }));
-    } catch (reason) {
-      if (isCurrent()) {
-        setState((current) => ({
-          ...current,
-          loadingEarlier: false,
-          error: reason,
-        }));
-      }
-    } finally {
-      if (isCurrent()) pending.current.earlier = false;
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const currentSession = sessionRef.current;
+          const page = currentSession?.remote
+            ? await readRemoteHistory(currentSession, cursor)
+            : await api.sessionEvents(sessionId, cursor);
+          if (!isCurrent()) return;
+          availableCursor.current = page.next_cursor;
+          setState((current) => ({
+            ...current,
+            events: uniqueEvents([...page.events, ...current.events]),
+            // A scan-budget notice describes the current cursor window, not permanent damage.
+            warnings: [
+              ...new Set([
+                ...page.warnings,
+                ...current.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
+              ]),
+            ],
+            nextCursor: page.next_cursor,
+            loadingEarlier: false,
+          }));
+        } catch (reason) {
+          if (isCurrent()) {
+            setState((current) => ({
+              ...current,
+              loadingEarlier: false,
+              error: reason,
+            }));
+          }
+        }
+      },
+      () => {
+        if (isCurrent()) pending.current.earlier = false;
+      },
+    );
   }, [key, sessionId, state.key, state.nextCursor]);
 
   // Render-time gating also prevents one frame of the previous conversation before effects run.

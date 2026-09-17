@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
 import { api } from "../../../core/api";
@@ -13,7 +13,7 @@ function WorkspaceDoctorRoute() {
   const navigate = useNavigate();
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId/doctor" });
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
-  const verification = useRef(search.doctorVerification).current;
+  const [verification] = useState(search.doctorVerification);
   const setRuntime = useAppStore((state) => state.setRuntime);
   const {
     project,

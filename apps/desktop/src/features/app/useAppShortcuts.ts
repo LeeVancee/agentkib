@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import type { GlobalPage } from "./app-route";
 import {
   currentAppPlatform,
@@ -45,37 +45,9 @@ export function useAppShortcuts({
   onOpenHelp,
   helpOpen,
 }: AppShortcutActions) {
-  const actionsRef = useRef<AppShortcutActions>({
-    onNavigate,
-    onOpenSettings,
-    onRefreshCurrent,
-    onAddWorkspace,
-    onAddScanRoot,
-    onToggleSidebar,
-    onGoBack,
-    onGoForward,
-    onOpenSearch,
-    onOpenHelp,
-    helpOpen,
-  });
-  actionsRef.current = {
-    onNavigate,
-    onOpenSettings,
-    onRefreshCurrent,
-    onAddWorkspace,
-    onAddScanRoot,
-    onToggleSidebar,
-    onGoBack,
-    onGoForward,
-    onOpenSearch,
-    onOpenHelp,
-    helpOpen,
-  };
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const actions = actionsRef.current;
-      if (event.defaultPrevented || event.isComposing || event.repeat || actions.helpOpen) return;
+      if (event.defaultPrevented || event.isComposing || event.repeat || helpOpen) return;
       if (isEditableTarget(event.target)) return;
       const platform = currentAppPlatform();
       const definition = shortcutDefinitions.find(
@@ -88,41 +60,53 @@ export function useAppShortcuts({
       event.preventDefault();
       const page = navigationByShortcut[definition.id];
       if (page) {
-        actions.onNavigate(page);
+        onNavigate(page);
         return;
       }
       switch (definition.id) {
         case "open-settings":
-          actions.onOpenSettings();
+          onOpenSettings();
           break;
         case "refresh-current":
-          void actions.onRefreshCurrent();
+          void onRefreshCurrent();
           break;
         case "add-workspace":
-          void actions.onAddWorkspace();
+          void onAddWorkspace();
           break;
         case "add-scan-root":
-          void actions.onAddScanRoot();
+          void onAddScanRoot();
           break;
         case "toggle-sidebar":
-          actions.onToggleSidebar();
+          onToggleSidebar();
           break;
         case "history-back":
-          actions.onGoBack();
+          onGoBack();
           break;
         case "history-forward":
-          actions.onGoForward();
+          onGoForward();
           break;
         case "open-search":
-          actions.onOpenSearch();
+          onOpenSearch();
           break;
         case "open-help":
-          actions.onOpenHelp();
+          onOpenHelp();
           break;
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [
+    helpOpen,
+    onAddScanRoot,
+    onAddWorkspace,
+    onGoBack,
+    onGoForward,
+    onNavigate,
+    onOpenHelp,
+    onOpenSearch,
+    onOpenSettings,
+    onRefreshCurrent,
+    onToggleSidebar,
+  ]);
 }

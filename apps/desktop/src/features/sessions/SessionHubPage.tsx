@@ -30,6 +30,7 @@ import {
 import { useSessionHistory } from "./useSessionHistory";
 import { ConversationTranscript } from "./ConversationTranscript";
 import { HistoryError, HistoryWarning } from "./HistoryFeedback";
+import { withAsyncCleanup } from "@/lib/utils";
 
 function Notice({ children, error = false }: { children: React.ReactNode; error?: boolean }) {
   return (
@@ -117,14 +118,19 @@ export function SessionHubPage() {
     enableLock.current = true;
     setEnabling(true);
     setEnableError("");
-    try {
-      useAppStore.getState().setRuntime(await api.setSessionIndexEnabled(true));
-    } catch (error) {
-      setEnableError(localizeMessage(error));
-    } finally {
-      enableLock.current = false;
-      setEnabling(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          useAppStore.getState().setRuntime(await api.setSessionIndexEnabled(true));
+        } catch (error) {
+          setEnableError(localizeMessage(error));
+        }
+      },
+      () => {
+        enableLock.current = false;
+        setEnabling(false);
+      },
+    );
   };
 
   if (!hub.runtimeReady || hub.workspacesLoading)

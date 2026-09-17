@@ -30,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
+import { withAsyncCleanup } from "@/lib/utils";
 import type {
   InstalledSkill,
   RemovedSkill,
@@ -122,15 +123,18 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const loadCatalog = async (force = false, reportError = true): Promise<unknown[]> => {
     setBusy("catalog");
     if (reportError) setErrors([]);
-    try {
-      setCatalog(await api.skillCatalog(force));
-      return [];
-    } catch (nextError) {
-      if (reportError) setErrors([nextError]);
-      return [nextError];
-    } finally {
-      setBusy(undefined);
-    }
+    return withAsyncCleanup(
+      async () => {
+        try {
+          setCatalog(await api.skillCatalog(force));
+          return [];
+        } catch (nextError) {
+          if (reportError) setErrors([nextError]);
+          return [nextError];
+        }
+      },
+      () => setBusy(undefined),
+    );
   };
 
   useEffect(() => {
@@ -152,13 +156,16 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const run = async (key: string, task: () => Promise<void>) => {
     setBusy(key);
     setErrors([]);
-    try {
-      await task();
-    } catch (nextError) {
-      setErrors([nextError]);
-    } finally {
-      setBusy(undefined);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await task();
+        } catch (nextError) {
+          setErrors([nextError]);
+        }
+      },
+      () => setBusy(undefined),
+    );
   };
 
   const refreshAfterMutation = async () => {

@@ -13,6 +13,7 @@ import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "lucide-react";
 import { api } from "@/core/api";
 import { localizeMessage } from "@/core/i18n";
 import type { WorkspaceOpener, WorkspaceSummary } from "@/core/types";
+import { withAsyncCleanup } from "@/lib/utils";
 
 export function WorkspaceOpenWith({
   workspace,
@@ -49,14 +50,17 @@ export function WorkspaceOpenWith({
     if (!preferred && !openerId) return;
     setOpening(true);
     onError("");
-    try {
-      await api.openWorkspaceWithApp(workspace.id, openerId);
-      if (openerId) await load();
-    } catch (reason) {
-      onError(localizeMessage(reason));
-    } finally {
-      setOpening(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await api.openWorkspaceWithApp(workspace.id, openerId);
+          if (openerId) await load();
+        } catch (reason) {
+          onError(localizeMessage(reason));
+        }
+      },
+      () => setOpening(false),
+    );
   };
 
   if (!preferred) return null;

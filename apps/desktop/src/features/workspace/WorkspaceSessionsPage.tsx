@@ -34,6 +34,7 @@ import { api } from "@/core/api";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import { withAsyncCleanup } from "@/lib/utils";
 
 import type {
   AgentKind,
@@ -124,21 +125,26 @@ export function WorkspaceSessionsPage({
     const sequence = ++cacheSequence.current;
     setRefreshing(true);
     setError("");
-    try {
-      const nextSessions = await api.refreshWorkspaceSessions(workspace.id, force);
-      if (sequence !== cacheSequence.current) return;
-      setSessions(nextSessions);
-      const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-      if (sequence !== cacheSequence.current) return;
-      setStatuses(nextStatuses);
-    } catch (reason) {
-      if (sequence === cacheSequence.current) {
-        setHistoryError(false);
-        setError(reason);
-      }
-    } finally {
-      if (sequence === cacheSequence.current) setRefreshing(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, force);
+          if (sequence !== cacheSequence.current) return;
+          setSessions(nextSessions);
+          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+          if (sequence !== cacheSequence.current) return;
+          setStatuses(nextStatuses);
+        } catch (reason) {
+          if (sequence === cacheSequence.current) {
+            setHistoryError(false);
+            setError(reason);
+          }
+        }
+      },
+      () => {
+        if (sequence === cacheSequence.current) setRefreshing(false);
+      },
+    );
   };
 
   useEffect(() => {
@@ -155,30 +161,33 @@ export function WorkspaceSessionsPage({
     setSlowLoading(false);
     setError("");
     const sequence = ++cacheSequence.current;
-    void (async () => {
-      try {
-        const [cachedSessions, cachedStatuses] = await Promise.all([
-          api.workspaceSessions(workspace.id).catch(() => []),
-          api.workspaceSessionStatus(workspace.id).catch(() => []),
-        ]);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setSessions(cachedSessions);
-        setStatuses(cachedStatuses);
-        const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setSessions(nextSessions);
-        const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setStatuses(nextStatuses);
-      } catch (reason) {
-        if (!disposed && sequence === cacheSequence.current) {
-          setHistoryError(false);
-          setError(reason);
+    void withAsyncCleanup(
+      async () => {
+        try {
+          const [cachedSessions, cachedStatuses] = await Promise.all([
+            api.workspaceSessions(workspace.id).catch(() => []),
+            api.workspaceSessionStatus(workspace.id).catch(() => []),
+          ]);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setSessions(cachedSessions);
+          setStatuses(cachedStatuses);
+          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setSessions(nextSessions);
+          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setStatuses(nextStatuses);
+        } catch (reason) {
+          if (!disposed && sequence === cacheSequence.current) {
+            setHistoryError(false);
+            setError(reason);
+          }
         }
-      } finally {
+      },
+      () => {
         if (!disposed && sequence === cacheSequence.current) setRefreshing(false);
-      }
-    })();
+      },
+    );
     return () => {
       disposed = true;
       cacheSequence.current += 1;
@@ -302,35 +311,40 @@ export function WorkspaceSessionsPage({
     const cursor = nextCursor;
     setLoadingEarlier(true);
     setError("");
-    try {
-      const page = await api.sessionEvents(selectedSessionId, cursor);
-      if (sequence !== readSequence.current) return;
-      setEvents((current) => {
-        const seen = new Set<string>();
-        return [...page.events, ...current].filter((event) => {
-          if (seen.has(event.id)) return false;
-          seen.add(event.id);
-          return true;
-        });
-      });
-      setNextCursor(page.next_cursor);
-      setWarnings((current) => [
-        ...new Set([
-          ...page.warnings,
-          ...current.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
-        ]),
-      ]);
-    } catch (reason) {
-      if (sequence === readSequence.current) {
-        setHistoryError(true);
-        setError(reason);
-      }
-    } finally {
-      if (sequence === readSequence.current) {
-        earlierRequest.current = null;
-        setLoadingEarlier(false);
-      }
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const page = await api.sessionEvents(selectedSessionId, cursor);
+          if (sequence !== readSequence.current) return;
+          setEvents((current) => {
+            const seen = new Set<string>();
+            return [...page.events, ...current].filter((event) => {
+              if (seen.has(event.id)) return false;
+              seen.add(event.id);
+              return true;
+            });
+          });
+          setNextCursor(page.next_cursor);
+          setWarnings((current) => [
+            ...new Set([
+              ...page.warnings,
+              ...current.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
+            ]),
+          ]);
+        } catch (reason) {
+          if (sequence === readSequence.current) {
+            setHistoryError(true);
+            setError(reason);
+          }
+        }
+      },
+      () => {
+        if (sequence === readSequence.current) {
+          earlierRequest.current = null;
+          setLoadingEarlier(false);
+        }
+      },
+    );
   };
 
   if (!enabled) {

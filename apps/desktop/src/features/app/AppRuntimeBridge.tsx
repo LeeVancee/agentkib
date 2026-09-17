@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useHomeQueryEvents } from "@/features/home/home-query";
 import { useInsightsQueryEvents } from "@/features/insights/insights-query";
 import { useQuotaQueryEvents } from "@/features/quota/quota-query";
+import { withAsyncCleanup } from "@/lib/utils";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 
@@ -104,25 +105,28 @@ export function AppRuntimeBridge() {
       desktop.events.onThemeChanged(onThemeChanged),
       desktop.events.onRuntimeStatus(onRuntimeStatus),
     ];
-    void (async () => {
-      try {
-        onRuntimeStatus(await desktop.runtime.status());
-        const legacy = localStorage.getItem("agentkib.project");
-        if (legacy) {
-          try {
-            await api.addWorkspace(legacy);
-            localStorage.removeItem("agentkib.project");
-          } catch (error) {
-            if (!disposed) setMessage(localizeMessage(error));
+    void withAsyncCleanup(
+      async () => {
+        try {
+          onRuntimeStatus(await desktop.runtime.status());
+          const legacy = localStorage.getItem("agentkib.project");
+          if (legacy) {
+            try {
+              await api.addWorkspace(legacy);
+              localStorage.removeItem("agentkib.project");
+            } catch (error) {
+              if (!disposed) setMessage(localizeMessage(error));
+            }
           }
+          await synchronizeRuntime();
+        } catch (error) {
+          reportRuntimeError(error);
         }
-        await synchronizeRuntime();
-      } catch (error) {
-        reportRuntimeError(error);
-      } finally {
+      },
+      () => {
         initialSyncPending = false;
-      }
-    })();
+      },
+    );
     return () => {
       disposed = true;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
@@ -171,28 +175,33 @@ export function AppRuntimeBridge() {
   const hasAnyUnsavedDraft =
     hasUnsavedDraft || Object.keys(workspaceStore.workspaceDrafts).length > 0;
   const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
-  quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
+  useLayoutEffect(() => {
+    quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
+  }, [applyingChanges, hasAnyUnsavedDraft]);
   useEffect(() => {
     const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
-      try {
-        if (quitState.current.applyingChanges) {
-          await dialogs.notify(tr("dialog.quit.changesApplying"));
-          return;
-        }
-        if (
-          quitState.current.hasUnsavedDraft &&
-          !(await dialogs.confirm({
-            description: tr("dialog.quit.discardDraft"),
-            tone: "destructive",
-          }))
-        )
-          return;
-        await api.quitApp();
-      } finally {
-        quitPromptOpen.current = false;
-      }
+      await withAsyncCleanup(
+        async () => {
+          if (quitState.current.applyingChanges) {
+            await dialogs.notify(tr("dialog.quit.changesApplying"));
+            return;
+          }
+          if (
+            quitState.current.hasUnsavedDraft &&
+            !(await dialogs.confirm({
+              description: tr("dialog.quit.discardDraft"),
+              tone: "destructive",
+            }))
+          )
+            return;
+          await api.quitApp();
+        },
+        () => {
+          quitPromptOpen.current = false;
+        },
+      );
     };
     return desktopApi().events.onQuitRequested(() => void handleQuitRequest());
   }, [dialogs, tr]);

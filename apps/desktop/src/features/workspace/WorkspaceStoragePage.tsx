@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "@/core/api";
+import { withAsyncCleanup } from "@/lib/utils";
 
 import type {
   AgentKind,
@@ -98,16 +99,19 @@ export function WorkspaceStoragePage({
 
   useEffect(() => {
     let disposed = false;
-    void (async () => {
-      try {
-        const cached = await api.storageOverview();
-        if (!disposed) setOverview(cached);
-      } catch (reason) {
-        if (!disposed) setFailure({ reason });
-      } finally {
+    void withAsyncCleanup(
+      async () => {
+        try {
+          const cached = await api.storageOverview();
+          if (!disposed) setOverview(cached);
+        } catch (reason) {
+          if (!disposed) setFailure({ reason });
+        }
+      },
+      () => {
         if (!disposed) setLoaded(true);
-      }
-    })();
+      },
+    );
     return () => {
       disposed = true;
     };
@@ -184,14 +188,17 @@ export function WorkspaceStoragePage({
   const start = async () => {
     setFailure(undefined);
     setRefreshPending(true);
-    try {
-      const receipt = await api.requestRefresh("storage", true);
-      if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
-    } catch (reason) {
-      setFailure({ reason });
-    } finally {
-      setRefreshPending(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const receipt = await api.requestRefresh("storage", true);
+          if (receipt.status.state === "succeeded") setOverview(await api.storageOverview());
+        } catch (reason) {
+          setFailure({ reason });
+        }
+      },
+      () => setRefreshPending(false),
+    );
   };
   const stop = async () => {
     await api.cancelStorageScan();
@@ -211,18 +218,24 @@ export function WorkspaceStoragePage({
         : location.node.relative_path;
     setExpanding(true);
     setFailure(undefined);
-    try {
-      const node = await api.workspaceStorageChildren(location.workspaceId, relativePath);
-      if (location.node.kind === "aggregate" && current) {
-        setTrail((value) => [...value.slice(0, -1), { workspaceId: location.workspaceId, node }]);
-      } else {
-        setTrail((value) => [...value, { workspaceId: location.workspaceId, node }]);
-      }
-    } catch (reason) {
-      setFailure({ reason, expanding: true });
-    } finally {
-      setExpanding(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const node = await api.workspaceStorageChildren(location.workspaceId, relativePath);
+          if (location.node.kind === "aggregate" && current) {
+            setTrail((value) => [
+              ...value.slice(0, -1),
+              { workspaceId: location.workspaceId, node },
+            ]);
+          } else {
+            setTrail((value) => [...value, { workspaceId: location.workspaceId, node }]);
+          }
+        } catch (reason) {
+          setFailure({ reason, expanding: true });
+        }
+      },
+      () => setExpanding(false),
+    );
   };
 
   const select = (location: StorageLocation) => {

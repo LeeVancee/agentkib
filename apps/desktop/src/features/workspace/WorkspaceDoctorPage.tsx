@@ -13,7 +13,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import { useHomeDoctorReport } from "@/features/home/home-query";
 
 export function WorkspaceDoctorPage({
@@ -64,11 +64,7 @@ export function WorkspaceDoctorPage({
 
   const repair = async () => {
     setRepairing(true);
-    try {
-      await onRepair();
-    } finally {
-      setRepairing(false);
-    }
+    await withAsyncCleanup(onRepair, () => setRepairing(false));
   };
 
   if (loading && !activeReport) {

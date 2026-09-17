@@ -9,6 +9,7 @@ import type { Manifest, RefreshKind, WorkspaceSummary } from "@/core/types";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar";
 import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
+import { withAsyncCleanup } from "@/lib/utils";
 import { createGlobalNavigation } from "./global-navigation";
 import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
 import type { AppHistoryEntry } from "./useAppHistory";
@@ -104,23 +105,28 @@ export function useAppNavigation() {
       useWorkspaceStore.getState().selectedWorkspace?.id === targetWorkspaceId;
     setBusy(true);
     setMessage("");
-    try {
-      const [nextScan, nextManifest, nextRuntime] = await Promise.all([
-        api.scan(path),
-        api.manifest(path),
-        api.runtime(),
-      ]);
-      if (!isCurrentRequest()) return;
-      setProject(path);
-      setScan(nextScan);
-      setManifest(draft ?? nextManifest);
-      setBaselineManifest(JSON.stringify(nextManifest));
-      useAppStore.getState().setRuntime(nextRuntime);
-    } catch (error) {
-      if (isCurrentRequest()) setMessage(localizeMessage(error));
-    } finally {
-      if (isCurrentRequest()) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const [nextScan, nextManifest, nextRuntime] = await Promise.all([
+            api.scan(path),
+            api.manifest(path),
+            api.runtime(),
+          ]);
+          if (!isCurrentRequest()) return;
+          setProject(path);
+          setScan(nextScan);
+          setManifest(draft ?? nextManifest);
+          setBaselineManifest(JSON.stringify(nextManifest));
+          useAppStore.getState().setRuntime(nextRuntime);
+        } catch (error) {
+          if (isCurrentRequest()) setMessage(localizeMessage(error));
+        }
+      },
+      () => {
+        if (isCurrentRequest()) setBusy(false);
+      },
+    );
   };
 
   const loadGlobal = async () => {
@@ -157,7 +163,7 @@ export function useAppNavigation() {
     if (!useWorkspaceStore.getState().applyingChanges) return true;
     await dialogs.notify(tr("dialog.quit.changesApplying"));
     return false;
-  }, [dialogs]);
+  }, [dialogs, tr]);
 
   const leaveWorkspace = async (next: () => void, clearRouteSearch = true): Promise<boolean> => {
     if (useWorkspaceStore.getState().applyingChanges) {

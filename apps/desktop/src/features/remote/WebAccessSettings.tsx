@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Check, Copy } from "lucide-react";
 import { requestWebAdmin, subscribeWebStatus } from "./web-status";
 import { useI18n } from "@/core/useI18n";
+import { withAsyncCleanup } from "@/lib/utils";
 import {
   SettingsSection,
   SettingsRow,
@@ -59,17 +60,22 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   async function run(input: WebAdminRequest) {
     setBusy(true);
     setError("");
-    try {
-      const next = await requestWebAdmin({ ...input, ...(lan ? { target } : {}) });
-      if (mounted.current) {
-        setStatus(next);
-        if (input.operation === "configure") setConfig(next.config);
-      }
-    } catch {
-      if (mounted.current) setError(c.unavailable);
-    } finally {
-      if (mounted.current) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const next = await requestWebAdmin({ ...input, ...(lan ? { target } : {}) });
+          if (mounted.current) {
+            setStatus(next);
+            if (input.operation === "configure") setConfig(next.config);
+          }
+        } catch {
+          if (mounted.current) setError(c.unavailable);
+        }
+      },
+      () => {
+        if (mounted.current) setBusy(false);
+      },
+    );
   }
   async function copyPairingCode(code: string) {
     if (!navigator.clipboard) return;

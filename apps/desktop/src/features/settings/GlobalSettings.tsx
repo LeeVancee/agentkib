@@ -35,6 +35,7 @@ import { QuotaDiagnostics } from "@/features/quota/QuotaDiagnostics";
 import { RemoteGatewaysSettings } from "./RemoteGateways";
 import { AgentToolsSettings } from "./AgentToolsSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
+import { withAsyncCleanup } from "@/lib/utils";
 import { RemoteConnectionSettings } from "@/features/remote/RemoteConnectionPanel";
 import {
   SettingsCopy,
@@ -50,9 +51,7 @@ import {
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale, localizeMessage } from "@/core/i18n";
-import {
-  cacheEffectiveTheme,
-} from "@/core/theme";
+import { cacheEffectiveTheme } from "@/core/theme";
 import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } from "@/core/platform";
 import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
@@ -201,10 +200,7 @@ export function GlobalSettings({
   if (section === "tools")
     return (
       <SettingsPage variant="workspace">
-        <SettingsPageHeader
-          title={tr("settings.section.tools")}
-          description={tr("settings.page.tools.description")}
-        />
+        <SettingsPageHeader title={tr("settings.section.tools")} />
         <AgentToolsSettings
           currentVersion={runtime?.app_version}
           updatesEnabled={runtime?.updates_enabled ?? false}
@@ -214,10 +210,7 @@ export function GlobalSettings({
   if (section === "discovery")
     return (
       <SettingsPage variant="management">
-        <SettingsPageHeader
-          title={tr("settings.section.discovery")}
-          description={tr("settings.page.discovery.description")}
-        />
+        <SettingsPageHeader title={tr("settings.section.discovery")} />
         <div className="grid gap-5">
           <SettingsSection title={tr("settings.discovery")} target="discovery-status">
             <SettingsRow>
@@ -432,11 +425,7 @@ function DiscoveryDiagnostics({ discovery }: { discovery?: DiscoveryReport }) {
   const { tr, formatDateTime } = useI18n();
   const sources = discovery?.source_diagnostics ?? [];
   return (
-    <SettingsSection
-      title={tr("settings.discoverySources")}
-      description={tr("settings.discoveryDetails")}
-      target="discovery-sources"
-    >
+    <SettingsSection title={tr("settings.discoverySources")} target="discovery-sources">
       {sources.length ? (
         <div className="divide-y divide-border/60">
           {sources.map((source, index) => (
@@ -673,17 +662,20 @@ function QuotaAutoRefreshSetting({
   const toggle = async (enabled: boolean, local = false) => {
     setBusy(true);
     setError("");
-    try {
-      onChanged(
-        await (local
-          ? api.setLocalAutoRefreshEnabled(enabled)
-          : api.setQuotaAutoRefreshEnabled(enabled)),
-      );
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          onChanged(
+            await (local
+              ? api.setLocalAutoRefreshEnabled(enabled)
+              : api.setQuotaAutoRefreshEnabled(enabled)),
+          );
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   return (
@@ -749,14 +741,17 @@ function ConversationPrivacySettings({
   const toggle = async (enabled: boolean) => {
     setBusy(true);
     setError("");
-    try {
-      onChanged(await api.setSessionIndexEnabled(enabled));
-      if (!enabled) setIndexedCount(0);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          onChanged(await api.setSessionIndexEnabled(enabled));
+          if (!enabled) setIndexedCount(0);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   const clear = async () => {
     if (
@@ -768,15 +763,18 @@ function ConversationPrivacySettings({
       return;
     setBusy(true);
     setError("");
-    try {
-      await api.clearSessionIndex();
-      onIndexCleared();
-      setIndexedCount(0);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await api.clearSessionIndex();
+          onIndexCleared();
+          setIndexedCount(0);
+        } catch (reason) {
+          setError(localizeMessage(reason));
+        }
+      },
+      () => setBusy(false),
+    );
   };
   return (
     <SettingsSection title={tr("conversations.settingsTitle")}>

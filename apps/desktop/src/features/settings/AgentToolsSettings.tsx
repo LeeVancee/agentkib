@@ -52,7 +52,7 @@ import type {
   AgentToolStatus,
   AppUpdateInfo,
 } from "@/core/types";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import {
@@ -141,18 +141,24 @@ export function AgentToolsSettings({
     if (refreshing) return;
     setRefreshing(true);
     setGlobalMessage("");
-    try {
-      await refreshAgentTools(queryClient);
-    } catch (error) {
-      setGlobalMessage(localizeMessage(error));
-    } finally {
-      setRefreshing(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await refreshAgentTools(queryClient);
+        } catch (error) {
+          setGlobalMessage(localizeMessage(error));
+        }
+      },
+      () => setRefreshing(false),
+    );
   };
 
   const copyCommand = async (command: string, message = tr("settings.tools.commandCopied")) => {
+    if (!navigator.clipboard) {
+      setCopyNotice(tr("settings.tools.clipboardUnavailable"));
+      return;
+    }
     try {
-      if (!navigator.clipboard) throw new Error(tr("settings.tools.clipboardUnavailable"));
       await navigator.clipboard.writeText(command);
       setCopyNotice(message);
     } catch (error) {
@@ -177,58 +183,63 @@ export function AgentToolsSettings({
       if (isCurrent()) setExecutingAgent(undefined);
       return undefined;
     }
-    try {
-      const installation =
-        tool.installations.find((candidate) => candidate.id === action.installation_id) ??
-        primaryInstallation(tool);
-      if (confirm) {
-        const confirmed = await dialogs.confirm({
-          title: tr("settings.tools.executeTitle"),
-          description: tr("settings.tools.executeConfirm", {
-            agent: agentLabels[tool.agent],
-            channel: channelLabel(action.channel, tr),
-            current: tool.current_version ?? tr("common.unknown"),
-            target: action.target_version ?? tr("common.unknown"),
-            path: installation?.path ?? tr("settings.tools.executableMissing"),
-            manager: action.manager_path ?? tr("settings.tools.managerMissing"),
-            command: action.command ?? "—",
-          }),
-        });
-        if (!confirmed || !isCurrent()) return undefined;
-      }
-      if (!isCurrent()) return undefined;
-      setGlobalMessage("");
-      const result = await api.executeAgentTool(tool.agent, action.id);
-      releaseExecution();
-      if (!isCurrent()) return result;
-      try {
-        await refreshAgentTools(queryClient);
-      } catch (error) {
-        if (isCurrent()) setGlobalMessage(localizeMessage(error));
-      }
-      if (!isCurrent()) return result;
-      if (confirm) {
-        await dialogs.notify({
-          title: tr(`settings.tools.result.${result.status}`),
-          description: executionResultDescription(result),
-          tone: result.status === "succeeded" ? "default" : "warning",
-        });
-      }
-      return result;
-    } catch (error) {
-      if (confirm && isCurrent()) {
-        await dialogs.notify({
-          title: tr("settings.tools.result.failed"),
-          description: localizeMessage(error),
-          tone: "warning",
-        });
-      }
-      return undefined;
-    } finally {
-      releaseExecution();
-      executionLock.current = false;
-      if (isCurrent()) setExecutingAgent(undefined);
-    }
+    return withAsyncCleanup(
+      async () => {
+        try {
+          const installation =
+            tool.installations.find((candidate) => candidate.id === action.installation_id) ??
+            primaryInstallation(tool);
+          if (confirm) {
+            const confirmed = await dialogs.confirm({
+              title: tr("settings.tools.executeTitle"),
+              description: tr("settings.tools.executeConfirm", {
+                agent: agentLabels[tool.agent],
+                channel: channelLabel(action.channel, tr),
+                current: tool.current_version ?? tr("common.unknown"),
+                target: action.target_version ?? tr("common.unknown"),
+                path: installation?.path ?? tr("settings.tools.executableMissing"),
+                manager: action.manager_path ?? tr("settings.tools.managerMissing"),
+                command: action.command ?? "—",
+              }),
+            });
+            if (!confirmed || !isCurrent()) return undefined;
+          }
+          if (!isCurrent()) return undefined;
+          setGlobalMessage("");
+          const result = await api.executeAgentTool(tool.agent, action.id);
+          releaseExecution();
+          if (!isCurrent()) return result;
+          try {
+            await refreshAgentTools(queryClient);
+          } catch (error) {
+            if (isCurrent()) setGlobalMessage(localizeMessage(error));
+          }
+          if (!isCurrent()) return result;
+          if (confirm) {
+            await dialogs.notify({
+              title: tr(`settings.tools.result.${result.status}`),
+              description: executionResultDescription(result),
+              tone: result.status === "succeeded" ? "default" : "warning",
+            });
+          }
+          return result;
+        } catch (error) {
+          if (confirm && isCurrent()) {
+            await dialogs.notify({
+              title: tr("settings.tools.result.failed"),
+              description: localizeMessage(error),
+              tone: "warning",
+            });
+          }
+          return undefined;
+        }
+      },
+      () => {
+        releaseExecution();
+        executionLock.current = false;
+        if (isCurrent()) setExecutingAgent(undefined);
+      },
+    );
   };
 
   const executeBatch = async () => {
@@ -242,47 +253,50 @@ export function AgentToolsSettings({
       executionLock.current = false;
       return;
     }
-    try {
-      const confirmed = await dialogs.confirm({
-        title: tr("settings.tools.batchExecuteTitle"),
-        description: tr("settings.tools.batchExecuteConfirm", { count: upgrades.length }),
-      });
-      if (!confirmed || !isCurrent()) return;
-      setGlobalMessage("");
-      setBatchOpen(false);
-      const results: AgentToolExecutionResult[] = [];
-      let requestFailures = 0;
-      for (const { tool, action } of upgrades) {
-        if (!isCurrent()) return;
-        setExecutingAgent(tool.agent);
-        try {
-          results.push(await api.executeAgentTool(tool.agent, action.id));
-        } catch {
-          requestFailures += 1;
+    await withAsyncCleanup(
+      async () => {
+        const confirmed = await dialogs.confirm({
+          title: tr("settings.tools.batchExecuteTitle"),
+          description: tr("settings.tools.batchExecuteConfirm", { count: upgrades.length }),
+        });
+        if (!confirmed || !isCurrent()) return;
+        setGlobalMessage("");
+        setBatchOpen(false);
+        const results: AgentToolExecutionResult[] = [];
+        let requestFailures = 0;
+        for (const { tool, action } of upgrades) {
+          if (!isCurrent()) return;
+          setExecutingAgent(tool.agent);
+          try {
+            results.push(await api.executeAgentTool(tool.agent, action.id));
+          } catch {
+            requestFailures += 1;
+          }
         }
-      }
-      releaseExecution();
-      if (!isCurrent()) return;
-      try {
-        await refreshAgentTools(queryClient);
-      } catch (error) {
-        if (isCurrent()) setGlobalMessage(localizeMessage(error));
-      }
-      if (!isCurrent()) return;
-      const succeeded = results.filter((result) => result.status === "succeeded").length;
-      await dialogs.notify({
-        title: tr("settings.tools.batchResultTitle"),
-        description: tr("settings.tools.batchResult", {
-          succeeded,
-          failed: results.length - succeeded + requestFailures,
-        }),
-        tone: succeeded === upgrades.length ? "default" : "warning",
-      });
-    } finally {
-      releaseExecution();
-      executionLock.current = false;
-      if (isCurrent()) setExecutingAgent(undefined);
-    }
+        releaseExecution();
+        if (!isCurrent()) return;
+        try {
+          await refreshAgentTools(queryClient);
+        } catch (error) {
+          if (isCurrent()) setGlobalMessage(localizeMessage(error));
+        }
+        if (!isCurrent()) return;
+        const succeeded = results.filter((result) => result.status === "succeeded").length;
+        await dialogs.notify({
+          title: tr("settings.tools.batchResultTitle"),
+          description: tr("settings.tools.batchResult", {
+            succeeded,
+            failed: results.length - succeeded + requestFailures,
+          }),
+          tone: succeeded === upgrades.length ? "default" : "warning",
+        });
+      },
+      () => {
+        releaseExecution();
+        executionLock.current = false;
+        if (isCurrent()) setExecutingAgent(undefined);
+      },
+    );
   };
 
   return (
@@ -303,6 +317,13 @@ export function AgentToolsSettings({
               <h2 id="agent-tools-heading" className="font-heading text-lg font-semibold">
                 {tr("settings.tools.localEnvironment")}
               </h2>
+              {toolsQuery.data?.latest_checked_at && (
+                <span className="whitespace-nowrap text-xs text-muted-foreground" aria-live="polite">
+                  {tr("settings.tools.lastChecked", {
+                    time: formatDateTime(toolsQuery.data.latest_checked_at),
+                  })}
+                </span>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -315,13 +336,6 @@ export function AgentToolsSettings({
                 {tr("settings.tools.environmentHelp")}
               </Button>
             </div>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              {toolsQuery.data?.latest_checked_at
-                ? tr("settings.tools.lastChecked", {
-                    time: formatDateTime(toolsQuery.data.latest_checked_at),
-                  })
-                : tr("settings.tools.environmentDescription")}
-            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button

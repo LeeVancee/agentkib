@@ -24,7 +24,7 @@ import { desktopApi } from "@/core/desktop";
 
 import { normalizePlatform } from "@/core/platform";
 import { useAppStore } from "@/stores/app-store";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import {
   compareQuotaProviders,
   flattenQuotaWindows,
@@ -59,13 +59,16 @@ export function QuotaPage({
   initialProvider,
   initialWindow,
   configurePopoverRequest = 0,
-  popoverSupported = normalizePlatform(desktopApi().platform) === "macos",
+  popoverSupported: popoverSupportedProp,
 }: {
   initialProvider?: string;
   initialWindow?: QuotaWindowSelector;
   configurePopoverRequest?: number;
   popoverSupported?: boolean;
 }) {
+  let popoverSupported = popoverSupportedProp;
+  if (popoverSupported === undefined)
+    popoverSupported = normalizePlatform(desktopApi().platform) === "macos";
   const { locale, localizeMessage, tr } = useI18n();
   const snapshotQuery = useQuotaSnapshot();
   const statusQuery = useQuotaStatus();
@@ -166,13 +169,16 @@ export function QuotaPage({
   const refresh = async () => {
     setRequestPending(true);
     setManualError("");
-    try {
-      await refreshMutation.mutateAsync();
-    } catch (reason) {
-      setManualError(reason);
-    } finally {
-      setRequestPending(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await refreshMutation.mutateAsync();
+        } catch (reason) {
+          setManualError(reason);
+        }
+      },
+      () => setRequestPending(false),
+    );
   };
   const markPromptSeen = async () => {
     setRuntime(await api.setQuotaAutoRefreshPromptSeen(true));

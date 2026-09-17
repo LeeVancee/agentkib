@@ -21,6 +21,7 @@ import type {
   RemoteGatewaySummary,
 } from "@/core/types";
 import { SettingsNotice, SettingsPanel } from "./components/SettingsLayout";
+import { withAsyncCleanup } from "@/lib/utils";
 
 const emptyGateway = (): RemoteGatewayInput => ({
   kind: "open-claw",
@@ -67,29 +68,35 @@ export function RemoteGatewaysSettings({
     if (!draft) return;
     setBusyId(draft.id ?? "new");
     setError("");
-    try {
-      const saved = await api.saveRemoteGateway(draft);
-      await api.refreshRemoteGateway(saved.id);
-      setDraft(undefined);
-      await onChanged();
-    } catch (cause) {
-      setError(localizeMessage(cause));
-    } finally {
-      setBusyId(undefined);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const saved = await api.saveRemoteGateway(draft);
+          await api.refreshRemoteGateway(saved.id);
+          setDraft(undefined);
+          await onChanged();
+        } catch (cause) {
+          setError(localizeMessage(cause));
+        }
+      },
+      () => setBusyId(undefined),
+    );
   };
 
   const refresh = async (id: string) => {
     setBusyId(id);
     setError("");
-    try {
-      await api.refreshRemoteGateway(id);
-      await onChanged();
-    } catch (cause) {
-      setError(localizeMessage(cause));
-    } finally {
-      setBusyId(undefined);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await api.refreshRemoteGateway(id);
+          await onChanged();
+        } catch (cause) {
+          setError(localizeMessage(cause));
+        }
+      },
+      () => setBusyId(undefined),
+    );
   };
 
   const remove = async (id: string) => {
@@ -97,14 +104,17 @@ export function RemoteGatewaysSettings({
       return;
     setBusyId(id);
     setError("");
-    try {
-      await api.removeRemoteGateway(id);
-      await onChanged();
-    } catch (cause) {
-      setError(localizeMessage(cause));
-    } finally {
-      setBusyId(undefined);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await api.removeRemoteGateway(id);
+          await onChanged();
+        } catch (cause) {
+          setError(localizeMessage(cause));
+        }
+      },
+      () => setBusyId(undefined),
+    );
   };
 
   return (

@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import type { ConversationEvent } from "@/core/types";
 import { ChevronRight } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ConversationEventRow } from "./ConversationEventRow";
 import { groupConversationEvents, type ConversationTurnGroup } from "./conversation-groups";
@@ -26,24 +26,27 @@ export function ConversationTranscript({
   sessionKey,
   incomplete = false,
 }: ConversationTranscriptProps) {
-  const { tr, formatDateTime } = useI18n();
-  const [, redraw] = useState(0);
-  const expansion = useRef<ExpansionState>({
-    sessionKey,
-    explicit: new Map(),
-  });
+  return (
+    <ConversationTranscriptForSession
+      events={events}
+      incomplete={incomplete}
+      key={sessionKey}
+      sessionKey={sessionKey}
+    />
+  );
+}
 
-  // Reset on the externally-owned session identity. Keeping this in a ref
-  // makes the first render after a switch use the new state as well, instead
-  // of briefly showing the previous conversation's open process blocks.
-  if (expansion.current.sessionKey !== sessionKey) {
-    expansion.current = { sessionKey, explicit: new Map() };
-  }
+function ConversationTranscriptForSession({
+  events,
+  sessionKey,
+  incomplete = false,
+}: ConversationTranscriptProps) {
+  const { tr, formatDateTime } = useI18n();
+  const [explicit, setExplicit] = useState<ExpansionState["explicit"]>(() => new Map());
 
   const groups = groupConversationEvents(events, { incomplete });
   const setExpanded = (key: string, open: boolean) => {
-    expansion.current.explicit.set(key, open);
-    redraw((value) => value + 1);
+    setExplicit((current) => new Map(current).set(key, open));
   };
 
   return (
@@ -81,7 +84,7 @@ export function ConversationTranscript({
                     className="session-hub-process group overflow-hidden rounded-xl border border-border/60 bg-muted/25"
                     data-segment-key={segment.key}
                     key={`${sessionKey}:${segment.key}`}
-                    open={expansion.current.explicit.get(segment.key) ?? segment.defaultOpen}
+                    open={explicit.get(segment.key) ?? segment.defaultOpen}
                     onOpenChange={(open) => setExpanded(segment.key, open)}
                   >
                     <CollapsibleTrigger className="session-hub-process-summary flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">

@@ -50,6 +50,15 @@ const agentLabels: Record<AgentKind, string> = {
   "deepseek-harness": "DeepSeek Harness",
 };
 
+function resolveContinuationState(
+  continuationState: ContinuationHomeState | undefined,
+  recentContinuations: RecentContinuation[],
+): ContinuationHomeState {
+  if (continuationState !== undefined) return continuationState;
+  if (recentContinuations.length) return "ready";
+  return "empty";
+}
+
 export function GlobalHome({
   workspaces,
   doctorSummaries,
@@ -63,7 +72,7 @@ export function GlobalHome({
   onShowWorkspaces,
   onShowAgents,
   recentContinuations = [],
-  continuationState = recentContinuations.length ? "ready" : "empty",
+  continuationState,
   continuationSlow = false,
   continuationError,
   onContinue,
@@ -106,6 +115,10 @@ export function GlobalHome({
   runtime?: RuntimeInfo;
   onRuntimeChanged: (runtime: RuntimeInfo) => void;
 }) {
+  const resolvedContinuationState = resolveContinuationState(
+    continuationState,
+    recentContinuations,
+  );
   const { tr, formatRelativeTime } = useI18n();
   const attention = workspaces.filter(
     (item) =>
@@ -200,7 +213,7 @@ export function GlobalHome({
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                {continuationState === "ready" && recentContinuations.length ? (
+                {resolvedContinuationState === "ready" && recentContinuations.length ? (
                   recentContinuations.map((item) => (
                     <Button
                       key={item.session.id}
@@ -230,7 +243,7 @@ export function GlobalHome({
                   ))
                 ) : (
                   <ContinuationEmptyState
-                    state={continuationState}
+                    state={resolvedContinuationState}
                     slow={continuationSlow}
                     error={continuationError}
                     onEnable={onEnableContinuations}

@@ -24,7 +24,7 @@ import {
   GitCompareArrows,
   ShieldCheck,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
 import type { AgentKind, ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
 const agentLabels: Record<AgentKind, string> = {
@@ -131,15 +131,20 @@ export function Changes({
     setBusy(true);
     setError("");
     onApplyingChange(true);
-    try {
-      await operation();
-    } catch (value) {
-      if (active.current) setError(localizeMessage(value));
-    } finally {
-      applying.current = false;
-      onApplyingChange(false);
-      if (active.current) setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await operation();
+        } catch (value) {
+          if (active.current) setError(localizeMessage(value));
+        }
+      },
+      () => {
+        applying.current = false;
+        onApplyingChange(false);
+        if (active.current) setBusy(false);
+      },
+    );
   };
   if (!changeSet && launchRequest && appliedLaunchFailure)
     return (
@@ -202,11 +207,9 @@ export function Changes({
   const planHome = async () => {
     if (busy || planningHome) return;
     setPlanningHome(true);
-    try {
-      await onPlanHome();
-    } finally {
+    await withAsyncCleanup(onPlanHome, () => {
       if (active.current) setPlanningHome(false);
-    }
+    });
   };
   const disabled =
     busy ||
@@ -489,21 +492,26 @@ function WorkspaceChangesRoute() {
             setMessage(localizeMessage(error));
           }
         }
-        try {
-          const runtime = await reload();
-          if (runtime) await queryClient.invalidateQueries({ queryKey: homeKeys.all });
-        } catch (error) {
-          if (
-            useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
-            useWorkspaceStore.getState().project === targetProject
-          )
-            setMessage(localizeMessage(error));
-        } finally {
-          if (!keepLaunchRequest) {
-            if (appliedHandoffSetup) navigateToContinuation(true);
-            else navigateTo(returnPage, appliedDoctorRepair);
-          }
-        }
+        await withAsyncCleanup(
+          async () => {
+            try {
+              const runtime = await reload();
+              if (runtime) await queryClient.invalidateQueries({ queryKey: homeKeys.all });
+            } catch (error) {
+              if (
+                useWorkspaceStore.getState().selectedWorkspace?.id === workspaceId &&
+                useWorkspaceStore.getState().project === targetProject
+              )
+                setMessage(localizeMessage(error));
+            }
+          },
+          () => {
+            if (!keepLaunchRequest) {
+              if (appliedHandoffSetup) navigateToContinuation(true);
+              else navigateTo(returnPage, appliedDoctorRepair);
+            }
+          },
+        );
       }}
       onLaunchCompleted={() => {
         setHandoffLaunchRequest(undefined);

@@ -1,7 +1,7 @@
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 
-import { cn } from "@/lib/utils";
+import { cn, withAsyncCleanup } from "@/lib/utils";
 import { Gauge } from "lucide-react";
 import { useState } from "react";
 
@@ -23,13 +23,16 @@ export function QuotaAutoRefreshPrompt({
     if (busy) return;
     setBusy(true);
     setError("");
-    try {
-      await action();
-    } catch (reason) {
-      setError(reason);
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await action();
+        } catch (reason) {
+          setError(reason);
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   return (

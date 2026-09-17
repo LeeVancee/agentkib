@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/core/useI18n";
 import { useRemoteStore } from "./remote-store";
+import { withAsyncCleanup } from "@/lib/utils";
 
 export function QuickConnect({ now, onDone }: { now: number; onDone: () => void }) {
   const { tr } = useI18n();
@@ -36,12 +37,13 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
     if (locked.current || useRemoteStore.getState().busy) return;
     locked.current = true;
     setSearching(true);
-    try {
-      await run({ operation: "discover" });
-    } finally {
-      locked.current = false;
-      if (mounted.current) setSearching(false);
-    }
+    await withAsyncCleanup(
+      () => run({ operation: "discover" }),
+      () => {
+        locked.current = false;
+        if (mounted.current) setSearching(false);
+      },
+    );
   }, [run]);
   useEffect(() => {
     if (step === "list" && !busy && !discoveredOnce.current) {
@@ -111,23 +113,26 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
                         returnFocus.current = event.currentTarget.dataset.focusKey ?? "";
                         locked.current = true;
                         setSubmitting(true);
-                        try {
-                          const result = await run({ operation: "connect", id: item.id });
-                          if (
-                            mounted.current &&
-                            result &&
-                            "local" in result &&
-                            result.connections.some(
-                              (h) => h.id === item.id && h.status === "online",
-                            )
-                          ) {
-                            setConnectedId(item.id);
-                            setStep("result");
-                          }
-                        } finally {
-                          locked.current = false;
-                          if (mounted.current) setSubmitting(false);
-                        }
+                        await withAsyncCleanup(
+                          async () => {
+                            const result = await run({ operation: "connect", id: item.id });
+                            if (
+                              mounted.current &&
+                              result &&
+                              "local" in result &&
+                              result.connections.some(
+                                (h) => h.id === item.id && h.status === "online",
+                              )
+                            ) {
+                              setConnectedId(item.id);
+                              setStep("result");
+                            }
+                          },
+                          () => {
+                            locked.current = false;
+                            if (mounted.current) setSubmitting(false);
+                          },
+                        );
                       }}
                     >
                       {tr("remote.connect")}
@@ -224,17 +229,20 @@ export function QuickConnect({ now, onDone }: { now: number; onDone: () => void 
               return;
             locked.current = true;
             setSubmitting(true);
-            try {
-              const result = await run({ operation: "pair", address: address.trim(), code });
-              if (mounted.current && result) {
-                setCode("");
-                setConnectedId(null);
-                setStep("result");
-              }
-            } finally {
-              locked.current = false;
-              if (mounted.current) setSubmitting(false);
-            }
+            await withAsyncCleanup(
+              async () => {
+                const result = await run({ operation: "pair", address: address.trim(), code });
+                if (mounted.current && result) {
+                  setCode("");
+                  setConnectedId(null);
+                  setStep("result");
+                }
+              },
+              () => {
+                locked.current = false;
+                if (mounted.current) setSubmitting(false);
+              },
+            );
           }}
         >
           {target ? (

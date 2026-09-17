@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { api } from "@/core/api";
 import type { ContextDoctorSummary, OnboardingState, WorkspaceSummary } from "@/core/types";
+import { withAsyncCleanup } from "@/lib/utils";
 
 export function GettingStartedCard({
   onboarding,
@@ -47,13 +48,16 @@ export function GettingStartedCard({
     if (busy) return;
     setBusy(true);
     setError(undefined);
-    try {
-      await operation();
-    } catch (reason) {
-      setError({ reason });
-    } finally {
-      setBusy(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          await operation();
+        } catch (reason) {
+          setError({ reason });
+        }
+      },
+      () => setBusy(false),
+    );
   };
 
   const dismiss = () =>

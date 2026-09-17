@@ -41,9 +41,6 @@ importers:
       '@octanejs/lucide':
         specifier: 0.1.47
         version: 0.1.47(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/markdown':
-        specifier: 0.0.18
-        version: 0.0.18(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
       '@octanejs/radix':
         specifier: 0.1.52
         version: 0.1.52(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
@@ -56,6 +53,9 @@ importers:
       '@octanejs/zustand':
         specifier: 0.1.52
         version: 0.1.52(@types/react@19.2.18)(immer@11.1.18)(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
+      '@tanstack/markdown':
+        specifier: 0.0.15
+        version: 0.0.15(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -77,12 +77,6 @@ importers:
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
-      rehype-sanitize:
-        specifier: ^6.0.0
-        version: 6.0.0
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1
       tailwindcss:
         specifier: ^4.1.18
         version: 4.3.3
@@ -712,12 +706,6 @@ packages:
 
   '@octanejs/lucide@0.1.47':
     resolution: {integrity: sha512-DQN1g2qap6W2vlgsQHPCOzy7KZLhojZ9EfBCZgmptTIgV2Z2a/XQn2KRGhLPlatkJ9geDcxj3MK2/pCdbDsqRA==}
-    engines: {node: '>=22.22.2'}
-    peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
-
-  '@octanejs/markdown@0.0.18':
-    resolution: {integrity: sha512-bqpawu25zGVZ7cScSGQrLQu8IpLfh5NDevL+iUzb6edztjOiXmHUdow0N0ZTvEyVPQkk5W/cvf7zjtFLFZBjZA==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
       octane: ^0.1.51 || ^0.2.0
@@ -1531,6 +1519,17 @@ packages:
   '@tanstack/history@1.162.3':
     resolution: {integrity: sha512-zZTDxZxdDxZudHXGp42d221R/sEKoQPbZsW2ezpdWknHpOmJVLyiljW21pdWtKXfMnLq+Kg5VJpVBwOe18+ZzQ==}
     engines: {node: '>=20.19'}
+
+  '@tanstack/markdown@0.0.15':
+    resolution: {integrity: sha512-8hZFgCxGzYcBogffndvOm/prhdDt8nATQ4jzd9b0ziU0j4ofW/5guC1sknO2JyBNSXPgeLrrdXlJA8sbb1zw8w==}
+    peerDependencies:
+      octane: '>=0.1.12'
+      react: '>=18'
+    peerDependenciesMeta:
+      octane:
+        optional: true
+      react:
+        optional: true
 
   '@tanstack/query-core@5.102.8':
     resolution: {integrity: sha512-ZNjkJ33CqvPNec/6lZBnHqLc3EVGPZ9ySLhYahU9TcuRFdmwXewuj0c4hwSWcGHqEUwcSrKeZ+oGcvPBqXcQcg==}
@@ -5160,23 +5159,6 @@ snapshots:
       '@lucide/icons': 1.24.0
       octane: 0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/markdown@0.0.18(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
-    dependencies:
-      '@types/hast': 3.0.5
-      '@types/mdast': 4.0.4
-      devlop: 1.1.0
-      hast-util-to-jsx-runtime: 2.3.6
-      html-url-attributes: 3.0.1
-      mdast-util-to-hast: 13.2.1
-      octane: 0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
-      remark-parse: 11.0.0
-      remark-rehype: 11.1.2
-      unified: 11.0.5
-      unist-util-visit: 5.1.0
-      vfile: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
   '@octanejs/radix@0.1.52(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@octanejs/floating-ui': 0.1.52(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
@@ -5648,6 +5630,11 @@ snapshots:
   '@tanstack/history@1.162.0': {}
 
   '@tanstack/history@1.162.3': {}
+
+  '@tanstack/markdown@0.0.15(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)':
+    optionalDependencies:
+      octane: 0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      react: 19.2.8
 
   '@tanstack/query-core@5.102.8': {}
 

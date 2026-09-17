@@ -1,8 +1,6 @@
 /** @jsxImportSource octane */
 
-import rehypeSanitize from "rehype-sanitize";
-import Markdown from "@octanejs/markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "@tanstack/markdown/octane";
 import type { PropsOf } from "@/lib/octane-types";
 import { api } from "@/core/api";
 import { cn } from "@/lib/utils";
@@ -11,10 +9,7 @@ export function MarkdownContent({ content, className }: { content: string; class
   return (
     <div className={cn("markdown-content", className)}>
       <Markdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
         components={{ a: MarkdownLink }}
-        skipHtml
       >
         {content}
       </Markdown>

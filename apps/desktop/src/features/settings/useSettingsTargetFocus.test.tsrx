@@ -5,7 +5,7 @@
 import { cleanup, render } from "@octanejs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { settingsTargetId } from "./components/SettingsLayout";
+import { settingsTargetId } from "./components/SettingsLayout.tsrx";
 import { useSettingsTargetFocus } from "./useSettingsTargetFocus";
 
 function FocusHarness({

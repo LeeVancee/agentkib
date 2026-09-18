@@ -4,7 +4,7 @@
 
 import { act, cleanup, renderHook, waitFor } from "@octanejs/testing-library";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
-import type { ReactNode } from "octane";
+import type { OctaneNode } from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import type {
@@ -12,7 +12,7 @@ import type {
   ConversationSessionSummary,
   WorkspaceSummary,
 } from "@/core/types";
-import { homeKeys } from "@/features/home/home-query";
+import { homeKeys } from "@/features/home/home-query.tsrx";
 import { useSessionCatalog } from "./useSessionCatalog";
 
 vi.mock("@/core/api", () => ({
@@ -46,7 +46,7 @@ function deferred<T>() {
 }
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const wrapper = ({ children }: { children: ReactNode }) => (
+  const wrapper = ({ children }: { children: OctaneNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   return { client, wrapper };

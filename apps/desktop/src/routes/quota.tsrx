@@ -1,13 +1,13 @@
 /** @jsxImportSource octane */
 
 import { lazy, Suspense } from "octane";
-import { QuotaSkeleton } from "@/features/quota/QuotaSkeleton";
+import { QuotaSkeleton } from "@/features/quota/QuotaSkeleton.tsrx";
 import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
 import { useAppStore } from "../stores/app-store";
 import type { QuotaWindowSelector } from "../core/types";
 
 const QuotaPageLazy = lazy(() =>
-  import("@/features/quota/QuotaPage").then(({ QuotaPage }) => ({ default: QuotaPage })),
+  import("@/features/quota/QuotaPage.tsrx").then(({ QuotaPage }) => ({ default: QuotaPage })),
 );
 
 type QuotaSearch = { quotaProvider?: string; quotaWindow?: QuotaWindowSelector };

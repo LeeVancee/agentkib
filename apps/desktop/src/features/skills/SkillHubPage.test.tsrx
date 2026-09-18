@@ -6,10 +6,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/test
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
 import { changeLocale, initializeI18n, localizeMessage } from "@/core/i18n";
 import type { SkillCandidate, SkillOperationPreview } from "@/core/types";
-import { SkillHubPage } from "./SkillHubPage";
+import { SkillHubPage } from "./SkillHubPage.tsrx";
 
 const mocks = vi.hoisted(() => ({
   installedSkills: vi.fn(),

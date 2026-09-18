@@ -2,25 +2,25 @@
 
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
-import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton";
+import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useEffect, useRef, useState } from "octane";
 import { api } from "../../../core/api";
 import { tr } from "../../../core/i18n";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card } from "@/components/ui/card.tsrx";
 import { withAsyncCleanup } from "@/lib/utils";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsrx";
+import { Input } from "@/components/ui/input.tsrx";
+import { Label } from "@/components/ui/label.tsrx";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
+} from "@/components/ui/select.tsrx";
 import {
   Bot,
   ChevronDown,

@@ -6,7 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { initializeI18n } from "@/core/i18n";
-import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
+import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt.tsrx";
 
 describe("QuotaAutoRefreshPrompt", () => {
   beforeAll(() => initializeI18n("en-US"));

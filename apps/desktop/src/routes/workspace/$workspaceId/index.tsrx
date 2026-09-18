@@ -2,16 +2,16 @@
 
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams } from "@octanejs/tanstack-router";
-import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton";
+import { WorkspaceOverviewSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard";
-import { useHomeDoctorReport } from "@/features/home/home-query.tsx";
-import { AgentIcon } from "@/features/agents/AgentIcon";
-import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { WorkspaceContextHealthCard } from "@/features/workspace/WorkspaceContextHealthCard.tsrx";
+import { useHomeDoctorReport } from "@/features/home/home-query.tsrx";
+import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
+import { WorkspaceObsidianCard } from "@/features/obsidian/ObsidianIntegration.tsrx";
+import { Badge } from "@/components/ui/badge.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsrx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsrx";
 import { CircleAlert, Copy } from "@octanejs/lucide";
 import { formatRelativeTime } from "../../../core/i18n";
 import type { AgentKind, Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";

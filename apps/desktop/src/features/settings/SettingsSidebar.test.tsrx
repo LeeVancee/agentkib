@@ -5,9 +5,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
-import { SettingsSidebar } from "./SettingsSidebar";
-import { settingsTargetId } from "./components/SettingsLayout";
+import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext.tsrx";
+import { SettingsSidebar } from "./SettingsSidebar.tsrx";
+import { settingsTargetId } from "./components/SettingsLayout.tsrx";
 
 describe("SettingsSidebar v9 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));

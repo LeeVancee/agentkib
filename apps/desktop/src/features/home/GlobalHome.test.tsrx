@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { GlobalHome } from "./GlobalHome";
+import { GlobalHome } from "./GlobalHome.tsrx";
 
 const workspace = {
   id: "workspace-1",

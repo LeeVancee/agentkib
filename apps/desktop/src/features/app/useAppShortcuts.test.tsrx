@@ -5,7 +5,7 @@
 import { cleanup, fireEvent, render } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentAppPlatform } from "@/core/keyboard-shortcuts";
-import { useAppShortcuts, type AppShortcutActions } from "./useAppShortcuts.tsx";
+import { useAppShortcuts, type AppShortcutActions } from "./useAppShortcuts.tsrx";
 
 function ShortcutHarness(actions: AppShortcutActions) {
   useAppShortcuts(actions);
@@ -29,7 +29,7 @@ function createActions(overrides: Partial<AppShortcutActions> = {}): AppShortcut
   };
 }
 
-describe("useAppShortcuts.tsx", () => {
+describe("useAppShortcuts.tsrx", () => {
   beforeEach(() => {
     document.documentElement.dataset.platform = "windows";
   });

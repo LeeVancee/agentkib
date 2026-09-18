@@ -8,7 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, localizeMessage } from "@/core/i18n";
 import type { OnboardingState, RuntimeInfo, WorkspaceSummary } from "@/core/types";
-import { GettingStartedCard } from "./GettingStartedCard";
+import { GettingStartedCard } from "./GettingStartedCard.tsrx";
 
 vi.mock("@/core/api", () => ({ api: { updateOnboarding: vi.fn() } }));
 

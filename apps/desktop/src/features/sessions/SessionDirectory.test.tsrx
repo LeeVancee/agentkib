@@ -8,12 +8,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { SessionDirectory } from "./SessionDirectory";
-import { useSessionHub } from "./SessionHubContext";
+import { SessionDirectory } from "./SessionDirectory.tsrx";
+import { useSessionHub } from "./SessionHubContext.tsrx";
 import { filterSessions } from "./session-catalog";
 import { useSessionViewStore } from "./session-view-store";
 
-vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("./SessionHubContext.tsrx", () => ({ useSessionHub: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
 }));

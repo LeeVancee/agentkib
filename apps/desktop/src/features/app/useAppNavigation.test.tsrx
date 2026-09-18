@@ -2,7 +2,7 @@
 
 // @vitest-environment jsdom
 
-import type { ReactNode } from "octane";
+import type { OctaneNode } from "octane";
 import { act, cleanup, renderHook } from "@octanejs/testing-library";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +10,8 @@ import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import type { Manifest, WorkspaceSummary } from "@/core/types";
-import { useAppNavigation } from "./useAppNavigation";
-import type { AppHistoryEntry } from "./useAppHistory";
+import { useAppNavigation } from "./useAppNavigation.tsrx";
+import type { AppHistoryEntry } from "./useAppHistory.tsrx";
 import { SESSION_REFRESH_EVENT } from "@/features/sessions/session-refresh";
 
 const testDoubles = vi.hoisted(() => ({
@@ -49,9 +49,9 @@ vi.mock("@/components/AppDialogProvider", () => ({
   }),
 }));
 
-vi.mock("@/features/home/home-query.tsx", async () => {
-  const actual = await vi.importActual<typeof import("@/features/home/home-query.tsx")>(
-    "@/features/home/home-query.tsx",
+vi.mock("@/features/home/home-query.tsrx", async () => {
+  const actual = await vi.importActual<typeof import("@/features/home/home-query.tsrx")>(
+    "@/features/home/home-query.tsrx",
   );
   return {
     ...actual,
@@ -61,7 +61,7 @@ vi.mock("@/features/home/home-query.tsx", async () => {
   };
 });
 
-const QueryWrapper = ({ children }: { children: ReactNode }) => {
+const QueryWrapper = ({ children }: { children: OctaneNode }) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 };
@@ -282,7 +282,7 @@ describe("useAppNavigation guards", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const wrapper = ({ children }: { children: ReactNode }) => (
+    const wrapper = ({ children }: { children: OctaneNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     testDoubles.location.pathname = "/settings";
@@ -301,7 +301,7 @@ describe("useAppNavigation guards", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    const wrapper = ({ children }: { children: ReactNode }) => (
+    const wrapper = ({ children }: { children: OctaneNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
     const snapshot = { tools: [], detected_at: "2026-09-03T00:00:00Z" };

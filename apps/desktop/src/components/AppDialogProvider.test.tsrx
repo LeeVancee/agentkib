@@ -5,10 +5,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { AppDialogProvider, useAppDialogs } from "./AppDialogProvider";
-import { SidebarSearchButton } from "./SidebarSearchButton";
-import { Dialog, DialogContent, DialogFooter, DialogTitle } from "./ui/dialog";
-import { SettingsSkeleton } from "@/features/settings/SettingsSkeleton";
+import { AppDialogProvider, useAppDialogs } from "./AppDialogProvider.tsrx";
+import { SidebarSearchButton } from "./SidebarSearchButton.tsrx";
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "./ui/dialog.tsrx";
+import { SettingsSkeleton } from "@/features/settings/SettingsSkeleton.tsrx";
 
 function DialogTrigger() {
   const dialogs = useAppDialogs();

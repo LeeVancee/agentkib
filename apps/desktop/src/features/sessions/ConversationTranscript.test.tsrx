@@ -7,8 +7,8 @@ import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { formatDateTime, initializeI18n, tr } from "@/core/i18n";
 import type { ConversationEvent } from "@/core/types";
-import { ConversationEventRow } from "./ConversationEventRow";
-import { ConversationTranscript } from "./ConversationTranscript";
+import { ConversationEventRow } from "./ConversationEventRow.tsrx";
+import { ConversationTranscript } from "./ConversationTranscript.tsrx";
 
 function event(
   id: string,

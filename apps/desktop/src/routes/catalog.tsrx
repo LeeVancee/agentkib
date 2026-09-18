@@ -4,28 +4,28 @@ import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
-import { AgentIcon } from "@/features/agents/AgentIcon";
-import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
-import { SkillHubPage } from "@/features/skills/SkillHubPage";
-import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
-import { useAppDialogs } from "@/components/AppDialogProvider";
-import { MemoryCard } from "@/features/catalog/MemoryCard";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
+import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage.tsrx";
+import { SkillHubPage } from "@/features/skills/SkillHubPage.tsrx";
+import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton.tsrx";
+import { useAppDialogs } from "@/components/AppDialogProvider.tsrx";
+import { MemoryCard } from "@/features/catalog/MemoryCard.tsrx";
+import { Badge } from "@/components/ui/badge.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card.tsrx";
+import { Checkbox } from "@/components/ui/checkbox.tsrx";
+import { Input } from "@/components/ui/input.tsrx";
+import { Label } from "@/components/ui/label.tsrx";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
+} from "@/components/ui/select.tsrx";
+import { Switch } from "@/components/ui/switch.tsrx";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsrx";
+import { Textarea } from "@/components/ui/textarea.tsrx";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
 import { useAppStore } from "../stores/app-store";
@@ -34,7 +34,7 @@ import {
   useHomeCatalog,
   useHomeMemories,
   useHomeWorkspaces,
-} from "@/features/home/home-query.tsx";
+} from "@/features/home/home-query.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import {
   Boxes,

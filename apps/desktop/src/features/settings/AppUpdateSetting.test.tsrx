@@ -6,10 +6,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act, cleanup, render, screen } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 
-import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { AppUpdateSetting } from "./AgentToolsSettings";
+import { AppUpdateSetting } from "./AgentToolsSettings.tsrx";
 
 vi.mock("@/core/api", () => ({
   api: {

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeInfo } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
-import { SidebarBrand } from "./SidebarBrand";
+import { SidebarBrand } from "./SidebarBrand.tsrx";
 
 describe("SidebarBrand", () => {
   afterEach(() => {

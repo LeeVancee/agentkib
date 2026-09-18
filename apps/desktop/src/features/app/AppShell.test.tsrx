@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
-import { AppShell, WindowNavigationControls } from "./AppShell";
+import { AppShell, WindowNavigationControls } from "./AppShell.tsrx";
 
 vi.mock("@octanejs/tanstack-router", () => ({
   useLocation: () => "/settings",

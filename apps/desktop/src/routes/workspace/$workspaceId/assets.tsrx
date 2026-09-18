@@ -2,23 +2,23 @@
 
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
-import { WorkspaceAssetsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
+import { WorkspaceAssetsSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useMemo, useState } from "octane";
 import { groupWorkspaceAssets } from "@/features/catalog/catalog";
-import { MarkdownContent } from "@/components/MarkdownContent";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { MarkdownContent } from "@/components/MarkdownContent.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card } from "@/components/ui/card.tsrx";
+import { Input } from "@/components/ui/input.tsrx";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@/components/ui/select.tsrx";
+import { Textarea } from "@/components/ui/textarea.tsrx";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsrx";
 import { FileCode2, Search, ShieldCheck, X } from "@octanejs/lucide";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "../../../core/types";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";

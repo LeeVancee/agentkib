@@ -12,7 +12,7 @@ import type {
   SessionHandoffDraft,
   WorkspaceSummary,
 } from "@/core/types";
-import { SessionHandoffDialog } from "./SessionHandoffDialog";
+import { SessionHandoffDialog } from "./SessionHandoffDialog.tsrx";
 
 vi.mock("@/core/api", () => ({
   api: {

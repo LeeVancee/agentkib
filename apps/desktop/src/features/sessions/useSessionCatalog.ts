@@ -8,7 +8,7 @@ import type {
   ConversationSessionSummary,
   WorkspaceSummary,
 } from "@/core/types";
-import { homeKeys, useOptionalQueryClient } from "@/features/home/home-query";
+import { homeKeys, useOptionalQueryClient } from "@/features/home/home-query.tsrx";
 import { sortSessions } from "./session-catalog";
 
 const statusKey = (workspaceId: string) => [...homeKeys.continuations(workspaceId), "status"];

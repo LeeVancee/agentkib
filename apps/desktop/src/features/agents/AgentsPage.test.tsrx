@@ -5,7 +5,7 @@
 import { cleanup, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
-import { AgentsPage } from "./AgentsPage";
+import { AgentsPage } from "./AgentsPage.tsrx";
 
 describe("AgentsPage", () => {
   beforeAll(() => initializeI18n("en-US"));

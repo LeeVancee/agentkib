@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
-import { Changes } from "./changes";
+import { Changes } from "./changes.tsrx";
 
 vi.mock("@octanejs/tanstack-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@octanejs/tanstack-router")>();

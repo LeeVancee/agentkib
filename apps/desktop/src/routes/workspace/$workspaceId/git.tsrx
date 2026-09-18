@@ -1,8 +1,8 @@
 /** @jsxImportSource octane */
 
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
-import { WorkspaceGitSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { WorkspaceGitPage, type GitSubview } from "@/features/workspace/WorkspaceGitPage";
+import { WorkspaceGitSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
+import { WorkspaceGitPage, type GitSubview } from "@/features/workspace/WorkspaceGitPage.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 
 type GitSearch = { gitSubview?: GitSubview };

@@ -1,5 +1,5 @@
 import { Award, Bot, FolderGit2, Gauge, Home, Library, MessageSquareText } from "@octanejs/lucide";
-import type { SidebarEntry } from "@/components/AppSidebar";
+import type { SidebarEntry } from "@/components/AppSidebar.tsrx";
 import type { GlobalPage } from "./app-route";
 
 const globalNav: SidebarEntry<GlobalPage>[] = [

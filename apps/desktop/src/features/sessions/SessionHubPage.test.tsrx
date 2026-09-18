@@ -14,16 +14,16 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
-import { useSessionHub } from "./SessionHubContext";
-import { SessionHubPage as SessionPage } from "./SessionHubPage";
-import { SessionWindowToolbar } from "./SessionWindowToolbar";
+import { useSessionHub } from "./SessionHubContext.tsrx";
+import { SessionHubPage as SessionPage } from "./SessionHubPage.tsrx";
+import { SessionWindowToolbar } from "./SessionWindowToolbar.tsrx";
 import { useSessionViewStore } from "./session-view-store";
 import { readRemoteHistory } from "@/features/remote/remote-catalog-store";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@octanejs/tanstack-router", () => ({ useNavigate: () => navigate }));
 vi.mock("@/core/api", () => ({ api: { sessionEvents: vi.fn(), setSessionIndexEnabled: vi.fn() } }));
-vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("./SessionHubContext.tsrx", () => ({ useSessionHub: vi.fn() }));
 vi.mock("@/features/remote/remote-catalog-store", () => ({ readRemoteHistory: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,

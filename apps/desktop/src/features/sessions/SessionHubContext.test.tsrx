@@ -2,7 +2,7 @@
 
 // @vitest-environment jsdom
 
-import type { ReactNode } from "octane";
+import type { OctaneNode } from "octane";
 import { act, cleanup, renderHook } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -13,7 +13,7 @@ import type {
 } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
 import { api } from "@/core/api";
-import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
+import { SessionHubProvider, useSessionHub } from "./SessionHubContext.tsrx";
 import { useSessionViewStore } from "./session-view-store";
 import { SESSION_REFRESH_EVENT } from "./session-refresh";
 import { useRemoteStore } from "@/features/remote/remote-store";
@@ -68,7 +68,7 @@ function catalogState() {
     refresh: vi.fn().mockResolvedValue(undefined),
   };
 }
-function wrapper({ children }: { children: ReactNode }) {
+function wrapper({ children }: { children: OctaneNode }) {
   return <SessionHubProvider>{children}</SessionHubProvider>;
 }
 function clearedSearch() {

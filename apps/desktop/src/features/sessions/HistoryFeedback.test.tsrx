@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { HistoryError, HistoryWarning } from "./HistoryFeedback";
+import { HistoryError, HistoryWarning } from "./HistoryFeedback.tsrx";
 
 describe("HistoryFeedback", () => {
   beforeAll(() => initializeI18n("en-US"));

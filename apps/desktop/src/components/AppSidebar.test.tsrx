@@ -6,8 +6,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@octanejs/testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { AppSidebar } from "./AppSidebar";
-import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
+import { AppSidebar } from "./AppSidebar.tsrx";
+import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext.tsrx";
 import { createGlobalNavigation } from "@/features/app/global-navigation";
 import { useAppStore } from "@/stores/app-store";
 import { clearSidebarPeekCloseTimer } from "@/features/app/sidebar-peek";

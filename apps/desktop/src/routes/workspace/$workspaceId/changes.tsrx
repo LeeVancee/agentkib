@@ -3,7 +3,7 @@
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
-import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
+import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
 import { api } from "../../../core/api";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
 import {
@@ -11,12 +11,12 @@ import {
   hasActiveChangesFlow,
   type WorkspaceFlowPage,
 } from "@/features/workspace/workspace-flow";
-import { homeKeys } from "@/features/home/home-query";
+import { homeKeys } from "@/features/home/home-query.tsrx";
 import { useCallback, useEffect, useRef, useState } from "octane";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card } from "@/components/ui/card.tsrx";
+import { Checkbox } from "@/components/ui/checkbox.tsrx";
+import { Label } from "@/components/ui/label.tsrx";
 import {
   Brain,
   Check,

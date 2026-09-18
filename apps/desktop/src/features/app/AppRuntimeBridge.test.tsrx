@@ -4,13 +4,13 @@
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
 import { changeLocale, initializeI18n } from "@/core/i18n";
 import { api } from "@/core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
-import { AppRuntimeBridge } from "./AppRuntimeBridge";
+import { AppRuntimeBridge } from "./AppRuntimeBridge.tsrx";
 import { useSidebarWidthStore } from "./sidebar-width-store";
 
 const { runtimeInfo, addWorkspace, setAccentThemePreference, setSidebarWidthPreference } =

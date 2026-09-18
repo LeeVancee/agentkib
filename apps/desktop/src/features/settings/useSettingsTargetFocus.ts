@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from "octane";
 
-import type { SettingsSection, SettingsTarget } from "./SettingsSidebar";
-import { focusSettingsTarget } from "./components/SettingsLayout";
+import type { SettingsSection, SettingsTarget } from "./SettingsSidebar.tsrx";
+import { focusSettingsTarget } from "./components/SettingsLayout.tsrx";
 
 export function useSettingsTargetFocus(
   target: SettingsTarget | undefined,

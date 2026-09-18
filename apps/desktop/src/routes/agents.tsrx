@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useMemo } from "octane";
 import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
-import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton";
+import { AgentsSkeleton } from "@/features/agents/AgentsSkeleton.tsrx";
 import { useNavigate } from "@octanejs/tanstack-router";
 import {
   useHomeCatalog,
@@ -10,13 +10,13 @@ import {
   useHomeInstallations,
   useHomeRemoteGateways,
   useHomeWorkspaces,
-} from "@/features/home/home-query.tsx";
+} from "@/features/home/home-query.tsrx";
 import type { WorkspaceSummary } from "../core/types";
-import type { AgentFilter } from "@/components/AppSidebar";
+import type { AgentFilter } from "@/components/AppSidebar.tsrx";
 import type { AgentKind } from "@/core/types";
 
 const AgentsPageLazy = lazy(() =>
-  import("@/features/agents/AgentsPage").then(({ AgentsPage }) => ({ default: AgentsPage })),
+  import("@/features/agents/AgentsPage.tsrx").then(({ AgentsPage }) => ({ default: AgentsPage })),
 );
 
 function AgentsRoute() {

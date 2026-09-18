@@ -7,11 +7,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { ContextDoctorReport, WorkspaceSummary } from "@/core/types";
-import { WorkspaceDoctorPage } from "./WorkspaceDoctorPage";
+import { WorkspaceDoctorPage } from "./WorkspaceDoctorPage.tsrx";
 
 vi.mock("@/core/api", () => ({ api: { workspaceDoctorReport: vi.fn() } }));
 
-vi.mock("@/features/home/home-query.tsx", () => ({
+vi.mock("@/features/home/home-query.tsrx", () => ({
   useHomeDoctorReport(workspaceId: string) {
     const [data, setData] = useState<ContextDoctorReport | undefined>(undefined);
     useEffect(() => {

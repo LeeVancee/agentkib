@@ -3,19 +3,19 @@
 import { useI18n } from "@/core/useI18n";
 import { lazy, Suspense, useState } from "octane";
 import { CircleAlert, RefreshCw } from "@octanejs/lucide";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton";
+import { Button } from "@/components/ui/button.tsrx";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsrx";
+import { InsightsSkeleton } from "@/features/insights/InsightsSkeleton.tsrx";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
-import type { InsightsSection } from "@/features/insights/InsightsPage";
-import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
+import type { InsightsSection } from "@/features/insights/InsightsPage.tsrx";
+import { useHomeWorkspaces } from "@/features/home/home-query.tsrx";
 import {
   useInsightsRefreshJob,
   useInsightsRefreshMutation,
-} from "@/features/insights/insights-query.tsx";
+} from "@/features/insights/insights-query.tsrx";
 
 const InsightsPageLazy = lazy(() =>
-  import("@/features/insights/InsightsPage").then(({ InsightsPage }) => ({
+  import("@/features/insights/InsightsPage.tsrx").then(({ InsightsPage }) => ({
     default: InsightsPage,
   })),
 );

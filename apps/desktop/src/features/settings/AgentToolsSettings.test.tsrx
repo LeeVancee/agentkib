@@ -7,7 +7,7 @@ import { act, cleanup, render, screen, waitFor } from "@octanejs/testing-library
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 
-import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
 import type {
   AgentKind,
@@ -15,7 +15,7 @@ import type {
   AgentToolSnapshot,
   AgentToolStatus,
 } from "@/core/types";
-import { AgentToolsSettings } from "./AgentToolsSettings";
+import { AgentToolsSettings } from "./AgentToolsSettings.tsrx";
 import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import { api } from "@/core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";

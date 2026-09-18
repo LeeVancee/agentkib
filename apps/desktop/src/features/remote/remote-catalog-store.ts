@@ -63,7 +63,7 @@ export function invalidateRemoteHost(id: string) {
   });
 }
 
-// Invalidate before React renders; late pages may not refill revoked/removed data.
+// Invalidate before Octane renders; late pages may not refill revoked/removed data.
 useRemoteStore.subscribe((state, previous) => {
   if (state.snapshot === previous.snapshot || !state.snapshot) return;
   const old = previous.snapshot?.connections ?? [];

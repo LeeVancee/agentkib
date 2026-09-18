@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "octane";
 import type { QueryClient } from "@octanejs/tanstack-query";
 import { api } from "@/core/api";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
-import { homeKeys, queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { homeKeys, queryDefaults, useOptionalQueryClient } from "@/features/home/home-query.tsrx";
 import { sortSessions } from "@/features/sessions/session-catalog";
 
 type Sessions = ConversationSessionSummary[];

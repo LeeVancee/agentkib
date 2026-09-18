@@ -5,8 +5,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
-import type { GlobalSettingsProps } from "./GlobalSettings";
-import { GlobalSettings } from "./GlobalSettings";
+import type { GlobalSettingsProps } from "./GlobalSettings.tsrx";
+import { GlobalSettings } from "./GlobalSettings.tsrx";
 
 const noop = async () => undefined;
 const baseProps: GlobalSettingsProps = {

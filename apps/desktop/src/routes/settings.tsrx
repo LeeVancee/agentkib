@@ -4,10 +4,10 @@ import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { api } from "../core/api";
-import { GlobalSettings } from "@/features/settings/GlobalSettings";
-import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
-import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
-import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
+import { GlobalSettings } from "@/features/settings/GlobalSettings.tsrx";
+import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton.tsrx";
+import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout.tsrx";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar.tsrx";
 import { useSettingsTargetFocus } from "@/features/settings/useSettingsTargetFocus";
 import { useAppStore } from "../stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
@@ -20,8 +20,8 @@ import {
   useHomeRemoteGateways,
   useHomeScanRoots,
   useHomeWorkspaces,
-} from "@/features/home/home-query";
-import { useQuotaStatus } from "@/features/quota/quota-query";
+} from "@/features/home/home-query.tsrx";
+import { useQuotaStatus } from "@/features/quota/quota-query.tsrx";
 import type { CloseBehavior, RefreshKind, RuntimeInfo } from "../core/types";
 
 type SettingsSearch = { settingsSection?: SettingsSection; settingsTarget?: SettingsTarget };

@@ -4,8 +4,8 @@ import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate } from "@octanejs/tanstack-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "octane";
 import { useQueries, useQueryClient } from "@octanejs/tanstack-query";
-import { GlobalHome, type ContinuationHomeState } from "@/features/home/GlobalHome";
-import { HomeSkeleton } from "@/features/home/HomeSkeleton";
+import { GlobalHome, type ContinuationHomeState } from "@/features/home/GlobalHome.tsrx";
+import { HomeSkeleton } from "@/features/home/HomeSkeleton.tsrx";
 import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "../stores/app-store";
@@ -30,7 +30,7 @@ import {
   useHomeInstallations,
   useHomeMemories,
   useHomeWorkspaces,
-} from "@/features/home/home-query.tsx";
+} from "@/features/home/home-query.tsrx";
 
 function HomeRoute() {
   const { localizeMessage } = useI18n();

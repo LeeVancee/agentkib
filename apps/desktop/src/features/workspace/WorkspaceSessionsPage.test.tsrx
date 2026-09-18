@@ -9,7 +9,7 @@ import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
-import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
+import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage.tsrx";
 
 vi.mock("@/core/api", () => ({
   api: {

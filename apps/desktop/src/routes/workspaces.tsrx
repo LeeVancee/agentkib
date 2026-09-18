@@ -4,22 +4,22 @@ import { useI18n } from "@/core/useI18n";
 import { useEffect, useLinkedState, useMemo, useRef, useState } from "octane";
 import { createFileRoute, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { useQueryClient } from "@octanejs/tanstack-query";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
+import { Card, CardContent } from "@/components/ui/card.tsrx";
+import { Input } from "@/components/ui/input.tsrx";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { useAppDialogs } from "@/components/AppDialogProvider";
-import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
-import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { AgentIcon } from "@/features/agents/AgentIcon";
+} from "@/components/ui/select.tsrx";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group.tsrx";
+import { useAppDialogs } from "@/components/AppDialogProvider.tsrx";
+import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage.tsrx";
+import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
+import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
 import { api } from "../core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { formatRelativeTime, tr } from "../core/i18n";
@@ -29,7 +29,7 @@ import {
   useHomeDiscovery,
   useHomeRefreshJobs,
   useHomeWorkspaces,
-} from "@/features/home/home-query.tsx";
+} from "@/features/home/home-query.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { ChevronLeft, ChevronRight, FolderGit2, RefreshCw, Search, Trash2 } from "@octanejs/lucide";
 import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "../core/types";

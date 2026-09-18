@@ -10,8 +10,8 @@ import {
   useParams,
 } from "@octanejs/tanstack-router";
 import { FolderGit2, GitCompareArrows } from "@octanejs/lucide";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge.tsrx";
+import { Button } from "@/components/ui/button.tsrx";
 import {
   WorkspaceAssetsSkeleton,
   WorkspaceChangesSkeleton,
@@ -21,9 +21,9 @@ import {
   WorkspaceLayoutSkeleton,
   WorkspaceOverviewSkeleton,
   WorkspaceSessionsSkeleton,
-} from "@/features/workspace/WorkspaceSkeleton";
+} from "@/features/workspace/WorkspaceSkeleton.tsrx";
 import { useAppStore } from "../../../stores/app-store";
-import { useHomeWorkspaces } from "@/features/home/home-query.tsx";
+import { useHomeWorkspaces } from "@/features/home/home-query.tsrx";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { api } from "../../../core/api";
 import { tr } from "../../../core/i18n";
@@ -34,8 +34,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith";
+} from "@/components/ui/dropdown-menu.tsrx";
+import { WorkspaceOpenWith } from "@/features/workspace/WorkspaceOpenWith.tsrx";
 import { Copy, MoreHorizontal, RefreshCw } from "@octanejs/lucide";
 function WorkspaceActions({
   workspace,

@@ -3,8 +3,8 @@
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
 import { useCallback, useEffect, useRef } from "octane";
-import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
+import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
+import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage.tsrx";
 import { api } from "../../../core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";

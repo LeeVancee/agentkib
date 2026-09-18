@@ -4,7 +4,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
-import { WebAccessSettings } from "./WebAccessSettings";
+import { WebAccessSettings } from "./WebAccessSettings.tsrx";
 const request = vi.fn();
 vi.mock("@/core/desktop", () => ({ desktopApi: () => ({ web: { request } }) }));
 const status = {

@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ContextDoctorSummary } from "@/core/types";
-import { WorkspaceContextHealthCard } from "./WorkspaceContextHealthCard";
+import { WorkspaceContextHealthCard } from "./WorkspaceContextHealthCard.tsrx";
 
 const healthy: ContextDoctorSummary = {
   workspace_id: "workspace-1",

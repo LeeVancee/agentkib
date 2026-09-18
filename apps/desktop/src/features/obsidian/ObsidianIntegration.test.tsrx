@@ -6,7 +6,7 @@ import { act, cleanup, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { ObsidianSettingsCard } from "./ObsidianIntegration";
+import { ObsidianSettingsCard } from "./ObsidianIntegration.tsrx";
 
 vi.mock("@/core/api", () => ({ api: { obsidianIntegration: vi.fn() } }));
 

@@ -12,8 +12,8 @@ import {
   type tr as translate,
 } from "./i18n";
 
-// React views need observable translation/formatting dependencies. Global helpers
-// remain available to non-React code, but do not invalidate compiler/memo caches.
+// Octane views need observable translation/formatting dependencies. Global helpers
+// remain available to non-component code, but do not invalidate compiler/memo caches.
 export function useI18n() {
   const { t, i18n } = useTranslation();
   const locale = normalizeLocale(i18n.resolvedLanguage ?? i18n.language);

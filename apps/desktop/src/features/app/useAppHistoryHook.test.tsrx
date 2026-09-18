@@ -4,7 +4,7 @@
 
 import { act, cleanup, renderHook, waitFor } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppHistoryLocation } from "./useAppHistory.tsx";
+import type { AppHistoryLocation } from "./useAppHistory.tsrx";
 
 type HistoryUpdate = {
   location: AppHistoryLocation;
@@ -22,7 +22,7 @@ vi.mock("@octanejs/tanstack-router", () => ({
   useRouter: () => ({ history: testHistory }),
 }));
 
-import { useAppHistory } from "./useAppHistory.tsx";
+import { useAppHistory } from "./useAppHistory.tsrx";
 
 function location(href: string, index: number): AppHistoryLocation {
   return {
@@ -34,7 +34,7 @@ function location(href: string, index: number): AppHistoryLocation {
   };
 }
 
-describe("useAppHistory.tsx", () => {
+describe("useAppHistory.tsrx", () => {
   beforeEach(() => {
     testHistory.location = location("/", 0);
     testHistory.listener = undefined;

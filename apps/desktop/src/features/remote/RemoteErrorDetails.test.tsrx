@@ -5,7 +5,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
-import { RemoteErrorDetails } from "./RemoteErrorDetails";
+import { RemoteErrorDetails } from "./RemoteErrorDetails.tsrx";
 
 beforeAll(() => initializeI18n("en-US"));
 afterEach(cleanup);

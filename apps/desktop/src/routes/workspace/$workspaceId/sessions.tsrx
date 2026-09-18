@@ -1,9 +1,9 @@
 /** @jsxImportSource octane */
 
 import { createFileRoute, useNavigate, useParams, useSearch } from "@octanejs/tanstack-router";
-import { useHomeInstallations } from "@/features/home/home-query";
-import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
+import { useHomeInstallations } from "@/features/home/home-query.tsrx";
+import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton.tsrx";
+import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage.tsrx";
 import { api } from "../../../core/api";
 import { useAppStore } from "../../../stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";

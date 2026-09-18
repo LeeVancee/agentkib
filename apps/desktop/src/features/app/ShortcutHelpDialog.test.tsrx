@@ -5,7 +5,7 @@
 import { cleanup, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { initializeI18n } from "@/core/i18n";
-import { ShortcutHelpDialog } from "./ShortcutHelpDialog";
+import { ShortcutHelpDialog } from "./ShortcutHelpDialog.tsrx";
 
 describe("ShortcutHelpDialog", () => {
   beforeAll(() => initializeI18n("en-US"));

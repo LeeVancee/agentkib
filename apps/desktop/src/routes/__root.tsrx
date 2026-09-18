@@ -4,18 +4,18 @@ import { useI18n } from "@/core/useI18n";
 import { createRootRoute, Outlet, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { CircleAlert } from "@octanejs/lucide";
 import { z } from "zod";
-import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar";
+import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar.tsrx";
 import { RemoteCatalogBridge } from "@/features/remote/remote-catalog-store";
-import type { SettingsSection } from "@/features/settings/SettingsSidebar";
+import type { SettingsSection } from "@/features/settings/SettingsSidebar.tsrx";
 import {
   SettingsSidebar,
   settingsTargets,
   type SettingsTarget,
-} from "@/features/settings/SettingsSidebar";
-import type { InsightsSection } from "@/features/insights/InsightsPage";
+} from "@/features/settings/SettingsSidebar.tsrx";
+import type { InsightsSection } from "@/features/insights/InsightsPage.tsrx";
 import type { AgentKind, RefreshJobStatus } from "../core/types";
-import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge";
-import { AppShell } from "../features/app/AppShell";
+import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge.tsrx";
+import { AppShell } from "../features/app/AppShell.tsrx";
 import {
   workspaceSearchForPage,
   type AppSearch,
@@ -23,21 +23,21 @@ import {
   type ParsedRoute,
 } from "../features/app/app-route";
 import { cn } from "@/lib/utils";
-import { useAppNavigation } from "../features/app/useAppNavigation.tsx";
-import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog";
-import { ShortcutHelpProvider } from "../features/app/ShortcutHelpContext";
-import { useAppShortcuts } from "../features/app/useAppShortcuts.tsx";
-import { useAppHistory } from "../features/app/useAppHistory.tsx";
+import { useAppNavigation } from "../features/app/useAppNavigation.tsrx";
+import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog.tsrx";
+import { ShortcutHelpProvider } from "../features/app/ShortcutHelpContext.tsrx";
+import { useAppShortcuts } from "../features/app/useAppShortcuts.tsrx";
+import { useAppHistory } from "../features/app/useAppHistory.tsrx";
 import { useAppStore } from "../stores/app-store";
 import { useState } from "octane";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { AppToolbar } from "@/features/app/AppToolbar";
-import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
+import { AppToolbar } from "@/features/app/AppToolbar.tsrx";
+import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog.tsrx";
 import type { WorkspaceSummary } from "@/core/types";
-import { useAppDialogs } from "@/components/AppDialogProvider";
-import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
+import { useAppDialogs } from "@/components/AppDialogProvider.tsrx";
+import { SessionHubProvider } from "@/features/sessions/SessionHubContext.tsrx";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
-import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar";
+import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar.tsrx";
 
 function RootLayout() {
   const {

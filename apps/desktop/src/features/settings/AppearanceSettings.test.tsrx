@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 
 import { initializeI18n } from "@/core/i18n";
 import type { RuntimeInfo } from "@/core/types";
-import { AppearanceSettings } from "./AppearanceSettings";
+import { AppearanceSettings } from "./AppearanceSettings.tsrx";
 
 const { setAccentThemePreference, setThemePreference } = vi.hoisted(() => ({
   setAccentThemePreference: vi.fn(),

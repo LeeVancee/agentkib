@@ -5,7 +5,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, formatCompactNumber, initializeI18n, tr } from "@/core/i18n";
-import { InsightsPage } from "./InsightsPage";
+import { InsightsPage } from "./InsightsPage.tsrx";
 
 vi.mock("./insights-query", () => ({
   useInsightsRefreshJob: () => ({ data: undefined }),

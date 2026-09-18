@@ -7,7 +7,7 @@ const repositoryRoot = path.resolve(desktopRoot, "../..");
 
 describe("desktop startup flow", () => {
   it("renders from cached appearance without awaiting runtimeInfo", () => {
-    const source = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
+    const source = readFileSync(path.join(desktopRoot, "src/main.tsrx"), "utf8");
 
     expect(source).toContain("cachedEffectiveLocale");
     expect(source).toContain("cachedEffectiveTheme");
@@ -16,7 +16,7 @@ describe("desktop startup flow", () => {
 
   it("updates startup appearance caches when settings change", () => {
     const source = readFileSync(
-      path.join(desktopRoot, "src/features/settings/GlobalSettings.tsx"),
+      path.join(desktopRoot, "src/features/settings/GlobalSettings.tsrx"),
       "utf8",
     );
 
@@ -62,7 +62,7 @@ describe("desktop startup flow", () => {
   });
 
   it("only reports the first commit from the main Renderer surface", () => {
-    const rendererSource = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
+    const rendererSource = readFileSync(path.join(desktopRoot, "src/main.tsrx"), "utf8");
     const mainSource = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
 
     expect(rendererSource).toContain('surface !== "quota-popover" && <BenchmarkCommitMarker />');

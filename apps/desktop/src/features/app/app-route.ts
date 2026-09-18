@@ -1,10 +1,10 @@
 /** @jsxImportSource octane */
 
-import type { AssetSection } from "@/features/home/GlobalHome";
-import type { GitSubview } from "@/features/workspace/WorkspaceGitPage";
-import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
+import type { AssetSection } from "@/features/home/GlobalHome.tsrx";
+import type { GitSubview } from "@/features/workspace/WorkspaceGitPage.tsrx";
+import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar.tsrx";
 import type { AgentKind } from "@/core/types";
-import type { AgentFilter } from "@/components/AppSidebar";
+import type { AgentFilter } from "@/components/AppSidebar.tsrx";
 
 export type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
 export type GlobalPage =

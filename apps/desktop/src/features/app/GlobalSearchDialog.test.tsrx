@@ -2,7 +2,7 @@
 
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import * as React from "octane";
+import { useState } from "octane";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Home } from "@octanejs/lucide";
@@ -11,7 +11,7 @@ import { useAppStore } from "@/stores/app-store";
 import type { ConversationSessionSummary, RuntimeInfo, WorkspaceSummary } from "@/core/types";
 import { useSearchSessions } from "./useSearchSessions";
 import { useSearchAssets } from "./useSearchAssets";
-import { GlobalSearchDialog } from "./GlobalSearchDialog";
+import { GlobalSearchDialog } from "./GlobalSearchDialog.tsrx";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { useRemoteStore } from "@/features/remote/remote-store";
@@ -248,7 +248,7 @@ describe("GlobalSearchDialog", () => {
     async (hideOriginal) => {
       const callbacks = props();
       function Harness() {
-        const [open, setOpen] = React.useState(false);
+        const [open, setOpen] = useState(false);
         return (
           <>
             <button data-global-search-trigger onClick={() => setOpen(true)}>

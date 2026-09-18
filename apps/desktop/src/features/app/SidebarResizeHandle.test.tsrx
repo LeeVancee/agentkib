@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/test
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
-import { AppShell } from "./AppShell";
+import { AppShell } from "./AppShell.tsrx";
 import { useSidebarWidthStore } from "./sidebar-width-store";
 
 const { saveWidth } = vi.hoisted(() => ({ saveWidth: vi.fn() }));

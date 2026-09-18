@@ -5,9 +5,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
-import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
-import { QuotaDiagnostics } from "./QuotaDiagnostics";
-import { QuotaWindowRow } from "./QuotaDisplay";
+import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt.tsrx";
+import { QuotaDiagnostics } from "./QuotaDiagnostics.tsrx";
+import { QuotaWindowRow } from "./QuotaDisplay.tsrx";
 
 describe("quota locale changes", () => {
   beforeEach(() => initializeI18n("en-US"));

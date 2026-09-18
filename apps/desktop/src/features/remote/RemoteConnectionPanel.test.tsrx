@@ -6,9 +6,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
-import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnectionPanel";
+import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnectionPanel.tsrx";
 import { useRemoteStore } from "./remote-store";
-import { QuickConnect } from "./QuickConnect";
+import { QuickConnect } from "./QuickConnect.tsrx";
 
 const status: RemoteStatus = {
   local: { id: "local", name: "Desk", enabled: false, address: null },

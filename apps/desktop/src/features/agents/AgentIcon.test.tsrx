@@ -4,7 +4,7 @@
 
 import { cleanup, render } from "@octanejs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentIcon } from "./AgentIcon";
+import { AgentIcon } from "./AgentIcon.tsrx";
 
 afterEach(cleanup);
 

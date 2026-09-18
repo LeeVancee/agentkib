@@ -12,7 +12,7 @@ import {
   SettingsPanel,
   SettingsSection,
   SettingsStatus,
-} from "./SettingsLayout";
+} from "./SettingsLayout.tsrx";
 
 describe("SettingsLayout", () => {
   afterEach(cleanup);

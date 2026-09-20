@@ -633,7 +633,11 @@ fn visible_working_directory(fields: &serde_json::Map<String, Value>) -> Option<
 }
 
 fn same_file_path(left: &str, right: &str, cwd: Option<&str>) -> bool {
-    if !visible_action_text(left) || !visible_action_text(right) {
+    if !visible_action_text(left)
+        || !visible_action_text(right)
+        || has_parent_segment(left)
+        || has_parent_segment(right)
+    {
         return false;
     }
     if left == right {
@@ -646,6 +650,12 @@ fn same_file_path(left: &str, right: &str, cwd: Option<&str>) -> bool {
         (Some(left), Some(right)) => left == right,
         _ => false,
     }
+}
+
+fn has_parent_segment(path: &str) -> bool {
+    // Inspect the original spelling before joining paths: platform path joins
+    // can normalize a parent segment before the later component check sees it.
+    path.split(['/', '\\']).any(|segment| segment == "..")
 }
 
 fn normalized_file_path(path: &str, cwd: Option<&str>) -> Option<PathBuf> {
@@ -1309,6 +1319,19 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn parent_segments_cannot_match_a_visible_file_path() {
+        let cwd = std::env::temp_dir().canonicalize().unwrap();
+        let cwd_text = cwd.to_string_lossy();
+        let file = cwd.join("src/a.rs").to_string_lossy().into_owned();
+        assert!(!same_file_path("src/../src/a.rs", &file, Some(&cwd_text)));
+        assert!(!same_file_path(
+            "src\\..\\src\\a.rs",
+            "src\\..\\src\\a.rs",
+            Some(&cwd_text)
+        ));
     }
 
     #[test]

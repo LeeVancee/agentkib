@@ -171,7 +171,7 @@ export function SessionHubProvider({
   children: OctaneNode;
   active?: boolean;
 }) {
-  return <SessionHubContext.Provider value={useHub(active)}>{children}</SessionHubContext.Provider>;
+  return <SessionHubContext value={useHub(active)}>{children}</SessionHubContext>;
 }
 
 export function useSessionHub() {

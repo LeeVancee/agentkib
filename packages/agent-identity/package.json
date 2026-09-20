@@ -5,7 +5,7 @@
   "type": "module",
   "exports": "./src/index.tsx",
   "dependencies": {
-    "@octanejs/lucide": "0.1.47",
-    "octane": "0.2.11"
+    "@octanejs/lucide": "0.1.48",
+    "octane": "0.3.3"
   }
 }

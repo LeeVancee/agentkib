@@ -19,9 +19,9 @@ export function ShortcutHelpProvider({
   openShortcutHelp: () => void;
 }) {
   return (
-    <ShortcutHelpContext.Provider value={{ openShortcutHelp }}>
+    <ShortcutHelpContext value={{ openShortcutHelp }}>
       {children}
-    </ShortcutHelpContext.Provider>
+    </ShortcutHelpContext>
   );
 }
 

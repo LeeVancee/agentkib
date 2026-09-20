@@ -33,29 +33,29 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@octanejs/base-ui':
-        specifier: 0.1.53
-        version: 0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/i18next':
-        specifier: 0.1.47
-        version: 0.1.47(i18next@26.4.2(typescript@5.9.3))(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/lucide':
-        specifier: 0.1.47
-        version: 0.1.47(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/radix':
-        specifier: 0.1.53
-        version: 0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/tanstack-query':
-        specifier: 0.1.53
-        version: 0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/tanstack-router':
         specifier: 0.1.54
-        version: 0.1.54(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+        version: 0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/i18next':
+        specifier: 0.1.48
+        version: 0.1.48(i18next@26.4.2(typescript@5.9.3))(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/lucide':
+        specifier: 0.1.48
+        version: 0.1.48(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/radix':
+        specifier: 0.1.54
+        version: 0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/tanstack-query':
+        specifier: 0.1.54
+        version: 0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/tanstack-router':
+        specifier: 0.1.55
+        version: 0.1.55(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
       '@octanejs/zustand':
-        specifier: 0.1.53
-        version: 0.1.53(@types/react@19.3.0)(immer@11.1.18)(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
+        specifier: 0.1.54
+        version: 0.1.54(@types/react@19.3.0)(immer@11.1.18)(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
       '@tanstack/markdown':
         specifier: 0.0.15
-        version: 0.0.15(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)
+        version: 0.0.15(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -72,8 +72,8 @@ importers:
         specifier: ^26.4.1
         version: 26.4.2(typescript@5.9.3)
       octane:
-        specifier: 0.2.16
-        version: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+        specifier: 0.3.3
+        version: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -88,11 +88,11 @@ importers:
         version: 4.4.3
     devDependencies:
       '@octanejs/testing-library':
-        specifier: 0.1.51
-        version: 0.1.51(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+        specifier: 0.1.52
+        version: 0.1.52(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
       '@octanejs/vite-plugin':
-        specifier: 0.1.55
-        version: 0.1.55(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+        specifier: 0.1.57
+        version: 0.1.57(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       '@rolldown/binding-linux-x64-gnu':
         specifier: 1.2.5
         version: 1.2.5
@@ -163,11 +163,11 @@ importers:
   packages/agent-identity:
     dependencies:
       '@octanejs/lucide':
-        specifier: 0.1.47
-        version: 0.1.47(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)))
+        specifier: 0.1.48
+        version: 0.1.48(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)))
       octane:
-        specifier: 0.2.11
-        version: 0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0))
+        specifier: 0.3.3
+        version: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0))
 
   packages/session-catalog: {}
 
@@ -676,26 +676,26 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@octanejs/app-core@0.0.51':
-    resolution: {integrity: sha512-b7Xe2yyx4XTf/zly967RVOkS3eDaCgO0n7NBEg+x6SdDDWay78FyG/xfJSSuHRsRr3Abdpl1kT5mJr7OZy2vTQ==}
+  '@octanejs/app-core@0.0.53':
+    resolution: {integrity: sha512-KiaQKsMqt5jWPGmDZYnYrWanW6UHFWM/csm0bgVu7wu5PuLDOMy63dgmJpZmoKGLHph6SfW2g7XkrEj9hexBIw==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.2.13
+      octane: ^0.3.1
 
-  '@octanejs/base-ui-utils@0.1.1':
-    resolution: {integrity: sha512-IVy4T1dHhEvo0tSYgCSESziLzN+Q4zwuW7Hjyq+YPbdtJlR/mwyPncl/eKu0nWplHexWPuRv+HZjiJ8gC2Oe0Q==}
+  '@octanejs/base-ui-utils@0.1.2':
+    resolution: {integrity: sha512-5/JnxMxBjujn4af73Tg65M+stvDUTQ19BcYV46bdFvw7DA/wsiCDaJ6YIsUbpzimWGy3LExhY1kd+K4g5DAB7A==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.2.5
+      octane: ^0.2.5 || ^0.3.0
 
-  '@octanejs/base-ui@0.1.53':
-    resolution: {integrity: sha512-Yt/2Xti51G6aDrgrNdI0xEWU7zObBSppTzt/1bxQf1nqUkWJpFknoEC9x1+JQRquki5fGYaEayDzF1Ij+VSQzw==}
+  '@octanejs/base-ui@0.1.54':
+    resolution: {integrity: sha512-mk3MDqNakt9JDfckoyp3CqOC3Og0sVTByBzNldbEQkHAwPg4ZcCw1SwCQ5A46pSbE/fxtOntDjiDe1Y2j70A6g==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
       '@date-fns/tz': ^1.2.0
       date-fns: ^4.0.0
       luxon: ^3.7.2
-      octane: ^0.2.5
+      octane: ^0.2.5 || ^0.3.0
     peerDependenciesMeta:
       '@date-fns/tz':
         optional: true
@@ -704,116 +704,68 @@ packages:
       luxon:
         optional: true
 
-  '@octanejs/floating-ui@0.1.53':
-    resolution: {integrity: sha512-bSXPo3E2n8zywff9GSSCrCyQFoI3RxHYixi7gHCcteAwe3xOoIGyeFZQ3Xka05qWqYBSdPeDGpgv9Cen/NPspQ==}
+  '@octanejs/floating-ui@0.1.54':
+    resolution: {integrity: sha512-YZ2x4SgEMWCHdz0djGXqQUp2RCxmAQfeoucun7wa/N9LAAqNkVydrDYOuwNrPRHO6BT6wPeIuRCR/ygTdlnDCQ==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/i18next@0.1.47':
-    resolution: {integrity: sha512-32OYWZkJJO/njmL5auEIK16G/sEmIRgkh7GuiSyxwMxd48dAn/+y0m3StPuq50FXDq5smCyqGor2+KgfmfLbWQ==}
+  '@octanejs/i18next@0.1.48':
+    resolution: {integrity: sha512-t6tUp/yI1vNFK/SYY0u/w5kmBfGI4C425zHIYfWcZ+ePU3LAzXSSDMpGWXHM8T+YLZfdr7X3cUUm7jSy5k4Trg==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
       i18next: '>=26.2.0'
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/lucide@0.1.47':
-    resolution: {integrity: sha512-DQN1g2qap6W2vlgsQHPCOzy7KZLhojZ9EfBCZgmptTIgV2Z2a/XQn2KRGhLPlatkJ9geDcxj3MK2/pCdbDsqRA==}
+  '@octanejs/lucide@0.1.48':
+    resolution: {integrity: sha512-NCkY1duTw8iY5X2UPr0I/zwGGu30v//9X+j9EmK7FsTjdhsCw3XOtaSuBCkbPs3dAxqwQahTaK7wppNMdwZDZg==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/radix@0.1.53':
-    resolution: {integrity: sha512-eoGNdUA8GtUmexPVX8FnNEbcGSNZC2zp0QAnwF8+oeIgektBb9dEwAxkld1vRHM1tzqacQLk2/V5tYae2daOVg==}
+  '@octanejs/radix@0.1.54':
+    resolution: {integrity: sha512-y7StVz8YONuDynXJYbg45NZT43DFL1ejGGlPmxDqXWidABsuJXsTDWGFQWuVthG2nqZJL8CecvFG5YU1ZCp6bQ==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/tanstack-query@0.1.53':
-    resolution: {integrity: sha512-/GgzOvxn8cAMktU9vemgjAjZphfIa9JDZzy2tWk2mTq8MiFh6Xp4r4TsPY7f39TXqf1rgGVb0dx5+KUK+02iXA==}
+  '@octanejs/tanstack-query@0.1.54':
+    resolution: {integrity: sha512-FKz4/M+Fa8rrOg7CBB1af6D1YQEkXHAEh+s/RbT1dq/CPv55Algc+6qW7Afp4xTz7Ig+8bTK3OzKQCBypqd2tw==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/tanstack-router@0.1.54':
-    resolution: {integrity: sha512-ZuzrXzBhGQU13+bDuhI+1t2gTCUKdB9QN5n51GSKP4d2Kb3s2d4igbHCf0Q8aH5LnoitGL69XH6F688S8exlLg==}
+  '@octanejs/tanstack-router@0.1.55':
+    resolution: {integrity: sha512-hOtp8OI5JBM5cKVObzf1/jBAA/oCbQKQ71auJUJVKZ+w9AVu9PIClc1M8eJPG5pDgkETVjrGhdK6YtTiKuzelQ==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
-  '@octanejs/testing-library@0.1.51':
-    resolution: {integrity: sha512-LjPRd8l/mKbO+pYcVHGeiOUQr3InaTfW+Rs9FBBTVmFCd16TfjyP/Cw/mct9bgn9sdHlEsLTRYPJS3UxcKh03g==}
+  '@octanejs/testing-library@0.1.52':
+    resolution: {integrity: sha512-qk69ERnj/ROCqCdIc9S+zZkxF2037lf96jXWP54uILOMonkfpRyOtZAFyTIxkzj7snDSJQcKB3UdHIC6maWAIQ==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.2.5
+      octane: ^0.2.5 || ^0.3.0
 
-  '@octanejs/vite-plugin@0.1.55':
-    resolution: {integrity: sha512-RERDyNF48+kI43dsgJHHssP4Tceth7b10EYj9F2JCvnx3GuXc5YmMva4Hv0kr7DYRrvSvAZ3XNFEJZIIgxE73g==}
+  '@octanejs/vite-plugin@0.1.57':
+    resolution: {integrity: sha512-87KEL+22N3yy8diFvVIggYFuneic8r48/1qC9DcvrcPwyt4GW9N8F9+vL2V6YfQ0Ewfhr5NtQmf2uaulCvcIuQ==}
     engines: {node: '>=22.22.2'}
     hasBin: true
     peerDependencies:
-      octane: ^0.2.13
+      octane: ^0.3.1
       vite: ^8.0.16
 
-  '@octanejs/zustand@0.1.53':
-    resolution: {integrity: sha512-tZYSXSZVaWcaQoVHSIt2tpMMHi2lanBbP7hfTHX7hvzbRZbgan35V55asCMHxU198pBjeXA/DPayWQlunYxydA==}
+  '@octanejs/zustand@0.1.54':
+    resolution: {integrity: sha512-p85Lj5ukakPSgZ1eYKswgPyUkwI5moOM+BTNGbQYGNO0Z838l8IG39m/pW1UCZgyozTHr1qFnjrwxkacTqsU/w==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
-      octane: ^0.1.51 || ^0.2.0
+      octane: ^0.1.51 || ^0.2.0 || ^0.3.0
 
   '@oxc-project/types@0.140.0':
     resolution: {integrity: sha512-h5LUOzGArYemnW1NMz/DuuQhBi96J6JL2Bk8zE4kvqxB5Sg3jxmCiH4uyOWHDkiKSt5vWlG4FIwCR/DbstcNRQ==}
 
   '@oxc-project/types@0.146.0':
     resolution: {integrity: sha512-XC0QsnnhVe7sLIWmYmdPw7x5P0h4W8vUU3Nv1ySgWXtvCz8NizoAEpGXA0sOYoJQV2Rl13LgURAHQ5cI5ILCSA==}
-
-  '@oxc-tsrx/native-darwin-arm64@0.5.0':
-    resolution: {integrity: sha512-PRymiTwR4BGOp72HF8hLh7D1Hmmm1+xAgus3j7GSHDzKx7qic+BKXAReR4whlaJtgsHIhGKnJqnx5aJ6HRsrXA==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@oxc-tsrx/native-darwin-x64@0.5.0':
-    resolution: {integrity: sha512-xk+Jd/+/icskBs9I5B+yWx//W7tRkxocv4j/DvnkavznuFc8GZHrNTFYyMusAzXsxup7Q0hiqbewAW+HJjt5uw==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
-    os: [darwin]
-
-  '@oxc-tsrx/native-linux-arm64-gnu@0.5.0':
-    resolution: {integrity: sha512-ref3olCGoKXeKTbCfycfKLtOiwvgZkyOeI8aJXMi0/tl4LvKZ8j9xvydyWgVu8gxQQW4Zx5SnrMDIkYWsvm4+A==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [arm64]
-    os: [linux]
-
-  '@oxc-tsrx/native-linux-arm64-musl@0.5.0':
-    resolution: {integrity: sha512-vzRmD2idbXvFqjCcAYHkfO04lDiKExQJZsyjx/US7n+c+CQ4rjIKMMLKMpXnLf9MVqA+Xa8KutKFTsW5f+nJaw==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [arm64]
-    os: [linux]
-
-  '@oxc-tsrx/native-linux-x64-gnu@0.5.0':
-    resolution: {integrity: sha512-kHa7ulfZgBpMyKPrgiOmh0dMzrWOXAt0TxkdjUIBb1iFjh2zvPySZCLfSD+FJXQyOuyhRVl4OSvSZ2gNBj5mFg==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
-    os: [linux]
-
-  '@oxc-tsrx/native-linux-x64-musl@0.5.0':
-    resolution: {integrity: sha512-Cffw2VVQqKrhaNMv0g/09ZDOdE8rafhB9s6/XmbDuJyG9DY43gwcsG1k70Gr+MDzqKRatV+GfanD/W7w1/zc2g==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
-    os: [linux]
-
-  '@oxc-tsrx/native-win32-arm64-msvc@0.5.0':
-    resolution: {integrity: sha512-uV6hp46bHIrsaqKe6hwwHRh170Vp3ZJ+PRisPjhmC5G6tPhYhOYAM+5/SzAlulXpEq3s5h/AtO8U3E+dvSOkeA==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [arm64]
-    os: [win32]
-
-  '@oxc-tsrx/native-win32-x64-msvc@0.5.0':
-    resolution: {integrity: sha512-OfOSm4m2ZkXQDtYle0bc4tKMOdHVrcyfbxHiox9aobTQ8TYY96dIi6n8F+EX/2CqW25jeVQnKRWWCyh8+vEX7w==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
-    os: [win32]
 
   '@oxfmt/binding-android-arm-eabi@0.59.0':
     resolution: {integrity: sha512-bNTnfbuG7sAwb2PakMNaDukx5kXeW9duXOBeWtTOiLz3fXz3q2DlWguufPZ+c2IHEVrRXHD+M4aUgEWm841LDA==}
@@ -1382,7 +1334,6 @@ packages:
   '@rolldown/binding-linux-x64-gnu@1.2.5':
     resolution: {integrity: sha512-Mgj59/HTuYeK9Gz2MA+mBWKnHsAgkBSec15ZMb1st3oIfFbX7gCjOae7GydHhzcyQi9Z/7M1QuN9bR3oFqF0jQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
     os: [linux]
 
   '@rolldown/binding-linux-x64-musl@1.2.5':
@@ -1483,7 +1434,6 @@ packages:
   '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
     resolution: {integrity: sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==}
     engines: {node: '>= 20'}
-    cpu: [x64]
     os: [linux]
 
   '@tailwindcss/oxide-linux-x64-musl@4.3.3':
@@ -1590,9 +1540,6 @@ packages:
   '@ts-morph/common@0.27.0':
     resolution: {integrity: sha512-Wf29UqxWDpc+i61k3oIOzcUfQt79PIT9y/MWfAGlrkjg6lBC1hwDECLXPVJAhWjiGbfBCxZd65F/LIZF3+jeJQ==}
 
-  '@tsrx/core@0.1.71':
-    resolution: {integrity: sha512-ooJ9RIOcaM1Z7jFAtW9FtyVnq3Bp8bZCI+mD1kcU0iEO3B2LHbW/gvE8iHONtZJB3wCaW0puFg5dVjRn44op2Q==}
-
   '@tsrx/core@0.2.4':
     resolution: {integrity: sha512-o07NiDB2yFeN2natoViMwwb9h0o3UDzYqGUJ7qe4w6r5Oc0WLoWFfrpRDUtWBpR+JL4Loc3lRxFdOD+Wz+0VlQ==}
 
@@ -1648,9 +1595,6 @@ packages:
     resolution: {integrity: sha512-Y8KEKepbugOuASyNVPazVulmdQy25LDYxUMw6MdiAWKmUWZ6RXzct8RgyiMqoif74LPOcKw+qpWZH3LJpeC7WA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
-
-  '@tsrx/runtime@0.1.7':
-    resolution: {integrity: sha512-lZn1z8nM0/+LSPE0auKiAb0PxN7+cBlCAKImP+aiWbmgLUQF3pcKPvAVRiUWUqjTfR5hC/LpdUElBPiTnoYhcA==}
 
   '@tsrx/runtime@0.2.2':
     resolution: {integrity: sha512-EsqZjTKWd/qrwEEk7AtaKrmTvPZWRz+H06rJjgNAb1Om0RC45xX2hZjDlv/tE20o4gcOgSCfc/AzKTq6qXlp1A==}
@@ -2281,9 +2225,6 @@ packages:
 
   detect-node@2.1.0:
     resolution: {integrity: sha512-T0NIuQpnTvFDATNuHN5roPwSBG83rFsuO+MXXH9/3N1eFbn4wcPjttvjMLEPWJ0RGUYgQE7cGgS3tNxbqCGM7g==}
-
-  devalue@5.9.2:
-    resolution: {integrity: sha512-po4PAY5c53tw5XMocSnf8A/5OHhbbUftpr93aEN6BBoAdntUmK7vu7wOATqvt7cXO7m1Cl4gMVn6p7n6n4mj0w==}
 
   devalue@5.9.4:
     resolution: {integrity: sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg==}
@@ -3511,26 +3452,8 @@ packages:
     resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
     engines: {node: '>=12.20.0'}
 
-  octane@0.2.11:
-    resolution: {integrity: sha512-xY5YAlPfp6bb50qbhcxTz/hS8u/hBh+GBPa+jR5jULV651m8WphkfxOEP8Pn36fWabzJ7IRDmVsD7sdCw/62lg==}
-    engines: {node: '>=22.22.2'}
-    peerDependencies:
-      react: ^19.0.0
-      react-dom: ^19.0.0
-      typescript: ^5.9.3
-      vite: ^8.0.16
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
-      typescript:
-        optional: true
-      vite:
-        optional: true
-
-  octane@0.2.16:
-    resolution: {integrity: sha512-7jMzf0WZhu++BQD2jyzlSo7bNHRObpOsSIEsLuQ0lcNABYph+Wirs3TD0XZqApvrpVdWsLzSfdYlbI3CPJNO6w==}
+  octane@0.3.3:
+    resolution: {integrity: sha512-IXlSV7Ms/Lx1BuA3fp96HG6Wf7GsMvip6Fa/UHeB4xy52NlIljb2NIGMn7AUYUAb3mrsGrqo2j3qYo5raAJroA==}
     engines: {node: '>=22.22.2'}
     peerDependencies:
       react: ^19.0.0
@@ -3573,11 +3496,6 @@ packages:
   ora@8.2.0:
     resolution: {integrity: sha512-weP+BZ8MVNnlCm8c0Qdc1WSWq4Qn7I+9CJGm7Qali6g44e/PUzbjNqJX5NJ9ljlNMosfJvg1fKEGILklK9cwnw==}
     engines: {node: '>=18'}
-
-  oxc-tsrx@0.5.0:
-    resolution: {integrity: sha512-gyuPG5K54eeDmnBjVBcG2IGONGgLzv8FP/arClMWrFu8sgoZ42vB+Tegj1/Zti1TrtRDOafGyHneTPDMCA6HCg==}
-    engines: {node: ^20.19.0 || >=22.12.0}
-    hasBin: true
 
   oxfmt@0.59.0:
     resolution: {integrity: sha512-Xqk6cPZS1yMvVa7OAuenaDZUsgMDutvvbZ9/L5gSvAfW64+WN4HVhgipLj5rVERbYQt8fLs9TopyZ1rU1XEG/w==}
@@ -5226,82 +5144,82 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@octanejs/app-core@0.0.51(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/app-core@0.0.53(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@ripple-ts/adapter': 0.4.6
       esbuild: 0.28.2
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/base-ui-utils@0.1.1(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/base-ui-utils@0.1.2(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@floating-ui/utils': 0.2.12
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       reselect: 5.3.0
 
-  '@octanejs/base-ui@0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/base-ui@0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@floating-ui/utils': 0.2.12
-      '@octanejs/base-ui-utils': 0.1.1(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      '@octanejs/floating-ui': 0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      '@octanejs/base-ui-utils': 0.1.2(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/floating-ui': 0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/floating-ui@0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/floating-ui@0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@floating-ui/dom': 1.8.0
       '@floating-ui/utils': 0.2.12
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       tabbable: 6.5.0
 
-  '@octanejs/i18next@0.1.47(i18next@26.4.2(typescript@5.9.3))(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/i18next@0.1.48(i18next@26.4.2(typescript@5.9.3))(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       html-parse-stringify: 3.1.0
       i18next: 26.4.2(typescript@5.9.3)
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/lucide@0.1.47(octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/lucide@0.1.48(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@lucide/icons': 1.24.0
-      octane: 0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/lucide@0.1.47(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/lucide@0.1.48(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@lucide/icons': 1.24.0
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/radix@0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/radix@0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
-      '@octanejs/floating-ui': 0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/floating-ui': 0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
       aria-hidden: 1.2.6
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/tanstack-query@0.1.53(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/tanstack-query@0.1.54(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@tanstack/query-core': 5.102.8
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/tanstack-router@0.1.54(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/tanstack-router@0.1.55(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@tanstack/history': 1.162.0
       '@tanstack/router-core': 1.171.15
       '@tanstack/store': 0.9.3
       isbot: 5.2.2
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/testing-library@0.1.51(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
+  '@octanejs/testing-library@0.1.52(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))':
     dependencies:
       '@testing-library/dom': 10.4.1
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
 
-  '@octanejs/vite-plugin@0.1.55(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))':
+  '@octanejs/vite-plugin@0.1.57(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))':
     dependencies:
-      '@octanejs/app-core': 0.0.51(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
+      '@octanejs/app-core': 0.0.53(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))
       '@ripple-ts/adapter': 0.4.6
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)
 
-  '@octanejs/zustand@0.1.53(@types/react@19.3.0)(immer@11.1.18)(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))':
+  '@octanejs/zustand@0.1.54(@types/react@19.3.0)(immer@11.1.18)(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))':
     dependencies:
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       zustand: 5.0.15(@types/react@19.3.0)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
     transitivePeerDependencies:
       - '@types/react'
@@ -5312,30 +5230,6 @@ snapshots:
   '@oxc-project/types@0.140.0': {}
 
   '@oxc-project/types@0.146.0': {}
-
-  '@oxc-tsrx/native-darwin-arm64@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-darwin-x64@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-linux-arm64-gnu@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-linux-arm64-musl@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-linux-x64-gnu@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-linux-x64-musl@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-win32-arm64-msvc@0.5.0':
-    optional: true
-
-  '@oxc-tsrx/native-win32-x64-msvc@0.5.0':
-    optional: true
 
   '@oxfmt/binding-android-arm-eabi@0.59.0':
     optional: true
@@ -5740,9 +5634,9 @@ snapshots:
 
   '@tanstack/history@1.162.3': {}
 
-  '@tanstack/markdown@0.0.15(octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)':
+  '@tanstack/markdown@0.0.15(octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)))(react@19.2.8)':
     optionalDependencies:
-      octane: 0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
+      octane: 0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0))
       react: 19.2.8
 
   '@tanstack/query-core@5.102.8': {}
@@ -5822,22 +5716,6 @@ snapshots:
       minimatch: 10.2.6
       path-browserify: 1.0.1
 
-  '@tsrx/core@0.1.71':
-    dependencies:
-      '@jridgewell/sourcemap-codec': 1.5.5
-      '@noble/hashes': 2.4.0
-      '@sveltejs/acorn-typescript': 1.0.13(acorn@8.18.0)
-      '@tsrx/runtime': 0.1.7
-      '@types/estree': 1.0.9
-      '@types/estree-jsx': 1.0.5
-      acorn: 8.18.0
-      esrap: 2.3.7
-      get-tsconfig: 5.0.0-beta.6
-      magic-string: 0.30.21
-      zimmerframe: 1.1.5
-    transitivePeerDependencies:
-      - '@typescript-eslint/types'
-
   '@tsrx/core@0.2.4':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
@@ -5898,8 +5776,6 @@ snapshots:
     transitivePeerDependencies:
       - svelte
       - vite-plus
-
-  '@tsrx/runtime@0.1.7': {}
 
   '@tsrx/runtime@0.2.2': {}
 
@@ -6543,8 +6419,6 @@ snapshots:
   detect-node@2.1.0:
     optional: true
 
-  devalue@5.9.2: {}
-
   devalue@5.9.4: {}
 
   devlop@1.1.0:
@@ -6774,7 +6648,7 @@ snapshots:
 
   esrap@2.3.7:
     dependencies:
-      '@jridgewell/sourcemap-codec': 1.5.5
+      '@jridgewell/sourcemap-codec': 1.6.0
 
   estree-util-is-identifier-name@3.0.0: {}
 
@@ -7991,29 +7865,7 @@ snapshots:
 
   obug@2.1.4: {}
 
-  octane@0.2.11(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)):
-    dependencies:
-      '@tsrx/core': 0.1.71
-      '@types/react': 19.2.18
-      '@volar/language-core': 2.4.28
-      '@volar/typescript': 2.4.28
-      alien-signals: 3.2.0
-      devalue: 5.9.2
-      entities: 7.0.1
-      es-module-lexer: 1.7.0
-      esrap: 2.3.7
-      oxc-tsrx: 0.5.0
-    optionalDependencies:
-      react: 19.2.8
-      react-dom: 19.2.8(react@19.2.8)
-      typescript: 5.9.3
-      vite: 8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)
-    transitivePeerDependencies:
-      - '@typescript-eslint/types'
-      - svelte
-      - vite-plus
-
-  octane@0.2.16(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)):
+  octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)):
     dependencies:
       '@tsrx/core': 0.2.4
       '@tsrx/oxc': 0.13.0
@@ -8031,6 +7883,29 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
       typescript: 5.9.3
       vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)
+    transitivePeerDependencies:
+      - '@typescript-eslint/types'
+      - svelte
+      - vite-plus
+
+  octane@0.3.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)):
+    dependencies:
+      '@tsrx/core': 0.2.4
+      '@tsrx/oxc': 0.13.0
+      '@types/react': 19.3.0
+      '@volar/language-core': 2.4.28
+      '@volar/typescript': 2.4.28
+      alien-signals: 3.2.0
+      csstype: 3.2.3
+      devalue: 5.9.4
+      entities: 7.0.1
+      es-module-lexer: 1.7.0
+      esrap: 2.3.7
+    optionalDependencies:
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+      typescript: 5.9.3
+      vite: 8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)
     transitivePeerDependencies:
       - '@typescript-eslint/types'
       - svelte
@@ -8078,27 +7953,6 @@ snapshots:
       stdin-discarder: 0.2.2
       string-width: 7.2.0
       strip-ansi: 7.2.0
-
-  oxc-tsrx@0.5.0:
-    dependencies:
-      '@oxc-project/types': 0.140.0
-      oxfmt-current: oxfmt@0.59.0
-      oxlint-current: oxlint@1.74.0(oxlint-tsgolint@0.24.0)
-      oxlint-tsgolint: 0.24.0
-      pathe: 2.0.3
-      tinyglobby: 0.2.17
-    optionalDependencies:
-      '@oxc-tsrx/native-darwin-arm64': 0.5.0
-      '@oxc-tsrx/native-darwin-x64': 0.5.0
-      '@oxc-tsrx/native-linux-arm64-gnu': 0.5.0
-      '@oxc-tsrx/native-linux-arm64-musl': 0.5.0
-      '@oxc-tsrx/native-linux-x64-gnu': 0.5.0
-      '@oxc-tsrx/native-linux-x64-musl': 0.5.0
-      '@oxc-tsrx/native-win32-arm64-msvc': 0.5.0
-      '@oxc-tsrx/native-win32-x64-msvc': 0.5.0
-    transitivePeerDependencies:
-      - svelte
-      - vite-plus
 
   oxfmt@0.59.0:
     dependencies:

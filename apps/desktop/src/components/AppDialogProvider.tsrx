@@ -143,7 +143,7 @@ export function AppDialogProvider({ children }: { children: Renderable }) {
   }, []);
 
   return (
-    <AppDialogContext.Provider value={value}>
+    <AppDialogContext value={value}>
       {children}
       <AlertDialog
         open={Boolean(active)}
@@ -222,7 +222,7 @@ export function AppDialogProvider({ children }: { children: Renderable }) {
           </DialogContent>
         )}
       </Dialog>
-    </AppDialogContext.Provider>
+    </AppDialogContext>
   );
 }
 

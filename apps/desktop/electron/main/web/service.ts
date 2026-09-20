@@ -885,9 +885,7 @@ export class WebAccessService {
       } else {
         params.turnId = this.field(body.turnId);
         params.approvalId =
-          typeof body.approvalId === "number" &&
-          Number.isSafeInteger(body.approvalId) &&
-          body.approvalId >= 0
+          typeof body.approvalId === "number" && Number.isSafeInteger(body.approvalId)
             ? body.approvalId
             : this.field(body.approvalId);
         params.decision = this.field(body.decision);

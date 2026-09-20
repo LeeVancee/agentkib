@@ -213,6 +213,25 @@ impl State {
         serde_json::from_value(id.clone()).context("invalid ACP request id")
     }
 
+    fn web_field_supported(value: &str) -> bool {
+        !value
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+            .is_empty()
+            && value.encode_utf16().count() <= 256
+            && !value.chars().any(char::is_control)
+    }
+
+    fn web_permission_id_supported(id: &RpcId) -> bool {
+        // The Web transport round-trips numbers through JavaScript and accepts
+        // string IDs only through its bounded input validator. Keep approvals
+        // that cannot survive that path visible but non-actionable.
+        const MAX_SAFE_INTEGER: i64 = (1_i64 << 53) - 1;
+        match id {
+            RpcId::Number(value) => (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(value),
+            RpcId::String(value) => Self::web_field_supported(value),
+        }
+    }
+
     fn apply(&mut self, event: Event) -> Result<()> {
         // Reject oversize events atomically: keep the last bounded view and never
         // show an actionable permission with a clipped tool description.
@@ -327,15 +346,17 @@ impl State {
                     .iter()
                     .map(|o| o.option_id.clone())
                     .collect();
+                let option_ids_supported = request
+                    .options
+                    .iter()
+                    .all(|option| Self::web_field_supported(&option.option_id));
                 let mut redaction_count = 0;
                 let options = request
                     .options
                     .iter()
                     .map(|option| {
                         ensure!(
-                            option.option_id.len() <= 256
-                                && !option.option_id.chars().any(|value| value.is_control())
-                                && !option.name.trim().is_empty()
+                            !option.name.trim().is_empty()
                                 && option.name.len() <= 512
                                 && !option.kind.trim().is_empty()
                                 && option.kind.len() <= 256,
@@ -357,13 +378,20 @@ impl State {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let projected = project_permission_tool_call(&request.tool_call);
-                let (tool_call, supported, unsupported_reason) = match projected {
-                    Ok(tool_call) => (tool_call, true, Value::Null),
-                    Err(_) => (
-                        json!({"toolCallId": "[unavailable]"}),
-                        false,
-                        json!("incomplete-operation-details"),
-                    ),
+                let (tool_call, operation_supported) = match projected {
+                    Ok(tool_call) => (tool_call, true),
+                    Err(_) => (json!({"toolCallId": "[unavailable]"}), false),
+                };
+                let id_supported = Self::web_permission_id_supported(&id);
+                let supported = operation_supported && id_supported && option_ids_supported;
+                let unsupported_reason = if !operation_supported {
+                    json!("incomplete-operation-details")
+                } else if !id_supported {
+                    json!("unsupported-request-id")
+                } else if !option_ids_supported {
+                    json!("unsupported-option-id")
+                } else {
+                    Value::Null
                 };
                 self.approvals
                     .push(json!({"requestId":id,"turnId":self.turn_id(),
@@ -1280,6 +1308,70 @@ mod tests {
                 .is_err()
         );
         assert!(state.apply(permission()).is_err());
+    }
+
+    #[test]
+    fn permission_ids_must_round_trip_through_web_before_becoming_actionable() {
+        for (id, actionable) in [
+            (RpcId::Number(-1), true),
+            (RpcId::Number(-((1_i64 << 53) - 1)), true),
+            (RpcId::Number((1_i64 << 53) - 1), true),
+            (RpcId::Number(1_i64 << 53), false),
+            (RpcId::Number(i64::MIN), false),
+            (RpcId::String(" ".into()), false),
+            (RpcId::String("\u{feff}".into()), false),
+            (RpcId::String("a".repeat(257)), false),
+            (RpcId::String("😀".repeat(129)), false),
+            (RpcId::String("bad\nrequest".into()), false),
+        ] {
+            let mut state = active();
+            let Event::Permission { request, .. } = permission() else {
+                unreachable!()
+            };
+            state
+                .apply(Event::Permission {
+                    id: id.clone(),
+                    request,
+                })
+                .unwrap();
+            let snapshot = state.snapshot();
+            let approval = &snapshot["approvals"][0];
+            assert_eq!(approval["supported"], actionable, "{id:?}");
+            let native_id = serde_json::to_value(&id).unwrap();
+            if actionable {
+                assert_eq!(approval["requestId"], native_id);
+                assert_eq!(
+                    state.permission(&native_id, "3", "native-yes", 1).unwrap(),
+                    id
+                );
+            } else {
+                assert_eq!(approval["availableDecisions"], json!([]));
+                assert_eq!(approval["unsupportedReason"], "unsupported-request-id");
+                assert!(state.permission(&native_id, "3", "native-yes", 1).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn permission_option_ids_must_round_trip_through_web_before_becoming_actionable() {
+        for option_id in [" ", "\u{feff}", "bad\noption"] {
+            let mut state = active();
+            let Event::Permission { id, mut request } = permission() else {
+                unreachable!()
+            };
+            request.options[0].option_id = option_id.into();
+            state.apply(Event::Permission { id, request }).unwrap();
+            let snapshot = state.snapshot();
+            let approval = &snapshot["approvals"][0];
+            assert_eq!(approval["supported"], false, "{option_id:?}");
+            assert_eq!(approval["availableDecisions"], json!([]));
+            assert_eq!(approval["unsupportedReason"], "unsupported-option-id");
+            assert!(
+                state
+                    .permission(&json!("approve-a"), "3", option_id, 1)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

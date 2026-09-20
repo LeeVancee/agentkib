@@ -1342,6 +1342,45 @@ describe("WebAccessService loopback security boundary", () => {
       }),
     );
   });
+  it("forwards a supported negative ACP approval ID without changing its sign", async () => {
+    await bootstrap();
+    await pair(true, true);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: -860,
+          turnId: "turn",
+          supported: true,
+          availableDecisions: ["native-yes"],
+        },
+      ],
+    });
+    const response = await http("/api/web/v1/approve", {
+      method: "POST",
+      body: {
+        sessionId: "s",
+        requestId: "negative-approval",
+        bootId,
+        expectedRevision: 4,
+        turnId: "turn",
+        approvalId: -860,
+        decision: "native-yes",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "approve", approvalId: -860 }),
+    );
+    expect(
+      runtime.mock.calls.filter(
+        ([params]) => (params as { operation?: string }).operation === "approve",
+      ),
+    ).toHaveLength(1);
+  });
   it("rechecks revoked grants between live read and mutation dispatch", async () => {
     await bootstrap();
     const id = await pair(true);

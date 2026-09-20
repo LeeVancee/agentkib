@@ -1362,6 +1362,7 @@ fn validate_native_ref(value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     #[test]

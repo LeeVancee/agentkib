@@ -3116,21 +3116,47 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let wrapper = directory.path().join("wrapper");
-        std::fs::write(&wrapper, "#!/bin/sh\nsleep 0.05\n(sleep 5) &\nexit 0\n").unwrap();
+        let ready = directory.path().join("ready");
+        let release = directory.path().join("release");
+        let args = [
+            ready.to_string_lossy().into_owned(),
+            release.to_string_lossy().into_owned(),
+        ];
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n(sleep 5) &\nprintf ready > \"$1\"\nwhile [ ! -e \"$2\" ]; do sleep 0.01; done\nexit 0\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
         let worker_cancelled = std::sync::Arc::clone(&cancelled);
-        std::thread::spawn(move || {
+        let signal = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + StdDuration::from_secs(1);
+            while !ready.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(StdDuration::from_millis(5));
+            }
+            let saw_ready = ready.exists();
+            if saw_ready {
+                // Keep the short-lived parent alive until process-group supervision
+                // has attached, then let it exit while the descendant holds stdout.
+                std::thread::sleep(StdDuration::from_millis(100));
+                std::fs::write(release, "").unwrap();
+            }
             std::thread::sleep(StdDuration::from_millis(200));
             worker_cancelled.store(true, Ordering::SeqCst);
+            saw_ready
         });
 
         let started = std::time::Instant::now();
         let result =
-            run_action_with_timeout(&wrapper, &[], StdDuration::from_secs(5), &cancelled).await;
+            run_action_with_timeout(&wrapper, &args, StdDuration::from_secs(5), &cancelled).await;
+        assert!(
+            signal.join().unwrap(),
+            "wrapper never reached the ready gate"
+        );
 
         let error = result.err().expect("cancellation should stop the command");
-        assert!(error.to_string().contains("cancelled"));
+        assert!(error.to_string().contains("cancelled"), "{error:#}");
         assert!(started.elapsed() < StdDuration::from_secs(2));
     }
 

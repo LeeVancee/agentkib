@@ -172,7 +172,9 @@ where
             .as_deref()
             .map(ExpectedFile::Sha256)
             .unwrap_or(ExpectedFile::Missing);
-        if let Err(error) = atomic_replace_checked(prepared.temp.path(), &change.target, expected)
+        // Windows ReplaceFileW cannot replace from a still-open NamedTempFile.
+        let temp_path = prepared.temp.into_temp_path();
+        if let Err(error) = atomic_replace_checked(&temp_path, &change.target, expected)
             .with_context(|| format!("Failed to write {}", change.target.display()))
         {
             return Err(error_with_rollback(

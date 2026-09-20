@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::mpsc as async_mpsc;
+use tokio::sync::{Notify, mpsc as async_mpsc};
 
 use crate::{Error, Event, Result, RpcId, StdioClient};
 
@@ -44,12 +44,13 @@ struct Command {
 ///
 /// One consumer must continuously drain `next_event`, including during prompts.
 /// Responses are correlated by request ID; session/load replay precedes its reply.
-/// The queue is bounded: an undrained stream closes the worker rather than losing
-/// events or approving tools. Callers own durable transcript/snapshot persistence.
+/// The queue is bounded: a full stream pauses ACP reads while commands remain
+/// serviceable. Callers must drain events and own durable snapshot persistence.
 #[derive(Clone)]
 pub struct BlockingClient {
     commands: async_mpsc::Sender<Command>,
     events: Arc<Mutex<mpsc::Receiver<Result<Event>>>>,
+    drained: Arc<Notify>,
     timeout: Duration,
     deadline: Option<Instant>,
 }
@@ -71,6 +72,8 @@ impl BlockingClient {
         let cwd = cwd.to_owned();
         let (commands, receiver) = async_mpsc::channel::<Command>(32);
         let (event_sender, events) = mpsc::sync_channel(128);
+        let drained = Arc::new(Notify::new());
+        let worker_drained = Arc::clone(&drained);
         let (started, ready) = mpsc::sync_channel(1);
         std::thread::Builder::new()
             .name("antigravity-acp".into())
@@ -96,7 +99,7 @@ impl BlockingClient {
                     if started.send(Ok(())).is_err() {
                         return;
                     }
-                    run(client, receiver, event_sender, timeout).await;
+                    run(client, receiver, event_sender, worker_drained, timeout).await;
                 });
             })?;
         ready.recv_timeout(timeout).map_err(|error| match error {
@@ -106,6 +109,7 @@ impl BlockingClient {
         Ok(Self {
             commands,
             events: Arc::new(Mutex::new(events)),
+            drained,
             timeout,
             deadline: None,
         })
@@ -180,7 +184,10 @@ impl BlockingClient {
         };
         let receiver = self.events.lock().map_err(|_| Error::Closed)?;
         match receiver.recv_timeout(timeout) {
-            Ok(event) => event.map(Some),
+            Ok(event) => {
+                self.drained.notify_one();
+                event.map(Some)
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if self
                     .deadline
@@ -233,10 +240,13 @@ async fn run(
     mut client: StdioClient,
     mut commands: async_mpsc::Receiver<Command>,
     events: mpsc::SyncSender<Result<Event>>,
+    drained: Arc<Notify>,
     timeout: Duration,
 ) {
+    let mut pending_event: Option<Result<Event>> = None;
     loop {
         tokio::select! {
+            biased;
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 if command.deadline <= Instant::now() {
@@ -249,9 +259,24 @@ async fn run(
                 let timed_out = matches!(result, Err(Error::Timeout));
                 if command.reply.send(result).is_err() || stop || timed_out { break; }
             }
-            event = client.next_event() => {
+            _ = drained.notified(), if pending_event.is_some() => {
+                let event = pending_event.take().expect("pending event");
                 let failed = event.is_err();
-                if events.try_send(event).is_err() || failed { break; }
+                match events.try_send(event) {
+                    Ok(()) if failed => break,
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(event)) => pending_event = Some(event),
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                }
+            }
+            event = client.next_event(), if pending_event.is_none() => {
+                let failed = event.is_err();
+                match events.try_send(event) {
+                    Ok(()) if failed => break,
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(event)) => pending_event = Some(event),
+                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                }
             }
         }
     }

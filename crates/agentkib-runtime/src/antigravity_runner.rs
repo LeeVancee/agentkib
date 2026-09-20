@@ -1793,9 +1793,9 @@ read -r line
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"loadSession":true}}}'
 read -r line
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"native history"}}}}'
-chunk=$(printf '%8192s' ' ')
+chunk=$(printf '%1024s' ' ')
 i=0
-while [ "$i" -lt 100 ]; do
+while [ "$i" -lt 700 ]; do
   printf '%s%s%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"' "$chunk" '"}}}}'
   i=$((i + 1))
 done

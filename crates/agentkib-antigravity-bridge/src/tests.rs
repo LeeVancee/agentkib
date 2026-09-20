@@ -421,3 +421,85 @@ fn scoped_deadline_caps_an_unresponsive_acp_wait() {
         Err(Error::Timeout)
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn blocking_worker_backpressures_a_bursty_event_stream() {
+    use crate::BlockingClient;
+    use std::ffi::OsString;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    let marker = std::env::temp_dir().join(format!(
+        "agentkib-acp-backpressure-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let script = r#"
+read -r initialize
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+read -r create
+i=0
+while [ "$i" -lt 160 ]; do
+  printf '{"jsonrpc":"2.0","method":"heartbeat","params":{"index":%s}}\n' "$i"
+  i=$((i + 1))
+done
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"native"}}'
+: > "$1"
+read -r second_create
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"sessionId":"native-two"}}'
+read -r hold
+"#;
+    let client = BlockingClient::spawn(
+        Path::new("/bin/sh"),
+        &[
+            OsString::from("-c"),
+            OsString::from(script),
+            OsString::from("fixture"),
+            marker.as_os_str().to_os_string(),
+        ],
+        Path::new("/"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    client.initialize().unwrap();
+    assert!(matches!(
+        client.next_event(Duration::from_secs(5)).unwrap(),
+        Some(Event::Response { method, .. }) if method == "initialize"
+    ));
+    client.new_session(Path::new("/")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not finish its burst"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The event queue is full here; a second command must still be dispatched.
+    assert_eq!(
+        client.new_session(Path::new("/")).unwrap(),
+        RpcId::Number(3)
+    );
+    for index in 0..160 {
+        match client.next_event(Duration::from_secs(5)).unwrap() {
+            Some(Event::Notification { method, params }) => {
+                assert_eq!(method, "heartbeat");
+                assert_eq!(params["index"], index);
+            }
+            event => panic!("unexpected event after {index} updates: {event:?}"),
+        }
+    }
+    assert!(matches!(
+        client.next_event(Duration::from_secs(5)).unwrap(),
+        Some(Event::Response { method, .. }) if method == "session/new"
+    ));
+    assert!(matches!(
+        client.next_event(Duration::from_secs(5)).unwrap(),
+        Some(Event::Response { method, .. }) if method == "session/new"
+    ));
+    client.shutdown().unwrap();
+    std::fs::remove_file(marker).unwrap();
+}

@@ -17,6 +17,9 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+// The desktop Web host gives a runtime request 20 seconds. Leave five seconds
+// for session lookup, access checks, and the response outside ACP attachment.
+const ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 const MAX_CONTENT: usize = 512 * 1024;
 const MAX_APPROVAL_DETAILS: usize = 64 * 1024;
@@ -901,6 +904,23 @@ impl Runner {
         workspace: PathBuf,
         session_id: String,
     ) -> Result<Self> {
+        Self::connect_with_attachment_timeout(
+            executable,
+            args,
+            workspace,
+            session_id,
+            ATTACHMENT_TIMEOUT,
+        )
+    }
+
+    fn connect_with_attachment_timeout(
+        executable: &Path,
+        args: &[OsString],
+        workspace: PathBuf,
+        session_id: String,
+        attachment_timeout: Duration,
+    ) -> Result<Self> {
+        let deadline = Instant::now() + attachment_timeout;
         ensure!(
             workspace.is_absolute() && workspace.is_dir(),
             "invalid Antigravity workspace"
@@ -910,36 +930,43 @@ impl Runner {
             "invalid Antigravity session id"
         );
         let client = BlockingClient::spawn(executable, args, &workspace, TIMEOUT)?;
+        let attachment_client = client.with_deadline(deadline);
         let mut state = State::new(session_id.clone());
         let attached = (|| -> Result<()> {
-            let initialize = client.initialize()?;
-            let response = wait_response(&client, &initialize, "initialize", None)?;
+            let initialize = attachment_client.initialize()?;
+            let response = wait_response(
+                &attachment_client,
+                &initialize,
+                "initialize",
+                None,
+                deadline,
+            )?;
             let caps = Compatibility::from_initialize(&response)?;
             Compatibility::verify_control_identity(&response)?;
             let (id, method) = if caps.resume_session {
                 (
-                    client.resume_session(&session_id, &workspace)?,
+                    attachment_client.resume_session(&session_id, &workspace)?,
                     "session/resume",
                 )
             } else if caps.load_session {
                 (
-                    client.load_session(&session_id, &workspace)?,
+                    attachment_client.load_session(&session_id, &workspace)?,
                     "session/load",
                 )
             } else {
                 bail!("Antigravity ACP server cannot resume or load native sessions")
             };
-            wait_response(&client, &id, method, Some(&mut state))?;
+            wait_response(&attachment_client, &id, method, Some(&mut state), deadline)?;
             // Initial live polling reports revision zero before lazy attachment.
             // Native replay is validated as it arrives, but it is not a live turn.
             state.revision = 0;
             state.stream_text.clear();
             Ok(())
         })();
-        if let Err(error) = attached {
-            let _ = client.shutdown();
-            return Err(error);
-        }
+        // On error, dropping both handles closes the command channel without
+        // spending the remaining host budget on a shutdown round trip.
+        attached?;
+        drop(attachment_client);
         let state = Arc::new(Mutex::new(state));
         let stopped = Arc::new(AtomicBool::new(false));
         let worker_client = client.clone();
@@ -1127,14 +1154,21 @@ fn wait_response(
     expected_id: &RpcId,
     expected_method: &str,
     mut replay: Option<&mut State>,
+    attachment_deadline: Instant,
 ) -> Result<Value> {
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = attachment_deadline.min(Instant::now() + TIMEOUT);
     loop {
         ensure!(
             Instant::now() < deadline,
             "ACP attachment timed out; connection closed"
         );
-        match client.next_event(deadline.saturating_duration_since(Instant::now()).min(POLL))? {
+        let event =
+            client.next_event(deadline.saturating_duration_since(Instant::now()).min(POLL))?;
+        ensure!(
+            Instant::now() < deadline,
+            "ACP attachment timed out; connection closed"
+        );
+        match event {
             Some(Event::Response { id, method, result }) => {
                 ensure!(
                     &id == expected_id && method == expected_method,
@@ -1647,6 +1681,30 @@ while read -r line; do :; done
                 "native-session".into(),
             )
             .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_deadline_includes_both_handshake_stages() {
+        let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+while read -r line; do :; done
+"#;
+        let started = Instant::now();
+        let result = Runner::connect_with_attachment_timeout(
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            std::env::temp_dir().canonicalize().unwrap(),
+            "native-session".into(),
+            Duration::from_secs(1),
+        );
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "attachment exceeded its shared deadline"
         );
     }
 

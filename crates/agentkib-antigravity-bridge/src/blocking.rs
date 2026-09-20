@@ -51,6 +51,7 @@ pub struct BlockingClient {
     commands: async_mpsc::Sender<Command>,
     events: Arc<Mutex<mpsc::Receiver<Result<Event>>>>,
     timeout: Duration,
+    deadline: Option<Instant>,
 }
 
 impl BlockingClient {
@@ -106,7 +107,18 @@ impl BlockingClient {
             commands,
             events: Arc::new(Mutex::new(events)),
             timeout,
+            deadline: None,
         })
+    }
+
+    /// Share the transport while bounding every command and event wait by one deadline.
+    pub fn with_deadline(&self, deadline: Instant) -> Self {
+        let mut scoped = self.clone();
+        scoped.deadline = Some(
+            self.deadline
+                .map_or(deadline, |existing| existing.min(deadline)),
+        );
+        scoped
     }
 
     pub fn initialize(&self) -> Result<RpcId> {
@@ -157,10 +169,28 @@ impl BlockingClient {
 
     /// `None` means no event arrived during the timeout, not session completion.
     pub fn next_event(&self, timeout: Duration) -> Result<Option<Event>> {
+        let timeout = if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Timeout);
+            }
+            timeout.min(remaining)
+        } else {
+            timeout
+        };
         let receiver = self.events.lock().map_err(|_| Error::Closed)?;
         match receiver.recv_timeout(timeout) {
             Ok(event) => event.map(Some),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if self
+                    .deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    Err(Error::Timeout)
+                } else {
+                    Ok(None)
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::Closed),
         }
     }
@@ -171,11 +201,19 @@ impl BlockingClient {
     }
 
     fn dispatch(&self, operation: Operation) -> Result<Option<RpcId>> {
+        let now = Instant::now();
+        let operation_deadline = now + self.timeout;
+        let deadline = self
+            .deadline
+            .map_or(operation_deadline, |shared| shared.min(operation_deadline));
+        if deadline <= now {
+            return Err(Error::Timeout);
+        }
         let (reply, receive) = mpsc::sync_channel(1);
         self.commands
             .try_send(Command {
                 operation,
-                deadline: Instant::now() + self.timeout,
+                deadline,
                 reply,
             })
             .map_err(|error| match error {
@@ -183,7 +221,7 @@ impl BlockingClient {
                 async_mpsc::error::TrySendError::Closed(_) => Error::Closed,
             })?;
         receive
-            .recv_timeout(self.timeout)
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|error| match error {
                 mpsc::RecvTimeoutError::Timeout => Error::Timeout,
                 mpsc::RecvTimeoutError::Disconnected => Error::Closed,

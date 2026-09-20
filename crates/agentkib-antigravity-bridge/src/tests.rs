@@ -390,3 +390,34 @@ fn blocking_worker_no_event_is_not_success_or_completion() {
     assert!(client.new_session(Path::new("/")).is_err());
     client.shutdown().unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn scoped_deadline_caps_an_unresponsive_acp_wait() {
+    use crate::BlockingClient;
+    use std::ffi::OsString;
+    use std::time::Instant;
+
+    let client = BlockingClient::spawn(
+        Path::new("/bin/sh"),
+        &[
+            OsString::from("-c"),
+            OsString::from("read -r initialize; read -r hold"),
+        ],
+        Path::new("/"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    client.initialize().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let scoped = client.with_deadline(deadline);
+    assert!(matches!(
+        scoped.next_event(Duration::from_secs(2)),
+        Err(Error::Timeout)
+    ));
+    assert!(Instant::now() < deadline + Duration::from_secs(1));
+    assert!(matches!(
+        client.with_deadline(deadline).new_session(Path::new("/")),
+        Err(Error::Timeout)
+    ));
+}

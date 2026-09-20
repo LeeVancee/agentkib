@@ -96,7 +96,7 @@ pub fn move_path(source: &Path, target: &Path) -> io::Result<()> {
 pub fn move_file_no_replace(source: &Path, target: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        return windows::move_path(source, target);
+        windows::move_path(source, target)
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {

@@ -10,6 +10,10 @@ const config = {
     octane({ requireDirective: true, strong: false }),
     tailwindcss(),
   ],
+  optimizeDeps: {
+    // Pre-bundle dependencies that Vite's initial TSRX scan does not discover.
+    include: ["i18next", "class-variance-authority", "cn", "zod", "d3-hierarchy", "qrcode"],
+  },
   resolve: {
     conditions: ["module", "browser", "default"],
     extensions: [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json", ".tsrx"],

@@ -1,5 +1,6 @@
 import codex from "./assets/codex.svg";
 import claude from "./assets/claude-code.svg";
+import antigravity from "./assets/antigravity.svg";
 import cursor from "./assets/cursor.svg";
 import opencode from "./assets/opencode.svg";
 import openClaw from "./assets/open-claw.svg";
@@ -12,6 +13,7 @@ import { Bot } from "lucide-react";
 const identities: Record<string, { name: string; src: string; invert?: boolean; dim?: boolean }> = {
   codex: { name: "Codex", src: codex },
   "claude-code": { name: "Claude Code", src: claude },
+  antigravity: { name: "Antigravity", src: antigravity },
   cursor: { name: "Cursor", src: cursor },
   opencode: { name: "OpenCode", src: opencode, invert: true },
   "open-claw": { name: "OpenClaw", src: openClaw },

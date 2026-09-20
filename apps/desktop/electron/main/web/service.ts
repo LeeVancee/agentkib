@@ -128,6 +128,7 @@ export class WebAccessService {
       runtimeRequest: (params: unknown) => Promise<unknown>;
       verifiedExperimental?: boolean;
       verifiedClaudeManaged?: boolean;
+      verifiedAntigravityManaged?: boolean;
       acceptanceSessionId?: string;
       mode?: "lan";
       sharedControl?: ReturnType<typeof createWebControlState>;
@@ -175,7 +176,9 @@ export class WebAccessService {
       this.config.experimentalEnabled &&
       (scope
         ? !this.config.externalOrigin && (sessionId === undefined || sessionId === scope)
-        : this.options.verifiedExperimental === true || this.options.verifiedClaudeManaged === true)
+        : this.options.verifiedExperimental === true ||
+          this.options.verifiedClaudeManaged === true ||
+          this.options.verifiedAntigravityManaged === true)
     );
   }
   private controlsEnabledForSnapshot(sessionId: string | undefined, snapshot: unknown) {
@@ -187,7 +190,12 @@ export class WebAccessService {
           snapshot !== null &&
           typeof snapshot === "object" &&
           "executionMode" in snapshot &&
-          snapshot.executionMode === "managed-resume"))
+          snapshot.executionMode === "managed-resume") ||
+        (this.options.verifiedAntigravityManaged === true &&
+          snapshot !== null &&
+          typeof snapshot === "object" &&
+          "executionMode" in snapshot &&
+          snapshot.executionMode === "acp-managed"))
     );
   }
 
@@ -373,6 +381,7 @@ export class WebAccessService {
       experimentalAvailable:
         this.options.verifiedExperimental === true ||
         this.options.verifiedClaudeManaged === true ||
+        this.options.verifiedAntigravityManaged === true ||
         !!this.options.acceptanceSessionId,
       acceptanceSessionId: this.options.acceptanceSessionId,
       localUrl: `http://${this.options.mode === "lan" ? this.config.lanAddress : "127.0.0.1"}:${this.config.port}`,
@@ -672,7 +681,7 @@ export class WebAccessService {
     const path = url.pathname.replace(/^\/api\/web\/v1/, "");
     if (!url.pathname.startsWith("/api/web/v1/")) throw new HttpError(404, "not_found");
     const getPaths = ["/access", "/info", "/catalog", "/events", "/live", "/stream"];
-    const postPaths = ["/pair", "/pair/cancel", "/logout", "/send", "/approve", "/answer"];
+    const postPaths = ["/pair", "/pair/cancel", "/logout", "/send", "/stop", "/approve", "/answer"];
     if (lan && req.method === "OPTIONS") {
       const method = req.headers["access-control-request-method"];
       const allowed = method === "GET" ? getPaths : method === "POST" ? postPaths : [];
@@ -701,7 +710,8 @@ export class WebAccessService {
         transport: lan ? "lan" : "local",
         capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
       });
-    control.request = req.method === "POST" && ["/send", "/approve", "/answer"].includes(path);
+    control.request =
+      req.method === "POST" && ["/send", "/stop", "/approve", "/answer"].includes(path);
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
     let raw = lan
       ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
@@ -800,7 +810,8 @@ export class WebAccessService {
           );
         return this.json(res, 200, { ok: true });
       }
-      if (!["/send", "/approve", "/answer"].includes(path)) throw new HttpError(404, "not_found");
+      if (!["/send", "/stop", "/approve", "/answer"].includes(path))
+        throw new HttpError(404, "not_found");
       const operation = path.slice(1);
       const permission = operation === "approve" ? "approve" : "send";
       this.grant(hash, permission);
@@ -836,6 +847,8 @@ export class WebAccessService {
         )
           throw new HttpError(400, "invalid_text");
         params.text = body.text;
+      } else if (operation === "stop") {
+        params.turnId = this.field(body.turnId);
       } else if (operation === "answer") {
         params.turnId = this.field(body.turnId);
         params.questionId =
@@ -877,9 +890,7 @@ export class WebAccessService {
           body.approvalId >= 0
             ? body.approvalId
             : this.field(body.approvalId);
-        if (!["accept", "decline", "cancel", "allow", "deny"].includes(String(body.decision)))
-          throw new HttpError(400, "invalid_decision");
-        params.decision = body.decision;
+        params.decision = this.field(body.decision);
       }
       if (this.admission) throw new HttpError(409, "operation_busy");
       this.rate(`control:${hash}`, 30);
@@ -900,7 +911,10 @@ export class WebAccessService {
         )) as {
           runtimeBootId?: string;
           revision?: number;
+          status?: string;
+          turnId?: string;
           sendEnabled?: boolean;
+          stopEnabled?: boolean;
           questions?: {
             requestId: unknown;
             turnId: string;
@@ -927,6 +941,11 @@ export class WebAccessService {
           throw new HttpError(409, "stale_state");
         if (operation === "send" && snapshot.sendEnabled !== true)
           throw new HttpError(409, "control_unavailable");
+        if (
+          operation === "stop" &&
+          (snapshot.stopEnabled !== true || snapshot.turnId !== params.turnId)
+        )
+          throw new HttpError(409, "turn_unavailable");
         if (operation === "answer") {
           const question = snapshot.questions?.find(
             (item) =>

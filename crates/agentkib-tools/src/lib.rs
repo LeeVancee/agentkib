@@ -92,20 +92,20 @@ struct ToolSpec {
     agent: AgentKind,
     commands: &'static [&'static str],
     version_args: &'static [&'static str],
-    upstream: LatestSource,
+    upstream: Option<LatestSource>,
     official_url: &'static str,
     release_url: Option<&'static str>,
 }
 
-const TOOL_SPECS: [ToolSpec; 7] = [
+const TOOL_SPECS: [ToolSpec; 8] = [
     ToolSpec {
         agent: AgentKind::Codex,
         commands: &["codex"],
         version_args: &["--version"],
-        upstream: LatestSource::Github {
+        upstream: Some(LatestSource::Github {
             repository: "openai/codex",
             prefix: "rust-v",
-        },
+        }),
         official_url: "https://learn.chatgpt.com/docs/codex/cli",
         release_url: Some("https://github.com/openai/codex/releases"),
     },
@@ -113,9 +113,9 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::ClaudeCode,
         commands: &["claude"],
         version_args: &["--version"],
-        upstream: LatestSource::Npm {
+        upstream: Some(LatestSource::Npm {
             package: "@anthropic-ai/claude-code",
-        },
+        }),
         official_url: "https://code.claude.com/docs/en/setup",
         release_url: None,
     },
@@ -123,7 +123,7 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::Cursor,
         commands: &["cursor-agent", "agent"],
         version_args: &["--version"],
-        upstream: LatestSource::CursorInstaller,
+        upstream: Some(LatestSource::CursorInstaller),
         official_url: "https://cursor.com/docs/cli/installation",
         release_url: Some("https://cursor.com/download"),
     },
@@ -131,10 +131,10 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::OpenCode,
         commands: &["opencode"],
         version_args: &["--version"],
-        upstream: LatestSource::Github {
+        upstream: Some(LatestSource::Github {
             repository: "anomalyco/opencode",
             prefix: "v",
-        },
+        }),
         official_url: "https://opencode.ai/docs/",
         release_url: Some("https://github.com/anomalyco/opencode/releases"),
     },
@@ -142,9 +142,9 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::OpenClaw,
         commands: &["openclaw"],
         version_args: &["--version"],
-        upstream: LatestSource::Npm {
+        upstream: Some(LatestSource::Npm {
             package: "openclaw",
-        },
+        }),
         official_url: "https://docs.openclaw.ai/install",
         release_url: Some("https://github.com/openclaw/openclaw/releases"),
     },
@@ -152,10 +152,10 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::Hermes,
         commands: &["hermes"],
         version_args: &["--version"],
-        upstream: LatestSource::Github {
+        upstream: Some(LatestSource::Github {
             repository: "NousResearch/hermes-agent",
             prefix: "v",
-        },
+        }),
         official_url: "https://hermes-agent.nousresearch.com/docs/",
         release_url: Some("https://github.com/NousResearch/hermes-agent/releases"),
     },
@@ -163,12 +163,20 @@ const TOOL_SPECS: [ToolSpec; 7] = [
         agent: AgentKind::GrokBuild,
         commands: &["grok"],
         version_args: &["--version"],
-        upstream: LatestSource::Github {
+        upstream: Some(LatestSource::Github {
             repository: "xai-org/grok-build",
             prefix: "v",
-        },
+        }),
         official_url: "https://docs.x.ai/build/overview",
         release_url: Some("https://github.com/xai-org/grok-build/releases"),
+    },
+    ToolSpec {
+        agent: AgentKind::Antigravity,
+        commands: &["agy"],
+        version_args: &["--version"],
+        upstream: None,
+        official_url: "https://antigravity.google/docs/cli/overview/",
+        release_url: None,
     },
 ];
 
@@ -579,6 +587,10 @@ fn available_channels(agent: AgentKind) -> &'static [AgentToolChannel] {
         AgentKind::OpenClaw => &[OfficialInstaller, Npm, Pnpm, Bun, DesktopApp],
         AgentKind::Hermes => &[OfficialInstaller, DesktopApp, Nix],
         AgentKind::GrokBuild => &[OfficialInstaller, Npm],
+        // Antigravity's official installer is a remote script. AgentKib only
+        // links to the official instructions until Google publishes a safe,
+        // versioned package-manager channel.
+        AgentKind::Antigravity => &[],
         AgentKind::DeepSeekHarness => &[],
     }
 }
@@ -594,7 +606,7 @@ fn package_name(agent: AgentKind) -> Option<&'static str> {
     }
 }
 
-fn channel_source(spec: ToolSpec, channel: AgentToolChannel) -> LatestSource {
+fn channel_source(spec: ToolSpec, channel: AgentToolChannel) -> Option<LatestSource> {
     match channel {
         AgentToolChannel::Npm
         | AgentToolChannel::Pnpm
@@ -602,17 +614,17 @@ fn channel_source(spec: ToolSpec, channel: AgentToolChannel) -> LatestSource {
         | AgentToolChannel::Yarn
         | AgentToolChannel::Volta => package_name(spec.agent)
             .map(|package| LatestSource::Npm { package })
-            .unwrap_or(spec.upstream),
+            .or(spec.upstream),
         AgentToolChannel::Homebrew if spec.agent == AgentKind::Codex => {
-            LatestSource::HomebrewCask { token: "codex" }
+            Some(LatestSource::HomebrewCask { token: "codex" })
         }
         AgentToolChannel::Homebrew if spec.agent == AgentKind::ClaudeCode => {
-            LatestSource::HomebrewCask {
+            Some(LatestSource::HomebrewCask {
                 token: "claude-code",
-            }
+            })
         }
         AgentToolChannel::Homebrew if spec.agent == AgentKind::OpenCode => {
-            LatestSource::HomebrewFormula { token: "opencode" }
+            Some(LatestSource::HomebrewFormula { token: "opencode" })
         }
         _ => spec.upstream,
     }
@@ -621,10 +633,13 @@ fn channel_source(spec: ToolSpec, channel: AgentToolChannel) -> LatestSource {
 fn release_sources() -> BTreeMap<String, LatestSource> {
     let mut sources = BTreeMap::new();
     for spec in TOOL_SPECS {
-        sources.insert(spec.upstream.key(), spec.upstream);
+        if let Some(upstream) = spec.upstream {
+            sources.insert(upstream.key(), upstream);
+        }
         for channel in available_channels(spec.agent) {
-            let source = channel_source(spec, *channel);
-            sources.insert(source.key(), source);
+            if let Some(source) = channel_source(spec, *channel) {
+                sources.insert(source.key(), source);
+            }
         }
     }
     sources
@@ -635,7 +650,7 @@ fn version_for(
     spec: ToolSpec,
     channel: AgentToolChannel,
 ) -> Option<String> {
-    versions.get(&channel_source(spec, channel).key()).cloned()
+    channel_source(spec, channel).and_then(|source| versions.get(&source.key()).cloned())
 }
 
 async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> AgentToolStatus {
@@ -655,7 +670,9 @@ async fn inspect_local(spec: ToolSpec, versions: &BTreeMap<String, String>) -> A
         .unwrap_or(AgentToolChannel::Unknown);
     let current_version = primary.and_then(|installation| installation.version.clone());
     let latest_version = version_for(versions, spec, channel);
-    let upstream_version = versions.get(&spec.upstream.key()).cloned();
+    let upstream_version = spec
+        .upstream
+        .and_then(|source| versions.get(&source.key()).cloned());
     let mut warnings = Vec::new();
     if installations.len() > 1 {
         warnings.push("multiple-executables".to_owned());
@@ -848,13 +865,18 @@ fn actions_for(
     versions: &BTreeMap<String, String>,
 ) -> Vec<AgentToolAction> {
     if state == AgentToolState::Uninstalled {
-        return available_channels(spec.agent)
+        let actions = available_channels(spec.agent)
             .iter()
             .filter_map(|channel| {
                 let target = version_for(versions, spec, *channel);
                 install_action(spec, *channel, target.as_deref())
             })
-            .collect();
+            .collect::<Vec<_>>();
+        return if actions.is_empty() {
+            vec![documentation_action(spec, AgentToolChannel::Unknown)]
+        } else {
+            actions
+        };
     }
     if state == AgentToolState::UpdateAvailable
         && let Some(installation) = installation
@@ -1134,6 +1156,7 @@ fn official_install_command(agent: AgentKind, shell: AgentToolShell) -> Option<S
         (AgentKind::GrokBuild, AgentToolShell::Powershell) => {
             "irm https://x.ai/cli/install.ps1 | iex"
         }
+        (AgentKind::Antigravity, _) => return None,
         (AgentKind::DeepSeekHarness, _) => return None,
     };
     Some(command.to_owned())
@@ -2166,6 +2189,7 @@ fn is_official_path(agent: AgentKind, value: &str) -> bool {
         AgentKind::OpenClaw => &["/.openclaw/"],
         AgentKind::Hermes => &["/.hermes/"],
         AgentKind::GrokBuild => &["/.grok/"],
+        AgentKind::Antigravity => &["/.gemini/antigravity-cli/"],
         AgentKind::DeepSeekHarness => &[],
     };
     markers.iter().any(|marker| value.contains(marker))
@@ -2502,13 +2526,32 @@ mod tests {
 
     #[test]
     fn tool_catalog_excludes_deepseek_harness() {
-        assert_eq!(TOOL_SPECS.len(), 7);
+        assert_eq!(TOOL_SPECS.len(), 8);
         assert!(
             TOOL_SPECS
                 .iter()
                 .all(|spec| spec.agent != AgentKind::DeepSeekHarness)
         );
         assert!(available_channels(AgentKind::DeepSeekHarness).is_empty());
+    }
+
+    #[test]
+    fn antigravity_tool_is_detection_and_documentation_only() {
+        let spec = tool_spec(AgentKind::Antigravity).unwrap();
+        assert_eq!(spec.commands, &["agy"]);
+        assert!(spec.upstream.is_none());
+        assert!(available_channels(AgentKind::Antigravity).is_empty());
+        let actions = actions_for(
+            spec,
+            AgentToolState::Uninstalled,
+            None,
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].kind, AgentToolActionKind::OpenDocumentation);
+        assert_eq!(actions[0].mode, AgentToolActionMode::OpenDocumentation);
+        assert!(actions[0].command.is_none());
     }
 
     #[test]

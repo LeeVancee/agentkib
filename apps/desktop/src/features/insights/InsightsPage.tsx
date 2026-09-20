@@ -72,6 +72,7 @@ export type InsightsSection = "overview" | "tokens" | "commits" | "milestones" |
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
+  antigravity: "Antigravity",
   cursor: "Cursor",
   opencode: "OpenCode",
   "open-claw": "OpenClaw",

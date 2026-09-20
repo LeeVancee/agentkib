@@ -4178,7 +4178,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(registered.asset_count, 1);
-        assert_eq!(assets.len(), 5);
+        assert_eq!(assets.len(), 6);
         assert!(assets.iter().all(|asset| asset.name == "logical-name"));
         let skill = platform_path::canonicalize(&skill).unwrap();
         assert!(assets.iter().all(|asset| asset.path == skill));
@@ -4194,7 +4194,7 @@ mod tests {
                 .filter_map(|asset| asset.agent)
                 .collect::<BTreeSet<_>>()
                 .len(),
-            5
+            6
         );
     }
 

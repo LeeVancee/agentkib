@@ -69,6 +69,7 @@ const RELEASES_URL = `${PROJECT_URL}/releases`;
 const MANAGED_AGENTS = new Set<AgentKind>([
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",
@@ -79,6 +80,7 @@ const MANAGED_AGENTS = new Set<AgentKind>([
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
+  antigravity: "Antigravity",
   cursor: "Cursor",
   opencode: "OpenCode",
   "open-claw": "OpenClaw",
@@ -318,7 +320,10 @@ export function AgentToolsSettings({
                 {tr("settings.tools.localEnvironment")}
               </h2>
               {toolsQuery.data?.latest_checked_at && (
-                <span className="whitespace-nowrap text-xs text-muted-foreground" aria-live="polite">
+                <span
+                  className="whitespace-nowrap text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
                   {tr("settings.tools.lastChecked", {
                     time: formatDateTime(toolsQuery.data.latest_checked_at),
                   })}

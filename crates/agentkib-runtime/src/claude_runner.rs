@@ -622,7 +622,7 @@ impl Runner {
         while !state.stream_text.is_char_boundary(end) {
             end -= 1;
         }
-        json!({"status":state.status,"sendEnabled":state.status == "idle","revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
+        json!({"status":state.status,"sendEnabled":state.status == "idle","stopEnabled":state.status != "idle" && !state.turn_id.is_empty() && state.reason.is_none(),"revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
     }
 
     pub fn send(&self, text: &str, expected_revision: u64) -> Result<()> {
@@ -705,6 +705,44 @@ impl Runner {
             answers.clone(),
             revision,
         ))
+    }
+
+    pub fn stop(&self, turn: &str, revision: u64) -> Result<()> {
+        let mut worker = self
+            .worker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Claude worker lock poisoned"))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
+        ensure!(
+            state.revision == revision
+                && state.turn_id == turn
+                && matches!(
+                    state.status.as_str(),
+                    "running" | "waiting-approval" | "waiting-input"
+                )
+                && state.reason.is_none(),
+            "stale Claude turn"
+        );
+        let retired = worker.take().context("Claude session has not started")?;
+        retired.stop.store(true, Ordering::Release);
+        // Keep the worker lock until the old process has exited. It can still
+        // hold the state lock or have an inbound frame in flight.
+        drop(state);
+        drop(retired);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
+        state.status = "idle".into();
+        state.approvals.clear();
+        state.questions.clear();
+        state.pending_user = None;
+        state.reason = None;
+        state.revision += 1;
+        Ok(())
     }
 
     fn control(&self, control: Control) -> Result<()> {
@@ -844,7 +882,11 @@ impl Runner {
                         bail!("Claude process exited ({exit})");
                     }
                     drop(state);
-                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                    let event = receiver.recv_timeout(Duration::from_millis(100));
+                    if worker_stop.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    match event {
                         Ok(Event::Frame(frame)) => {
                             let response = shared
                                 .lock()
@@ -873,7 +915,9 @@ impl Runner {
                 }
             })();
             terminate_owned_process_group(&mut child);
-            if let Err(error) = result {
+            if let Err(error) = result
+                && !worker_stop.load(Ordering::Acquire)
+            {
                 let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
                 if state.status != "outcome-unknown" {
                     state.fail(error.to_string());
@@ -1583,5 +1627,59 @@ mod tests {
         assert_eq!(initializing.status, "running");
         assert!(state.frame(json!({"type":"conversation_reset"})).is_err());
         assert!(state.frame(json!({"type":"unknown_notification"})).is_err());
+    }
+
+    #[test]
+    fn stop_requires_the_exact_active_turn_and_retires_the_worker() {
+        let runner = Runner::mock_worker("running");
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.turn_id = "turn-1".into();
+            state.revision = 7;
+            state.approvals.push(json!({"requestId":"pending"}));
+        }
+        assert!(runner.stop("old", 7).is_err());
+        runner.stop("turn-1", 7).unwrap();
+        let snapshot = runner.snapshot();
+        assert_eq!(snapshot["status"], "idle");
+        assert_eq!(snapshot["revision"], 8);
+        assert_eq!(snapshot["approvals"], json!([]));
+        assert!(!runner.has_worker());
+    }
+
+    #[test]
+    fn stop_waits_for_worker_exit_before_reporting_idle() {
+        let runner = Arc::new(Runner::mock_worker("running"));
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.turn_id = "turn-1".into();
+            state.revision = 7;
+        }
+        let (stopping, observed) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let shared = Arc::clone(&runner.state);
+        let mut worker = runner.worker.lock().unwrap();
+        let stop = Arc::clone(&worker.as_ref().unwrap().stop);
+        worker.as_mut().unwrap().join = Some(thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            stopping.send(()).unwrap();
+            released.recv().unwrap();
+            shared.lock().unwrap().fail("late Claude stream close");
+        }));
+        drop(worker);
+
+        let target = Arc::clone(&runner);
+        let request = thread::spawn(move || target.stop("turn-1", 7));
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let in_flight = runner.snapshot();
+        release.send(()).unwrap();
+        request.join().unwrap().unwrap();
+        assert_eq!(in_flight["status"], "running");
+        let complete = runner.snapshot();
+        assert_eq!(complete["status"], "idle");
+        assert_eq!(complete["revision"], 9);
+        assert!(complete["reason"].is_null());
     }
 }

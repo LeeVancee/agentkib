@@ -148,6 +148,7 @@ describe("WorkspaceSessionsPage", () => {
   });
 
   it.each([
+    ["antigravity", "Antigravity"],
     ["opencode", "OpenCode"],
     ["open-claw", "OpenClaw"],
     ["hermes", "Hermes"],

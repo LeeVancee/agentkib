@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -55,6 +55,7 @@ pub fn resolve_context(
         AgentKind::OpenClaw => openclaw_sources(&dirs),
         AgentKind::Hermes => hermes_sources(&dirs),
         AgentKind::GrokBuild => Vec::new(),
+        AgentKind::Antigravity => antigravity_sources(&dirs, &mut warnings),
         AgentKind::DeepSeekHarness => Vec::new(),
     };
     let mut sections = if agent == AgentKind::DeepSeekHarness {
@@ -69,8 +70,8 @@ pub fn resolve_context(
                 push_context_budget_warning(&mut warnings);
                 break;
             }
-            let agent_home_source =
-                agent == AgentKind::OpenCode && !path_starts_with(&source, &root);
+            let agent_home_source = matches!(agent, AgentKind::OpenCode | AgentKind::Antigravity)
+                && !path_starts_with(&source, &root);
             let external_root = agent_home_source
                 .then(|| source.parent().and_then(|parent| canonicalize(parent).ok()))
                 .flatten();
@@ -835,6 +836,384 @@ fn claude_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     result
+}
+
+fn antigravity_sources(dirs: &[PathBuf], warnings: &mut Vec<String>) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut active_plugins = Vec::new();
+    if let Some(home) = user_home().map(|home| home.join(".gemini")) {
+        let global = home.join("GEMINI.md");
+        if global.is_file() {
+            result.push(global);
+        }
+        let cli_home = home.join("antigravity-cli");
+        collect_antigravity_rules(&cli_home.join("rules"), &mut result, warnings, None);
+        active_plugins.extend(discover_antigravity_plugins(
+            &home.join("config/plugins"),
+            false,
+            warnings,
+        ));
+        active_plugins.extend(discover_enabled_cli_plugins(
+            &cli_home.join("plugins"),
+            &home.join("config/config.json"),
+            warnings,
+        ));
+    }
+    if let Some(root) = dirs.first() {
+        active_plugins.extend(discover_antigravity_plugins(
+            &root.join(".agents/plugins"),
+            false,
+            warnings,
+        ));
+    }
+    collect_antigravity_plugin_rules(active_plugins, &mut result, warnings);
+    for dir in dirs {
+        for path in [dir.join("AGENTS.md"), dir.join("GEMINI.md")] {
+            if path.is_file() {
+                result.push(path);
+            }
+        }
+        let current = dir.join(".agents/rules");
+        let current_relative = antigravity_rule_relative_paths(&current);
+        collect_antigravity_rules(&current, &mut result, warnings, None);
+        collect_antigravity_rules(
+            &dir.join(".agent/rules"),
+            &mut result,
+            warnings,
+            Some(&current_relative),
+        );
+    }
+    result
+}
+
+#[derive(Debug)]
+struct AntigravityPlugin {
+    name: String,
+    root: PathBuf,
+    default_disabled: bool,
+}
+
+fn collect_antigravity_plugin_rules(
+    plugins: impl IntoIterator<Item = AntigravityPlugin>,
+    output: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
+) {
+    let mut by_name = BTreeMap::<String, Vec<AntigravityPlugin>>::new();
+    for plugin in plugins {
+        by_name.entry(plugin.name.clone()).or_default().push(plugin);
+    }
+    for (name, plugins) in by_name {
+        if plugins.len() != 1 {
+            warnings.push(format!(
+                "Antigravity plugin name is not unique and its rules were excluded: {name}"
+            ));
+            continue;
+        }
+        let plugin = &plugins[0];
+        if plugin.root.join("rules.json").is_file() {
+            // The public changelog confirms rules.json allow/exclusion behavior,
+            // but no stable public schema is available to reproduce it safely.
+            warnings.push(format!(
+                "Antigravity plugin rules.json cannot be verified and its rules were excluded: {}",
+                plugin.root.display()
+            ));
+            continue;
+        }
+        // Manually installed workspace/global plugins are active by location;
+        // plugin rule frontmatter therefore does not gate inclusion.
+        output.extend(antigravity_rule_files(&plugin.root.join("rules")));
+    }
+}
+
+fn discover_enabled_cli_plugins(
+    root: &Path,
+    config_path: &Path,
+    warnings: &mut Vec<String>,
+) -> Vec<AntigravityPlugin> {
+    let plugins = discover_antigravity_plugins(root, true, warnings);
+    if plugins.is_empty() {
+        return Vec::new();
+    }
+    let overrides = match antigravity_cli_plugin_overrides(config_path) {
+        Ok(overrides) => overrides,
+        Err(error) => {
+            warnings.push(format!(
+                "Antigravity CLI plugin overrides could not be verified; staged rules were excluded: {} ({error})",
+                config_path.display()
+            ));
+            return Vec::new();
+        }
+    };
+    plugins
+        .into_iter()
+        .filter_map(|plugin| {
+            let directory_name = plugin
+                .root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            let enabled = match overrides.get(directory_name) {
+                Some(Some(enabled)) => Some(*enabled),
+                Some(None) => None,
+                None => Some(!plugin.default_disabled),
+            };
+            match enabled {
+                Some(true) => Some(plugin),
+                Some(false) => {
+                    warnings.push(format!(
+                        "Antigravity CLI staged plugin is disabled; its rules were excluded: {}",
+                        plugin.root.display()
+                    ));
+                    None
+                }
+                None => {
+                    warnings.push(format!(
+                        "Antigravity CLI staged plugin override is malformed; its rules were excluded: {}",
+                        plugin.root.display()
+                    ));
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+fn antigravity_cli_plugin_overrides(path: &Path) -> Result<BTreeMap<String, Option<bool>>> {
+    // The CLI 1.2.7 bundled plugin guide defines this map as
+    // `plugins.<directory-name>.enabled`; the official changelog locates the
+    // corresponding config.json under ~/.gemini/config. Missing entries fall
+    // back to plugin.json's `disabled` flag in discover_enabled_cli_plugins.
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error).context("config.json metadata could not be read"),
+    };
+    if !metadata.is_file() || metadata.len() > MAX_CONTEXT_BYTES_PER_FILE {
+        bail!("config.json must be a bounded regular file");
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).context("config.json could not be read")?)
+            .context("config.json is not valid JSON")?;
+    let object = value.as_object().context("config.json must be an object")?;
+    let Some(plugins) = object.get("plugins") else {
+        return Ok(BTreeMap::new());
+    };
+    let plugins = plugins
+        .as_object()
+        .context("config.json plugins must be an object")?;
+    Ok(plugins
+        .iter()
+        .map(|(name, state)| {
+            let enabled = state
+                .as_object()
+                .and_then(|object| object.get("enabled"))
+                .and_then(serde_json::Value::as_bool);
+            (name.clone(), enabled)
+        })
+        .collect())
+}
+
+fn discover_antigravity_plugins(
+    root: &Path,
+    cli_name_required: bool,
+    warnings: &mut Vec<String>,
+) -> Vec<AntigravityPlugin> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut directories = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    directories.sort();
+    directories
+        .into_iter()
+        .filter_map(
+            |directory| match antigravity_plugin_manifest(&directory, cli_name_required) {
+                Ok((name, default_disabled)) => Some(AntigravityPlugin {
+                    name,
+                    root: directory,
+                    default_disabled,
+                }),
+                Err(reason) => {
+                    warnings.push(format!(
+                        "Invalid Antigravity plugin manifest; rules were excluded: {} ({reason})",
+                        directory.display()
+                    ));
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
+fn antigravity_plugin_manifest(root: &Path, cli_name_required: bool) -> Result<(String, bool)> {
+    let manifest = root.join("plugin.json");
+    let metadata = fs::metadata(&manifest).context("plugin.json is required")?;
+    if !metadata.is_file() || metadata.len() > MAX_CONTEXT_BYTES_PER_FILE {
+        bail!("plugin.json must be a bounded regular file");
+    }
+    let value: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&manifest).context("plugin.json could not be read")?,
+    )
+    .context("plugin.json is not valid JSON")?;
+    let object = value.as_object().context("plugin.json must be an object")?;
+    if object.keys().any(|key| {
+        !(matches!(key.as_str(), "$schema" | "name" | "description")
+            || cli_name_required && key == "disabled")
+    }) {
+        bail!("plugin.json contains fields outside the published schema");
+    }
+    if object
+        .get("$schema")
+        .is_some_and(|value| !value.is_string())
+        || object
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+    {
+        bail!("plugin.json metadata fields must be strings");
+    }
+    let default_disabled = match object.get("disabled") {
+        Some(value) => value
+            .as_bool()
+            .context("plugin disabled must be a boolean")?,
+        None => false,
+    };
+    let directory_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("plugin directory name is not valid UTF-8")?;
+    let name = match object.get("name") {
+        Some(value) => value.as_str().context("plugin name must be a string")?,
+        None if cli_name_required => bail!("plugin name is required for CLI staged plugins"),
+        None => directory_name,
+    };
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        bail!("plugin name does not match ^[a-zA-Z0-9-_]+$");
+    }
+    // The published schema constrains the name syntax but does not require it
+    // to equal the containing directory, so a valid explicit name wins.
+    Ok((name.to_owned(), default_disabled))
+}
+
+fn antigravity_rule_relative_paths(root: &Path) -> HashSet<PathBuf> {
+    antigravity_rule_files(root)
+        .into_iter()
+        .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_owned))
+        .collect()
+}
+
+fn antigravity_rule_files(root: &Path) -> Vec<PathBuf> {
+    let mut rules = WalkDir::new(root)
+        .follow_links(false)
+        .max_depth(16)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        })
+        .collect::<Vec<_>>();
+    rules.sort();
+    rules
+}
+
+fn collect_antigravity_rules(
+    root: &Path,
+    output: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
+    shadowed_relative_paths: Option<&HashSet<PathBuf>>,
+) {
+    for path in antigravity_rule_files(root) {
+        if shadowed_relative_paths.is_some_and(|shadowed| {
+            path.strip_prefix(root)
+                .is_ok_and(|relative| shadowed.contains(relative))
+        }) {
+            continue;
+        }
+        match antigravity_rule_activation(&path) {
+            AntigravityRuleActivation::Always => output.push(path),
+            AntigravityRuleActivation::Conditional => warnings.push(format!(
+                "Antigravity rule is not always active and was excluded from effective context: {}",
+                path.display()
+            )),
+            AntigravityRuleActivation::Unknown => warnings.push(format!(
+                "Antigravity rule activation could not be verified and was excluded from effective context: {}",
+                path.display()
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AntigravityRuleActivation {
+    Always,
+    Conditional,
+    Unknown,
+}
+
+fn antigravity_rule_activation(path: &Path) -> AntigravityRuleActivation {
+    // The stable documentation names the activation modes but does not publish
+    // a complete file schema. Parse only the Markdown metadata conventions we
+    // can verify (`trigger` and Cursor-compatible `alwaysApply`); unknown values
+    // stay excluded rather than being guessed active.
+    let Ok((content, _)) = read_context_file(path) else {
+        return AntigravityRuleActivation::Unknown;
+    };
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return AntigravityRuleActivation::Always;
+    }
+    let mut found_end = false;
+    let mut activation = None;
+    for line in lines {
+        if line.trim() == "---" {
+            found_end = true;
+            break;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+        let candidate = if key.eq_ignore_ascii_case("trigger") {
+            match value.replace(['-', ' '], "_").as_str() {
+                "always" | "always_on" => Some(AntigravityRuleActivation::Always),
+                "manual" | "model_decision" | "glob" | "glob_pattern" => {
+                    Some(AntigravityRuleActivation::Conditional)
+                }
+                _ => Some(AntigravityRuleActivation::Unknown),
+            }
+        } else if key.eq_ignore_ascii_case("alwaysApply") {
+            match value.as_str() {
+                "true" => Some(AntigravityRuleActivation::Always),
+                "false" => Some(AntigravityRuleActivation::Conditional),
+                _ => Some(AntigravityRuleActivation::Unknown),
+            }
+        } else {
+            None
+        };
+        if let Some(candidate) = candidate {
+            activation = match activation {
+                None => Some(candidate),
+                Some(previous) if previous == candidate => Some(previous),
+                Some(_) => Some(AntigravityRuleActivation::Unknown),
+            };
+        }
+    }
+    if !found_end {
+        AntigravityRuleActivation::Unknown
+    } else {
+        activation.unwrap_or(AntigravityRuleActivation::Always)
+    }
 }
 
 fn cursor_sources(dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -2369,5 +2748,305 @@ mod tests {
         );
         assert!(preview.approved_memories.is_empty());
         assert!(preview.visible_connections.is_empty());
+    }
+
+    #[test]
+    fn antigravity_loads_agents_and_gemini_in_directory_order() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "shared").unwrap();
+        fs::write(dir.path().join("GEMINI.md"), "antigravity").unwrap();
+        fs::create_dir_all(dir.path().join(".agents/rules/nested")).unwrap();
+        fs::create_dir_all(dir.path().join(".agent/rules/nested")).unwrap();
+        fs::write(
+            dir.path().join(".agents/rules/nested/project.md"),
+            "workspace rule",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".agent/rules/nested/project.md"),
+            "legacy duplicate",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".agent/rules/legacy.md"),
+            "legacy-only rule",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".agents/rules/manual.md"),
+            "---\ntrigger: manual\n---\nmanual rule",
+        )
+        .unwrap();
+        fs::write(nested.join("GEMINI.md"), "nested").unwrap();
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::Antigravity, None, vec![]).unwrap();
+        let project_sections = preview
+            .sections
+            .iter()
+            .filter(|section| section.scope != "agent-home")
+            .collect::<Vec<_>>();
+        assert_eq!(project_sections.len(), 5);
+        assert_eq!(project_sections[0].content.trim(), "shared");
+        assert_eq!(project_sections[1].content.trim(), "antigravity");
+        assert_eq!(project_sections[2].content.trim(), "workspace rule");
+        assert_eq!(project_sections[3].content.trim(), "legacy-only rule");
+        assert_eq!(project_sections[4].content.trim(), "nested");
+        assert!(
+            preview
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("manual.md") && warning.contains("not always"))
+        );
+        assert!(
+            project_sections
+                .iter()
+                .all(|section| !section.content.contains("legacy duplicate"))
+        );
+    }
+
+    #[test]
+    fn antigravity_rule_activation_is_conservative_and_plugins_are_loaded() {
+        let dir = tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        let plugins = dir.path().join("plugins");
+        fs::create_dir_all(&rules).unwrap();
+        fs::create_dir_all(plugins.join("reviewer/rules/nested")).unwrap();
+        fs::write(
+            plugins.join("reviewer/plugin.json"),
+            r#"{"name":"reviewer"}"#,
+        )
+        .unwrap();
+        fs::write(rules.join("plain.md"), "plain").unwrap();
+        fs::write(
+            rules.join("always.md"),
+            "---\ntrigger: always_on\n---\nalways",
+        )
+        .unwrap();
+        fs::write(
+            rules.join("glob.md"),
+            "---\ntrigger: glob\nglobs: src/**/*.rs\n---\nglob",
+        )
+        .unwrap();
+        fs::write(
+            rules.join("unknown.md"),
+            "---\ntrigger: future_mode\n---\nunknown",
+        )
+        .unwrap();
+        fs::write(
+            plugins.join("reviewer/rules/nested/plugin.md"),
+            "---\ntrigger: manual\n---\nplugin rule",
+        )
+        .unwrap();
+
+        let mut sources = Vec::new();
+        let mut warnings = Vec::new();
+        collect_antigravity_rules(&rules, &mut sources, &mut warnings, None);
+        collect_antigravity_plugin_rules(
+            discover_antigravity_plugins(&plugins, false, &mut warnings),
+            &mut sources,
+            &mut warnings,
+        );
+
+        assert!(sources.contains(&rules.join("plain.md")));
+        assert!(sources.contains(&rules.join("always.md")));
+        assert!(sources.contains(&plugins.join("reviewer/rules/nested/plugin.md")));
+        assert!(!sources.contains(&rules.join("glob.md")));
+        assert!(!sources.contains(&rules.join("unknown.md")));
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn antigravity_plugins_honor_verified_cli_enablement_and_fail_closed() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace-plugins");
+        let global = dir.path().join("global-plugins");
+        let staged = dir.path().join("staged-plugins");
+        let config = dir.path().join("config.json");
+        for root in [&workspace, &global, &staged] {
+            fs::create_dir_all(root).unwrap();
+        }
+        let create = |root: &Path, directory: &str, manifest: Option<&str>, rule: &str| {
+            let plugin = root.join(directory);
+            fs::create_dir_all(plugin.join("rules")).unwrap();
+            if let Some(manifest) = manifest {
+                fs::write(plugin.join("plugin.json"), manifest).unwrap();
+            }
+            fs::write(plugin.join("rules/rule.md"), rule).unwrap();
+            plugin
+        };
+        let workspace_plugin = create(
+            &workspace,
+            "workspace-dir",
+            Some(r#"{"name":"workspace-plugin"}"#),
+            "workspace plugin",
+        );
+        let global_plugin = create(
+            &global,
+            "global-default-name",
+            Some(r#"{"description":"IDE name defaults to its directory"}"#),
+            "global plugin",
+        );
+        let missing_manifest = create(&workspace, "missing", None, "must not load");
+        let configured = create(
+            &global,
+            "configured",
+            Some(r#"{"name":"configured"}"#),
+            "must not load configured",
+        );
+        fs::write(configured.join("rules.json"), r#"{"include":["rule.md"]}"#).unwrap();
+        let active_staged_plugin = create(
+            &staged,
+            "active-staged",
+            Some(r#"{"name":"active-staged"}"#),
+            "active staged plugin",
+        );
+        let manifest_disabled_plugin = create(
+            &staged,
+            "manifest-disabled",
+            Some(r#"{"name":"manifest-disabled","disabled":true}"#),
+            "must not load manifest-disabled staged",
+        );
+        let override_disabled_plugin = create(
+            &staged,
+            "override-disabled",
+            Some(r#"{"name":"override-disabled"}"#),
+            "must not load override-disabled staged",
+        );
+        let override_enabled_plugin = create(
+            &staged,
+            "override-enabled-dir",
+            Some(r#"{"name":"override-enabled-manifest","disabled":true}"#),
+            "override-enabled staged plugin",
+        );
+        let malformed_override_plugin = create(
+            &staged,
+            "malformed-override",
+            Some(r#"{"name":"malformed-override"}"#),
+            "must not load malformed override",
+        );
+        fs::write(
+            &config,
+            r#"{"userSettings":{},"plugins":{"override-disabled":{"enabled":false},"override-enabled-dir":{"enabled":true},"malformed-override":{}}}"#,
+        )
+        .unwrap();
+
+        let mut sources = Vec::new();
+        let mut warnings = Vec::new();
+        let mut plugins = discover_antigravity_plugins(&global, false, &mut warnings);
+        plugins.extend(discover_antigravity_plugins(
+            &workspace,
+            false,
+            &mut warnings,
+        ));
+        plugins.extend(discover_enabled_cli_plugins(
+            &staged,
+            &config,
+            &mut warnings,
+        ));
+        collect_antigravity_plugin_rules(plugins, &mut sources, &mut warnings);
+
+        assert!(sources.contains(&workspace_plugin.join("rules/rule.md")));
+        assert!(sources.contains(&global_plugin.join("rules/rule.md")));
+        assert!(sources.contains(&active_staged_plugin.join("rules/rule.md")));
+        assert!(sources.contains(&override_enabled_plugin.join("rules/rule.md")));
+        assert!(!sources.contains(&missing_manifest.join("rules/rule.md")));
+        assert!(!sources.contains(&configured.join("rules/rule.md")));
+        assert!(!sources.contains(&manifest_disabled_plugin.join("rules/rule.md")));
+        assert!(!sources.contains(&override_disabled_plugin.join("rules/rule.md")));
+        assert!(!sources.contains(&malformed_override_plugin.join("rules/rule.md")));
+        assert!(warnings.iter().any(|warning| warning.contains("missing")));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("rules.json"))
+        );
+        assert!(
+            warnings.iter().any(
+                |warning| warning.contains("manifest-disabled") && warning.contains("disabled")
+            )
+        );
+        assert!(
+            warnings.iter().any(
+                |warning| warning.contains("override-disabled") && warning.contains("disabled")
+            )
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("malformed-override")
+                    && warning.contains("malformed"))
+        );
+    }
+
+    #[test]
+    fn antigravity_cli_plugins_default_active_without_override_map() {
+        let dir = tempdir().unwrap();
+        let staged = dir.path().join("plugins");
+        for (name, manifest) in [
+            ("active", r#"{"name":"active"}"#),
+            ("disabled", r#"{"name":"disabled","disabled":true}"#),
+            ("invalid", r#"{"name":"invalid","disabled":"yes"}"#),
+        ] {
+            let plugin = staged.join(name);
+            fs::create_dir_all(plugin.join("rules")).unwrap();
+            fs::write(plugin.join("plugin.json"), manifest).unwrap();
+            fs::write(plugin.join("rules/rule.md"), name).unwrap();
+        }
+        fs::write(dir.path().join("config.json"), r#"{"userSettings":{}}"#).unwrap();
+
+        let mut warnings = Vec::new();
+        let plugins =
+            discover_enabled_cli_plugins(&staged, &dir.path().join("config.json"), &mut warnings);
+
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].name, "active");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("disabled") && warning.contains("excluded"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("invalid") && warning.contains("Invalid"))
+        );
+    }
+
+    #[test]
+    fn antigravity_workspace_plugins_are_loaded_only_from_project_root() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("src");
+        fs::create_dir(&nested).unwrap();
+        for (base, name, content) in [
+            (dir.path(), "root-plugin", "root plugin rule"),
+            (&nested, "nested-plugin", "nested plugin rule"),
+        ] {
+            let plugin = base.join(".agents/plugins").join(name);
+            fs::create_dir_all(plugin.join("rules")).unwrap();
+            fs::write(
+                plugin.join("plugin.json"),
+                format!(r#"{{"name":"{name}"}}"#),
+            )
+            .unwrap();
+            fs::write(plugin.join("rules/rule.md"), content).unwrap();
+        }
+
+        let preview =
+            resolve_context(dir.path(), &nested, AgentKind::Antigravity, None, vec![]).unwrap();
+        assert!(
+            preview
+                .sections
+                .iter()
+                .any(|section| section.content.contains("root plugin rule"))
+        );
+        assert!(
+            preview
+                .sections
+                .iter()
+                .all(|section| !section.content.contains("nested plugin rule"))
+        );
     }
 }

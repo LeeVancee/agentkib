@@ -80,6 +80,7 @@ fn providers() -> Vec<Box<dyn WorkspaceDiscoveryProvider>> {
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
+        Box::new(AntigravityProvider::default()),
         Box::new(DeepSeekHarnessProvider::default()),
     ]
 }
@@ -227,6 +228,7 @@ fn source_name(agent: AgentKind) -> &'static str {
         AgentKind::OpenClaw => "config-and-sessions",
         AgentKind::Hermes => "profiles-and-state",
         AgentKind::GrokBuild => "sessions-and-archives",
+        AgentKind::Antigravity => "config-and-cli",
         AgentKind::DeepSeekHarness => "workspace-storage",
     }
 }
@@ -323,6 +325,59 @@ where
 #[derive(Default)]
 struct CodexProvider {
     home: Option<PathBuf>,
+}
+
+#[derive(Default)]
+struct AntigravityProvider {
+    home: Option<PathBuf>,
+}
+
+impl AntigravityProvider {
+    fn home(&self) -> Option<PathBuf> {
+        self.home
+            .clone()
+            .or_else(|| dirs::home_dir().map(|path| path.join(".gemini")))
+    }
+}
+
+impl WorkspaceDiscoveryProvider for AntigravityProvider {
+    fn installation(&self) -> AgentInstallation {
+        installation(
+            AgentKind::Antigravity,
+            self.home(),
+            agent_is_installed(AgentKind::Antigravity),
+        )
+    }
+
+    fn discover(&self) -> Result<Vec<DiscoveryCandidate>> {
+        // Antigravity does not currently publish a stable workspace-history
+        // store. Workspace discovery remains asset based until it does.
+        Ok(Vec::new())
+    }
+
+    fn scan_home_assets(&self) -> Result<Vec<CatalogAsset>> {
+        let Some(home) = self.home().filter(|path| path.is_dir()) else {
+            return Ok(Vec::new());
+        };
+        let mut assets = scan_known_home(AgentKind::Antigravity, &home, &["GEMINI.md"])?;
+        for (root, names) in [
+            (
+                home.join("antigravity-cli"),
+                &["settings.json", "skills", "rules", "plugins"][..],
+            ),
+            (
+                home.join("config"),
+                &["mcp_config.json", "skills", "plugins"][..],
+            ),
+        ] {
+            if root.is_dir() {
+                assets.extend(scan_known_home(AgentKind::Antigravity, &root, names)?);
+            }
+        }
+        assets.sort_by(|left, right| left.path.cmp(&right.path));
+        assets.dedup_by(|left, right| left.path == right.path);
+        Ok(assets)
+    }
 }
 
 impl CodexProvider {
@@ -2306,6 +2361,11 @@ fn home_asset_kind(path: &Path) -> AssetKind {
         AssetKind::Memory
     } else if name.eq_ignore_ascii_case("hooks.json") || has_path_component(path, "hooks") {
         AssetKind::Hook
+    } else if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "mcp.json" | "mcp_config.json"
+    ) {
+        AssetKind::Connection
     } else if has_path_component(path, "agents")
         || has_path_component(path, "profiles")
         || has_path_component(path, ".agent-presets")
@@ -2412,6 +2472,7 @@ fn agent_is_installed(agent: AgentKind) -> bool {
         AgentKind::OpenClaw => "openclaw",
         AgentKind::Hermes => "hermes",
         AgentKind::GrokBuild => "grok",
+        AgentKind::Antigravity => "agy",
         AgentKind::DeepSeekHarness => "dsh",
     };
     command_is_available(command) || app_bundle_is_available(agent)
@@ -2432,6 +2493,7 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
         AgentKind::Codex => "Codex.app",
         AgentKind::Cursor => "Cursor.app",
         AgentKind::OpenCode => "OpenCode.app",
+        AgentKind::Antigravity => "Antigravity.app",
         AgentKind::ClaudeCode
         | AgentKind::OpenClaw
         | AgentKind::Hermes
@@ -2478,6 +2540,12 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
             .into_iter()
             .any(|path| command::is_executable(&path))
         }
+        AgentKind::Antigravity => command::desktop_application_executables(
+            &["antigravity", "com.google.antigravity"],
+            &command::search_directories(),
+        )
+        .into_iter()
+        .any(|path| command::is_executable(&path)),
         _ => false,
     }
 }
@@ -3636,5 +3704,108 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].path, project);
+    }
+
+    #[test]
+    fn antigravity_home_catalog_scans_official_customization_roots() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("GEMINI.md"), "global guidance").unwrap();
+        for root in ["antigravity-cli/skills/cli", "config/skills/shared"] {
+            fs::create_dir_all(dir.path().join(root)).unwrap();
+            fs::write(dir.path().join(root).join("SKILL.md"), "# Skill").unwrap();
+        }
+        fs::create_dir_all(dir.path().join("antigravity-cli/rules")).unwrap();
+        fs::write(
+            dir.path().join("antigravity-cli/rules/global.md"),
+            "# Global rule",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(dir.path().join("config/mcp_config.json"), "{}").unwrap();
+        for root in [
+            "antigravity-cli/plugins/cli-reviewer",
+            "config/plugins/global-reviewer",
+        ] {
+            fs::create_dir_all(dir.path().join(root).join("rules")).unwrap();
+            fs::create_dir_all(dir.path().join(root).join("skills/review")).unwrap();
+            fs::write(
+                dir.path().join(root).join("plugin.json"),
+                r#"{"name":"reviewer"}"#,
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join(root).join("rules/review.md"),
+                "# Review rule",
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join(root).join("skills/review/SKILL.md"),
+                "---\nname: review\n---\n# Review skill",
+            )
+            .unwrap();
+            fs::create_dir_all(dir.path().join(root).join("agents")).unwrap();
+            fs::write(
+                dir.path().join(root).join("agents/reviewer.md"),
+                "# Reviewer",
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join(root).join("mcp_config.json"),
+                r#"{"mcpServers":{}}"#,
+            )
+            .unwrap();
+            fs::write(dir.path().join(root).join("hooks.json"), "{}").unwrap();
+            fs::write(
+                dir.path().join(root).join("credentials.json"),
+                "must stay private",
+            )
+            .unwrap();
+        }
+
+        let assets = AntigravityProvider {
+            home: Some(dir.path().to_path_buf()),
+        }
+        .scan_home_assets()
+        .unwrap();
+        assert_eq!(
+            assets
+                .iter()
+                .filter(|asset| asset.kind == AssetKind::Skill)
+                .count(),
+            4
+        );
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.path.ends_with("antigravity-cli/rules/global.md"))
+        );
+        for path in [
+            "antigravity-cli/plugins/cli-reviewer/rules/review.md",
+            "config/plugins/global-reviewer/rules/review.md",
+        ] {
+            assert!(assets.iter().any(|asset| {
+                asset.path.ends_with(path) && asset.kind == AssetKind::Instruction
+            }));
+        }
+        for (path, kind) in [
+            (
+                "config/plugins/global-reviewer/agents/reviewer.md",
+                AssetKind::Agent,
+            ),
+            (
+                "config/plugins/global-reviewer/mcp_config.json",
+                AssetKind::Connection,
+            ),
+            ("config/plugins/global-reviewer/hooks.json", AssetKind::Hook),
+        ] {
+            assert!(
+                assets
+                    .iter()
+                    .any(|asset| asset.path.ends_with(path) && asset.kind == kind)
+            );
+        }
+        assert!(assets.iter().all(|asset| {
+            asset.path.file_name().and_then(|value| value.to_str()) != Some("credentials.json")
+        }));
     }
 }

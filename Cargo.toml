@@ -20,6 +20,7 @@ members = [
   "crates/agentkib-tools",
   "crates/agentkib-remote",
   "crates/agentkib-codex-bridge",
+  "crates/agentkib-antigravity-bridge",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+agentkib-antigravity-bridge = { path = "crates/agentkib-antigravity-bridge" }
 agentkib-codex-bridge = { path = "crates/agentkib-codex-bridge" }
 agentkib-protocol = { path = "crates/agentkib-protocol" }
 agentkib-platform = { path = "crates/agentkib-platform" }

@@ -28,4 +28,11 @@ describe("AgentIcon", () => {
     expect(image?.getAttribute("src")).toContain("Grok");
     expect(image?.classList.contains("ak-agent-invert")).toBe(true);
   });
+
+  it("renders the Antigravity asset", () => {
+    const { container } = render(<AgentIcon agent="antigravity" />);
+
+    expect(container.querySelector("img")?.getAttribute("src")).toContain("image/svg+xml");
+    expect(container.querySelector(".ak-agent-mark")?.getAttribute("title")).toBe("Antigravity");
+  });
 });

@@ -8,6 +8,7 @@ license.workspace = true
 dev-app = ["agentkib-store/dev-app"]
 
 [dependencies]
+agentkib-antigravity-bridge.workspace = true
 agentkib-codex-bridge.workspace = true
 agentkib-protocol.workspace = true
 agentkib-remote.workspace = true

@@ -390,7 +390,7 @@ export function useSessionController({
     } else if (
       live.status === "idle" &&
       pendingReceipt.observedActive &&
-      live.turnId === pendingReceipt.turnId
+      (!live.turnId || live.turnId === pendingReceipt.turnId)
     ) {
       receipt.current = undefined;
       setNotice(undefined);
@@ -413,7 +413,7 @@ export function useSessionController({
     }
   }, [live, selected, online, controlReady, modal, access]);
   async function control(
-    kind: "send" | "approve" | "answer",
+    kind: "send" | "stop" | "approve" | "answer",
     approval?: Approval,
     decision?: Decision,
     question?: UserQuestionRequest,
@@ -422,6 +422,14 @@ export function useSessionController({
     if (mutating.current || !access || !live || !online || !controlReady) return;
     const text = message.trim();
     if (kind === "send" && !isValidMessage(message)) return;
+    if (
+      kind === "stop" &&
+      (!access.experimentalEnabled ||
+        !access.device?.send ||
+        live.stopEnabled !== true ||
+        !live.turnId)
+    )
+      return;
     if (
       kind === "answer" &&
       (!question ||
@@ -455,21 +463,29 @@ export function useSessionController({
         expectedRevision: live.revision,
         ...(kind === "send"
           ? { text }
-          : kind === "approve"
-            ? { turnId: approval!.turnId, approvalId: approval!.requestId, decision }
-            : answerRequestBody(
-                question!,
-                answers!,
-                { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
-                requestId,
-              )),
+          : kind === "stop"
+            ? { turnId: live.turnId }
+            : kind === "approve"
+              ? { turnId: approval!.turnId, approvalId: approval!.requestId, decision }
+              : answerRequestBody(
+                  question!,
+                  answers!,
+                  { sessionId: id, bootId: access.bootId, expectedRevision: live.revision },
+                  requestId,
+                )),
       });
       if (g !== generation.current) return;
       receipt.current = {
         sessionId: id,
         requestId,
         turnId:
-          kind === "send" ? undefined : kind === "answer" ? question!.turnId : approval!.turnId,
+          kind === "send"
+            ? undefined
+            : kind === "stop"
+              ? live.turnId
+              : kind === "answer"
+                ? question!.turnId
+                : approval!.turnId,
         // A current native interaction already establishes an active turn,
         // even if the owner uses an unfamiliar waiting-status label.
         observedActive: kind !== "send",
@@ -523,6 +539,14 @@ export function useSessionController({
     !!access.device?.send &&
     !!live?.sendEnabled &&
     live.status === "idle";
+  const canStop =
+    controlReady &&
+    online &&
+    !busy &&
+    !!access?.experimentalEnabled &&
+    !!access.device?.send &&
+    live?.stopEnabled === true &&
+    !!live.turnId;
   const liveText =
     live?.reason === "control-outcome-unconfirmed"
       ? t.controlUnconfirmed
@@ -592,6 +616,7 @@ export function useSessionController({
     formatCatalogTime,
     sourceTitle,
     canSend,
+    canStop,
     liveText,
     leaveSession,
   };

@@ -26,10 +26,21 @@ describe("catalog presentation", () => {
         summary: "",
         size: 10,
       },
+      {
+        id: "3",
+        scope: "workspace",
+        workspace_id: "w",
+        agent: "antigravity",
+        kind: "instruction",
+        name: "AGENTS.md",
+        path: "/repo/AGENTS.md",
+        summary: "",
+        size: 10,
+      },
     ]);
 
     expect(groups).toHaveLength(1);
-    expect(groups[0].agents).toEqual(["codex", "claude-code"]);
+    expect(groups[0].agents).toEqual(["codex", "claude-code", "antigravity"]);
     expect(workspaceAssetCounts(groups).get("w")).toBe(1);
   });
 

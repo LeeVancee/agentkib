@@ -21,6 +21,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentkib-antigravity-bridge"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "agentkib-cli"
 version = "0.11.0"
 dependencies = [
@@ -49,9 +59,11 @@ dependencies = [
 name = "agentkib-conversations"
 version = "0.11.0"
 dependencies = [
+ "agentkib-antigravity-bridge",
  "agentkib-core",
  "agentkib-platform",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "hex",
@@ -244,6 +256,7 @@ name = "agentkib-runtime"
 version = "0.11.0"
 dependencies = [
  "agentkib-adapters",
+ "agentkib-antigravity-bridge",
  "agentkib-codex-bridge",
  "agentkib-conversations",
  "agentkib-core",

@@ -7,7 +7,7 @@ use agentkib_core::{
     McpServerConfig, McpServerTransport, RiskLevel, encode_url_path_segment, hash_content,
 };
 use agentkib_platform::path::{canonicalize, starts_with as path_starts_with};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -51,6 +51,13 @@ fn scan_native_candidates_with_grok_home(
             &["mcpServers"],
             &mut candidates,
         )?;
+        scan_json_servers(
+            &project.join(".agents/mcp_config.json"),
+            AgentKind::Antigravity,
+            "project",
+            &["mcpServers"],
+            &mut candidates,
+        )?;
         for path in [
             project.join("opencode.json"),
             project.join("opencode.jsonc"),
@@ -84,6 +91,13 @@ fn scan_native_candidates_with_grok_home(
             &mut candidates,
         )?;
         scan_hermes(&home.join(".hermes/config.yaml"), "home", &mut candidates)?;
+        scan_json_servers(
+            &home.join(".gemini/config/mcp_config.json"),
+            AgentKind::Antigravity,
+            "home",
+            &["mcpServers"],
+            &mut candidates,
+        )?;
     }
     if let Some(config_home) = agentkib_platform::xdg::config_home()
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
@@ -230,6 +244,7 @@ pub fn migration_server(candidate: &McpMigrationCandidate) -> Result<McpServerCo
         AgentKind::OpenClaw => json_server(candidate, &["mcp", "servers"], true)?,
         AgentKind::Hermes => hermes_server(candidate)?,
         AgentKind::GrokBuild => toml_server(candidate, "Grok Build")?,
+        AgentKind::Antigravity => antigravity_server(candidate)?,
         AgentKind::DeepSeekHarness => {
             bail!("DeepSeek Harness Beta native MCP migration is not supported")
         }
@@ -383,6 +398,7 @@ fn scan_toml_servers(
     for (name, server) in servers {
         let endpoint = server
             .get("url")
+            .or_else(|| server.get("serverUrl"))
             .or_else(|| server.get("command"))
             .and_then(toml::Value::as_str)
             .unwrap_or("unavailable");
@@ -470,6 +486,7 @@ fn collect_json_servers(
     for (name, server) in servers {
         let endpoint = server
             .get("url")
+            .or_else(|| server.get("serverUrl"))
             .or_else(|| server.get("command"))
             .and_then(|value| {
                 value.as_str().or_else(|| {
@@ -485,7 +502,7 @@ fn collect_json_servers(
             .or_else(|| server.get("type"))
             .and_then(Value::as_str)
             .unwrap_or_else(|| {
-                if server.get("url").is_some() {
+                if server.get("url").is_some() || server.get("serverUrl").is_some() {
                     "http"
                 } else {
                     "stdio"
@@ -509,7 +526,9 @@ fn collect_json_servers(
         );
         let has_unsupported_opencode_fields =
             agent == AgentKind::OpenCode && !opencode_server_can_be_migrated(server);
-        if has_unsupported_opencode_fields {
+        let has_unsupported_antigravity_policy =
+            agent == AgentKind::Antigravity && !antigravity_server_policy_can_be_migrated(server);
+        if has_unsupported_opencode_fields || has_unsupported_antigravity_policy {
             migration_candidate.supported = false;
             if !migration_candidate
                 .warnings
@@ -564,6 +583,75 @@ fn string_map_is_valid(value: Option<&Value>) -> bool {
             .as_object()
             .is_some_and(|values| values.values().all(Value::is_string))
     })
+}
+
+fn antigravity_server_policy_can_be_migrated(server: &Value) -> bool {
+    let Some(server) = server.as_object() else {
+        return false;
+    };
+    let supported_fields = [
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "serverUrl",
+        "url",
+        "headers",
+        "transport",
+        "type",
+        "disabled",
+        "enabledTools",
+        "disabledTools",
+    ];
+    server
+        .keys()
+        .all(|key| supported_fields.contains(&key.as_str()))
+        && server.get("disabled").is_none_or(Value::is_boolean)
+        && antigravity_transport_can_be_migrated(server)
+        && antigravity_allow_tools(server).is_ok()
+}
+
+fn antigravity_transport_can_be_migrated(server: &serde_json::Map<String, Value>) -> bool {
+    let command = server.get("command");
+    let server_url = server.get("serverUrl");
+    let legacy_url = server.get("url");
+    let remote_url = server_url.or(legacy_url);
+    let urls_agree = match (server_url, legacy_url) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    };
+    if !urls_agree || command.is_some() == remote_url.is_some() {
+        return false;
+    }
+    if !command.is_none_or(Value::is_string)
+        || !remote_url.is_none_or(Value::is_string)
+        || !server.get("cwd").is_none_or(Value::is_string)
+        || !server.get("args").is_none_or(|value| {
+            value
+                .as_array()
+                .is_some_and(|values| values.iter().all(Value::is_string))
+        })
+        || !string_map_is_valid(server.get("env"))
+        || !string_map_is_valid(server.get("headers"))
+    {
+        return false;
+    }
+    let transport = server.get("transport").and_then(Value::as_str);
+    let kind = server.get("type").and_then(Value::as_str);
+    if server
+        .get("transport")
+        .is_some_and(|value| !value.is_string())
+        || server.get("type").is_some_and(|value| !value.is_string())
+        || transport.is_some() && kind.is_some() && transport != kind
+    {
+        return false;
+    }
+    let declared = transport.or(kind);
+    if command.is_some() {
+        declared.is_none_or(|value| matches!(value, "stdio" | "local"))
+    } else {
+        declared.is_none_or(|value| matches!(value, "http" | "streamable-http" | "remote"))
+    }
 }
 
 fn mark_layered_opencode_candidates_unsupported(candidates: &mut [McpMigrationCandidate]) {
@@ -717,7 +805,10 @@ fn json_server(
         .and_then(Value::as_object)
         .and_then(|servers| servers.get(&candidate.name))
         .context("Native MCP candidate no longer exists")?;
-    let url = server.get("url").and_then(Value::as_str);
+    let url = server
+        .get("url")
+        .or_else(|| server.get("serverUrl"))
+        .and_then(Value::as_str);
     Ok(base_server(
         candidate,
         if let Some(url) = url {
@@ -741,6 +832,77 @@ fn json_server(
             }
         },
     ))
+}
+
+fn antigravity_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
+    let content = std::fs::read_to_string(&candidate.source_path)?;
+    let value: Value = serde_json::from_str(&content)?;
+    let server = value
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get(&candidate.name))
+        .and_then(Value::as_object)
+        .context("Native Antigravity MCP candidate no longer exists")?;
+    let mut output = json_server(candidate, &["mcpServers"], false)?;
+    output.enabled = !server
+        .get("disabled")
+        .map(|value| {
+            value
+                .as_bool()
+                .context("Antigravity MCP disabled must be a boolean")
+        })
+        .transpose()?
+        .unwrap_or(false);
+    output.allow_tools = antigravity_allow_tools(server)?;
+    Ok(output)
+}
+
+fn antigravity_allow_tools(server: &serde_json::Map<String, Value>) -> Result<Vec<String>> {
+    let enabled = antigravity_string_array(server, "enabledTools")?;
+    let disabled = antigravity_string_array(server, "disabledTools")?.unwrap_or_default();
+    let Some(enabled) = enabled else {
+        ensure!(
+            disabled.is_empty(),
+            "Antigravity MCP disabledTools cannot be migrated without enabledTools"
+        );
+        return Ok(Vec::new());
+    };
+    ensure!(
+        !enabled.is_empty(),
+        "An empty Antigravity MCP enabledTools policy cannot be represented"
+    );
+    let disabled = disabled.into_iter().collect::<HashSet<_>>();
+    let enabled = enabled
+        .into_iter()
+        .filter(|tool| !disabled.contains(tool))
+        .collect::<Vec<_>>();
+    ensure!(
+        !enabled.is_empty(),
+        "An Antigravity MCP policy that disables every enabled tool cannot be represented"
+    );
+    Ok(enabled)
+}
+
+fn antigravity_string_array(
+    server: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<Vec<String>>> {
+    let Some(value) = server.get(key) else {
+        return Ok(None);
+    };
+    let values = value
+        .as_array()
+        .with_context(|| format!("Antigravity MCP {key} must be an array"))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("Antigravity MCP {key} must contain only strings"))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 fn hermes_server(candidate: &McpMigrationCandidate) -> Result<McpServerConfig> {
@@ -889,7 +1051,7 @@ fn remove_native_candidates(
             output.push_str("\n# agentkib:managed:end\n");
             Ok(output)
         }
-        AgentKind::ClaudeCode | AgentKind::Cursor => {
+        AgentKind::ClaudeCode | AgentKind::Cursor | AgentKind::Antigravity => {
             let mut value: Value = serde_json::from_str(content)?;
             remove_json_names(&mut value, &["mcpServers"], &names)?;
             upsert_json_gateway(&mut value, &["mcpServers"], agent, gateway_url)?;
@@ -937,6 +1099,7 @@ fn agent_gateway_url(template: &str, agent: AgentKind) -> String {
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
         AgentKind::GrokBuild => "grok-build",
+        AgentKind::Antigravity => "antigravity",
         AgentKind::DeepSeekHarness => "deepseek-harness",
     };
     template.replace("{agent}", slug)
@@ -969,6 +1132,10 @@ fn upsert_json_gateway(
         AgentKind::OpenCode => {
             gateway.insert("type".into(), "remote".into());
             gateway.insert("enabled".into(), true.into());
+        }
+        AgentKind::Antigravity => {
+            let url = gateway.remove("url").unwrap_or(Value::Null);
+            gateway.insert("serverUrl".into(), url);
         }
         AgentKind::Codex
         | AgentKind::Cursor
@@ -1010,6 +1177,7 @@ fn remove_json_names(value: &mut Value, pointer: &[&str], names: &[&str]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::tempdir;
 
     #[test]
@@ -1032,6 +1200,199 @@ mod tests {
                 .unwrap()
                 .contains("do-not-return")
         );
+    }
+
+    #[test]
+    fn antigravity_server_url_round_trips_through_native_migration() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"remote":{"serverUrl":"https://example.com/mcp","disabled":true,"enabledTools":["search","write"],"disabledTools":["write"]}}}"#;
+        std::fs::write(&config, content).unwrap();
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::Antigravity && candidate.name == "remote"
+            })
+            .unwrap();
+        assert_eq!(candidate.endpoint, "https://example.com/mcp");
+        let migrated = migration_server(candidate).unwrap();
+        assert!(matches!(
+            migrated.transport,
+            McpServerTransport::StreamableHttp { ref url } if url == "https://example.com/mcp"
+        ));
+        assert!(!migrated.enabled);
+        assert_eq!(migrated.allow_tools, ["search"]);
+        let output = remove_native_candidates(
+            content,
+            &[candidate],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert!(value.pointer("/mcpServers/remote").is_none());
+        assert_eq!(
+            value.pointer("/mcpServers/agentkib/serverUrl"),
+            Some(&json!(
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/antigravity"
+            ))
+        );
+    }
+
+    #[test]
+    fn antigravity_deny_only_policy_is_not_removed_by_migration_plan() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content =
+            r#"{"mcpServers":{"restricted":{"command":"server","disabledTools":["write"]}}}"#;
+        std::fs::write(&config, content).unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::Antigravity && candidate.name == "restricted"
+            })
+            .unwrap();
+        assert!(!candidate.supported);
+        assert!(migration_server(candidate).is_err());
+        assert!(
+            plan_migration(
+                dir.path(),
+                std::slice::from_ref(&candidate.id),
+                &[],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
+    }
+
+    #[test]
+    fn antigravity_adc_auth_is_not_removed_by_migration_plan() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"google":{"serverUrl":"https://example.googleapis.com/mcp","authProviderType":"google_credentials"}}}"#;
+        std::fs::write(&config, content).unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::Antigravity && candidate.name == "google"
+            })
+            .unwrap();
+        assert!(!candidate.supported);
+        assert!(migration_server(candidate).is_err());
+        assert!(
+            plan_migration(
+                dir.path(),
+                std::slice::from_ref(&candidate.id),
+                &[],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
+    }
+
+    #[test]
+    fn antigravity_static_oauth_and_explicit_sse_are_not_migrated() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"static-oauth":{"serverUrl":"https://example.com/mcp","oauth":{"clientId":"client","clientSecret":"secret"}},"legacy-sse":{"serverUrl":"https://example.com/sse","transport":"sse"}}}"#;
+        std::fs::write(&config, content).unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let unsupported = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.agent == AgentKind::Antigravity
+                    && matches!(candidate.name.as_str(), "static-oauth" | "legacy-sse")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unsupported.len(), 2);
+        assert!(unsupported.iter().all(|candidate| !candidate.supported));
+        assert!(
+            unsupported
+                .iter()
+                .all(|candidate| migration_server(candidate).is_err())
+        );
+        assert!(
+            plan_migration(
+                dir.path(),
+                &unsupported
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect::<Vec<_>>(),
+                &[],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
+    }
+
+    #[test]
+    fn antigravity_unknown_fields_are_not_removed_by_migration_plan() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"timed":{"command":"server","timeoutSeconds":30},"eager":{"serverUrl":"https://example.com/mcp","tools":{"eager":true}}}}"#;
+        std::fs::write(&config, content).unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let unsupported = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.agent == AgentKind::Antigravity
+                    && matches!(candidate.name.as_str(), "timed" | "eager")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unsupported.len(), 2);
+        assert!(unsupported.iter().all(|candidate| !candidate.supported));
+        let candidate_ids = unsupported
+            .iter()
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            plan_migration(
+                dir.path(),
+                &candidate_ids,
+                &[],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
+    }
+
+    #[test]
+    fn antigravity_ambiguous_transport_is_not_migrated() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"mixed":{"command":"server","serverUrl":"https://example.com/mcp"},"conflicting":{"serverUrl":"https://one.example/mcp","url":"https://two.example/mcp"},"mismatched":{"command":"server","transport":"http"}}}"#;
+        std::fs::write(&config, content).unwrap();
+
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let antigravity = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.agent == AgentKind::Antigravity
+                    && matches!(
+                        candidate.name.as_str(),
+                        "mixed" | "conflicting" | "mismatched"
+                    )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(antigravity.len(), 3);
+        assert!(antigravity.iter().all(|candidate| !candidate.supported));
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
     }
 
     #[test]

@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+mod antigravity_runner;
 mod claude_runner;
 mod obsidian;
 mod web;
@@ -2192,6 +2193,13 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
     let (command, expected_version) = match target {
         AgentKind::Codex => ("codex", (0, 146)),
         AgentKind::ClaudeCode => ("claude", (2, 1)),
+        AgentKind::Antigravity => {
+            return NativeImportCapability {
+                supported: false,
+                beta: false,
+                reason: Some("native-history-import-unsupported".into()),
+            };
+        }
         _ => {
             return NativeImportCapability {
                 supported: false,
@@ -2245,6 +2253,12 @@ fn native_resume_capability(
     target: AgentKind,
     native: &NativeImportCapability,
 ) -> ContinuationCapability {
+    if target == AgentKind::Antigravity {
+        return continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("native-history-import-unsupported"),
+        );
+    }
     if !matches!(target, AgentKind::Codex | AgentKind::ClaudeCode) {
         return continuation_capability(
             ContinuationCapabilityStatus::Unsupported,
@@ -3199,6 +3213,7 @@ fn native_mcp_home_files_for(home: &Path, opencode_config_home: &Path) -> Vec<Pa
         home.join(".claude.json"),
         home.join(".openclaw/openclaw.json"),
         home.join(".hermes/config.yaml"),
+        home.join(".gemini/config/mcp_config.json"),
         opencode_config_home.join("opencode.json"),
         opencode_config_home.join("opencode.jsonc"),
     ]
@@ -5831,7 +5846,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_home_mcp_configs_are_approved_changeset_targets() {
+    fn native_mcp_home_configs_are_approved_changeset_targets() {
         let dir = tempdir().unwrap();
         let project = dir.path().join("project");
         let home = dir.path().join("home");
@@ -5851,6 +5866,15 @@ mod tests {
                 .is_ok()
             );
         }
+        assert!(
+            agentkib_core::ensure_allowed_target(
+                &project,
+                &home.join(".gemini/config/mcp_config.json"),
+                &approved,
+                &[],
+            )
+            .is_ok()
+        );
         assert!(
             agentkib_core::ensure_allowed_target(
                 &project,

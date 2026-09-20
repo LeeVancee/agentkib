@@ -101,6 +101,10 @@ struct Service {
     claude_targets: BTreeMap<String, agentkib_conversations::VerifiedClaudeControlTarget>,
     claude_target_retry: BTreeMap<String, std::time::Instant>,
     claude_available: InstallationProbe,
+    antigravity: BTreeMap<String, crate::antigravity_runner::Runner>,
+    antigravity_targets: BTreeMap<String, (String, PathBuf)>,
+    antigravity_target_retry: BTreeMap<String, std::time::Instant>,
+    antigravity_available: InstallationProbe,
     #[cfg(target_os = "macos")]
     bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
     #[cfg(target_os = "macos")]
@@ -117,6 +121,10 @@ impl Default for Service {
             claude_targets: BTreeMap::new(),
             claude_target_retry: BTreeMap::new(),
             claude_available: InstallationProbe::default(),
+            antigravity: BTreeMap::new(),
+            antigravity_targets: BTreeMap::new(),
+            antigravity_target_retry: BTreeMap::new(),
+            antigravity_available: InstallationProbe::default(),
             #[cfg(target_os = "macos")]
             bridges: BTreeMap::new(),
             #[cfg(target_os = "macos")]
@@ -137,7 +145,7 @@ impl Service {
         anyhow::ensure!(
             matches!(
                 request.operation.as_str(),
-                "catalog" | "events" | "live" | "send" | "approve" | "answer"
+                "catalog" | "events" | "live" | "send" | "stop" | "approve" | "answer"
             ),
             "web-operation-unsupported"
         );
@@ -268,6 +276,11 @@ impl Service {
             // asynchronous write errors remain fenced in the runner snapshot.
             let outcome = if request.operation == "send" {
                 runner.send(request.text.as_deref().context("missing-text")?, revision)
+            } else if request.operation == "stop" {
+                runner.stop(
+                    request.turn_id.as_deref().context("missing-turn")?,
+                    revision,
+                )
             } else if request.operation == "answer" {
                 runner.answer(
                     request.question_id.as_ref().context("missing-question")?,
@@ -284,6 +297,99 @@ impl Service {
                 )
             };
             return control_response(&request, &self.boot, outcome.is_ok(), outcome);
+        }
+        if session.agent == AgentKind::Antigravity {
+            let mut dispatched = false;
+            let outcome = (|| -> anyhow::Result<Value> {
+                if !request.experimental_enabled {
+                    return self.unsupported(&request, "control-disabled");
+                }
+                if !self.antigravity_available.supported(
+                    std::time::Instant::now(),
+                    crate::antigravity_runner::installation_supported,
+                ) {
+                    return self.unsupported(&request, "unverified-installation");
+                }
+                anyhow::ensure!(!session.sidechain, "auxiliary-session-not-controllable");
+                let canonical_workspace = fs::canonicalize(&workspace)?;
+                let target = cached_target(
+                    &mut self.antigravity_targets,
+                    &mut self.antigravity_target_retry,
+                    id,
+                    std::time::Instant::now(),
+                    request.operation != "live",
+                    || {
+                        let adapter = provider(session.agent).context("provider-unavailable")?;
+                        let native = adapter
+                            .list_sessions(&canonical_workspace)?
+                            .into_iter()
+                            .find(|candidate| {
+                                store
+                                    .conversation_id(session.agent, &candidate.native_ref)
+                                    .is_ok_and(|found| found == id)
+                            })
+                            .context("session-unavailable")?;
+                        Ok((native.native_ref, canonical_workspace.clone()))
+                    },
+                    |target| {
+                        anyhow::ensure!(
+                            target.1 == canonical_workspace,
+                            "session-workspace-mismatch"
+                        );
+                        Ok(())
+                    },
+                )?;
+                let native_id = target.0.clone();
+                if self.reserve_antigravity_runner(id).is_err() {
+                    return self.unsupported(&request, "live-session-limit");
+                }
+                if !self.antigravity.contains_key(id) {
+                    validate_session_access(&source, epoch, &store, &session, &workspace)?;
+                    let runner = match crate::antigravity_runner::Runner::connect(
+                        canonical_workspace,
+                        native_id,
+                    ) {
+                        Ok(runner) => runner,
+                        Err(_) => return self.unsupported(&request, "open-in-original-client"),
+                    };
+                    self.antigravity.insert(id.to_owned(), runner);
+                }
+                validate_session_access(&source, epoch, &store, &session, &workspace)?;
+                if request.operation == "live" {
+                    let mut state = self.antigravity_live_snapshot(id)?;
+                    state["sessionId"] = json!(id);
+                    state["runtimeBootId"] = json!(self.boot);
+                    return Ok(state);
+                }
+                let runner = self
+                    .antigravity
+                    .get(id)
+                    .context("managed-session-unavailable")?;
+                let revision = request.expected_revision.context("missing-revision")?;
+                let outcome = if request.operation == "send" {
+                    runner.send(request.text.as_deref().context("missing-text")?, revision)
+                } else if request.operation == "stop" {
+                    runner.stop(
+                        request.turn_id.as_deref().context("missing-turn")?,
+                        revision,
+                    )
+                } else if request.operation == "approve" {
+                    runner.approve(
+                        request.approval_id.as_ref().context("missing-approval")?,
+                        request.turn_id.as_deref().context("missing-turn")?,
+                        request.decision.as_deref().context("missing-decision")?,
+                        revision,
+                    )
+                } else {
+                    anyhow::bail!("control-unavailable")
+                };
+                // A transport error can happen after the ACP request has reached the
+                // server. Runner fences that case as outcome-unknown; propagate it as
+                // dispatched so the Electron host does not clear its durable fence.
+                dispatched = antigravity_control_dispatched(runner, &outcome);
+                control_response(&request, &self.boot, dispatched, outcome.map(|_| ()))
+            })();
+            return control_attempt_response(&request, &self.boot, dispatched, outcome);
         }
         #[cfg(target_os = "macos")]
         {
@@ -416,7 +522,7 @@ impl Service {
                     };
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
                     return Ok(
-                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"approvals":approvals,"questions":questions}),
+                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"stopEnabled":controls && state.active_turn().is_some(),"approvals":approvals,"questions":questions}),
                     );
                 }
                 anyhow::ensure!(
@@ -435,6 +541,13 @@ impl Service {
                     let text = request.text.as_deref().context("missing-text")?;
                     bridge.send_text_at_revision_with_authorization(
                         text,
+                        request.expected_revision,
+                        authorize,
+                        dispatch,
+                    )
+                } else if request.operation == "stop" {
+                    bridge.stop_at_revision_with_authorization(
+                        request.turn_id.as_deref().context("missing-turn")?,
                         request.expected_revision,
                         authorize,
                         dispatch,
@@ -546,6 +659,38 @@ impl Service {
         }
         anyhow::ensure!(count < 8, "managed-session-limit");
         Ok(())
+    }
+    fn reserve_antigravity_runner(&mut self, id: &str) -> anyhow::Result<()> {
+        if self.antigravity.contains_key(id) {
+            return Ok(());
+        }
+        while self.antigravity.len() >= 8 {
+            let candidate = self
+                .antigravity
+                .iter()
+                .find(|(other_id, runner)| other_id.as_str() != id && runner.is_retirable())
+                .map(|(other_id, _)| other_id.clone());
+            let Some(candidate) = candidate else {
+                break;
+            };
+            self.antigravity.remove(&candidate);
+        }
+        anyhow::ensure!(self.antigravity.len() < 8, "managed-session-limit");
+        Ok(())
+    }
+    fn antigravity_live_snapshot(&mut self, id: &str) -> anyhow::Result<Value> {
+        let runner = self
+            .antigravity
+            .get(id)
+            .context("managed-session-unavailable")?;
+        // Surface a failure once before releasing a reconnectable runner.
+        // Outcome-unknown runners retain the native turn and stay fenced.
+        let reconnectable_failure = runner.is_failed() && !runner.is_outcome_unknown();
+        let state = runner.snapshot();
+        if reconnectable_failure {
+            self.antigravity.remove(id);
+        }
+        Ok(state)
     }
     fn unsupported(&self, request: &Request, reason: &str) -> anyhow::Result<Value> {
         anyhow::ensure!(request.operation == "live", "control-unavailable");
@@ -663,6 +808,27 @@ fn control_response(
     Ok(
         json!({"accepted":true,"completed":false,"requestId":request.request_id,"runtimeBootId":boot}),
     )
+}
+
+fn control_attempt_response(
+    request: &Request,
+    boot: &str,
+    dispatched: bool,
+    outcome: anyhow::Result<Value>,
+) -> anyhow::Result<Value> {
+    match outcome {
+        Err(error) if request.operation != "live" && !dispatched => {
+            control_response(request, boot, false, Err(error))
+        }
+        outcome => outcome,
+    }
+}
+
+fn antigravity_control_dispatched(
+    runner: &crate::antigravity_runner::Runner,
+    outcome: &anyhow::Result<Value>,
+) -> bool {
+    outcome.is_ok() || runner.is_outcome_unknown()
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -956,6 +1122,177 @@ mod tests {
         assert!(busy.reserve_claude_worker("0").is_ok());
     }
 
+    #[cfg(unix)]
+    fn failed_antigravity_runner(id: &str) -> crate::antigravity_runner::Runner {
+        let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+exit 0
+"#;
+        let runner = crate::antigravity_runner::Runner::connect_for_test(
+            Path::new("/bin/sh"),
+            &[
+                std::ffi::OsString::from("-c"),
+                std::ffi::OsString::from(script),
+            ],
+            std::env::temp_dir().canonicalize().unwrap(),
+            id.into(),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !runner.is_failed() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Antigravity runner did not fail after transport EOF"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        runner
+    }
+
+    #[cfg(unix)]
+    fn outcome_unknown_antigravity_runner(id: &str) -> crate::antigravity_runner::Runner {
+        let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+read -r line
+exit 0
+"#;
+        let runner = crate::antigravity_runner::Runner::connect_for_test(
+            Path::new("/bin/sh"),
+            &[
+                std::ffi::OsString::from("-c"),
+                std::ffi::OsString::from(script),
+            ],
+            std::env::temp_dir().canonicalize().unwrap(),
+            id.into(),
+        )
+        .unwrap();
+        runner.send("run once", 0).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !runner.is_outcome_unknown() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Antigravity runner did not preserve its uncertain turn"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        runner
+    }
+
+    #[cfg(unix)]
+    fn prompt_dispatch_failed_antigravity_runner(id: &str) -> crate::antigravity_runner::Runner {
+        let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+exec 0<&-
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-dispatch","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stdin-closed"}}}}'
+sleep 5
+"#;
+        let runner = crate::antigravity_runner::Runner::connect_for_test(
+            Path::new("/bin/sh"),
+            &[
+                std::ffi::OsString::from("-c"),
+                std::ffi::OsString::from(script),
+            ],
+            std::env::temp_dir().canonicalize().unwrap(),
+            id.into(),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let snapshot = runner.snapshot();
+            if snapshot["streamText"] == "stdin-closed" {
+                let revision = snapshot["revision"].as_u64().unwrap();
+                assert!(runner.send("run once", revision).is_err());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Antigravity runner did not close stdin"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(runner.is_outcome_unknown());
+        runner
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_capacity_retires_only_safe_failures() {
+        let mut same = Service::default();
+        same.antigravity
+            .insert("same".into(), failed_antigravity_runner("native-same"));
+        same.reserve_antigravity_runner("same").unwrap();
+        assert!(same.antigravity.contains_key("same"));
+        let failed = same.antigravity_live_snapshot("same").unwrap();
+        assert_eq!(failed["status"], "failed");
+        assert!(!same.antigravity.contains_key("same"));
+
+        let mut full = Service::default();
+        for index in 0..8 {
+            full.antigravity.insert(
+                index.to_string(),
+                failed_antigravity_runner(&format!("native-{index}")),
+            );
+        }
+        full.reserve_antigravity_runner("ninth").unwrap();
+        assert_eq!(full.antigravity.len(), 7);
+
+        let mut uncertain = Service::default();
+        for index in 0..8 {
+            uncertain.antigravity.insert(
+                index.to_string(),
+                outcome_unknown_antigravity_runner(&format!("uncertain-{index}")),
+            );
+        }
+        assert!(uncertain.reserve_antigravity_runner("ninth").is_err());
+        assert_eq!(uncertain.antigravity.len(), 8);
+        let snapshot = uncertain.antigravity_live_snapshot("0").unwrap();
+        assert_eq!(snapshot["status"], "outcome-unknown");
+        assert!(snapshot["turnId"].is_string());
+        assert!(uncertain.antigravity.contains_key("0"));
+        let revision = snapshot["revision"].as_u64().unwrap();
+        assert!(uncertain.antigravity["0"].send("repeat", revision).is_err());
+
+        let mut dispatch_failed = Service::default();
+        dispatch_failed.antigravity.insert(
+            "dispatch".into(),
+            prompt_dispatch_failed_antigravity_runner("native-dispatch"),
+        );
+        let snapshot = dispatch_failed
+            .antigravity_live_snapshot("dispatch")
+            .unwrap();
+        assert_eq!(snapshot["status"], "outcome-unknown");
+        assert!(dispatch_failed.antigravity.contains_key("dispatch"));
+        assert!(
+            dispatch_failed
+                .reserve_antigravity_runner("dispatch")
+                .is_ok()
+        );
+        let revision = snapshot["revision"].as_u64().unwrap();
+        assert!(
+            dispatch_failed.antigravity["dispatch"]
+                .send("repeat", revision)
+                .is_err()
+        );
+        let request: Request = serde_json::from_value(json!({
+            "operation":"send", "requestId":"dispatch-error"
+        }))
+        .unwrap();
+        let outcome = Err::<Value, _>(anyhow::anyhow!("ACP prompt write failed"));
+        let dispatched =
+            antigravity_control_dispatched(&dispatch_failed.antigravity["dispatch"], &outcome);
+        assert!(dispatched);
+        assert!(control_response(&request, "boot-1", dispatched, outcome.map(|_| ())).is_err());
+    }
+
     #[test]
     fn web_catalog_projects_one_snapshot_and_only_browser_workspace_fields() {
         struct Snapshot;
@@ -1093,6 +1430,46 @@ mod tests {
                 true
             );
         }
+    }
+
+    #[test]
+    fn control_attempt_wraps_only_pre_dispatch_mutation_failures() {
+        let request: Request = serde_json::from_value(json!({
+            "operation":"send", "requestId":"request-1"
+        }))
+        .unwrap();
+        let receipt = control_attempt_response(
+            &request,
+            "boot-1",
+            false,
+            Err(anyhow::anyhow!(
+                "session disappeared before native dispatch"
+            )),
+        )
+        .unwrap();
+        assert_eq!(receipt["controlOutcome"], "not-dispatched");
+        assert_eq!(receipt["requestId"], "request-1");
+
+        assert!(
+            control_attempt_response(
+                &request,
+                "boot-1",
+                true,
+                Err(anyhow::anyhow!("native outcome unknown")),
+            )
+            .is_err()
+        );
+
+        let live: Request = serde_json::from_value(json!({"operation":"live"})).unwrap();
+        assert!(
+            control_attempt_response(
+                &live,
+                "boot-1",
+                false,
+                Err(anyhow::anyhow!("session unavailable")),
+            )
+            .is_err()
+        );
     }
 
     #[test]

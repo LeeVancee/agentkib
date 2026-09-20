@@ -14,12 +14,12 @@ describe("Agent capability boundaries", () => {
   );
 
   it("exposes every supported continuation target", () => {
-    for (const agent of ["opencode", "grok-build"] as const) {
+    for (const agent of ["antigravity", "opencode", "grok-build"] as const) {
       expect(sessionHandoffTargets.map(([target]) => target)).toContain(agent);
     }
   });
 
-  it.each(["codex", "claude-code", "opencode"] as const)(
+  it.each(["codex", "claude-code", "antigravity", "opencode"] as const)(
     "allows continuation from %s history",
     (agent) => {
       expect(canContinueFromHistory(agent)).toBe(true);
@@ -42,7 +42,7 @@ describe("Agent capability boundaries", () => {
 
   it("does not infer capabilities for installations from an old runtime", () => {
     const installation: AgentInstallation = {
-      agent: "open-claw",
+      agent: "antigravity",
       installed: true,
       configured: true,
       warnings: [],
@@ -53,7 +53,7 @@ describe("Agent capability boundaries", () => {
 
   it("exposes the runtime-reported surfaces without rewriting them", () => {
     const installation: AgentInstallation = {
-      agent: "open-claw",
+      agent: "antigravity",
       installed: true,
       configured: true,
       warnings: [],

@@ -41,10 +41,17 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
         .to_string();
     let agents = fs::read_to_string(project.join("AGENTS.md")).ok();
     let claude = fs::read_to_string(project.join("CLAUDE.md")).ok();
+    let gemini = fs::read_to_string(project.join("GEMINI.md")).ok();
     let shared = agents
         .clone()
         .or_else(|| {
             claude
+                .as_ref()
+                .filter(|content| !content.lines().any(|line| line.trim() == "@AGENTS.md"))
+                .cloned()
+        })
+        .or_else(|| {
+            gemini
                 .as_ref()
                 .filter(|content| !content.lines().any(|line| line.trim() == "@AGENTS.md"))
                 .cloned()
@@ -61,6 +68,12 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
         && let Some(override_text) = claude_platform_override(&content)
     {
         platform_overrides.insert(AgentKind::ClaudeCode, override_text);
+    }
+    if agents.is_some()
+        && let Some(content) = gemini
+        && let Some(override_text) = imported_agents_platform_override(&content)
+    {
+        platform_overrides.insert(AgentKind::Antigravity, override_text);
     }
     if let Ok(content) = fs::read_to_string(project.join(".cursor/rules/agentkib.mdc"))
         && let Some(override_text) = managed_content(&content)
@@ -184,6 +197,41 @@ fn claude_platform_override(content: &str) -> Option<String> {
     Some(remaining.trim().to_string()).filter(|value| !value.is_empty())
 }
 
+fn imported_agents_platform_override(content: &str) -> Option<String> {
+    if let Some(content) = managed_content(content) {
+        return Some(content.trim().to_string()).filter(|value| !value.is_empty());
+    }
+    if !content.lines().any(|line| line.trim() == "@AGENTS.md") {
+        return Some(content.trim().to_string()).filter(|value| !value.is_empty());
+    }
+    let remaining = content
+        .lines()
+        .filter(|line| line.trim() != "@AGENTS.md")
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(remaining.trim().to_string()).filter(|value| !value.is_empty())
+}
+
+fn promoted_gemini_remainder<'a>(
+    project: &Path,
+    existing: &'a str,
+    shared: &str,
+) -> Option<&'a str> {
+    if shared.trim().is_empty() || project.join("AGENTS.md").is_file() {
+        return None;
+    }
+    let claude_supplies_shared = fs::read_to_string(project.join("CLAUDE.md"))
+        .ok()
+        .is_some_and(|content| !content.lines().any(|line| line.trim() == "@AGENTS.md"));
+    if claude_supplies_shared || existing.lines().any(|line| line.trim() == "@AGENTS.md") {
+        return None;
+    }
+    // default_manifest promotes a GEMINI-only file to shared instructions. If
+    // AGENTS.md is then planned, leave that exact promoted prefix there only;
+    // later user text remains an unmanaged Antigravity-specific suffix.
+    existing.strip_prefix(shared).map(str::trim_start)
+}
+
 fn managed_content(content: &str) -> Option<&str> {
     let (_, content) = content.split_once(START)?;
     let (content, _) = content.split_once(END)?;
@@ -271,6 +319,7 @@ pub fn plan_workspace_changes(
         AgentKind::OpenClaw,
         AgentKind::Hermes,
         AgentKind::GrokBuild,
+        AgentKind::Antigravity,
     ]
     .into_iter()
     .any(|agent| adapter_enabled(manifest, agent));
@@ -315,6 +364,40 @@ pub fn plan_workspace_changes(
             &mut changes,
             root.join(".mcp.json"),
             merge_claude_mcp(&root.join(".mcp.json"), &gateway_connections)?,
+            ChangeScope::Project,
+            RiskLevel::Medium,
+            "json",
+        )?;
+    }
+    if adapter_enabled(manifest, AgentKind::Antigravity) {
+        let platform_override = manifest
+            .instructions
+            .platform_overrides
+            .get(&AgentKind::Antigravity)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let instructions = root.join("GEMINI.md");
+        let existing = fs::read_to_string(&instructions).unwrap_or_default();
+        let promoted_remainder =
+            promoted_gemini_remainder(&root, &existing, &manifest.instructions.shared);
+        if promoted_remainder.is_some()
+            || !platform_override.trim().is_empty()
+            || existing.contains(START)
+        {
+            push_change(
+                &mut changes,
+                instructions,
+                managed_markdown(promoted_remainder.unwrap_or(&existing), platform_override),
+                ChangeScope::Project,
+                RiskLevel::Medium,
+                "markdown",
+            )?;
+        }
+        let mcp = root.join(".agents/mcp_config.json");
+        push_change(
+            &mut changes,
+            mcp.clone(),
+            merge_mcp_json(&mcp, &gateway_connections, AgentKind::Antigravity)?,
             ChangeScope::Project,
             RiskLevel::Medium,
             "json",
@@ -545,6 +628,7 @@ pub fn plan_workspace_changes(
             AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
+            AgentKind::Antigravity,
         ]
         .into_iter()
         .any(|agent| {
@@ -839,7 +923,10 @@ fn read_handoff_gitignore(path: &Path) -> Result<Option<String>> {
 
 fn adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
     manifest.adapters.get(&agent).map_or(
-        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        !matches!(
+            agent,
+            AgentKind::OpenCode | AgentKind::GrokBuild | AgentKind::Antigravity
+        ),
         |state| state.enabled,
     )
 }
@@ -1060,6 +1147,8 @@ fn update_generated_hashes(
             || name == ".mcp.json"
         {
             &[AgentKind::ClaudeCode]
+        } else if name == "GEMINI.md" || name == "mcp_config.json" {
+            &[AgentKind::Antigravity]
         } else {
             &[
                 AgentKind::Codex,
@@ -1068,6 +1157,7 @@ fn update_generated_hashes(
                 AgentKind::OpenClaw,
                 AgentKind::Hermes,
                 AgentKind::GrokBuild,
+                AgentKind::Antigravity,
             ]
         };
         for agent in agents {
@@ -1599,6 +1689,32 @@ fn merge_json_server(
         .entry(connection.name.clone())
         .or_insert_with(|| JsonValue::Object(JsonMap::new()));
     if let (Some(existing), Some(generated)) = (existing.as_object_mut(), generated.as_object()) {
+        if agent == AgentKind::Antigravity {
+            // Remove filters emitted by earlier AgentKib versions and make the
+            // manifest's current allow-list authoritative for this connection.
+            existing.remove("tools");
+            existing.remove("enabledTools");
+            existing.remove("disabledTools");
+            // The generated endpoint determines the transport. A stale native
+            // hint can contradict it after switching between stdio and HTTP.
+            existing.remove("type");
+            existing.remove("transport");
+            if generated.contains_key("serverUrl") {
+                // Antigravity requires exactly one transport entry. Do not
+                // leave a previously managed stdio or legacy URL beside HTTP.
+                existing.remove("command");
+                existing.remove("args");
+                existing.remove("cwd");
+                existing.remove("url");
+                existing.remove("httpUrl");
+            } else if generated.contains_key("command") {
+                // Clear both the current and legacy remote URL spellings when
+                // the managed connection changes back to stdio.
+                existing.remove("serverUrl");
+                existing.remove("url");
+                existing.remove("httpUrl");
+            }
+        }
         for (key, value) in generated {
             existing.insert(key.clone(), value.clone());
         }
@@ -1636,6 +1752,10 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
                     value.insert("type".into(), "remote".into());
                     value.insert("enabled".into(), true.into());
                 }
+                AgentKind::Antigravity => {
+                    let url = value.remove("url").unwrap_or(JsonValue::Null);
+                    value.insert("serverUrl".into(), url);
+                }
                 AgentKind::Codex
                 | AgentKind::Cursor
                 | AgentKind::Hermes
@@ -1653,10 +1773,17 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
         value.insert(key.into(), serde_json::json!(connection.env));
     }
     if !connection.allow_tools.is_empty() {
-        value.insert(
-            "tools".into(),
-            serde_json::json!({ "include": connection.allow_tools }),
-        );
+        if agent == AgentKind::Antigravity {
+            value.insert(
+                "enabledTools".into(),
+                serde_json::json!(connection.allow_tools),
+            );
+        } else {
+            value.insert(
+                "tools".into(),
+                serde_json::json!({ "include": connection.allow_tools }),
+            );
+        }
     }
     JsonValue::Object(value)
 }
@@ -1670,6 +1797,7 @@ fn agent_url(url: &str, agent: AgentKind) -> String {
         AgentKind::OpenClaw => "open-claw",
         AgentKind::Hermes => "hermes",
         AgentKind::GrokBuild => "grok-build",
+        AgentKind::Antigravity => "antigravity",
         AgentKind::DeepSeekHarness => "deepseek-harness",
     };
     url.replace("{agent}", slug)
@@ -2352,6 +2480,92 @@ mod tests {
             manifest.instructions.platform_overrides[&AgentKind::Hermes],
             "Hermes project rule."
         );
+    }
+
+    #[test]
+    fn gemini_only_shared_instructions_are_moved_once_and_preserve_native_content() {
+        let dir = tempdir().unwrap();
+        let original_shared = "Shared instructions from the legacy project.\n";
+        fs::write(dir.path().join("GEMINI.md"), original_shared).unwrap();
+
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.instructions.shared, original_shared);
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = true;
+        manifest.instructions.platform_overrides.insert(
+            AgentKind::Antigravity,
+            "Use the native Antigravity tools.".into(),
+        );
+
+        // Text added after discovery is unknown to the manifest. Planning must
+        // retain it as unmanaged GEMINI.md content and expose it in the review.
+        let reviewed_gemini =
+            format!("{original_shared}\nKeep this unknown Antigravity-only note.\n");
+        fs::write(dir.path().join("GEMINI.md"), &reviewed_gemini).unwrap();
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let agents = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("AGENTS.md"))
+            .unwrap();
+        let gemini = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("GEMINI.md"))
+            .unwrap();
+
+        assert_eq!(agents.after.matches(original_shared.trim()).count(), 1);
+        assert!(!gemini.after.contains(original_shared.trim()));
+        assert!(
+            gemini
+                .after
+                .contains("Keep this unknown Antigravity-only note.")
+        );
+        assert!(gemini.after.contains("Use the native Antigravity tools."));
+        assert_eq!(gemini.before, reviewed_gemini);
+        assert!(gemini.original_hash.is_some());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("GEMINI.md")).unwrap(),
+            reviewed_gemini
+        );
+    }
+
+    #[test]
+    fn managed_gemini_override_is_idempotent_across_rediscovery() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "Shared rules\n").unwrap();
+        fs::write(
+            dir.path().join("GEMINI.md"),
+            "Keep this native note.\n\n<!-- agentkib:managed:start -->\nUse Antigravity tools.\n<!-- agentkib:managed:end -->\n",
+        )
+        .unwrap();
+
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = true;
+        assert_eq!(
+            manifest.instructions.platform_overrides[&AgentKind::Antigravity],
+            "Use Antigravity tools."
+        );
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !change.target.ends_with("GEMINI.md"))
+        );
+        let content = fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
+        assert_eq!(content.matches(START).count(), 1);
+        assert_eq!(content.matches(END).count(), 1);
+        assert!(content.contains("Keep this native note."));
+        assert!(content.contains("Use Antigravity tools."));
     }
 
     #[test]
@@ -3266,5 +3480,129 @@ mod tests {
         let dir = tempdir().unwrap();
         assert!(plan_handoff_export(dir.path(), "../private.md", "text").is_err());
         assert!(plan_handoff_export(dir.path(), "handoff.txt", "text").is_err());
+    }
+
+    #[test]
+    fn antigravity_plan_writes_native_instructions_skills_and_server_url() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("shared/reviewer")).unwrap();
+        fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        fs::write(dir.path().join("shared/reviewer/SKILL.md"), "# Reviewer").unwrap();
+        fs::write(
+            dir.path().join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{"agentkib":{"command":"old-server","args":["--legacy"],"cwd":"/tmp/legacy","type":"stdio","transport":"stdio","serverUrl":"https://old.test/mcp","url":"https://legacy.test/mcp","httpUrl":"https://older.test/mcp","tools":{"include":["legacy"]},"enabledTools":["legacy"],"disabledTools":["session_search"]}}}"#,
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.instructions.shared = "Shared rules".into();
+        manifest
+            .instructions
+            .platform_overrides
+            .insert(AgentKind::Antigravity, "Use Antigravity tools".into());
+        manifest.skills.push(agentkib_core::SkillDefinition {
+            name: "reviewer".into(),
+            path: "shared/reviewer".into(),
+            targets: vec![AgentKind::Antigravity],
+        });
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Http {
+                url: "https://example.test/mcp/{agent}".into(),
+            },
+            env: BTreeMap::new(),
+            allow_tools: vec!["session_search".into(), "session_read_chunk".into()],
+            targets: vec![AgentKind::Antigravity],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let gemini = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("GEMINI.md"))
+            .unwrap();
+        assert!(gemini.after.contains("Use Antigravity tools"));
+        assert!(
+            plan.changes
+                .iter()
+                .any(|change| { change.target.ends_with(".agents/skills/reviewer/SKILL.md") })
+        );
+        let mcp = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agents/mcp_config.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&mcp.after).unwrap();
+        assert_eq!(
+            value["mcpServers"]["agentkib"]["serverUrl"],
+            "https://example.test/mcp/antigravity"
+        );
+        assert!(value["mcpServers"]["agentkib"].get("url").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("httpUrl").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("command").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("args").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("cwd").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("type").is_none());
+        assert!(value["mcpServers"]["agentkib"].get("transport").is_none());
+        assert_eq!(
+            value["mcpServers"]["agentkib"]["enabledTools"],
+            serde_json::json!(["session_search", "session_read_chunk"])
+        );
+        assert!(value["mcpServers"]["agentkib"].get("tools").is_none());
+        assert!(
+            value["mcpServers"]["agentkib"]
+                .get("disabledTools")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn antigravity_plan_removes_remote_transport_when_switching_to_stdio() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        fs::write(
+            dir.path().join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{"agentkib":{"serverUrl":"https://old.test/mcp","url":"https://legacy.test/mcp","httpUrl":"https://older.test/mcp","type":"remote","transport":"remote"}}}"#,
+        )
+        .unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.connections.push(ConnectionDefinition {
+            name: "agentkib".into(),
+            transport: ConnectionTransport::Stdio {
+                command: "agentkib-mcp".into(),
+                args: vec!["serve".into()],
+            },
+            env: BTreeMap::new(),
+            allow_tools: Vec::new(),
+            targets: vec![AgentKind::Antigravity],
+        });
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let mcp = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with(".agents/mcp_config.json"))
+            .unwrap();
+        let value: JsonValue = serde_json::from_str(&mcp.after).unwrap();
+        let server = &value["mcpServers"]["agentkib"];
+        assert_eq!(server["command"], "agentkib-mcp");
+        assert_eq!(server["args"], serde_json::json!(["serve"]));
+        assert!(server.get("serverUrl").is_none());
+        assert!(server.get("url").is_none());
+        assert!(server.get("httpUrl").is_none());
+        assert!(server.get("type").is_none());
+        assert!(server.get("transport").is_none());
+    }
+
+    #[test]
+    fn legacy_manifest_does_not_enable_antigravity_writes() {
+        let dir = tempdir().unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.adapters.remove(&AgentKind::Antigravity);
+
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(plan.changes.iter().all(|change| {
+            !change.target.ends_with("GEMINI.md")
+                && !change.target.ends_with(".agents/mcp_config.json")
+        }));
     }
 }

@@ -90,6 +90,22 @@ struct Request {
     #[serde(default)]
     experimental_enabled: bool,
 }
+
+#[cfg(any(target_os = "macos", test))]
+fn codex_stop_enabled(
+    controls: bool,
+    status: agentkib_codex_bridge::Status,
+    active_turn: Option<&str>,
+) -> bool {
+    controls
+        && active_turn.is_some()
+        && matches!(
+            status,
+            agentkib_codex_bridge::Status::Running
+                | agentkib_codex_bridge::Status::AwaitingApproval
+        )
+}
+
 struct Service {
     boot: String,
     used: BTreeSet<String>,
@@ -522,7 +538,7 @@ impl Service {
                     };
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
                     return Ok(
-                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"stopEnabled":controls && state.active_turn().is_some(),"approvals":approvals,"questions":questions}),
+                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"stopEnabled":codex_stop_enabled(controls,state.status(),state.active_turn()),"approvals":approvals,"questions":questions}),
                     );
                 }
                 anyhow::ensure!(
@@ -974,6 +990,24 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_stop_is_unavailable_while_the_previous_outcome_is_unknown() {
+        use agentkib_codex_bridge::Status;
+
+        assert!(!codex_stop_enabled(
+            true,
+            Status::OutcomeUnknown,
+            Some("turn")
+        ));
+        assert!(codex_stop_enabled(true, Status::Running, Some("turn")));
+        assert!(codex_stop_enabled(
+            true,
+            Status::AwaitingApproval,
+            Some("turn")
+        ));
+        assert!(!codex_stop_enabled(false, Status::Running, Some("turn")));
+    }
 
     #[test]
     fn cached_targets_evict_bad_paths_and_rediscover_after_cooldown() {

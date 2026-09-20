@@ -226,6 +226,17 @@ impl State {
         Ok(())
     }
 
+    fn apply_replay_update(&mut self, event: Event) -> Result<()> {
+        // Validate each replay frame with the live limits, but do not count
+        // historical frames toward the state retained for the next live turn.
+        self.apply(event)?;
+        self.stream_text.clear();
+        self.updates.clear();
+        self.tool_calls.clear();
+        self.revision = 0;
+        Ok(())
+    }
+
     fn apply_inner(&mut self, event: Event) -> Result<bool> {
         match event {
             Event::SessionUpdate { session_id, update } => {
@@ -920,7 +931,7 @@ impl Runner {
             };
             wait_response(&client, &id, method, Some(&mut state))?;
             // Initial live polling reports revision zero before lazy attachment.
-            // Native replay is exposed as updates; it is not a new active turn.
+            // Native replay is validated as it arrives, but it is not a live turn.
             state.revision = 0;
             state.stream_text.clear();
             Ok(())
@@ -1137,7 +1148,7 @@ fn wait_response(
                 replay
                     .as_mut()
                     .context("unexpected ACP initialization update")?
-                    .apply(event)?;
+                    .apply_replay_update(event)?;
             }
             Some(Event::Notification { .. } | Event::UnsupportedRequest { .. }) | None => {}
             Some(_) => bail!("unexpected ACP interaction during attachment"),
@@ -1718,12 +1729,18 @@ while read -r line; do :; done
 
     #[cfg(unix)]
     #[test]
-    fn load_replay_is_captured_before_attach_and_transport_eof_fails_closed() {
+    fn load_replay_is_discarded_before_live_control_and_transport_eof_fails_closed() {
         let script = r#"
 read -r line
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"loadSession":true}}}'
 read -r line
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"native history"}}}}'
+chunk=$(printf '%1024s' ' ')
+i=0
+while [ "$i" -lt 700 ]; do
+  printf '%s%s%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"' "$chunk" '"}}}}'
+  i=$((i + 1))
+done
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
 read -r line
 exit 0
@@ -1739,10 +1756,8 @@ exit 0
         let snapshot = runner.snapshot();
         assert!(snapshot.get("updates").is_none());
         assert!(snapshot.get("toolCalls").is_none());
-        assert_eq!(
-            runner.state.lock().unwrap().updates[0]["content"]["text"],
-            "native history"
-        );
+        assert!(runner.state.lock().unwrap().updates.is_empty());
+        assert_eq!(snapshot["streamText"], "");
         runner.send("hello", 0).unwrap();
         let failed = wait_status(&runner, "outcome-unknown");
         assert_eq!(failed["sendEnabled"], false);

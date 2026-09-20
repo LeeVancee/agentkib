@@ -2,7 +2,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, atomic_write_checked};
+use agentkib_platform::fs::{
+    ExpectedFile, atomic_replace_checked, atomic_write_checked, move_path,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -471,14 +473,64 @@ where
 }
 
 fn remove_written_file_checked(target: &Path, written_hash: &str) -> std::io::Result<()> {
-    let current = fs::read(target)?;
-    if hash_content(&current) != written_hash {
-        return Err(std::io::Error::new(
+    remove_written_file_checked_with_hook(target, written_hash, |_| {})
+}
+
+fn remove_written_file_checked_with_hook(
+    target: &Path,
+    written_hash: &str,
+    after_move: impl FnOnce(&Path),
+) -> std::io::Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidInput, "target has no parent"))?;
+    let quarantine_dir = tempfile::Builder::new()
+        .prefix(".agentkib-rollback-")
+        .tempdir_in(parent)?;
+    let quarantined = quarantine_dir.path().join("written");
+    // Move the pathname away first: a replacement at the original path after
+    // this point cannot be unlinked by our rollback.
+    move_path(target, &quarantined)?;
+    after_move(&quarantined);
+    let current = match fs::symlink_metadata(&quarantined) {
+        Ok(metadata) if metadata.is_file() => fs::read(&quarantined),
+        Ok(_) => Err(std::io::Error::new(
             ErrorKind::InvalidData,
-            format!("file was modified externally: {}", target.display()),
-        ));
-    }
-    fs::remove_file(target)
+            "moved target is not a regular file",
+        )),
+        Err(error) => Err(error),
+    };
+    let reason = match current {
+        Ok(current) if hash_content(&current) == written_hash => {
+            match fs::remove_file(&quarantined) {
+                Ok(()) => return Ok(()),
+                Err(error) => format!("failed to remove verified moved file: {error}"),
+            }
+        }
+        Ok(_) => "file was modified externally".to_owned(),
+        Err(error) => format!("failed to verify moved target: {error}"),
+    };
+    let preserved = quarantine_dir.keep().join("written");
+    let restore = if fs::symlink_metadata(&preserved).is_ok_and(|meta| meta.is_file()) {
+        fs::hard_link(&preserved, target)
+    } else {
+        Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "moved target is not a regular file",
+        ))
+    };
+    let restore_note = match restore {
+        Ok(()) => "also restored to the original path".to_owned(),
+        Err(error) => format!("could not restore the original path: {error}"),
+    };
+    Err(std::io::Error::new(
+        ErrorKind::InvalidData,
+        format!(
+            "{reason}: {}; inspect moved content at {} ({restore_note})",
+            target.display(),
+            preserved.display()
+        ),
+    ))
 }
 
 fn format_rollback_error(target: &Path, original: &OriginalFile, message: String) -> String {
@@ -806,6 +858,44 @@ mod tests {
         assert!(message.contains("rollback incomplete"));
         assert!(message.contains("external content was preserved"));
         assert_eq!(fs::read_to_string(target).unwrap(), "external-not-json");
+    }
+
+    #[test]
+    fn rollback_of_new_file_does_not_delete_a_replacement_after_move() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("new.json");
+        fs::write(&target, "agent-write").unwrap();
+        remove_written_file_checked_with_hook(&target, &hash_content(b"agent-write"), |_| {
+            fs::write(&target, "external-write").unwrap();
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(target).unwrap(), "external-write");
+    }
+
+    #[test]
+    fn rollback_of_new_file_preserves_moved_external_content() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("new.json");
+        fs::write(&target, "external-write").unwrap();
+        let error = remove_written_file_checked(&target, &hash_content(b"agent-write"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("file was modified externally"));
+        assert!(error.contains("inspect moved content at"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "external-write");
+        let preserved = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".agentkib-rollback-")
+            })
+            .unwrap()
+            .path()
+            .join("written");
+        assert_eq!(fs::read_to_string(preserved).unwrap(), "external-write");
     }
 
     #[test]

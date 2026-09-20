@@ -51,7 +51,7 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 ## 内置 Web（开发预览）
 
-monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连接 → Web 访问** 中开启，远程使用时自行配置 HTTPS 反向代理或隧道，无需 AgentKib 账号或官方协调服务。桌面应用必须保持运行。实验发送和审批在真实验收完成前保持禁用。参见[自部署说明](docs/WEB-SELF-HOSTING.md)和[分层验收状态](qa/WEB-V1.md)。此处描述的是开发预览，不代表当前已发布版本已包含 Web。
+monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连接 → Web 访问** 中开启，远程使用时自行配置 HTTPS 反向代理或隧道，无需 AgentKib 账号或官方协调服务。桌面应用必须保持运行。读取授权与控制权限相互独立；经过验证的 macOS Claude Code 安装可在开启主机开关并单独授权浏览器后使用 AgentKib 托管续接，Codex owner 控制仍受发布验收门槛限制。参见[自部署说明](docs/WEB-SELF-HOSTING.md)、[Claude 续接边界](docs/CLAUDE-WEB.md)和[分层验收状态](qa/WEB-V1.md)。此处描述的是开发预览，不代表当前已发布版本已包含 Web。
 
 ## 下载
 

@@ -56,12 +56,7 @@ afterEach(cleanup);
 describe("SessionCatalog", () => {
   it("groups duplicate workspace names by path identity and hides auxiliary sessions by default", () => {
     render(
-      <SessionCatalog
-        sessions={sessions}
-        workspaces={workspaces}
-        selected=""
-        onSelect={vi.fn()}
-      />,
+      <SessionCatalog sessions={sessions} workspaces={workspaces} selected="" onSelect={vi.fn()} />,
     );
 
     expect(screen.getByRole("button", { name: /Newest session/ })).toBeVisible();

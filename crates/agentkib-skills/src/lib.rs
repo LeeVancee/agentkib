@@ -216,13 +216,22 @@ impl SkillHub {
                 write_json(&cache, &snapshot)?;
                 self.annotate_installed(snapshot)
             }
-            Err(error) => {
-                let mut snapshot = read_json::<SkillCatalogSnapshot>(&cache)
-                    .with_context(|| format!("Could not refresh curated Skills: {error}"))?;
-                snapshot.stale = true;
-                self.annotate_installed(snapshot)
-            }
+            Err(error) => self
+                .cached_curated_stale()
+                .with_context(|| format!("Could not refresh curated Skills: {error}")),
         }
+    }
+
+    /// Returns the last curated snapshot without performing network I/O.
+    ///
+    /// The runtime uses this after its end-to-end request deadline expires. Keeping the
+    /// fallback here ensures the cached snapshot is annotated exactly like the ordinary
+    /// offline path while the timed-out network future can be dropped by the caller.
+    pub fn cached_curated_stale(&self) -> Result<SkillCatalogSnapshot> {
+        let mut snapshot =
+            read_json::<SkillCatalogSnapshot>(&self.cache_dir.join("curated-skills.json"))?;
+        snapshot.stale = true;
+        self.annotate_installed(snapshot)
     }
 
     pub async fn discover(&self, value: &str) -> Result<Vec<SkillCandidate>> {
@@ -3659,5 +3668,10 @@ mod tests {
         assert!(catalog.stale);
         assert_eq!(catalog.cached_at, cached_at);
         assert_eq!(catalog.entries[0].candidate.name, "reviewer");
+
+        let cached = hub.cached_curated_stale().unwrap();
+        assert!(cached.stale);
+        assert_eq!(cached.cached_at, cached_at);
+        assert_eq!(cached.entries[0].candidate.name, "reviewer");
     }
 }

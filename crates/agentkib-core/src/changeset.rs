@@ -2,8 +2,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, atomic_write};
-use anyhow::{Context, Result, bail};
+use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, atomic_write_checked};
+use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -27,41 +27,69 @@ pub fn apply_changeset(
     backup_root: &Path,
     options: &ApplyOptions,
 ) -> Result<ApplyReport> {
+    apply_changeset_with_hook(changeset, backup_root, options, |_| {})
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone)]
+enum ApplyEvent {
+    BeforeReplace {
+        index: usize,
+        target: PathBuf,
+    },
+    AfterReplace {
+        index: usize,
+        backup: Option<PathBuf>,
+    },
+    BeforeRollback {
+        index: usize,
+        target: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum OriginalFile {
+    Existing { backup: PathBuf, hash: String },
+    Missing,
+}
+
+struct PreparedChange {
+    temp: NamedTempFile,
+    original: OriginalFile,
+}
+
+#[derive(Debug, Clone)]
+struct AppliedChange {
+    index: usize,
+    written_hash: String,
+    original: OriginalFile,
+}
+
+fn apply_changeset_with_hook<F>(
+    changeset: &ChangeSet,
+    backup_root: &Path,
+    options: &ApplyOptions,
+    mut hook: F,
+) -> Result<ApplyReport>
+where
+    F: FnMut(ApplyEvent),
+{
     if changeset.requires_home_approval && !options.home_approval {
         bail!("This ChangeSet contains Agent Home files and requires separate authorization");
     }
     for change in &changeset.changes {
-        ensure_allowed_target(
-            &changeset.project_root,
-            &change.target,
-            &options.approved_home_files,
-            &options.approved_application_files,
-        )?;
-        if matches!(change.scope, ChangeScope::Project) {
-            ensure_project_target_has_safe_ancestors(&changeset.project_root, &change.target)?;
-        }
-        if matches!(change.scope, ChangeScope::AgentHome) && !options.home_approval {
-            bail!("Agent Home write is not authorized");
-        }
-        if matches!(change.scope, ChangeScope::ApplicationData)
-            && !options
-                .approved_application_files
-                .iter()
-                .any(|path| path == &change.target)
-        {
-            bail!("Application data write is not authorized");
-        }
-        if matches!(change.scope, ChangeScope::ApplicationData) {
-            ensure_application_data_parent_chain(&change.target)?;
-        }
-        if matches!(change.scope, ChangeScope::AgentHome) {
-            ensure_protected_home_parent_chain(&change.target, options)?;
-        }
-        let current = fs::read(&change.target).unwrap_or_default();
-        let current_hash = if change.target.exists() {
-            Some(hash_content(&current))
-        } else {
-            None
+        ensure_change_target_is_safe(changeset, change, options)?;
+        let current_hash = match fs::read(&change.target) {
+            Ok(current) => Some(hash_content(&current)),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to read ChangeSet target: {}",
+                        change.target.display()
+                    )
+                });
+            }
         };
         if current_hash != change.original_hash {
             bail!("File was modified externally: {}", change.target.display());
@@ -76,72 +104,114 @@ pub fn apply_changeset(
             .target
             .parent()
             .context("Target has no parent directory")?;
-        if matches!(change.scope, ChangeScope::ApplicationData) {
-            ensure_application_data_parent_chain(&change.target)?;
-        }
-        if matches!(change.scope, ChangeScope::AgentHome) {
-            ensure_protected_home_parent_chain(&change.target, options)?;
-        }
+        ensure_change_target_is_safe(changeset, change, options)?;
         fs::create_dir_all(parent)?;
-        if matches!(change.scope, ChangeScope::ApplicationData) {
-            ensure_application_data_parent_chain(&change.target)?;
-        }
-        if matches!(change.scope, ChangeScope::AgentHome) {
-            ensure_protected_home_parent_chain(&change.target, options)?;
-        }
-        if change.target.exists() {
-            fs::copy(&change.target, backup_dir.join(format!("{index}.bak")))?;
-        }
+        ensure_change_target_is_safe(changeset, change, options)?;
+        let original = match &change.original_hash {
+            Some(original_hash) => {
+                let backup = backup_dir.join(format!("{index}.bak"));
+                fs::copy(&change.target, &backup).with_context(|| {
+                    format!(
+                        "Failed to back up {} to {}",
+                        change.target.display(),
+                        backup.display()
+                    )
+                })?;
+                verify_backup(&backup, original_hash)?;
+                OriginalFile::Existing {
+                    backup,
+                    hash: original_hash.clone(),
+                }
+            }
+            None => OriginalFile::Missing,
+        };
         let mut temp = NamedTempFile::new_in(parent)?;
-        if matches!(change.scope, ChangeScope::ApplicationData) {
-            ensure_application_data_parent_chain(&change.target)?;
-        }
-        if matches!(change.scope, ChangeScope::AgentHome) {
-            ensure_protected_home_parent_chain(&change.target, options)?;
-        }
+        ensure_change_target_is_safe(changeset, change, options)?;
         use std::io::Write;
         temp.write_all(change.after.as_bytes())?;
         if let Ok(metadata) = fs::metadata(&change.target) {
             temp.as_file_mut().set_permissions(metadata.permissions())?;
         }
         temp.as_file().sync_all()?;
-        prepared.push(temp);
+        prepared.push(PreparedChange { temp, original });
     }
 
     let mut applied = Vec::new();
-    for (index, (change, temp)) in changeset.changes.iter().zip(prepared).enumerate() {
-        if matches!(change.scope, ChangeScope::ApplicationData)
-            && let Err(error) = ensure_application_data_parent_chain(&change.target)
-        {
-            if index > 0 {
-                rollback(changeset, &backup_dir, index - 1);
-            }
-            return Err(error);
+    let mut rollback_log = Vec::new();
+    for (index, (change, prepared)) in changeset.changes.iter().zip(prepared).enumerate() {
+        let backup = match &prepared.original {
+            OriginalFile::Existing { backup, .. } => Some(backup.clone()),
+            OriginalFile::Missing => None,
+        };
+        hook(ApplyEvent::BeforeReplace {
+            index,
+            target: change.target.clone(),
+        });
+        if let Err(error) = ensure_change_target_is_safe(changeset, change, options) {
+            return Err(error_with_rollback(
+                error,
+                changeset,
+                options,
+                &rollback_log,
+                &mut hook,
+            ));
         }
-        if matches!(change.scope, ChangeScope::AgentHome)
-            && let Err(error) = ensure_protected_home_parent_chain(&change.target, options)
+        if let OriginalFile::Existing { backup, hash } = &prepared.original
+            && let Err(error) = verify_backup(backup, hash)
         {
-            if index > 0 {
-                rollback(changeset, &backup_dir, index - 1);
-            }
-            return Err(error);
+            return Err(error_with_rollback(
+                error,
+                changeset,
+                options,
+                &rollback_log,
+                &mut hook,
+            ));
         }
         let expected = change
             .original_hash
             .as_deref()
             .map(ExpectedFile::Sha256)
             .unwrap_or(ExpectedFile::Missing);
-        let write_result = atomic_replace_checked(temp.path(), &change.target, expected)
+        if let Err(error) = atomic_replace_checked(prepared.temp.path(), &change.target, expected)
             .with_context(|| format!("Failed to write {}", change.target.display()))
-            .and_then(|_| {
-                let written = fs::read_to_string(&change.target)?;
+        {
+            return Err(error_with_rollback(
+                error,
+                changeset,
+                options,
+                &rollback_log,
+                &mut hook,
+            ));
+        }
+
+        let written_hash = hash_content(change.after.as_bytes());
+        rollback_log.push(AppliedChange {
+            index,
+            written_hash: written_hash.clone(),
+            original: prepared.original,
+        });
+        hook(ApplyEvent::AfterReplace { index, backup });
+        let validation_result = fs::read_to_string(&change.target)
+            .with_context(|| format!("Failed to read written file: {}", change.target.display()))
+            .and_then(|written| {
+                if hash_content(written.as_bytes()) != written_hash {
+                    bail!(
+                        "File was modified externally after write: {}",
+                        change.target.display()
+                    );
+                }
                 validate_written(&change.validator, &written).with_context(|| {
                     format!("Post-write validation failed: {}", change.target.display())
                 })
             });
-        if let Err(error) = write_result {
-            rollback(changeset, &backup_dir, index);
-            return Err(error);
+        if let Err(error) = validation_result {
+            return Err(error_with_rollback(
+                error,
+                changeset,
+                options,
+                &rollback_log,
+                &mut hook,
+            ));
         }
         applied.push(change.target.clone());
     }
@@ -150,6 +220,54 @@ pub fn apply_changeset(
         applied,
         backup_dir,
     })
+}
+
+fn ensure_change_target_is_safe(
+    changeset: &ChangeSet,
+    change: &crate::FileChange,
+    options: &ApplyOptions,
+) -> Result<()> {
+    ensure_allowed_target(
+        &changeset.project_root,
+        &change.target,
+        &options.approved_home_files,
+        &options.approved_application_files,
+    )?;
+    match change.scope {
+        ChangeScope::Project => {
+            ensure_project_target_has_safe_ancestors(&changeset.project_root, &change.target)?;
+        }
+        ChangeScope::AgentHome => {
+            if !options.home_approval {
+                bail!("Agent Home write is not authorized");
+            }
+            ensure_protected_home_parent_chain(&change.target, options)?;
+        }
+        ChangeScope::ApplicationData => {
+            if !options
+                .approved_application_files
+                .iter()
+                .any(|path| path == &change.target)
+            {
+                bail!("Application data write is not authorized");
+            }
+            ensure_application_data_parent_chain(&change.target)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_backup(backup: &Path, expected_hash: &str) -> Result<()> {
+    let content =
+        fs::read(backup).with_context(|| format!("Backup is unavailable: {}", backup.display()))?;
+    let actual_hash = hash_content(&content);
+    if actual_hash != expected_hash {
+        bail!(
+            "Backup content does not match the original file: {}",
+            backup.display()
+        );
+    }
+    Ok(())
 }
 
 fn ensure_protected_home_parent_chain(target: &Path, options: &ApplyOptions) -> Result<()> {
@@ -227,17 +345,148 @@ fn ensure_application_data_parent_chain(target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn rollback(changeset: &ChangeSet, backup_dir: &Path, last_index: usize) {
-    for index in (0..=last_index).rev() {
-        let target = &changeset.changes[index].target;
-        let backup = backup_dir.join(format!("{index}.bak"));
-        if backup.exists() {
-            if let Ok(content) = fs::read(backup) {
-                let _ = atomic_write(target, &content);
-            }
-        } else {
-            let _ = fs::remove_file(target);
+fn error_with_rollback<F>(
+    original_error: anyhow::Error,
+    changeset: &ChangeSet,
+    options: &ApplyOptions,
+    applied: &[AppliedChange],
+    hook: &mut F,
+) -> anyhow::Error
+where
+    F: FnMut(ApplyEvent),
+{
+    let rollback_errors = rollback(changeset, options, applied, hook);
+    if rollback_errors.is_empty() {
+        original_error
+    } else {
+        anyhow!(
+            "{original_error:#}; rollback incomplete: {}",
+            rollback_errors.join("; ")
+        )
+    }
+}
+
+fn rollback<F>(
+    changeset: &ChangeSet,
+    options: &ApplyOptions,
+    applied: &[AppliedChange],
+    hook: &mut F,
+) -> Vec<String>
+where
+    F: FnMut(ApplyEvent),
+{
+    let mut errors = Vec::new();
+    for applied_change in applied.iter().rev() {
+        let change = &changeset.changes[applied_change.index];
+        let target = &change.target;
+        hook(ApplyEvent::BeforeRollback {
+            index: applied_change.index,
+            target: target.clone(),
+        });
+
+        if let Err(error) = ensure_change_target_is_safe(changeset, change, options) {
+            errors.push(format_rollback_error(
+                target,
+                &applied_change.original,
+                format!("target is no longer safe: {error:#}"),
+            ));
+            continue;
         }
+
+        let current = match fs::read(target) {
+            Ok(current) => current,
+            Err(error)
+                if error.kind() == ErrorKind::NotFound
+                    && matches!(applied_change.original, OriginalFile::Missing) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                errors.push(format_rollback_error(
+                    target,
+                    &applied_change.original,
+                    format!("failed to read current target: {error}"),
+                ));
+                continue;
+            }
+        };
+        if hash_content(&current) != applied_change.written_hash {
+            errors.push(format_rollback_error(
+                target,
+                &applied_change.original,
+                "content changed after AgentKib wrote it; external content was preserved".into(),
+            ));
+            continue;
+        }
+
+        match &applied_change.original {
+            OriginalFile::Existing { backup, hash } => {
+                let backup_content = match fs::read(backup) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        errors.push(format_rollback_error(
+                            target,
+                            &applied_change.original,
+                            format!("failed to read backup: {error}"),
+                        ));
+                        continue;
+                    }
+                };
+                if hash_content(&backup_content) != *hash {
+                    errors.push(format_rollback_error(
+                        target,
+                        &applied_change.original,
+                        "backup content does not match the original hash".into(),
+                    ));
+                    continue;
+                }
+                if let Err(error) = atomic_write_checked(
+                    target,
+                    &backup_content,
+                    ExpectedFile::Sha256(&applied_change.written_hash),
+                ) {
+                    errors.push(format_rollback_error(
+                        target,
+                        &applied_change.original,
+                        format!("failed to restore backup with a checked atomic write: {error}"),
+                    ));
+                }
+            }
+            OriginalFile::Missing => {
+                if let Err(error) =
+                    remove_written_file_checked(target, &applied_change.written_hash)
+                {
+                    errors.push(format_rollback_error(
+                        target,
+                        &applied_change.original,
+                        format!("failed to remove newly created file: {error}"),
+                    ));
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn remove_written_file_checked(target: &Path, written_hash: &str) -> std::io::Result<()> {
+    let current = fs::read(target)?;
+    if hash_content(&current) != written_hash {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("file was modified externally: {}", target.display()),
+        ));
+    }
+    fs::remove_file(target)
+}
+
+fn format_rollback_error(target: &Path, original: &OriginalFile, message: String) -> String {
+    match original {
+        OriginalFile::Existing { backup, .. } => format!(
+            "{} (backup: {}): {message}",
+            target.display(),
+            backup.display()
+        ),
+        OriginalFile::Missing => format!("{} (originally absent): {message}", target.display()),
     }
 }
 
@@ -276,6 +525,286 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
     use uuid::Uuid;
+
+    fn project_change(
+        target: PathBuf,
+        before: Option<&str>,
+        after: &str,
+        validator: &str,
+    ) -> FileChange {
+        FileChange {
+            target,
+            scope: ChangeScope::Project,
+            original_hash: before.map(|content| hash_content(content.as_bytes())),
+            before: before.unwrap_or_default().into(),
+            after: after.into(),
+            risk: RiskLevel::Low,
+            validator: validator.into(),
+        }
+    }
+
+    fn change_set(project_root: &Path, changes: Vec<FileChange>) -> ChangeSet {
+        ChangeSet {
+            id: Uuid::new_v4().to_string(),
+            project_root: project_root.canonicalize().unwrap(),
+            created_at: Utc::now(),
+            requires_home_approval: false,
+            changes,
+        }
+    }
+
+    #[test]
+    fn preserves_external_modification_when_replace_has_not_happened() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("AGENTS.md");
+        fs::write(&target, "old").unwrap();
+        let set = change_set(
+            dir.path(),
+            vec![project_change(
+                target.clone(),
+                Some("old"),
+                "agent",
+                "markdown",
+            )],
+        );
+
+        let error = apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::BeforeReplace {
+                    index: 0, target, ..
+                } = event
+                {
+                    fs::write(target, "external").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Failed to write"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "external");
+    }
+
+    #[test]
+    fn preserves_external_creation_when_replace_has_not_happened() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("new.md");
+        let set = change_set(
+            dir.path(),
+            vec![project_change(target.clone(), None, "agent", "markdown")],
+        );
+
+        apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::BeforeReplace {
+                    index: 0, target, ..
+                } = event
+                {
+                    fs::write(target, "external").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(fs::read_to_string(target).unwrap(), "external");
+    }
+
+    #[test]
+    fn rolls_back_only_the_applied_prefix_after_a_later_conflict() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.md");
+        let second = dir.path().join("second.md");
+        fs::write(&first, "first-old").unwrap();
+        fs::write(&second, "second-old").unwrap();
+        let set = change_set(
+            dir.path(),
+            vec![
+                project_change(first.clone(), Some("first-old"), "first-agent", "markdown"),
+                project_change(
+                    second.clone(),
+                    Some("second-old"),
+                    "second-agent",
+                    "markdown",
+                ),
+            ],
+        );
+
+        apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::BeforeReplace {
+                    index: 1, target, ..
+                } = event
+                {
+                    fs::write(target, "second-external").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(fs::read_to_string(first).unwrap(), "first-old");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second-external");
+    }
+
+    #[test]
+    fn preserves_external_change_made_before_rollback_and_reports_backup() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.md");
+        let second = dir.path().join("second.md");
+        fs::write(&first, "first-old").unwrap();
+        fs::write(&second, "second-old").unwrap();
+        let set = change_set(
+            dir.path(),
+            vec![
+                project_change(first.clone(), Some("first-old"), "first-agent", "markdown"),
+                project_change(
+                    second.clone(),
+                    Some("second-old"),
+                    "second-agent",
+                    "markdown",
+                ),
+            ],
+        );
+
+        let error = apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| match event {
+                ApplyEvent::BeforeReplace {
+                    index: 1, target, ..
+                } => {
+                    fs::write(target, "second-external").unwrap();
+                }
+                ApplyEvent::BeforeRollback { index: 0, target } => {
+                    fs::write(target, "first-external").unwrap();
+                }
+                _ => {}
+            },
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("Failed to write"));
+        assert!(message.contains("rollback incomplete"));
+        assert!(message.contains("external content was preserved"));
+        assert!(message.contains("0.bak"));
+        assert_eq!(fs::read_to_string(first).unwrap(), "first-external");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second-external");
+    }
+
+    #[test]
+    fn reports_a_missing_backup_without_overwriting_the_written_file() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        fs::write(&target, "{}").unwrap();
+        let set = change_set(
+            dir.path(),
+            vec![project_change(
+                target.clone(),
+                Some("{}"),
+                "not-json",
+                "json",
+            )],
+        );
+
+        let error = apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::AfterReplace {
+                    index: 0,
+                    backup: Some(backup),
+                    ..
+                } = event
+                {
+                    fs::remove_file(backup).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("Post-write validation failed"));
+        assert!(message.contains("failed to read backup"));
+        assert!(message.contains("0.bak"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "not-json");
+    }
+
+    #[test]
+    fn reports_an_unreadable_backup_without_overwriting_the_written_file() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        fs::write(&target, "{}").unwrap();
+        let set = change_set(
+            dir.path(),
+            vec![project_change(
+                target.clone(),
+                Some("{}"),
+                "not-json",
+                "json",
+            )],
+        );
+
+        let error = apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::AfterReplace {
+                    index: 0,
+                    backup: Some(backup),
+                    ..
+                } = event
+                {
+                    fs::remove_file(&backup).unwrap();
+                    fs::create_dir(&backup).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("failed to read backup"));
+        assert!(message.contains("0.bak"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "not-json");
+    }
+
+    #[test]
+    fn preserves_an_externally_changed_new_file_instead_of_deleting_it() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("new.json");
+        let set = change_set(
+            dir.path(),
+            vec![project_change(target.clone(), None, "not-json", "json")],
+        );
+
+        let error = apply_changeset_with_hook(
+            &set,
+            &dir.path().join("backup"),
+            &ApplyOptions::default(),
+            |event| {
+                if let ApplyEvent::AfterReplace { index: 0, .. } = event {
+                    fs::write(&target, "external-not-json").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("modified externally after write"));
+        assert!(message.contains("rollback incomplete"));
+        assert!(message.contains("external content was preserved"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "external-not-json");
+    }
 
     #[test]
     fn rejects_hash_conflict() {

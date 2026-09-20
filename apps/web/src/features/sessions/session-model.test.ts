@@ -13,16 +13,40 @@ describe("session model", () => {
     const merged = mergeLatestPage(
       {
         events: [
-          { id: "old", kind: "agent-message", content: "old", attachment_count: 0, truncated: false },
-          { id: "current", kind: "agent-message", content: "current", attachment_count: 0, truncated: false },
+          {
+            id: "old",
+            kind: "agent-message",
+            content: "old",
+            attachment_count: 0,
+            truncated: false,
+          },
+          {
+            id: "current",
+            kind: "agent-message",
+            content: "current",
+            attachment_count: 0,
+            truncated: false,
+          },
         ],
         warnings: ["older warning"],
         next_cursor: "cursor",
       },
       {
         events: [
-          { id: "current", kind: "agent-message", content: "updated", attachment_count: 0, truncated: false },
-          { id: "new", kind: "agent-message", content: "new", attachment_count: 0, truncated: false },
+          {
+            id: "current",
+            kind: "agent-message",
+            content: "updated",
+            attachment_count: 0,
+            truncated: false,
+          },
+          {
+            id: "new",
+            kind: "agent-message",
+            content: "new",
+            attachment_count: 0,
+            truncated: false,
+          },
         ],
         warnings: ["latest warning"],
       },

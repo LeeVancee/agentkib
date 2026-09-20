@@ -596,7 +596,7 @@ export class WebAccessService {
       typeof value !== "string" ||
       !value.trim() ||
       value.length > max ||
-      /[\x00-\x1f]/.test(value)
+      [...value].some((character) => character.charCodeAt(0) <= 0x1f)
     )
       throw new HttpError(400, "invalid_input");
     return value;

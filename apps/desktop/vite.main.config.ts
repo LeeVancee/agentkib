@@ -15,11 +15,7 @@ export default defineConfig({
       fileName: () => "main.cjs",
     },
     rollupOptions: {
-      external: [
-        "electron",
-        ...builtinModules,
-        ...builtinModules.map((name) => `node:${name}`),
-      ],
+      external: ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
     },
   },
 });

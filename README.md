@@ -51,7 +51,7 @@ Inspect Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, and
 
 ## Built-in Web (development preview)
 
-This monorepo includes a separately built Web client bundled with Electron. Enable it in **Settings → Remote connections → Web access**; configure your own HTTPS proxy or tunnel for remote use. No AgentKib account or coordination server is required. The desktop application must remain running. Experimental sending and approvals stay disabled until live acceptance is completed. See the [self-hosting guide (Chinese)](docs/WEB-SELF-HOSTING.md) and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
+This monorepo includes a separately built Web client bundled with Electron. Enable it in **Settings → Remote connections → Web access**; configure your own HTTPS proxy or tunnel for remote use. No AgentKib account or coordination server is required. The desktop application must remain running. Read access is separate from control permissions. Verified macOS Claude Code installations support AgentKib-managed continuation when the host switch and per-browser permissions are enabled; Codex owner control remains acceptance-gated. See the [self-hosting guide (Chinese)](docs/WEB-SELF-HOSTING.md), [Claude continuation boundary](docs/CLAUDE-WEB.md), and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
 
 ## Download
 

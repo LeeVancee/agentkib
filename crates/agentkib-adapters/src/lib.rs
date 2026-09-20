@@ -71,7 +71,9 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
     }
     if agents.is_some()
         && let Some(content) = gemini
-        && let Some(override_text) = imported_agents_platform_override(&content)
+        && let Some(override_text) = imported_agents_platform_override(
+            promoted_gemini_remainder(project, &content, &shared)?.unwrap_or(&content),
+        )
     {
         platform_overrides.insert(AgentKind::Antigravity, override_text);
     }
@@ -217,9 +219,19 @@ fn promoted_gemini_remainder<'a>(
     existing: &'a str,
     shared: &str,
 ) -> Result<Option<&'a str>> {
-    if shared.trim().is_empty() || project.join("AGENTS.md").is_file() || existing.trim().is_empty()
-    {
+    if existing.trim().is_empty() {
         return Ok(None);
+    }
+    let agents_path = project.join("AGENTS.md");
+    if agents_path.is_file() {
+        let agents = fs::read_to_string(agents_path)?;
+        // An older plan could create the managed AGENTS.md while Antigravity
+        // was disabled, leaving the promoted text in GEMINI.md. Only a managed
+        // shared block provides enough evidence to remove that duplicate.
+        return Ok(managed_content(&agents)
+            .and_then(|content| existing.strip_prefix(content))
+            .filter(|remainder| remainder.is_empty() || remainder.starts_with(char::is_whitespace))
+            .map(str::trim_start));
     }
     let claude_supplies_shared = fs::read_to_string(project.join("CLAUDE.md"))
         .ok()
@@ -227,12 +239,15 @@ fn promoted_gemini_remainder<'a>(
     if claude_supplies_shared || existing.lines().any(|line| line.trim() == "@AGENTS.md") {
         return Ok(None);
     }
-    // default_manifest promotes a GEMINI-only file to shared instructions. If
-    // AGENTS.md is then planned, leave that exact promoted prefix there only;
-    // later user text remains an unmanaged Antigravity-specific suffix.
+    anyhow::ensure!(
+        !shared.trim().is_empty(),
+        "GEMINI.md may contain the original shared instructions; reconcile it with the edited shared instructions before creating AGENTS.md"
+    );
+    // Without an earlier managed AGENTS.md, a suffix could be newly added
+    // native text or shared text removed during preview. Do not guess.
     let remainder = existing.strip_prefix(shared).map(str::trim_start);
     anyhow::ensure!(
-        remainder.is_some(),
+        remainder.is_some_and(str::is_empty),
         "GEMINI.md may contain the original shared instructions; reconcile it with the edited shared instructions before creating AGENTS.md"
     );
     Ok(remainder)
@@ -329,6 +344,14 @@ pub fn plan_workspace_changes(
     ]
     .into_iter()
     .any(|agent| adapter_enabled(manifest, agent));
+    let antigravity_enabled = adapter_enabled(manifest, AgentKind::Antigravity);
+    let gemini_path = root.join("GEMINI.md");
+    let existing_gemini = fs::read_to_string(&gemini_path).unwrap_or_default();
+    let promoted_remainder = if common_enabled {
+        promoted_gemini_remainder(&root, &existing_gemini, &manifest.instructions.shared)?
+    } else {
+        None
+    };
     if common_enabled {
         push_change(
             &mut changes,
@@ -341,6 +364,16 @@ pub fn plan_workspace_changes(
             RiskLevel::Medium,
             "markdown",
         )?;
+        if !antigravity_enabled && let Some(remainder) = promoted_remainder {
+            push_change(
+                &mut changes,
+                gemini_path.clone(),
+                remainder.to_owned(),
+                ChangeScope::Project,
+                RiskLevel::Medium,
+                "markdown",
+            )?;
+        }
     }
     if adapter_enabled(manifest, AgentKind::ClaudeCode) {
         let claude_override = manifest
@@ -375,25 +408,34 @@ pub fn plan_workspace_changes(
             "json",
         )?;
     }
-    if adapter_enabled(manifest, AgentKind::Antigravity) {
+    if antigravity_enabled {
         let platform_override = manifest
             .instructions
             .platform_overrides
             .get(&AgentKind::Antigravity)
             .map(String::as_str)
             .unwrap_or_default();
-        let instructions = root.join("GEMINI.md");
-        let existing = fs::read_to_string(&instructions).unwrap_or_default();
-        let promoted_remainder =
-            promoted_gemini_remainder(&root, &existing, &manifest.instructions.shared)?;
+        if root.join("AGENTS.md").is_file()
+            && !existing_gemini.contains(START)
+            && let Some(remainder) = promoted_remainder
+            && !remainder.trim().is_empty()
+            && remainder.trim() != platform_override.trim()
+        {
+            anyhow::bail!(
+                "GEMINI.md contains a previously promoted platform override that differs from the edited Antigravity override; reconcile them before applying"
+            );
+        }
         if promoted_remainder.is_some()
             || !platform_override.trim().is_empty()
-            || existing.contains(START)
+            || existing_gemini.contains(START)
         {
             push_change(
                 &mut changes,
-                instructions,
-                managed_markdown(promoted_remainder.unwrap_or(&existing), platform_override),
+                gemini_path.clone(),
+                managed_markdown(
+                    promoted_remainder.unwrap_or(&existing_gemini),
+                    platform_override,
+                ),
                 ChangeScope::Project,
                 RiskLevel::Medium,
                 "markdown",
@@ -1791,6 +1833,9 @@ fn connection_json(connection: &ConnectionDefinition, agent: AgentKind) -> JsonV
             );
         }
     }
+    if agent == AgentKind::Antigravity {
+        value.insert("disabled".into(), false.into());
+    }
     JsonValue::Object(value)
 }
 
@@ -2489,7 +2534,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_only_shared_instructions_are_moved_once_and_preserve_native_content() {
+    fn gemini_only_shared_instructions_require_reconciliation_after_external_edits() {
         let dir = tempdir().unwrap();
         let original_shared = "Shared instructions from the legacy project.\n";
         fs::write(dir.path().join("GEMINI.md"), original_shared).unwrap();
@@ -2506,34 +2551,17 @@ mod tests {
             "Use the native Antigravity tools.".into(),
         );
 
-        // Text added after discovery is unknown to the manifest. Planning must
-        // retain it as unmanaged GEMINI.md content and expose it in the review.
+        // Text added after discovery is indistinguishable from shared text
+        // removed during preview; neither case may be silently reinterpreted.
         let reviewed_gemini =
             format!("{original_shared}\nKeep this unknown Antigravity-only note.\n");
         fs::write(dir.path().join("GEMINI.md"), &reviewed_gemini).unwrap();
 
-        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
-        let agents = plan
-            .changes
-            .iter()
-            .find(|change| change.target.ends_with("AGENTS.md"))
-            .unwrap();
-        let gemini = plan
-            .changes
-            .iter()
-            .find(|change| change.target.ends_with("GEMINI.md"))
-            .unwrap();
-
-        assert_eq!(agents.after.matches(original_shared.trim()).count(), 1);
-        assert!(!gemini.after.contains(original_shared.trim()));
-        assert!(
-            gemini
-                .after
-                .contains("Keep this unknown Antigravity-only note.")
-        );
-        assert!(gemini.after.contains("Use the native Antigravity tools."));
-        assert_eq!(gemini.before, reviewed_gemini);
-        assert!(gemini.original_hash.is_some());
+        let error = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reconcile it with the edited shared instructions"));
+        assert!(!dir.path().join("AGENTS.md").exists());
         assert_eq!(
             fs::read_to_string(dir.path().join("GEMINI.md")).unwrap(),
             reviewed_gemini
@@ -2553,10 +2581,143 @@ mod tests {
             .to_string();
         assert!(error.contains("reconcile it with the edited shared instructions"));
         assert_eq!(
-            fs::read_to_string(gemini).unwrap(),
+            fs::read_to_string(&gemini).unwrap(),
             "Original shared rules.\n"
         );
         assert!(!dir.path().join("AGENTS.md").exists());
+
+        manifest.instructions.shared.clear();
+        let error = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reconcile it with the edited shared instructions"));
+        assert_eq!(
+            fs::read_to_string(&gemini).unwrap(),
+            "Original shared rules.\n"
+        );
+
+        fs::write(&gemini, "First paragraph.\nSecond paragraph.\n").unwrap();
+        manifest.instructions.shared = "First paragraph.\n".into();
+        let error = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reconcile it with the edited shared instructions"));
+        assert_eq!(
+            fs::read_to_string(&gemini).unwrap(),
+            "First paragraph.\nSecond paragraph.\n"
+        );
+    }
+
+    #[test]
+    fn gemini_promotion_is_cleaned_even_when_antigravity_is_enabled_later() {
+        let dir = tempdir().unwrap();
+        let shared = "Shared instructions from GEMINI.\n";
+        let gemini_path = dir.path().join("GEMINI.md");
+        fs::write(&gemini_path, shared).unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = false;
+
+        let initial =
+            plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let agents = initial
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("AGENTS.md"))
+            .unwrap();
+        let gemini = initial
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("GEMINI.md"))
+            .unwrap();
+        assert_eq!(gemini.before, shared);
+        assert!(gemini.after.trim().is_empty());
+        fs::write(&agents.target, &agents.after).unwrap();
+        fs::write(&gemini.target, &gemini.after).unwrap();
+
+        assert!(
+            !default_manifest(dir.path())
+                .unwrap()
+                .instructions
+                .platform_overrides
+                .contains_key(&AgentKind::Antigravity)
+        );
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = true;
+        let delayed =
+            plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        assert!(
+            delayed
+                .changes
+                .iter()
+                .all(|change| !change.target.ends_with("GEMINI.md"))
+        );
+    }
+
+    #[test]
+    fn an_older_delayed_gemini_promotion_is_reconciled_without_losing_new_text() {
+        let dir = tempdir().unwrap();
+        let shared = "Shared instructions from GEMINI.\n";
+        let native_note = "Keep this native note.\n";
+        fs::write(dir.path().join("AGENTS.md"), managed_markdown("", shared)).unwrap();
+        fs::write(
+            dir.path().join("GEMINI.md"),
+            format!("{shared}\n{native_note}"),
+        )
+        .unwrap();
+
+        let discovered = default_manifest(dir.path()).unwrap();
+        assert_eq!(
+            discovered.instructions.platform_overrides[&AgentKind::Antigravity],
+            native_note.trim()
+        );
+        let mut manifest = discovered;
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = false;
+        let plan = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let gemini = plan
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("GEMINI.md"))
+            .unwrap();
+        assert_eq!(gemini.after, native_note);
+
+        manifest
+            .adapters
+            .get_mut(&AgentKind::Antigravity)
+            .unwrap()
+            .enabled = true;
+        let enabled =
+            plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default()).unwrap();
+        let enabled_gemini = enabled
+            .changes
+            .iter()
+            .find(|change| change.target.ends_with("GEMINI.md"))
+            .unwrap();
+        assert_eq!(enabled_gemini.after.matches(native_note.trim()).count(), 1);
+        assert!(!enabled_gemini.after.contains(shared.trim()));
+
+        manifest.instructions.platform_overrides.insert(
+            AgentKind::Antigravity,
+            "Replace the old native note.".into(),
+        );
+        let error = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reconcile them before applying"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("GEMINI.md")).unwrap(),
+            format!("{shared}\n{native_note}")
+        );
     }
 
     #[test]
@@ -3515,7 +3676,7 @@ mod tests {
         fs::write(dir.path().join("shared/reviewer/SKILL.md"), "# Reviewer").unwrap();
         fs::write(
             dir.path().join(".agents/mcp_config.json"),
-            r#"{"mcpServers":{"agentkib":{"command":"old-server","args":["--legacy"],"cwd":"/tmp/legacy","type":"stdio","transport":"stdio","serverUrl":"https://old.test/mcp","url":"https://legacy.test/mcp","httpUrl":"https://older.test/mcp","tools":{"include":["legacy"]},"enabledTools":["legacy"],"disabledTools":["session_search"]}}}"#,
+            r#"{"mcpServers":{"agentkib":{"command":"old-server","args":["--legacy"],"cwd":"/tmp/legacy","type":"stdio","transport":"stdio","serverUrl":"https://old.test/mcp","url":"https://legacy.test/mcp","httpUrl":"https://older.test/mcp","tools":{"include":["legacy"]},"enabledTools":["legacy"],"disabledTools":["session_search"],"disabled":true}}}"#,
         )
         .unwrap();
         let mut manifest = default_manifest(dir.path()).unwrap();
@@ -3561,6 +3722,7 @@ mod tests {
             value["mcpServers"]["agentkib"]["serverUrl"],
             "https://example.test/mcp/antigravity"
         );
+        assert_eq!(value["mcpServers"]["agentkib"]["disabled"], false);
         assert!(value["mcpServers"]["agentkib"].get("url").is_none());
         assert!(value["mcpServers"]["agentkib"].get("httpUrl").is_none());
         assert!(value["mcpServers"]["agentkib"].get("command").is_none());

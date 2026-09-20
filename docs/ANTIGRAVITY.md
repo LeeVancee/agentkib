@@ -17,6 +17,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 - 发现 `agy` CLI 和 Antigravity 桌面应用。
 - 读取全局 `~/.gemini/GEMINI.md`、`~/.gemini/antigravity-cli/settings.json`、`~/.gemini/antigravity-cli/skills`、`~/.gemini/antigravity-cli/rules`、`~/.gemini/config/skills` 和 `~/.gemini/config/mcp_config.json`。资产目录同时扫描 CLI 暂存插件 `~/.gemini/antigravity-cli/plugins/*` 与全局插件 `~/.gemini/config/plugins/*`。
 - 读取和生成项目 `AGENTS.md`、`GEMINI.md`、`.agents/skills` 与 `.agents/mcp_config.json`；规则扫描支持 `.agents/rules` 和兼容路径 `.agent/rules`，同名时以新路径为准。有效上下文只纳入可确认常驻的工作区/全局规则；Manual、Model Decision、Glob 及未知激活模式保留为资产并显示预览警告。远程 MCP 使用 `serverUrl`，并保留未知 JSON 字段。
+- 仅有 `GEMINI.md` 的项目若将其规则提升为共享规则，生成 `AGENTS.md` 的同次变更也会清理 `GEMINI.md` 中的重复内容，即使尚未启用 Antigravity；无法确定旧专用规则与编辑后的规则如何合并时，预览会要求先协调原文。
 - 加载项目根 `.agents/plugins/*`、全局 `~/.gemini/config/plugins/*` 以及 CLI 暂存目录 `~/.gemini/antigravity-cli/plugins/*` 中通过 `plugin.json` 校验的插件规则。CLI 插件按官方自动发现语义默认启用，并尊重已验证的配置覆盖和 manifest 默认禁用值；无法解析的显式状态会失败关闭并告警。名称冲突或带有无法可靠解释的 `rules.json` 时同样排除并告警。
 - 通过 Google 分发的 ACP server 列出和读取 ACP 原生会话，归一化为 AgentKib `SessionDocument`。
 - 原生 MCP 迁移会保留无法转换的配置：带静态 OAuth 客户端配置或显式 SSE 传输的服务不会标为可自动迁移；未声明传输的远程服务仍需通过迁移前连接探测。

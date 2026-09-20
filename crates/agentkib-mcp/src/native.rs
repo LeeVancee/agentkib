@@ -1144,8 +1144,71 @@ fn upsert_json_gateway(
         | AgentKind::GrokBuild
         | AgentKind::DeepSeekHarness => {}
     }
-    servers.insert("agentkib".into(), Value::Object(gateway));
+    let gateway = Value::Object(gateway);
+    if agent == AgentKind::Antigravity {
+        // Scanning excludes this name, so a different existing entry was never selected
+        // for migration. Only the exact gateway or a prior generated shape may be replaced.
+        ensure!(
+            servers.get("agentkib").is_none_or(|existing| {
+                existing == &gateway
+                    || is_prior_antigravity_gateway(
+                        existing,
+                        gateway["serverUrl"].as_str().unwrap_or_default(),
+                    )
+            }),
+            "Antigravity MCP `agentkib` entry is not the planned gateway; reconcile it before migrating other servers"
+        );
+    }
+    servers.insert("agentkib".into(), gateway);
     Ok(())
+}
+
+fn is_prior_antigravity_gateway(existing: &Value, planned_url: &str) -> bool {
+    let Some(server) = existing.as_object() else {
+        return false;
+    };
+    if !server
+        .keys()
+        .all(|key| key == "serverUrl" || key == "disabled")
+        || server
+            .get("disabled")
+            .is_some_and(|value| value != &Value::Bool(false))
+    {
+        return false;
+    }
+    let Some(existing_url) = server.get("serverUrl").and_then(Value::as_str) else {
+        return false;
+    };
+    let (Ok(existing_url), Ok(planned_url)) = (
+        reqwest::Url::parse(existing_url),
+        reqwest::Url::parse(planned_url),
+    ) else {
+        return false;
+    };
+    let Some(workspace) = planned_url
+        .path()
+        .strip_prefix("/mcp/v1/workspaces/")
+        .and_then(|path| path.strip_suffix("/agents/antigravity"))
+    else {
+        return false;
+    };
+    !workspace.is_empty()
+        && !workspace.contains('/')
+        && existing_url.scheme() == "http"
+        && planned_url.scheme() == "http"
+        && matches!(existing_url.host_str(), Some("127.0.0.1" | "localhost"))
+        && existing_url.host_str() == planned_url.host_str()
+        && existing_url.port().is_some()
+        && planned_url.port().is_some()
+        && existing_url.username().is_empty()
+        && existing_url.password().is_none()
+        && existing_url.query().is_none()
+        && existing_url.fragment().is_none()
+        && planned_url.username().is_empty()
+        && planned_url.password().is_none()
+        && planned_url.query().is_none()
+        && planned_url.fragment().is_none()
+        && existing_url.path() == planned_url.path()
 }
 
 fn grok_home() -> Option<PathBuf> {
@@ -1239,6 +1302,111 @@ mod tests {
                 "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/antigravity"
             ))
         );
+    }
+
+    #[test]
+    fn antigravity_migration_preserves_unselected_user_agentkib_entry() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        let config = dir.path().join(".agents/mcp_config.json");
+        let content = r#"{"mcpServers":{"selected":{"command":"server"},"agentkib":{"command":"user-server","args":["serve"]}}}"#;
+        std::fs::write(&config, content).unwrap();
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let selected = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.agent == AgentKind::Antigravity && candidate.name == "selected"
+            })
+            .unwrap();
+        assert!(!candidates.iter().any(|candidate| {
+            candidate.agent == AgentKind::Antigravity && candidate.name == "agentkib"
+        }));
+
+        let error = plan_migration(
+            dir.path(),
+            std::slice::from_ref(&selected.id),
+            &[],
+            "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("reconcile it before migrating"));
+        assert_eq!(std::fs::read_to_string(config).unwrap(), content);
+        assert!(!dir.path().join(".agentkib/mcp.json").exists());
+    }
+
+    #[test]
+    fn antigravity_migration_reuses_identical_or_prior_gateway() {
+        let current = "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/antigravity";
+        for prior in [
+            current,
+            "http://127.0.0.1:40000/mcp/v1/workspaces/ws/agents/antigravity",
+        ] {
+            let dir = tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+            let config = dir.path().join(".agents/mcp_config.json");
+            std::fs::write(
+                &config,
+                format!(
+                    r#"{{"mcpServers":{{"selected":{{"command":"server"}},"agentkib":{{"serverUrl":"{prior}"}}}}}}"#
+                ),
+            )
+            .unwrap();
+            let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+            let selected = candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.agent == AgentKind::Antigravity && candidate.name == "selected"
+                })
+                .unwrap();
+            let plan = plan_migration(
+                dir.path(),
+                std::slice::from_ref(&selected.id),
+                &[],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .unwrap();
+            let native = plan
+                .changes
+                .iter()
+                .find(|change| change.target.ends_with(".agents/mcp_config.json"))
+                .unwrap();
+            let value: Value = serde_json::from_str(&native.after).unwrap();
+            assert_eq!(
+                value.pointer("/mcpServers/agentkib/serverUrl"),
+                Some(&json!(current))
+            );
+            assert!(value.pointer("/mcpServers/selected").is_none());
+        }
+    }
+
+    #[test]
+    fn antigravity_migration_rejects_gateway_lookalikes() {
+        for prior in [
+            json!({"serverUrl": "http://evil.example:40000/mcp/v1/workspaces/ws/agents/antigravity"}),
+            json!({"serverUrl": "http://localhost:40000/mcp/v1/workspaces/ws/agents/antigravity"}),
+            json!({"serverUrl": "http://127.0.0.1:40000/mcp/v1/workspaces/other/agents/antigravity"}),
+            json!({"serverUrl": "http://127.0.0.1:40000/mcp/v1/workspaces/ws/agents/antigravity", "future": 42}),
+            json!({"serverUrl": "http://127.0.0.1:40000/mcp/v1/workspaces/ws/agents/antigravity", "disabled": true}),
+        ] {
+            let value = json!({"mcpServers":{"selected":{"command":"server"},"agentkib":prior}});
+            let candidate = candidate(
+                Path::new(".agents/mcp_config.json"),
+                AgentKind::Antigravity,
+                "project",
+                "selected",
+                "stdio",
+                "server",
+                false,
+            );
+            let content = serde_json::to_string(&value).unwrap();
+            let error = remove_native_candidates(
+                &content,
+                &[&candidate],
+                "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/{agent}",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("reconcile it before migrating"));
+        }
     }
 
     #[test]

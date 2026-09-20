@@ -3,6 +3,10 @@
 use super::*;
 use agentkib_remote::Source;
 
+// The Electron Web host waits 20 seconds for one runtime request. Keep session
+// discovery and native attachment within a single budget, leaving reply time.
+const ANTIGRAVITY_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub(super) struct Worker {
     sender: Option<mpsc::SyncSender<RpcRequest>>,
     pending: Arc<AtomicU64>,
@@ -315,6 +319,7 @@ impl Service {
             return control_response(&request, &self.boot, outcome.is_ok(), outcome);
         }
         if session.agent == AgentKind::Antigravity {
+            let deadline = std::time::Instant::now() + ANTIGRAVITY_LIVE_TIMEOUT;
             let mut dispatched = false;
             let outcome = (|| -> anyhow::Result<Value> {
                 if !request.experimental_enabled {
@@ -335,9 +340,8 @@ impl Service {
                     std::time::Instant::now(),
                     request.operation != "live",
                     || {
-                        let adapter = provider(session.agent).context("provider-unavailable")?;
-                        let native = adapter
-                            .list_sessions(&canonical_workspace)?
+                        let native = agentkib_conversations::AntigravityProvider::default()
+                            .list_sessions_until(&canonical_workspace, deadline)?
                             .into_iter()
                             .find(|candidate| {
                                 store
@@ -361,9 +365,10 @@ impl Service {
                 }
                 if !self.antigravity.contains_key(id) {
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
-                    let runner = match crate::antigravity_runner::Runner::connect(
+                    let runner = match crate::antigravity_runner::Runner::connect_until(
                         canonical_workspace,
                         native_id,
+                        deadline,
                     ) {
                         Ok(runner) => runner,
                         Err(_) => return self.unsupported(&request, "open-in-original-client"),

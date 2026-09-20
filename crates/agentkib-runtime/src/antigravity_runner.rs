@@ -17,8 +17,8 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(15);
-// The desktop Web host gives a runtime request 20 seconds. Leave five seconds
-// for session lookup, access checks, and the response outside ACP attachment.
+// Test-only default for direct attachment; the Web path passes its caller budget.
+#[cfg(test)]
 const ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 const MAX_CONTENT: usize = 512 * 1024;
@@ -75,6 +75,8 @@ struct State {
     approvals: Vec<Value>,
     seen_permissions: HashSet<RpcId>,
     reason: Option<String>,
+    // Valid only until a caller mutates retained fields outside apply().
+    retained_len: Option<usize>,
 }
 
 impl State {
@@ -91,6 +93,7 @@ impl State {
             approvals: Vec::new(),
             seen_permissions: HashSet::new(),
             reason: None,
+            retained_len: None,
         }
     }
 
@@ -148,6 +151,7 @@ impl State {
         self.approvals.clear();
         self.cancelling_since = None;
         self.reason = Some(reason.to_string().chars().take(512).collect());
+        self.retained_len = None;
         self.revision += 1;
     }
 
@@ -233,16 +237,127 @@ impl State {
     }
 
     fn apply(&mut self, event: Event) -> Result<()> {
+        if let Event::SessionUpdate { session_id, update } = event {
+            return self.apply_update(session_id, update);
+        }
+        self.apply_checked(event)
+    }
+
+    fn apply_update(&mut self, session_id: String, update: Value) -> Result<()> {
+        ensure!(
+            session_id == self.session_id,
+            "ACP session identity changed"
+        );
+        ensure!(self.updates.len() < 4096, "too many ACP updates");
+        let text = if update["sessionUpdate"] == "agent_message_chunk"
+            && update["content"]["type"] == "text"
+        {
+            Some(
+                update["content"]["text"]
+                    .as_str()
+                    .context("invalid ACP text chunk")?,
+            )
+        } else {
+            None
+        };
+        let tool_change = if matches!(
+            update["sessionUpdate"].as_str(),
+            Some("tool_call" | "tool_call_update")
+        ) {
+            let id = update["toolCallId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .context("invalid ACP tool ID")?;
+            if let Some((index, existing)) = self
+                .tool_calls
+                .iter()
+                .enumerate()
+                .find(|(_, tool)| tool["toolCallId"].as_str() == Some(id))
+            {
+                let old_len = serde_json::to_vec(existing)?.len();
+                let mut combined = existing.clone();
+                combined
+                    .as_object_mut()
+                    .context("invalid ACP tool")?
+                    .extend(
+                        update
+                            .as_object()
+                            .context("invalid ACP tool update")?
+                            .clone(),
+                    );
+                Some((Some(index), combined, old_len))
+            } else {
+                Some((None, update.clone(), 0))
+            }
+        } else {
+            None
+        };
+        if let Some(text) = text {
+            ensure!(
+                self.stream_text.len() + text.len() <= MAX_CONTENT,
+                "ACP output exceeds 512 KiB"
+            );
+        }
+        // JSON string escaping is additive across UTF-8 chunks. Measure only
+        // the incoming frame and changed tool instead of repeatedly serializing
+        // and cloning up to 4096 earlier frames under the state lock.
+        let text_len = text
+            .map(|text| serde_json::to_vec(text).map(|encoded| encoded.len() - 2))
+            .transpose()?
+            .unwrap_or(0);
+        let frame_len = serde_json::to_vec(&update)?.len();
+        let base = match self.retained_len {
+            Some(len) => len,
+            None => self.retained_content_len()?,
+        };
+        let mut next_len = base
+            .checked_add(frame_len)
+            .and_then(|len| len.checked_add(usize::from(!self.updates.is_empty())))
+            .and_then(|len| len.checked_add(text_len))
+            .context("ACP session content length overflow")?;
+        if let Some((index, tool, old_len)) = &tool_change {
+            let new_len = serde_json::to_vec(tool)?.len();
+            next_len = next_len
+                .checked_sub(*old_len)
+                .and_then(|len| len.checked_add(new_len))
+                .and_then(|len| {
+                    len.checked_add(usize::from(index.is_none() && !self.tool_calls.is_empty()))
+                })
+                .context("ACP session content length overflow")?;
+        }
+        ensure!(
+            next_len <= MAX_CONTENT - 8192,
+            "ACP session content exceeds 512 KiB"
+        );
+        if let Some(text) = text {
+            self.stream_text.push_str(text);
+        }
+        if let Some((index, tool, _)) = tool_change {
+            if let Some(index) = index {
+                self.tool_calls[index] = tool;
+            } else {
+                self.tool_calls.push(tool);
+            }
+        }
+        self.updates.push(update);
+        self.retained_len = Some(next_len);
+        self.revision += 1;
+        Ok(())
+    }
+
+    fn apply_checked(&mut self, event: Event) -> Result<()> {
         // Reject oversize events atomically: keep the last bounded view and never
         // show an actionable permission with a clipped tool description.
         let mut next = self.clone();
         if !next.apply_inner(event)? {
             return Ok(());
         }
+        let retained_len = next.retained_content_len()?;
         ensure!(
-            next.retained_content_len()? <= MAX_CONTENT - 8192,
+            retained_len <= MAX_CONTENT - 8192,
             "ACP session content exceeds 512 KiB"
         );
+        next.retained_len = Some(retained_len);
         next.revision += 1;
         *self = next;
         Ok(())
@@ -255,60 +370,14 @@ impl State {
         self.stream_text.clear();
         self.updates.clear();
         self.tool_calls.clear();
+        self.retained_len = None;
         self.revision = 0;
         Ok(())
     }
 
     fn apply_inner(&mut self, event: Event) -> Result<bool> {
         match event {
-            Event::SessionUpdate { session_id, update } => {
-                ensure!(
-                    session_id == self.session_id,
-                    "ACP session identity changed"
-                );
-                ensure!(self.updates.len() < 4096, "too many ACP updates");
-                match update["sessionUpdate"].as_str() {
-                    Some("agent_message_chunk") => {
-                        if update["content"]["type"] == "text" {
-                            let text = update["content"]["text"]
-                                .as_str()
-                                .context("invalid ACP text chunk")?;
-                            ensure!(
-                                self.stream_text.len() + text.len() <= MAX_CONTENT,
-                                "ACP output exceeds 512 KiB"
-                            );
-                            self.stream_text.push_str(text);
-                        }
-                    }
-                    Some("tool_call" | "tool_call_update") => {
-                        let id = update["toolCallId"]
-                            .as_str()
-                            .filter(|v| !v.is_empty())
-                            .context("invalid ACP tool ID")?;
-                        if let Some(existing) = self
-                            .tool_calls
-                            .iter_mut()
-                            .find(|v| v["toolCallId"].as_str() == Some(id))
-                        {
-                            existing
-                                .as_object_mut()
-                                .context("invalid ACP tool")?
-                                .extend(
-                                    update
-                                        .as_object()
-                                        .context("invalid ACP tool update")?
-                                        .clone(),
-                                );
-                        } else {
-                            self.tool_calls.push(update.clone());
-                        }
-                    }
-                    // Preserve user/agent thoughts, non-text blocks and future
-                    // updates verbatim; none is a permission or turn completion.
-                    _ => {}
-                }
-                self.updates.push(update);
-            }
+            Event::SessionUpdate { .. } => unreachable!("updates use apply_update"),
             Event::Permission { id, request } => {
                 ensure!(
                     request.session_id == self.session_id,
@@ -922,10 +991,21 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn connect(workspace: PathBuf, session_id: String) -> Result<Self> {
-        Self::connect_with(&resolve_installation()?, &[], workspace, session_id)
+    pub fn connect_until(
+        workspace: PathBuf,
+        session_id: String,
+        deadline: Instant,
+    ) -> Result<Self> {
+        Self::connect_with_deadline(
+            &resolve_installation()?,
+            &[],
+            workspace,
+            session_id,
+            deadline,
+        )
     }
 
+    #[cfg(test)]
     fn connect_with(
         executable: &Path,
         args: &[OsString],
@@ -941,6 +1021,7 @@ impl Runner {
         )
     }
 
+    #[cfg(test)]
     fn connect_with_attachment_timeout(
         executable: &Path,
         args: &[OsString],
@@ -948,7 +1029,22 @@ impl Runner {
         session_id: String,
         attachment_timeout: Duration,
     ) -> Result<Self> {
-        let deadline = Instant::now() + attachment_timeout;
+        Self::connect_with_deadline(
+            executable,
+            args,
+            workspace,
+            session_id,
+            Instant::now() + attachment_timeout,
+        )
+    }
+
+    fn connect_with_deadline(
+        executable: &Path,
+        args: &[OsString],
+        workspace: PathBuf,
+        session_id: String,
+        deadline: Instant,
+    ) -> Result<Self> {
         ensure!(
             workspace.is_absolute() && workspace.is_dir(),
             "invalid Antigravity workspace"
@@ -957,7 +1053,10 @@ impl Runner {
             !session_id.is_empty() && session_id.len() <= 4096,
             "invalid Antigravity session id"
         );
-        let client = BlockingClient::spawn(executable, args, &workspace, TIMEOUT)?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .context("Antigravity attachment timed out before connection")?;
+        let client = BlockingClient::spawn(executable, args, &workspace, TIMEOUT.min(remaining))?;
         let attachment_client = client.with_deadline(deadline);
         let mut state = State::new(session_id.clone());
         let attached = (|| -> Result<()> {
@@ -989,6 +1088,7 @@ impl Runner {
             // Native replay is validated as it arrives, but it is not a live turn.
             state.revision = 0;
             state.stream_text.clear();
+            state.retained_len = None;
             Ok(())
         })();
         // On error, dropping both handles closes the command channel without
@@ -1104,6 +1204,7 @@ impl Runner {
                 state.tool_calls.clear();
                 state.seen_permissions.clear();
                 state.reason = None;
+                state.retained_len = None;
                 state.revision += 1;
                 Ok(state.snapshot())
             }
@@ -1125,6 +1226,7 @@ impl Runner {
             Ok(()) => {
                 state.cancelling_since = Some(Instant::now());
                 state.approvals.clear();
+                state.retained_len = None;
                 state.status = "running";
                 state.revision += 1;
                 Ok(state.snapshot())
@@ -1151,6 +1253,7 @@ impl Runner {
         match self.client.respond_permission(&id, Some(option_id)) {
             Ok(()) => {
                 state.approvals.retain(|a| &a["requestId"] != request_id);
+                state.retained_len = None;
                 state.status = if state.approvals.is_empty() {
                     "running"
                 } else {
@@ -1698,6 +1801,75 @@ mod tests {
     }
 
     #[test]
+    fn session_updates_keep_exact_budget_and_reject_oversize_atomically() {
+        let mut state = active();
+        for _ in 0..2048 {
+            state
+                .apply(update(json!({
+                    "sessionUpdate":"agent_message_chunk",
+                    "content":{"type":"text","text":"\\\n🙂"}
+                })))
+                .unwrap();
+        }
+        state
+            .apply(update(json!({
+                "sessionUpdate":"agent_thought_chunk",
+                "content":{"type":"text","text":"thought"}
+            })))
+            .unwrap();
+        state
+            .apply(update(json!({
+                "sessionUpdate":"tool_call",
+                "toolCallId":"tool-1","title":"Read"
+            })))
+            .unwrap();
+        for index in 0..1024 {
+            state
+                .apply(update(json!({
+                    "sessionUpdate":"tool_call_update",
+                    "toolCallId":"tool-1","status":format!("running-{index}")
+                })))
+                .unwrap();
+        }
+        state
+            .apply(update(json!({
+                "sessionUpdate":"agent_message_chunk",
+                "content":{"type":"text","text":"after tool"}
+            })))
+            .unwrap();
+        let retained = state.retained_content_len().unwrap();
+        assert_eq!(state.retained_len, Some(retained));
+        let revision = state.revision;
+        let update_count = state.updates.len();
+        let stream_text = state.stream_text.clone();
+        assert!(
+            state
+                .apply(update(json!({
+                    "sessionUpdate":"agent_message_chunk",
+                    "content":{"type":"text","text":"x".repeat(MAX_CONTENT)}
+                })))
+                .is_err()
+        );
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.updates.len(), update_count);
+        assert_eq!(state.stream_text, stream_text);
+        assert_eq!(state.retained_len, Some(retained));
+        let tool = state.tool_calls[0].clone();
+        assert!(
+            state
+                .apply(update(json!({
+                    "sessionUpdate":"tool_call_update",
+                    "toolCallId":"tool-1","rawOutput":"x".repeat(MAX_CONTENT)
+                })))
+                .is_err()
+        );
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.updates.len(), update_count);
+        assert_eq!(state.tool_calls[0], tool);
+        assert_eq!(state.retained_len, Some(retained));
+    }
+
+    #[test]
     fn failures_without_an_active_turn_remain_reconnectable() {
         let mut state = State::new("native-session".into());
         state.fail("transport closed while idle");
@@ -1798,6 +1970,86 @@ while read -r line; do :; done
             started.elapsed() < Duration::from_secs(3),
             "attachment exceeded its shared deadline"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn slow_discovery_and_attachment_share_one_web_deadline() {
+        use agentkib_conversations::AntigravityProvider;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let executable = dir.path().join("agy_acp_server.par");
+        let attachment_started = dir.path().join("attachment-started");
+        std::fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentInfo":{{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"}},"agentCapabilities":{{"sessionCapabilities":{{"list":{{}},"resume":{{}}}}}}}}}}'
+      ;;
+    *\"method\":\"session/list\"*)
+      sleep 1
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessions":[{{"sessionId":"native-session","cwd":"{}"}}]}}}}'
+      ;;
+    *\"method\":\"session/resume\"*)
+      touch '{}'
+      sleep 5
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":null}}'
+      ;;
+  esac
+done
+"#,
+                workspace.display(),
+                attachment_started.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(3);
+        let provider = AntigravityProvider::with_executable(executable.clone());
+        let sessions = provider.list_sessions_until(&workspace, deadline).unwrap();
+        assert_eq!(sessions.len(), 1);
+        let error = Runner::connect_with_deadline(
+            &executable,
+            &[],
+            workspace,
+            sessions[0].native_ref.clone(),
+            deadline,
+        )
+        .err()
+        .expect("slow attachment must exceed the shared deadline");
+        assert!(
+            attachment_started.exists(),
+            "attachment did not start: {error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(4500),
+            "attachment received a fresh budget after discovery: {error:#}"
+        );
+    }
+
+    #[test]
+    fn attachment_rejects_an_expired_discovery_budget_before_spawning_acp() {
+        let workspace = std::env::temp_dir().canonicalize().unwrap();
+        let error = Runner::connect_with_deadline(
+            &std::env::current_exe().unwrap(),
+            &[],
+            workspace,
+            "native-session".into(),
+            Instant::now() - Duration::from_millis(1),
+        )
+        .err()
+        .expect("expired deadline must fail before launching the executable");
+        assert!(error.to_string().contains("timed out"), "{error:#}");
     }
 
     #[cfg(unix)]

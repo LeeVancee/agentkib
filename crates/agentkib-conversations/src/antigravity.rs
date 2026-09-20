@@ -24,10 +24,15 @@ use crate::{
 
 const ACP_ENV: &str = "AGENTKIB_ANTIGRAVITY_ACP_BIN";
 const ACP_TIMEOUT: Duration = Duration::from_secs(10);
+// Leave time for the desktop Web host's 20-second RPC deadline to send its reply.
+const HISTORY_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LIST_PAGES: usize = 100;
 const MAX_LIST_SESSIONS: usize = 10_000;
 const MAX_REPLAY_UPDATES: usize = 100_000;
 const MAX_REPLAY_BYTES: usize = 256 * 1024 * 1024;
+// Replay input is bounded separately; avoid multiplying it into event and turn copies.
+const MAX_PARSED_TOOL_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PARSED_TOOL_NAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EVENTS_PER_PAGE: usize = 500;
 const SNAPSHOT_TTL: Duration = Duration::from_secs(120);
 const MAX_SNAPSHOTS: usize = 4;
@@ -82,6 +87,24 @@ struct SessionCollection {
 }
 
 impl AntigravityProvider {
+    /// Pin an explicitly selected ACP executable; it is verified before use.
+    pub fn with_executable(executable: PathBuf) -> Self {
+        Self {
+            executable: Some(executable),
+        }
+    }
+
+    /// Bound session discovery by a caller-owned deadline, so an ACP attachment
+    /// following discovery cannot receive a fresh full timeout.
+    pub fn list_sessions_until(
+        &self,
+        workspace: &Path,
+        deadline: Instant,
+    ) -> Result<Vec<NativeSessionSummary>> {
+        self.list_sessions_with_executable_until(workspace, self.optional_executable()?, deadline)
+            .map(|listing| listing.sessions)
+    }
+
     fn optional_executable(&self) -> Result<Option<PathBuf>> {
         if let Some(path) = &self.executable {
             return verified_executable(path).map(Some);
@@ -107,12 +130,21 @@ impl AntigravityProvider {
         })
     }
 
-    fn connect(&self, cwd: &Path) -> Result<(BlockingClient, Compatibility)> {
+    fn connect_until(
+        &self,
+        cwd: &Path,
+        deadline: Instant,
+    ) -> Result<(BlockingClient, Compatibility)> {
         let cwd = fs::canonicalize(cwd)
             .with_context(|| format!("Antigravity workspace is unavailable: {}", cwd.display()))?;
-        let client =
-            BlockingClient::spawn(&self.executable()?, &[] as &[OsString], &cwd, ACP_TIMEOUT)
-                .context("Unable to start the official Antigravity ACP server")?;
+        let executable = self.executable()?;
+        let timeout = deadline
+            .checked_duration_since(Instant::now())
+            .context("Antigravity ACP operation timed out before connection")?
+            .min(ACP_TIMEOUT);
+        let client = BlockingClient::spawn(&executable, &[] as &[OsString], &cwd, timeout)
+            .context("Unable to start the official Antigravity ACP server")?
+            .with_deadline(deadline);
         let request = client
             .initialize()
             .context("Antigravity ACP initialization failed")?;
@@ -121,14 +153,18 @@ impl AntigravityProvider {
             &request,
             "initialize",
             None,
-            Instant::now() + ACP_TIMEOUT,
+            deadline.min(Instant::now() + ACP_TIMEOUT),
         )?;
         let compatibility = Compatibility::from_initialize(&value)
             .context("Antigravity ACP compatibility negotiation failed")?;
         Ok((client, compatibility))
     }
 
-    fn collect(&self, workspace: Option<&Path>) -> Result<SessionCollection> {
+    fn collect_until(
+        &self,
+        workspace: Option<&Path>,
+        deadline: Instant,
+    ) -> Result<SessionCollection> {
         let canonical_filter = workspace
             .map(fs::canonicalize)
             .transpose()
@@ -136,12 +172,12 @@ impl AntigravityProvider {
         let process_cwd = canonical_filter
             .clone()
             .unwrap_or(fs::canonicalize(env::current_dir()?)?);
-        let (client, compatibility) = self.connect(&process_cwd)?;
+        let (client, compatibility) = self.connect_until(&process_cwd, deadline)?;
         ensure!(
             compatibility.list_sessions,
             "Antigravity ACP does not support session/list"
         );
-        let result = collect_pages(&client, canonical_filter.as_deref());
+        let result = collect_pages(&client, canonical_filter.as_deref(), deadline);
         let _ = client.shutdown();
         result.map(|mut collected| {
             collected.load_session = compatibility.load_session;
@@ -150,9 +186,13 @@ impl AntigravityProvider {
     }
 
     fn resolve(&self, native_ref: &str) -> Result<AcpSession> {
+        self.resolve_until(native_ref, Instant::now() + ACP_TIMEOUT * 3)
+    }
+
+    fn resolve_until(&self, native_ref: &str, deadline: Instant) -> Result<AcpSession> {
         validate_native_ref(native_ref)?;
         let matches = self
-            .collect(None)?
+            .collect_until(None, deadline)?
             .sessions
             .into_iter()
             .filter(|session| session.id == native_ref)
@@ -164,9 +204,9 @@ impl AntigravityProvider {
         Ok(matches.into_iter().next().expect("one verified session"))
     }
 
-    fn replay(&self, native_ref: &str) -> Result<(AcpSession, Replay)> {
-        let session = self.resolve(native_ref)?;
-        let (client, compatibility) = self.connect(&session.workspace)?;
+    fn replay_until(&self, native_ref: &str, deadline: Instant) -> Result<(AcpSession, Replay)> {
+        let session = self.resolve_until(native_ref, deadline)?;
+        let (client, compatibility) = self.connect_until(&session.workspace, deadline)?;
         ensure!(
             compatibility.load_session,
             "Antigravity ACP does not support session/load"
@@ -174,7 +214,7 @@ impl AntigravityProvider {
         let request = client
             .load_session(&session.id, &session.workspace)
             .context("Antigravity ACP session/load failed")?;
-        let replay = collect_replay(&client, &request, &session.id);
+        let replay = collect_replay(&client, &request, &session.id, deadline);
         let _ = client.shutdown();
         Ok((session, replay?))
     }
@@ -183,6 +223,19 @@ impl AntigravityProvider {
         &self,
         workspace: &Path,
         executable: Option<PathBuf>,
+    ) -> Result<NativeSessionListing> {
+        self.list_sessions_with_executable_until(
+            workspace,
+            executable,
+            Instant::now() + ACP_TIMEOUT * 3,
+        )
+    }
+
+    fn list_sessions_with_executable_until(
+        &self,
+        workspace: &Path,
+        executable: Option<PathBuf>,
+        deadline: Instant,
     ) -> Result<NativeSessionListing> {
         let Some(executable) = executable else {
             return Ok(NativeSessionListing {
@@ -193,7 +246,7 @@ impl AntigravityProvider {
         let collected = Self {
             executable: Some(executable),
         }
-        .collect(Some(workspace))?;
+        .collect_until(Some(workspace), deadline)?;
         let availability = if collected.load_session {
             SessionAvailability::Readable
         } else {
@@ -253,6 +306,7 @@ impl ConversationProvider for AntigravityProvider {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<ConversationEventPage> {
+        let deadline = Instant::now() + HISTORY_TIMEOUT;
         ensure!(
             (1..=MAX_EVENTS_PER_PAGE).contains(&limit),
             "Invalid event page size"
@@ -263,14 +317,23 @@ impl ConversationProvider for AntigravityProvider {
             if let Some(snapshot) = cached_snapshot(id, &executable, native_ref) {
                 // The cursor binds an old snapshot, but a session ID can be
                 // reassigned to another workspace by the ACP server.
-                if self.resolve(native_ref)?.workspace == snapshot.workspace {
-                    return page_snapshot(&snapshot, end, limit);
+                if self.resolve_until(native_ref, deadline)?.workspace == snapshot.workspace {
+                    let page = page_snapshot(&snapshot, end, limit)?;
+                    ensure!(
+                        Instant::now() < deadline,
+                        "Antigravity ACP replay timed out while paginating history"
+                    );
+                    return Ok(page);
                 }
             }
         }
-        let (session, replay) = self.replay(native_ref)?;
-        let parsed = parse_replay(&replay.updates)?;
-        match cursor {
+        let (session, replay) = self.replay_until(native_ref, deadline)?;
+        let parsed = parse_replay_until(&replay.updates, deadline)?;
+        ensure!(
+            Instant::now() < deadline,
+            "Antigravity ACP replay timed out before history pagination"
+        );
+        let page = match cursor {
             EventCursor::Legacy(end) => page_events(
                 parsed.events,
                 parsed.warnings,
@@ -291,12 +354,18 @@ impl ConversationProvider for AntigravityProvider {
                     limit,
                 )
             }
-        }
+        }?;
+        ensure!(
+            Instant::now() < deadline,
+            "Antigravity ACP replay timed out while paginating history"
+        );
+        Ok(page)
     }
 
     fn read_handoff_context(&self, native_ref: &str) -> Result<HandoffContext> {
-        let (_, replay) = self.replay(native_ref)?;
-        let parsed = parse_replay(&replay.updates)?;
+        let deadline = Instant::now() + HISTORY_TIMEOUT;
+        let (_, replay) = self.replay_until(native_ref, deadline)?;
+        let parsed = parse_replay_until(&replay.updates, deadline)?;
         Ok(HandoffContext {
             compact_summary: None,
             messages: parsed.events,
@@ -315,8 +384,9 @@ impl ConversationProvider for AntigravityProvider {
             source.agent == AgentKind::Antigravity,
             "Session source Agent mismatch"
         );
-        let (session, replay) = self.replay(native_ref)?;
-        let parsed = parse_replay(&replay.updates)?;
+        let deadline = Instant::now() + HISTORY_TIMEOUT;
+        let (session, replay) = self.replay_until(native_ref, deadline)?;
+        let parsed = parse_replay_until(&replay.updates, deadline)?;
         let mut document_source = source.clone();
         document_source.title = parsed
             .title
@@ -388,12 +458,16 @@ fn wait_for_response(
     bail!("Antigravity ACP emitted too many events before its response")
 }
 
-fn collect_pages(client: &BlockingClient, workspace: Option<&Path>) -> Result<SessionCollection> {
+fn collect_pages(
+    client: &BlockingClient,
+    workspace: Option<&Path>,
+    deadline: Instant,
+) -> Result<SessionCollection> {
     let mut output = Vec::new();
     let mut incomplete = false;
     let mut cursor = None::<String>;
     let mut seen_cursors = BTreeSet::new();
-    let deadline = Instant::now() + ACP_TIMEOUT;
+    let deadline = deadline.min(Instant::now() + ACP_TIMEOUT);
     for _ in 0..MAX_LIST_PAGES {
         let request = client.list_sessions(workspace, cursor.as_deref())?;
         let result = wait_for_response(client, &request, "session/list", None, deadline)?;
@@ -487,9 +561,14 @@ fn deduplicate_sessions(sessions: Vec<AcpSession>) -> Result<Vec<AcpSession>> {
     Ok(unique.into_values().collect())
 }
 
-fn collect_replay(client: &BlockingClient, request: &RpcId, native_ref: &str) -> Result<Replay> {
+fn collect_replay(
+    client: &BlockingClient,
+    request: &RpcId,
+    native_ref: &str,
+    deadline: Instant,
+) -> Result<Replay> {
     let mut replay = Replay::default();
-    let deadline = Instant::now() + ACP_TIMEOUT;
+    let deadline = deadline.min(Instant::now() + ACP_TIMEOUT);
     for _ in 0..=MAX_REPLAY_UPDATES {
         let remaining = deadline
             .checked_duration_since(Instant::now())
@@ -542,10 +621,14 @@ struct ParsedReplay {
     // Missing field, explicit clear, and replacement are distinct ACP patches.
     title: Option<Option<String>>,
     updated_at: Option<Option<DateTime<Utc>>>,
+    tool_output_bytes: usize,
+    tool_name_bytes: usize,
 }
 
 struct ReplayToolCall {
     name: String,
+    // First present ACP name field. Lower-priority patches cannot affect it.
+    name_source: Option<&'static str>,
     name_fields: Value,
     status: String,
     raw_output: Option<Value>,
@@ -572,12 +655,21 @@ impl ReplayToolCall {
     }
 }
 
+#[cfg(test)]
 fn parse_replay(updates: &[Value]) -> Result<ParsedReplay> {
+    parse_replay_until(updates, Instant::now() + HISTORY_TIMEOUT)
+}
+
+fn parse_replay_until(updates: &[Value], deadline: Instant) -> Result<ParsedReplay> {
     let mut parsed = ParsedReplay::default();
     let mut known_calls = BTreeMap::new();
     let mut messages = BTreeMap::new();
     let mut last_message_had_id = false;
     for (index, update) in updates.iter().enumerate() {
+        ensure!(
+            Instant::now() < deadline,
+            "Antigravity ACP replay timed out while parsing history"
+        );
         let kind = update
             .get("sessionUpdate")
             .and_then(Value::as_str)
@@ -628,6 +720,7 @@ fn parse_replay(updates: &[Value]) -> Result<ParsedReplay> {
                 );
                 let mut call = ReplayToolCall {
                     name: name.clone(),
+                    name_source: None,
                     name_fields: Value::Object(Default::default()),
                     status: "pending".into(),
                     raw_output: None,
@@ -637,6 +730,7 @@ fn parse_replay(updates: &[Value]) -> Result<ParsedReplay> {
                     result_position: None,
                 };
                 let input = update.get("rawInput").map(json_text).unwrap_or_default();
+                account_tool_name(&mut parsed, 0, name.len().saturating_mul(2))?;
                 parsed.events.push(event(
                     &id,
                     ConversationEventKind::ToolSummary,
@@ -675,7 +769,15 @@ fn parse_replay(updates: &[Value]) -> Result<ParsedReplay> {
             | "usage_update" => {}
             _ => bail!("Unsupported Antigravity ACP replay update: {kind}"),
         }
+        ensure!(
+            Instant::now() < deadline,
+            "Antigravity ACP replay timed out while parsing history"
+        );
     }
+    ensure!(
+        Instant::now() < deadline,
+        "Antigravity ACP replay timed out while parsing history"
+    );
     Ok(parsed)
 }
 
@@ -790,6 +892,9 @@ fn update_tool_call(
     update: &Value,
     initial: bool,
 ) -> Result<()> {
+    let raw_patch = update.get("rawOutput").filter(|value| !value.is_null());
+    let content_patch = update.get("content").filter(|value| !value.is_null());
+    let has_output_patch = raw_patch.is_some() || content_patch.is_some();
     if let Some(status) = update.get("status").filter(|value| !value.is_null()) {
         let status = status.as_str().context("Invalid Antigravity tool status")?;
         ensure!(
@@ -802,19 +907,43 @@ fn update_tool_call(
         );
         call.status = status.into();
     }
+    let mut name_patches = Vec::new();
     for field in ["title", "name", "kind"] {
         if let Some(value) = update.get(field).filter(|value| !value.is_null()) {
             ensure!(value.is_string(), "Invalid Antigravity tool name metadata");
-            call.name_fields[field] = value.clone();
+            if call.name_fields.get(field) != Some(value) {
+                name_patches.push((field, value));
+            }
         }
     }
-    call.name = tool_name(&call.name_fields);
+    let mut name_changed = false;
+    if !name_patches.is_empty() {
+        let previous_name_source = call.name_source;
+        let changed_name_fields = name_patches
+            .iter()
+            .map(|(field, _)| *field)
+            .collect::<BTreeSet<_>>();
+        for (field, value) in name_patches {
+            call.name_fields[field] = value.clone();
+        }
+        let current_name_source = tool_name_source(&call.name_fields);
+        call.name_source = current_name_source;
+        let visible_name_may_change = previous_name_source != current_name_source
+            || current_name_source.is_some_and(|field| changed_name_fields.contains(field));
+        if visible_name_may_change {
+            let next_name = tool_name(&call.name_fields);
+            if next_name != call.name {
+                call.name = next_name;
+                name_changed = true;
+            }
+        }
+    }
     // ACP patches these fields independently. Keep both latest values rather
     // than treating a content update as a replacement for rawOutput (or vice versa).
-    if let Some(content) = update.get("content").filter(|value| !value.is_null()) {
+    if let Some(content) = content_patch {
         call.content_text = Some(tool_content_output(parsed, content)?);
     }
-    if let Some(output) = update.get("rawOutput").filter(|value| !value.is_null()) {
+    if let Some(output) = raw_patch {
         call.raw_output = Some(output.clone());
     }
     if let Some(locations) = update.get("locations").filter(|value| !value.is_null()) {
@@ -831,28 +960,76 @@ fn update_tool_call(
             call.locations_loss_reported = true;
         }
     }
+    if name_changed {
+        let old_name_len = match &parsed.turns[call.call_turn].blocks[0] {
+            SessionBlock::ToolCall { name, .. } => name.len(),
+            _ => unreachable!("tool call turn contains a tool call block"),
+        };
+        account_tool_name(parsed, old_name_len, call.name.len())?;
+    }
     if let SessionBlock::ToolCall { name, input, .. } = &mut parsed.turns[call.call_turn].blocks[0]
     {
-        *name = call.name.clone();
+        if name_changed {
+            *name = call.name.clone();
+        }
         if let Some(value) = update.get("rawInput").filter(|value| !value.is_null()) {
             *input = json_text(value);
         }
     }
     if !matches!(call.status.as_str(), "completed" | "failed") {
         if !initial {
+            // Status-only updates have no new output. Keep full snapshots for
+            // actual output patches, including independently patched fields.
+            let output = has_output_patch.then(|| call.output()).flatten();
+            account_tool_output(parsed, 0, output.as_ref().map_or(0, String::len))?;
+            account_tool_name(parsed, 0, call.name.len())?;
             parsed.events.push(event(
                 id,
                 ConversationEventKind::ToolSummary,
-                call.output(),
+                output,
                 Some(call.name.clone()),
                 Some(call.status.clone()),
             ));
         }
         return Ok(());
     }
+    if let Some((_, event_index)) = call.result_position
+        && !has_output_patch
+    {
+        if name_changed {
+            let old_name_len = parsed.events[event_index]
+                .tool_name
+                .as_ref()
+                .map_or(0, String::len);
+            account_tool_name(parsed, old_name_len, call.name.len())?;
+        }
+        let result_event = &mut parsed.events[event_index];
+        if name_changed {
+            result_event.tool_name = Some(call.name.clone());
+        }
+        result_event.tool_status = Some(call.status.clone());
+        return Ok(());
+    }
     let output = call
         .output()
         .unwrap_or_else(|| format!("Antigravity tool status: {}", call.status));
+    let old_bytes = call.result_position.map_or(0, |(_, event_index)| {
+        parsed.events[event_index]
+            .content
+            .as_ref()
+            .map_or(0, String::len)
+            .saturating_mul(2)
+    });
+    account_tool_output(parsed, old_bytes, output.len().saturating_mul(2))?;
+    if call.result_position.is_none() || name_changed {
+        let old_name_bytes = call.result_position.map_or(0, |(_, event_index)| {
+            parsed.events[event_index]
+                .tool_name
+                .as_ref()
+                .map_or(0, String::len)
+        });
+        account_tool_name(parsed, old_name_bytes, call.name.len())?;
+    }
     let block = SessionBlock::ToolResult {
         call_id: call_id.into(),
         output: output.clone(),
@@ -862,7 +1039,9 @@ fn update_tool_call(
         parsed.turns[turn_index].blocks[0] = block;
         let result_event = &mut parsed.events[event_index];
         result_event.content = Some(output);
-        result_event.tool_name = Some(call.name.clone());
+        if name_changed {
+            result_event.tool_name = Some(call.name.clone());
+        }
         result_event.tool_status = Some(call.status.clone());
     } else {
         call.result_position = Some((parsed.turns.len(), parsed.events.len()));
@@ -881,6 +1060,34 @@ fn update_tool_call(
             blocks: vec![block],
         });
     }
+    Ok(())
+}
+
+fn account_tool_output(parsed: &mut ParsedReplay, replaced: usize, added: usize) -> Result<()> {
+    let total = parsed
+        .tool_output_bytes
+        .checked_sub(replaced)
+        .context("Invalid Antigravity replay output accounting")?
+        .saturating_add(added);
+    ensure!(
+        total <= MAX_PARSED_TOOL_OUTPUT_BYTES,
+        "Antigravity ACP parsed tool output exceeds 64 MiB"
+    );
+    parsed.tool_output_bytes = total;
+    Ok(())
+}
+
+fn account_tool_name(parsed: &mut ParsedReplay, replaced: usize, added: usize) -> Result<()> {
+    let total = parsed
+        .tool_name_bytes
+        .checked_sub(replaced)
+        .context("Invalid Antigravity replay tool name accounting")?
+        .saturating_add(added);
+    ensure!(
+        total <= MAX_PARSED_TOOL_NAME_BYTES,
+        "Antigravity ACP parsed tool names exceed 16 MiB"
+    );
+    parsed.tool_name_bytes = total;
     Ok(())
 }
 
@@ -1231,9 +1438,15 @@ fn tool_name(update: &Value) -> String {
         .or_else(|| update.get("name"))
         .or_else(|| update.get("kind"))
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| value.chars().any(|character| !character.is_whitespace()))
         .unwrap_or("tool")
         .to_owned()
+}
+
+fn tool_name_source(fields: &Value) -> Option<&'static str> {
+    ["title", "name", "kind"]
+        .into_iter()
+        .find(|field| fields.get(field).is_some())
 }
 
 fn json_text(value: &Value) -> String {
@@ -1422,6 +1635,74 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("not a runnable regular file"));
+    }
+
+    #[test]
+    fn session_listing_rejects_an_expired_caller_deadline_before_spawning_acp() {
+        let dir = tempdir().unwrap();
+        let provider = AntigravityProvider {
+            executable: Some(std::env::current_exe().unwrap()),
+        };
+        let error = provider
+            .list_sessions_until(dir.path(), Instant::now() - Duration::from_millis(1))
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_shares_one_deadline_across_session_list_and_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let script = dir.path().join("agy_acp_server.par");
+        let load_marker = dir.path().join("load-started");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"list":{{}}}}}}}}}}'
+      ;;
+    *\"method\":\"session/list\"*)
+      sleep 1
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessions":[{{"sessionId":"native-1","cwd":"{}"}}]}}}}'
+      ;;
+    *\"method\":\"session/load\"*)
+      touch '{}'
+      sleep 3
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":null}}'
+      ;;
+  esac
+done
+"#,
+                dir.path().display(),
+                load_marker.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+
+        let provider = AntigravityProvider {
+            executable: Some(script),
+        };
+        let started = Instant::now();
+        let error = provider
+            .replay_until("native-1", started + Duration::from_millis(1500))
+            .unwrap_err();
+        assert!(
+            load_marker.exists(),
+            "session/load was not reached: {error:#}"
+        );
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the second ACP stage received a fresh timeout: {error:#}"
+        );
     }
 
     #[test]
@@ -1670,6 +1951,149 @@ done
             json!({
                 "rawOutput":"partial raw output","contentText":"final output"
             })
+        );
+    }
+
+    #[test]
+    fn frequent_status_updates_do_not_repeat_large_tool_output() {
+        let large = "x".repeat(1024 * 1024);
+        let mut updates = vec![
+            json!({"sessionUpdate":"tool_call","toolCallId":"call","status":"pending"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"in_progress","rawOutput":large}),
+        ];
+        updates.extend((0..1000).map(|_| {
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"in_progress"})
+        }));
+        updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":"call","content":[{"type":"content","content":{"type":"text","text":"latest"}}]}));
+        updates.push(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"completed"}),
+        );
+        updates.extend((0..1000).map(|_| {
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"completed"})
+        }));
+
+        let parsed = parse_replay(&updates).unwrap();
+        assert_eq!(parsed.events.len(), 1004);
+        assert!(
+            parsed.events[2..1002]
+                .iter()
+                .all(|event| event.content.is_none())
+        );
+        let progress = parsed.events[1002].content.as_deref().unwrap();
+        let result = tool_results(&parsed);
+        assert_eq!(result.len(), 1);
+        assert_eq!(progress, result[0].1);
+        assert_eq!(
+            serde_json::from_str::<Value>(result[0].1).unwrap(),
+            json!({"rawOutput":large,"contentText":"latest"})
+        );
+        assert!(parsed.tool_output_bytes < 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn frequent_status_updates_cannot_multiply_large_tool_names() {
+        let mut updates = vec![json!({
+            "sessionUpdate":"tool_call",
+            "toolCallId":"call",
+            "title":"x".repeat(1024 * 1024),
+            "status":"pending"
+        })];
+        updates.extend((0..1000).map(|_| {
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"in_progress"})
+        }));
+        let error = parse_replay(&updates).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("parsed tool names exceed 16 MiB"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn unrelated_name_patches_leave_large_visible_title_unchanged() {
+        let title = format!("{}x", " ".repeat(1024 * 1024 - 1));
+        let mut updates = vec![json!({
+            "sessionUpdate":"tool_call",
+            "toolCallId":"call",
+            "title":title,
+            "status":"pending"
+        })];
+        updates.extend((0..8).map(|_| {
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"in_progress"})
+        }));
+        updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":"call","kind":"read"}));
+        updates
+            .push(json!({"sessionUpdate":"tool_call_update","toolCallId":"call","kind":"write"}));
+        updates.push(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"completed"}),
+        );
+
+        let parsed = parse_replay(&updates).unwrap();
+        assert_eq!(parsed.events.len(), 12);
+        assert!(
+            parsed
+                .events
+                .iter()
+                .all(|event| event.tool_name.as_deref() == Some(title.as_str()))
+        );
+        assert!(parsed.tool_name_bytes <= 13 * 1024 * 1024);
+    }
+
+    #[test]
+    fn tool_name_source_tracks_priority_and_blank_values() {
+        let updates = [
+            json!({"sessionUpdate":"tool_call","toolCallId":"call","kind":"execute","status":"pending"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","name":"read_file"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","title":"   "}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","kind":"write"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","title":"Run tests"}),
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"call","status":"completed"}),
+        ];
+        let parsed = parse_replay(&updates).unwrap();
+        assert_eq!(
+            parsed
+                .events
+                .iter()
+                .map(|event| event.tool_name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "execute",
+                "read_file",
+                "tool",
+                "tool",
+                "Run tests",
+                "Run tests"
+            ]
+        );
+        let SessionBlock::ToolCall { name, .. } = &parsed.turns[0].blocks[0] else {
+            panic!("missing tool call")
+        };
+        assert_eq!(name, "Run tests");
+    }
+
+    #[test]
+    fn parsed_tool_output_budget_and_deadline_fail_closed() {
+        let mut parsed = ParsedReplay::default();
+        account_tool_output(&mut parsed, 0, MAX_PARSED_TOOL_OUTPUT_BYTES).unwrap();
+        assert!(
+            account_tool_output(&mut parsed, 0, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("parsed tool output exceeds")
+        );
+        assert_eq!(parsed.tool_output_bytes, MAX_PARSED_TOOL_OUTPUT_BYTES);
+        account_tool_output(&mut parsed, MAX_PARSED_TOOL_OUTPUT_BYTES, 1).unwrap();
+        assert_eq!(parsed.tool_output_bytes, 1);
+        assert!(
+            parse_replay_until(
+                &[json!({"sessionUpdate":"session_info_update"})],
+                Instant::now() - Duration::from_millis(1)
+            )
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("timed out")
         );
     }
 

@@ -18,7 +18,7 @@ use std::{
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 // Test-only default for direct attachment; the Web path passes its caller budget.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 const MAX_CONTENT: usize = 512 * 1024;
@@ -1005,7 +1005,7 @@ impl Runner {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn connect_with(
         executable: &Path,
         args: &[OsString],
@@ -1021,7 +1021,7 @@ impl Runner {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn connect_with_attachment_timeout(
         executable: &Path,
         args: &[OsString],

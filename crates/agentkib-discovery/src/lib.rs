@@ -2290,7 +2290,10 @@ fn scan_known_home(agent: AgentKind, home: &Path, names: &[&str]) -> Result<Vec<
             if !entry.file_type().is_file() || is_private_home_file(entry.path()) {
                 continue;
             }
-            if *name == "skills"
+            if entry
+                .path()
+                .strip_prefix(&home)
+                .is_ok_and(|relative| has_path_component(relative, "skills"))
                 && entry.path().file_name().and_then(|value| value.to_str()) != Some("SKILL.md")
             {
                 continue;
@@ -3713,6 +3716,7 @@ mod tests {
         for root in ["antigravity-cli/skills/cli", "config/skills/shared"] {
             fs::create_dir_all(dir.path().join(root)).unwrap();
             fs::write(dir.path().join(root).join("SKILL.md"), "# Skill").unwrap();
+            fs::write(dir.path().join(root).join("script.py"), "print('helper')").unwrap();
         }
         fs::create_dir_all(dir.path().join("antigravity-cli/rules")).unwrap();
         fs::write(
@@ -3741,6 +3745,11 @@ mod tests {
             fs::write(
                 dir.path().join(root).join("skills/review/SKILL.md"),
                 "---\nname: review\n---\n# Review skill",
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join(root).join("skills/review/script.py"),
+                "print('helper')",
             )
             .unwrap();
             fs::create_dir_all(dir.path().join(root).join("agents")).unwrap();
@@ -3773,6 +3782,11 @@ mod tests {
                 .filter(|asset| asset.kind == AssetKind::Skill)
                 .count(),
             4
+        );
+        assert!(
+            assets
+                .iter()
+                .all(|asset| !asset.path.ends_with("script.py"))
         );
         assert!(
             assets

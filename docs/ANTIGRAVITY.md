@@ -27,7 +27,7 @@ AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据�
 
 ACP v1 的 `session/new` 没有导入外部历史的参数。Antigravity CLI 1.2.7 也没有把任意外部 transcript 创建为目标原生会话的稳定命令。因此 Codex/Claude Code → Antigravity 的原生历史导入保持 `native-history-import-unsupported`，不会降级后仍标记为原生导入。
 
-当前 ACP server 使用自己的会话存储。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。因此 AgentKib 只把 ACP server 返回的会话标记为可读、可控；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
+当前 ACP server 使用自己的会话存储。尚无公开稳定接口证明它可以完整列出或控制 Antigravity Desktop/IDE 与 `agy` CLI 已有的全部会话。因此 AgentKib 只索引 ACP server 返回的会话；只有服务端同时支持 `session/load` 时才标记为可读，否则仅展示元数据。未安装可选 ACP server 时，会话来源为空；不会把 ACP 能力扩大解释为对现有 Desktop/IDE 或 CLI 会话的控制。
 
 ## 实施与验收
 

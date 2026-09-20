@@ -216,20 +216,26 @@ fn promoted_gemini_remainder<'a>(
     project: &Path,
     existing: &'a str,
     shared: &str,
-) -> Option<&'a str> {
-    if shared.trim().is_empty() || project.join("AGENTS.md").is_file() {
-        return None;
+) -> Result<Option<&'a str>> {
+    if shared.trim().is_empty() || project.join("AGENTS.md").is_file() || existing.trim().is_empty()
+    {
+        return Ok(None);
     }
     let claude_supplies_shared = fs::read_to_string(project.join("CLAUDE.md"))
         .ok()
         .is_some_and(|content| !content.lines().any(|line| line.trim() == "@AGENTS.md"));
     if claude_supplies_shared || existing.lines().any(|line| line.trim() == "@AGENTS.md") {
-        return None;
+        return Ok(None);
     }
     // default_manifest promotes a GEMINI-only file to shared instructions. If
     // AGENTS.md is then planned, leave that exact promoted prefix there only;
     // later user text remains an unmanaged Antigravity-specific suffix.
-    existing.strip_prefix(shared).map(str::trim_start)
+    let remainder = existing.strip_prefix(shared).map(str::trim_start);
+    anyhow::ensure!(
+        remainder.is_some(),
+        "GEMINI.md may contain the original shared instructions; reconcile it with the edited shared instructions before creating AGENTS.md"
+    );
+    Ok(remainder)
 }
 
 fn managed_content(content: &str) -> Option<&str> {
@@ -379,7 +385,7 @@ pub fn plan_workspace_changes(
         let instructions = root.join("GEMINI.md");
         let existing = fs::read_to_string(&instructions).unwrap_or_default();
         let promoted_remainder =
-            promoted_gemini_remainder(&root, &existing, &manifest.instructions.shared);
+            promoted_gemini_remainder(&root, &existing, &manifest.instructions.shared)?;
         if promoted_remainder.is_some()
             || !platform_override.trim().is_empty()
             || existing.contains(START)
@@ -2532,6 +2538,25 @@ mod tests {
             fs::read_to_string(dir.path().join("GEMINI.md")).unwrap(),
             reviewed_gemini
         );
+    }
+
+    #[test]
+    fn edited_gemini_only_shared_instructions_require_reconciliation() {
+        let dir = tempdir().unwrap();
+        let gemini = dir.path().join("GEMINI.md");
+        fs::write(&gemini, "Original shared rules.\n").unwrap();
+        let mut manifest = default_manifest(dir.path()).unwrap();
+        manifest.instructions.shared = "Different shared rules.\n".into();
+
+        let error = plan_workspace_changes(dir.path(), &manifest, &HomeTargets::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reconcile it with the edited shared instructions"));
+        assert_eq!(
+            fs::read_to_string(gemini).unwrap(),
+            "Original shared rules.\n"
+        );
+        assert!(!dir.path().join("AGENTS.md").exists());
     }
 
     #[test]

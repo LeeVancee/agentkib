@@ -1,8 +1,10 @@
-use std::fs;
-use std::io::{ErrorKind, Write};
+use std::fs::{self, File};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use agentkib_platform::fs::{ExpectedFile, atomic_replace_checked, move_path};
+use agentkib_platform::fs::{
+    ExpectedFile, atomic_replace_checked, move_file_no_replace, move_path,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -512,12 +514,12 @@ fn restore_existing_file_checked_with_hook(
     };
     let reason = match current {
         Ok(current) if hash_content(&current) == written_hash => {
-            match fs::hard_link(&replacement, target) {
+            match install_no_clobber(&replacement, target) {
                 Ok(()) => {
                     drop(replacement);
                     return quarantine_dir.close();
                 }
-                Err(error) => format!("could not atomically restore backup: {error}"),
+                Err(error) => format!("could not safely restore backup: {error}"),
             }
         }
         Ok(_) => "file was modified externally".to_owned(),
@@ -526,7 +528,7 @@ fn restore_existing_file_checked_with_hook(
     drop(replacement);
     let preserved = quarantine_dir.keep().join("written");
     let restore = if fs::symlink_metadata(&preserved).is_ok_and(|meta| meta.is_file()) {
-        fs::hard_link(&preserved, target)
+        install_no_clobber(&preserved, target)
     } else {
         Err(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -545,6 +547,36 @@ fn restore_existing_file_checked_with_hook(
             preserved.display()
         ),
     ))
+}
+
+fn install_no_clobber(source: &Path, target: &Path) -> io::Result<()> {
+    install_no_clobber_with_link(source, target, |source, target| {
+        fs::hard_link(source, target)
+    })
+}
+
+fn install_no_clobber_with_link(
+    source: &Path,
+    target: &Path,
+    link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    if link(source, target).is_ok() {
+        return Ok(());
+    }
+    // Some supported project volumes cannot create hard links. Stage the copy
+    // beside the target, then install it atomically without replacing a file
+    // created after the written target was moved into quarantine.
+    let parent = target
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "target has no parent"))?;
+    let mut input = File::open(source)?;
+    let mut staged = NamedTempFile::new_in(parent)?;
+    io::copy(&mut input, staged.as_file_mut())?;
+    staged
+        .as_file_mut()
+        .set_permissions(input.metadata()?.permissions())?;
+    staged.as_file_mut().sync_all()?;
+    move_file_no_replace(&staged.into_temp_path(), target)
 }
 
 fn remove_written_file_checked(target: &Path, written_hash: &str) -> std::io::Result<()> {
@@ -587,7 +619,7 @@ fn remove_written_file_checked_with_hook(
     };
     let preserved = quarantine_dir.keep().join("written");
     let restore = if fs::symlink_metadata(&preserved).is_ok_and(|meta| meta.is_file()) {
-        fs::hard_link(&preserved, target)
+        install_no_clobber(&preserved, target)
     } else {
         Err(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -986,8 +1018,24 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("could not atomically restore backup"));
+        assert!(error.contains("could not safely restore backup"));
         assert!(error.contains("inspect moved content at"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "external-write");
+    }
+
+    #[test]
+    fn unsupported_hard_links_restore_without_overwriting_external_files() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("staged-backup");
+        let target = dir.path().join("existing.json");
+        fs::write(&source, "original-content").unwrap();
+        let unsupported = |_: &Path, _: &Path| Err(io::Error::from(ErrorKind::Unsupported));
+
+        install_no_clobber_with_link(&source, &target, unsupported).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original-content");
+        fs::write(&target, "external-write").unwrap();
+        let error = install_no_clobber_with_link(&source, &target, unsupported).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&target).unwrap(), "external-write");
     }
 

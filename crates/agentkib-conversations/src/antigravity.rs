@@ -78,26 +78,33 @@ struct Replay {
 struct SessionCollection {
     sessions: Vec<AcpSession>,
     incomplete: bool,
+    load_session: bool,
 }
 
 impl AntigravityProvider {
-    fn executable(&self) -> Result<PathBuf> {
+    fn optional_executable(&self) -> Result<Option<PathBuf>> {
         if let Some(path) = &self.executable {
-            return verified_executable(path);
+            return verified_executable(path).map(Some);
         }
         if let Some(value) = env::var_os(ACP_ENV) {
             let path = PathBuf::from(value);
             ensure!(path.is_absolute(), "{ACP_ENV} must be an absolute path");
-            return verified_executable(&path);
+            return verified_executable(&path).map(Some);
         }
         for name in ["agy_acp_server.par", "agy_acp_server.exe"] {
             if let Some(path) = command::resolve(name) {
-                return verified_executable(&path);
+                return verified_executable(&path).map(Some);
             }
         }
-        bail!(
-            "Antigravity ACP server is unavailable; set {ACP_ENV} to the official absolute executable path"
-        )
+        Ok(None)
+    }
+
+    fn executable(&self) -> Result<PathBuf> {
+        self.optional_executable()?.with_context(|| {
+            format!(
+                "Antigravity ACP server is unavailable; set {ACP_ENV} to the official absolute executable path"
+            )
+        })
     }
 
     fn connect(&self, cwd: &Path) -> Result<(BlockingClient, Compatibility)> {
@@ -136,7 +143,10 @@ impl AntigravityProvider {
         );
         let result = collect_pages(&client, canonical_filter.as_deref());
         let _ = client.shutdown();
-        result
+        result.map(|mut collected| {
+            collected.load_session = compatibility.load_session;
+            collected
+        })
     }
 
     fn resolve(&self, native_ref: &str) -> Result<AcpSession> {
@@ -168,20 +178,27 @@ impl AntigravityProvider {
         let _ = client.shutdown();
         Ok((session, replay?))
     }
-}
 
-impl ConversationProvider for AntigravityProvider {
-    fn agent(&self) -> AgentKind {
-        AgentKind::Antigravity
-    }
-
-    fn list_sessions(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>> {
-        self.list_sessions_detailed(workspace)
-            .map(|listing| listing.sessions)
-    }
-
-    fn list_sessions_detailed(&self, workspace: &Path) -> Result<NativeSessionListing> {
-        let collected = self.collect(Some(workspace))?;
+    fn list_sessions_with_executable(
+        &self,
+        workspace: &Path,
+        executable: Option<PathBuf>,
+    ) -> Result<NativeSessionListing> {
+        let Some(executable) = executable else {
+            return Ok(NativeSessionListing {
+                sessions: Vec::new(),
+                incomplete: false,
+            });
+        };
+        let collected = Self {
+            executable: Some(executable),
+        }
+        .collect(Some(workspace))?;
+        let availability = if collected.load_session {
+            SessionAvailability::Readable
+        } else {
+            SessionAvailability::MetadataOnly
+        };
         let sessions = collected
             .sessions
             .into_iter()
@@ -198,13 +215,28 @@ impl ConversationProvider for AntigravityProvider {
                 git_branch: None,
                 archived: false,
                 sidechain: false,
-                availability: SessionAvailability::Readable,
+                availability,
             })
             .collect();
         Ok(NativeSessionListing {
             sessions,
             incomplete: collected.incomplete,
         })
+    }
+}
+
+impl ConversationProvider for AntigravityProvider {
+    fn agent(&self) -> AgentKind {
+        AgentKind::Antigravity
+    }
+
+    fn list_sessions(&self, workspace: &Path) -> Result<Vec<NativeSessionSummary>> {
+        self.list_sessions_detailed(workspace)
+            .map(|listing| listing.sessions)
+    }
+
+    fn list_sessions_detailed(&self, workspace: &Path) -> Result<NativeSessionListing> {
+        self.list_sessions_with_executable(workspace, self.optional_executable()?)
     }
 
     fn verified_control_id(&self, native_ref: &str) -> Result<Option<String>> {
@@ -398,6 +430,7 @@ fn collect_pages(client: &BlockingClient, workspace: Option<&Path>) -> Result<Se
             return Ok(SessionCollection {
                 sessions: deduplicate_sessions(output)?,
                 incomplete,
+                load_session: false,
             });
         };
         ensure!(
@@ -1367,8 +1400,29 @@ fn validate_native_ref(value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-    #[cfg(unix)]
     use tempfile::tempdir;
+
+    #[test]
+    fn missing_optional_server_is_a_complete_empty_source() {
+        let listing = AntigravityProvider::default()
+            .list_sessions_with_executable(Path::new("unused"), None)
+            .unwrap();
+        assert!(listing.sessions.is_empty());
+        assert!(!listing.incomplete);
+    }
+
+    #[test]
+    fn explicitly_configured_missing_server_remains_an_error() {
+        let dir = tempdir().unwrap();
+        let provider = AntigravityProvider {
+            executable: Some(dir.path().join("missing-acp-server")),
+        };
+        let error = provider
+            .list_sessions_detailed(dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a runnable regular file"));
+    }
 
     #[test]
     fn event_pages_start_with_latest_and_walk_backwards_stably() {
@@ -2101,6 +2155,10 @@ done
         assert!(listing.incomplete);
         assert_eq!(listing.sessions.len(), 1);
         assert_eq!(listing.sessions[0].native_ref, "opaque://native-1");
+        assert_eq!(
+            listing.sessions[0].availability,
+            SessionAvailability::Readable
+        );
         let events = provider.read_events("opaque://native-1", None, 10).unwrap();
         assert_eq!(events.events.len(), 2);
         assert_eq!(events.events[0].content.as_deref(), Some("original"));
@@ -2165,12 +2223,13 @@ done
         // each operation reports only its own missing negotiated capability.
         let list_only = body.replace("\"loadSession\":true", "\"loadSession\":false");
         fs::write(provider.executable.as_ref().unwrap(), list_only).unwrap();
+        let listing = provider
+            .list_sessions_detailed(&dir.path().join("workspace"))
+            .unwrap();
+        assert_eq!(listing.sessions.len(), 1);
         assert_eq!(
-            provider
-                .list_sessions(&dir.path().join("workspace"))
-                .unwrap()
-                .len(),
-            1
+            listing.sessions[0].availability,
+            SessionAvailability::MetadataOnly
         );
         let error = provider
             .read_events("opaque://native-1", None, 10)

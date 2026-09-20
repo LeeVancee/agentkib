@@ -522,6 +522,7 @@ fn parse_agent(value: &str) -> Result<AgentKind> {
         "openclaw" | "open-claw" => Ok(AgentKind::OpenClaw),
         "hermes" => Ok(AgentKind::Hermes),
         "grok" | "grok-build" => Ok(AgentKind::GrokBuild),
+        "antigravity" => Ok(AgentKind::Antigravity),
         "deepseek-harness" | "dsh" => Ok(AgentKind::DeepSeekHarness),
         _ => anyhow::bail!("Unknown Agent: {value}"),
     }
@@ -542,6 +543,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn antigravity_gateway_route_uses_the_native_agent_kind() {
+        assert_eq!(parse_agent("antigravity").unwrap(), AgentKind::Antigravity);
+    }
 
     fn free_port() -> u16 {
         TcpListener::bind(("127.0.0.1", 0))

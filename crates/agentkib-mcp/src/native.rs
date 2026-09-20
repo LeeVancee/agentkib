@@ -724,7 +724,8 @@ fn candidate(
     let source_path = canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let digest = Sha256::digest(format!("{}:{name}", source_path.display()));
     let supported = matches!(transport, "stdio" | "http" | "streamable-http" | "sse")
-        || (agent == AgentKind::OpenCode && matches!(transport, "local" | "remote"));
+        || (matches!(agent, AgentKind::OpenCode | AgentKind::Antigravity)
+            && matches!(transport, "local" | "remote"));
     McpMigrationCandidate {
         id: hex::encode(&digest[..12]),
         agent,
@@ -1238,6 +1239,33 @@ mod tests {
                 "http://127.0.0.1:47653/mcp/v1/workspaces/ws/agents/antigravity"
             ))
         );
+    }
+
+    #[test]
+    fn antigravity_declared_transport_aliases_can_be_migrated() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents")).unwrap();
+        std::fs::write(
+            dir.path().join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{"local":{"type":"local","command":"server"},"remote":{"type":"remote","serverUrl":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        for name in ["local", "remote"] {
+            let candidate = candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.agent == AgentKind::Antigravity && candidate.name == name
+                })
+                .unwrap();
+            assert!(candidate.supported, "{name}: {:?}", candidate.warnings);
+            let migrated = migration_server(candidate).unwrap();
+            assert!(matches!(
+                (name, migrated.transport),
+                ("local", McpServerTransport::Stdio { .. })
+                    | ("remote", McpServerTransport::StreamableHttp { .. })
+            ));
+        }
     }
 
     #[test]

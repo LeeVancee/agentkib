@@ -24,6 +24,17 @@ fn pair() -> (TestClient, Peer) {
     )
 }
 
+fn workspace() -> &'static Path {
+    #[cfg(windows)]
+    {
+        Path::new(r"C:\workspace")
+    }
+    #[cfg(not(windows))]
+    {
+        Path::new("/workspace")
+    }
+}
+
 impl Peer {
     async fn read(&mut self) -> Value {
         let mut line = String::new();
@@ -63,7 +74,7 @@ async fn initialized() -> (TestClient, Peer) {
 
 async fn active() -> (TestClient, Peer, RpcId) {
     let (mut client, mut peer) = initialized().await;
-    let id = client.new_session(Path::new("/workspace")).await.unwrap();
+    let id = client.new_session(workspace()).await.unwrap();
     peer.read().await;
     peer.reply(&id, json!({"sessionId":"session-1"})).await;
     client.next_event().await.unwrap();
@@ -112,7 +123,7 @@ async fn requests_require_handshake_and_advertised_capabilities() {
         Err(Error::Unsupported("session/list"))
     ));
     assert!(matches!(
-        client.load_session("native", Path::new("/workspace")).await,
+        client.load_session("native", workspace()).await,
         Err(Error::Unsupported("session/load"))
     ));
     assert!(client.initialize().await.is_err());
@@ -122,12 +133,12 @@ async fn requests_require_handshake_and_advertised_capabilities() {
 async fn list_preserves_cursor_and_native_records() {
     let (mut client, mut peer) = initialized().await;
     let id = client
-        .list_sessions(Some(Path::new("/workspace")), Some("page-2"))
+        .list_sessions(Some(workspace()), Some("page-2"))
         .await
         .unwrap();
     assert_eq!(
         peer.read().await["params"],
-        json!({"cwd":"/workspace","cursor":"page-2"})
+        json!({"cwd":workspace().to_string_lossy(),"cursor":"page-2"})
     );
     let records = json!({"sessions":[{"sessionId":"native","cwd":"/workspace","title":"Original history"}],"nextCursor":"page-3"});
     peer.reply(&id, records.clone()).await;
@@ -142,10 +153,7 @@ async fn list_preserves_cursor_and_native_records() {
 #[tokio::test]
 async fn load_receives_native_replay_before_response() {
     let (mut client, mut peer) = initialized().await;
-    let id = client
-        .load_session("native", Path::new("/workspace"))
-        .await
-        .unwrap();
+    let id = client.load_session("native", workspace()).await.unwrap();
     assert_eq!(peer.read().await["method"], "session/load");
     peer.send(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"original"}}}})).await;
     assert!(matches!(
@@ -232,10 +240,7 @@ async fn unrelated_server_request_never_executes_client_tools() {
 #[tokio::test]
 async fn remote_errors_do_not_attach_sessions() {
     let (mut client, mut peer) = initialized().await;
-    let id = client
-        .resume_session("missing", Path::new("/workspace"))
-        .await
-        .unwrap();
+    let id = client.resume_session("missing", workspace()).await.unwrap();
     peer.read().await;
     peer.send(
         json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Session not found"}}),

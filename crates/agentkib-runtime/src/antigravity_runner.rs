@@ -989,7 +989,7 @@ impl Runner {
             .is_retirable()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn connect_for_test(
         executable: &Path,
         args: &[OsString],

@@ -17,7 +17,7 @@ struct Work {
 }
 
 pub(super) struct Worker {
-    sender: Option<mpsc::SyncSender<Work>>,
+    sender: Option<mpsc::SyncSender<Box<Work>>>,
     stopping: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
     timeout: Duration,
@@ -36,7 +36,7 @@ impl Worker {
         completed: impl Fn(RpcResponse) + Send + 'static,
         execute: impl Fn(RpcRequest, Instant, &AtomicBool) -> RpcResponse + Send + 'static,
     ) -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Work>(QUEUE_CAPACITY);
+        let (sender, receiver) = mpsc::sync_channel::<Box<Work>>(QUEUE_CAPACITY);
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
         let execute: Box<Executor> = Box::new(execute);
@@ -66,10 +66,10 @@ impl Worker {
         if self.stopping.load(Ordering::SeqCst) {
             return Some(unavailable_response(id));
         }
-        let work = Work {
+        let work = Box::new(Work {
             request,
             deadline: Instant::now() + self.timeout,
-        };
+        });
         match self.sender.as_ref().map(|sender| sender.try_send(work)) {
             Some(Ok(())) => None,
             Some(Err(mpsc::TrySendError::Full(_))) => Some(RpcResponse::error(

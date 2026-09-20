@@ -1500,7 +1500,7 @@ pub(crate) fn finish_document(
     })
 }
 
-fn is_textual_media_type(media_type: &str) -> bool {
+pub(crate) fn is_textual_media_type(media_type: &str) -> bool {
     let media_type = media_type
         .split(';')
         .next()

@@ -975,19 +975,23 @@ fn push_message_content(
                 .get("resource")
                 .filter(|value| value.is_object())
                 .context("Antigravity ACP resource content is missing resource")?;
-            let data = if let Some(blob) = resource.get("blob").and_then(Value::as_str) {
+            let (data, from_text) = if let Some(blob) = resource.get("blob").and_then(Value::as_str)
+            {
                 ensure!(
                     base64::engine::general_purpose::STANDARD
                         .decode(blob)
                         .is_ok(),
                     "Antigravity ACP resource blob is not valid base64"
                 );
-                Some(blob.to_owned())
+                (Some(blob.to_owned()), false)
             } else {
-                resource
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(|text| base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))
+                let text = resource.get("text").and_then(Value::as_str);
+                (
+                    text.map(|text| {
+                        base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
+                    }),
+                    text.is_some(),
+                )
             };
             if data.is_none() {
                 record_loss(
@@ -996,6 +1000,18 @@ fn push_message_content(
                     "Antigravity resource content remains external",
                 );
             }
+            let declared_media_type = resource
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("application/octet-stream");
+            // ACP resource.text is plaintext even when its MIME label claims binary data.
+            let media_type =
+                if from_text && !crate::continuation::is_textual_media_type(declared_media_type) {
+                    "text/plain"
+                } else {
+                    declared_media_type
+                };
             push_attachment(
                 parsed,
                 id,
@@ -1003,18 +1019,7 @@ fn push_message_content(
                 role,
                 SessionBlock::Attachment {
                     kind: SessionAttachmentKind::Document,
-                    media_type: resource
-                        .get("mimeType")
-                        .and_then(Value::as_str)
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            if resource.get("text").is_some_and(Value::is_string) {
-                                "text/plain"
-                            } else {
-                                "application/octet-stream"
-                            }
-                        })
-                        .to_owned(),
+                    media_type: media_type.to_owned(),
                     filename: attachment_name(resource),
                     inline_base64: data,
                 },
@@ -1682,10 +1687,11 @@ done
     }
 
     #[test]
-    fn replay_parser_preserves_content_and_redacts_text_resource_without_mime() {
+    fn replay_parser_redacts_text_resources_even_with_binary_mime() {
         let parsed = parse_replay(&[
             json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","data":"aW1hZ2U=","mimeType":"image/png","uri":"diagram.png"}}),
             json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource","resource":{"uri":"notes.txt","text":"token=sk-abcdefghijklmnop"}}}),
+            json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource","resource":{"uri":"secrets.bin","mimeType":"application/octet-stream","text":"token=sk-binarylabelsecret"}}}),
             json!({"sessionUpdate":"agent_message_chunk","content":{"type":"resource_link","uri":"https://example.test/report","name":"report","mimeType":"text/html"}}),
             json!({"sessionUpdate":"agent_message_chunk","content":{"type":"audio","data":"YXVkaW8=","mimeType":"audio/wav"}}),
             json!({"sessionUpdate":"config_option_update","configOptions":[]}),
@@ -1693,8 +1699,8 @@ done
             json!({"sessionUpdate":"usage_update","used":1}),
         ])
         .unwrap();
-        assert_eq!(parsed.events.len(), 4);
-        assert_eq!(parsed.turns.len(), 4);
+        assert_eq!(parsed.events.len(), 5);
+        assert_eq!(parsed.turns.len(), 5);
         assert_eq!(parsed.events[0].attachment_count, 1);
         assert!(matches!(
             parsed.turns[0].blocks[0],
@@ -1728,24 +1734,22 @@ done
         let document =
             crate::continuation::finish_document(&source, parsed.turns, parsed.losses, None)
                 .unwrap();
-        assert_eq!(document.redaction_count, 1);
-        let SessionBlock::Attachment {
-            media_type,
-            inline_base64: Some(data),
-            ..
-        } = &document.turns[1].blocks[0]
-        else {
-            panic!("resource attachment was not preserved")
-        };
-        assert_eq!(media_type, "text/plain");
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(data)
-            .unwrap();
-        assert!(
-            !String::from_utf8(decoded)
-                .unwrap()
-                .contains("sk-abcdefghijklmnop")
-        );
+        assert_eq!(document.redaction_count, 2);
+        for (turn, secret) in [(1, "sk-abcdefghijklmnop"), (2, "sk-binarylabelsecret")] {
+            let SessionBlock::Attachment {
+                media_type,
+                inline_base64: Some(data),
+                ..
+            } = &document.turns[turn].blocks[0]
+            else {
+                panic!("resource attachment was not preserved")
+            };
+            assert_eq!(media_type, "text/plain");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap();
+            assert!(!String::from_utf8(decoded).unwrap().contains(secret));
+        }
     }
 
     #[test]

@@ -1232,7 +1232,7 @@ mod tests {
         let cwd = std::env::temp_dir().canonicalize().unwrap();
         let file = cwd.join("src/a.rs").to_string_lossy().into_owned();
         let other = cwd.join("other/a.rs").to_string_lossy().into_owned();
-        for tool_call in [
+        for (case, tool_call) in [
             json!({"toolCallId":"tool-a"}),
             json!({"toolCallId":"tool-a","title":"Run command"}),
             json!({"toolCallId":"tool-a","title":"Run command","rawInput":{"api_key":"sk-abcdefghijklmnop"}}),
@@ -1277,7 +1277,10 @@ mod tests {
             json!({"toolCallId":"tool-a","title":"Run command","rawInput":true}),
             json!({"toolCallId":"tool-a","rawOutput":{"secret":"result"}}),
             json!({"toolCallId":"tool-a","futureScope":{"root":"/"}}),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut state = active();
             state
                 .apply(Event::Permission {
@@ -1294,7 +1297,7 @@ mod tests {
                 })
                 .unwrap();
             let snapshot = state.snapshot();
-            assert_eq!(snapshot["approvals"][0]["supported"], false);
+            assert_eq!(snapshot["approvals"][0]["supported"], false, "case {case}");
             assert_eq!(
                 snapshot["approvals"][0]["unsupportedReason"],
                 "incomplete-operation-details"

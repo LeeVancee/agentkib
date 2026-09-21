@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentkib-adapters"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-antigravity-bridge"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-adapters",
  "agentkib-core",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-codex-bridge"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-conversations"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-antigravity-bridge",
  "agentkib-core",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-discovery"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-gateways"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-git"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-insights"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-mcp"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-conversations",
  "agentkib-core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-platform"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "hex",
  "libc",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-protocol"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-quota"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-platform",
  "anyhow",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-remote"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-runtime"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-adapters",
  "agentkib-antigravity-bridge",
@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-skills"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-storage"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-platform",
  "chrono",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-store"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-conversations",
  "agentkib-core",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "agentkib-tools"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "agentkib-core",
  "agentkib-platform",

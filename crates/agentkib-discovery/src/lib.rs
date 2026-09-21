@@ -2517,13 +2517,39 @@ fn app_bundle_is_available(agent: AgentKind) -> bool {
     if agent == AgentKind::Cursor {
         return command::cursor_app_is_available();
     }
-    if agent != AgentKind::OpenCode {
-        return false;
+    match agent {
+        AgentKind::OpenCode => dirs::data_local_dir().is_some_and(|local| {
+            [
+                local.join("Programs/OpenCode/OpenCode.exe"),
+                local.join("OpenCode/OpenCode.exe"),
+            ]
+            .into_iter()
+            .any(|path| path.is_file())
+        }),
+        AgentKind::Antigravity => antigravity_windows_app_is_available(
+            dirs::data_local_dir().as_deref(),
+            env::var_os("ProgramFiles").as_deref().map(Path::new),
+        ),
+        _ => false,
     }
-    dirs::data_local_dir().is_some_and(|local| {
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn antigravity_windows_app_is_available(
+    local: Option<&Path>,
+    program_files: Option<&Path>,
+) -> bool {
+    [
+        local.map(|path| path.join("Programs")),
+        program_files.map(Path::to_path_buf),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|root| {
         [
-            local.join("Programs/OpenCode/OpenCode.exe"),
-            local.join("OpenCode/OpenCode.exe"),
+            root.join("Antigravity/Antigravity.exe"),
+            root.join("Antigravity/Antigravity IDE.exe"),
+            root.join("Antigravity IDE/Antigravity IDE.exe"),
         ]
         .into_iter()
         .any(|path| path.is_file())
@@ -2696,6 +2722,33 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
+
+    #[test]
+    fn antigravity_windows_desktop_install_is_detected_without_cli() {
+        for relative in [
+            "Programs/Antigravity/Antigravity.exe",
+            "Programs/Antigravity/Antigravity IDE.exe",
+            "Programs/Antigravity IDE/Antigravity IDE.exe",
+        ] {
+            let dir = tempdir().unwrap();
+            let local = dir.path().join("Local");
+            let executable = local.join(relative);
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            assert!(!antigravity_windows_app_is_available(Some(&local), None));
+            fs::write(&executable, b"desktop app").unwrap();
+            assert!(antigravity_windows_app_is_available(Some(&local), None));
+        }
+
+        let dir = tempdir().unwrap();
+        let program_files = dir.path().join("Program Files");
+        let executable = program_files.join("Antigravity IDE/Antigravity IDE.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"desktop app").unwrap();
+        assert!(antigravity_windows_app_is_available(
+            None,
+            Some(&program_files)
+        ));
+    }
 
     #[test]
     fn jsonl_discovery_reads_large_transcript_headers_with_a_bounded_prefix() {

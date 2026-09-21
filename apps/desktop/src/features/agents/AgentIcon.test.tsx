@@ -32,7 +32,9 @@ describe("AgentIcon", () => {
   it("renders the Antigravity asset", () => {
     const { container } = render(<AgentIcon agent="antigravity" />);
 
-    expect(container.querySelector("img")?.getAttribute("src")).toContain("image/svg+xml");
+    expect(container.querySelector("img")?.getAttribute("src")).toContain(
+      "agent-identity/src/assets/antigravity.svg",
+    );
     expect(container.querySelector(".ak-agent-mark")?.getAttribute("title")).toBe("Antigravity");
   });
 });

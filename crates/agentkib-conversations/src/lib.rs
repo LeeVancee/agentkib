@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use walkdir::WalkDir;
 
+mod antigravity;
 mod archive;
 mod continuation;
 mod grokbuild;
@@ -21,6 +22,7 @@ mod history;
 mod openclaw;
 mod opencode;
 mod paging;
+pub use antigravity::AntigravityProvider;
 pub use archive::*;
 pub use continuation::*;
 pub use grokbuild::GrokBuildProvider;
@@ -1020,6 +1022,7 @@ pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
+        Box::new(AntigravityProvider::default()),
     ]
 }
 
@@ -1031,6 +1034,7 @@ pub fn provider(agent: AgentKind) -> Option<Box<dyn ConversationProvider + Send 
         AgentKind::OpenClaw => Some(Box::new(OpenClawProvider::default())),
         AgentKind::Hermes => Some(Box::new(HermesProvider::default())),
         AgentKind::GrokBuild => Some(Box::new(GrokBuildProvider::default())),
+        AgentKind::Antigravity => Some(Box::new(AntigravityProvider::default())),
         _ => None,
     }
 }

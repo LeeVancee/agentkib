@@ -221,6 +221,16 @@ impl Bridge {
     /// guarantee that tool subprocesses have exited; never remove the turn guard
     /// or retry without it to attempt thread-wide terminal cleanup.
     pub fn stop(&mut self, expected_turn_id: &str) -> Result<()> {
+        self.stop_at_revision_with_authorization(expected_turn_id, None, || Ok(()), || {})
+    }
+
+    pub fn stop_at_revision_with_authorization(
+        &mut self,
+        expected_turn_id: &str,
+        revision: Option<u64>,
+        authorize: impl FnOnce() -> Result<()>,
+        dispatch: impl FnOnce(),
+    ) -> Result<()> {
         self.ready()?;
         let _operation = OperationGuard::acquire(
             &self.endpoint,
@@ -232,13 +242,20 @@ impl Bridge {
         self.refresh()?;
         let state = self.selected.as_ref().context("no selected session")?;
         ensure!(
+            revision.is_none() || revision == state.revision(),
+            "session revision changed; stop cancelled"
+        );
+        ensure!(
             state.active_turn() == Some(expected_turn_id),
             "turn changed; stop cancelled"
         );
-        let receipt = self.mutate(
+        let conversation = state.conversation.clone();
+        let receipt = self.mutate_with_authorization(
             "thread-follower-interrupt-turn",
-            json!({"conversationId":state.conversation,
+            json!({"conversationId":conversation,
             "mode":"user-stop","expectedTurnId":expected_turn_id}),
+            authorize,
+            dispatch,
         )?;
         validate_interrupt_receipt(&receipt, expected_turn_id)
     }
@@ -439,19 +456,6 @@ impl Bridge {
             "session state is not confirmed; synchronize before retrying"
         );
         Ok(())
-    }
-
-    fn mutate(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.mutate_with_dispatch(method, params, || {})
-    }
-
-    fn mutate_with_dispatch(
-        &mut self,
-        method: &str,
-        params: Value,
-        dispatch: impl FnOnce(),
-    ) -> Result<Value> {
-        self.mutate_with_authorization(method, params, || Ok(()), dispatch)
     }
 
     fn mutate_with_authorization(

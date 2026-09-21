@@ -70,6 +70,7 @@ type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
+  antigravity: "Antigravity",
   cursor: "Cursor",
   opencode: "OpenCode",
   "open-claw": "OpenClaw",

@@ -11,8 +11,10 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+mod antigravity_runner;
 mod claude_runner;
 mod obsidian;
+mod skill_worker;
 mod web;
 
 use agentkib_conversations::{
@@ -127,10 +129,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut agent_tool_workers = AgentToolWorkers::default();
     let remote_worker = RemoteWorker::new(events_tx.clone());
     let web_worker = web::Worker::new(events_tx.clone());
+    let skill_events = events_tx.clone();
+    let mut skill_worker = skill_worker::Worker::new(
+        move |response| {
+            let _ = skill_events.send(RuntimeEvent::SkillFinished { response });
+        },
+        execute_skill_request,
+    );
 
     while let Ok(event) = events_rx.recv() {
         match event {
-            RuntimeEvent::Input(Err(error)) => return Err(error.into()),
+            RuntimeEvent::Input(Err(error)) => {
+                shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
+                return Err(error.into());
+            }
             RuntimeEvent::Input(Ok(line)) => {
                 if line.trim().is_empty() {
                     continue;
@@ -214,9 +226,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     continue;
                 }
+                if is_skill_method(&request.method) {
+                    if let Some(response) = skill_worker.submit(request) {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
                 let starts_hub = request.method == HANDSHAKE_METHOD;
                 let (response, should_shutdown) = handle_request(request);
                 let handshake_succeeded = starts_hub && response.error.is_none();
+                if should_shutdown {
+                    if let Some(scan) = storage_scan.take() {
+                        scan.cancelled.store(true, Ordering::SeqCst);
+                    }
+                    agent_tool_workers.cancel_and_join();
+                    shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
+                    if let Some(hub) = MCP_HUB.get() {
+                        hub.shutdown();
+                    }
+                    write_response(&mut stdout, response)?;
+                    break;
+                }
                 write_response(&mut stdout, response)?;
                 // Flush the handshake before binding the MCP listener. Electron can render its
                 // shell immediately while subsequent business requests remain queued on stdin.
@@ -225,22 +255,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     initialize_skill_hub()?;
                     remote_worker.initialize();
                 }
-                if should_shutdown {
-                    if let Some(scan) = storage_scan.take() {
-                        scan.cancelled.store(true, Ordering::SeqCst);
-                    }
-                    agent_tool_workers.cancel_and_join();
-                    if let Some(hub) = MCP_HUB.get() {
-                        hub.shutdown();
-                    }
-                    break;
-                }
             }
             RuntimeEvent::EndOfInput => {
                 if let Some(scan) = storage_scan.take() {
                     scan.cancelled.store(true, Ordering::SeqCst);
                 }
                 agent_tool_workers.cancel_and_join();
+                shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                 if let Some(hub) = MCP_HUB.get() {
                     hub.shutdown();
                 }
@@ -279,6 +300,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             RuntimeEvent::RemoteFinished { request_id, result } => {
                 write_response(&mut stdout, result_response(request_id, *result))?;
             }
+            RuntimeEvent::SkillFinished { response } => {
+                write_response(&mut stdout, response)?;
+            }
         }
     }
 
@@ -313,6 +337,9 @@ enum RuntimeEvent {
     RemoteFinished {
         request_id: Value,
         result: Box<anyhow::Result<Value>>,
+    },
+    SkillFinished {
+        response: RpcResponse,
     },
     Input(io::Result<String>),
     EndOfInput,
@@ -741,6 +768,27 @@ fn write_response(stdout: &mut impl Write, response: RpcResponse) -> io::Result<
     stdout.flush()
 }
 
+fn write_pending_skill_responses(
+    events: &mpsc::Receiver<RuntimeEvent>,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    for event in events.try_iter() {
+        if let RuntimeEvent::SkillFinished { response } = event {
+            write_response(stdout, response)?;
+        }
+    }
+    Ok(())
+}
+
+fn shutdown_skill_worker(
+    worker: &mut skill_worker::Worker,
+    events: &mpsc::Receiver<RuntimeEvent>,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    worker.shutdown();
+    write_pending_skill_responses(events, stdout)
+}
+
 fn invalid_params_response<E: std::fmt::Display>(id: Value, error: E) -> RpcResponse {
     RpcResponse::error(
         id,
@@ -760,6 +808,24 @@ fn skill_hub() -> anyhow::Result<&'static agentkib_skills::SkillHub> {
     SKILL_HUB
         .get()
         .ok_or_else(|| anyhow::anyhow!("AgentKib Skill Hub is not initialized"))
+}
+
+fn is_skill_method(method: &str) -> bool {
+    matches!(
+        method,
+        LIST_SKILL_CATALOG_METHOD
+            | DISCOVER_SKILLS_METHOD
+            | LIST_INSTALLED_SKILLS_METHOD
+            | PREPARE_SKILL_INSTALL_METHOD
+            | APPLY_SKILL_OPERATION_METHOD
+            | CHECK_SKILL_UPDATES_METHOD
+            | PREPARE_SKILL_UPDATE_METHOD
+            | ROLLBACK_SKILL_METHOD
+            | UNINSTALL_SKILL_METHOD
+            | LIST_REMOVED_SKILLS_METHOD
+            | RESTORE_SKILL_METHOD
+            | READ_SKILL_FILE_METHOD
+    )
 }
 
 fn load_mcp_network_settings() -> McpNetworkSettings {
@@ -788,7 +854,8 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         );
     }
 
-    match request.method.as_str() {
+    let method = request.method.clone();
+    match method.as_str() {
         HANDSHAKE_METHOD => handle_handshake(request),
         SHUTDOWN_METHOD => (RpcResponse::success(request.id, Value::Null), true),
         SCAN_WORKSPACE_METHOD => command_response(request, scan_workspace),
@@ -821,18 +888,6 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         LIST_WORKSPACES_METHOD => command_response(request, list_workspaces),
         LIST_AGENT_INSTALLATIONS_METHOD => command_response(request, list_agent_installations),
         SEARCH_CATALOG_ASSETS_METHOD => command_response(request, search_catalog_assets),
-        LIST_SKILL_CATALOG_METHOD => command_response(request, list_skill_catalog),
-        DISCOVER_SKILLS_METHOD => command_response(request, discover_skills),
-        LIST_INSTALLED_SKILLS_METHOD => command_response(request, list_installed_skills),
-        PREPARE_SKILL_INSTALL_METHOD => command_response(request, prepare_skill_install),
-        APPLY_SKILL_OPERATION_METHOD => command_response(request, apply_skill_operation),
-        CHECK_SKILL_UPDATES_METHOD => command_response(request, check_skill_updates),
-        PREPARE_SKILL_UPDATE_METHOD => command_response(request, prepare_skill_update),
-        ROLLBACK_SKILL_METHOD => command_response(request, rollback_skill),
-        UNINSTALL_SKILL_METHOD => command_response(request, uninstall_skill),
-        LIST_REMOVED_SKILLS_METHOD => command_response(request, list_removed_skills),
-        RESTORE_SKILL_METHOD => command_response(request, restore_skill),
-        READ_SKILL_FILE_METHOD => command_response(request, read_skill_file),
         LIST_GLOBAL_MEMORIES_METHOD => command_response(request, list_global_memories),
         LIST_ACTIVITY_METHOD => command_response(request, list_activity),
         LIST_SCAN_ROOTS_METHOD => command_response(request, list_scan_roots),
@@ -2192,6 +2247,13 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
     let (command, expected_version) = match target {
         AgentKind::Codex => ("codex", (0, 146)),
         AgentKind::ClaudeCode => ("claude", (2, 1)),
+        AgentKind::Antigravity => {
+            return NativeImportCapability {
+                supported: false,
+                beta: false,
+                reason: Some("native-history-import-unsupported".into()),
+            };
+        }
         _ => {
             return NativeImportCapability {
                 supported: false,
@@ -2245,6 +2307,12 @@ fn native_resume_capability(
     target: AgentKind,
     native: &NativeImportCapability,
 ) -> ContinuationCapability {
+    if target == AgentKind::Antigravity {
+        return continuation_capability(
+            ContinuationCapabilityStatus::Unsupported,
+            Some("native-history-import-unsupported"),
+        );
+    }
     if !matches!(target, AgentKind::Codex | AgentKind::ClaudeCode) {
         return continuation_capability(
             ContinuationCapabilityStatus::Unsupported,
@@ -3199,6 +3267,7 @@ fn native_mcp_home_files_for(home: &Path, opencode_config_home: &Path) -> Vec<Pa
         home.join(".claude.json"),
         home.join(".openclaw/openclaw.json"),
         home.join(".hermes/config.yaml"),
+        home.join(".gemini/config/mcp_config.json"),
         opencode_config_home.join("opencode.json"),
         opencode_config_home.join("opencode.jsonc"),
     ]
@@ -4127,21 +4196,157 @@ struct SkillCatalogRequest {
     force: bool,
 }
 
-fn list_skill_catalog(
-    request: SkillCatalogRequest,
-) -> anyhow::Result<agentkib_core::SkillCatalogSnapshot> {
-    runtime_block_on(skill_hub()?.curated(request.force))
+enum SkillNetworkOutcome<T> {
+    Completed(anyhow::Result<T>),
+    Deadline,
+    Cancelled,
+}
+
+fn execute_skill_request(
+    request: RpcRequest,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> RpcResponse {
+    if Instant::now() >= deadline {
+        return result_response(
+            request.id,
+            Err::<Value, _>(anyhow::anyhow!(
+                "Skill request exceeded the 180 second queue deadline"
+            )),
+        );
+    }
+    if cancelled.load(Ordering::SeqCst) {
+        return result_response(
+            request.id,
+            Err::<Value, _>(anyhow::anyhow!("Skill worker is shutting down")),
+        );
+    }
+
+    let method = request.method.clone();
+    match method.as_str() {
+        LIST_SKILL_CATALOG_METHOD => command_response(request, |params: SkillCatalogRequest| {
+            let hub = skill_hub()?;
+            match run_skill_network(hub.curated(params.force), deadline, cancelled)? {
+                SkillNetworkOutcome::Completed(result) => result,
+                SkillNetworkOutcome::Deadline => hub.cached_curated_stale().with_context(|| {
+                    "Skill catalog refresh exceeded the 180 second queue deadline and no cached catalog is available"
+                }),
+                SkillNetworkOutcome::Cancelled => {
+                    anyhow::bail!("Skill catalog refresh was cancelled during shutdown")
+                }
+            }
+        })
+        .0,
+        DISCOVER_SKILLS_METHOD => command_response(request, |params: DiscoverSkillsRequest| {
+            resolve_skill_network(
+                run_skill_network(skill_hub()?.discover(&params.url), deadline, cancelled)?,
+                "Skill discovery",
+            )
+        })
+        .0,
+        LIST_INSTALLED_SKILLS_METHOD => command_response(request, list_installed_skills).0,
+        PREPARE_SKILL_INSTALL_METHOD => {
+            command_response(request, |params: PrepareSkillInstallRequest| {
+                resolve_skill_network(
+                    run_skill_network(
+                        skill_hub()?.prepare_install(params.source),
+                        deadline,
+                        cancelled,
+                    )?,
+                    "Skill install preview",
+                )
+            })
+            .0
+        }
+        APPLY_SKILL_OPERATION_METHOD => command_response(request, apply_skill_operation).0,
+        CHECK_SKILL_UPDATES_METHOD => command_response(request, |_: EmptyRequest| {
+            resolve_skill_network(
+                run_skill_network(skill_hub()?.check_updates(), deadline, cancelled)?,
+                "Skill update check",
+            )
+        })
+        .0,
+        PREPARE_SKILL_UPDATE_METHOD => command_response(request, |params: SkillNameRequest| {
+            resolve_skill_network(
+                run_skill_network(
+                    skill_hub()?.prepare_update(&params.name),
+                    deadline,
+                    cancelled,
+                )?,
+                "Skill update preview",
+            )
+        })
+        .0,
+        ROLLBACK_SKILL_METHOD => command_response(request, rollback_skill).0,
+        UNINSTALL_SKILL_METHOD => command_response(request, uninstall_skill).0,
+        LIST_REMOVED_SKILLS_METHOD => command_response(request, list_removed_skills).0,
+        RESTORE_SKILL_METHOD => command_response(request, restore_skill).0,
+        READ_SKILL_FILE_METHOD => command_response(request, read_skill_file).0,
+        _ => RpcResponse::error(
+            request.id,
+            -32601,
+            format!("Unknown Skill method: {method}"),
+            None,
+        ),
+    }
+}
+
+fn run_skill_network<F, T>(
+    future: F,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> anyhow::Result<SkillNetworkOutcome<T>>
+where
+    F: Future<Output = anyhow::Result<T>>,
+{
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        return Ok(SkillNetworkOutcome::Deadline);
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let outcome = runtime.block_on(async {
+        tokio::select! {
+            biased;
+            result = future => SkillNetworkOutcome::Completed(result),
+            _ = wait_for_skill_shutdown(cancelled) => SkillNetworkOutcome::Cancelled,
+            _ = tokio::time::sleep(remaining) => SkillNetworkOutcome::Deadline,
+        }
+    });
+    // A Skill future can perform synchronous directory scans or hashing while being polled.
+    // That blocks this timer, so never report a late completion as success.
+    Ok(match outcome {
+        SkillNetworkOutcome::Completed(_) if cancelled.load(Ordering::SeqCst) => {
+            SkillNetworkOutcome::Cancelled
+        }
+        SkillNetworkOutcome::Completed(_) if Instant::now() >= deadline => {
+            SkillNetworkOutcome::Deadline
+        }
+        outcome => outcome,
+    })
+}
+
+async fn wait_for_skill_shutdown(cancelled: &AtomicBool) {
+    while !cancelled.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn resolve_skill_network<T>(outcome: SkillNetworkOutcome<T>, operation: &str) -> anyhow::Result<T> {
+    match outcome {
+        SkillNetworkOutcome::Completed(result) => result,
+        SkillNetworkOutcome::Deadline => {
+            anyhow::bail!("{operation} exceeded the 180 second queue deadline")
+        }
+        SkillNetworkOutcome::Cancelled => {
+            anyhow::bail!("{operation} was cancelled during shutdown")
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct DiscoverSkillsRequest {
     url: String,
-}
-
-fn discover_skills(
-    request: DiscoverSkillsRequest,
-) -> anyhow::Result<Vec<agentkib_core::SkillCandidate>> {
-    runtime_block_on(skill_hub()?.discover(&request.url))
 }
 
 fn list_installed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::InstalledSkill>> {
@@ -4151,12 +4356,6 @@ fn list_installed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::I
 #[derive(Deserialize)]
 struct PrepareSkillInstallRequest {
     source: agentkib_core::SkillSource,
-}
-
-fn prepare_skill_install(
-    request: PrepareSkillInstallRequest,
-) -> anyhow::Result<agentkib_core::SkillOperationPreview> {
-    runtime_block_on(skill_hub()?.prepare_install(request.source))
 }
 
 #[derive(Deserialize)]
@@ -4176,19 +4375,9 @@ fn apply_skill_operation(
     Ok(skill)
 }
 
-fn check_skill_updates(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::InstalledSkill>> {
-    runtime_block_on(skill_hub()?.check_updates())
-}
-
 #[derive(Deserialize)]
 struct SkillNameRequest {
     name: String,
-}
-
-fn prepare_skill_update(
-    request: SkillNameRequest,
-) -> anyhow::Result<agentkib_core::SkillOperationPreview> {
-    runtime_block_on(skill_hub()?.prepare_update(&request.name))
 }
 
 #[derive(Deserialize)]
@@ -5163,6 +5352,130 @@ mod tests {
     use super::*;
 
     #[test]
+    fn all_skill_rpc_methods_are_routed_to_the_worker() {
+        for method in [
+            LIST_SKILL_CATALOG_METHOD,
+            DISCOVER_SKILLS_METHOD,
+            LIST_INSTALLED_SKILLS_METHOD,
+            PREPARE_SKILL_INSTALL_METHOD,
+            APPLY_SKILL_OPERATION_METHOD,
+            CHECK_SKILL_UPDATES_METHOD,
+            PREPARE_SKILL_UPDATE_METHOD,
+            ROLLBACK_SKILL_METHOD,
+            UNINSTALL_SKILL_METHOD,
+            LIST_REMOVED_SKILLS_METHOD,
+            RESTORE_SKILL_METHOD,
+            READ_SKILL_FILE_METHOD,
+        ] {
+            assert!(is_skill_method(method), "{method} was not routed");
+        }
+        assert!(!is_skill_method(RUNTIME_INFO_METHOD));
+    }
+
+    #[test]
+    fn skill_shutdown_flushes_pending_responses() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut worker = skill_worker::Worker::new(
+            move |response| {
+                events_tx
+                    .send(RuntimeEvent::SkillFinished { response })
+                    .unwrap();
+            },
+            |request, _, _| RpcResponse::success(request.id, Value::Null),
+        );
+        for id in 1..=2 {
+            let request = RpcRequest {
+                jsonrpc: "2.0".into(),
+                id: id.into(),
+                method: LIST_INSTALLED_SKILLS_METHOD.into(),
+                params: json!({}),
+            };
+            assert!(worker.submit(request).is_none());
+        }
+
+        let mut output = Vec::new();
+        shutdown_skill_worker(&mut worker, &events_rx, &mut output).unwrap();
+        let responses = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[1]["id"], 2);
+    }
+
+    #[test]
+    fn skill_network_deadline_drops_the_in_flight_future() {
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let signal = DropSignal(Arc::clone(&dropped));
+        let future = async move {
+            let _signal = signal;
+            std::future::pending::<()>().await;
+            Ok::<_, anyhow::Error>(())
+        };
+        let cancelled = AtomicBool::new(false);
+
+        let result = run_skill_network(
+            future,
+            Instant::now() + Duration::from_millis(20),
+            &cancelled,
+        )
+        .unwrap();
+
+        assert!(matches!(result, SkillNetworkOutcome::Deadline));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn skill_network_deadline_rejects_late_synchronous_completion() {
+        let cancelled = AtomicBool::new(false);
+        let result = run_skill_network(
+            async {
+                std::thread::sleep(Duration::from_millis(30));
+                Ok::<_, anyhow::Error>(())
+            },
+            Instant::now() + Duration::from_millis(10),
+            &cancelled,
+        )
+        .unwrap();
+
+        assert!(matches!(result, SkillNetworkOutcome::Deadline));
+    }
+
+    #[test]
+    fn skill_network_shutdown_drops_the_in_flight_future() {
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let signal = DropSignal(Arc::clone(&dropped));
+        let future = async move {
+            let _signal = signal;
+            std::future::pending::<()>().await;
+            Ok::<_, anyhow::Error>(())
+        };
+        let cancelled = AtomicBool::new(true);
+
+        let result =
+            run_skill_network(future, Instant::now() + Duration::from_secs(1), &cancelled).unwrap();
+
+        assert!(matches!(result, SkillNetworkOutcome::Cancelled));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn remote_source_enforces_index_preference_before_opening_database() {
         use agentkib_remote::Source;
         let directory = tempdir().unwrap();
@@ -5831,7 +6144,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_home_mcp_configs_are_approved_changeset_targets() {
+    fn native_mcp_home_configs_are_approved_changeset_targets() {
         let dir = tempdir().unwrap();
         let project = dir.path().join("project");
         let home = dir.path().join("home");
@@ -5851,6 +6164,15 @@ mod tests {
                 .is_ok()
             );
         }
+        assert!(
+            agentkib_core::ensure_allowed_target(
+                &project,
+                &home.join(".gemini/config/mcp_config.json"),
+                &approved,
+                &[],
+            )
+            .is_ok()
+        );
         assert!(
             agentkib_core::ensure_allowed_target(
                 &project,

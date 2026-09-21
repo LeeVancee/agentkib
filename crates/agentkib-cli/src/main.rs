@@ -90,12 +90,23 @@ fn parse_agent(value: &str) -> Result<AgentKind> {
         "openclaw" => Ok(AgentKind::OpenClaw),
         "hermes" => Ok(AgentKind::Hermes),
         "grok" | "grok-build" => Ok(AgentKind::GrokBuild),
+        "antigravity" => Ok(AgentKind::Antigravity),
         "deepseek-harness" | "dsh" => Ok(AgentKind::DeepSeekHarness),
         _ => bail!("Unknown Agent: {value}"),
     }
 }
 fn print_help() {
     println!(
-        "agentkib scan <project>\nagentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|grok-build|deepseek-harness> [cwd]\nagentkib plan <project>\nagentkib validate <project>\nagentkib manifest <project>"
+        "agentkib scan <project>\nagentkib context <project> <codex|claude-code|cursor|opencode|openclaw|hermes|grok-build|antigravity|deepseek-harness> [cwd]\nagentkib plan <project>\nagentkib validate <project>\nagentkib manifest <project>"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_context_agent_is_accepted() {
+        assert_eq!(parse_agent("antigravity").unwrap(), AgentKind::Antigravity);
+    }
 }

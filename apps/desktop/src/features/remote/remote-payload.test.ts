@@ -75,7 +75,15 @@ describe("remote payload validation", () => {
       ).not.toThrow();
   });
   it("accepts a mixed catalog of all supported history providers", () => {
-    const agents = ["codex", "claude-code", "opencode", "open-claw", "hermes", "grok-build"];
+    const agents = [
+      "codex",
+      "claude-code",
+      "antigravity",
+      "opencode",
+      "open-claw",
+      "hermes",
+      "grok-build",
+    ];
     const result = parseRemoteCatalog({
       workspaces: [workspace],
       sessions: agents.map((agent) => ({ ...session, id: agent, agent })),

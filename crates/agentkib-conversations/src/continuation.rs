@@ -5,6 +5,7 @@ use std::path::Path;
 
 use agentkib_core::AgentKind;
 use anyhow::{Context, Result, bail};
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1448,9 +1449,23 @@ pub(crate) fn finish_document(
                 SessionBlock::ToolResult { output, .. } => {
                     *output = sanitize_handoff_content(output, home, &mut redaction_count);
                 }
-                SessionBlock::Attachment { filename, .. } => {
+                SessionBlock::Attachment {
+                    media_type,
+                    filename,
+                    inline_base64,
+                    ..
+                } => {
                     if let Some(value) = filename {
                         *value = sanitize_handoff_content(value, home, &mut redaction_count);
+                    }
+                    if is_textual_media_type(media_type)
+                        && let Some(data) = inline_base64
+                        && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&*data)
+                        && let Ok(text) = String::from_utf8(bytes)
+                    {
+                        *data = base64::engine::general_purpose::STANDARD.encode(
+                            sanitize_handoff_content(&text, home, &mut redaction_count).as_bytes(),
+                        );
                     }
                 }
             }
@@ -1483,6 +1498,22 @@ pub(crate) fn finish_document(
             .collect(),
         redaction_count,
     })
+}
+
+pub(crate) fn is_textual_media_type(media_type: &str) -> bool {
+    let media_type = media_type
+        .split(';')
+        .next()
+        .unwrap_or(media_type)
+        .trim()
+        .to_ascii_lowercase();
+    media_type.starts_with("text/")
+        || matches!(
+            media_type.as_str(),
+            "application/json" | "application/xml" | "application/javascript"
+        )
+        || media_type.ends_with("+json")
+        || media_type.ends_with("+xml")
 }
 
 fn read_snapshot(path: &Path) -> Result<Snapshot> {

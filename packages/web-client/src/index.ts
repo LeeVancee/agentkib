@@ -4,6 +4,7 @@ export interface ConversationSessionSummary {
   agent:
     | "codex"
     | "claude-code"
+    | "antigravity"
     | "cursor"
     | "opencode"
     | "open-claw"
@@ -51,7 +52,7 @@ export interface ConversationEventPage {
   next_cursor?: string;
   warnings: string[];
 }
-export type Decision = "accept" | "decline" | "cancel" | "allow" | "deny";
+export type Decision = string;
 export interface Access {
   bearerToken?: string;
   status: "unpaired" | "pending" | "approved" | "ended";
@@ -73,6 +74,8 @@ export interface Approval {
     description?: unknown;
     permissionSuggestions?: unknown;
   };
+  toolCall?: unknown;
+  options?: { optionId: string; name: string; kind: string }[];
   command?: unknown;
   cwd?: string;
   changes?: unknown;
@@ -104,10 +107,12 @@ export interface Live {
   revision: number;
   turnId?: string;
   sendEnabled: boolean;
+  stopEnabled?: boolean;
+  cancelling?: boolean;
   approvals: Approval[];
   questions?: UserQuestionRequest[];
   reason?: string;
-  executionMode?: "managed-resume";
+  executionMode?: "managed-resume" | "acp-managed";
   streamText?: string;
   streamTextTruncated?: boolean;
 }

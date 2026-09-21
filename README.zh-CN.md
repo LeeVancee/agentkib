@@ -41,17 +41,17 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 ### 跨 Agent 继续工作
 
-浏览受支持的 Codex 与 Claude Code 本地会话，并准备经过审查的交接。AgentKib 会保留有用的时间线上下文、遮盖常见敏感值，并在写入或导入交接产物前请求确认。
+浏览 Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build 的本地会话。Codex、Claude Code、Antigravity ACP 与 OpenCode 会话可以生成经过审查的跨 Agent 交接；其余来源保持只读。AgentKib 会保留有用的时间线上下文、遮盖常见敏感值，并在写入或导入交接产物前请求确认。Antigravity 的原生导入与 Desktop/CLI 互操作限制见[Antigravity 接入边界](docs/ANTIGRAVITY.md)。
 
 ### 维护本地工具链
 
-检查 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 的安装。AgentKib 会显示每处安装的版本、来源、可执行路径、PATH 默认项和冲突。经过验证的包管理器或官方更新器操作可使用固定参数执行；来源不明、需要提权或远程脚本的流程只提供官方命令或文档。
+检查 Codex、Claude Code、Antigravity、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build 的安装。AgentKib 会显示每处安装的版本、来源、可执行路径、PATH 默认项和冲突。经过验证且能固定目标版本的包管理器操作可以直接执行；无法固定精确版本、来源不明、需要提权或远程脚本的流程只提供供用户审查的命令或官方文档。
 
 [![AgentKib 工具与更新，展示版本、安装来源和诊断](docs/assets/agentkib-tools-updates.png)](docs/assets/agentkib-tools-updates.png)
 
 ## 内置 Web（开发预览）
 
-monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连接 → Web 访问** 中开启，远程使用时自行配置 HTTPS 反向代理或隧道，无需 AgentKib 账号或官方协调服务。桌面应用必须保持运行。实验发送和审批在真实验收完成前保持禁用。参见[自部署说明](docs/WEB-SELF-HOSTING.md)和[分层验收状态](qa/WEB-V1.md)。此处描述的是开发预览，不代表当前已发布版本已包含 Web。
+monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连接 → Web 访问** 中开启，远程使用时自行配置 HTTPS 反向代理或隧道，无需 AgentKib 账号或官方协调服务。桌面应用必须保持运行。读取授权与控制权限相互独立；经过验证的 macOS Claude Code 安装可在开启主机开关并单独授权浏览器后使用 AgentKib 托管续接，Codex owner 控制仍受发布验收门槛限制。参见[自部署说明](docs/WEB-SELF-HOSTING.md)、[Claude 续接边界](docs/CLAUDE-WEB.md)和[分层验收状态](qa/WEB-V1.md)。此处描述的是开发预览，不代表当前已发布版本已包含 Web。
 
 ## 下载
 
@@ -72,9 +72,10 @@ monorepo 中的独立 Web 构建随 Electron 打包。在 **设置 → 远程连
 
 ## 支持概览
 
-- **发现与上下文：** Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes、Grok Build，以及只读的 DeepSeek Harness 诊断。
-- **会话浏览与交接：** Codex 和 Claude Code。
-- **工具管理：** Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build；明确不包含 DeepSeek Harness。
+- **发现与上下文：** Codex、Claude Code、Antigravity、Cursor、OpenCode、OpenClaw、Hermes、Grok Build，以及只读的 DeepSeek Harness 诊断。
+- **会话浏览：** Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build；后三者是只读来源。
+- **经过审查的交接：** 支持以 Codex、Claude Code、Antigravity ACP 和 OpenCode 会话为来源，续接到受支持的本机 Agent。
+- **工具管理：** Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build。Antigravity 只提供安装检测与官方更新说明，不提供自动包管理操作；DeepSeek Harness 明确不在此范围内。
 - **界面：** English、简体中文、繁體中文和日本語；支持浅色、深色与跟随系统主题。
 - **平台：** macOS 13.3+、Windows 11、Ubuntu 22.04 和 Fedora；Windows 与 Linux ARM64 安装包仍为 Preview。
 

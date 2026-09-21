@@ -1,6 +1,7 @@
 export type AgentKind =
   | "codex"
   | "claude-code"
+  | "antigravity"
   | "cursor"
   | "opencode"
   | "open-claw"

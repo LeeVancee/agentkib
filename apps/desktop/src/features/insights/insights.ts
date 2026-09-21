@@ -3,6 +3,7 @@ import type { AgentKind, HeatmapPoint } from "@/core/types";
 export const insightsAgentKinds: AgentKind[] = [
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "open-claw",
   "hermes",

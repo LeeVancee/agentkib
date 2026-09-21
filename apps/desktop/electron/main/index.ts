@@ -192,6 +192,7 @@ async function startApplication(): Promise<void> {
   webAccess = new WebAccessService({
     sharedControl,
     verifiedClaudeManaged: process.platform === "darwin",
+    verifiedAntigravityManaged: true,
     acceptanceSessionId: acceptanceSession(process.env),
     dataDir: path.join(electronDataPath, "web"),
     staticDir: app.isPackaged
@@ -207,6 +208,7 @@ async function startApplication(): Promise<void> {
     mode: "lan",
     sharedControl,
     verifiedClaudeManaged: process.platform === "darwin",
+    verifiedAntigravityManaged: true,
     dataDir: path.join(electronDataPath, "web-lan"),
     staticDir: "",
     runtimeRequest: (params) => {

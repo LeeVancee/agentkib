@@ -724,6 +724,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::OpenClaw,
             AgentKind::Hermes,
             AgentKind::GrokBuild,
+            AgentKind::Antigravity,
         ]
         .into_iter()
         .any(|agent| manifest_adapter_enabled(manifest, agent));
@@ -743,6 +744,7 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::OpenClaw => cwd.join("TOOLS.md"),
             AgentKind::Hermes => cwd.join(".hermes.md"),
             AgentKind::GrokBuild => return false,
+            AgentKind::Antigravity => cwd.join("GEMINI.md"),
             AgentKind::DeepSeekHarness => return false,
         }
     } else {
@@ -762,7 +764,8 @@ fn instruction_fragment_can_be_repaired(
             AgentKind::Cursor
             | AgentKind::OpenCode
             | AgentKind::OpenClaw
-            | AgentKind::GrokBuild => cwd.join("AGENTS.md"),
+            | AgentKind::GrokBuild
+            | AgentKind::Antigravity => cwd.join("AGENTS.md"),
             AgentKind::Hermes => {
                 let private = cwd.join(".hermes.md");
                 let legacy = cwd.join("HERMES.md");
@@ -791,6 +794,7 @@ fn mcp_target_can_be_repaired(project: &Path, agent: AgentKind) -> bool {
         AgentKind::Cursor => project.join(".cursor/mcp.json"),
         AgentKind::OpenCode => opencode_managed_config_path(project),
         AgentKind::GrokBuild => project.join(".grok/config.toml"),
+        AgentKind::Antigravity => project.join(".agents/mcp_config.json"),
         AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::DeepSeekHarness => return false,
     };
     planned_instruction_file_is_safe(project, &target)
@@ -846,6 +850,7 @@ fn generated_skill_is_current(
             ".cursor/skills",
         ],
         AgentKind::Codex | AgentKind::Hermes => &[".agents/skills"],
+        AgentKind::Antigravity => &[".agents/skills"],
     };
     let source = project.join(&skill.path);
     let Some(source_files) = managed_skill_files(project, &source) else {
@@ -893,6 +898,7 @@ fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'s
         AgentKind::OpenCode,
         AgentKind::OpenClaw,
         AgentKind::Hermes,
+        AgentKind::Antigravity,
     ]
     .into_iter()
     .any(|shared_agent| {
@@ -908,7 +914,10 @@ fn cursor_skill_root(manifest: &Manifest, skill: &crate::SkillDefinition) -> &'s
 
 fn manifest_adapter_enabled(manifest: &Manifest, agent: AgentKind) -> bool {
     manifest.adapters.get(&agent).map_or(
-        !matches!(agent, AgentKind::OpenCode | AgentKind::GrokBuild),
+        !matches!(
+            agent,
+            AgentKind::OpenCode | AgentKind::GrokBuild | AgentKind::Antigravity
+        ),
         |state| state.enabled,
     )
 }
@@ -1005,6 +1014,7 @@ fn generated_skill_can_be_repaired(
             ".agents/skills"
         }
         AgentKind::GrokBuild => ".grok/skills",
+        AgentKind::Antigravity => ".agents/skills",
         AgentKind::DeepSeekHarness => return false,
     };
     let target = project.join(relative_root).join(&skill.name);
@@ -2070,7 +2080,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.error_count, 0);
-        assert_eq!(report.summary.warning_count, 0);
+        assert_eq!(report.summary.warning_count, 0, "{:#?}", report.issues);
         assert!(
             report
                 .matrix
@@ -2227,6 +2237,7 @@ mod tests {
             AgentKind::OpenCode,
             AgentKind::OpenClaw,
             AgentKind::Hermes,
+            AgentKind::Antigravity,
         ] {
             value.adapters.get_mut(&agent).unwrap().enabled = false;
         }

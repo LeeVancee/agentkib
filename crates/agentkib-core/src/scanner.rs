@@ -43,6 +43,10 @@ pub fn scan_workspace(project: &Path) -> Result<WorkspaceScan> {
 
     assets.sort_by(|a, b| a.path.cmp(&b.path));
     assets.dedup_by(|a, b| a.agent == b.agent && a.path == b.path);
+    assets.retain(|asset| {
+        asset.agent != AgentKind::Antigravity
+            || !antigravity_legacy_rule_shadowed(&root, &asset.path)
+    });
     let agents = AgentKind::ALL
         .into_iter()
         .map(|agent| {
@@ -349,6 +353,39 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 "Grok Build LSP configuration",
             ),
         ],
+        AgentKind::Antigravity => vec![
+            (
+                "AGENTS.md",
+                AssetKind::Instruction,
+                "Antigravity project instructions",
+            ),
+            (
+                "GEMINI.md",
+                AssetKind::Instruction,
+                "Antigravity project instructions",
+            ),
+            (
+                ".agents/rules",
+                AssetKind::Instruction,
+                "Antigravity workspace rules",
+            ),
+            (
+                ".agent/rules",
+                AssetKind::Instruction,
+                "Antigravity workspace rules",
+            ),
+            (
+                ".agents/plugins",
+                AssetKind::Configuration,
+                "Antigravity workspace plugins",
+            ),
+            (".agents/skills", AssetKind::Skill, "Antigravity Skills"),
+            (
+                ".agents/mcp_config.json",
+                AssetKind::Connection,
+                "Antigravity MCP",
+            ),
+        ],
         AgentKind::DeepSeekHarness => vec![
             (
                 "AGENTS.md",
@@ -374,6 +411,12 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
             (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
         ],
     }
+}
+
+fn antigravity_legacy_rule_shadowed(root: &Path, path: &Path) -> bool {
+    let legacy = root.join(".agent/rules");
+    path.strip_prefix(&legacy)
+        .is_ok_and(|relative| root.join(".agents/rules").join(relative).is_file())
 }
 
 fn record(agent: AgentKind, kind: AssetKind, path: PathBuf, summary: &str) -> Result<AssetRecord> {
@@ -473,7 +516,7 @@ mod tests {
             .filter(|asset| asset.kind == AssetKind::Skill)
             .collect();
 
-        assert_eq!(skill_assets.len(), 5);
+        assert_eq!(skill_assets.len(), 6);
         assert!(
             skill_assets
                 .iter()
@@ -493,6 +536,7 @@ mod tests {
             AgentKind::Cursor,
             AgentKind::OpenCode,
             AgentKind::OpenClaw,
+            AgentKind::Antigravity,
             AgentKind::DeepSeekHarness,
         ] {
             assert_eq!(
@@ -669,5 +713,70 @@ mod tests {
                 || asset.path.extension().and_then(|value| value.to_str()) == Some("js")
                 || asset.path.extension().and_then(|value| value.to_str()) == Some("ts")
         }));
+    }
+
+    #[test]
+    fn scans_antigravity_project_assets() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("GEMINI.md"), "Project guidance").unwrap();
+        fs::create_dir_all(dir.path().join(".agents/rules")).unwrap();
+        fs::create_dir_all(dir.path().join(".agent/rules")).unwrap();
+        fs::write(dir.path().join(".agents/rules/project.md"), "Rule").unwrap();
+        fs::write(
+            dir.path().join(".agent/rules/project.md"),
+            "Legacy duplicate",
+        )
+        .unwrap();
+        fs::write(dir.path().join(".agent/rules/legacy.md"), "Legacy rule").unwrap();
+        fs::create_dir_all(dir.path().join(".agents/plugins/reviewer/rules")).unwrap();
+        fs::write(
+            dir.path().join(".agents/plugins/reviewer/plugin.json"),
+            r#"{"name":"reviewer"}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".agents/plugins/reviewer/rules/review.md"),
+            "Plugin rule",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/reviewer")).unwrap();
+        fs::write(
+            dir.path().join(".agents/skills/reviewer/SKILL.md"),
+            "# Reviewer",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{}}"#,
+        )
+        .unwrap();
+
+        let scan = scan_workspace(dir.path()).unwrap();
+        let antigravity = scan
+            .agents
+            .iter()
+            .find(|agent| agent.agent == AgentKind::Antigravity)
+            .unwrap();
+        assert!(antigravity.detected);
+        assert_eq!(antigravity.asset_count, 7);
+        assert!(scan.assets.iter().any(|asset| {
+            asset.agent == AgentKind::Antigravity && asset.path.ends_with(".agent/rules/legacy.md")
+        }));
+        assert!(scan.assets.iter().all(|asset| {
+            asset.agent != AgentKind::Antigravity
+                || !asset.path.ends_with(".agent/rules/project.md")
+        }));
+        assert_eq!(
+            scan.assets
+                .iter()
+                .filter(|asset| {
+                    asset.agent == AgentKind::Antigravity
+                        && asset
+                            .path
+                            .ends_with(".agents/plugins/reviewer/rules/review.md")
+                })
+                .count(),
+            1
+        );
     }
 }

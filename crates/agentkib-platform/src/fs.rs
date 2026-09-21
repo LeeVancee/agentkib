@@ -92,6 +92,47 @@ pub fn move_path(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
+/// Atomically move a file only when the destination is still absent.
+pub fn move_file_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows::move_path(source, target)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let source = CString::new(source.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source contains NUL"))?;
+        let target = CString::new(target.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "target contains NUL"))?;
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                target.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        fs::hard_link(source, target)?;
+        fs::remove_file(source)
+    }
+}
+
 pub fn atomic_replace_checked(
     source: &Path,
     target: &Path,

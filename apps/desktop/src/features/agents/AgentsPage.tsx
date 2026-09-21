@@ -44,6 +44,7 @@ type AgentDetailSection = "overview" | "assets" | "workspaces" | "usage";
 const agentKinds: AgentKind[] = [
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",
@@ -54,6 +55,7 @@ const agentKinds: AgentKind[] = [
 const agentLabels: Record<AgentKind, string> = {
   codex: "Codex",
   "claude-code": "Claude Code",
+  antigravity: "Antigravity",
   cursor: "Cursor",
   opencode: "OpenCode",
   "open-claw": "OpenClaw",

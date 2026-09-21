@@ -1,6 +1,14 @@
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, ArrowUp, ChevronRight, RefreshCw, Settings2, ShieldCheck } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUp,
+  ChevronRight,
+  RefreshCw,
+  Settings2,
+  ShieldCheck,
+  Square,
+} from "lucide-react";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { SafeMarkdown, Transcript } from "@agentkib/session-ui";
 import { useNavigate } from "@tanstack/react-router";
@@ -29,6 +37,7 @@ export function SessionReader() {
     live,
     notice,
     canSend,
+    canStop,
     message,
     setMessage,
     control,
@@ -148,7 +157,9 @@ export function SessionReader() {
           {t[notice]}
         </p>
       )}
-      {(current?.agent === "codex" || current?.agent === "claude-code") &&
+      {(current?.agent === "codex" ||
+        current?.agent === "claude-code" ||
+        current?.agent === "antigravity") &&
       access.experimentalEnabled &&
       access.device?.send ? (
         <form
@@ -173,19 +184,33 @@ export function SessionReader() {
             <small>
               {t.experimental} · {t.controlInfo}
             </small>
-            <Button
-              variant="default"
-              className="size-9 shrink-0 rounded-xl"
-              aria-label={t.send}
-              disabled={!canSend || !isValidMessage(message)}
-            >
-              <ArrowUp size={20} />
-            </Button>
+            {canStop ? (
+              <Button
+                type="button"
+                variant="destructive"
+                className="size-9 shrink-0 rounded-xl"
+                aria-label={t.stop}
+                onClick={() => void control("stop")}
+              >
+                <Square size={17} />
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                className="size-9 shrink-0 rounded-xl"
+                aria-label={t.send}
+                disabled={!canSend || !isValidMessage(message)}
+              >
+                <ArrowUp size={20} />
+              </Button>
+            )}
           </div>
         </form>
       ) : (
         <footer className="shrink-0 border-t px-5 py-4 text-center text-xs text-muted-foreground">
-          {(current?.agent === "codex" || current?.agent === "claude-code") &&
+          {(current?.agent === "codex" ||
+            current?.agent === "claude-code" ||
+            current?.agent === "antigravity") &&
           access.experimentalEnabled &&
           access.device?.approve
             ? t.noSendPermission

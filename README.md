@@ -41,17 +41,17 @@ Browse reviewed OpenAI Skills or inspect a public GitHub repository before addin
 
 ### Continue across agents
 
-Browse supported Codex and Claude Code session history and prepare a reviewed handoff. AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts.
+Browse Codex, Claude Code, Antigravity ACP, OpenCode, OpenClaw, Hermes, and Grok Build session history. Codex, Claude Code, Antigravity ACP, and OpenCode sessions can be used to prepare a reviewed cross-agent handoff; the other sources remain read-only. AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts. Antigravity's current native-import and Desktop/CLI interoperability limits are documented in [Antigravity integration](docs/ANTIGRAVITY.md).
 
 ### Keep local tools current
 
-Inspect Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build installations. AgentKib reports each installation's version, source, executable path, PATH default, and conflicts. Verified package-manager or official-updater actions can run with pinned arguments; ambiguous, privileged, or remote-script flows fall back to official commands or documentation.
+Inspect Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build installations. AgentKib reports each installation's version, source, executable path, PATH default, and conflicts. Verified package-manager actions can run with a pinned target; channels that cannot pin an exact version, along with ambiguous, privileged, or remote-script flows, fall back to a command or official documentation.
 
 [![AgentKib Tools and updates showing versions, installation sources, and diagnostics](docs/assets/agentkib-tools-updates.png)](docs/assets/agentkib-tools-updates.png)
 
 ## Built-in Web (development preview)
 
-This monorepo includes a separately built Web client bundled with Electron. Enable it in **Settings → Remote connections → Web access**; configure your own HTTPS proxy or tunnel for remote use. No AgentKib account or coordination server is required. The desktop application must remain running. Experimental sending and approvals stay disabled until live acceptance is completed. See the [self-hosting guide (Chinese)](docs/WEB-SELF-HOSTING.md) and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
+This monorepo includes a separately built Web client bundled with Electron. Enable it in **Settings → Remote connections → Web access**; configure your own HTTPS proxy or tunnel for remote use. No AgentKib account or coordination server is required. The desktop application must remain running. Read access is separate from control permissions. Verified macOS Claude Code installations support AgentKib-managed continuation when the host switch and per-browser permissions are enabled; Codex owner control remains acceptance-gated. See the [self-hosting guide (Chinese)](docs/WEB-SELF-HOSTING.md), [Claude continuation boundary](docs/CLAUDE-WEB.md), and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
 
 ## Download
 
@@ -72,9 +72,10 @@ Only use files from the official release and verify the matching `.sha256` check
 
 ## Support at a glance
 
-- **Discovery and context:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, Grok Build, and read-only DeepSeek Harness diagnostics.
-- **Session browsing and handoff:** Codex and Claude Code.
-- **Tool management:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. DeepSeek Harness is intentionally excluded.
+- **Discovery and context:** Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, Grok Build, and read-only DeepSeek Harness diagnostics.
+- **Session browsing:** Codex, Claude Code, Antigravity ACP, OpenCode, OpenClaw, Hermes, and Grok Build; the latter three are read-only sources.
+- **Reviewed handoff:** Codex, Claude Code, Antigravity ACP, and OpenCode sources, targeting supported local agents.
+- **Tool management:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. Antigravity is detected and linked to official update guidance, but has no automatic package action. DeepSeek Harness is intentionally excluded.
 - **Interface:** English, Simplified Chinese, Traditional Chinese, and Japanese; light, dark, and system themes.
 - **Platforms:** macOS 13.3+, Windows 11, Ubuntu 22.04, and Fedora. ARM64 Windows and Linux packages remain Preview.
 

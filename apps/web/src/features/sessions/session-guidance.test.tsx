@@ -80,4 +80,58 @@ describe("production session guidance", () => {
       if (content?.trim()) expect(document.querySelector("pre")?.textContent).toBe(content);
     },
   );
+
+  it.each(["running", "waiting-approval"])(
+    "stops the exact active Antigravity turn while %s",
+    async (status) => {
+      vi.spyOn(WebClient.prototype, "access").mockResolvedValue({
+        status: "approved",
+        csrfToken: "test",
+        bootId: "boot",
+        experimentalEnabled: true,
+        device: { id: "device", name: "Browser", send: true, approve: false },
+      });
+      vi.spyOn(WebClient.prototype, "catalog").mockResolvedValue({
+        indexEnabled: true,
+        sessions: [
+          {
+            id: "antigravity-session",
+            workspace_id: "workspace",
+            agent: "antigravity",
+            availability: "readable",
+            archived: false,
+            sidechain: false,
+          },
+        ],
+      });
+      vi.spyOn(WebClient.prototype, "events").mockResolvedValue({ events: [], warnings: [] });
+      vi.spyOn(WebClient.prototype, "live").mockResolvedValue({
+        sessionId: "antigravity-session",
+        status,
+        revision: 4,
+        turnId: '"prompt-4"',
+        sendEnabled: false,
+        stopEnabled: true,
+        approvals: [],
+        executionMode: "acp-managed",
+      });
+      const request = vi
+        .spyOn(WebClient.prototype, "request")
+        .mockResolvedValue({ accepted: true });
+      const { result } = renderHook(() => useSessionController({}));
+      await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+      await act(() => result.current.choose("antigravity-session"));
+      expect(result.current.canStop).toBe(true);
+      await act(() => result.current.control("stop"));
+      expect(request).toHaveBeenCalledWith(
+        "stop",
+        expect.objectContaining({
+          sessionId: "antigravity-session",
+          bootId: "boot",
+          expectedRevision: 4,
+          turnId: '"prompt-4"',
+        }),
+      );
+    },
+  );
 });

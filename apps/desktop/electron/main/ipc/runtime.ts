@@ -18,6 +18,7 @@ const KNOWN_AGENTS = new Set([
   "opencode",
   "open-claw",
   "hermes",
+  "antigravity",
   "deepseek-harness",
 ]);
 

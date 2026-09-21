@@ -45,7 +45,11 @@ describe("AppearanceSettings", () => {
     expect(screen.getByRole("button", { name: "Dark" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Follow System" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sakura" })).toBeTruthy();
-    expect(screen.queryByText("Applies a coordinated palette to actions, focus, selections, surfaces, and the sidebar.")).toBeNull();
+    expect(
+      screen.queryByText(
+        "Applies a coordinated palette to actions, focus, selections, surfaces, and the sidebar.",
+      ),
+    ).toBeNull();
   });
 
   it("persists a selected accent", async () => {
@@ -66,7 +70,11 @@ describe("AppearanceSettings", () => {
   it("persists a selected appearance mode", async () => {
     const user = userEvent.setup();
     const onChanged = vi.fn();
-    const nextRuntime = { ...runtime, effective_theme: "dark", theme_preference: "dark" } as RuntimeInfo;
+    const nextRuntime = {
+      ...runtime,
+      effective_theme: "dark",
+      theme_preference: "dark",
+    } as RuntimeInfo;
     setThemePreference.mockResolvedValue(nextRuntime);
     render(<AppearanceSettings runtime={runtime} onChanged={onChanged} />);
 

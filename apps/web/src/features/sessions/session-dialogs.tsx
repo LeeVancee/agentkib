@@ -79,7 +79,9 @@ export function SessionDialogs() {
             {JSON.stringify(
               modal.method === "claude/can_use_tool"
                 ? (modal.input ?? null)
-                : (modal.command ?? modal.changes ?? null),
+                : modal.method === "session/request_permission"
+                  ? (modal.toolCall ?? null)
+                  : (modal.command ?? modal.changes ?? null),
               null,
               2,
             )}
@@ -107,7 +109,9 @@ export function SessionDialogs() {
                 .filter((d) =>
                   (modal.method === "claude/can_use_tool"
                     ? ["allow", "deny"]
-                    : ["accept", "decline", "cancel"]
+                    : modal.method === "session/request_permission"
+                      ? (modal.options?.map((option) => option.optionId) ?? [])
+                      : ["accept", "decline", "cancel"]
                   ).includes(d),
                 )
                 .map((d) => (
@@ -115,15 +119,21 @@ export function SessionDialogs() {
                     variant="ghost"
                     key={d}
                     className={
-                      d === "accept" || d === "allow"
+                      modal.method !== "session/request_permission" &&
+                      (d === "accept" || d === "allow")
                         ? "bg-primary text-primary-foreground hover:bg-primary/90"
                         : "border"
                     }
                     disabled={busy}
                     onClick={() => void control("approve", modal, d)}
                   >
-                    {(d === "accept" || d === "allow") && <Check size={16} />}{" "}
-                    {d === "cancel" ? t.cancelTurn : t[d]}
+                    {modal.method !== "session/request_permission" &&
+                      (d === "accept" || d === "allow") && <Check size={16} />}{" "}
+                    {modal.method === "session/request_permission"
+                      ? (modal.options?.find((option) => option.optionId === d)?.name ?? d)
+                      : d === "cancel"
+                        ? t.cancelTurn
+                        : t[d as "accept" | "allow" | "deny" | "decline"]}
                   </Button>
                 ))}
             </div>

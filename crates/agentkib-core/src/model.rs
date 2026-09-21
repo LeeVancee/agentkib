@@ -15,12 +15,13 @@ pub enum AgentKind {
     OpenClaw,
     Hermes,
     GrokBuild,
+    Antigravity,
     #[serde(rename = "deepseek-harness")]
     DeepSeekHarness,
 }
 
 impl AgentKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
@@ -28,12 +29,13 @@ impl AgentKind {
         Self::OpenClaw,
         Self::Hermes,
         Self::GrokBuild,
+        Self::Antigravity,
         Self::DeepSeekHarness,
     ];
 
     /// Agents whose native configuration AgentKib may generate today.
     /// DeepSeek Harness remains read-only while its persistence contracts are beta.
-    pub const WRITABLE: [Self; 7] = [
+    pub const WRITABLE: [Self; 8] = [
         Self::Codex,
         Self::ClaudeCode,
         Self::Cursor,
@@ -41,6 +43,7 @@ impl AgentKind {
         Self::OpenClaw,
         Self::Hermes,
         Self::GrokBuild,
+        Self::Antigravity,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -52,6 +55,7 @@ impl AgentKind {
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
             Self::GrokBuild => "grok-build",
+            Self::Antigravity => "antigravity",
             Self::DeepSeekHarness => "deepseek-harness",
         }
     }
@@ -543,6 +547,7 @@ impl AgentSupportCapabilities {
                 | AgentKind::OpenClaw
                 | AgentKind::Hermes
                 | AgentKind::GrokBuild
+                | AgentKind::Antigravity
         );
         Self {
             workspace_discovery: true,
@@ -550,9 +555,12 @@ impl AgentSupportCapabilities {
             history_read: session_list,
             continuation: matches!(
                 agent,
-                AgentKind::Codex | AgentKind::ClaudeCode | AgentKind::OpenCode
+                AgentKind::Codex
+                    | AgentKind::ClaudeCode
+                    | AgentKind::OpenCode
+                    | AgentKind::Antigravity
             ),
-            control: matches!(agent, AgentKind::Codex)
+            control: matches!(agent, AgentKind::Codex | AgentKind::Antigravity)
                 .then_some(AgentControlSupport::Experimental)
                 .unwrap_or_default(),
         }

@@ -299,6 +299,43 @@ describe("WebAccessService loopback security boundary", () => {
         .status,
     ).toBe(409);
   });
+  it("stops only the exact active turn and forwards it with send permission", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockImplementation(async (params) => {
+      const request = params as { operation: string };
+      if (request.operation === "live")
+        return {
+          runtimeBootId: "runtime-one",
+          revision: 9,
+          status: "running",
+          turnId: "turn-9",
+          sendEnabled: false,
+          stopEnabled: true,
+          approvals: [],
+        };
+      return { accepted: true, runtimeBootId: "runtime-one" };
+    });
+    const body = {
+      sessionId: "session",
+      requestId: "stop-one",
+      bootId,
+      expectedRevision: 9,
+      turnId: "turn-9",
+    };
+    expect((await http("/api/web/v1/stop", { method: "POST", body })).status).toBe(200);
+    expect(runtime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "stop", turnId: "turn-9" }),
+    );
+    expect(
+      (
+        await http("/api/web/v1/stop", {
+          method: "POST",
+          body: { ...body, requestId: "stop-stale", turnId: "old-turn" },
+        })
+      ).status,
+    ).toBe(409);
+  });
   it.each([
     ["ASCII character limit", "x".repeat(16_000)],
     ["Chinese UTF-8 byte limit", "中".repeat(5_461) + "x"],
@@ -1274,7 +1311,7 @@ describe("WebAccessService loopback security boundary", () => {
           requestId: 860,
           turnId: "turn",
           supported: true,
-          availableDecisions: ["accept", "cancel"],
+          availableDecisions: ["approve-once", "cancel"],
         },
       ],
     });
@@ -1293,13 +1330,56 @@ describe("WebAccessService loopback security boundary", () => {
       (
         await http("/api/web/v1/approve", {
           method: "POST",
-          body: { ...approval, requestId: "accept", decision: "accept" },
+          body: { ...approval, requestId: "accept", decision: "approve-once" },
         })
       ).status,
     ).toBe(200);
     expect(runtime).toHaveBeenLastCalledWith(
-      expect.objectContaining({ operation: "approve", approvalId: 860, decision: "accept" }),
+      expect.objectContaining({
+        operation: "approve",
+        approvalId: 860,
+        decision: "approve-once",
+      }),
     );
+  });
+  it("forwards a supported negative ACP approval ID without changing its sign", async () => {
+    await bootstrap();
+    await pair(true, true);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: -860,
+          turnId: "turn",
+          supported: true,
+          availableDecisions: ["native-yes"],
+        },
+      ],
+    });
+    const response = await http("/api/web/v1/approve", {
+      method: "POST",
+      body: {
+        sessionId: "s",
+        requestId: "negative-approval",
+        bootId,
+        expectedRevision: 4,
+        turnId: "turn",
+        approvalId: -860,
+        decision: "native-yes",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "approve", approvalId: -860 }),
+    );
+    expect(
+      runtime.mock.calls.filter(
+        ([params]) => (params as { operation?: string }).operation === "approve",
+      ),
+    ).toHaveLength(1);
   });
   it("rechecks revoked grants between live read and mutation dispatch", async () => {
     await bootstrap();

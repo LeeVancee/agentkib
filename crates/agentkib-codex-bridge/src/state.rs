@@ -5,13 +5,17 @@ use anyhow::bail;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use serde_json::Value;
+#[cfg(any(target_os = "macos", test))]
 use std::io::{self, Write};
 
+#[cfg(any(target_os = "macos", test))]
 const MAX_SNAPSHOT_SIZE: usize = 48 * 1024 * 1024;
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct ByteCounter(usize);
 
+#[cfg(any(target_os = "macos", test))]
 impl Write for ByteCounter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0 = self.0.saturating_add(bytes.len());
@@ -23,6 +27,7 @@ impl Write for ByteCounter {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn json_size(value: &Value) -> Result<usize> {
     let mut bytes = ByteCounter::default();
     serde_json::to_writer(&mut bytes, value)?;

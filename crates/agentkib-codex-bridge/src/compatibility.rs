@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 use crate::EXTENSION_VERSION;
 use crate::{DESKTOP_VERSION, DESKTOP_VERSION_CURRENT};
 use anyhow::{Context, Result, ensure};

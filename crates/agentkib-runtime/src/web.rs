@@ -235,6 +235,44 @@ impl Default for Service {
     }
 }
 impl Service {
+    fn follower_settings_state(&self, id: &str) -> Value {
+        #[cfg(target_os = "macos")]
+        {
+            self.bridges
+                .get(id)
+                .map(|bridge| bridge.thread_settings())
+                .unwrap_or_else(|| {
+                    json!({"available":false,"executionMode":"codex-follower","reason":"open-in-original-client"})
+                })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = id;
+            json!({"available":false,"executionMode":"codex-follower","reason":"platform-unsupported"})
+        }
+    }
+
+    fn follower_settings_capability(&self, id: &str, live: &Value) -> Value {
+        #[cfg(target_os = "macos")]
+        {
+            if self
+                .bridges
+                .get(id)
+                .is_some_and(|bridge| bridge.supports_thread_settings())
+                && live["status"] == "idle"
+            {
+                json!({"available":true})
+            } else {
+                json!({"available":false,"reason":"follower-operation-unverified"})
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (id, live);
+            json!({"available":false,"reason":"platform-unsupported"})
+        }
+    }
+
     fn request(&mut self, value: Value) -> anyhow::Result<Value> {
         if matches!(
             value["operation"].as_str(),
@@ -258,7 +296,7 @@ impl Service {
                         let mut live = value.clone();
                         live["operation"] = json!("live");
                         self.request_inner(live)?;
-                        Ok(self.bridges.get(id).map(|bridge| bridge.thread_settings()).unwrap_or_else(|| json!({"available":false,"executionMode":"codex-follower","reason":"open-in-original-client"})))
+                        Ok(self.follower_settings_state(id))
                     } else {
                         Ok(
                             json!({"available":false,"executionMode":"codex-follower","reason":"follower-operation-unverified"}),
@@ -299,16 +337,8 @@ impl Service {
                                     json!({"available":false,"reason":"session-state-unavailable"})
                                 };
                             }
-                            let settings = self
-                                .bridges
-                                .get(id)
-                                .is_some_and(|bridge| bridge.supports_thread_settings())
-                                && live["status"] == "idle";
-                            caps["features"]["settings"] = if settings {
-                                json!({"available":true})
-                            } else {
-                                json!({"available":false,"reason":"follower-operation-unverified"})
-                            };
+                            caps["features"]["settings"] =
+                                self.follower_settings_capability(id, &live);
                         }
                     }
                     Ok(caps)
@@ -1340,6 +1370,36 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follower_settings_require_a_supported_platform_and_attached_owner() {
+        let service = Service::default();
+        let state = service.follower_settings_state("unattached-session");
+        assert_eq!(state["available"], false);
+        assert_eq!(state["executionMode"], "codex-follower");
+        assert_eq!(
+            state["reason"],
+            if cfg!(target_os = "macos") {
+                "open-in-original-client"
+            } else {
+                "platform-unsupported"
+            }
+        );
+        // An idle status must not grant settings control without a native owner.
+        for status in ["idle", "running", "outcome-unknown"] {
+            let capability = service
+                .follower_settings_capability("unattached-session", &json!({"status":status}));
+            assert_eq!(capability["available"], false);
+            assert_eq!(
+                capability["reason"],
+                if cfg!(target_os = "macos") {
+                    "follower-operation-unverified"
+                } else {
+                    "platform-unsupported"
+                }
+            );
+        }
+    }
 
     #[test]
     fn codex_stop_is_unavailable_while_the_previous_outcome_is_unknown() {

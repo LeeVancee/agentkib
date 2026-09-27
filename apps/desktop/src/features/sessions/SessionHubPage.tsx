@@ -348,101 +348,107 @@ export function SessionHubPage() {
                   <h2>{tr("sessions.recent")}</h2>
                   <span>{hub.filtered.length}</span>
                 </header>
-                {hub.filtered.slice(0, 12).map((session) => {
-                  const source = hub.workspaces.find((item) => item.id === session.workspace_id);
-                  return (
-                    <Button
-                      variant="bare"
-                      size="content"
-                      className="session-recent-item"
-                      key={session.id}
-                      onClick={() => hub.select(session.id)}
-                      title={[
-                        source?.path,
-                        sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
-                      ]
-                        .filter(Boolean)
-                        .join("\n")}
-                    >
-                      <AgentIcon agent={session.agent} compact />
-                      <span>
-                        <strong className="inline-flex items-center gap-1">
-                          {displaySessionTitle(session.title, tr)}
-                          {isInteractiveFork(session) && (
-                            <GitBranch
-                              size={12}
-                              aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
-                            />
-                          )}
-                        </strong>
-                        <small>
-                          {session.remote && `${session.remote.host_name} · `}
-                          {source?.name} · {sessionAgentNames[session.agent]} ·{" "}
-                          {sessionRecordLabel(session, tr)}
-                        </small>
-                      </span>
-                      <time>
-                        {session.updated_at
-                          ? formatDateTime(session.updated_at)
-                          : tr("conversations.unknownTime")}
-                      </time>
-                    </Button>
-                  );
-                })}
-                {!hub.filtered.length && !hub.loading && (
-                  <div className="session-state-inline">
-                    <p>{tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}</p>
-                    {hub.sessions.length > 0 && (
-                      <Button variant="ghost" onClick={resetFilters}>
-                        {tr("sessions.clearFilters")}
+                <div className="session-overview-panel-content">
+                  {hub.filtered.slice(0, 12).map((session) => {
+                    const source = hub.workspaces.find((item) => item.id === session.workspace_id);
+                    return (
+                      <Button
+                        variant="bare"
+                        size="content"
+                        className="session-recent-item"
+                        key={session.id}
+                        onClick={() => hub.select(session.id)}
+                        title={[
+                          source?.path,
+                          sessionSourceLabel(session, hub.sessions, tr, formatDateTime),
+                        ]
+                          .filter(Boolean)
+                          .join("\n")}
+                      >
+                        <AgentIcon agent={session.agent} compact />
+                        <span>
+                          <strong className="inline-flex items-center gap-1">
+                            {displaySessionTitle(session.title, tr)}
+                            {isInteractiveFork(session) && (
+                              <GitBranch
+                                size={12}
+                                aria-label={`${tr("conversations.forked")}: ${sessionSourceLabel(session, hub.sessions, tr, formatDateTime)}`}
+                              />
+                            )}
+                          </strong>
+                          <small>
+                            {session.remote && `${session.remote.host_name} · `}
+                            {source?.name} · {sessionAgentNames[session.agent]} ·{" "}
+                            {sessionRecordLabel(session, tr)}
+                          </small>
+                        </span>
+                        <time>
+                          {session.updated_at
+                            ? formatDateTime(session.updated_at)
+                            : tr("conversations.unknownTime")}
+                        </time>
                       </Button>
-                    )}
-                  </div>
-                )}
+                    );
+                  })}
+                  {!hub.filtered.length && !hub.loading && (
+                    <div className="session-state-inline">
+                      <p>
+                        {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}
+                      </p>
+                      {hub.sessions.length > 0 && (
+                        <Button variant="ghost" onClick={resetFilters}>
+                          {tr("sessions.clearFilters")}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </section>
               <section className="session-overview-panel">
                 <header>
                   <Database size={18} />
                   <h2>{tr("sessions.indexStatus")}</h2>
                 </header>
-                {statusWorkspaces.map((item) => (
-                  <div className="session-index-item" key={item.id}>
-                    <strong title={item.path}>{item.name}</strong>
-                    {hub.errors[item.id] && (
-                      <p className="text-destructive">{hub.errors[item.id]}</p>
-                    )}
-                    {hub.statuses
-                      .filter((status) => status.workspace_id === item.id)
-                      .map((status) => (
-                        <div className="session-index-status" key={`${item.id}:${status.agent}`}>
-                          <span>{sessionAgentNames[status.agent]}</span>
-                          <span>{tr(`sessions.index.${status.freshness}`)}</span>
-                          <small>
-                            {status.last_success_at
-                              ? formatDateTime(status.last_success_at)
-                              : tr("sessions.neverIndexed")}
-                          </small>
-                          {(status.error_key || status.error_detail) && (
-                            <p className="text-destructive">
-                              {status.error_key
-                                ? tr(status.error_key)
-                                : localizeMessage(status.error_detail ?? "")}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                    {!hub.statuses.some((status) => status.workspace_id === item.id) && (
-                      <p>
-                        {tr(hub.refreshing ? "conversations.scanning" : "sessions.neverIndexed")}
-                      </p>
-                    )}
-                  </div>
-                ))}
-                {!statusWorkspaces.length && (
-                  <p className="session-state-inline">
-                    {tr(hub.workspaces.length ? "sessions.noMatches" : "sessions.noWorkspaces")}
-                  </p>
-                )}
+                <div className="session-overview-panel-content">
+                  {statusWorkspaces.map((item) => (
+                    <div className="session-index-item" key={item.id}>
+                      <strong title={item.path}>{item.name}</strong>
+                      {hub.errors[item.id] && (
+                        <p className="text-destructive">{hub.errors[item.id]}</p>
+                      )}
+                      {hub.statuses
+                        .filter((status) => status.workspace_id === item.id)
+                        .map((status) => (
+                          <div className="session-index-status" key={`${item.id}:${status.agent}`}>
+                            <span>{sessionAgentNames[status.agent]}</span>
+                            <span>{tr(`sessions.index.${status.freshness}`)}</span>
+                            <small>
+                              {status.last_success_at
+                                ? formatDateTime(status.last_success_at)
+                                : tr("sessions.neverIndexed")}
+                            </small>
+                            {(status.error_key || status.error_detail) && (
+                              <p className="text-destructive">
+                                {status.error_key
+                                  ? tr(status.error_key)
+                                  : localizeMessage(status.error_detail ?? "")}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      {!hub.statuses.some((status) => status.workspace_id === item.id) && (
+                        <p>
+                          {tr(hub.refreshing ? "conversations.scanning" : "sessions.neverIndexed")}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {!statusWorkspaces.length && (
+                    <p className="session-state-inline">
+                      {tr(hub.workspaces.length ? "sessions.noMatches" : "sessions.noWorkspaces")}
+                    </p>
+                  )}
+                </div>
               </section>
             </div>
           </>

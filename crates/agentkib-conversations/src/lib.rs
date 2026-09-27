@@ -1095,7 +1095,7 @@ impl CodexProvider {
                 incomplete = true;
                 continue;
             }
-            let title = first_column_expression(&columns, &["name", "title", "preview"], "''");
+            let title = first_non_empty_column_expression(&columns, &["name", "title", "preview"]);
             let created =
                 first_column_expression(&columns, &["created_at_ms", "created_at"], "NULL");
             let updated = first_column_expression(
@@ -1117,8 +1117,10 @@ impl CodexProvider {
             let parent = first_column_expression(&columns, &["parent_thread_id"], "NULL");
             let forked = first_column_expression(&columns, &["forked_from_id"], "NULL");
             let thread_source = first_column_expression(&columns, &["thread_source"], "NULL");
+            let agent_path = first_column_expression(&columns, &["agent_path"], "NULL");
+            let agent_nickname = first_column_expression(&columns, &["agent_nickname"], "NULL");
             let sql = format!(
-                "SELECT id, rollout_path, cwd, {title}, {created}, {updated}, {branch}, {archived}, {source}, {parent}, {forked}, {thread_source} FROM threads"
+                "SELECT id, rollout_path, cwd, {title}, {created}, {updated}, {branch}, {archived}, {source}, {parent}, {forked}, {thread_source}, {agent_path}, {agent_nickname} FROM threads"
             );
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map([], |row| {
@@ -1131,17 +1133,23 @@ impl CodexProvider {
                 let forked = non_empty_string(row.get::<_, Option<String>>(10)?);
                 let thread_source = row.get::<_, Option<String>>(11)?;
                 let metadata = classify_codex_metadata(
-                    source_value,
+                    source_value.clone(),
                     thread_source.as_deref(),
                     parent.clone(),
                     forked.clone(),
                     source_malformed,
                 );
+                let agent_path = non_empty_string(row.get::<_, Option<String>>(12)?)
+                    .or_else(|| codex_agent_source_field(source_value.as_ref(), "agent_path"));
+                let agent_nickname = non_empty_string(row.get::<_, Option<String>>(13)?)
+                    .or_else(|| codex_agent_source_field(source_value.as_ref(), "agent_nickname"));
                 Ok(CodexNativeSession {
                     native_ref: row.get(0)?,
                     transcript: PathBuf::from(row.get::<_, String>(1)?),
                     cwd: PathBuf::from(row.get::<_, String>(2)?),
                     title: row.get::<_, Option<String>>(3)?,
+                    agent_path,
+                    agent_nickname,
                     origin: metadata.origin,
                     origin_authoritative: metadata.origin_authoritative,
                     source_present_in_database: source
@@ -1270,24 +1278,27 @@ impl ConversationProvider for CodexProvider {
         let sessions = sessions
             .into_iter()
             .map(|session| self.enrich_session(session))
-            .map(|session| NativeSessionSummary {
-                native_ref: session.native_ref,
-                agent: AgentKind::Codex,
-                title: sanitize_title(session.title.as_deref()),
-                origin: session.origin,
-                spawned_by_session_id: session.spawned_by_session_id,
-                forked_from_session_id: session.forked_from_session_id,
-                created_at: session.created_at,
-                updated_at: session.updated_at,
-                message_count: None,
-                git_branch: sanitize_metadata(session.git_branch),
-                archived: session.archived,
-                sidechain: false,
-                availability: if paging::is_readable(&session.transcript) {
-                    SessionAvailability::Readable
-                } else {
-                    SessionAvailability::MetadataOnly
-                },
+            .map(|session| {
+                let title = codex_session_title(&session);
+                NativeSessionSummary {
+                    native_ref: session.native_ref,
+                    agent: AgentKind::Codex,
+                    title,
+                    origin: session.origin,
+                    spawned_by_session_id: session.spawned_by_session_id,
+                    forked_from_session_id: session.forked_from_session_id,
+                    created_at: session.created_at,
+                    updated_at: session.updated_at,
+                    message_count: None,
+                    git_branch: sanitize_metadata(session.git_branch),
+                    archived: session.archived,
+                    sidechain: false,
+                    availability: if paging::is_readable(&session.transcript) {
+                        SessionAvailability::Readable
+                    } else {
+                        SessionAvailability::MetadataOnly
+                    },
+                }
             })
             .collect();
         Ok(NativeSessionListing {
@@ -1358,6 +1369,8 @@ struct CodexNativeSession {
     transcript: PathBuf,
     cwd: PathBuf,
     title: Option<String>,
+    agent_path: Option<String>,
+    agent_nickname: Option<String>,
     origin: SessionOrigin,
     origin_authoritative: bool,
     source_present_in_database: bool,
@@ -1532,6 +1545,28 @@ fn non_empty_text(value: &str) -> Option<String> {
 
 fn non_empty_string(value: Option<String>) -> Option<String> {
     value.and_then(|value| non_empty_text(&value))
+}
+
+fn codex_agent_source_field(source: Option<&Value>, field: &str) -> Option<String> {
+    source
+        .and_then(|source| source.pointer(&format!("/subagent/thread_spawn/{field}")))
+        .and_then(Value::as_str)
+        .and_then(non_empty_text)
+}
+
+fn codex_session_title(session: &CodexNativeSession) -> Option<String> {
+    sanitize_title(session.title.as_deref()).or_else(|| {
+        if session.origin != SessionOrigin::Auxiliary {
+            return None;
+        }
+        session
+            .agent_path
+            .as_deref()
+            .and_then(|path| path.trim_end_matches('/').rsplit('/').next())
+            .filter(|name| !name.is_empty() && *name != "root")
+            .and_then(|name| sanitize_title(Some(name)))
+            .or_else(|| sanitize_title(session.agent_nickname.as_deref()))
+    })
 }
 
 fn json_non_empty_string(value: Option<&Value>) -> Option<String> {
@@ -2732,6 +2767,19 @@ fn first_column_expression(
         [] => fallback.into(),
         [only] => (*only).into(),
         values => format!("COALESCE({})", values.join(", ")),
+    }
+}
+
+fn first_non_empty_column_expression(columns: &BTreeSet<String>, candidates: &[&str]) -> String {
+    let existing = candidates
+        .iter()
+        .filter(|column| columns.contains(**column))
+        .map(|column| format!("NULLIF(TRIM({column}), '')"))
+        .collect::<Vec<_>>();
+    if existing.is_empty() {
+        "NULL".into()
+    } else {
+        format!("COALESCE({})", existing.join(", "))
     }
 }
 

@@ -3011,6 +3011,20 @@ mod tests {
                 nickname_source.as_str(),
             ),
             (
+                "subagent-source-path",
+                "",
+                None,
+                None,
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-source-nickname",
+                "",
+                None,
+                None,
+                nickname_source.as_str(),
+            ),
+            (
                 "interactive",
                 "",
                 Some("/root/should_not_be_used"),
@@ -3051,6 +3065,8 @@ mod tests {
         assert_eq!(title_for("subagent-path"), Some("fix_title_bug"));
         assert_eq!(title_for("subagent-title"), Some("Codex title"));
         assert_eq!(title_for("subagent-nickname"), Some("Cedar"));
+        assert_eq!(title_for("subagent-source-path"), Some("fix_title_bug"));
+        assert_eq!(title_for("subagent-source-nickname"), Some("Cedar"));
         assert_eq!(title_for("interactive"), None);
     }
 

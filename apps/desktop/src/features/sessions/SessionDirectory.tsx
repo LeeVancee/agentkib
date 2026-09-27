@@ -20,7 +20,12 @@ import {
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionHub } from "./SessionHubContext";
-import { useSessionViewStore, type SessionRecordFilter } from "./session-view-store";
+import {
+  normalizeDirectoryOrder,
+  normalizeSessionDirectoryOrder,
+  useSessionViewStore,
+  type SessionRecordFilter,
+} from "./session-view-store";
 import {
   isInteractiveFork,
   sessionAgentNames,
@@ -81,8 +86,16 @@ export function SessionDirectory({
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
   const groups = groupSessions(hub.filtered, hub.workspaces);
   const allGroups = groupSessions(hub.sessions, hub.workspaces);
-  const workspacePositions = new Map(view.workspaceOrder.map((id, index) => [id, index]));
+  const completeWorkspaceOrder = normalizeDirectoryOrder(
+    view.workspaceOrder,
+    allGroups.map((group) => group.workspace.id),
+  );
+  const workspacePositions = new Map(completeWorkspaceOrder.map((id, index) => [id, index]));
   const orderedGroups = [...groups].sort((left, right) => {
+    const leftHost = left.workspace.remote?.host_id ?? "";
+    const rightHost = right.workspace.remote?.host_id ?? "";
+    const hostOrder = leftHost.localeCompare(rightHost);
+    if (hostOrder !== 0) return hostOrder;
     const leftPosition = workspacePositions.get(left.workspace.id);
     const rightPosition = workspacePositions.get(right.workspace.id);
     if (leftPosition === undefined) return rightPosition === undefined ? 0 : 1;
@@ -132,12 +145,19 @@ export function SessionDirectory({
     const source = draggedEntry.current;
     if (!source || source.kind !== target.kind) return;
     if (source.kind === "workspace" && target.kind === "workspace") {
-      const completeOrder = [
-        ...view.workspaceOrder,
-        ...allGroups
-          .map((group) => group.workspace.id)
-          .filter((id) => !view.workspaceOrder.includes(id)),
-      ];
+      const sourceWorkspace = hub.workspaces.find((item) => item.id === source.workspaceId);
+      const targetWorkspace = hub.workspaces.find((item) => item.id === target.workspaceId);
+      if (
+        (sourceWorkspace?.remote?.host_id ?? "local") !==
+        (targetWorkspace?.remote?.host_id ?? "local")
+      ) {
+        finishDrag();
+        return;
+      }
+      const completeOrder = normalizeDirectoryOrder(
+        view.workspaceOrder,
+        allGroups.map((group) => group.workspace.id),
+      );
       view.setWorkspaceOrder(
         moveRelative(completeOrder, source.workspaceId, target.workspaceId, dropAfter, (id) => id),
       );
@@ -148,11 +168,10 @@ export function SessionDirectory({
     ) {
       const group = allGroups.find((item) => item.workspace.id === source.workspaceId);
       if (group) {
-        const savedOrder = view.sessionOrder[source.workspaceId] ?? [];
-        const completeOrder = [
-          ...savedOrder,
-          ...group.sessions.map((session) => session.id).filter((id) => !savedOrder.includes(id)),
-        ];
+        const completeOrder = normalizeSessionDirectoryOrder(
+          view.sessionOrder[source.workspaceId] ?? [],
+          group.sessions.map((session) => session.id),
+        );
         view.setSessionOrder(
           source.workspaceId,
           moveRelative(completeOrder, source.sessionId, target.sessionId, dropAfter, (id) => id),

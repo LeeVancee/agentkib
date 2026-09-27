@@ -5,6 +5,27 @@ export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
 const SESSION_DIRECTORY_ORDER_STORAGE_KEY = "agentkib.session-directory-order";
 
+export function normalizeDirectoryOrder(savedOrder: string[], availableIds: string[]) {
+  const available = new Set(availableIds);
+  const seen = new Set<string>();
+  const normalized = savedOrder.filter((id) => {
+    if (!available.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...normalized, ...availableIds.filter((id) => !seen.has(id))];
+}
+
+export function normalizeSessionDirectoryOrder(savedOrder: string[], availableIds: string[]) {
+  const available = new Set(availableIds);
+  const saved = new Set(savedOrder.filter((id) => available.has(id)));
+  const normalized = normalizeDirectoryOrder(savedOrder, availableIds);
+  return [
+    ...availableIds.filter((id) => !saved.has(id)),
+    ...normalized.filter((id) => saved.has(id)),
+  ];
+}
+
 function initialSessionDirectoryOrder() {
   try {
     const value = localStorage?.getItem(SESSION_DIRECTORY_ORDER_STORAGE_KEY);

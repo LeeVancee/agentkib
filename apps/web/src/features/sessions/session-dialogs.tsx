@@ -1,3 +1,6 @@
+import { NativeScope } from "@/features/interactions/native-scope";
+import { NativeDecisions } from "@/features/interactions/native-decisions";
+import { codexCopy } from "./codex-copy";
 import { PreferencesDialog } from "@/features/preferences/preferences-dialog";
 import { SessionDetailsDialog } from "@/features/catalog/session-details-dialog";
 import { Button } from "@/components/ui/button";
@@ -36,12 +39,13 @@ export function SessionDialogs() {
       )}
       {typeof modal === "object" && "questions" in modal && (
         <Dialog
+          panel
           closeLabel={t.close}
           title={interactionCopy[locale].title}
           onClose={() => setModal(undefined)}
         >
           <QuestionForm
-            key={`${selected}:${modal.turnId}:${modal.requestId}`}
+            key={`${selected}:${JSON.stringify(modal)}`}
             request={modal}
             locale={locale}
             busy={busy}
@@ -65,8 +69,14 @@ export function SessionDialogs() {
         </Dialog>
       )}
       {typeof modal === "object" && "requestId" in modal && !("questions" in modal) && (
-        <Dialog closeLabel={t.close} title={t.approval} onClose={() => setModal(undefined)}>
-          <p>{modal.method === "claude/can_use_tool" ? t.claudeDecisionInfo : t.decisionInfo}</p>
+        <Dialog panel closeLabel={t.close} title={t.approval} onClose={() => setModal(undefined)}>
+          <p>
+            {modal.decisionOptions?.length
+              ? codexCopy[locale].native
+              : modal.method === "claude/can_use_tool"
+                ? t.claudeDecisionInfo
+                : t.decisionInfo}
+          </p>
           {modal.method === "claude/can_use_tool" && <h3>{modal.toolName || t.unknownTool}</h3>}
           {modal.environmentId === "local" && <p>{t.localExecution}</p>}
           {modal.cwd && (
@@ -86,18 +96,41 @@ export function SessionDialogs() {
               2,
             )}
           </pre>
+          {modal.requestContext && <NativeScope value={modal.requestContext} locale={locale} />}
+          <NativeDecisions
+            key={`${selected}:${JSON.stringify(modal)}`}
+            approval={modal}
+            locale={locale}
+            busy={busy}
+            enabled={
+              !!(
+                modal.supported &&
+                access?.experimentalEnabled &&
+                access.device?.approve &&
+                access.device?.extendedApproval &&
+                controlReady &&
+                online &&
+                live?.approvals.some((item) => JSON.stringify(item) === JSON.stringify(modal))
+              )
+            }
+            submit={(nativeDecision) =>
+              void control("approve", modal, undefined, undefined, undefined, { nativeDecision })
+            }
+          />
           {modal.method === "claude/can_use_tool" && modal.context && (
             <aside className="info">
               <p>{t.claudeContextInfo}</p>
               <pre>{JSON.stringify(modal.context, null, 2)}</pre>
             </aside>
           )}
-          {modal.method !== "claude/can_use_tool" && modal.proposedExecpolicyAmendment && (
-            <aside className="info block [&>pre]:mt-3">
-              <p>{t.policyProposal}</p>
-              <pre>{JSON.stringify(modal.proposedExecpolicyAmendment, null, 2)}</pre>
-            </aside>
-          )}
+          {!modal.decisionOptions?.length &&
+            modal.method !== "claude/can_use_tool" &&
+            modal.proposedExecpolicyAmendment && (
+              <aside className="info block [&>pre]:mt-3">
+                <p>{t.policyProposal}</p>
+                <pre>{JSON.stringify(modal.proposedExecpolicyAmendment, null, 2)}</pre>
+              </aside>
+            )}
           {modal.supported &&
           access?.experimentalEnabled &&
           access.device?.approve &&
@@ -106,6 +139,7 @@ export function SessionDialogs() {
           live?.approvals.some((a) => JSON.stringify(a) === JSON.stringify(modal)) ? (
             <div className="flex flex-wrap gap-2 border-t pt-4">
               {modal.availableDecisions
+                .filter(() => !modal.decisionOptions?.length)
                 .filter((d) =>
                   (modal.method === "claude/can_use_tool"
                     ? ["allow", "deny"]

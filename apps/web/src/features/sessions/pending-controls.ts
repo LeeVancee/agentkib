@@ -1,0 +1,98 @@
+import type { CodexAction } from "@agentkib/web-client";
+/** Only command identity is persisted; never prompts, answers, tokens or approval details. */
+export type PendingControl = {
+  requestId: string;
+  sessionId?: string;
+  workspaceId?: string;
+  kind:
+    | "send"
+    | "stop"
+    | "approve"
+    | "answer"
+    | "create"
+    | "adopt"
+    | "release"
+    | "reconcile"
+    | CodexAction;
+};
+const prefix = "agentkib:codex-pending:v1:";
+export function pendingScope(origin: string, deviceId: string): string {
+  return `${prefix}${JSON.stringify([origin || window.location.origin, deviceId])}`;
+}
+export function readPending(scope: string): PendingControl[] {
+  const raw = sessionStorage.getItem(scope);
+  if (raw === null) return [];
+  const entries: unknown = JSON.parse(raw);
+  if (
+    !Array.isArray(entries) ||
+    entries.length > 100 ||
+    entries.some(
+      (value) =>
+        !value ||
+        typeof value !== "object" ||
+        !/^[a-f0-9-]{36}$/i.test(value.requestId) ||
+        (value.sessionId !== undefined &&
+          (typeof value.sessionId !== "string" ||
+            !value.sessionId ||
+            value.sessionId.length > 256)) ||
+        (value.workspaceId !== undefined &&
+          (typeof value.workspaceId !== "string" ||
+            !value.workspaceId ||
+            value.workspaceId.length > 256)) ||
+        (!value.sessionId && !value.workspaceId) ||
+        ![
+          "send",
+          "stop",
+          "approve",
+          "answer",
+          "create",
+          "adopt",
+          "release",
+          "reconcile",
+          "resume",
+          "inspect",
+          "steer",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-reorder",
+          "queue-start",
+          "rename",
+          "archive",
+          "unarchive",
+          "fork",
+          "settings",
+        ].includes(value.kind),
+    )
+  )
+    throw new Error("pending_control_storage_invalid");
+  return entries.map(({ requestId, sessionId, workspaceId, kind }) => ({
+    requestId,
+    sessionId,
+    workspaceId,
+    kind,
+  }));
+}
+export function rememberPending(scope: string, pending: PendingControl): void {
+  const entries = readPending(scope);
+  if (
+    entries.some((entry) =>
+      pending.sessionId
+        ? entry.sessionId === pending.sessionId &&
+          (pending.kind !== "reconcile" || entry.kind === "reconcile")
+        : entry.kind === "create",
+    )
+  )
+    throw new Error("control_outcome_unconfirmed");
+  if (entries.length >= 100) throw new Error("pending_control_capacity");
+  const { requestId, sessionId, workspaceId, kind } = pending;
+  sessionStorage.setItem(
+    scope,
+    JSON.stringify([...entries, { requestId, sessionId, workspaceId, kind }]),
+  );
+}
+export function forgetPending(scope: string, requestId: string): void {
+  const entries = readPending(scope).filter((entry) => entry.requestId !== requestId);
+  if (entries.length) sessionStorage.setItem(scope, JSON.stringify(entries));
+  else sessionStorage.removeItem(scope);
+}

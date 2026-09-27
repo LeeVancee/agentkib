@@ -5,7 +5,12 @@
 mod transport;
 #[cfg(target_os = "macos")]
 pub use transport::Connection;
+mod native_requests;
 mod state;
+pub use native_requests::{
+    native_approval_options, project_native_questions, validate_native_answers,
+    validate_native_approval,
+};
 pub use state::{Approval, Decision, SessionState, Status};
 mod compatibility;
 pub use compatibility::Compatibility;
@@ -20,8 +25,9 @@ mod state_tests;
 mod transport_tests;
 
 pub const CLIENT_TYPE: &str = "agentkib-codex-bridge";
-pub const DESKTOP_VERSION: &str = "26.901.51231";
-pub const EXTENSION_VERSION: &str = "26.901.22334";
+pub const DESKTOP_VERSION: &str = "26.917.62051";
+pub const DESKTOP_VERSION_CURRENT: &str = "26.924.22138";
+pub const EXTENSION_VERSION: &str = "26.908.40401";
 
 pub fn validate_send_text(text: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -44,6 +50,7 @@ pub(crate) fn method_version(method: &str) -> Option<u64> {
         | "thread-follower-command-approval-decision"
         | "thread-follower-submit-user-input"
         | "thread-follower-file-approval-decision" => Some(1),
+        "thread-follower-update-thread-settings" => Some(2),
         "thread-follower-start-turn" => Some(2),
         "thread-follower-interrupt-turn" => Some(4),
         "thread-stream-state-changed" => Some(11),

@@ -26,7 +26,7 @@
 - `pnpm typecheck`：桌面与 Web 通过。协议生成输出与 `electron/generated/runtime-protocol.ts` 的 `cmp` 一致，协议版本 14。
 - `pnpm build`：正式 Rust runtime、Web 静态资源、桌面 renderer、Electron main/preload 均成功。
 - `electron-builder --dir --publish never`：成功生成 macOS arm64 未签名 `.app`，不发布。不是 Windows/Linux 或签名/公证安装验收。
-- 打包应用使用独立 `/tmp/agentkib-web-package-S9NcOH` 用户数据启动；可见 `app://bundle/index.html`，设置里默认服务关闭，启用后显示 `http://127.0.0.1:1421`，浏览器从该端口加载完整配对页。关闭服务后端口拒绝连接，退出测试 `.app` 后进程退出；没有退出 Codex。
+- 打包应用使用独立 `/tmp/agentkib-web-package-REDACTED` 用户数据启动；可见 `app://bundle/index.html`，设置里默认服务关闭，启用后显示 `http://127.0.0.1:1421`，浏览器从该端口加载完整配对页。关闭服务后端口拒绝连接，退出测试 `.app` 后进程退出；没有退出 Codex。
 - 此次桌面管理视觉检查发现保存按钮过宽、待授权列表缺少间距，已调整并重新构建。
 - 最终 `.app` 再次启动实看：上述布局修正可见，实验开关 disabled，显示“本构建尚未通过 Web 实验控制真实验收”。Web 资源目录与 `apps/web/dist` 逐文件一致；MIT 文件与根 LICENSE 一致。`build-info.json` 标注 version 0.8.0、源码 revision 与 dirty:true，未冒充正式发布。复核后关闭隔离应用及测试浏览器。
 - HTTP 测试 16 项包含在桌面总数中：配对/权限、Host/Origin/CSRF、静态路径和符号链接、过期/失败限额、HTTPS/local cookie 隔离、SSE 撤销、超时锁保留、重启/撤销竞态、发布验收开关默认禁用。
@@ -70,7 +70,7 @@
 ## 追加：2026-09-08 本地隔离控制验收
 
 - 增加仅由进程环境显式开启的验收入口：必须使用系统临时目录下 `agentkib-web-acceptance-*` 的独立 electron/runtime 数据目录、指定 64 位索引 ID，且不允许外部 HTTPS origin。不是浏览器可开启的设置，不改变正式 `verifiedExperimental=false`。桌面明确显示隔离验收及会话 ID；HTTP 拒绝其他会话的控制，仍核验配对、独立发送/审批授权、CSRF、owner 和 revision。
-- 使用同一个官方 UUID `01a07b7a-68a8-7113-832f-36d1ddd5594f`（处理测试对话）。隔离用户数据会产生不同的盐化索引 ID，因此从实际目录核对映射，不复用原用户数据的索引 ID。
+- 使用同一个官方 UUID `REDACTED_NATIVE_THREAD_ID`（处理测试对话）。隔离用户数据会产生不同的盐化索引 ID，因此从实际目录核对映射，不复用原用户数据的索引 ID。
 - 首次发送 `AK-WEB-SEND-023` 返回 HTTP 409；立即暂停控制，未重发。只读历史未出现该标记；三次 idle 查询却依次为 revision 181/182/183。根因是 refresh 使用 select 反复取消/建立订阅，官方 owner 首次添加 follower 会发布递增版本快照。
 - 核对本机已安装官方 ASAR 的 `handleThreadStreamFollowingChanged`：重复确认已有 follower 会发送当前 revision 的快照。因此修为保留原 stream，在 discovery 回调接收通知并校验 owner 不变，再确认已有订阅、等待完整快照。仅接受同版本且完整 JSON 相等的重复快照；相同版本的变更/patch、回退、baseRevision 缺口仍失效。同版本快照不能清除 OutcomeUnknown。协议无因果 nonce，不声称该刷新消除官方客户端竞争。
 - 修复后重建正式 release runtime 并装入未签名 macOS arm64 `.app`；没有使用开发服务器。三次真实只读查询均为 idle/revision 417。

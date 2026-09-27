@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::{CLIENT_TYPE, method_version};
 
-const MAX_FRAME: usize = 8 * 1024 * 1024;
+// Official Desktop snapshots include the full conversation. Keep a finite bound
+// above the largest verified local session while leaving room for IPC metadata.
+const MAX_FRAME: usize = 64 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A connection is single-consumer and never registers as a thread owner/router.
@@ -219,7 +221,10 @@ impl Connection {
             }
             if self.buffered.len() >= 4 {
                 let size = u32::from_le_bytes(self.buffered[..4].try_into()?) as usize;
-                ensure!(size > 0 && size <= MAX_FRAME, "IPC frame exceeds limit");
+                ensure!(
+                    size > 0 && size <= MAX_FRAME,
+                    "IPC frame exceeds limit ({size} bytes)"
+                );
                 if self.buffered.len() >= size + 4 {
                     let message: Value = serde_json::from_slice(&self.buffered[4..size + 4])?;
                     self.buffered.drain(..size + 4);

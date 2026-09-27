@@ -24,6 +24,8 @@ extraResources:
     to: web
   - from: build/runtime
     to: bin
+  - from: build/frpc
+    to: bin
   - from: build/quota
     to: bin
   - from: resources/quota/resources/CodexBar_CodexBarCore.bundle

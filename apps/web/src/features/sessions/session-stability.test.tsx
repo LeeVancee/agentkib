@@ -8,6 +8,7 @@ import type {
   Live,
   UserQuestionRequest,
 } from "@agentkib/web-client";
+import { pendingScope, readPending, rememberPending } from "./pending-controls";
 import { WebApplication } from "@/router";
 
 class FakeEventSource {
@@ -106,11 +107,16 @@ function createServer(initialLive: Live = idleLive) {
     catalog,
     history,
     live: initialLive,
+    receipt: undefined as unknown,
+    capabilities: undefined as unknown,
     mutation: undefined as ((path: string, init?: RequestInit) => Promise<Response>) | undefined,
   };
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (state.mutation && init?.method === "POST") return state.mutation(path, init);
+    if (path.includes("/codex/capabilities?")) return json(state.capabilities ?? {});
+    if (path.includes("/requests/"))
+      return json(state.receipt ?? { found: false, requestId: path.split("/").at(-1) });
     if (path.endsWith("/access")) return json(state.access);
     if (path.endsWith("/catalog")) return json(state.catalog);
     if (path.includes("/events?")) return json(state.history);
@@ -123,6 +129,7 @@ function createServer(initialLive: Live = idleLive) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
   vi.stubGlobal("scrollTo", vi.fn());
 });
 
@@ -141,6 +148,48 @@ afterEach(() => {
 });
 
 describe("access invalidation", () => {
+  it("enters the catalog directly after a code grants full access without desktop confirmation", async () => {
+    const server = createServer();
+    server.state.access = {
+      status: "unpaired",
+      pairingMode: "code",
+      csrfToken: "csrf",
+      bootId: "boot",
+      experimentalEnabled: false,
+    };
+    let finishPair!: () => void;
+    server.state.mutation = async (path) => {
+      if (path.endsWith("/pair")) {
+        await new Promise<void>((resolve) => {
+          finishPair = resolve;
+        });
+        server.state.access = {
+          ...approvedAccess,
+          pairingMode: "code",
+          device: { ...approvedAccess.device!, accessMode: "full", manage: true, files: true },
+        };
+        return json({ status: "approved", device: server.state.access.device });
+      }
+      return json({});
+    };
+    render(<WebApplication />);
+    fireEvent.change(await screen.findByLabelText("授权码"), { target: { value: "12345678" } });
+    expect(screen.queryByText("等待桌面 AgentKib 确认")).not.toBeInTheDocument();
+    const connect = screen.getByRole("button", { name: "连接并开始使用" });
+    fireEvent.click(connect);
+    fireEvent.click(connect);
+    expect(connect).toBeDisabled();
+    await waitFor(() => expect(finishPair).toBeTypeOf("function"));
+    await act(async () => finishPair());
+    expect(await screen.findByRole("button", { name: /Test session/ })).toBeVisible();
+    expect(screen.queryByText("等待桌面 AgentKib 确认")).not.toBeInTheDocument();
+    expect(
+      server.fetcher.mock.calls.filter(
+        ([path, init]) => String(path).endsWith("/pair") && init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("clears private state immediately and ignores late events after access is revoked", async () => {
     const server = createServer();
     await openSession();
@@ -425,4 +474,186 @@ describe("host identity isolation", () => {
     expect(hostBAccess).toBeDefined();
     expect(streams.length).toBeGreaterThan(0);
   });
+});
+
+describe("durable Codex control recovery", () => {
+  it("persists unknown sends across reload and only clears them using the matching receipt", async () => {
+    const server = createServer({ ...idleLive, executionMode: "codex-managed" });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    server.state.mutation = async () =>
+      json({ code: "runtime_timeout", controlOutcome: "unknown" }, 503);
+    await openSession();
+    fireEvent.change(screen.getByLabelText("发送消息"), {
+      target: { value: "private prompt never persisted" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText(/结果未确认/);
+    const scope = pendingScope("", "browser");
+    const pending = readPending(scope)[0];
+    expect(pending.kind).toBe("send");
+    expect(sessionStorage.getItem(scope)).not.toContain("private prompt");
+    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    await waitFor(() =>
+      expect(server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/"))).toBe(
+        true,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    cleanup();
+    FakeEventSource.instances = [];
+    await openSession();
+    fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "new draft" } });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    server.state.receipt = {
+      found: true,
+      requestId: pending.requestId,
+      sessionId: "session",
+      operation: "send",
+      status: "accepted",
+      completionObserved: false,
+      ack: { accepted: true, completed: false },
+    };
+    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(readPending(scope)).toEqual([]);
+    expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
+      1,
+    );
+  });
+  it("does not load another device's pending identities", async () => {
+    rememberPending(pendingScope("", "other-device"), {
+      requestId: crypto.randomUUID(),
+      sessionId: "session",
+      kind: "send",
+    });
+    const server = createServer({ ...idleLive, executionMode: "codex-managed" });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    await openSession();
+    fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "draft" } });
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    expect(server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/"))).toBe(
+      false,
+    );
+  });
+  it("keeps native approvals visible after an accepted approval receipt", async () => {
+    const requestId = crypto.randomUUID();
+    rememberPending(pendingScope("", "browser"), {
+      requestId,
+      sessionId: "session",
+      kind: "approve",
+    });
+    const server = createServer({
+      ...idleLive,
+      executionMode: "codex-managed",
+      status: "awaiting-approval",
+      turnId: "turn",
+      sendEnabled: false,
+      approvals: [approval],
+    });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    server.state.receipt = {
+      found: true,
+      requestId,
+      sessionId: "session",
+      operation: "approve",
+      status: "accepted",
+      turnId: "turn",
+      completionObserved: false,
+      ack: { accepted: true, completed: false },
+    };
+    await openSession();
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeVisible());
+    expect(readPending(pendingScope("", "browser"))).toEqual([]);
+    expect(
+      server.fetcher.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/approve") && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("advanced Codex receipt recovery", () => {
+  it("never replays an uncertain rename after refresh or remount", async () => {
+    const server = createServer({ ...idleLive, executionMode: "codex-follower" });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    server.state.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, organize: true },
+    };
+    server.state.capabilities = {
+      sessionId: "session",
+      executionMode: "codex-follower",
+      status: "idle",
+      features: { rename: { available: true } },
+    };
+    server.state.mutation = async () =>
+      json({ code: "runtime_timeout", controlOutcome: "unknown" }, 503);
+    await openSession();
+    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    const rename = screen.getByRole("button", { name: "重命名" });
+    await waitFor(() => expect(rename).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "private name" } });
+    fireEvent.click(rename);
+    fireEvent.click(rename);
+    const scope = pendingScope("", "browser");
+    await waitFor(() => expect(readPending(scope)).toHaveLength(1));
+    const pending = readPending(scope)[0]!;
+    expect(pending.kind).toBe("rename");
+    expect(sessionStorage.getItem(scope)).not.toContain("private name");
+    await waitFor(() => expect(rename).toBeDisabled());
+    cleanup();
+    await openSession();
+    const writes = () =>
+      server.fetcher.mock.calls.filter(
+        ([url, init]) => String(url).endsWith("/codex/rename") && init?.method === "POST",
+      );
+    expect(writes()).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    expect(screen.getByRole("button", { name: "重命名" })).toBeDisabled();
+    server.state.receipt = {
+      ...pending,
+      found: true,
+      status: "accepted",
+      operation: "rename",
+      completionObserved: false,
+    };
+    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]!);
+    await waitFor(() => expect(readPending(scope)).toHaveLength(0));
+    expect(writes()).toHaveLength(1);
+  });
+});
+
+it("does not reload capabilities for streaming text revisions but does on manual refresh", async () => {
+  const live = {
+    ...idleLive,
+    executionMode: "codex-managed" as const,
+    status: "running",
+    sendEnabled: false,
+  };
+  const server = createServer(live);
+  server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+  server.state.capabilities = {
+    sessionId: "session",
+    executionMode: "codex-managed",
+    status: "running",
+    features: { inspect: { available: true } },
+  };
+  await openSession();
+  const count = () =>
+    server.fetcher.mock.calls.filter(([url]) => String(url).includes("/codex/capabilities?"))
+      .length;
+  await waitFor(() => expect(count()).toBeGreaterThan(0));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  const before = count();
+  const source = FakeEventSource.instances.at(-1)!;
+  for (let index = 2; index <= 20; index++) {
+    await act(async () =>
+      source.emit("snapshot", { ...live, revision: index, streamText: `token ${index}` }),
+    );
+  }
+  expect(count()).toBe(before);
+  fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]!);
+  await waitFor(() => expect(count()).toBeGreaterThan(before));
 });

@@ -1,4 +1,6 @@
-use crate::{DESKTOP_VERSION, EXTENSION_VERSION};
+#[cfg(test)]
+use crate::EXTENSION_VERSION;
+use crate::{DESKTOP_VERSION, DESKTOP_VERSION_CURRENT};
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use std::{
@@ -17,19 +19,22 @@ pub struct Compatibility {
 impl Compatibility {
     /// Reads package metadata only; never loads/evaluates official application code.
     pub fn inspect(desktop_asar: &Path, extension_package: &Path) -> Self {
-        let expected_asar = Path::new("/Applications/ChatGPT.app/Contents/Resources/app.asar");
-        let expected_extension = dirs::home_dir().map(|home| {
-            home.join(format!(
-                ".vscode/extensions/openai.chatgpt-{EXTENSION_VERSION}-darwin-arm64/package.json"
-            ))
-        });
-        let verified_paths = desktop_asar == expected_asar
-            && desktop_asar.canonicalize().ok().as_deref() == Some(expected_asar)
-            && expected_extension.as_deref() == Some(extension_package)
-            && extension_package.canonicalize().ok().as_deref() == Some(extension_package);
+        // The running peer's bundle is authoritative. Relocated/user Applications
+        // installations must not be confused with a different /Applications copy.
+        let router_root = desktop_asar
+            .parent()
+            .and_then(Path::parent)
+            .filter(|root| {
+                root.file_name().is_some_and(|n| n == "Contents")
+                    && root
+                        .parent()
+                        .is_some_and(|app| app.extension().is_some_and(|s| s == "app"))
+                    && root.join("Resources/app.asar") == desktop_asar
+                    && desktop_asar.canonicalize().ok().as_deref() == Some(desktop_asar)
+            })
+            .map(Path::to_owned);
         Self {
-            router_root: verified_paths
-                .then(|| PathBuf::from("/Applications/ChatGPT.app/Contents")),
+            router_root,
             desktop: asar_version(desktop_asar).ok(),
             extension: (|| -> Result<String> {
                 let file = File::open(extension_package)?;
@@ -53,8 +58,10 @@ impl Compatibility {
 
     pub fn is_known(&self) -> bool {
         self.router_root.is_some()
-            && self.desktop.as_deref() == Some(DESKTOP_VERSION)
-            && self.extension.as_deref() == Some(EXTENSION_VERSION)
+            && matches!(
+                self.desktop.as_deref(),
+                Some(DESKTOP_VERSION | DESKTOP_VERSION_CURRENT)
+            )
     }
 
     pub fn desktop_version(&self) -> Option<&str> {
@@ -62,6 +69,27 @@ impl Compatibility {
     }
     pub fn extension_version(&self) -> Option<&str> {
         self.extension.as_deref()
+    }
+
+    pub fn supports_thread_settings(&self) -> bool {
+        self.router_root.is_some() && self.desktop.as_deref() == Some(DESKTOP_VERSION_CURRENT)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn for_router(executable: &Path) -> Self {
+        let Some(root) = executable.ancestors().find(|p| {
+            p.file_name().is_some_and(|n| n == "Contents")
+                && p.parent()
+                    .is_some_and(|app| app.extension().is_some_and(|e| e == "app"))
+        }) else {
+            return Self::default();
+        };
+        // Extension presence is not proof of the selected owner. Desktop-only
+        // operation is supported; every owner still passes the stream contract.
+        Self::inspect(
+            &root.join("Resources/app.asar"),
+            Path::new("/nonexistent-codex-extension-metadata"),
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -87,6 +115,14 @@ impl Compatibility {
             ),
         }
     }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn settings_fixture() -> Self {
+        Self {
+            desktop: Some(DESKTOP_VERSION_CURRENT.into()),
+            ..Self::fixture()
+        }
+    }
 }
 
 fn asar_version(path: &Path) -> Result<String> {
@@ -96,8 +132,10 @@ fn asar_version(path: &Path) -> Result<String> {
     file.read_exact(&mut prefix)?;
     let header_size = u32::from_le_bytes(prefix[4..8].try_into()?) as u64;
     let json_size = u32::from_le_bytes(prefix[12..16].try_into()?) as usize;
+    // The verified Desktop build has a 4.3 MiB ASAR index. Keep a bounded read
+    // while allowing that index to grow without silently disabling the bridge.
     ensure!(
-        json_size > 0 && json_size <= 4 * 1024 * 1024 && header_size >= json_size as u64 + 8,
+        json_size > 0 && json_size <= 8 * 1024 * 1024 && header_size >= json_size as u64 + 8,
         "invalid ASAR header"
     );
     let mut bytes = vec![0; json_size];
@@ -137,6 +175,7 @@ fn asar_version(path: &Path) -> Result<String> {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn versions_alone_do_not_enable_control() {
@@ -148,6 +187,11 @@ mod tests {
         assert!(!compatibility.is_known());
         compatibility.router_root = Some(PathBuf::from("/Applications/ChatGPT.app/Contents"));
         assert!(compatibility.is_known());
+        compatibility.extension = None;
+        assert!(
+            compatibility.is_known(),
+            "Desktop peer validation must not require an installed extension"
+        );
         assert!(compatibility.matches_router(Path::new(
             "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
         )));
@@ -159,5 +203,43 @@ mod tests {
         assert!(!compatibility.matches_router(Path::new(
             "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
         )));
+        compatibility.desktop = Some(DESKTOP_VERSION_CURRENT.into());
+        assert!(compatibility.matches_router(Path::new(
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+        )));
+        assert!(compatibility.supports_thread_settings());
+        compatibility.desktop = Some(DESKTOP_VERSION.into());
+        assert!(!compatibility.supports_thread_settings());
+    }
+
+    #[test]
+    fn accepts_current_desktop_asar_header_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let asar = directory.path().join("app.asar");
+        let package = serde_json::json!({
+            "name": "openai-codex-electron",
+            "version": DESKTOP_VERSION,
+        })
+        .to_string();
+        let header = serde_json::json!({
+            "files": {
+                "package.json": {"offset": "0", "size": package.len()},
+                "padding": "x".repeat(4 * 1024 * 1024),
+            },
+        })
+        .to_string();
+        assert!(header.len() > 4 * 1024 * 1024);
+        let mut file = File::create(&asar).unwrap();
+        file.write_all(&4u32.to_le_bytes()).unwrap();
+        file.write_all(&(header.len() as u32 + 8).to_le_bytes())
+            .unwrap();
+        file.write_all(&(header.len() as u32 + 4).to_le_bytes())
+            .unwrap();
+        file.write_all(&(header.len() as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(header.as_bytes()).unwrap();
+        file.write_all(package.as_bytes()).unwrap();
+        drop(file);
+        assert_eq!(asar_version(&asar).unwrap(), DESKTOP_VERSION);
     }
 }

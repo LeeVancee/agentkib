@@ -1,0 +1,418 @@
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  ApiError,
+  type CodexAction,
+  type CodexActionBody,
+  type CodexOptions,
+  type CodexQueue,
+} from "@agentkib/web-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog } from "@/components/dialog";
+import { useSession } from "./session-context";
+import { webLayoutCopy } from "./web-layout-copy";
+import { codexCopy, codexReason } from "./codex-copy";
+
+export function CodexTools({
+  open: controlledOpen,
+  onOpenChange,
+  showTrigger = true,
+  ownership,
+  shortcuts,
+}: {
+  open?: boolean;
+  onOpenChange?: (value: boolean) => void;
+  showTrigger?: boolean;
+  ownership?: ReactNode;
+  shortcuts?: ReactNode;
+} = {}) {
+  const {
+    current,
+    selected,
+    client,
+    capabilities,
+    codexAction,
+    busy,
+    online,
+    controlReady,
+    locale,
+    access,
+    live,
+    refresh,
+  } = useSession();
+  const copy = codexCopy[locale];
+  const navigate = useNavigate();
+  const [context, setContext] = useState<unknown>();
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  function setOpen(value: boolean) {
+    setLocalOpen(value);
+    onOpenChange?.(value);
+  }
+  const layout = webLayoutCopy[locale];
+  const [queue, setQueue] = useState<CodexQueue>();
+  const [options, setOptions] = useState<CodexOptions>();
+  const [name, setName] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [mode, setMode] = useState<"" | "default" | "plan">("");
+  const [editing, setEditing] = useState("");
+  const [text, setText] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [queueError, setQueueError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [operation, setOperation] = useState(false);
+  useEffect(() => {
+    setContext(undefined);
+    setQueue(undefined);
+    setOptions(undefined);
+    setModel("");
+    setEffort("");
+    setMode("");
+    setName(current?.title ?? "");
+    setEditing("");
+    setText("");
+    setConfirmed(false);
+  }, [selected, current?.title]);
+  useEffect(() => {
+    if (!open || !selected || access?.status !== "approved") return;
+    const abort = new AbortController();
+    let flight = false;
+    const load = async () => {
+      if (flight) return;
+      flight = true;
+      try {
+        const result = await client.codexQueue(selected, abort.signal);
+        if (!abort.signal.aborted) {
+          setQueue(result);
+          setQueueError("");
+        }
+      } catch (error) {
+        if (!abort.signal.aborted) {
+          setQueue(undefined);
+          setQueueError(
+            error instanceof ApiError && error.code === "queue_too_large"
+              ? copy.queueTooLarge
+              : copy.unavailableQueue,
+          );
+        }
+      } finally {
+        flight = false;
+      }
+    };
+    void load();
+    void client
+      .request<CodexOptions>("managed/options", undefined, abort.signal)
+      .then((value) => {
+        if (!abort.signal.aborted) setOptions(value);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setOptions(undefined);
+      });
+    const timer = setInterval(() => void load(), 4000);
+    return () => {
+      abort.abort();
+      clearInterval(timer);
+    };
+  }, [
+    open,
+    selected,
+    client,
+    access?.status,
+    access?.device?.id,
+    revision,
+    copy.queueTooLarge,
+    copy.unavailableQueue,
+  ]);
+  if (current?.agent !== "codex") return null;
+  function enabled(action: CodexAction) {
+    return !!(
+      access?.experimentalEnabled &&
+      !busy &&
+      !operation &&
+      (action === "inspect" || action === "resume" || (online && controlReady)) &&
+      capabilities?.sessionId === selected &&
+      capabilities.features[action]?.available
+    );
+  }
+  const actionLabels: Record<string, string> = {
+    resume: copy.resume,
+    inspect: copy.inspect,
+    steer: copy.steer,
+    "queue-add": copy.queueAdd,
+    "queue-update": copy.queueUpdate,
+    "queue-delete": copy.queueDelete,
+    "queue-reorder": copy.queueUp,
+    "queue-start": copy.queueStart,
+    rename: copy.rename,
+    archive: copy.archive,
+    unarchive: copy.unarchive,
+    fork: copy.fork,
+    settings: copy.settings,
+    attachments: copy.attachment,
+  };
+  const reason = (action: CodexAction) =>
+    codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+  async function run(
+    action: CodexAction,
+    fields: Omit<
+      Partial<CodexActionBody>,
+      "requestId" | "bootId" | "sessionId" | "expectedRevision"
+    > = {},
+  ) {
+    if (!enabled(action)) return;
+    setOperation(true);
+    try {
+      const result = await codexAction(action, fields);
+      if (result) {
+        if (action === "inspect") setContext(result.context);
+        if (action === "fork" && result.sessionId && result.sessionId !== selected) {
+          setOpen(false);
+          void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
+        }
+        if (action === "archive") {
+          setOpen(false);
+          void navigate({ to: "/sessions" });
+        }
+        setEditing("");
+        setText("");
+        setRevision((n) => n + 1);
+      }
+    } finally {
+      setOperation(false);
+    }
+  }
+  const actionButton = (action: CodexAction, label: string, fields = {}) => (
+    <div className="min-w-0 max-w-full space-y-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={!enabled(action)}
+        title={enabled(action) ? undefined : reason(action)}
+        onClick={() => void run(action, fields)}
+      >
+        {label}
+      </Button>
+      {!enabled(action) && (
+        <p className="max-w-64 text-xs text-muted-foreground">{reason(action)}</p>
+      )}
+    </div>
+  );
+  return (
+    <>
+      {showTrigger && (
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+          {layout.actions}
+        </Button>
+      )}
+      {open && (
+        <Dialog panel title={layout.actions} closeLabel={copy.close} onClose={() => setOpen(false)}>
+          {shortcuts}
+
+          <section className="space-y-3 border-t pt-3">
+            <h3 className="font-medium">{layout.management}</h3>
+            <label className="block text-sm">
+              {copy.name}
+              <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={!enabled("rename") || !name.trim()}
+                title={reason("rename")}
+                onClick={() => void run("rename", { name: name.trim() })}
+              >
+                {copy.rename}
+              </Button>
+              {actionButton(
+                current.archived ? "unarchive" : "archive",
+                current.archived ? copy.unarchive : copy.archive,
+              )}
+              {actionButton("fork", copy.fork)}
+            </div>
+          </section>
+          <section className="space-y-3 border-t pt-3">
+            <h3 className="font-medium">{layout.ownership}</h3>
+            {ownership}
+            <details>
+              <summary className="cursor-pointer py-2 text-sm">{copy.resume}</summary>
+              <div className="space-y-3 pt-2">
+                <label className="flex items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(e) => setConfirmed(e.target.checked)}
+                  />
+                  {copy.handoff}
+                </label>
+                <Button
+                  variant="outline"
+                  disabled={!enabled("resume") || !confirmed}
+                  title={reason("resume")}
+                  onClick={() => void run("resume", { handoffConfirmed: true })}
+                >
+                  {copy.resume}
+                </Button>
+                {!capabilities?.features.resume?.available && (
+                  <p className="text-xs text-muted-foreground">{reason("resume")}</p>
+                )}
+              </div>
+            </details>
+          </section>
+          {access?.device?.accessMode !== "full" && (
+            <section className="space-y-3 border-t pt-3">
+              <h3>{copy.settings}</h3>
+              <label className="block text-sm">
+                {copy.model}
+                <select
+                  className="block w-full rounded border bg-background p-2"
+                  value={model}
+                  onChange={(e) => {
+                    setModel(e.target.value);
+                    setEffort("");
+                  }}
+                >
+                  <option value="">{copy.keep}</option>
+                  {options?.models?.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name || item.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                {copy.effort}
+                <select
+                  className="block w-full rounded border bg-background p-2"
+                  value={effort}
+                  onChange={(e) => setEffort(e.target.value)}
+                >
+                  <option value="">{copy.keep}</option>
+                  {options?.models
+                    ?.find((item) => item.id === model)
+                    ?.efforts?.map((item) => (
+                      <option key={item}>{item}</option>
+                    ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                {copy.mode}
+                <select
+                  className="block w-full rounded border bg-background p-2"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as "" | "default" | "plan")}
+                >
+                  <option value="">{copy.keep}</option>
+                  <option value="default">{copy.normal}</option>
+                  <option value="plan">{copy.plan}</option>
+                </select>
+              </label>
+              {actionButton("settings", copy.apply, {
+                ...(model ? { model } : {}),
+                ...(effort ? { effort } : {}),
+                ...(mode ? { mode } : {}),
+              })}
+            </section>
+          )}
+          <section className="space-y-3 border-t pt-3">
+            <h3>{copy.queue}</h3>
+            {queueError && <p role="status">{queueError}</p>}
+            {queue?.data?.length === 0 && <p>{copy.queueEmpty}</p>}
+            {queue?.data?.map((item, index) => (
+              <div key={item.id} className="space-y-2 rounded border p-3">
+                <p className="whitespace-pre-wrap break-words text-sm">{item.text || item.id}</p>
+                {item.hasAttachments && (
+                  <p className="text-xs text-muted-foreground">{copy.queueAttachments}</p>
+                )}
+                {editing === item.id && !item.hasAttachments && (
+                  <Input
+                    aria-label={copy.text}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      !enabled("queue-update") ||
+                      item.hasAttachments === true ||
+                      (editing === item.id && !text.trim())
+                    }
+                    onClick={() => {
+                      if (editing === item.id)
+                        void run("queue-update", { queuedSubmissionId: item.id, text });
+                      else {
+                        setEditing(item.id);
+                        setText(item.text ?? "");
+                      }
+                    }}
+                  >
+                    {copy.queueUpdate}
+                  </Button>
+                  {actionButton("queue-delete", copy.queueDelete, { queuedSubmissionId: item.id })}
+                  {index > 0 &&
+                    actionButton("queue-reorder", copy.queueUp, {
+                      queuedSubmissionIds: queue.data.map((entry, position) =>
+                        position === index - 1
+                          ? item.id
+                          : position === index
+                            ? queue.data[index - 1]!.id
+                            : entry.id,
+                      ),
+                    })}
+                </div>
+              </div>
+            ))}
+            {!!queue?.data?.length &&
+              live?.status === "idle" &&
+              actionButton("queue-start", copy.queueStart)}
+          </section>
+          <details className="space-y-3 border-t pt-3">
+            <summary className="cursor-pointer py-2 font-medium">{layout.diagnostics}</summary>
+            <h3>{copy.capabilities}</h3>
+            <p className="break-words text-xs text-muted-foreground">
+              {capabilities
+                ? `${capabilities.executionMode} · ${capabilities.status}${capabilities.reason ? ` · ${codexReason(locale, capabilities.reason).text}` : ""}`
+                : copy.unavailable}
+            </p>
+            <ul className="space-y-1 text-xs text-muted-foreground">
+              {Object.entries(capabilities?.features ?? {})
+                .filter(([, feature]) => !feature?.available)
+                .map(([action, feature]) => (
+                  <li key={action}>
+                    {actionLabels[action] ?? action}: {codexReason(locale, feature?.reason).text}
+                    {codexReason(locale, feature?.reason).technical && (
+                      <details>
+                        <summary>{copy.context}</summary>
+                        <code className="break-all">{feature?.reason}</code>
+                      </details>
+                    )}
+                  </li>
+                ))}
+            </ul>
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setRevision((n) => n + 1);
+                void refresh(true);
+              }}
+            >
+              {copy.refresh}
+            </Button>
+            <div className="flex flex-wrap gap-2">{actionButton("inspect", copy.inspect)}</div>
+            {context !== undefined && (
+              <pre className="whitespace-pre-wrap break-words text-xs">
+                {JSON.stringify(context, null, 2)}
+              </pre>
+            )}
+          </details>
+        </Dialog>
+      )}
+    </>
+  );
+}

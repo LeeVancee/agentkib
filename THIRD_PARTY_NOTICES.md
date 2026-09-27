@@ -1,5 +1,15 @@
 # Third-party notices
 
+## frp (frpc)
+
+AgentKib bundles the checksum-verified frpc 0.68.0 client for remote connections.
+
+- Project: https://github.com/fatedier/frp
+- License: Apache-2.0
+
+The upstream license is copied unchanged into the desktop application's
+`bin/licenses/frp-LICENSE`. The relay server implementation is not included.
+
 ## CodexBarCLI
 
 AgentKib bundles CodexBarCLI 0.49.5 on macOS and Linux to collect local quota

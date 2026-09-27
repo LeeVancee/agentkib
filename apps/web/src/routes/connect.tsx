@@ -4,5 +4,5 @@ import { ConnectionPage } from "@/features/connection/connection-page";
 export const Route = createFileRoute("/connect")({ component: Connect });
 function Connect() {
   const env = useEnvironment();
-  return env.hosted && !env.origin ? <ConnectionPage /> : <Navigate to="/sessions" replace />;
+  return env.hosted && !env.connection ? <ConnectionPage /> : <Navigate to="/sessions" replace />;
 }

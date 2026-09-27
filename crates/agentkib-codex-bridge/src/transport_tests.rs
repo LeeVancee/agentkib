@@ -254,6 +254,197 @@ fn oversized_frame_closes_connection() {
     server.join().unwrap();
 }
 #[test]
+fn long_conversation_snapshot_remains_controllable() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => write(
+                    &mut socket,
+                    json!({"type":"response","requestId":message["requestId"],"resultType":"success","handledByClientId":"owner"}),
+                ),
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    let mut large = snapshot(1, "idle");
+                    large["params"]["change"]["conversationState"]["historyPadding"] =
+                        json!("x".repeat(9 * 1024 * 1024));
+                    write(&mut socket, large);
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == false => {}
+                _ => panic!("unexpected operation"),
+            }
+        }
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.select(SESSION).unwrap();
+    bridge.enable_controls().unwrap();
+    assert_eq!(bridge.state().unwrap().status(), Status::Idle);
+    assert!(bridge.state().unwrap().revision().is_some());
+    drop(bridge);
+    server.join().unwrap();
+}
+#[test]
+fn live_observation_consumes_patches_without_repeated_full_snapshots() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        let mut discoveries = 0;
+        let mut full_snapshots = 0;
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => {
+                    discoveries += 1;
+                    write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],
+                        "resultType":"success","handledByClientId":"owner"}),
+                    );
+                    if discoveries == 2 {
+                        for revision in 2..=4 {
+                            write(
+                                &mut socket,
+                                json!({"type":"broadcast","sourceClientId":"owner","version":11,
+                                "method":"thread-stream-state-changed","params":{"hostId":"local","conversationId":SESSION,
+                                "change":{"type":"patches","baseRevision":revision-1,"revision":revision,
+                                "patches":[{"op":"add","path":["title"],"value":format!("updated-{revision}")}]}}}),
+                            );
+                        }
+                    }
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    full_snapshots += 1;
+                    let mut state = snapshot(if full_snapshots == 1 { 1 } else { 4 }, "idle");
+                    if full_snapshots > 1 {
+                        state["params"]["change"]["conversationState"]["title"] =
+                            json!("updated-4");
+                    }
+                    write(&mut socket, state);
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == false =>
+                {
+                    break;
+                }
+                _ => panic!("unexpected operation"),
+            }
+        }
+        (discoveries, full_snapshots)
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.select(SESSION).unwrap();
+    bridge.force_live_checks_due(false);
+    bridge.observe_live().unwrap();
+    assert_eq!(bridge.state().unwrap().revision(), Some(4));
+    assert_eq!(
+        bridge.state().unwrap().snapshot().unwrap()["title"],
+        "updated-4"
+    );
+    bridge.observe_live().unwrap();
+    bridge.force_live_checks_due(true);
+    bridge.observe_live().unwrap();
+    assert_eq!(bridge.state().unwrap().revision(), Some(4));
+    drop(bridge);
+    let (discoveries, full_snapshots) = server.join().unwrap();
+    assert_eq!(discoveries, 3);
+    assert_eq!(full_snapshots, 2);
+}
+#[test]
+fn live_observation_rejects_owner_change_without_reusing_cached_state() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        let mut discoveries = 0;
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => {
+                    discoveries += 1;
+                    write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],
+                        "resultType":"success","handledByClientId":if discoveries == 1 { "owner" } else { "other-owner" }}),
+                    );
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    write(&mut socket, snapshot(1, "idle"));
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == false =>
+                {
+                    break;
+                }
+                _ => panic!("unexpected operation"),
+            }
+        }
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.select(SESSION).unwrap();
+    bridge.force_live_checks_due(false);
+    assert!(bridge.observe_live().is_err());
+    assert_eq!(bridge.state().unwrap().status(), Status::Unsupported);
+    assert_eq!(bridge.state().unwrap().revision(), None);
+    drop(bridge);
+    server.join().unwrap();
+}
+#[test]
+fn live_observation_rejects_revision_gap_in_follower_patch() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        let mut discoveries = 0;
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => {
+                    discoveries += 1;
+                    if discoveries == 2 {
+                        write(
+                            &mut socket,
+                            json!({"type":"broadcast","sourceClientId":"owner","version":11,
+                            "method":"thread-stream-state-changed","params":{"hostId":"local","conversationId":SESSION,
+                            "change":{"type":"patches","baseRevision":4,"revision":5,
+                            "patches":[{"op":"add","path":["title"],"value":"unsafe"}]}}}),
+                        );
+                    }
+                    write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],
+                        "resultType":"success","handledByClientId":"owner"}),
+                    );
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    write(&mut socket, snapshot(1, "idle"));
+                }
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == false =>
+                {
+                    break;
+                }
+                _ => panic!("unexpected operation"),
+            }
+        }
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.select(SESSION).unwrap();
+    bridge.force_live_checks_due(false);
+    assert!(bridge.observe_live().is_err());
+    assert_eq!(bridge.state().unwrap().status(), Status::Unsupported);
+    assert_eq!(bridge.state().unwrap().revision(), None);
+    drop(bridge);
+    server.join().unwrap();
+}
+#[test]
 fn partial_frame_survives_poll_timeout() {
     let (_dir, path, listener) = endpoint();
     let server = thread::spawn(move || {
@@ -529,6 +720,78 @@ fn send_is_targeted_and_cannot_be_repeated_without_sync() {
     drop(b);
     server.join().unwrap();
 }
+
+#[test]
+fn attachment_send_preserves_native_identity_and_rejects_path_aliases() {
+    let (dir, path, listener) = endpoint();
+    let image_path = dir.path().canonicalize().unwrap().join("image.png");
+    fs::write(&image_path, b"synthetic-image").unwrap();
+    let alias = image_path.with_file_name("alias.png");
+    std::os::unix::fs::symlink(&image_path, &alias).unwrap();
+    let request_id = "00000000-0000-4000-8000-000000000002";
+    let input = json!([{"type":"text","text":"inspect"},{"type":"localImage","path":image_path}]);
+    let expected_input = input.clone();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        let mut sent = 0;
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str().unwrap() {
+                "thread-owner-discovery" => write(
+                    &mut socket,
+                    json!({"type":"response","requestId":message["requestId"],"resultType":"success","handledByClientId":"owner"}),
+                ),
+                "thread-stream-following-changed" => {
+                    if message["params"]["following"] == true {
+                        write(&mut socket, snapshot(1, "idle"));
+                    }
+                }
+                "thread-follower-start-turn" => {
+                    sent += 1;
+                    assert_eq!(
+                        message["params"]["turnStart"]["request"],
+                        json!({"threadId":SESSION,"clientUserMessageId":request_id,"input":expected_input})
+                    );
+                    write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],"resultType":"success","method":"thread-follower-start-turn","handledByClientId":"owner","result":{"ok":true}}),
+                    );
+                }
+                _ => panic!("unexpected mutation"),
+            }
+        }
+        assert_eq!(sent, 1);
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.enable_controls().unwrap();
+    bridge.select(SESSION).unwrap();
+    let mut dispatched = false;
+    assert!(
+        bridge
+            .send_input_at_revision_with_authorization(
+                &json!([{"type":"localImage","path":alias}]),
+                request_id,
+                Some(1),
+                || Ok(()),
+                || dispatched = true
+            )
+            .is_err()
+    );
+    assert!(!dispatched);
+    bridge
+        .send_input_at_revision_with_authorization(
+            &input,
+            request_id,
+            Some(1),
+            || Ok(()),
+            || dispatched = true,
+        )
+        .unwrap();
+    assert!(dispatched);
+    assert_eq!(bridge.state().unwrap().status(), Status::OutcomeUnknown);
+    drop(bridge);
+    server.join().unwrap();
+}
 #[test]
 fn running_session_rejects_send_and_old_turn_stop() {
     let (_dir, path, listener) = endpoint();
@@ -787,4 +1050,117 @@ fn following_status_request_is_answered_only_for_selected_owner() {
     b.poll(Duration::from_secs(1)).unwrap();
     drop(b);
     server.join().unwrap();
+}
+
+#[test]
+fn native_mode_settings_require_supported_idle_owner_and_applied_receipt() {
+    for (supported, running, revision, applied) in [
+        (true, false, 1, true),
+        (true, false, 1, false),
+        (true, false, 99, true),
+        (true, true, 1, true),
+        (false, false, 1, true),
+    ] {
+        let (_dir, path, listener) = endpoint();
+        let should_dispatch = supported && !running && revision == 1;
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            initialize(&mut socket);
+            let mut changed = false;
+            let mut mutations = 0;
+            while let Some(message) = read(&mut socket) {
+                match message["method"].as_str().unwrap() {
+                    "thread-owner-discovery" => write(
+                        &mut socket,
+                        json!({
+                            "type":"response","requestId":message["requestId"],
+                            "resultType":"success","handledByClientId":"owner"
+                        }),
+                    ),
+                    "thread-stream-following-changed" => {
+                        if message["params"]["following"] != true {
+                            continue;
+                        }
+                        let mut value = snapshot(
+                            if changed { 2 } else { 1 },
+                            if running { "active" } else { "idle" },
+                        );
+                        let state = &mut value["params"]["change"]["conversationState"];
+                        state["latestModel"] = json!("native-model");
+                        state["latestReasoningEffort"] = json!("high");
+                        state["latestThreadSettings"] = json!({"model":"native-model","effort":"high",
+                            "collaborationMode":{"mode":if changed { "plan" } else { "default" }}});
+                        write(&mut socket, value);
+                    }
+                    "thread-follower-update-thread-settings" => {
+                        assert!(should_dispatch);
+                        mutations += 1;
+                        assert_eq!(mutations, 1);
+                        assert_eq!(message["version"], 2);
+                        assert_eq!(message["targetClientId"], "owner");
+                        assert_eq!(
+                            message["params"]["condition"],
+                            json!({"ifModelEquals":"native-model","ifEffortEquals":"high"})
+                        );
+                        let settings = &message["params"]["threadSettings"];
+                        assert_eq!(
+                            settings["model"],
+                            settings["collaborationMode"]["settings"]["model"]
+                        );
+                        assert_eq!(
+                            settings["effort"],
+                            settings["collaborationMode"]["settings"]["reasoning_effort"]
+                        );
+                        assert!(
+                            settings["collaborationMode"]["settings"]["developer_instructions"]
+                                .is_null()
+                        );
+                        changed = applied;
+                        write(
+                            &mut socket,
+                            json!({"type":"response","requestId":message["requestId"],
+                            "resultType":"success","method":message["method"],"handledByClientId":"owner","result":{"applied":applied}}),
+                        );
+                    }
+                    _ => panic!("unexpected owner operation"),
+                }
+            }
+            assert_eq!(mutations, usize::from(should_dispatch));
+        });
+        let mut bridge = Bridge::connect(
+            &path,
+            if supported {
+                Compatibility::settings_fixture()
+            } else {
+                known()
+            },
+        )
+        .unwrap();
+        bridge.enable_controls().unwrap();
+        bridge.select(SESSION).unwrap();
+        assert_eq!(
+            bridge.thread_settings()["collaborationModes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            if supported { 2 } else { 0 }
+        );
+        let mut dispatched = false;
+        let outcome = bridge.update_thread_settings_at_revision_with_authorization(
+            &json!({"model":"native-model","effort":"high","collaborationMode":{"mode":"plan","settings":{
+                "model":"native-model","reasoning_effort":"high","developer_instructions":null
+            }}}), Some(revision), || Ok(()), || dispatched = true,
+        );
+        assert_eq!(dispatched, should_dispatch);
+        assert_eq!(outcome.is_ok(), should_dispatch && applied);
+        if outcome.is_ok() {
+            bridge.refresh().unwrap();
+            assert_eq!(
+                bridge.thread_settings()["settings"]["current"]["mode"],
+                "plan"
+            );
+        }
+        drop(bridge);
+        server.join().unwrap();
+    }
 }

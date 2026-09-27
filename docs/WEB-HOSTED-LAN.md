@@ -1,6 +1,6 @@
 # 托管 Web 与局域网直连
 
-`https://remote.agentkib.com` 只托管网页。Chromium 浏览器直接请求同一局域网电脑上的 AgentKib；Cloudflare 不代理会话、控制请求或实时事件，不提供打洞、中继、账号或计费。
+本文描述可选的局域网直连方式；手机访问的主要流程见 [一键开通托管连接](REMOTE-CODEX-WEB.md)。在 LAN 模式下，`https://remote.agentkib.com` 托管网页并作为桌面可信 Origin，Chromium 浏览器直接请求同一局域网电脑上的 AgentKib；静态网页托管不代理会话、控制请求或实时事件。托管连接的注册与授权 API 独立使用 `https://api.agentkib.com`，本模式不调用该 API 建立中继，也不代替原生「连接其他电脑」。
 
 ## 使用与安全边界
 

@@ -38,7 +38,7 @@ fn main() -> anyhow::Result<()> {
                     "probe --socket /absolute/ipc.sock [--session UUID --desktop-asar PATH --extension-package PATH --allow-control]"
                 );
                 println!(
-                    "Without --session: initialization only, then disconnect. With --session: status, sync, diagnostics, approvals, send TEXT, stop TURN_ID, approve JSON, quit."
+                    "Without --session: initialization only, then disconnect. With --session: status, sync, settings, mode plan|default, diagnostics, approvals, send TEXT, stop TURN_ID, approve JSON, quit."
                 );
                 println!(
                     "approve JSON: {{\"requestId\":42,\"turnId\":\"...\",\"decision\":\"accept|decline|cancel\"}}"
@@ -137,6 +137,34 @@ fn main() -> anyhow::Result<()> {
                         last = None;
                     } else if line == "sync" {
                         bridge.refresh()?;
+                    } else if line == "settings" {
+                        bridge.refresh()?;
+                        println!("{}", bridge.thread_settings());
+                    } else if let Some(mode) = line.strip_prefix("mode ") {
+                        ensure!(controls, "mode changes require --allow-control");
+                        ensure!(matches!(mode, "plan" | "default"), "invalid native mode");
+                        bridge.refresh()?;
+                        let current = bridge.thread_settings();
+                        let model = current["settings"]["current"]["model"]
+                            .as_str()
+                            .context("native model unavailable")?;
+                        let effort = &current["settings"]["current"]["effort"];
+                        let revision = bridge.state().and_then(|state| state.revision());
+                        bridge.update_thread_settings_at_revision_with_authorization(
+                            &json!({"model":model,"effort":effort,"collaborationMode":{"mode":mode,"settings":{
+                                "model":model,"reasoning_effort":effort,"developer_instructions":null
+                            }}}), revision, || Ok(()), || {},
+                        )?;
+                        bridge.refresh()?;
+                        let state = bridge.thread_settings();
+                        ensure!(
+                            state["settings"]["current"]["mode"] == mode,
+                            "native mode not confirmed"
+                        );
+                        println!(
+                            "{}",
+                            json!({"nativeModeConfirmed":mode,"revision":state["revision"]})
+                        );
                     } else if line == "diagnostics" {
                         let snapshot = bridge
                             .state()
@@ -200,7 +228,9 @@ fn main() -> anyhow::Result<()> {
                         bridge.approve(&value["requestId"], turn, decision)?;
                         receipt();
                     } else {
-                        bail!("unknown command; use status/sync/approvals/send/stop/approve/quit");
+                        bail!(
+                            "unknown command; use status/sync/settings/mode/approvals/send/stop/approve/quit"
+                        );
                     }
                     Ok(())
                 })();

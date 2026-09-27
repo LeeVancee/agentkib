@@ -235,3 +235,38 @@ it.each([
   expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   expect(submit).not.toHaveBeenCalled();
 });
+
+it("masks native secret answers and clears their drafts immediately after submission", () => {
+  const submit = vi.fn();
+  render(
+    <QuestionForm
+      request={{
+        requestId: "secret",
+        turnId: "turn",
+        supported: true,
+        questions: [
+          {
+            id: "token",
+            question: "Token",
+            isSecret: true,
+            options: [],
+            multiSelect: false,
+            allowCustom: true,
+          },
+        ],
+      }}
+      locale="en-US"
+      enabled
+      busy={false}
+      onSubmit={submit}
+    />,
+  );
+  fireEvent.click(screen.getByLabelText("Custom answer"));
+  const input = screen.getByLabelText("Token · Custom answer");
+  expect(input).toHaveAttribute("type", "password");
+  expect(input).toHaveAttribute("autocomplete", "new-password");
+  fireEvent.change(input, { target: { value: " secret-value " } });
+  fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
+  expect(submit).toHaveBeenCalledWith({ token: [" secret-value "] });
+  expect(screen.queryByDisplayValue(" secret-value ")).not.toBeInTheDocument();
+});

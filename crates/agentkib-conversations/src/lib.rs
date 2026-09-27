@@ -2776,10 +2776,10 @@ fn first_non_empty_column_expression(columns: &BTreeSet<String>, candidates: &[&
         .filter(|column| columns.contains(**column))
         .map(|column| format!("NULLIF(TRIM({column}), '')"))
         .collect::<Vec<_>>();
-    if existing.is_empty() {
-        "NULL".into()
-    } else {
-        format!("COALESCE({})", existing.join(", "))
+    match existing.as_slice() {
+        [] => "NULL".into(),
+        [only] => only.clone(),
+        values => format!("COALESCE({})", values.join(", ")),
     }
 }
 

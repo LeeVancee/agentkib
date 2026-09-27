@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n } from "@/core/i18n";
 import { WebAccessSettings } from "./WebAccessSettings";
@@ -45,6 +46,28 @@ it("refreshes active Web settings every two seconds and clears a recovered polli
   });
   expect(request).toHaveBeenCalledTimes(3);
   expect(screen.queryByRole("alert")).toBeNull();
+});
+it("supports keyboard access to advanced settings without losing unsaved values", async () => {
+  const user = userEvent.setup();
+  render(<WebAccessSettings />);
+  const trigger = await screen.findByRole("button", {
+    name: "Advanced connection and permissions",
+  });
+  trigger.focus();
+  await user.keyboard("{Enter}");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const broker = screen.getByLabelText("Bridge service (official or self-hosted)");
+  fireEvent.change(broker, { target: { value: "https://self-hosted.example.com" } });
+  trigger.focus();
+  await user.keyboard(" ");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByRole("switch", { name: "Enable local Web service" })).toBeNull();
+  await user.keyboard("{Enter}");
+  expect(
+    (screen.getByLabelText("Bridge service (official or self-hosted)") as HTMLInputElement).value,
+  ).toBe("https://self-hosted.example.com");
+  expect(document.activeElement).toBe(trigger);
+  expect(request.mock.calls.every(([input]) => input.operation === "status")).toBe(true);
 });
 it("does not enable service until settings are saved", async () => {
   render(<WebAccessSettings />);
@@ -322,8 +345,11 @@ it("keeps advanced controls hidden and translates all primary actions in four la
   render(<WebAccessSettings />);
   await screen.findByRole("button", { name: "Enable remote access" });
   expect(
-    screen.getByRole("switch", { name: "Enable local Web service" }).closest("details")?.open,
-  ).toBe(false);
+    screen
+      .getByRole("button", { name: "Advanced connection and permissions" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  expect(screen.queryByRole("switch", { name: "Enable local Web service" })).toBeNull();
   try {
     for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
       await act(() => changeLocale(locale));
@@ -356,7 +382,7 @@ it("keeps manual pairing inside advanced settings without exposing an unready re
   render(<WebAccessSettings />);
   await act(async () => {});
   expect(screen.queryByRole("img", { name: "Open on your phone" })).toBeNull();
-  expect(screen.getByText("24681357").closest("details")?.open).toBe(false);
+  expect(screen.getByText("24681357").closest("[hidden]")).not.toBeNull();
   fireEvent.click(screen.getByText("Advanced connection and permissions"));
   expect(screen.getByText(/Local or manually configured access/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Generate 8-digit pairing code" }));

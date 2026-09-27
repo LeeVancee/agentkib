@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Check, Copy } from "lucide-react";
@@ -300,7 +302,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           )}
           <label className="block space-y-1">
             <span>{r.extraRoots}</span>
-            <textarea
+            <Textarea
               className="w-full rounded-md border bg-background p-2"
               rows={3}
               value={
@@ -522,48 +524,52 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
               <Input readOnly value={status.relay.publicUrl} onFocus={(e) => e.target.select()} />
             </div>
           )}
-          <details className="space-y-3">
-            <summary className="cursor-pointer text-muted-foreground">{r.advanced}</summary>
-            <label className="block">
-              {r.broker}
-              <Input
-                type="url"
-                value={relayBroker}
-                placeholder="https://api.agentkib.com"
-                onChange={(e) => setRelayBroker(e.target.value)}
-              />
-            </label>
-            <label className="block">
-              {r.frpc}
-              <Input
-                value={frpcPath}
-                placeholder={r.bundled}
-                onChange={(e) => setFrpcPath(e.target.value)}
-              />
-            </label>
-            <label className="block">
-              {r.bandwidth}
-              <Input
-                type="number"
-                min={16}
-                max={1048576}
-                step={1}
-                value={(config?.previewBytesPerSecond ?? 2 * 1024 * 1024) / 1024}
-                onChange={(event) =>
-                  setConfig((old) =>
-                    old
-                      ? {
-                          ...old,
-                          previewBytesPerSecond: Math.round(Number(event.target.value) * 1024),
-                        }
-                      : old,
-                  )
-                }
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">{r.switchWarning}</p>
-            {settingsForm}
-          </details>
+          <Collapsible className="space-y-3">
+            <CollapsibleTrigger className="cursor-pointer text-muted-foreground">
+              {r.advanced}
+            </CollapsibleTrigger>
+            <CollapsibleContent keepMounted className="space-y-3">
+              <label className="block">
+                {r.broker}
+                <Input
+                  type="url"
+                  value={relayBroker}
+                  placeholder="https://api.agentkib.com"
+                  onChange={(e) => setRelayBroker(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                {r.frpc}
+                <Input
+                  value={frpcPath}
+                  placeholder={r.bundled}
+                  onChange={(e) => setFrpcPath(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                {r.bandwidth}
+                <Input
+                  type="number"
+                  min={16}
+                  max={1048576}
+                  step={1}
+                  value={(config?.previewBytesPerSecond ?? 2 * 1024 * 1024) / 1024}
+                  onChange={(event) =>
+                    setConfig((old) =>
+                      old
+                        ? {
+                            ...old,
+                            previewBytesPerSecond: Math.round(Number(event.target.value) * 1024),
+                          }
+                        : old,
+                    )
+                  }
+                />
+              </label>
+              <p className="text-xs text-muted-foreground">{r.switchWarning}</p>
+              {settingsForm}
+            </CollapsibleContent>
+          </Collapsible>
         </div>
       )}
       {lan && status?.running && status.connectionUrl && (

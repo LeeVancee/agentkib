@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
@@ -400,11 +401,16 @@ it("keeps an enabled LAN listener visible while its settings are collapsed", asy
   webSnapshot.running = true;
   render(<RemoteConnectionSettings />);
   expect(await screen.findByText("LAN HTTP access is running")).toBeTruthy();
-  const summary = screen.getByText("LAN access (advanced)");
-  expect(summary.closest("details")?.open).toBe(false);
+  const summary = screen.getByRole("button", { name: "LAN access (advanced)" });
+  expect(summary.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "Manage LAN access" }));
-  expect(summary.closest("details")?.open).toBe(true);
+  expect(summary.getAttribute("aria-expanded")).toBe("true");
   expect(document.activeElement).toBe(summary);
+  const user = userEvent.setup();
+  await user.keyboard("{Enter}");
+  expect(summary.getAttribute("aria-expanded")).toBe("false");
+  await user.keyboard(" ");
+  expect(summary.getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByRole("region", { name: "Connect to another computer" })).toBeTruthy();
 });
 

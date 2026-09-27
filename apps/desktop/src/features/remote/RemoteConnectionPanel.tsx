@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, RefreshCw, ShieldCheck, Wifi } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -295,7 +296,7 @@ function LanAccessSettings() {
   const [status, setStatus] = useState<WebAdminStatus>();
   const [open, setOpen] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
-  const summary = useRef<HTMLDetailsElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   useEffect(
     () =>
       subscribeWebStatus("lan", {
@@ -314,19 +315,24 @@ function LanAccessSettings() {
             variant="outline"
             onClick={() => {
               setOpen(true);
-              summary.current?.querySelector("summary")?.focus();
+              trigger.current?.focus();
             }}
           >
             {copy.lanManage}
           </Button>
         </SettingsNotice>
       )}
-      <details ref={summary} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-        <summary className="cursor-pointer rounded-md px-2 py-3 text-sm font-medium">
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <CollapsibleTrigger
+          ref={trigger}
+          className="cursor-pointer rounded-md px-2 py-3 text-sm font-medium"
+        >
           {copy.lanAdvanced}
-        </summary>
-        <WebAccessSettings target="lan" />
-      </details>
+        </CollapsibleTrigger>
+        <CollapsibleContent keepMounted>
+          <WebAccessSettings target="lan" />
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

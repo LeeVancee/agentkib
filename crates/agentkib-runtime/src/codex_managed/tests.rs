@@ -28,6 +28,73 @@ fn fixture() -> (tempfile::TempDir, Service, String) {
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+#[test]
+fn platform_override_requires_a_complete_isolated_fixture() {
+    let (_temp, mut service, _) = fixture();
+    assert!(service.platform_supported());
+    let executable = service.test_executable.take().unwrap();
+    assert!(!service.platform_supported());
+    assert_eq!(
+        service
+            .request(json!({"operation":"options"}), "boot", true)
+            .unwrap()["reason"],
+        "platform-unsupported"
+    );
+    assert_eq!(
+        service
+            .request(json!({"operation":"create"}), "boot", true)
+            .unwrap_err()
+            .to_string(),
+        "platform-unsupported"
+    );
+    service.test_executable = Some(executable);
+    let root = service.test_root.take().unwrap();
+    assert!(!service.platform_supported());
+    service.test_root = Some(root);
+    service.test_executable = Some(PathBuf::from("/usr/bin/python3"));
+    assert!(!service.platform_supported());
+    service.test_executable = Some(service.test_root.as_ref().unwrap().join("codex"));
+    service.ledger = None;
+    assert!(!service.platform_supported());
+}
+
+#[test]
+fn options_uses_the_same_isolated_executable_and_home_as_requests() {
+    let (_temp, mut service, _) = fixture();
+    let options = service
+        .request(json!({"operation":"options"}), "boot", true)
+        .unwrap();
+    assert_eq!(options["available"], true);
+    assert_eq!(options["models"][0]["id"], "mock-model");
+    assert!(
+        service
+            .request(json!({"operation":"options"}), "boot", false)
+            .is_err()
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn production_service_on_unsupported_platform_never_opens_user_environment() {
+    let mut service = Service::default();
+    assert!(!service.platform_supported());
+    assert_eq!(
+        service
+            .request(json!({"operation":"options"}), "boot", true)
+            .unwrap()["reason"],
+        "platform-unsupported"
+    );
+    assert_eq!(
+        service
+            .request(json!({"operation":"create"}), "boot", true)
+            .unwrap_err()
+            .to_string(),
+        "platform-unsupported"
+    );
+    assert!(service.ledger.is_none());
+    assert!(service.runners.is_empty());
+}
+
 fn create(service: &mut Service, workspace: &str) -> Value {
     let result=service.request(json!({"operation":"create","workspaceId":workspace,"requestId":id(),"model":"mock-model","effort":"medium"}),"boot",true).unwrap();
     assert_eq!(result["accepted"], true, "fixture create: {result}");

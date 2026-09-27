@@ -77,6 +77,27 @@ pub(super) struct Service {
     test_executable: Option<PathBuf>,
 }
 impl Service {
+    fn platform_supported(&self) -> bool {
+        #[cfg(test)]
+        if self.test_root.is_some() || self.test_executable.is_some() {
+            // Unix protocol fixtures may run on Linux, but must never fall back
+            // to the developer's executable, CODEX_HOME or persistent ledger.
+            return self.ledger.is_some()
+                && self.test_root.as_ref().is_some_and(|root| {
+                    root.canonicalize().is_ok_and(|root| {
+                        root.join("home")
+                            .canonicalize()
+                            .is_ok_and(|home| home.is_dir() && home.starts_with(&root))
+                            && self.test_executable.as_ref().is_some_and(|executable| {
+                                executable.canonicalize().is_ok_and(|executable| {
+                                    executable.is_file() && executable.starts_with(&root)
+                                })
+                            })
+                    })
+                });
+        }
+        cfg!(target_os = "macos")
+    }
     fn store(&self) -> Result<Store> {
         #[cfg(test)]
         if let Some(root) = &self.test_root {
@@ -372,9 +393,9 @@ impl Service {
         validate_device(req.device_id.as_deref())?;
         if req.operation == "options" {
             ensure!(admin, "managed-operation-required");
-            return options();
+            return options(self);
         }
-        ensure!(cfg!(target_os = "macos"), "platform-unsupported");
+        ensure!(self.platform_supported(), "platform-unsupported");
         ensure!(
             if admin {
                 matches!(
@@ -1594,14 +1615,6 @@ fn codex_home() -> Result<PathBuf> {
         .canonicalize()
         .context("codex-home-unavailable")
 }
-fn verified_executable() -> Result<PathBuf> {
-    let path = agentkib_platform::command::resolve("codex").context("codex-cli-unavailable")?;
-    verify_version(path)
-}
-fn verify_version(path: PathBuf) -> Result<PathBuf> {
-    verified_version(&path)?;
-    path.canonicalize().context("codex-cli-unavailable")
-}
 fn verified_version(path: &Path) -> Result<String> {
     let mut child = Command::new(path)
         .arg("--version")
@@ -1686,15 +1699,15 @@ fn resources(client: &Client, workspace: &Path) -> Result<Value> {
         json!({"available":true,"executionMode":"codex-managed","skills":skills,"plugins":[],"apps":[],"contextReferences":{"supportedTypes":["computerPath","skill"],"unavailable":{"plugin":"unsupported-codex-cli-version","app":"unsupported-codex-cli-version"}}}),
     )
 }
-fn options() -> Result<Value> {
-    if !cfg!(target_os = "macos") {
+fn options(service: &Service) -> Result<Value> {
+    if !service.platform_supported() {
         return Ok(
             json!({"available":false,"reason":"platform-unsupported","models":[],"policies":[]}),
         );
     }
     let result = (|| -> Result<Vec<Value>> {
-        let executable = verified_executable()?;
-        let home = codex_home()?;
+        let executable = service.executable()?;
+        let home = service.home()?;
         let client = Client::spawn(&executable, &home, &home, None, |_| {})?;
         model_catalog(&client)
     })();

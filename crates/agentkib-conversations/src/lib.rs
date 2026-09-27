@@ -2943,6 +2943,118 @@ mod tests {
     }
 
     #[test]
+    fn codex_subagent_uses_task_name_when_native_title_is_missing() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let transcript = dir.path().join("subagent.jsonl");
+        let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads(
+                    id TEXT,
+                    rollout_path TEXT,
+                    cwd TEXT,
+                    name TEXT,
+                    title TEXT,
+                    preview TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER,
+                    source TEXT,
+                    parent_thread_id TEXT,
+                    forked_from_id TEXT,
+                    thread_source TEXT,
+                    agent_path TEXT,
+                    agent_nickname TEXT
+                );",
+            )
+            .unwrap();
+        let spawned_source = serde_json::json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "parent",
+                    "agent_path": "/root/fix_title_bug",
+                    "agent_nickname": "Cedar"
+                }
+            }
+        })
+        .to_string();
+        let nickname_source = serde_json::json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "parent",
+                    "agent_nickname": "Cedar"
+                }
+            }
+        })
+        .to_string();
+        for (id, title, agent_path, agent_nickname, source) in [
+            (
+                "subagent-path",
+                "",
+                Some("/root/fix_title_bug"),
+                Some("Cedar"),
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-title",
+                "Codex title",
+                Some("/root/fix_title_bug"),
+                Some("Cedar"),
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-nickname",
+                "",
+                None,
+                Some("Cedar"),
+                nickname_source.as_str(),
+            ),
+            (
+                "interactive",
+                "",
+                Some("/root/should_not_be_used"),
+                Some("Cedar"),
+                "cli",
+            ),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO threads VALUES (
+                        ?1, ?2, ?3, NULL, ?4, NULL, 1, 2, ?5, ?6, NULL, ?7, ?8, ?9
+                    )",
+                    rusqlite::params![
+                        id,
+                        transcript.display().to_string(),
+                        workspace.display().to_string(),
+                        title,
+                        source,
+                        (source != "cli").then_some("parent"),
+                        if source == "cli" { "user" } else { "subagent" },
+                        agent_path,
+                        agent_nickname,
+                    ],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+            .list_sessions(&workspace)
+            .unwrap();
+        let title_for = |id| {
+            sessions
+                .iter()
+                .find(|session| session.native_ref == id)
+                .and_then(|session| session.title.as_deref())
+        };
+        assert_eq!(title_for("subagent-path"), Some("fix_title_bug"));
+        assert_eq!(title_for("subagent-title"), Some("Codex title"));
+        assert_eq!(title_for("subagent-nickname"), Some("Cedar"));
+        assert_eq!(title_for("interactive"), None);
+    }
+
+    #[test]
     fn codex_lists_active_archived_and_missing_transcripts() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");

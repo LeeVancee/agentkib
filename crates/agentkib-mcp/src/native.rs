@@ -15,13 +15,28 @@ use uuid::Uuid;
 
 const CONTINUATION_ARCHIVE_TOOLS: [&str; 2] = ["session_search", "session_read_chunk"];
 
-pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
-    let grok_home = grok_home();
-    scan_native_candidates_with_grok_home(project, grok_home.as_deref())
+fn global_config_roots() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+    let home = dirs::home_dir();
+    let opencode_home = agentkib_platform::xdg::config_home()
+        .or_else(|| home.as_ref().map(|home| home.join(".config")))
+        .map(|home| home.join("opencode"));
+    (home, opencode_home, grok_home())
 }
 
-fn scan_native_candidates_with_grok_home(
+pub fn scan_native_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
+    let (home, opencode_home, grok_home) = global_config_roots();
+    scan_native_candidates_with_roots(
+        project,
+        home.as_deref(),
+        opencode_home.as_deref(),
+        grok_home.as_deref(),
+    )
+}
+
+fn scan_native_candidates_with_roots(
     project: Option<&Path>,
+    home: Option<&Path>,
+    opencode_home: Option<&Path>,
     grok_home: Option<&Path>,
 ) -> Result<Vec<McpMigrationCandidate>> {
     let mut candidates = Vec::new();
@@ -67,7 +82,7 @@ fn scan_native_candidates_with_grok_home(
             scan_opencode_servers(&path, "project", &mut candidates)?;
         }
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         scan_codex(&home.join(".codex/config.toml"), "home", &mut candidates)?;
         scan_json_servers(
             &home.join(".claude.json"),
@@ -99,10 +114,7 @@ fn scan_native_candidates_with_grok_home(
             &mut candidates,
         )?;
     }
-    if let Some(config_home) = agentkib_platform::xdg::config_home()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
-        .map(|home| home.join("opencode"))
-    {
+    if let Some(config_home) = opencode_home {
         for name in ["opencode.json", "opencode.jsonc"] {
             scan_opencode_servers(&config_home.join(name), "home", &mut candidates)?;
         }
@@ -259,8 +271,30 @@ pub fn plan_migration(
     servers: &[McpServerConfig],
     gateway_url: &str,
 ) -> Result<ChangeSet> {
+    let (home, opencode_home, grok_home) = global_config_roots();
+    plan_migration_with_roots(
+        project,
+        candidate_ids,
+        servers,
+        gateway_url,
+        home.as_deref(),
+        opencode_home.as_deref(),
+        grok_home.as_deref(),
+    )
+}
+
+fn plan_migration_with_roots(
+    project: &Path,
+    candidate_ids: &[String],
+    servers: &[McpServerConfig],
+    gateway_url: &str,
+    home: Option<&Path>,
+    opencode_home: Option<&Path>,
+    grok_home: Option<&Path>,
+) -> Result<ChangeSet> {
     let project = canonicalize(project)?;
-    let candidates = scan_native_candidates(Some(&project))?;
+    let candidates =
+        scan_native_candidates_with_roots(Some(&project), home, opencode_home, grok_home)?;
     let selected: Vec<_> = candidates
         .iter()
         .filter(|candidate| candidate_ids.contains(&candidate.id))
@@ -388,10 +422,10 @@ fn scan_toml_servers(
     scope: &str,
     output: &mut Vec<McpMigrationCandidate>,
 ) -> Result<()> {
-    if !path.is_file() {
+    let Some(content) = read_nonempty_config(path)? else {
         return Ok(());
-    }
-    let value: toml::Value = toml::from_str(&std::fs::read_to_string(path)?)?;
+    };
+    let value: toml::Value = toml::from_str(&content)?;
     let Some(servers) = value.get("mcp_servers").and_then(toml::Value::as_table) else {
         return Ok(());
     };
@@ -428,10 +462,10 @@ fn scan_json_servers(
     pointer: &[&str],
     output: &mut Vec<McpMigrationCandidate>,
 ) -> Result<()> {
-    if !path.is_file() {
+    let Some(content) = read_nonempty_config(path)? else {
         return Ok(());
-    }
-    let value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    };
+    let value: Value = serde_json::from_str(&content)?;
     collect_json_servers(path, agent, scope, pointer_value(&value, pointer), output);
     Ok(())
 }
@@ -443,10 +477,10 @@ fn scan_json5_servers(
     pointer: &[&str],
     output: &mut Vec<McpMigrationCandidate>,
 ) -> Result<()> {
-    if !path.is_file() {
+    let Some(content) = read_nonempty_config(path)? else {
         return Ok(());
-    }
-    let value: Value = json5::from_str(&std::fs::read_to_string(path)?)?;
+    };
+    let value: Value = json5::from_str(&content)?;
     collect_json_servers(path, agent, scope, pointer_value(&value, pointer), output);
     Ok(())
 }
@@ -456,13 +490,20 @@ fn scan_opencode_servers(
     scope: &str,
     output: &mut Vec<McpMigrationCandidate>,
 ) -> Result<()> {
-    if !path.is_file() {
+    let Some(content) = read_nonempty_config(path)? else {
         return Ok(());
-    }
-    let content = std::fs::read_to_string(path)?;
+    };
     let value = parse_opencode_config(path, &content)?;
     collect_json_servers(path, AgentKind::OpenCode, scope, value.get("mcp"), output);
     Ok(())
+}
+
+fn read_nonempty_config(path: &Path) -> Result<Option<String>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok((!content.trim().is_empty()).then_some(content))
 }
 
 fn parse_opencode_config(path: &Path, content: &str) -> Result<Value> {
@@ -1244,6 +1285,27 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    fn scan_project_candidates(project: Option<&Path>) -> Result<Vec<McpMigrationCandidate>> {
+        scan_native_candidates_with_roots(project, None, None, None)
+    }
+
+    fn plan_project_migration(
+        project: &Path,
+        candidate_ids: &[String],
+        servers: &[McpServerConfig],
+        gateway_url: &str,
+    ) -> Result<ChangeSet> {
+        plan_migration_with_roots(
+            project,
+            candidate_ids,
+            servers,
+            gateway_url,
+            None,
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn scan_reports_secret_presence_without_returning_values() {
         let dir = tempdir().unwrap();
@@ -1253,7 +1315,7 @@ mod tests {
             "[mcp_servers.private]\ncommand = \"server\"\nenv = { API_TOKEN = \"do-not-return\" }\n",
         )
         .unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let candidate = candidates
             .iter()
             .find(|candidate| candidate.name == "private")
@@ -1273,7 +1335,7 @@ mod tests {
         let config = dir.path().join(".agents/mcp_config.json");
         let content = r#"{"mcpServers":{"remote":{"serverUrl":"https://example.com/mcp","disabled":true,"enabledTools":["search","write"],"disabledTools":["write"]}}}"#;
         std::fs::write(&config, content).unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let candidate = candidates
             .iter()
             .find(|candidate| {
@@ -1311,7 +1373,7 @@ mod tests {
         let config = dir.path().join(".agents/mcp_config.json");
         let content = r#"{"mcpServers":{"selected":{"command":"server"},"agentkib":{"command":"user-server","args":["serve"]}}}"#;
         std::fs::write(&config, content).unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let selected = candidates
             .iter()
             .find(|candidate| {
@@ -1322,7 +1384,7 @@ mod tests {
             candidate.agent == AgentKind::Antigravity && candidate.name == "agentkib"
         }));
 
-        let error = plan_migration(
+        let error = plan_project_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),
             &[],
@@ -1351,14 +1413,14 @@ mod tests {
                 ),
             )
             .unwrap();
-            let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+            let candidates = scan_project_candidates(Some(dir.path())).unwrap();
             let selected = candidates
                 .iter()
                 .find(|candidate| {
                     candidate.agent == AgentKind::Antigravity && candidate.name == "selected"
                 })
                 .unwrap();
-            let plan = plan_migration(
+            let plan = plan_project_migration(
                 dir.path(),
                 std::slice::from_ref(&selected.id),
                 &[],
@@ -1418,7 +1480,7 @@ mod tests {
             r#"{"mcpServers":{"local":{"type":"local","command":"server"},"remote":{"type":"remote","serverUrl":"https://example.com/mcp"}}}"#,
         )
         .unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         for name in ["local", "remote"] {
             let candidate = candidates
                 .iter()
@@ -1445,7 +1507,7 @@ mod tests {
             r#"{"mcpServers":{"restricted":{"command":"server","disabledTools":["write"]}}}"#;
         std::fs::write(&config, content).unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let candidate = candidates
             .iter()
             .find(|candidate| {
@@ -1455,7 +1517,7 @@ mod tests {
         assert!(!candidate.supported);
         assert!(migration_server(candidate).is_err());
         assert!(
-            plan_migration(
+            plan_project_migration(
                 dir.path(),
                 std::slice::from_ref(&candidate.id),
                 &[],
@@ -1474,7 +1536,7 @@ mod tests {
         let content = r#"{"mcpServers":{"google":{"serverUrl":"https://example.googleapis.com/mcp","authProviderType":"google_credentials"}}}"#;
         std::fs::write(&config, content).unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let candidate = candidates
             .iter()
             .find(|candidate| {
@@ -1484,7 +1546,7 @@ mod tests {
         assert!(!candidate.supported);
         assert!(migration_server(candidate).is_err());
         assert!(
-            plan_migration(
+            plan_project_migration(
                 dir.path(),
                 std::slice::from_ref(&candidate.id),
                 &[],
@@ -1503,7 +1565,7 @@ mod tests {
         let content = r#"{"mcpServers":{"static-oauth":{"serverUrl":"https://example.com/mcp","oauth":{"clientId":"client","clientSecret":"secret"}},"legacy-sse":{"serverUrl":"https://example.com/sse","transport":"sse"}}}"#;
         std::fs::write(&config, content).unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let unsupported = candidates
             .iter()
             .filter(|candidate| {
@@ -1519,7 +1581,7 @@ mod tests {
                 .all(|candidate| migration_server(candidate).is_err())
         );
         assert!(
-            plan_migration(
+            plan_project_migration(
                 dir.path(),
                 &unsupported
                     .iter()
@@ -1541,7 +1603,7 @@ mod tests {
         let content = r#"{"mcpServers":{"timed":{"command":"server","timeoutSeconds":30},"eager":{"serverUrl":"https://example.com/mcp","tools":{"eager":true}}}}"#;
         std::fs::write(&config, content).unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let unsupported = candidates
             .iter()
             .filter(|candidate| {
@@ -1556,7 +1618,7 @@ mod tests {
             .map(|candidate| candidate.id.clone())
             .collect::<Vec<_>>();
         assert!(
-            plan_migration(
+            plan_project_migration(
                 dir.path(),
                 &candidate_ids,
                 &[],
@@ -1575,7 +1637,7 @@ mod tests {
         let content = r#"{"mcpServers":{"mixed":{"command":"server","serverUrl":"https://example.com/mcp"},"conflicting":{"serverUrl":"https://one.example/mcp","url":"https://two.example/mcp"},"mismatched":{"command":"server","transport":"http"}}}"#;
         std::fs::write(&config, content).unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let antigravity = candidates
             .iter()
             .filter(|candidate| {
@@ -1739,7 +1801,7 @@ mod tests {
         )
         .unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         for name in ["local-shape", "remote-shape"] {
             let candidate = candidates
                 .iter()
@@ -1773,7 +1835,7 @@ mod tests {
         )
         .unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let empty = candidates
             .iter()
             .find(|candidate| candidate.name == "empty-secrets")
@@ -1843,7 +1905,7 @@ mod tests {
         )
         .unwrap();
 
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let layered = candidates
             .iter()
             .filter(|candidate| {
@@ -1876,13 +1938,13 @@ mod tests {
 }"#,
         )
         .unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let selected = candidates
             .iter()
             .find(|candidate| candidate.name == "selected")
             .unwrap();
         let server = migration_server(selected).unwrap();
-        let plan = plan_migration(
+        let plan = plan_project_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),
             &[server],
@@ -1942,7 +2004,7 @@ mod tests {
 }"#,
         )
         .unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let selected = candidates
             .iter()
             .find(|candidate| {
@@ -1963,7 +2025,7 @@ mod tests {
                 if command == "node" && args == &["server.js"]
         ));
         assert!(!server.enabled);
-        let plan = plan_migration(
+        let plan = plan_project_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),
             &[server],
@@ -2009,7 +2071,7 @@ mod tests {
         let content = r#"{"mcp":{"selected":{"type":"remote","url":"https://example.com"}},}"#;
         std::fs::write(&path, content).unwrap();
 
-        assert!(scan_native_candidates(Some(dir.path())).is_err());
+        assert!(scan_project_candidates(Some(dir.path())).is_err());
         let candidate = candidate(
             &path,
             AgentKind::OpenCode,
@@ -2048,7 +2110,7 @@ future = 42
 "#,
         )
         .unwrap();
-        let candidates = scan_native_candidates(Some(dir.path())).unwrap();
+        let candidates = scan_project_candidates(Some(dir.path())).unwrap();
         let selected = candidates
             .iter()
             .find(|candidate| {
@@ -2068,7 +2130,7 @@ future = 42
                 if cwd == Path::new("services/reviewer")
         ));
         assert_eq!(server.allow_tools, ["search", "read_file"]);
-        let plan = plan_migration(
+        let plan = plan_project_migration(
             dir.path(),
             std::slice::from_ref(&selected.id),
             &[server],
@@ -2119,7 +2181,8 @@ future = 42
         .unwrap();
 
         let candidates =
-            scan_native_candidates_with_grok_home(Some(dir.path()), Some(&grok_home)).unwrap();
+            scan_native_candidates_with_roots(Some(dir.path()), None, None, Some(&grok_home))
+                .unwrap();
         let matching: Vec<_> = candidates
             .iter()
             .filter(|candidate| {
@@ -2148,7 +2211,7 @@ future = 42
         symlink(&actual_home, &linked_home).unwrap();
 
         let home = canonical_grok_home(linked_home).unwrap();
-        let candidates = scan_native_candidates_with_grok_home(None, Some(&home)).unwrap();
+        let candidates = scan_native_candidates_with_roots(None, None, None, Some(&home)).unwrap();
         let matching: Vec<_> = candidates
             .iter()
             .filter(|candidate| candidate.agent == AgentKind::GrokBuild && candidate.name == "home")

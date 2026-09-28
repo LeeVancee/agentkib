@@ -398,6 +398,7 @@
   "settings.diagnostics.needsAttention": "対応が必要",
   "settings.section.general": "一般",
   "settings.section.appearance": "テーマと外観",
+  "settings.section.shortcuts": "キーボードショートカット",
   "settings.section.discovery": "検出",
   "settings.section.integrations": "連携",
   "settings.section.privacy": "データとプライバシー",

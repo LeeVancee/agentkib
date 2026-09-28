@@ -398,6 +398,7 @@
   "settings.diagnostics.needsAttention": "Needs attention",
   "settings.section.general": "General",
   "settings.section.appearance": "Theme & appearance",
+  "settings.section.shortcuts": "Keyboard shortcuts",
   "settings.section.discovery": "Discovery",
   "settings.section.integrations": "Integrations",
   "settings.section.privacy": "Data & Privacy",

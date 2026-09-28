@@ -8,6 +8,7 @@ import {
   ArrowLeft,
   Database,
   FolderSearch,
+  Keyboard,
   Menu,
   MonitorSmartphone,
   PackageSearch,
@@ -28,6 +29,7 @@ import { focusSettingsTarget } from "./components/SettingsLayout";
 export type SettingsSection =
   | "general"
   | "appearance"
+  | "shortcuts"
   | "discovery"
   | "tools"
   | "remote"
@@ -37,10 +39,10 @@ export type SettingsSection =
 
 export const settingsTargets = [
   "general-interface",
-  "general-shortcuts",
   "general-quota",
   "appearance-mode",
   "appearance-theme",
+  "shortcuts-list",
   "discovery-status",
   "discovery-sources",
   "discovery-roots",
@@ -71,6 +73,7 @@ const sections: Array<{
 }> = [
   { id: "general", label: "settings.section.general", icon: Settings2 },
   { id: "appearance", label: "settings.section.appearance", icon: Palette },
+  { id: "shortcuts", label: "settings.section.shortcuts", icon: Keyboard },
   { id: "discovery", label: "settings.section.discovery", icon: FolderSearch },
   { id: "tools", label: "settings.section.tools", icon: PackageSearch },
   { id: "remote", label: "settings.section.remote", icon: MonitorSmartphone },
@@ -123,10 +126,15 @@ const searchEntries: Array<{
     ],
   },
   {
-    section: "general",
-    target: "general-shortcuts",
+    section: "shortcuts",
+    target: "shortcuts-list",
     label: "settings.shortcutsTitle",
-    keywords: ["settings.shortcuts", "settings.viewShortcuts"],
+    keywords: [
+      "settings.shortcuts",
+      "shortcuts.title",
+      "shortcuts.group.navigation",
+      "shortcuts.group.actions",
+    ],
   },
   {
     section: "general",

@@ -398,6 +398,7 @@
   "settings.diagnostics.needsAttention": "需要处理",
   "settings.section.general": "常规",
   "settings.section.appearance": "主题与外观",
+  "settings.section.shortcuts": "快捷键",
   "settings.section.discovery": "发现",
   "settings.section.integrations": "集成",
   "settings.section.privacy": "数据与隐私",

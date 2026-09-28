@@ -358,6 +358,7 @@ const searchSchema = z.object({
     .enum([
       "general",
       "appearance",
+      "shortcuts",
       "discovery",
       "tools",
       "remote",

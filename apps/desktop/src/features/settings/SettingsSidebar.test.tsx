@@ -58,7 +58,7 @@ describe("SettingsSidebar v9 navigation", () => {
     expect(screen.getByRole("button", { name: "Obsidian" })).toBeTruthy();
   });
 
-  it("shows only the back entry and eight settings sections", () => {
+  it("shows only the back entry and nine settings sections", () => {
     const { container } = render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
         <SettingsSidebar
@@ -73,13 +73,13 @@ describe("SettingsSidebar v9 navigation", () => {
     );
 
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Keyboard shortcuts" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Theme & appearance" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tools & updates" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search settings…" })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(10);
+    expect(screen.getAllByRole("button")).toHaveLength(11);
     expect(screen.getByRole("button", { name: "Remote connections" })).toBeTruthy();
   });
 

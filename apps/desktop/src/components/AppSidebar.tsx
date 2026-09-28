@@ -352,7 +352,6 @@ export function AppSidebar(props: {
                 aria-current={active === "settings" ? "page" : undefined}
                 aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
                 onClick={() => {
-                  expandPanel();
                   props.onSettings();
                 }}
               >

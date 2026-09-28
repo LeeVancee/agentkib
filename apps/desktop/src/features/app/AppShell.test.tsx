@@ -64,6 +64,31 @@ describe("AppShell settings mode", () => {
   beforeEach(() => useAppStore.getState().reset());
   afterEach(cleanup);
 
+  it("keeps settings expanded and preserves the previous collapse preference on exit", () => {
+    useAppStore.getState().setSidebarCollapsed(true);
+    const { container, rerender } = render(
+      <AppShell sidebar={<aside>Settings navigation</aside>} sidebarMode="settings" headerless>
+        Settings content
+      </AppShell>,
+    );
+    expect(container.querySelector(".app-shell-sidebar-collapsed")).toBeNull();
+    const toggle = screen.getByRole("button", { name: "收起侧栏" });
+    expect((toggle as HTMLButtonElement).disabled).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(toggle);
+    expect(useAppStore.getState().sidebarCollapsed).toBe(true);
+
+    rerender(
+      <AppShell sidebar={<aside>App navigation</aside>} sidebarMode="primary">
+        App content
+      </AppShell>,
+    );
+    expect(container.querySelector(".app-shell-sidebar-collapsed")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "展开侧栏" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
   it("keeps search in the sidebar rather than duplicating it in window controls", () => {
     render(
       <AppShell

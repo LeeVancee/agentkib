@@ -67,6 +67,7 @@ function RootLayout() {
     onAddWorkspace: addWorkspace,
     onAddScanRoot: addScanRoot,
     onToggleSidebar: () => {
+      if (route.kind === "settings") return;
       if (
         route.kind !== "global" ||
         ["workspaces", "agents", "sessions", "catalog"].includes(route.page)
@@ -208,7 +209,7 @@ function AppShellRouter({
       searchOpen={searchOpen}
       onRefresh={onRefresh}
       active={isSettings ? "settings" : isWorkspace ? "workspaces" : active}
-      collapsed={sidebarCollapsed}
+      collapsed={!isSettings && sidebarCollapsed}
       entries={entries}
       favoriteWorkspaceIds={favoriteWorkspaceIds}
       workspaces={[...workspaces].sort((left, right) => {

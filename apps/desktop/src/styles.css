@@ -1404,6 +1404,37 @@ button {
   }
 }
 
+/* Settings keeps its navigation visible even at the desktop window's minimum
+   width, where other pages switch to a dismissible navigation drawer. */
+@media (max-width: 1023px) {
+  .app-shell-settings {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+  .app-shell-settings .app-shell-main {
+    grid-column: 2 !important;
+    grid-row: 3 !important;
+  }
+  .app-shell-settings .app-sidebar-dual {
+    position: relative;
+    grid-column: 1;
+    grid-row: 3;
+    top: 0;
+    width: var(--sidebar-width);
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+    box-shadow: none;
+  }
+  .app-shell-settings .sidebar-mobile-trigger,
+  .app-shell-settings .sidebar-mobile-backdrop,
+  .app-shell-settings .activity-bar-mobile-close {
+    display: none;
+  }
+  .app-shell-settings .settings-content {
+    padding-top: 1.5rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-shell,
   .app-context-sidebar,

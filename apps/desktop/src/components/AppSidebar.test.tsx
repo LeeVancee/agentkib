@@ -174,8 +174,10 @@ describe("AppSidebar v8 navigation", () => {
     expect(
       screen.getByRole("button", { name: tr("sessions.remote") }).hasAttribute("disabled"),
     ).toBe(false);
+    useAppStore.getState().setSidebarCollapsed(true);
     await userEvent.setup().click(settings);
     expect(onSettings).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().sidebarCollapsed).toBe(true);
   });
 
   it("adds sessions after Agents in the same sidebar and preserves the tool navigation", async () => {

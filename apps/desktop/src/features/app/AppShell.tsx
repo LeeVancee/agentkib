@@ -30,8 +30,10 @@ export function WindowNavigationControls({
   onForward,
   onOpenSearch,
   hasSidebarPanel = true,
+  sidebarFixed = false,
 }: {
   hasSidebarPanel?: boolean;
+  sidebarFixed?: boolean;
   canGoBack?: boolean;
   canGoForward?: boolean;
   onBack?: () => void;
@@ -39,7 +41,8 @@ export function WindowNavigationControls({
   onOpenSearch?: () => void;
 }) {
   const { tr } = useI18n();
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const storedSidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const sidebarCollapsed = !sidebarFixed && storedSidebarCollapsed;
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const platform = currentAppPlatform();
@@ -58,7 +61,7 @@ export function WindowNavigationControls({
         aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
         aria-expanded={!sidebarCollapsed}
         data-collapsed={sidebarCollapsed}
-        disabled={!hasSidebarPanel}
+        disabled={!hasSidebarPanel || sidebarFixed}
         title={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
         onClick={() => {
           setSidebarPeek(false);
@@ -153,7 +156,9 @@ export function AppShell({
   onOpenSearch?: () => void;
 }) {
   const { tr } = useI18n();
-  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const storedSidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const sidebarFixed = sidebarMode === "settings";
+  const sidebarCollapsed = !sidebarFixed && storedSidebarCollapsed;
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const locationKey = useLocation({ select: (location) => location.href });
@@ -193,6 +198,7 @@ export function AppShell({
       className={cn(
         "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
         headerless && "app-shell-headerless",
+        sidebarFixed && "app-shell-settings",
         sidebarCollapsed && "app-shell-sidebar-collapsed",
         !hasSidebarPanel && "app-shell-no-context",
         sidebarWidth.dragging && "app-shell-sidebar-resizing",
@@ -205,6 +211,7 @@ export function AppShell({
           z-index. Keep these exclusions after the overlapping header drag area. */}
       <WindowNavigationControls
         hasSidebarPanel={hasSidebarPanel}
+        sidebarFixed={sidebarFixed}
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         onBack={onBack}

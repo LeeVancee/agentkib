@@ -200,6 +200,9 @@ export function AppShell({
       )}
     >
       <WindowToolbar />
+      {!headerless && <AppShellHeader>{toolbar}</AppShellHeader>}
+      {/* Electron applies drag/no-drag regions in DOM order, independently of
+          z-index. Keep these exclusions after the overlapping header drag area. */}
       <WindowNavigationControls
         hasSidebarPanel={hasSidebarPanel}
         canGoBack={canGoBack}
@@ -208,7 +211,6 @@ export function AppShell({
         onForward={onForward}
         onOpenSearch={onOpenSearch}
       />
-      {!headerless && <AppShellHeader>{toolbar}</AppShellHeader>}
       {sidebar}
       {hasSidebarPanel && !sidebarCollapsed && windowWidth >= 1024 && (
         <SidebarResizeHandle width={visibleSidebarWidth} maxWidth={maxSidebarWidth} />

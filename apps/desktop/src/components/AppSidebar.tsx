@@ -25,7 +25,6 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import { SidebarBrand } from "./SidebarBrand";
 import { SidebarSearchButton } from "./SidebarSearchButton";
 import { useAppStore } from "@/stores/app-store";
 import {
@@ -379,7 +378,6 @@ export function AppSidebar(props: {
         >
           <div className="app-sidebar-content">
             <div className="app-sidebar-header">
-              <SidebarBrand />
               <h2 className="context-sidebar-title m-0 px-2 text-[14px] font-[650] text-sidebar-foreground">
                 {panelTitle}
               </h2>
@@ -405,7 +403,7 @@ export function AppSidebar(props: {
                           <Button
                             variant="bare"
                             size="content"
-                            className="workspace-sidebar-toggle grid w-[22px] h-9 flex-[0_0_22px] place-items-center text-muted-foreground rounded-[6px] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg]:transition-transform [&_svg]:duration-160 [&_svg]:ease-[ease] motion-reduce:[&_svg]:transition-none"
+                            className="workspace-sidebar-toggle grid w-[22px] h-9 flex-[0_0_22px] place-items-center text-muted-foreground rounded-[6px] [&_svg]:transition-transform [&_svg]:duration-160 [&_svg]:ease-[ease] motion-reduce:[&_svg]:transition-none"
                             aria-label={
                               tr(expanded ? "common.collapseSidebar" : "common.expandSidebar") +
                               ": " +
@@ -426,8 +424,8 @@ export function AppSidebar(props: {
                             data-sidebar-navigate
                             title={workspace.name}
                             onClick={() => {
-                              setWorkspaceExpanded(workspace.id, true);
-                              props.onOpenWorkspace?.(workspace);
+                              setWorkspaceExpanded(workspace.id, selected ? !expanded : true);
+                              if (!selected) props.onOpenWorkspace?.(workspace);
                             }}
                           >
                             <FolderGit2 size={16} />

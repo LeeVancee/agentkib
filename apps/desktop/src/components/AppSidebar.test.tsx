@@ -8,6 +8,8 @@ import { AppSidebar } from "./AppSidebar";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
 import { createGlobalNavigation } from "@/features/app/global-navigation";
 import { useAppStore } from "@/stores/app-store";
+import type { WorkspaceSummary } from "@/core/types";
+import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 
 vi.mock("@/features/sessions/SessionDirectory", () => ({
   SessionDirectory: ({ onMenuOpenChange }: { onMenuOpenChange?: (open: boolean) => void }) => (
@@ -23,6 +25,45 @@ describe("AppSidebar v8 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => useAppStore.getState().reset());
   afterEach(cleanup);
+
+  it("toggles the current workspace by name and opens other workspaces expanded", async () => {
+    useSidebarViewStore.setState({ expandedWorkspaces: {} });
+    const workspace: WorkspaceSummary = {
+      id: "current",
+      name: "Current workspace",
+      path: "/current",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const other = { ...workspace, id: "other", name: "Other workspace", path: "/other" };
+    const onOpenWorkspace = vi.fn();
+    const { container } = render(
+      <AppSidebar
+        active="workspaces"
+        activeWorkspaceId={workspace.id}
+        workspaces={[workspace, other]}
+        entries={createGlobalNavigation(0)}
+        onNavigate={vi.fn()}
+        onSettings={vi.fn()}
+        onOpenWorkspace={onOpenWorkspace}
+        collapsed={false}
+      />,
+    );
+    const user = userEvent.setup();
+    const currentRow = container.querySelectorAll(".workspace-sidebar-group")[0];
+    expect(currentRow.querySelector(".workspace-sidebar-children")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: workspace.name }));
+    expect(currentRow.querySelector(".workspace-sidebar-children")).toBeNull();
+    await user.click(screen.getByRole("button", { name: workspace.name }));
+    expect(currentRow.querySelector(".workspace-sidebar-children")).toBeTruthy();
+    expect(onOpenWorkspace).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: other.name }));
+    expect(onOpenWorkspace).toHaveBeenCalledWith(other);
+    expect(container.querySelectorAll(".workspace-sidebar-children")).toHaveLength(2);
+    useSidebarViewStore.setState({ expandedWorkspaces: {} });
+  });
 
   it.each([
     ["zh-CN", "设置", "远程连接"],

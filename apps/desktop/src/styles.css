@@ -797,6 +797,10 @@ button {
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
+:root[data-platform="windows"] .app-window-navigation-controls,
+:root[data-platform="linux"] .app-window-navigation-controls {
+  left: calc(var(--window-controls-left) + 0.875rem);
+}
 :root[data-platform="macos"] .app-window-navigation-controls {
   left: 6.25rem;
 }
@@ -1031,12 +1035,6 @@ button {
   gap: 8px;
   padding-bottom: 16px;
 }
-.app-context-sidebar .sidebar-brand {
-  padding: 0 8px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--muted-foreground);
-}
 
 .context-sidebar-scroll {
   flex: 1;
@@ -1045,6 +1043,20 @@ button {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+}
+.workspace-sidebar-row {
+  transition: background-color 160ms ease;
+}
+.workspace-sidebar-row:hover {
+  background: var(--sidebar-accent);
+}
+.workspace-sidebar-row .workspace-sidebar-name,
+.workspace-sidebar-row .workspace-sidebar-name:hover {
+  background: transparent;
+}
+.workspace-sidebar-row:hover .workspace-sidebar-toggle,
+.workspace-sidebar-row:hover .workspace-sidebar-name {
+  color: var(--sidebar-accent-foreground);
 }
 .app-shell-sidebar-resizing .app-context-sidebar {
   transition: none;
@@ -1175,7 +1187,7 @@ button {
     border-top-left-radius: 16px;
   }
   .app-activity-bar,
-  .app-context-sidebar > .app-sidebar-content {
+  .app-sidebar-dual .app-context-sidebar > .app-sidebar-content {
     padding-top: 12px;
   }
   .sidebar-resize-handle {
@@ -1258,6 +1270,10 @@ button {
   :root[data-platform="macos"] .sidebar-mobile-trigger {
     left: 6.25rem;
   }
+  :root[data-platform="windows"] .sidebar-mobile-trigger,
+  :root[data-platform="linux"] .sidebar-mobile-trigger {
+    left: calc(var(--window-controls-left) + 7rem);
+  }
   .sidebar-mobile-backdrop {
     position: fixed;
     z-index: 50;
@@ -1281,12 +1297,6 @@ button {
     padding-right: 0.375rem;
     padding-left: 0.375rem;
   }
-  .app-sidebar-collapsed .sidebar-brand {
-    width: fit-content;
-    gap: 0.625rem;
-    justify-content: initial;
-  }
-  .app-sidebar-collapsed .sidebar-brand-label,
   .app-sidebar-collapsed .app-sidebar-item-label {
     display: inline;
   }
@@ -1306,9 +1316,7 @@ button {
     font-size: 0.6875rem;
   }
 
-  .app-window-navigation-controls,
-  :root[data-platform="windows"] .app-window-navigation-controls,
-  :root[data-platform="linux"] .app-window-navigation-controls {
+  .app-window-navigation-controls {
     left: calc(3.75rem + var(--window-controls-left));
   }
   :root[data-platform="macos"] .app-window-navigation-controls {
@@ -1380,9 +1388,6 @@ button {
     padding: 16px 12px 12px;
   }
   .app-sidebar-no-panel .app-context-sidebar {
-    display: none;
-  }
-  .app-sidebar-dual .app-context-sidebar .sidebar-brand {
     display: none;
   }
   .app-shell-sidebar-collapsed .app-toolbar-content,

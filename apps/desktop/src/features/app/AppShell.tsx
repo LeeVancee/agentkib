@@ -1,5 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import type { CSSProperties, ReactNode } from "react";
+import { useRetainedScroll } from "./useRetainedScroll";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, useSidebarWidthStore } from "./sidebar-width-store";
 
@@ -9,10 +10,6 @@ import { WindowToolbar } from "@/components/WindowToolbar";
 import { ariaShortcut, currentAppPlatform, getShortcutDefinition } from "@/core/keyboard-shortcuts";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import {
-  clearSidebarPeekCloseTimer,
-  scheduleSidebarPeekClose as scheduleSidebarPeekCloseTimer,
-} from "./sidebar-peek";
 import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -24,7 +21,9 @@ export function WindowNavigationControls({
   canGoForward = false,
   onBack,
   onForward,
+  hasSidebarPanel = true,
 }: {
+  hasSidebarPanel?: boolean;
   canGoBack?: boolean;
   canGoForward?: boolean;
   onBack?: () => void;
@@ -49,6 +48,7 @@ export function WindowNavigationControls({
         aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
         aria-expanded={!sidebarCollapsed}
         data-collapsed={sidebarCollapsed}
+        disabled={!hasSidebarPanel}
         title={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
         onClick={() => {
           setSidebarPeek(false);
@@ -103,6 +103,7 @@ export function AppShellHeader({ children }: { children?: ReactNode }) {
 export function AppShell({
   sidebar,
   sidebarMode = "primary",
+  hasSidebarPanel = true,
   children,
   toolbar,
   headerless = false,
@@ -114,6 +115,7 @@ export function AppShell({
 }: {
   sidebar: ReactNode;
   sidebarMode?: "primary" | "settings";
+  hasSidebarPanel?: boolean;
   children: ReactNode;
   toolbar?: ReactNode;
   headerless?: boolean;
@@ -137,10 +139,11 @@ export function AppShell({
   }, []);
   const maxSidebarWidth = Math.max(
     MIN_SIDEBAR_WIDTH,
-    Math.min(MAX_SIDEBAR_WIDTH, windowWidth - 640),
+    Math.min(MAX_SIDEBAR_WIDTH, windowWidth - 640 - 52),
   );
   const visibleSidebarWidth = Math.min(sidebarWidth.width, maxSidebarWidth);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollOffsets] = useState(() => new Map<string, number>());
+  const scrollContainerRef = useRetainedScroll(locationKey, scrollOffsets);
   const previousSidebarMode = useRef(sidebarMode);
   const [sidebarMotion, setSidebarMotion] = useState<"to-primary" | "to-settings" | null>(null);
 
@@ -154,25 +157,8 @@ export function AppShell({
   }, [sidebarMode]);
 
   useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = 0;
-    }
-  }, [locationKey]);
-
-  useEffect(() => {
     if (!sidebarCollapsed && sidebarPeek) setSidebarPeek(false);
   }, [sidebarCollapsed, sidebarPeek, setSidebarPeek]);
-
-  const revealSidebar = () => {
-    if (!sidebarCollapsed) return;
-    clearSidebarPeekCloseTimer();
-    setSidebarPeek(true);
-  };
-
-  const scheduleSidebarPeekClose = () => {
-    if (!sidebarCollapsed) return;
-    scheduleSidebarPeekCloseTimer(setSidebarPeek);
-  };
 
   return (
     <div
@@ -181,18 +167,14 @@ export function AppShell({
         "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
         headerless && "app-shell-headerless",
         sidebarCollapsed && "app-shell-sidebar-collapsed",
+        !hasSidebarPanel && "app-shell-no-context",
         sidebarWidth.dragging && "app-shell-sidebar-resizing",
         sidebarMotion && `app-shell-sidebar-motion-${sidebarMotion}`,
       )}
     >
-      <div
-        className="app-sidebar-hover-trigger"
-        aria-hidden="true"
-        onPointerEnter={revealSidebar}
-        onPointerLeave={scheduleSidebarPeekClose}
-      />
       <WindowToolbar />
       <WindowNavigationControls
+        hasSidebarPanel={hasSidebarPanel}
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         onBack={onBack}
@@ -200,7 +182,7 @@ export function AppShell({
       />
       {!headerless && <AppShellHeader>{toolbar}</AppShellHeader>}
       {sidebar}
-      {!sidebarCollapsed && windowWidth >= 1024 && (
+      {hasSidebarPanel && !sidebarCollapsed && windowWidth >= 1024 && (
         <SidebarResizeHandle width={visibleSidebarWidth} maxWidth={maxSidebarWidth} />
       )}
       {sidebarWidth.error && (

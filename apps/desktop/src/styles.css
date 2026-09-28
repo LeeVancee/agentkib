@@ -46,7 +46,9 @@
 :root {
   --window-safe-top: 16px;
   --window-toolbar-height: var(--window-safe-top);
-  --sidebar-width: var(--sidebar-expanded-width);
+  --sidebar-rail-width: 52px;
+  --sidebar-panel-width: var(--sidebar-expanded-width);
+  --sidebar-width: calc(var(--sidebar-rail-width) + var(--sidebar-panel-width));
   --sidebar-expanded-width: 250px;
   --radius: 0.625rem;
   --panel: var(--card);
@@ -462,7 +464,9 @@ button {
 
 /* Application shell: layout variables are shared by the desktop and settings shells. */
 .app-shell {
-  --sidebar-width: var(--sidebar-expanded-width);
+  --sidebar-rail-width: 52px;
+  --sidebar-panel-width: var(--sidebar-expanded-width);
+  --sidebar-width: calc(var(--sidebar-rail-width) + var(--sidebar-panel-width));
   position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
@@ -476,15 +480,16 @@ button {
 :root[data-platform="macos"] .app-shell {
   grid-template-rows: 0 52px minmax(0, 1fr);
 }
-.app-shell-sidebar-collapsed {
-  --sidebar-width: 0px;
+.app-shell-sidebar-collapsed,
+.app-shell-no-context {
+  --sidebar-panel-width: 0px;
 }
 .sidebar-resize-handle {
   position: absolute;
   z-index: 65;
-  top: 52px;
+  top: calc(var(--window-safe-top) + 52px);
   bottom: 0;
-  left: calc(var(--sidebar-expanded-width) - 4px);
+  left: calc(var(--sidebar-rail-width) + var(--sidebar-expanded-width) - 4px);
   width: 8px;
   cursor: col-resize;
   touch-action: none;
@@ -900,7 +905,7 @@ button {
   position: fixed;
   z-index: 65;
   top: var(--window-safe-top);
-  left: 0.875rem;
+  left: calc(var(--sidebar-rail-width) + 0.875rem);
   display: flex;
   height: 52px;
   align-items: center;
@@ -964,11 +969,14 @@ button {
   padding-top: 4rem;
 }
 :root[data-platform="windows"] .app-shell-sidebar-collapsed .app-toolbar-content,
-:root[data-platform="linux"] .app-shell-sidebar-collapsed .app-toolbar-content {
-  padding-left: 7.5rem;
+:root[data-platform="linux"] .app-shell-sidebar-collapsed .app-toolbar-content,
+:root[data-platform="windows"] .app-shell-no-context .app-toolbar-content,
+:root[data-platform="linux"] .app-shell-no-context .app-toolbar-content {
+  padding-left: 6.5rem;
 }
-:root[data-platform="macos"] .app-shell-sidebar-collapsed .app-toolbar-content {
-  padding-left: 12.5rem;
+:root[data-platform="macos"] .app-shell-sidebar-collapsed .app-toolbar-content,
+:root[data-platform="macos"] .app-shell-no-context .app-toolbar-content {
+  padding-left: 9.5rem;
 }
 .app-sidebar-collapse-button:hover {
   transform: scale(1.06);
@@ -1217,6 +1225,243 @@ button {
   display: grid;
   overflow: visible;
 }
+/* The activity bar remains visible independently of contextual navigation. */
+.app-sidebar-dual {
+  width: var(--sidebar-width);
+}
+.app-activity-bar {
+  display: flex;
+  flex: 0 0 var(--sidebar-rail-width);
+  width: var(--sidebar-rail-width);
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--window-safe-top) + 52px) 6px 12px;
+  border-right: 1px solid var(--sidebar-border);
+  background: color-mix(in srgb, var(--sidebar) 88%, var(--background));
+}
+
+.activity-bar-brand img {
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
+}
+:root[data-theme="dark"] .activity-bar-brand img {
+  filter: invert(1);
+}
+.activity-bar-navigation {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.activity-bar-item {
+  position: relative;
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--sidebar-foreground) 62%, transparent);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+  -webkit-app-region: no-drag;
+}
+.activity-bar-item:hover,
+.activity-bar-search:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+.activity-bar-item-active {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+.activity-bar-item-active::before {
+  position: absolute;
+  left: -6px;
+  top: 11px;
+  bottom: 11px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--sidebar-primary);
+  content: "";
+}
+.activity-bar-item:focus-visible {
+  outline: 2px solid var(--sidebar-ring);
+  outline-offset: -2px;
+}
+.activity-bar-badge {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--sidebar-primary);
+  color: var(--sidebar-primary-foreground);
+  font-size: 9px;
+  line-height: 15px;
+  font-style: normal;
+}
+.activity-bar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.activity-bar-mobile-close {
+  display: none;
+}
+.app-context-sidebar {
+  display: flex;
+  flex: 0 0 var(--sidebar-panel-width);
+  width: var(--sidebar-panel-width);
+  min-width: 0;
+  overflow: hidden;
+  transition:
+    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    flex-basis 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.app-context-sidebar > .app-sidebar-content {
+  flex: 0 0 var(--sidebar-expanded-width);
+  width: var(--sidebar-expanded-width);
+  padding: calc(var(--window-safe-top) + 52px) 12px 12px;
+}
+.app-context-sidebar .app-sidebar-header {
+  gap: 8px;
+  padding-bottom: 16px;
+}
+.app-context-sidebar .sidebar-brand {
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.context-sidebar-title {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--sidebar-foreground);
+}
+.context-sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.app-shell-sidebar-resizing .app-context-sidebar {
+  transition: none;
+}
+.app-sidebar-no-panel .app-context-sidebar,
+.app-sidebar-panel-collapsed .app-context-sidebar {
+  visibility: hidden;
+  pointer-events: none;
+}
+.app-sidebar-no-panel .app-activity-bar,
+.app-sidebar-panel-collapsed .app-activity-bar {
+  border-right: 0;
+}
+.app-sidebar-sessions .context-sidebar-scroll {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.app-sidebar-sessions .app-sidebar-session-directory {
+  margin-top: 0;
+  border-top: 0;
+}
+.workspace-sidebar-directory {
+  display: grid;
+  gap: 6px;
+}
+.workspace-sidebar-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+.workspace-sidebar-row-active {
+  background: color-mix(in srgb, var(--sidebar-accent) 50%, transparent);
+}
+.workspace-sidebar-toggle {
+  display: grid;
+  width: 22px;
+  height: 36px;
+  flex: 0 0 22px;
+  place-items: center;
+  color: var(--muted-foreground);
+  border-radius: 6px;
+}
+.workspace-sidebar-toggle:hover {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+.workspace-sidebar-toggle svg {
+  transition: transform 160ms ease;
+}
+.workspace-sidebar-name {
+  min-width: 0;
+  gap: 7px;
+  padding-left: 2px;
+  padding-right: 6px;
+}
+.workspace-sidebar-children {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 8px 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--sidebar-border);
+}
+.workspace-sidebar-child {
+  min-height: 34px;
+  gap: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+}
+.workspace-sidebar-divider {
+  margin: 4px 8px;
+  border-top: 1px solid var(--sidebar-border);
+}
+.agent-sidebar-filters {
+  margin-bottom: 12px;
+}
+.agent-sidebar-tools {
+  margin-bottom: 12px;
+}
+.agent-sidebar-list small {
+  line-height: 1.5;
+}
+.catalog-sidebar-navigation [data-slot="tabs"] {
+  width: 100%;
+}
+.catalog-sidebar-tabs .app-sidebar-item [data-slot="badge"] {
+  margin-left: auto;
+}
+.catalog-sidebar-tabs .app-sidebar-item[data-active] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+  box-shadow: none;
+}
+.catalog-sidebar-tabs .app-sidebar-item:hover {
+  background: var(--sidebar-accent);
+}
+.settings-sidebar-content .app-sidebar-nav {
+  overflow: visible;
+  padding: 0;
+}
+.app-sidebar-collapse-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 @media (max-width: 1023px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1348,8 +1593,87 @@ button {
   }
 }
 
+@media (max-width: 1023px) {
+  .app-sidebar-dual {
+    width: min(90vw, 340px);
+    flex-direction: column;
+  }
+  .app-sidebar-dual .app-activity-bar {
+    width: 100%;
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+  .app-sidebar-dual .activity-bar-brand {
+    margin-right: auto;
+  }
+  .app-sidebar-dual .activity-bar-navigation {
+    order: 2;
+    flex: 1 0 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 3px;
+    overflow: visible;
+  }
+  .app-sidebar-dual .activity-bar-footer {
+    flex-direction: row;
+    gap: 3px;
+  }
+  .app-sidebar-dual .activity-bar-mobile-close {
+    display: grid;
+  }
+  .app-sidebar-dual .activity-bar-item {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+  .app-sidebar-dual .activity-bar-item-active::before {
+    inset: auto 10px -2px;
+    width: auto;
+    height: 2px;
+    border-radius: 2px;
+  }
+  .app-sidebar-dual .app-context-sidebar {
+    width: 100%;
+    flex: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  .app-sidebar-dual .app-context-sidebar > .app-sidebar-content {
+    width: 100%;
+    flex-basis: 100%;
+    padding: 16px 12px 12px;
+  }
+  .app-sidebar-no-panel .app-context-sidebar {
+    display: none;
+  }
+  .app-sidebar-dual .app-context-sidebar .sidebar-brand {
+    display: none;
+  }
+  .app-shell-sidebar-collapsed .app-toolbar-content,
+  .app-shell-no-context .app-toolbar-content {
+    padding-left: 8rem;
+  }
+  :root[data-platform="macos"] .app-shell-sidebar-collapsed .app-toolbar-content,
+  :root[data-platform="macos"] .app-shell-no-context .app-toolbar-content {
+    padding-left: 12.75rem;
+  }
+  .app-sidebar-dual:not(.app-sidebar-open) {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .app-shell {
+  .app-shell,
+  .app-context-sidebar,
+  .activity-bar-item,
+  .workspace-sidebar-toggle svg {
     transition: none;
   }
   .app-toolbar-content {

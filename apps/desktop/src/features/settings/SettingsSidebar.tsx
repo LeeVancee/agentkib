@@ -21,6 +21,7 @@ import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
+import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 import { focusSettingsTarget } from "./components/SettingsLayout";
 
 export type SettingsSection =
@@ -237,6 +238,7 @@ const searchEntries: Array<{
 ];
 
 export function SettingsSidebar(props: {
+  embedded?: boolean;
   active: SettingsSection;
   activeTarget?: SettingsTarget;
   onSelect: (section: SettingsSection, target?: SettingsTarget) => void;
@@ -253,7 +255,11 @@ export function SettingsSidebar(props: {
   useEffect(() => {
     if (props.searchOpen) setMobileOpen(false);
   }, [props.searchOpen]);
-  const [query, setQuery] = useState("");
+  const [localQuery, setLocalQuery] = useState("");
+  const savedQuery = useSidebarViewStore((state) => state.settingsQuery);
+  const setSavedQuery = useSidebarViewStore((state) => state.setSettingsQuery);
+  const query = props.embedded ? savedQuery : localQuery;
+  const setQuery = props.embedded ? setSavedQuery : setLocalQuery;
   const sidebarPeek = useAppStore((state) => state.sidebarPeek);
   const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const sidebarId = useId();
@@ -300,6 +306,124 @@ export function SettingsSidebar(props: {
       )
     : [];
 
+  const content = (
+    <div className={props.embedded ? "settings-sidebar-content" : "app-sidebar-content"}>
+      <div className="app-sidebar-header">
+        {!props.embedded && (
+          <div className="app-sidebar-header-row">
+            <Button
+              variant="bare"
+              size="content"
+              className="app-sidebar-item app-sidebar-back-item app-settings-back"
+              type="button"
+              title={tr("settings.backToApp")}
+              onClick={() => {
+                setMobileOpen(false);
+                onBack();
+              }}
+            >
+              <span className="app-sidebar-item-icon">
+                <ArrowLeft size={18} />
+              </span>
+              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                {tr("settings.backToApp")}
+              </span>
+            </Button>
+            {props.onOpenSearch && <SidebarSearchButton onOpenSearch={props.onOpenSearch} />}
+          </div>
+        )}
+        <label className="relative block">
+          <Search
+            size={16}
+            aria-hidden="true"
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            className="h-10 rounded-xl border-transparent bg-muted/70 pl-9 pr-9 shadow-none focus-visible:border-input focus-visible:bg-background"
+            value={query}
+            type="search"
+            placeholder={tr("settings.search.placeholder")}
+            aria-label={tr("settings.search.placeholder")}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {query && (
+            <Button
+              variant="bare"
+              size="content"
+              className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+              type="button"
+              aria-label={tr("settings.search.clear")}
+              onClick={() => setQuery("")}
+            >
+              <X size={14} />
+            </Button>
+          )}
+        </label>
+      </div>
+      <nav className="app-sidebar-nav" aria-label={tr("settings.navigation")}>
+        {!normalizedQuery &&
+          sections.map(({ id, label, icon: Icon }) => (
+            <Button
+              key={id}
+              data-sidebar-navigate
+              variant="bare"
+              size="content"
+              className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
+              aria-current={active === id ? "page" : undefined}
+              title={tr(label)}
+              onClick={() => select(id)}
+            >
+              <span className="app-sidebar-item-icon">
+                <Icon size={18} />
+              </span>
+              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                {tr(label)}
+              </span>
+            </Button>
+          ))}
+        {normalizedQuery &&
+          sections.map(({ id, label }) => {
+            const sectionResults = results.filter((result) => result.section === id);
+            if (!sectionResults.length) return null;
+            return (
+              <section className="app-sidebar-group mt-1" key={id}>
+                <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
+                  {tr(label)}
+                </p>
+                {sectionResults.map((result) => (
+                  <Button
+                    key={result.target}
+                    data-sidebar-navigate
+                    variant="bare"
+                    size="content"
+                    className={cn(
+                      "app-sidebar-item min-h-10 pl-3",
+                      active === id && activeTarget === result.target && "app-sidebar-item-active",
+                    )}
+                    aria-current={
+                      active === id && activeTarget === result.target ? "location" : undefined
+                    }
+                    title={tr(result.label)}
+                    onClick={() => select(id, result.target)}
+                  >
+                    <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
+                      {tr(result.label)}
+                    </span>
+                  </Button>
+                ))}
+              </section>
+            );
+          })}
+        {normalizedQuery && !results.length && (
+          <p className="px-3 py-6 text-center text-xs leading-relaxed text-muted-foreground">
+            {tr("settings.search.empty")}
+          </p>
+        )}
+      </nav>
+    </div>
+  );
+  if (props.embedded) return content;
+
   return (
     <>
       <Button
@@ -335,118 +459,7 @@ export function SettingsSidebar(props: {
         onPointerEnter={handleSidebarMouseEnter}
         onPointerLeave={handleSidebarMouseLeave}
       >
-        <div className="app-sidebar-content">
-          <div className="app-sidebar-header">
-            <div className="app-sidebar-header-row">
-              <Button
-                variant="bare"
-                size="content"
-                className="app-sidebar-item app-sidebar-back-item app-settings-back"
-                type="button"
-                title={tr("settings.backToApp")}
-                onClick={() => {
-                  setMobileOpen(false);
-                  onBack();
-                }}
-              >
-                <span className="app-sidebar-item-icon">
-                  <ArrowLeft size={18} />
-                </span>
-                <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                  {tr("settings.backToApp")}
-                </span>
-              </Button>
-              {props.onOpenSearch && <SidebarSearchButton onOpenSearch={props.onOpenSearch} />}
-            </div>
-            <label className="relative block">
-              <Search
-                size={16}
-                aria-hidden="true"
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-              />
-              <Input
-                className="h-10 rounded-xl border-transparent bg-muted/70 pl-9 pr-9 shadow-none focus-visible:border-input focus-visible:bg-background"
-                value={query}
-                type="search"
-                placeholder={tr("settings.search.placeholder")}
-                aria-label={tr("settings.search.placeholder")}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-              {query && (
-                <Button
-                  variant="bare"
-                  size="content"
-                  className="absolute right-1.5 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-                  type="button"
-                  aria-label={tr("settings.search.clear")}
-                  onClick={() => setQuery("")}
-                >
-                  <X size={14} />
-                </Button>
-              )}
-            </label>
-          </div>
-          <nav className="app-sidebar-nav" aria-label={tr("settings.navigation")}>
-            {!normalizedQuery &&
-              sections.map(({ id, label, icon: Icon }) => (
-                <Button
-                  key={id}
-                  variant="bare"
-                  size="content"
-                  className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
-                  aria-current={active === id ? "page" : undefined}
-                  title={tr(label)}
-                  onClick={() => select(id)}
-                >
-                  <span className="app-sidebar-item-icon">
-                    <Icon size={18} />
-                  </span>
-                  <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                    {tr(label)}
-                  </span>
-                </Button>
-              ))}
-            {normalizedQuery &&
-              sections.map(({ id, label }) => {
-                const sectionResults = results.filter((result) => result.section === id);
-                if (!sectionResults.length) return null;
-                return (
-                  <section className="app-sidebar-group mt-1" key={id}>
-                    <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
-                      {tr(label)}
-                    </p>
-                    {sectionResults.map((result) => (
-                      <Button
-                        key={result.target}
-                        variant="bare"
-                        size="content"
-                        className={cn(
-                          "app-sidebar-item min-h-10 pl-3",
-                          active === id &&
-                            activeTarget === result.target &&
-                            "app-sidebar-item-active",
-                        )}
-                        aria-current={
-                          active === id && activeTarget === result.target ? "location" : undefined
-                        }
-                        title={tr(result.label)}
-                        onClick={() => select(id, result.target)}
-                      >
-                        <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                          {tr(result.label)}
-                        </span>
-                      </Button>
-                    ))}
-                  </section>
-                );
-              })}
-            {normalizedQuery && !results.length && (
-              <p className="px-3 py-6 text-center text-xs leading-relaxed text-muted-foreground">
-                {tr("settings.search.empty")}
-              </p>
-            )}
-          </nav>
-        </div>
+        {content}
       </aside>
     </>
   );

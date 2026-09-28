@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage } from "@/features/skills/SkillHubPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
@@ -242,86 +243,92 @@ function CatalogPage({
   const AssetPage = AssetCatalogPage;
   return (
     <div className="relative grid gap-5 pb-8">
-      <section className="w-fit max-w-full">
-        <Tabs value={section} onValueChange={(value) => onSection(value as AssetSection)}>
-          <TabsList
-            className="segmented-control !h-auto w-fit max-w-full justify-start"
-            variant="default"
-            aria-label={tr("nav.assets")}
+      <SidebarPanel>
+        <nav className="catalog-sidebar-navigation">
+          <Tabs
+            orientation="vertical"
+            value={section}
+            onValueChange={(value) => onSection(value as AssetSection)}
           >
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="instructions"
+            <TabsList
+              className="catalog-sidebar-tabs !h-auto !w-full items-stretch bg-transparent p-0"
+              variant="default"
+              aria-label={tr("nav.assets")}
             >
-              <FileCode2 size={15} />
-              {tr("assets.instructions")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+              <TabsTrigger
+                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                value="instructions"
               >
-                {instructionAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="skills"
-            >
-              <Sparkles size={15} />
-              {tr("assets.skills")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                <FileCode2 size={15} />
+                {tr("assets.instructions")}
+                <Badge
+                  variant="secondary"
+                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                >
+                  {instructionAssets.length}
+                </Badge>
+              </TabsTrigger>
+              <TabsTrigger
+                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                value="skills"
               >
-                {skillAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="mcp"
-            >
-              <PlugZap size={15} />
-              MCP
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                <Sparkles size={15} />
+                {tr("assets.skills")}
+                <Badge
+                  variant="secondary"
+                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                >
+                  {skillAssets.length}
+                </Badge>
+              </TabsTrigger>
+              <TabsTrigger
+                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                value="mcp"
               >
-                {connectionAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="memory"
-            >
-              <Brain size={15} />
-              {tr("assets.memories")}
-              <Badge
-                variant="secondary"
-                className={cn(
-                  "min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
-                  pending && "border-amber-300 bg-amber-100 text-amber-800",
-                )}
-                aria-label={pendingMemoryLabel}
-                title={pendingMemoryLabel}
+                <PlugZap size={15} />
+                MCP
+                <Badge
+                  variant="secondary"
+                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                >
+                  {connectionAssets.length}
+                </Badge>
+              </TabsTrigger>
+              <TabsTrigger
+                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                value="memory"
               >
-                {memories.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="other"
-            >
-              <Boxes size={15} />
-              {tr("assets.hooksProfiles")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                <Brain size={15} />
+                {tr("assets.memories")}
+                <Badge
+                  variant="secondary"
+                  className={cn(
+                    "min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
+                    pending && "border-amber-300 bg-amber-100 text-amber-800",
+                  )}
+                  aria-label={pendingMemoryLabel}
+                  title={pendingMemoryLabel}
+                >
+                  {memories.length}
+                </Badge>
+              </TabsTrigger>
+              <TabsTrigger
+                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                value="other"
               >
-                {otherAssets.length}
-              </Badge>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </section>
+                <Boxes size={15} />
+                {tr("assets.hooksProfiles")}
+                <Badge
+                  variant="secondary"
+                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
+                >
+                  {otherAssets.length}
+                </Badge>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </nav>
+      </SidebarPanel>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}

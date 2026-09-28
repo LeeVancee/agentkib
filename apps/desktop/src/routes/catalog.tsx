@@ -384,6 +384,8 @@ function GlobalMemoryInbox({
   onReload: () => Promise<void>;
 }) {
   const { tr } = useI18n();
+  const pendingCount = records.filter((item) => item.status === "pending").length;
+  const approvedCount = records.filter((item) => item.status === "approved").length;
   const review = async (
     id: string,
     status: "approved" | "rejected" | "invalidated",
@@ -393,22 +395,62 @@ function GlobalMemoryInbox({
     await onReload();
   };
   return (
-    <Card className="rounded-xl border border-border bg-card shadow-sm overflow-hidden rounded-xl border border-border bg-card">
-      <CardHeader className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
-        <div>
-          <h2>{tr("memory.globalTitle")}</h2>
-          <p>
-            {tr("memory.globalPending", {
-              count: records.filter((item) => item.status === "pending").length,
-            })}
-          </p>
-        </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="grid gap-4">
+    <div className="mx-auto grid w-full max-w-6xl gap-4 pb-8">
+      <Card className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-muted text-foreground">
+              <Brain size={21} />
+            </div>
+            <div className="min-w-0">
+              <CardTitle className="text-lg">{tr("memory.globalTitle")}</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {tr("memory.globalPending", { count: pendingCount })}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm text-muted-foreground">
+              {tr("assets.memories")}
+              <strong className="font-semibold text-foreground">{records.length}</strong>
+            </span>
+            <span
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm",
+                pendingCount > 0
+                  ? "border-amber-300/70 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+                  : "border-border bg-background text-muted-foreground",
+              )}
+            >
+              {tr("status.memory.pending")}
+              <strong className="font-semibold">{pendingCount}</strong>
+            </span>
+            {approvedCount > 0 && (
+              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+                {tr("status.memory.approved")}
+                <strong className="font-semibold">{approvedCount}</strong>
+              </span>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-9 rounded-lg"
+              aria-label={tr("common.refresh")}
+              title={tr("common.refresh")}
+              onClick={() => void onReload()}
+            >
+              <RefreshCw size={15} />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-4 sm:p-5">
           {records.map((record) => (
-            <div key={record.id} className="grid gap-2">
-              <span className="text-xs font-medium text-muted-foreground">
+            <div
+              key={record.id}
+              className="mb-3 grid gap-2 rounded-xl border border-border bg-background p-4 last:mb-0"
+            >
+              <span className="text-xs font-semibold text-muted-foreground">
                 {workspaces.find((item) => item.manifest_workspace_id === record.project_id)
                   ?.name ?? record.project_id.slice(0, 8)}
               </span>
@@ -416,11 +458,25 @@ function GlobalMemoryInbox({
             </div>
           ))}
           {!records.length && (
-            <CatalogEmpty title={tr("memory.empty")} text={tr("memory.globalEmptyText")} />
+            <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-border bg-muted/20 px-5 py-8 text-center">
+              <div className="grid max-w-lg justify-items-center gap-3">
+                <div className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-sm">
+                  <Brain size={22} />
+                </div>
+                <div className="grid gap-1.5">
+                  <h3 className="m-0 text-base font-semibold text-foreground">
+                    {tr("memory.empty")}
+                  </h3>
+                  <p className="m-0 text-sm leading-relaxed text-muted-foreground">
+                    {tr("memory.globalEmptyText")}
+                  </p>
+                </div>
+              </div>
+            </div>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

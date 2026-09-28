@@ -940,6 +940,90 @@ fn inspection_uses_exact_late_resolution_only_in_same_runtime() {
 }
 
 #[test]
+fn release_preserves_unknown_approval_and_answer_evidence_until_inspected() {
+    for (operation_name, prompt, waiting, native_request) in [
+        ("approve", "approval", "awaiting-approval", 90),
+        ("answer", "question", "waiting-input", 91),
+    ] {
+        let (temp, mut service, workspace) = fixture();
+        let created = create(&mut service, &workspace);
+        let session = created["sessionId"].as_str().unwrap();
+        send(&mut service, session, prompt, &id()).unwrap();
+        let current = wait(&mut service, session, waiting);
+        let request = id();
+        let mut input = json!({"operation":operation_name,"sessionId":session,"requestId":request,"runtimeBootId":"boot","expectedRevision":current["revision"],"experimentalEnabled":true,"turnId":current["turnId"]});
+        if operation_name == "approve" {
+            input["approvalId"] = json!(native_request);
+            input["nativeDecision"] = json!("accept");
+        } else {
+            input["questionId"] = json!(native_request);
+            input["answers"] = json!({"choice":["A"]});
+        }
+        assert_eq!(
+            service.request(input, "boot", false).unwrap()["accepted"],
+            true
+        );
+        wait(&mut service, session, "idle");
+        let ledger = service.ledger().unwrap();
+        let native = ledger.get(session).unwrap().unwrap().native_id;
+        // The native response arrived but its durable acknowledgement was lost.
+        rusqlite::Connection::open(temp.path().join("ledger/executions.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE managed_commands SET phase='dispatched',result=NULL WHERE request_id=?1",
+                [&request],
+            )
+            .unwrap();
+        let release_id = id();
+        let release = json!({"operation":"release","sessionId":session,"requestId":release_id,"deviceId":"browser"});
+        let rejected = service.request(release.clone(), "boot", true).unwrap();
+        assert_eq!(rejected["accepted"], false);
+        assert_eq!(rejected["controlOutcome"], "not-dispatched");
+        assert_eq!(rejected["reason"], "control-outcome-unconfirmed");
+        assert_eq!(
+            ledger.receipt(&release_id, "browser").unwrap()["status"],
+            "not-dispatched"
+        );
+        assert!(service.runners.get(session).unwrap().client.connected());
+        assert!(!ledger.get(session).unwrap().unwrap().released);
+        assert!(ledger.has_unknown(session).unwrap());
+        assert_eq!(
+            service.inspect(session, "different-boot").unwrap()["reconciled"],
+            false
+        );
+        assert_eq!(
+            service.inspect(session, "boot").unwrap()["reconciled"],
+            true
+        );
+        assert!(!ledger.has_unknown(session).unwrap());
+        // A retry of the rejected command remains rejected; a new explicit
+        // release is required after reconciliation and can then be resumed.
+        assert_eq!(service.request(release, "boot", true).unwrap(), rejected);
+        assert!(service.runners.contains_key(session));
+        assert_eq!(
+            service
+                .request(
+                    json!({"operation":"release","sessionId":session,"requestId":id()}),
+                    "boot",
+                    true
+                )
+                .unwrap()["released"],
+            true
+        );
+        assert_eq!(
+            operation(
+                &mut service,
+                session,
+                "resume",
+                json!({"handoffConfirmed":true})
+            )["accepted"],
+            true
+        );
+        assert_eq!(ledger.get(session).unwrap().unwrap().native_id, native);
+    }
+}
+
+#[test]
 fn released_adopted_session_capabilities_return_to_follower() {
     let (_temp, mut service, workspace) = fixture();
     let created = create(&mut service, &workspace);

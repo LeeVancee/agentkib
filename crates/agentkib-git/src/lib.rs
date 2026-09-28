@@ -305,6 +305,39 @@ pub fn diff(workspace: &Path, request: &GitDiffRequest) -> Result<Option<GitDiff
     }))
 }
 
+/// Paths in the requested comparison, before applying an optional file selection.
+/// Unlike status, this excludes untracked files and changes in the other index layer.
+pub fn diff_files(
+    workspace: &Path,
+    request: &GitDiffRequest,
+) -> Result<Option<Vec<GitFileChange>>> {
+    if request.kind == GitDiffKind::Commit {
+        return commit_files(
+            workspace,
+            request
+                .oid
+                .as_deref()
+                .context("Commit diff requires an oid")?,
+        );
+    }
+    let Some(repository) = repository(workspace)? else {
+        return Ok(None);
+    };
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--name-status",
+        "-z",
+    ];
+    if request.kind == GitDiffKind::Staged {
+        args.push("--cached");
+    }
+    let output = run_git(&repository.worktree_root, args, FILES_LIMIT)?;
+    Ok(Some(parse_name_status(&output)))
+}
+
 fn first_parent(worktree: &Path, oid: &str) -> Result<Option<String>> {
     let output = run_git(
         worktree,

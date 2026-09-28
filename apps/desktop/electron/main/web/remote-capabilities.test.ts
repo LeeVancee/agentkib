@@ -181,6 +181,37 @@ describe("remote capabilities share device and workspace authorization", () => {
     expect((await api("managed/create", body)).status).toBe(409);
     expect(managed).toHaveBeenCalledTimes(1);
   });
+  it("reports release blocked by an unknown control as definitely not dispatched", async () => {
+    await pair({ manage: true });
+    managed.mockImplementation(async ({ requestId }) => ({
+      requestId,
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      reason: "control-outcome-unconfirmed",
+    }));
+    const rejected = await api("managed/release", {
+      bootId,
+      requestId: "blocked-release",
+      sessionId: "s",
+    });
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toEqual({
+      error: "control-outcome-unconfirmed",
+      controlOutcome: "not-dispatched",
+    });
+    expect(managed).toHaveBeenCalledTimes(1);
+    managed.mockResolvedValue({ accepted: true, released: true });
+    expect(
+      (
+        await api("managed/release", {
+          bootId,
+          requestId: "confirmed-release",
+          sessionId: "s",
+        })
+      ).status,
+    ).toBe(200);
+  });
   it("requires explicit handoff confirmation and a scoped task", async () => {
     await pair({ manage: true });
     expect((await api("managed/adopt", { bootId, requestId: "a", sessionId: "s" })).status).toBe(

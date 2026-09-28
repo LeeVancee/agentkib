@@ -533,6 +533,14 @@ impl Service {
         }
         let outcome = (|| {
             if req.operation == "release" {
+                // Approval/question resolution evidence lives in this runner.
+                // Keep it available for inspect until every dispatched command
+                // has a confirmed outcome; rejecting release itself is definite.
+                if ledger.has_unknown(id)? {
+                    return Ok(
+                        json!({"accepted":false,"completed":false,"controlOutcome":"not-dispatched","reason":"control-outcome-unconfirmed","sessionId":id,"requestId":request_id,"runtimeBootId":boot}),
+                    );
+                }
                 // Explicit release terminates only our dedicated child and its descendants.
                 if let Some(mut runner) = self.runners.remove(id) {
                     runner.state.lock().unwrap().record.released = true;

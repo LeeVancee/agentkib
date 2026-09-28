@@ -81,7 +81,7 @@ python3 crates/agentkib-runtime/tests/fixtures/codex_native_writer_lock.py \
 
 ## 持久控制回执与本机 CSR
 
-Codex follower 的 send/stop/approve/answer 现在复用 `executions.sqlite` 命令账本。SQLite 成功记录 dispatched 后，桥接才可发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
+Codex follower 的 send/stop/approve/answer 现在复用 `executions.sqlite` 命令账本。SQLite 成功记录 dispatched 后，桥接才可发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。释放会话前也检查未确认记录；存在已派发但结果未知的审批、问答或其他控制时，release 明确返回未派发，保留执行进程及其原生 resolved 证据。应先 inspect 核对，确认后再以新 requestId 显式释放，不自动重试旧 release。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
 
 本机 `control.receipt {requestId,deviceId}` 查询通常返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。
 

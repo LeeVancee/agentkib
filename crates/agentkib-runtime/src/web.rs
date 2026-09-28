@@ -2319,58 +2319,14 @@ fn web_diff(value: Value) -> anyhow::Result<Value> {
             "diff-invalid-path"
         );
     }
-    let check_paths = || -> anyhow::Result<()> {
-        let files: Vec<(String, Option<String>)> = match request.kind {
-            agentkib_git::GitDiffKind::Commit => {
-                agentkib_git::commit_files(&path, request.oid.as_deref().context("missing-oid")?)?
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|f| (f.path, f.old_path))
-                    .collect()
-            }
-            _ => agentkib_git::workspace_summary(&path)?
-                .map(|s| {
-                    s.changes
-                        .into_iter()
-                        .map(|f| (f.path, f.old_path))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-        if let Some(selected) = &request.path {
-            anyhow::ensure!(
-                files
-                    .iter()
-                    .any(|(file, old)| file == selected || old.as_ref() == Some(selected)),
-                "diff-path-not-changed-file"
-            );
-        }
-        for (file, old) in files {
-            if request
-                .path
-                .as_ref()
-                .is_none_or(|selected| selected == &file || old.as_ref() == Some(selected))
-            {
-                anyhow::ensure!(
-                    !sensitive_diff_path(&file)
-                        && old.as_deref().is_none_or(|p| !sensitive_diff_path(p)),
-                    "diff-sensitive-path"
-                );
-            }
-        }
-        Ok(())
-    };
-    check_paths()?;
-    let result = agentkib_git::diff(
+    let result = checked_web_diff(
         &path,
         &agentkib_git::GitDiffRequest {
             kind: request.kind,
-            path: request.path.clone(),
-            oid: request.oid.clone(),
+            path: request.path,
+            oid: request.oid,
         },
     )?;
-    // Revalidate metadata after concurrent Git activity before exposing any bytes.
-    check_paths()?;
     anyhow::ensure!(
         store
             .workspace_path(&request.workspace_id)?
@@ -2379,6 +2335,43 @@ fn web_diff(value: Value) -> anyhow::Result<Value> {
         "workspace-unavailable"
     );
     Ok(serde_json::to_value(result)?)
+}
+
+fn checked_web_diff(
+    path: &std::path::Path,
+    request: &agentkib_git::GitDiffRequest,
+) -> anyhow::Result<Option<agentkib_git::GitDiff>> {
+    let check_paths = || -> anyhow::Result<()> {
+        let files = agentkib_git::diff_files(path, request)?.unwrap_or_default();
+        if let Some(selected) = &request.path {
+            anyhow::ensure!(
+                files
+                    .iter()
+                    .any(|file| &file.path == selected || file.old_path.as_ref() == Some(selected)),
+                "diff-path-not-changed-file"
+            );
+        }
+        for file in files {
+            if request.path.as_ref().is_none_or(|selected| {
+                selected == &file.path || file.old_path.as_ref() == Some(selected)
+            }) {
+                anyhow::ensure!(
+                    !sensitive_diff_path(&file.path)
+                        && file
+                            .old_path
+                            .as_deref()
+                            .is_none_or(|p| !sensitive_diff_path(p)),
+                    "diff-sensitive-path"
+                );
+            }
+        }
+        Ok(())
+    };
+    check_paths()?;
+    let result = agentkib_git::diff(path, request)?;
+    // Revalidate the same comparison after concurrent Git activity before exposing bytes.
+    check_paths()?;
+    Ok(result)
 }
 
 fn sensitive_diff_path(path: &str) -> bool {
@@ -2454,6 +2447,151 @@ fn sensitive_diff_root(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod diff_safety_tests {
     use super::*;
+    use agentkib_git::{GitDiffKind, GitDiffRequest};
+
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+
+    fn fixture(track_sensitive_file: bool) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path();
+        git(path, &["init", "-b", "main"]);
+        git(path, &["config", "user.name", "AgentKib Test"]);
+        git(path, &["config", "user.email", "test@example.invalid"]);
+        std::fs::write(path.join("code.txt"), "before\n").unwrap();
+        if track_sensitive_file {
+            std::fs::write(path.join(".env"), "fixture-before\n").unwrap();
+        }
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        directory
+    }
+
+    fn request(kind: GitDiffKind) -> GitDiffRequest {
+        GitDiffRequest {
+            kind,
+            path: None,
+            oid: None,
+        }
+    }
+
+    #[test]
+    fn staged_diff_ignores_untracked_sensitive_files() {
+        let directory = fixture(false);
+        let path = directory.path();
+        std::fs::write(path.join("code.txt"), "staged-code\n").unwrap();
+        git(path, &["add", "code.txt"]);
+        std::fs::write(path.join(".env"), "untracked-fixture\n").unwrap();
+        let result = checked_web_diff(path, &request(GitDiffKind::Staged))
+            .unwrap()
+            .unwrap();
+        assert!(result.patch.contains("+staged-code"));
+        assert!(!result.patch.contains("untracked-fixture"));
+        assert!(
+            checked_web_diff(path, &request(GitDiffKind::Worktree))
+                .unwrap()
+                .unwrap()
+                .patch
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn checks_sensitive_paths_only_in_the_requested_index_layer() {
+        for kind in [GitDiffKind::Worktree, GitDiffKind::Staged] {
+            let directory = fixture(true);
+            let path = directory.path();
+            std::fs::write(path.join("code.txt"), "safe-change\n").unwrap();
+            std::fs::write(path.join(".env"), "sensitive-change\n").unwrap();
+            let staged = if kind == GitDiffKind::Worktree {
+                ".env"
+            } else {
+                "code.txt"
+            };
+            git(path, &["add", staged]);
+            let result = checked_web_diff(path, &request(kind)).unwrap().unwrap();
+            assert!(result.patch.contains("+safe-change"));
+            assert!(!result.patch.contains("sensitive-change"));
+            let other_kind = if kind == GitDiffKind::Worktree {
+                GitDiffKind::Staged
+            } else {
+                GitDiffKind::Worktree
+            };
+            assert_eq!(
+                checked_web_diff(path, &request(other_kind))
+                    .unwrap_err()
+                    .to_string(),
+                "diff-sensitive-path"
+            );
+            let mut wrong_layer = request(other_kind);
+            wrong_layer.path = Some("code.txt".into());
+            assert_eq!(
+                checked_web_diff(path, &wrong_layer)
+                    .unwrap_err()
+                    .to_string(),
+                "diff-path-not-changed-file"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_copy_uses_the_same_detection_as_the_patch() {
+        let directory = fixture(true);
+        let path = directory.path();
+        git(path, &["config", "diff.renames", "copies"]);
+        std::fs::copy(path.join(".env"), path.join("settings.txt")).unwrap();
+        std::fs::write(path.join(".env"), "fixture-after\n").unwrap();
+        git(path, &["add", "."]);
+        let files = agentkib_git::diff_files(path, &request(GitDiffKind::Staged))
+            .unwrap()
+            .unwrap();
+        let copied = files
+            .iter()
+            .find(|file| file.path == "settings.txt")
+            .unwrap();
+        assert_eq!(copied.old_path.as_deref(), Some(".env"));
+        let mut selected = request(GitDiffKind::Staged);
+        selected.path = Some("settings.txt".into());
+        assert_eq!(
+            checked_web_diff(path, &selected).unwrap_err().to_string(),
+            "diff-sensitive-path"
+        );
+    }
+
+    #[test]
+    fn staged_and_commit_renames_check_both_sensitive_endpoints() {
+        for (from, to) in [(".env", "settings.txt"), ("code.txt", ".env.local")] {
+            let directory = fixture(true);
+            let path = directory.path();
+            git(path, &["mv", from, to]);
+            let mut staged = request(GitDiffKind::Staged);
+            // Selecting the ordinary endpoint must not expose the sensitive one.
+            staged.path = Some(if from.starts_with('.') { to } else { from }.into());
+            assert_eq!(
+                checked_web_diff(path, &staged).unwrap_err().to_string(),
+                "diff-sensitive-path"
+            );
+            git(path, &["commit", "-m", "rename"]);
+            let output = std::process::Command::new("git")
+                .current_dir(path)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            let mut commit = request(GitDiffKind::Commit);
+            commit.oid = Some(String::from_utf8(output.stdout).unwrap().trim().into());
+            assert_eq!(
+                checked_web_diff(path, &commit).unwrap_err().to_string(),
+                "diff-sensitive-path"
+            );
+        }
+    }
+
     #[test]
     fn rejects_secrets_before_reading_patch() {
         for name in [

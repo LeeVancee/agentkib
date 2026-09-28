@@ -2050,6 +2050,7 @@ export class WebAccessService {
           "unsupported-effort",
           "session-managed-by-another-runtime",
           "pause-original-goal-before-handoff",
+          "control-outcome-unconfirmed",
           "codex-policy-mismatch",
           "codex-workspace-mismatch",
           "codex-sandbox-mismatch",

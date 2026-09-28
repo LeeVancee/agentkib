@@ -1,6 +1,14 @@
 import { Button } from "@/components/ui/button";
-import { SidebarTooltip } from "@/components/ui/tooltip";
-import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Tooltip } from "@base-ui/react/tooltip";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   Bot,
   ChevronRight,
@@ -56,6 +64,21 @@ const agentFilters: Array<[AgentFilter, string]> = [
   ["enabled", "agents.filter.enabled"],
   ["available", "agents.filter.available"],
 ];
+
+function ActivityBarTooltip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={children} aria-label={label} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="right" sideOffset={8} className="z-[9999]">
+          <Tooltip.Popup className="rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-lg">
+            {label}
+          </Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
 
 export function AppSidebar(props: {
   active: GlobalPage | "settings";
@@ -247,7 +270,7 @@ export function AppSidebar(props: {
           )}
           <nav className="activity-bar-navigation" aria-label={tr("common.primaryNavigation")}>
             {props.entries.map(({ id, label, icon: Icon, badge, shortcut }) => (
-              <SidebarTooltip key={id} label={tr(label)}>
+              <ActivityBarTooltip key={id} label={tr(label)}>
                 <Button
                   variant="bare"
                   size="content"
@@ -267,11 +290,11 @@ export function AppSidebar(props: {
                   <span className="sr-only">{tr(label)}</span>
                   {!!badge && <em className="activity-bar-badge">{badge}</em>}
                 </Button>
-              </SidebarTooltip>
+              </ActivityBarTooltip>
             ))}
           </nav>
           <div className="activity-bar-footer">
-            <SidebarTooltip label={tr("sessions.remote")}>
+            <ActivityBarTooltip label={tr("sessions.remote")}>
               <Button
                 variant="bare"
                 size="content"
@@ -284,8 +307,8 @@ export function AppSidebar(props: {
                 <MonitorSmartphone size={19} />
                 <span className="sr-only">{tr("sessions.remote")}</span>
               </Button>
-            </SidebarTooltip>
-            <SidebarTooltip label={tr("nav.settings")}>
+            </ActivityBarTooltip>
+            <ActivityBarTooltip label={tr("nav.settings")}>
               <Button
                 variant="bare"
                 size="content"
@@ -303,7 +326,7 @@ export function AppSidebar(props: {
                 <Settings size={20} />
                 <span className="sr-only">{tr("nav.settings")}</span>
               </Button>
-            </SidebarTooltip>
+            </ActivityBarTooltip>
             <Button
               variant="bare"
               size="content"

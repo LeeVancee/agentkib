@@ -192,7 +192,7 @@ export function AppSidebar(props: {
   };
   const navigate = (page: GlobalPage) => {
     const needsPanel = ["workspaces", "sessions", "agents", "catalog"].includes(page);
-    if (needsPanel) expandPanel();
+    if (needsPanel && active !== "settings") expandPanel();
     else setMobileOpen(false);
     props.onNavigate(page);
   };

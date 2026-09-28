@@ -35,7 +35,7 @@ import {
 } from "@/features/workspace/workspace-navigation";
 import { SessionDirectory } from "@/features/sessions/SessionDirectory";
 import { RemoteConnectionPanel } from "@/features/remote/RemoteConnectionPanel";
-import logo from "@/assets/logo.svg";
+import logo from "../../resources/assets/agentkib-icon-mark.png";
 
 export interface SidebarEntry<T extends string> {
   id: T;

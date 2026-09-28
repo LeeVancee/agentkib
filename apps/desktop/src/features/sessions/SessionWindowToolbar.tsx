@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, ArrowUpRight, MoreHorizontal, RefreshCw } from "lucide-react";
+import { ArrowUpRight, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -42,33 +42,31 @@ export function SessionWindowToolbar() {
   };
   return (
     <div className="app-toolbar-content session-window-toolbar">
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={tr("sessions.backOverview")}
-        onClick={() => hub.select()}
-      >
-        <ArrowLeft size={17} />
-      </Button>
       <AgentIcon agent={selected.agent} compact />
       <h1 className="session-window-title" title={displaySessionTitle(selected.title, tr)}>
         {displaySessionTitle(selected.title, tr)}
       </h1>
       <div className="session-window-actions">
         {canContinue && (
-          <Button variant="ghost" size="sm" onClick={continueSession}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={tr("sessions.continueWorkspace")}
+            title={tr("sessions.continueWorkspace")}
+            onClick={continueSession}
+          >
             <ArrowUpRight size={15} />
-            {tr("sessions.continueWorkspace")}
           </Button>
         )}
         <Button
-          variant="ghost"
-          size="sm"
+          variant="outline"
+          size="icon"
           disabled={hub.refreshing}
+          aria-label={tr("sessions.refresh")}
+          title={tr("sessions.refresh")}
           onClick={() => void hub.refresh()}
         >
           <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
-          {tr("sessions.refresh")}
         </Button>
       </div>
       <div className="session-window-menu">

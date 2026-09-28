@@ -522,14 +522,15 @@ impl Service {
             );
         }
         let request_id = valid_request_id(&req)?;
-        if let Some(previous) = ledger.claim(request_id, id, &fingerprint)? {
+        if let Some(previous) = ledger.claim(
+            request_id,
+            id,
+            &fingerprint,
+            req.device_id.as_deref(),
+            &command_context(&req, boot, &record.workspace_id),
+        )? {
             return Ok(previous);
         }
-        ledger.annotate(
-            request_id,
-            &command_context(&req, boot, &record.workspace_id),
-        )?;
-        ledger.bind_device(request_id, req.device_id.as_deref())?;
         let outcome = (|| {
             if req.operation == "release" {
                 // Explicit release terminates only our dedicated child and its descendants.
@@ -1195,11 +1196,15 @@ impl Service {
                 "Codex".into(),
             )
         };
-        if let Some(previous) = ledger.claim(request_id, &id, fingerprint)? {
+        if let Some(previous) = ledger.claim(
+            request_id,
+            &id,
+            fingerprint,
+            req.device_id.as_deref(),
+            &command_context(&req, boot, &workspace_id),
+        )? {
             return Ok(previous);
         }
-        ledger.annotate(request_id, &command_context(&req, boot, &workspace_id))?;
-        ledger.bind_device(request_id, req.device_id.as_deref())?;
         let workspace = store.workspace_path(&workspace_id)?.canonicalize()?;
         let home = self.home()?;
         let record = Record {

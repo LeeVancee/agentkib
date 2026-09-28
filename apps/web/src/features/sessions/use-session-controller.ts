@@ -9,6 +9,7 @@ import { useSessionLive } from "./use-session-live";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ApiError,
+  isLegacyPreparedReceipt,
   WebClient,
   type Access,
   type WebConnection,
@@ -197,9 +198,11 @@ export function useSessionController({
         if (
           !result.found ||
           result.requestId !== entry.requestId ||
-          (entry.sessionId && result.sessionId !== entry.sessionId) ||
-          result.operation !== entry.kind ||
-          result.status === "unknown"
+          (!isLegacyPreparedReceipt(result, entry.requestId) &&
+            (result.recovery !== undefined ||
+              (entry.sessionId && result.sessionId !== entry.sessionId) ||
+              result.operation !== entry.kind ||
+              result.status === "unknown"))
         )
           continue;
         if (result.status !== "accepted" && result.status !== "not-dispatched") continue;

@@ -380,11 +380,12 @@ impl Service {
                     let fingerprint =
                         format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&value)?));
                     let ledger = self.managed.ledger()?;
-                    if let Some(previous) = ledger.claim(request_id, id, &fingerprint)? {
+                    if let Some(previous) = ledger.claim(
+                        request_id, id, &fingerprint, request.device_id.as_deref(),
+                        &json!({"operation":request.operation,"workspaceId":session.workspace_id,"executionMode":"codex-follower","runtimeBootId":self.boot,"expectedRevision":request.expected_revision,"turnId":request.turn_id}),
+                    )? {
                         return Ok(previous);
                     }
-                    ledger.bind_device(request_id, request.device_id.as_deref())?;
-                    ledger.annotate(request_id,&json!({"operation":request.operation,"workspaceId":session.workspace_id,"executionMode":"codex-follower","runtimeBootId":self.boot,"expectedRevision":request.expected_revision,"turnId":request.turn_id}))?;
                     let outcome = self.request_inner(value);
                     if ledger.is_dispatched(request_id)? {
                         if let Ok(ack) = &outcome

@@ -215,22 +215,127 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(403);
     expect((await http("/api/web/v1/requests/not-a-uuid")).status).toBe(400);
   });
-  it("rechecks revocation after a receipt lookup finishes", async () => {
+  it("returns only the legacy non-dispatch proof after authenticating the browser", async () => {
+    const requestId = "a169d42b-c32a-45e0-83b6-c2460c111bed";
+    const proof = {
+      found: true,
+      requestId,
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(401);
     await bootstrap();
-    const device = await pair(true);
-    let release!: (result: unknown) => void;
-    receiptQuery.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          release = resolve;
-        }),
-    );
-    const pending = http("/api/web/v1/requests/a169d42b-c32a-45e0-83b6-c2460c111bed");
-    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
-    await service.request({ operation: "revoke", id: device });
-    release({ found: false });
-    expect((await pending).status).toBe(401);
+    const deviceId = await pair(true);
+    receiptQuery.mockResolvedValueOnce({
+      ...proof,
+      sessionId: "private-session",
+      workspaceId: "private-workspace",
+      operation: "create",
+      ack: { private: "runtime-only" },
+    });
+    const response = await http(`/api/web/v1/requests/${requestId}`);
+    expect(response.status).toBe(200);
+    expect(response.json()).toEqual(proof);
+    expect(receiptQuery).toHaveBeenLastCalledWith({ requestId, deviceId });
   });
+  it("clears only the inactive fence correlated with a legacy non-dispatch proof", async () => {
+    await bootstrap();
+    await pair(true);
+    const requestId = crypto.randomUUID();
+    const body = { sessionId: "s", text: "x", requestId, bootId, expectedRevision: 4 };
+    runtime.mockImplementation(async (params) => {
+      if ((params as { operation: string }).operation === "send") throw new Error("receipt lost");
+      return { runtimeBootId: "r", revision: 4, sendEnabled: true };
+    });
+    expect((await http("/api/web/v1/send", { method: "POST", body })).json()).toMatchObject({
+      controlOutcome: "unknown",
+    });
+    const proof = {
+      found: true,
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    const otherId = crypto.randomUUID();
+    receiptQuery.mockResolvedValueOnce({ ...proof, requestId: otherId });
+    expect((await http(`/api/web/v1/requests/${otherId}`)).status).toBe(200);
+    expect(
+      (
+        await http("/api/web/v1/send", {
+          method: "POST",
+          body: { ...body, requestId: crypto.randomUUID() },
+        })
+      ).json(),
+    ).toMatchObject({ error: "outcome_unknown" });
+    receiptQuery.mockResolvedValueOnce({ ...proof, requestId });
+    expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(200);
+    // Receipt recovery itself must not issue the original control a second time.
+    expect(
+      runtime.mock.calls.filter(
+        ([params]) => (params as { operation: string }).operation === "send",
+      ),
+    ).toHaveLength(1);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "r",
+      revision: 4,
+      sendEnabled: true,
+    });
+    expect(
+      (
+        await http("/api/web/v1/send", {
+          method: "POST",
+          body: { ...body, requestId: crypto.randomUUID() },
+        })
+      ).status,
+    ).toBe(200);
+  });
+  it.each(["unknown", "accepted", "wrong-request", "wrong-marker", "completed"])(
+    "rejects a legacy recovery proof with %s",
+    async (invalid) => {
+      const requestId = "a169d42b-c32a-45e0-83b6-c2460c111bed";
+      await bootstrap();
+      await pair(true);
+      receiptQuery.mockResolvedValueOnce({
+        found: true,
+        requestId: invalid === "wrong-request" ? crypto.randomUUID() : requestId,
+        status: ["unknown", "accepted"].includes(invalid) ? invalid : "not-dispatched",
+        recovery: invalid === "wrong-marker" ? "other" : "legacy-prepared",
+        completionObserved: invalid === "completed",
+      });
+      expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(503);
+    },
+  );
+  it.each([false, true])(
+    "rechecks revocation after a receipt lookup finishes (legacy=%s)",
+    async (legacy) => {
+      await bootstrap();
+      const device = await pair(true);
+      let release!: (result: unknown) => void;
+      receiptQuery.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const pending = http("/api/web/v1/requests/a169d42b-c32a-45e0-83b6-c2460c111bed");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await service.request({ operation: "revoke", id: device });
+      release(
+        legacy
+          ? {
+              found: true,
+              requestId: "a169d42b-c32a-45e0-83b6-c2460c111bed",
+              status: "not-dispatched",
+              recovery: "legacy-prepared",
+              completionObserved: false,
+            }
+          : { found: false },
+      );
+      expect((await pending).status).toBe(401);
+    },
+  );
   it("requires pairing, same origin and CSRF; exposes no arbitrary runtime methods", async () => {
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
     const access = await bootstrap();

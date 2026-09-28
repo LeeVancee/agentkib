@@ -171,11 +171,23 @@ export interface Live {
   usage?: CodexTokenUsage;
   goal?: CodexGoal;
 }
+export type LegacyPreparedReceipt = {
+  found: true;
+  requestId: string;
+  status: "not-dispatched";
+  recovery: "legacy-prepared";
+  completionObserved: false;
+  sessionId?: never;
+  operation?: never;
+  turnId?: never;
+};
 export type ControlReceipt =
   | { found: false; requestId: string }
+  | LegacyPreparedReceipt
   | {
       found: true;
       requestId: string;
+      recovery?: never;
       sessionId: string;
       workspaceId?: string | null;
       operation?: string | null;
@@ -193,6 +205,20 @@ export type ControlReceipt =
       } | null;
       completionObserved: false;
     };
+// A legacy prepared claim was durably terminated before dispatch. Its metadata
+// can be absent; it proves only that this exact request can leave the pending UI.
+export function isLegacyPreparedReceipt(
+  receipt: ControlReceipt,
+  requestId: string,
+): receipt is LegacyPreparedReceipt {
+  return (
+    receipt.found === true &&
+    receipt.requestId === requestId &&
+    receipt.status === "not-dispatched" &&
+    receipt.recovery === "legacy-prepared" &&
+    receipt.completionObserved === false
+  );
+}
 export class ApiError extends Error {
   constructor(
     public status: number,

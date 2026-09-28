@@ -2,7 +2,7 @@ import { managedText } from "./managed-copy";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
-import { ApiError } from "@agentkib/web-client";
+import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useSession } from "./session-context";
@@ -116,9 +116,11 @@ export function ManagedTasks({
           cancelled ||
           !result.found ||
           result.requestId !== pending.requestId ||
-          (pending.sessionId && result.sessionId !== pending.sessionId) ||
-          result.operation !== pending.kind ||
-          result.status === "unknown"
+          (!isLegacyPreparedReceipt(result, pending.requestId) &&
+            (result.recovery !== undefined ||
+              (pending.sessionId && result.sessionId !== pending.sessionId) ||
+              result.operation !== pending.kind ||
+              result.status === "unknown"))
         )
           return;
         if (result.status !== "accepted" && result.status !== "not-dispatched") return;

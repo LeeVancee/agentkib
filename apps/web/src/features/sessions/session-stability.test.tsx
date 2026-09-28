@@ -483,6 +483,53 @@ describe("host identity isolation", () => {
 });
 
 describe("durable Codex control recovery", () => {
+  it("clears only a matching legacy non-dispatch proof and keeps the draft without resending", async () => {
+    const scope = pendingScope("", "browser");
+    const requestId = crypto.randomUUID();
+    rememberPending(scope, { requestId, sessionId: "session", kind: "send" });
+    const server = createServer({ ...idleLive, executionMode: "codex-managed" });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    server.state.receipt = {
+      found: true,
+      requestId: crypto.randomUUID(),
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    await openSession();
+    fireEvent.change(screen.getByLabelText("发送消息"), { target: { value: "keep this draft" } });
+    expect(readPending(scope)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    server.state.receipt = {
+      found: true,
+      requestId,
+      status: "unknown",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    await waitFor(() =>
+      expect(
+        server.fetcher.mock.calls.filter(([url]) => String(url).includes("/requests/")).length,
+      ).toBeGreaterThan(1),
+    );
+    expect(readPending(scope)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    server.state.receipt = {
+      found: true,
+      requestId,
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+    await waitFor(() => expect(readPending(scope)).toEqual([]));
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    expect(screen.getByLabelText("发送消息")).toHaveValue("keep this draft");
+    expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
+      0,
+    );
+  });
   it("persists unknown sends across reload and only clears them using the matching receipt", async () => {
     const server = createServer({ ...idleLive, executionMode: "codex-managed" });
     server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };

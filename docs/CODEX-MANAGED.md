@@ -83,7 +83,11 @@ python3 crates/agentkib-runtime/tests/fixtures/codex_native_writer_lock.py \
 
 Codex follower 的 send/stop/approve/answer 现在复用 `executions.sqlite` 命令账本。SQLite 成功记录 dispatched 后，桥接才可发送原生请求；无法写账本时不发送。收到匹配的原生回执才写 resolved。runtime 重启后，任何设备对同一 session 的后续控制仍受未确认记录阻挡；idle 快照、页面刷新和重新连接均不能清除此屏障。
 
-本机 `control.receipt {requestId,deviceId}` 只读查询返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。
+本机 `control.receipt {requestId,deviceId}` 查询通常返回 `{found:false,requestId}`，或包含 sessionId、workspaceId、operation、executionMode、原 runtimeBootId/expectedRevision/turnId、status、ack 的记录。status 为 not-dispatched / accepted / unknown。deviceId 必须与原命令一致，设备权限与 workspace 授权由 Electron 再验证；跨设备同 UUID 不会返回他人回执。旧账本添加 device_id 列，旧记录保留但不自动分配给任何新设备。UUID 保留全局唯一约束，跨设备 UUID 碰撞拒绝。`completionObserved:false` 明确表示 accepted 仅确认请求回执，不表示审批、工具或轮次已经结束，UI 必须继续显示原生 pending 事项。
+
+新命令的认领、device_id 和操作证据在同一 SQLite 事务中提交；`claim_version=1` 标识完整认领，旧记录迁移为 0。任务创建也在产生原生副作用前保存 workspace 与操作信息，重启后可直接查到归属正确的未派发回执。
+
+旧版在认领与补写元数据之间中断的记录，仅当 `claim_version=0`、仍为 prepared 且缺设备归属或操作信息时，回执查询才可在写事务内将其终结为未派发。返回最小证明 `{found:true,requestId,status:"not-dispatched",recovery:"legacy-prepared",completionObserved:false}`，不含 session、workspace、operation 或原始结果；不猜测或补绑设备。仍有设备归属的旧记录只能由原设备查询；无归属的记录仅允许已授权浏览器取得该最小证明，不开放普通回执内容。终结与 dispatch 互斥，保留原 requestId 去重记录。浏览器仅清除同一 requestId 的待确认标识并提示未发送，不自动重试、不按成功处理。已 dispatched、已正常 resolved、完整的旧记录及新版记录不走此恢复路径；无法证明未派发的孤立记录保持阻塞，需在电脑端核查原生状态，不能靠清空账本解锁。
 
 Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 保存到按 host + device 隔离的 sessionStorage，不保存正文、答案、token 或审批详情。刷新/重连只查询回执，不自动重发。found:false 和 unknown 保留屏障；accepted/not-dispatched 才收敛。创建回执可用返回 sessionId 导航找回任务。不同设备授权不加载旧设备 pending。浏览器存储不可写时，Codex 新控制在发送前被拒绝。其他 agent 沿用原行为。同源 HTTP 请求默认 25 秒超时，LAN 默认 15 秒。
 

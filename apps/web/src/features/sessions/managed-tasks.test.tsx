@@ -258,6 +258,52 @@ describe("ManagedTasks", () => {
     expect(mutations()).toHaveLength(0);
     expect(readPending(scope)).toHaveLength(1);
   });
+  it.each(["create", "adopt", "release", "reconcile"] as const)(
+    "recovers a legacy prepared %s without replaying it or requiring a session id",
+    async (kind) => {
+      const requestId = crypto.randomUUID();
+      const scope = pendingScope("", "browser");
+      rememberPending(scope, {
+        requestId,
+        workspaceId: "workspace",
+        ...(kind === "create" ? {} : { sessionId: "original-session" }),
+        kind,
+      });
+      session.client.receipt.mockResolvedValue({
+        found: true,
+        requestId,
+        status: "not-dispatched",
+        recovery: "legacy-prepared",
+        completionObserved: false,
+      });
+      await show(kind === "create");
+      await waitFor(() => expect(readPending(scope)).toEqual([]));
+      expect(mutations()).toHaveLength(0);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(session.refresh).toHaveBeenCalledWith(true);
+    },
+  );
+  it.each(["unknown", "accepted", "wrong-request", "wrong-marker", "completed"])(
+    "retains legacy creation pending when the proof is %s",
+    async (invalid) => {
+      const requestId = crypto.randomUUID();
+      const scope = pendingScope("", "browser");
+      rememberPending(scope, { requestId, workspaceId: "workspace", kind: "create" });
+      session.client.receipt.mockResolvedValue({
+        found: true,
+        requestId: invalid === "wrong-request" ? crypto.randomUUID() : requestId,
+        status: ["unknown", "accepted"].includes(invalid) ? invalid : "not-dispatched",
+        recovery: invalid === "wrong-marker" ? "other" : "legacy-prepared",
+        completionObserved: invalid === "completed",
+      });
+      await show(true);
+      await waitFor(() => expect(session.client.receipt).toHaveBeenCalledWith(requestId));
+      expect(readPending(scope)).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+      expect(mutations()).toHaveLength(0);
+      expect(navigate).not.toHaveBeenCalled();
+    },
+  );
   it("finds an accepted creation by durable receipt and navigates without creating again", async () => {
     const requestId = crypto.randomUUID();
     const scope = pendingScope("", "browser");

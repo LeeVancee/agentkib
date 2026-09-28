@@ -91,6 +91,17 @@ impl Ledger {
                 "ALTER TABLE managed_commands ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
             )?;
         }
+        let has_claim_version = conn
+            .prepare("PRAGMA table_info(managed_commands)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "claim_version");
+        if !has_claim_version {
+            conn.execute_batch(
+                "ALTER TABLE managed_commands ADD COLUMN claim_version INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
         conn.execute_batch("COMMIT")?;
         #[cfg(unix)]
         {
@@ -153,7 +164,21 @@ impl Ledger {
             }
         }
     }
-    pub fn claim(&self, request: &str, session: &str, fingerprint: &str) -> Result<Option<Value>> {
+    pub fn claim(
+        &self,
+        request: &str,
+        session: &str,
+        fingerprint: &str,
+        device: Option<&str>,
+        evidence: &Value,
+    ) -> Result<Option<Value>> {
+        ensure!(
+            evidence["operation"]
+                .as_str()
+                .is_some_and(|op| !op.is_empty()),
+            "missing-command-operation"
+        );
+        let evidence = serde_json::to_string(evidence)?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let prior: Option<(String, String, Option<String>)> = tx
@@ -175,23 +200,46 @@ impl Ledger {
                 }
             }));
         }
-        tx.execute("INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,result) VALUES(?1,?2,?3,'prepared',NULL)",params![request,session,fingerprint])?;
+        tx.execute(
+            "INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,result,device_id,evidence,claim_version) VALUES(?1,?2,?3,'prepared',NULL,?4,?5,1)",
+            params![request, session, fingerprint, device.unwrap_or(""), evidence],
+        )?;
         tx.commit()?;
         Ok(None)
-    }
-    pub fn bind_device(&self, request: &str, device: Option<&str>) -> Result<()> {
-        self.connection()?.execute(
-            "UPDATE managed_commands SET device_id=?2 WHERE request_id=?1 AND phase='prepared'",
-            params![request, device.unwrap_or("")],
-        )?;
-        Ok(())
     }
     pub fn is_dispatched(&self, request: &str) -> Result<bool> {
         Ok(self.connection()?.query_row("SELECT EXISTS(SELECT 1 FROM managed_commands WHERE request_id=?1 AND phase='dispatched')",[request],|r|r.get(0))?)
     }
     pub fn receipt(&self, request: &str, device: &str) -> Result<Value> {
-        let prior:Option<(String,String,Option<String>,Option<String>)>=self.connection()?.query_row("SELECT session_id,phase,result,evidence FROM managed_commands WHERE request_id=?1 AND device_id=?2",params![request,device],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        let Some((session, phase, result, evidence)) = prior else {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        struct ReceiptRecord {
+            session: String,
+            phase: String,
+            result: Option<String>,
+            evidence: Option<String>,
+            owner: String,
+            claim_version: i64,
+        }
+        let prior = tx
+            .query_row(
+                "SELECT session_id,phase,result,evidence,device_id,claim_version FROM managed_commands WHERE request_id=?1 AND (device_id=?2 OR (device_id='' AND claim_version=0))",
+                params![request, device],
+                |r| Ok(ReceiptRecord {
+                    session: r.get(0)?, phase: r.get(1)?, result: r.get(2)?,
+                    evidence: r.get(3)?, owner: r.get(4)?, claim_version: r.get(5)?,
+                }),
+            )
+            .optional()?;
+        let Some(ReceiptRecord {
+            session,
+            phase,
+            result,
+            evidence,
+            owner,
+            claim_version,
+        }) = prior
+        else {
             return Ok(json!({"found":false,"requestId":request}));
         };
         let ack: Value = result
@@ -202,6 +250,31 @@ impl Ledger {
             .map(|s| serde_json::from_str(&s))
             .transpose()?
             .unwrap_or(Value::Null);
+        // Older claims could commit before their ownership/operation was saved.
+        // Only prepared commands are provably not dispatched. Resolve them while
+        // holding the write lock, so dispatch cannot race this recovery. An
+        // unattributed receipt exposes no session, workspace, operation or result.
+        let orphan = claim_version == 0
+            && (owner.is_empty() || evidence["operation"].as_str().is_none_or(str::is_empty));
+        if orphan && phase == "prepared" {
+            let result = json!({"accepted":false,"completed":false,"controlOutcome":"not-dispatched","requestId":request,"recovery":"legacy-prepared"});
+            tx.execute(
+                "UPDATE managed_commands SET phase='resolved',result=?2 WHERE request_id=?1 AND phase='prepared'",
+                params![request, serde_json::to_string(&result)?],
+            )?;
+            tx.commit()?;
+            return Ok(legacy_prepared_receipt(request));
+        }
+        if orphan
+            && phase == "resolved"
+            && ack["recovery"] == "legacy-prepared"
+            && ack["controlOutcome"] == "not-dispatched"
+        {
+            return Ok(legacy_prepared_receipt(request));
+        }
+        if owner != device {
+            return Ok(json!({"found":false,"requestId":request}));
+        }
         let status = if phase == "dispatched" {
             "unknown"
         } else if ack["accepted"] == true {
@@ -219,10 +292,11 @@ impl Ledger {
         Ok(())
     }
     pub fn annotate(&self, request: &str, evidence: &Value) -> Result<()> {
-        self.connection()?.execute(
+        let changed = self.connection()?.execute(
             "UPDATE managed_commands SET evidence=?2 WHERE request_id=?1 AND phase='prepared'",
             params![request, serde_json::to_string(evidence)?],
         )?;
+        ensure!(changed == 1, "control-ledger-not-prepared");
         Ok(())
     }
     pub fn unknown(&self, session: &str) -> Result<Vec<(String, Value)>> {
@@ -295,6 +369,10 @@ impl Ledger {
     }
 }
 
+fn legacy_prepared_receipt(request: &str) -> Value {
+    json!({"found":true,"requestId":request,"status":"not-dispatched","recovery":"legacy-prepared","completionObserved":false})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,19 +381,54 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("managed.db");
         let l = Ledger::open(path.clone()).unwrap();
-        assert!(l.claim("req", "s", "hash").unwrap().is_none());
+        assert!(
+            l.claim(
+                "req",
+                "s",
+                "hash",
+                Some("device-a"),
+                &json!({"operation":"send"})
+            )
+            .unwrap()
+            .is_none()
+        );
         l.dispatch("req").unwrap();
         drop(l);
         let l = Ledger::open(path).unwrap();
         assert!(l.has_unknown("s").unwrap());
         assert_eq!(
-            l.claim("req", "s", "hash").unwrap().unwrap()["controlOutcome"],
+            l.claim(
+                "req",
+                "s",
+                "hash",
+                Some("device-a"),
+                &json!({"operation":"send"})
+            )
+            .unwrap()
+            .unwrap()["controlOutcome"],
             "unknown"
         );
-        assert!(l.claim("req", "s", "other").is_err());
+        assert!(
+            l.claim(
+                "req",
+                "s",
+                "other",
+                Some("device-a"),
+                &json!({"operation":"send"})
+            )
+            .is_err()
+        );
         l.finish("req", &json!({"accepted":true})).unwrap();
         assert_eq!(
-            l.claim("req", "s", "hash").unwrap().unwrap()["accepted"],
+            l.claim(
+                "req",
+                "s",
+                "hash",
+                Some("device-a"),
+                &json!({"operation":"send"})
+            )
+            .unwrap()
+            .unwrap()["accepted"],
             true
         );
     }
@@ -327,13 +440,33 @@ mod tests {
         let path = dir.join("executions.sqlite");
         let old = Connection::open(&path).unwrap();
         old.execute_batch("CREATE TABLE managed_commands(request_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, phase TEXT NOT NULL, result TEXT); INSERT INTO managed_commands VALUES('old','session','hash','resolved','{\"accepted\":true}')").unwrap();
+        old.execute(
+            "INSERT INTO managed_commands VALUES('interrupted','session','hash','prepared',NULL)",
+            [],
+        )
+        .unwrap();
         drop(old);
         let ledger = Ledger::open(path.clone()).unwrap();
+        assert_eq!(
+            ledger.receipt("interrupted", "device-a").unwrap(),
+            legacy_prepared_receipt("interrupted")
+        );
         assert_eq!(
             ledger.replay("old", "hash").unwrap().unwrap()["accepted"],
             true
         );
-        assert!(ledger.claim("new", "session", "hash2").unwrap().is_none());
+        assert!(
+            ledger
+                .claim(
+                    "new",
+                    "session",
+                    "hash2",
+                    Some("device-a"),
+                    &json!({"operation":"send"})
+                )
+                .unwrap()
+                .is_none()
+        );
         ledger
             .annotate("new", &json!({"operation":"send"}))
             .unwrap();
@@ -357,9 +490,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("commands.db");
         let ledger = Ledger::open(path.clone()).unwrap();
-        ledger.claim("request", "session", "fingerprint").unwrap();
-        ledger.bind_device("request", Some("device-a")).unwrap();
-        ledger.annotate("request",&json!({"operation":"approve","executionMode":"codex-follower","runtimeBootId":"original-boot","expectedRevision":7,"workspaceId":"workspace","turnId":"turn"})).unwrap();
+        ledger.claim("request", "session", "fingerprint", Some("device-a"), &json!({"operation":"approve","executionMode":"codex-follower","runtimeBootId":"original-boot","expectedRevision":7,"workspaceId":"workspace","turnId":"turn"})).unwrap();
         assert_eq!(
             ledger.receipt("request", "device-a").unwrap()["status"],
             "not-dispatched"
@@ -388,6 +519,199 @@ mod tests {
         assert_eq!(receipt["completionObserved"], false);
         assert!(!ledger.has_unknown("session").unwrap());
     }
+
+    #[test]
+    fn fresh_claim_is_queryable_after_restart_before_any_other_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("commands.db");
+        let ledger = Ledger::open(path.clone()).unwrap();
+        for operation in ["create", "adopt", "send", "settings", "goal-set"] {
+            let evidence = json!({"operation":operation,"workspaceId":"workspace","executionMode":"codex-managed","runtimeBootId":"original","expectedRevision":7});
+            assert!(
+                ledger
+                    .claim(operation, "session", "hash", Some("device-a"), &evidence)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        drop(ledger);
+        let reopened = Ledger::open(path).unwrap();
+        for operation in ["create", "adopt", "send", "settings", "goal-set"] {
+            let receipt = reopened.receipt(operation, "device-a").unwrap();
+            assert_eq!(receipt["found"], true);
+            assert_eq!(receipt["status"], "not-dispatched");
+            assert_eq!(receipt["operation"], operation);
+            assert_eq!(receipt["workspaceId"], "workspace");
+            assert_eq!(receipt["runtimeBootId"], "original");
+            assert_eq!(receipt["expectedRevision"], 7);
+            assert_eq!(
+                reopened.receipt(operation, "device-b").unwrap()["found"],
+                false
+            );
+        }
+    }
+
+    #[test]
+    fn failed_claim_leaves_no_partial_record_and_can_be_claimed_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(temp.path().join("commands.db")).unwrap();
+        let conn = ledger.connection().unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_claim AFTER INSERT ON managed_commands BEGIN SELECT RAISE(ABORT,'simulated write failure'); END;").unwrap();
+        let evidence = json!({"operation":"create","workspaceId":"workspace"});
+        assert!(
+            ledger
+                .claim("request", "session", "hash", Some("device"), &evidence)
+                .is_err()
+        );
+        assert_eq!(ledger.receipt("request", "device").unwrap()["found"], false);
+        assert!(ledger.replay("request", "hash").unwrap().is_none());
+        conn.execute_batch("DROP TRIGGER fail_claim").unwrap();
+        assert!(
+            ledger
+                .claim("request", "session", "hash", Some("device"), &evidence)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ledger
+                .claim("request", "session", "hash", Some("device"), &evidence)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            ledger.receipt("request", "device").unwrap()["operation"],
+            "create"
+        );
+    }
+
+    fn legacy(ledger: &Ledger, request: &str, device: &str, phase: &str, evidence: Option<Value>) {
+        ledger.connection().unwrap().execute(
+            "INSERT INTO managed_commands(request_id,session_id,fingerprint,phase,device_id,evidence) VALUES(?1,'private-session','hash',?2,?3,?4)",
+            params![request, phase, device, evidence.map(|e| e.to_string())],
+        ).unwrap();
+    }
+
+    #[test]
+    fn old_prepared_orphans_recover_without_identity_disclosure_or_redispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("commands.db");
+        let ledger = Ledger::open(path.clone()).unwrap();
+        // Both legacy call orders: claim, annotate/bind, bind/annotate.
+        legacy(&ledger, "claim-only", "", "prepared", None);
+        legacy(
+            &ledger,
+            "annotated",
+            "",
+            "prepared",
+            Some(json!({"operation":"create","workspaceId":"private-workspace"})),
+        );
+        legacy(&ledger, "bound", "device-a", "prepared", None);
+        assert_eq!(ledger.receipt("bound", "device-b").unwrap()["found"], false);
+        for request in ["claim-only", "annotated", "bound"] {
+            assert_eq!(
+                ledger.receipt(request, "device-a").unwrap(),
+                legacy_prepared_receipt(request)
+            );
+            assert!(ledger.dispatch(request).is_err());
+            assert!(
+                ledger
+                    .annotate(request, &json!({"operation":"send"}))
+                    .is_err()
+            );
+            let replay = ledger.replay(request, "hash").unwrap().unwrap();
+            assert_eq!(replay["controlOutcome"], "not-dispatched");
+            assert_eq!(replay["accepted"], false);
+            assert!(!ledger.has_unknown("private-session").unwrap());
+        }
+        drop(ledger);
+        let reopened = Ledger::open(path).unwrap();
+        for request in ["claim-only", "annotated", "bound"] {
+            assert_eq!(
+                reopened.receipt(request, "device-a").unwrap(),
+                legacy_prepared_receipt(request)
+            );
+        }
+        assert_eq!(
+            reopened.receipt("bound", "device-b").unwrap()["found"],
+            false
+        );
+    }
+
+    #[test]
+    fn recovery_never_clears_dispatched_or_new_local_commands_or_exposes_legacy_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(temp.path().join("commands.db")).unwrap();
+        legacy(&ledger, "dispatched", "", "dispatched", None);
+        legacy(
+            &ledger,
+            "resolved",
+            "",
+            "resolved",
+            Some(json!({"operation":"send"})),
+        );
+        ledger
+            .finish("resolved", &json!({"accepted":true,"private":"secret"}))
+            .unwrap();
+        ledger
+            .claim(
+                "local",
+                "session",
+                "hash",
+                None,
+                &json!({"operation":"send"}),
+            )
+            .unwrap();
+        for request in ["dispatched", "resolved", "local"] {
+            assert_eq!(
+                ledger.receipt(request, "device-a").unwrap(),
+                json!({"found":false,"requestId":request})
+            );
+        }
+        assert!(ledger.has_unknown("private-session").unwrap());
+        assert_eq!(
+            ledger.replay("resolved", "hash").unwrap().unwrap()["accepted"],
+            true
+        );
+        ledger.dispatch("local").unwrap();
+        legacy(
+            &ledger,
+            "complete-metadata",
+            "device-a",
+            "prepared",
+            Some(json!({"operation":"send"})),
+        );
+        assert_eq!(
+            ledger.receipt("complete-metadata", "device-a").unwrap()["operation"],
+            "send"
+        );
+        ledger.dispatch("complete-metadata").unwrap();
+    }
+
+    #[test]
+    fn legacy_recovery_and_dispatch_cannot_both_win() {
+        use std::sync::{Arc, Barrier};
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(temp.path().join("commands.db")).unwrap();
+        legacy(&ledger, "request", "", "prepared", None);
+        let barrier = Arc::new(Barrier::new(2));
+        let contender = ledger.clone();
+        let ready = barrier.clone();
+        let dispatch = std::thread::spawn(move || {
+            ready.wait();
+            contender.dispatch("request")
+        });
+        barrier.wait();
+        let receipt = ledger.receipt("request", "device-a").unwrap();
+        let dispatched = dispatch.join().unwrap().is_ok();
+        if dispatched {
+            assert_eq!(receipt["found"], false);
+            assert!(ledger.has_unknown("private-session").unwrap());
+        } else {
+            assert_eq!(receipt, legacy_prepared_receipt("request"));
+            assert!(!ledger.has_unknown("private-session").unwrap());
+        }
+    }
+
     #[test]
     fn event_replay_is_deduplicated_and_paginated() {
         let t = tempfile::tempdir().unwrap();

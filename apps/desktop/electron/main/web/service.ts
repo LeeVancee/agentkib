@@ -2998,8 +2998,35 @@ export class WebAccessService {
         operation?: string;
         executionMode?: string;
         status?: string;
+        recovery?: unknown;
+        completionObserved?: unknown;
       };
       this.grant(hash);
+      if (result.recovery !== undefined) {
+        if (
+          result.found !== true ||
+          result.requestId !== requestId ||
+          result.status !== "not-dispatched" ||
+          result.recovery !== "legacy-prepared" ||
+          result.completionObserved !== false
+        )
+          throw new HttpError(503, "receipt_unavailable");
+        for (const [sessionId, pendingRequestId] of this.unconfirmedRequests) {
+          if (pendingRequestId === requestId && !this.active.has(sessionId)) {
+            this.unconfirmed.delete(sessionId);
+            this.unconfirmedRequests.delete(sessionId);
+          }
+        }
+        // Old prepared claims may lack ownership and operation metadata. Expose
+        // only the durable non-dispatch proof, never runtime metadata or an ack.
+        return this.json(res, 200, {
+          found: true,
+          requestId,
+          status: "not-dispatched",
+          recovery: "legacy-prepared",
+          completionObserved: false,
+        });
+      }
       if (result.found) {
         if (result.operation?.startsWith("goal-")) this.fullAccess(hash);
         const permission =

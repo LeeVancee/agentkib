@@ -376,11 +376,13 @@ export function AppSidebar(props: {
           inert={!hasPanel || (collapsed && !mobileOpen)}
         >
           <div className="app-sidebar-content">
-            <div className="app-sidebar-header">
-              <h2 className="context-sidebar-title m-0 px-2 text-[14px] font-[650] text-sidebar-foreground">
-                {panelTitle}
-              </h2>
-            </div>
+            {active !== "sessions" && (
+              <div className="app-sidebar-header">
+                <h2 className="context-sidebar-title m-0 px-2 text-[14px] font-[650] text-sidebar-foreground">
+                  {panelTitle}
+                </h2>
+              </div>
+            )}
             <div ref={scrollRef} className="context-sidebar-scroll">
               {active === "workspaces" && (
                 <nav

@@ -3,6 +3,32 @@ import { forgetPending, pendingScope, readPending, rememberPending } from "./pen
 
 beforeEach(() => sessionStorage.clear());
 describe("pending Codex identities", () => {
+  it.each(["goal-set", "goal-pause", "goal-resume", "goal-clear"] as const)(
+    "round trips %s and clears it after receipt reconciliation",
+    (kind) => {
+      const scope = pendingScope("", "device");
+      const identity = { requestId: crypto.randomUUID(), sessionId: "session", kind };
+      rememberPending(scope, identity);
+      expect(readPending(scope)).toEqual([identity]);
+      expect(() => rememberPending(scope, { ...identity, requestId: crypto.randomUUID() })).toThrow(
+        "control_outcome_unconfirmed",
+      );
+      forgetPending(scope, identity.requestId);
+      expect(readPending(scope)).toEqual([]);
+      rememberPending(scope, { ...identity, kind: "send" });
+      expect(readPending(scope)[0].kind).toBe("send");
+    },
+  );
+  it("recovers an existing Goal identity without migration and rejects unknown actions", () => {
+    const scope = pendingScope("", "device");
+    const identity = { requestId: crypto.randomUUID(), sessionId: "session", kind: "goal-set" };
+    sessionStorage.setItem(scope, JSON.stringify([identity]));
+    expect(readPending(scope)).toEqual([identity]);
+    for (const kind of ["unknown-action", "toString", "__proto__"]) {
+      sessionStorage.setItem(scope, JSON.stringify([{ ...identity, kind }]));
+      expect(() => readPending(scope)).toThrow("pending_control_storage_invalid");
+    }
+  });
   it("isolates host and device and stores only identity fields", () => {
     const scope = pendingScope("http://192.168.1.2:1422", "device-a");
     const identity = {

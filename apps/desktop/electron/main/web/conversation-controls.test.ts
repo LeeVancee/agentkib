@@ -370,6 +370,19 @@ describe("Codex conversation controls", () => {
     const file = options.data.resources.find(
       (resource: { name: string }) => resource.name === "fixture.txt",
     );
+    const resourcesOnly = await client.api("send", {
+      bootId: client.bootId,
+      requestId: randomUUID(),
+      sessionId: "session",
+      expectedRevision: 7,
+      text: "  ",
+      resourceIds: [skill.id, file.id],
+    });
+    expect(resourcesOnly.response.status).toBe(400);
+    expect(resourcesOnly.data.error).toBe("invalid_text");
+    expect(
+      runtime.mock.calls.some(([value]) => (value as Record<string, unknown>).operation === "send"),
+    ).toBe(false);
     const sent = await client.api("send", {
       bootId: client.bootId,
       requestId: randomUUID(),

@@ -109,11 +109,17 @@ function createServer(initialLive: Live = idleLive) {
     live: initialLive,
     receipt: undefined as unknown,
     capabilities: undefined as unknown,
+    contextOptions: undefined as unknown,
+    goals: undefined as unknown,
     mutation: undefined as ((path: string, init?: RequestInit) => Promise<Response>) | undefined,
   };
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (state.mutation && init?.method === "POST") return state.mutation(path, init);
+    if (path.includes("/codex/session-settings?"))
+      return json({ error: { code: "unavailable" } }, 503);
+    if (path.includes("/codex/context-options?")) return json(state.contextOptions ?? {});
+    if (path.includes("/codex/goals?")) return json(state.goals ?? {});
     if (path.includes("/codex/capabilities?")) return json(state.capabilities ?? {});
     if (path.includes("/requests/"))
       return json(state.receipt ?? { found: false, requestId: path.split("/").at(-1) });
@@ -656,4 +662,120 @@ it("does not reload capabilities for streaming text revisions but does on manual
   expect(count()).toBe(before);
   fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]!);
   await waitFor(() => expect(count()).toBeGreaterThan(before));
+});
+
+describe("Codex composer with the real session controller", () => {
+  function codexServer() {
+    const server = createServer({ ...idleLive, executionMode: "codex-managed" });
+    server.state.catalog = { ...catalog, sessions: [{ ...catalog.sessions[0], agent: "codex" }] };
+    server.state.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, accessMode: "full" },
+    };
+    server.state.capabilities = {
+      sessionId: "session",
+      executionMode: "codex-managed",
+      status: "idle",
+      features: { context: { available: true }, "goal-set": { available: true } },
+    };
+    server.state.goals = {
+      sessionId: "session",
+      revision: 1,
+      available: true,
+      actions: { set: { available: true } },
+    };
+    return server;
+  }
+
+  it.each(["file", "skill"])(
+    "keeps a %s-only draft editable, then sends text and the reference once",
+    async (kind) => {
+      const server = codexServer();
+      server.state.contextOptions = {
+        sessionId: "session",
+        revision: 1,
+        available: true,
+        resources: [{ id: "opaque-resource", name: "reference", kind, available: true }],
+      };
+      server.state.mutation = async () => json({ accepted: true });
+      await openSession();
+      fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
+      fireEvent.click(await screen.findByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: "完成" }));
+      const input = screen.getByLabelText("发送消息");
+      const send = screen.getByRole("button", { name: "发送" });
+      expect(send).toBeDisabled();
+      fireEvent.submit(input.closest("form")!);
+      expect(input).toBeEnabled();
+      expect(server.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
+        0,
+      );
+      fireEvent.change(input, { target: { value: "Use this reference" } });
+      await waitFor(() => expect(send).toBeEnabled());
+      fireEvent.click(send);
+      await waitFor(() => expect(input).toHaveValue(""));
+      expect(input).toBeEnabled();
+      const writes = server.fetcher.mock.calls.filter(
+        ([url, init]) => String(url).endsWith("/send") && init?.method === "POST",
+      );
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(writes[0][1]!.body as string)).toMatchObject({
+        text: "Use this reference",
+        resourceIds: ["opaque-resource"],
+      });
+      expect(readPending(pendingScope("", "browser"))).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "persists a Goal request, reconciles its receipt, and never replays it (disconnect=%s)",
+    async (disconnect) => {
+      const server = codexServer();
+      const scope = pendingScope("", "browser");
+      let observedPending = false;
+      server.state.mutation = async () => {
+        observedPending = readPending(scope)[0]?.kind === "goal-set";
+        return disconnect
+          ? json({ code: "runtime_timeout", controlOutcome: "unknown" }, 503)
+          : json({ accepted: true });
+      };
+      await openSession();
+      fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
+      fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
+      fireEvent.change(await screen.findByLabelText("目标内容"), {
+        target: { value: "safe test goal" },
+      });
+      const start = screen.getByRole("button", { name: "开始目标" });
+      await waitFor(() => expect(start).toBeEnabled());
+      fireEvent.click(start);
+      const writes = () =>
+        server.fetcher.mock.calls.filter(
+          ([url, init]) => String(url).endsWith("/codex/goal-set") && init?.method === "POST",
+        );
+      await waitFor(() => expect(writes()).toHaveLength(1));
+      expect(observedPending).toBe(true);
+      if (disconnect) {
+        await waitFor(() =>
+          expect(
+            server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/")),
+          ).toBe(true),
+        );
+        fireEvent.click(start);
+        const pending = readPending(scope)[0];
+        cleanup();
+        await openSession();
+        expect(readPending(scope)).toEqual([pending]);
+        server.state.receipt = {
+          ...pending,
+          found: true,
+          status: "accepted",
+          operation: "goal-set",
+          completionObserved: false,
+        };
+        fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
+      }
+      await waitFor(() => expect(readPending(scope)).toEqual([]));
+      expect(writes()).toHaveLength(1);
+    },
+  );
 });

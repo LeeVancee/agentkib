@@ -29,7 +29,7 @@ import type { CatalogWorkspace } from "@/features/catalog/session-catalog";
 import { catalogCopy } from "@/features/catalog/catalog-copy";
 import { dictionaries, type Locale } from "@/i18n";
 import { unavailableReasonText } from "@/live-status";
-import { isValidMessage, MAX_MESSAGE_LENGTH, mergeLatestPage } from "./session-model";
+import { isValidMessage, mergeLatestPage } from "./session-model";
 import { useAppearance } from "@/features/preferences/use-appearance";
 export function useSessionController({
   origin: legacyOrigin = "",
@@ -646,12 +646,7 @@ export function useSessionController({
     )
       return;
     const text = message.trim();
-    if (
-      kind === "send" &&
-      (message.length > MAX_MESSAGE_LENGTH ||
-        (!isValidMessage(message) && !extra?.attachmentIds?.length))
-    )
-      return;
+    if (kind === "send" && !isValidMessage(message, !!extra?.attachmentIds?.length)) return;
     if (
       extra?.attachmentIds?.length &&
       (!access.device?.attachments || !capabilities?.features.attachments?.available)

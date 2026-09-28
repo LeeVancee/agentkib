@@ -109,7 +109,8 @@ describe("responsive composer behavior", () => {
     expect(screen.getByRole("button", { name: "移除附件: readme.md" })).toBeVisible();
     expect(state.control).not.toHaveBeenCalled();
     expect(state.codexAction).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByLabelText("发送消息")).toBeEnabled();
   });
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as Locale[])(
     "localizes effort and exposes disabled reasons in %s",

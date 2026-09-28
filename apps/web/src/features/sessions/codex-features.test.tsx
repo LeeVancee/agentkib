@@ -245,6 +245,11 @@ describe("Codex composer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "添加上下文" }));
     fireEvent.click(await screen.findByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByText("引用文件或技能后，请输入消息或添加手机附件再发送。")).toBeVisible();
+    expect(state.control).not.toHaveBeenCalled();
+    state = { ...state, message: "Use these references" };
+    view.rerender(<CodexComposer />);
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() =>
       expect(state.control).toHaveBeenCalledWith(

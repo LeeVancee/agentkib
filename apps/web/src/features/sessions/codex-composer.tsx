@@ -148,10 +148,8 @@ export function CodexComposer() {
   const ready = uploads.every((item) => !!item.result);
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
   const resourceIds = resources.map((item) => item.id);
-  const valid =
-    ready &&
-    (isValidMessage(message) ||
-      ((!!attachmentIds.length || !!resourceIds.length) && message.length <= MAX_MESSAGE_LENGTH));
+  const valid = ready && isValidMessage(message, attachmentIds.length > 0);
+  const resourceNeedsMessage = resourceIds.length > 0 && !message.trim() && !attachmentIds.length;
   async function send(action: "send" | "steer" | "queue-add") {
     if (!valid || busy || submitted) return;
     setSubmitted(true);
@@ -250,6 +248,11 @@ export function CodexComposer() {
             </li>
           ))}
         </ul>
+      )}
+      {resourceNeedsMessage && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {layout.resourceNeedsMessage}
+        </p>
       )}
       {error && (
         <p role="alert" className="text-xs text-destructive">

@@ -2,7 +2,13 @@ import type { Locale } from "@/i18n";
 
 const copy = {
   "zh-CN": {
+    resourceNeedsMessage: "引用文件或技能后，请输入消息或添加手机附件再发送。",
     details: "诊断详情",
+    enterDirectory: "进入文件夹",
+    parentDirectory: "返回上级",
+    contextRoot: "工作区根目录",
+    contextLoading: "正在加载资源…",
+    contextRetry: "重试",
     tryResume: "尝试恢复",
     modeUnknown: "原生模式待确认",
     nativeChanged: "Codex 原生状态已变化，草稿已保留。重新载入后再提交。",
@@ -22,7 +28,13 @@ const copy = {
     waiting: "请先处理待审批或回答的请求。",
   },
   "zh-TW": {
+    resourceNeedsMessage: "引用檔案或技能後，請輸入訊息或新增手機附件再傳送。",
     details: "診斷詳情",
+    enterDirectory: "進入資料夾",
+    parentDirectory: "返回上層",
+    contextRoot: "工作區根目錄",
+    contextLoading: "正在載入資源…",
+    contextRetry: "重試",
     tryResume: "嘗試恢復",
     modeUnknown: "原生模式待確認",
     nativeChanged: "Codex 原生狀態已變更，草稿已保留。重新載入後再提交。",
@@ -42,7 +54,13 @@ const copy = {
     waiting: "請先處理待核准或回答的請求。",
   },
   "en-US": {
+    resourceNeedsMessage: "Add a message or upload an attachment to send file or skill references.",
     details: "Diagnostic details",
+    enterDirectory: "Open folder",
+    parentDirectory: "Parent folder",
+    contextRoot: "Workspace root",
+    contextLoading: "Loading resources…",
+    contextRetry: "Retry",
     tryResume: "Try resuming",
     modeUnknown: "Native mode unconfirmed",
     nativeChanged: "Codex state changed. Your draft is preserved. Reload before submitting.",
@@ -62,7 +80,14 @@ const copy = {
     waiting: "Resolve the pending approval or question first.",
   },
   "ja-JP": {
+    resourceNeedsMessage:
+      "ファイルやスキルの参照を送るには、メッセージを入力するか添付ファイルを追加してください。",
     details: "診断の詳細",
+    enterDirectory: "フォルダーを開く",
+    parentDirectory: "上の階層へ",
+    contextRoot: "ワークスペースのルート",
+    contextLoading: "リソースを読み込み中…",
+    contextRetry: "再試行",
     tryResume: "再開を試す",
     modeUnknown: "ネイティブモードは未確認",
     nativeChanged:

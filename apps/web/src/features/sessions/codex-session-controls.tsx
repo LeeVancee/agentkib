@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
-import { Gauge, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, Gauge, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
 import {
   ApiError,
   type CodexAction,
@@ -62,6 +62,13 @@ export function CodexComposerControls({
     );
   };
   const loadGeneration = useRef(0);
+  const contextGeneration = useRef(0);
+  const contextAbort = useRef<AbortController | undefined>(undefined);
+  const resourcesRef = useRef(resources);
+  resourcesRef.current = resources;
+  const contextLocation = useRef<{ id?: string; names: string[] }>({ names: [] });
+  const [contextNames, setContextNames] = useState<string[]>([]);
+  const [contextLoading, setContextLoading] = useState(false);
   const revisionSeen = useRef<string | undefined>(undefined);
   const lastNativeRead = useRef(0);
   const settingsDraftRevision = useRef<number | undefined>(undefined);
@@ -108,16 +115,53 @@ export function CodexComposerControls({
     setServiceTier(selected.serviceTierId ?? "");
   }, []);
 
+  const loadContext = useCallback(
+    async (directoryId?: string, names: string[] = []) => {
+      if (!full || !selected || !online) return;
+      contextAbort.current?.abort();
+      const abort = new AbortController();
+      contextAbort.current = abort;
+      const generation = ++contextGeneration.current;
+      contextLocation.current = { id: directoryId, names };
+      setContextLoading(true);
+      setContextError("");
+      try {
+        const value = await client.codexContextOptions(selected, directoryId, abort.signal);
+        if (abort.signal.aborted || generation !== contextGeneration.current) return;
+        setContext(value);
+        setContextNames(names);
+        setQuery("");
+        // A directory response is only a partial catalog. Missing references may
+        // belong to another folder; the host revalidates every reference on send.
+        const current = resourcesRef.current;
+        const visible = new Map(value.resources.map((item) => [item.id, item]));
+        const next = current.flatMap((item) => {
+          const refreshed = visible.get(item.id);
+          return !refreshed ? [item] : refreshed.available ? [refreshed] : [];
+        });
+        if (next.length !== current.length) setResourceWarning(copy.resourceRemoved);
+        if (next.some((item, index) => item !== current[index]) || next.length !== current.length)
+          setResources(next);
+      } catch (error) {
+        if (!abort.signal.aborted && generation === contextGeneration.current)
+          setContextError(unavailable(error));
+      } finally {
+        if (!abort.signal.aborted && generation === contextGeneration.current)
+          setContextLoading(false);
+      }
+    },
+    [client, copy.resourceRemoved, full, online, selected, setResources],
+  );
+
   const load = useCallback(async () => {
     if (!full || !selected) return;
     const generation = ++loadGeneration.current;
     const results = await Promise.allSettled([
       client.codexSessionSettings(selected),
       client.codexGoals(selected),
-      client.codexContextOptions(selected),
     ]);
     if (generation !== loadGeneration.current) return;
-    const [settingsResult, goalResult, contextResult] = results;
+    const [settingsResult, goalResult] = results;
     if (settingsResult.status === "fulfilled") {
       applySettings(settingsResult.value);
       setSettingsError("");
@@ -136,21 +180,7 @@ export function CodexComposerControls({
       setGoal(undefined);
       setGoalError(unavailable(goalResult.reason));
     }
-    if (contextResult.status === "fulfilled") {
-      setContext(contextResult.value);
-      setContextError("");
-      const valid = new Map(contextResult.value.resources.map((item) => [item.id, item]));
-      const nextResources = resources.flatMap((item) => {
-        const next = valid.get(item.id);
-        return next?.available ? [next] : [];
-      });
-      if (nextResources.length !== resources.length) setResourceWarning(copy.resourceRemoved);
-      setResources(nextResources);
-    } else {
-      setContext(undefined);
-      setContextError(unavailable(contextResult.reason));
-    }
-  }, [applySettings, client, copy.resourceRemoved, full, resources, selected, setResources]);
+  }, [applySettings, client, full, selected]);
 
   useEffect(() => {
     loadGeneration.current++;
@@ -162,6 +192,12 @@ export function CodexComposerControls({
     setSettings(undefined);
     setGoal(undefined);
     setContext(undefined);
+    contextGeneration.current++;
+    contextAbort.current?.abort();
+    contextLocation.current = { names: [] };
+    setContextNames([]);
+    setContextLoading(false);
+    setQuery("");
     setResources([]);
     setDialog(undefined);
     setSaved(false);
@@ -173,12 +209,20 @@ export function CodexComposerControls({
     setResourceWarning("");
     return () => {
       loadGeneration.current++;
+      contextGeneration.current++;
+      contextAbort.current?.abort();
     };
   }, [selected, setResources]);
 
   useEffect(() => {
-    if (!full || !selected || !online) return;
+    if (!full || !selected || !online) {
+      contextGeneration.current++;
+      contextAbort.current?.abort();
+      setContextLoading(false);
+      return;
+    }
     void load();
+    void loadContext(contextLocation.current.id, contextLocation.current.names);
     // Re-read only the selected session after reconnect. Native changes arrive over SSE.
   }, [full, online, selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -374,6 +418,7 @@ export function CodexComposerControls({
           disabled={disabled}
           onClick={() => {
             void load();
+            void loadContext(context?.directoryId, contextNames);
             setDialog("context");
           }}
         >
@@ -951,10 +996,44 @@ export function CodexComposerControls({
             >
               {copy.uploadFromPhone}
             </Button>
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11 shrink-0"
+                disabled={!context?.parentId || contextLoading || !online}
+                onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
+              >
+                <ArrowLeft size={16} />
+                {layout.parentDirectory}
+              </Button>
+              <span className="min-w-0 break-words text-sm">
+                {[layout.contextRoot, ...contextNames].join(" / ")}
+              </span>
+            </div>
+            {contextLoading && (
+              <p role="status" className="text-sm">
+                {layout.contextLoading}
+              </p>
+            )}
+            {contextError && (
+              <div role="alert" className="space-y-2 text-sm">
+                {reason(contextError)}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={contextLoading || !online}
+                  onClick={() =>
+                    void loadContext(contextLocation.current.id, contextLocation.current.names)
+                  }
+                >
+                  {layout.contextRetry}
+                </Button>
+              </div>
+            )}
             {!context ? (
               <p role="status" className="text-sm text-muted-foreground">
-                {copy.resourceUnavailable}
-                {reason(contextError)}
+                {!contextLoading && !contextError ? copy.resourceUnavailable : null}
               </p>
             ) : (
               <>
@@ -979,38 +1058,67 @@ export function CodexComposerControls({
                           {group.items.map((item) => {
                             const checked = resources.some((selected) => selected.id === item.id);
                             return (
-                              <label
+                              <div
                                 key={item.id}
-                                className="flex items-start gap-3 rounded-lg border p-3 text-sm"
+                                className="flex items-center gap-2 rounded-lg border p-3 text-sm"
                               >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={
-                                    !item.available ||
-                                    disabled ||
-                                    feature("context")?.available !== true
-                                  }
-                                  title={reasonTitle(item.reason || feature("context")?.reason)}
-                                  onChange={(event) =>
-                                    setResources(
-                                      event.target.checked
-                                        ? [...resources, item]
-                                        : resources.filter((selected) => selected.id !== item.id),
-                                    )
-                                  }
-                                />
-                                <span className="min-w-0">
-                                  <span className="block break-words font-medium">{item.name}</span>
-                                  <span className="block text-xs text-muted-foreground">
-                                    {term(item.kind)}
-                                    {item.description ? ` · ${item.description}` : ""}
-                                    {!item.available || feature("context")?.available !== true
-                                      ? ` · ${reason(item.reason || feature("context")?.reason)}`
-                                      : ""}
+                                <label className="flex min-w-0 flex-1 items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={
+                                      !item.available ||
+                                      contextLoading ||
+                                      !online ||
+                                      disabled ||
+                                      feature("context")?.available !== true
+                                    }
+                                    title={reasonTitle(item.reason || feature("context")?.reason)}
+                                    onChange={(event) =>
+                                      setResources(
+                                        event.target.checked
+                                          ? [...resources, item]
+                                          : resources.filter((selected) => selected.id !== item.id),
+                                      )
+                                    }
+                                  />
+                                  <span className="min-w-0">
+                                    <span className="block break-words font-medium">
+                                      {item.name}
+                                    </span>
+                                    <span className="block text-xs text-muted-foreground">
+                                      {term(item.kind)}
+                                      {item.description ? ` · ${item.description}` : ""}
+                                      {!item.available || feature("context")?.available !== true
+                                        ? ` · ${reason(item.reason || feature("context")?.reason)}`
+                                        : ""}
+                                    </span>
                                   </span>
-                                </span>
-                              </label>
+                                </label>
+                                {item.kind === "directory" && item.navigationId && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className="size-11 shrink-0 p-0"
+                                    aria-label={`${layout.enterDirectory}: ${item.name}`}
+                                    disabled={
+                                      contextLoading ||
+                                      !online ||
+                                      disabled ||
+                                      !item.available ||
+                                      feature("context")?.available !== true
+                                    }
+                                    onClick={() =>
+                                      void loadContext(item.navigationId, [
+                                        ...contextNames,
+                                        item.name,
+                                      ])
+                                    }
+                                  >
+                                    <ChevronRight size={18} />
+                                  </Button>
+                                )}
+                              </div>
                             );
                           })}
                         </section>

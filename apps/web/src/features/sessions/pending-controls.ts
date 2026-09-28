@@ -15,6 +15,34 @@ export type PendingControl = {
     | "reconcile"
     | CodexAction;
 };
+// Keep persisted identities exhaustive when native actions are added.
+const pendingKinds = {
+  send: true,
+  stop: true,
+  approve: true,
+  answer: true,
+  create: true,
+  adopt: true,
+  release: true,
+  reconcile: true,
+  resume: true,
+  inspect: true,
+  steer: true,
+  "queue-add": true,
+  "queue-update": true,
+  "queue-delete": true,
+  "queue-reorder": true,
+  "queue-start": true,
+  rename: true,
+  archive: true,
+  unarchive: true,
+  fork: true,
+  settings: true,
+  "goal-set": true,
+  "goal-pause": true,
+  "goal-resume": true,
+  "goal-clear": true,
+} satisfies Record<PendingControl["kind"], true>;
 const prefix = "agentkib:codex-pending:v1:";
 export function pendingScope(origin: string, deviceId: string): string {
   return `${prefix}${JSON.stringify([origin || window.location.origin, deviceId])}`;
@@ -40,29 +68,8 @@ export function readPending(scope: string): PendingControl[] {
             !value.workspaceId ||
             value.workspaceId.length > 256)) ||
         (!value.sessionId && !value.workspaceId) ||
-        ![
-          "send",
-          "stop",
-          "approve",
-          "answer",
-          "create",
-          "adopt",
-          "release",
-          "reconcile",
-          "resume",
-          "inspect",
-          "steer",
-          "queue-add",
-          "queue-update",
-          "queue-delete",
-          "queue-reorder",
-          "queue-start",
-          "rename",
-          "archive",
-          "unarchive",
-          "fork",
-          "settings",
-        ].includes(value.kind),
+        typeof value.kind !== "string" ||
+        !Object.hasOwn(pendingKinds, value.kind),
     )
   )
     throw new Error("pending_control_storage_invalid");

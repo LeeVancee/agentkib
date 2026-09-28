@@ -88,7 +88,7 @@ export function SessionDirectory({
   const allGroups = groupSessions(hub.sessions, hub.workspaces);
   const completeWorkspaceOrder = normalizeDirectoryOrder(
     view.workspaceOrder,
-    allGroups.map((group) => group.workspace.id),
+    hub.workspaces.map((workspace) => workspace.id),
   );
   const workspacePositions = new Map(completeWorkspaceOrder.map((id, index) => [id, index]));
   const orderedGroups = [...groups].sort((left, right) => {
@@ -156,7 +156,7 @@ export function SessionDirectory({
       }
       const completeOrder = normalizeDirectoryOrder(
         view.workspaceOrder,
-        allGroups.map((group) => group.workspace.id),
+        hub.workspaces.map((workspace) => workspace.id),
       );
       view.setWorkspaceOrder(
         moveRelative(completeOrder, source.workspaceId, target.workspaceId, dropAfter, (id) => id),

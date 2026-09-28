@@ -1615,6 +1615,23 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
+    #[cfg(unix)]
+    fn acp_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        // Keep the hard link and runner on the same filesystem, even if /tmp differs.
+        // The executable inode is never opened for writing: parallel fork/spawn
+        // can inherit a script's write FD briefly even after this thread closes
+        // it, causing Linux exec to fail with ETXTBSY. Only the shell input changes.
+        let dir = tempfile::Builder::new()
+            .prefix(".acp-test-")
+            .tempdir_in(&fixtures)
+            .unwrap();
+        let executable = dir.path().join("agy_acp_server.par");
+        fs::hard_link(fixtures.join("acp-script-runner.sh"), &executable).unwrap();
+        let body = dir.path().join("agy_acp_server.par.body");
+        (dir, executable, body)
+    }
+
     #[test]
     fn missing_optional_server_is_a_complete_empty_source() {
         let listing = AntigravityProvider::default()
@@ -1652,13 +1669,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn replay_shares_one_deadline_across_session_list_and_load() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempdir().unwrap();
-        let script = dir.path().join("agy_acp_server.par");
+        let (dir, script, script_body) = acp_fixture();
         let load_marker = dir.path().join("load-started");
         fs::write(
-            &script,
+            &script_body,
             format!(
                 r#"#!/bin/sh
 while IFS= read -r line; do
@@ -1683,9 +1697,6 @@ done
             ),
         )
         .unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&script, permissions).unwrap();
 
         let provider = AntigravityProvider {
             executable: Some(script),
@@ -1761,19 +1772,16 @@ done
     #[cfg(unix)]
     #[test]
     fn event_snapshot_reuses_load_across_provider_instances_and_refreshes_latest() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempdir().unwrap();
+        let (dir, script, script_body) = acp_fixture();
         let workspace = dir.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
         let moved_workspace = dir.path().join("moved-workspace");
         fs::create_dir(&moved_workspace).unwrap();
-        let script = dir.path().join("agy_acp_server.par");
         let log = dir.path().join("calls.log");
         let marker = dir.path().join("new-message");
         let moved_marker = dir.path().join("moved-session");
         fs::write(
-            &script,
+            &script_body,
             format!(
                 r#"#!/bin/sh
 while IFS= read -r line; do
@@ -1808,9 +1816,6 @@ done
             ),
         )
         .unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&script, permissions).unwrap();
 
         let provider = AntigravityProvider {
             executable: Some(script.clone()),
@@ -2539,12 +2544,9 @@ done
     #[cfg(unix)]
     #[test]
     fn fake_stdio_server_lists_and_loads_native_history_without_resume() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempdir().unwrap();
+        let (dir, script, script_body) = acp_fixture();
         let workspace = dir.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
-        let script = dir.path().join("agy_acp_server.par");
         let body = format!(
             r#"#!/bin/sh
 while IFS= read -r line; do
@@ -2567,15 +2569,19 @@ done
             workspace.display(),
             workspace.display()
         );
-        fs::write(&script, &body).unwrap();
-        let mut permissions = fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&script, permissions).unwrap();
+        fs::write(&script_body, &body).unwrap();
 
         let provider = AntigravityProvider {
             executable: Some(script),
         };
+        // Simulate an inherited writable descriptor without an actual fork race.
+        // Executing this data file directly would fail with ETXTBSY on Linux.
+        let body_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&script_body)
+            .unwrap();
         let listing = provider.list_sessions_detailed(&workspace).unwrap();
+        drop(body_writer);
         assert!(listing.incomplete);
         assert_eq!(listing.sessions.len(), 1);
         assert_eq!(listing.sessions[0].native_ref, "opaque://native-1");
@@ -2634,7 +2640,7 @@ done
             "\"title\":null,\"updatedAt\":null",
         );
         assert_ne!(cleared_body, body);
-        fs::write(provider.executable.as_ref().unwrap(), cleared_body).unwrap();
+        fs::write(&script_body, cleared_body).unwrap();
         let mut old_source = source;
         old_source.updated_at = document.source.updated_at;
         let cleared = provider
@@ -2646,7 +2652,7 @@ done
         // Metadata listing does not require load. Reading history does, and
         // each operation reports only its own missing negotiated capability.
         let list_only = body.replace("\"loadSession\":true", "\"loadSession\":false");
-        fs::write(provider.executable.as_ref().unwrap(), list_only).unwrap();
+        fs::write(&script_body, list_only).unwrap();
         let listing = provider
             .list_sessions_detailed(&dir.path().join("workspace"))
             .unwrap();
@@ -2661,7 +2667,7 @@ done
         assert!(error.to_string().contains("does not support session/load"));
 
         let load_only = body.replace("\"list\":{}", "");
-        fs::write(provider.executable.as_ref().unwrap(), load_only).unwrap();
+        fs::write(&script_body, load_only).unwrap();
         let error = provider
             .list_sessions(&dir.path().join("workspace"))
             .unwrap_err();
@@ -2669,7 +2675,7 @@ done
 
         let invalid_cursor = body.replace("\"sessions\":[", "\"nextCursor\":123,\"sessions\":[");
         assert_ne!(invalid_cursor, body);
-        fs::write(provider.executable.as_ref().unwrap(), invalid_cursor).unwrap();
+        fs::write(&script_body, invalid_cursor).unwrap();
         let error = provider.list_sessions(&workspace).unwrap_err();
         assert!(error.to_string().contains("invalid nextCursor"));
     }

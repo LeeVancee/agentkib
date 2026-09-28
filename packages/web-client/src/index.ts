@@ -53,12 +53,55 @@ export interface ConversationEventPage {
   warnings: string[];
 }
 export type Decision = string;
+export type ArtifactPreviewKind =
+  | "html"
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "text"
+  | "download";
+export interface ArtifactEntry {
+  id: string;
+  name: string;
+  kind: "file" | "directory";
+  mime: string;
+  size: number;
+  modifiedAt: string;
+  revision: string;
+  previewKind: ArtifactPreviewKind;
+}
+export interface ArtifactListing {
+  directoryId: string;
+  parentId?: string;
+  entries: ArtifactEntry[];
+}
+export interface ArtifactTicket {
+  url: string;
+  expiresAt: number;
+  revision: string;
+  kind: ArtifactPreviewKind;
+}
 export interface Access {
   bearerToken?: string;
+  pairingMode?: "code" | "confirmation";
   status: "unpaired" | "pending" | "approved" | "ended";
   csrfToken: string;
   bootId: string;
-  device?: { id: string; name: string; send: boolean; approve: boolean };
+  device?: {
+    accessMode?: "full";
+    id: string;
+    name: string;
+    send: boolean;
+    approve: boolean;
+    manage?: boolean;
+    files?: boolean;
+    attachments?: boolean;
+    advancedControl?: boolean;
+    organize?: boolean;
+    settings?: boolean;
+    extendedApproval?: boolean;
+  };
   pending?: { id: string; verification: string; expiresAt: string | number };
   experimentalEnabled: boolean;
 }
@@ -83,6 +126,13 @@ export interface Approval {
   supported: boolean;
   unsupportedReason?: string | null;
   unsupportedMetadata?: { field: string; type: string }[];
+  decisionOptions?: {
+    id: string;
+    label: string;
+    decision: unknown;
+    scope: "once" | "session" | "persistent";
+  }[];
+  requestContext?: Record<string, unknown>;
   proposedExecpolicyAmendment?: string[] | null;
   environmentId?: "local" | null;
 }
@@ -97,6 +147,8 @@ export interface UserQuestionRequest {
     header?: string;
     question: string;
     options: { label: string; description?: string }[];
+    isSecret?: boolean;
+    secret?: boolean;
     multiSelect: boolean;
     allowCustom: boolean;
   }[];
@@ -112,9 +164,60 @@ export interface Live {
   approvals: Approval[];
   questions?: UserQuestionRequest[];
   reason?: string;
-  executionMode?: "managed-resume" | "acp-managed";
+  executionMode?: "managed-resume" | "acp-managed" | "codex-managed" | "codex-follower";
   streamText?: string;
   streamTextTruncated?: boolean;
+  settings?: CodexSessionSettings;
+  usage?: CodexTokenUsage;
+  goal?: CodexGoal;
+}
+export type LegacyPreparedReceipt = {
+  found: true;
+  requestId: string;
+  status: "not-dispatched";
+  recovery: "legacy-prepared";
+  completionObserved: false;
+  sessionId?: never;
+  operation?: never;
+  turnId?: never;
+};
+export type ControlReceipt =
+  | { found: false; requestId: string }
+  | LegacyPreparedReceipt
+  | {
+      found: true;
+      requestId: string;
+      recovery?: never;
+      sessionId: string;
+      workspaceId?: string | null;
+      operation?: string | null;
+      executionMode?: string | null;
+      runtimeBootId?: string | null;
+      expectedRevision?: number | null;
+      turnId?: string | null;
+      status: "not-dispatched" | "accepted" | "unknown";
+      ack?: {
+        accepted?: boolean;
+        completed?: boolean;
+        requestId?: string;
+        sessionId?: string;
+        reconciled?: boolean;
+      } | null;
+      completionObserved: false;
+    };
+// A legacy prepared claim was durably terminated before dispatch. Its metadata
+// can be absent; it proves only that this exact request can leave the pending UI.
+export function isLegacyPreparedReceipt(
+  receipt: ControlReceipt,
+  requestId: string,
+): receipt is LegacyPreparedReceipt {
+  return (
+    receipt.found === true &&
+    receipt.requestId === requestId &&
+    receipt.status === "not-dispatched" &&
+    receipt.recovery === "legacy-prepared" &&
+    receipt.completionObserved === false
+  );
 }
 export class ApiError extends Error {
   constructor(
@@ -125,16 +228,206 @@ export class ApiError extends Error {
     super(code);
   }
 }
+export type CodexAction =
+  | "resume"
+  | "inspect"
+  | "steer"
+  | "queue-add"
+  | "queue-update"
+  | "queue-delete"
+  | "queue-reorder"
+  | "queue-start"
+  | "rename"
+  | "archive"
+  | "unarchive"
+  | "fork"
+  | "settings"
+  | "goal-set"
+  | "goal-pause"
+  | "goal-resume"
+  | "goal-clear";
+export interface CodexCapabilities {
+  sessionId: string;
+  executionMode: string;
+  status: string;
+  reason?: string;
+  features: Partial<
+    Record<
+      CodexAction | "attachments" | "context" | "resources" | "send",
+      { available: boolean; reason?: string }
+    >
+  >;
+}
+export interface UploadedAttachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  version: string;
+}
+export interface CodexQueueItem {
+  id: string;
+  hasAttachments?: boolean;
+  clientUserMessageId?: string;
+  text?: string;
+  attachmentIds?: string[];
+}
+export interface CodexQueue {
+  sessionId?: string;
+  data: CodexQueueItem[];
+}
+export interface CodexOptions {
+  available: boolean;
+  reason?: string;
+  models?: { id: string; name?: string; efforts?: string[] }[];
+  workspaces: { id: string; name: string }[];
+}
+export interface CodexAvailability {
+  available: boolean;
+  reason?: string;
+}
+export interface CodexTokenUsage {
+  available: boolean;
+  reason?: string;
+  revision?: number;
+  usedTokens?: number;
+  totalTokens?: number;
+  contextWindow?: number;
+  percent?: number;
+  updatedAt?: string;
+}
+export interface CodexSettingValues {
+  modelId?: string;
+  effort?: string;
+  mode?: string;
+  policyId?: string;
+  serviceTierId?: string;
+}
+export interface CodexSessionSettings {
+  sessionId: string;
+  available: boolean;
+  reason?: string;
+  revision: number;
+  executionMode?: string;
+  status?: string;
+  current: CodexSettingValues;
+  selected?: CodexSettingValues;
+  applicationStatus?: "pending" | "confirmed" | "unknown";
+  defaults: { modelId?: string; effort?: string; serviceTierId?: string };
+  writable: {
+    model: CodexAvailability;
+    effort: CodexAvailability;
+    mode: CodexAvailability;
+    policy: CodexAvailability;
+    serviceTier: CodexAvailability;
+    restoreDefaults: CodexAvailability;
+  };
+  options: {
+    collaborationModes?: { id: "plan" | "default"; name: string }[];
+    models: {
+      id: string;
+      name?: string;
+      efforts: string[];
+      defaultEffort?: string;
+      serviceTierIds: string[];
+    }[];
+    policies: { id: string; name: string; description?: string }[];
+    serviceTiers: { id: string; name: string; description?: string }[];
+  };
+  usage?: CodexTokenUsage;
+}
+export interface CodexGoal {
+  objective: string;
+  status: string;
+  tokenBudget?: number;
+  tokensUsed?: number;
+  elapsedMs?: number;
+}
+export interface CodexGoalState {
+  sessionId: string;
+  available: boolean;
+  reason?: string;
+  revision: number;
+  goal?: CodexGoal;
+  actions: {
+    set: CodexAvailability;
+    pause: CodexAvailability;
+    resume: CodexAvailability;
+    clear: CodexAvailability;
+  };
+}
+export type CodexContextResourceKind = "file" | "directory" | "skill" | "plugin" | "app";
+export interface CodexContextResource {
+  id: string;
+  kind: CodexContextResourceKind;
+  name: string;
+  description?: string;
+  /** Opaque host directory cursor; only present on browsable directories. */
+  navigationId?: string;
+  available: boolean;
+  reason?: string;
+}
+export interface CodexContextOptions {
+  sessionId: string;
+  revision: number;
+  directoryId?: string;
+  parentId?: string;
+  resources: CodexContextResource[];
+}
+export interface CodexActionBody {
+  bootId: string;
+  requestId: string;
+  sessionId: string;
+  expectedRevision: number;
+  handoffConfirmed?: boolean;
+  turnId?: string;
+  name?: string;
+  text?: string;
+  attachmentIds?: string[];
+  resourceIds?: string[];
+  queuedSubmissionId?: string;
+  queuedSubmissionIds?: string[];
+  model?: string;
+  effort?: string;
+  mode?: "plan" | "default";
+  policyId?: string;
+  serviceTierId?: string;
+  restoreDefaults?: true;
+  objective?: string;
+  intent?: "start" | "update";
+  tokenBudget?: number | null;
+}
+
+export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
+
+/** Legacy origin strings remain supported; they only ever select private LAN HTTP. */
+export function resolveWebConnection(connection: WebConnection | string = ""): WebConnection {
+  const value =
+    typeof connection === "string"
+      ? connection
+        ? { type: "lan-http" as const, origin: connection }
+        : { type: "same-origin" as const }
+      : connection;
+  if (value.type === "lan-http") {
+    if (parseLanOrigin(value.origin) !== value.origin) throw new Error("invalid_lan_address");
+    return { type: "lan-http", origin: value.origin };
+  }
+  return { type: "same-origin" };
+}
+
 export class WebClient {
+  readonly connection: WebConnection;
+  readonly origin: string;
   csrfToken = "";
   private bearerToken = "";
   private compatible = false;
   private accessFlight?: Promise<Access>;
   constructor(
     private readonly transport?: typeof fetch,
-    readonly origin = "",
+    connection: WebConnection | string = { type: "same-origin" },
   ) {
-    if (origin && parseLanOrigin(origin) !== origin) throw new Error("invalid_lan_address");
+    this.connection = resolveWebConnection(connection);
+    this.origin = this.connection.type === "lan-http" ? this.connection.origin : "";
   }
   reset() {
     this.bearerToken = "";
@@ -158,7 +451,8 @@ export class WebClient {
   }
   private headers(body?: unknown) {
     const headers: Record<string, string> = {};
-    if (this.origin && this.bearerToken) headers.Authorization = `Bearer ${this.bearerToken}`;
+    if (this.connection.type === "lan-http" && this.bearerToken)
+      headers.Authorization = `Bearer ${this.bearerToken}`;
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       headers["X-CSRF-Token"] = this.csrfToken;
@@ -167,17 +461,17 @@ export class WebClient {
   }
   async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     if (
-      this.origin &&
+      this.connection.type === "lan-http" &&
       path !== "info" &&
       (!this.compatible || (path !== "access" && !this.bearerToken))
     )
       throw new ApiError(401, "access_ended");
     const response = await (this.transport ?? fetch)(`${this.origin}/api/web/v1/${path}`, {
       method: body === undefined ? "GET" : "POST",
-      credentials: this.origin ? "omit" : "same-origin",
+      credentials: this.connection.type === "lan-http" ? "omit" : "same-origin",
       redirect: "error",
       cache: "no-store",
-      signal: signal ?? (this.origin ? AbortSignal.timeout(15000) : undefined),
+      signal: signal ?? AbortSignal.timeout(this.connection.type === "lan-http" ? 15000 : 25000),
       headers: this.headers(body),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -201,9 +495,9 @@ export class WebClient {
     return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
   }
   async access(signal?: AbortSignal) {
-    if (this.origin && this.accessFlight) return this.accessFlight;
+    if (this.connection.type === "lan-http" && this.accessFlight) return this.accessFlight;
     const pending = this.loadAccess(signal);
-    if (!this.origin) return pending;
+    if (this.connection.type === "same-origin") return pending;
     this.accessFlight = pending;
     try {
       return await pending;
@@ -212,9 +506,9 @@ export class WebClient {
     }
   }
   private async loadAccess(signal?: AbortSignal) {
-    if (this.origin && !this.compatible) await this.info(signal);
+    if (this.connection.type === "lan-http" && !this.compatible) await this.info(signal);
     const result = await this.request<Access>("access", undefined, signal);
-    if (this.origin && !this.bearerToken) {
+    if (this.connection.type === "lan-http" && !this.bearerToken) {
       if (!result.bearerToken) throw new ApiError(401, "access_ended");
       this.bearerToken = result.bearerToken;
     }
@@ -231,7 +525,7 @@ export class WebClient {
     },
   ) {
     const path = `/api/web/v1/stream?${new URLSearchParams({ sessionId })}`;
-    if (!this.origin) {
+    if (this.connection.type === "same-origin") {
       const source = new EventSource(path);
       for (const type of ["snapshot", "unavailable", "access-ended"])
         source.addEventListener(type, (e) => handlers.event(type, (e as MessageEvent).data));
@@ -286,6 +580,128 @@ export class WebClient {
       abort.abort();
       clearTimeout(timer);
     };
+  }
+  codexCapabilities(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexCapabilities>(
+      `codex/capabilities?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  codexQueue(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexQueue>(
+      `codex/queue?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  codexSessionSettings(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexSessionSettings>(
+      `codex/session-settings?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  codexGoals(sessionId: string, signal?: AbortSignal) {
+    return this.request<CodexGoalState>(
+      `codex/goals?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  codexContextOptions(sessionId: string, directoryId?: string, signal?: AbortSignal) {
+    const query = new URLSearchParams({ sessionId });
+    if (directoryId) query.set("directoryId", directoryId);
+    return this.request<CodexContextOptions>(`codex/context-options?${query}`, undefined, signal);
+  }
+  codexAction(action: CodexAction, body: CodexActionBody) {
+    return this.request<{
+      accepted?: boolean;
+      sessionId?: string;
+      reconciled?: boolean;
+      context?: unknown;
+    }>(`codex/${action}`, body);
+  }
+  attachments(sessionId: string, signal?: AbortSignal) {
+    return this.request<{ attachments: UploadedAttachment[] }>(
+      `attachments?${new URLSearchParams({ sessionId })}`,
+      undefined,
+      signal,
+    );
+  }
+  uploadAttachment(
+    sessionId: string,
+    file: File,
+    progress: (percent: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadedAttachment> {
+    if (this.connection.type === "lan-http" && (!this.compatible || !this.bearerToken))
+      return Promise.reject(new ApiError(401, "access_ended"));
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const abort = () => xhr.abort();
+      const finish = () => signal?.removeEventListener("abort", abort);
+      if (signal?.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      xhr.open(
+        "POST",
+        `${this.origin}/api/web/v1/attachments?${new URLSearchParams({ sessionId, name: file.name, mime: file.type || "application/octet-stream" })}`,
+      );
+      xhr.timeout = 120000;
+      xhr.withCredentials = this.connection.type === "same-origin";
+      for (const [key, value] of Object.entries(this.headers({})))
+        if (key !== "Content-Type") xhr.setRequestHeader(key, value);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) progress(Math.round((event.loaded / event.total) * 100));
+      };
+      xhr.onload = () => {
+        finish();
+        try {
+          const value = JSON.parse(xhr.responseText);
+          if (xhr.status < 200 || xhr.status >= 300) {
+            reject(
+              new ApiError(
+                xhr.status,
+                typeof value.code === "string" ? value.code : "upload_failed",
+              ),
+            );
+            return;
+          }
+          if (
+            !value ||
+            typeof value.id !== "string" ||
+            typeof value.name !== "string" ||
+            typeof value.mime !== "string" ||
+            typeof value.size !== "number" ||
+            typeof value.version !== "string"
+          )
+            throw new Error("invalid_attachment_response");
+          resolve(value as UploadedAttachment);
+        } catch {
+          reject(new ApiError(xhr.status, "upload_failed"));
+        }
+      };
+      xhr.onerror = xhr.ontimeout = () => {
+        finish();
+        reject(new ApiError(0, "upload_failed"));
+      };
+      xhr.onabort = () => {
+        finish();
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      xhr.send(file);
+    });
+  }
+  receipt(requestId: string, signal?: AbortSignal) {
+    return this.request<ControlReceipt>(
+      `requests/${encodeURIComponent(requestId)}`,
+      undefined,
+      signal,
+    );
   }
   catalog(signal?: AbortSignal) {
     return this.request<ConversationCatalog>("catalog", undefined, signal);

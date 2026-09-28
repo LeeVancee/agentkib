@@ -20,7 +20,13 @@ impl Worker {
         let handle = std::thread::spawn(move || {
             let mut service = Service::default();
             while let Ok(request) = receiver.recv() {
-                let result = service.request(request.params);
+                let result = if request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD {
+                    service.managed.receipt(request.params)
+                } else if request.method == agentkib_protocol::CODEX_MANAGED_METHOD {
+                    service.managed.request(request.params, &service.boot, true)
+                } else {
+                    service.request(request.params)
+                };
                 finished.fetch_sub(1, Ordering::SeqCst);
                 let _ = events.send(RuntimeEvent::RemoteFinished {
                     request_id: request.id,
@@ -38,10 +44,23 @@ impl Worker {
         let id = request.id.clone();
         // Opening a page starts history, live and SSE reads together. Bound and serialize
         // those reads; mutations must still acquire an entirely idle worker, never queue.
-        let read = matches!(
-            request.params["operation"].as_str(),
-            Some("catalog" | "events" | "live")
-        );
+        let read = request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
+            || matches!(
+                request.params["operation"].as_str(),
+                Some(
+                    "catalog"
+                        | "events"
+                        | "live"
+                        | "capabilities"
+                        | "inspect"
+                        | "context"
+                        | "queue-list"
+                        | "settings-state"
+                        | "usage"
+                        | "goal"
+                        | "resources"
+                )
+            );
         let claimed = self
             .pending
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
@@ -83,9 +102,19 @@ struct Request {
     cursor: Option<String>,
     limit: Option<usize>,
     request_id: Option<String>,
+    device_id: Option<String>,
     expected_revision: Option<u64>,
     runtime_boot_id: Option<String>,
     text: Option<String>,
+    input: Option<Value>,
+    resource_refs: Option<Vec<Value>>,
+    model: Option<String>,
+    effort: Option<String>,
+    mode: Option<String>,
+    service_tier: Option<String>,
+    policy_id: Option<String>,
+    #[serde(default)]
+    reset_defaults: bool,
     turn_id: Option<String>,
     approval_id: Option<Value>,
     question_id: Option<Value>,
@@ -110,7 +139,59 @@ fn codex_stop_enabled(
         )
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn follower_thread_settings(
+    request: &Request,
+    workspace: &Path,
+    current: &Value,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        request.model.is_none() && request.effort.is_none() && request.service_tier.is_none(),
+        "follower-model-catalog-unavailable"
+    );
+    let mut settings = json!({});
+    if let Some(mode) = request.mode.as_deref() {
+        anyhow::ensure!(matches!(mode, "default" | "plan"), "invalid-mode");
+        let model = current["model"]
+            .as_str()
+            .context("model-required-for-mode")?;
+        let effort = current["effort"].as_str();
+        // The owner applies these as one settings change. Keep its top-level
+        // selection and collaboration-mode selection identical, using only the
+        // current native values (not browser-provided model strings).
+        settings["model"] = json!(model);
+        settings["effort"] = json!(effort);
+        settings["collaborationMode"] = json!({"mode":mode,"settings":{"model":model,"reasoning_effort":effort,"developer_instructions":null}});
+    }
+    if let Some(policy) = request.policy_id.as_deref() {
+        match policy {
+            "workspace-write-on-request" => {
+                settings["approvalPolicy"] = json!("on-request");
+                settings["approvalsReviewer"] = json!("user");
+                settings["sandboxPolicy"] = json!({"type":"workspaceWrite","writableRoots":[workspace],"networkAccess":false});
+            }
+            "full-access-on-request" => {
+                settings["approvalPolicy"] = json!("never");
+                settings["approvalsReviewer"] = json!("user");
+                settings["sandboxPolicy"] = json!({"type":"dangerFullAccess"});
+            }
+            "workspace-write-auto-review" => {
+                settings["approvalPolicy"] = json!("on-request");
+                settings["approvalsReviewer"] = json!("auto_review");
+                settings["sandboxPolicy"] = json!({"type":"workspaceWrite","writableRoots":[workspace],"networkAccess":false});
+            }
+            _ => anyhow::bail!("unsupported-policy"),
+        }
+    }
+    anyhow::ensure!(
+        settings.as_object().is_some_and(|value| !value.is_empty()),
+        "empty-settings"
+    );
+    Ok(settings)
+}
+
 struct Service {
+    managed: crate::codex_managed::Service,
     boot: String,
     used: BTreeSet<String>,
     // Independent of the bridge cache: reconnect/eviction must not turn a lost
@@ -133,6 +214,7 @@ struct Service {
 impl Default for Service {
     fn default() -> Self {
         Self {
+            managed: crate::codex_managed::Service::default(),
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
             unresolved: BTreeSet::new(),
@@ -153,19 +235,207 @@ impl Default for Service {
     }
 }
 impl Service {
+    fn follower_settings_state(&self, id: &str) -> Value {
+        #[cfg(target_os = "macos")]
+        {
+            self.bridges
+                .get(id)
+                .map(|bridge| bridge.thread_settings())
+                .unwrap_or_else(|| {
+                    json!({"available":false,"executionMode":"codex-follower","reason":"open-in-original-client"})
+                })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = id;
+            json!({"available":false,"executionMode":"codex-follower","reason":"platform-unsupported"})
+        }
+    }
+
+    fn follower_settings_capability(&self, id: &str, live: &Value) -> Value {
+        #[cfg(target_os = "macos")]
+        {
+            if self
+                .bridges
+                .get(id)
+                .is_some_and(|bridge| bridge.supports_thread_settings())
+                && live["status"] == "idle"
+            {
+                json!({"available":true})
+            } else {
+                json!({"available":false,"reason":"follower-operation-unverified"})
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (id, live);
+            json!({"available":false,"reason":"platform-unsupported"})
+        }
+    }
+
     fn request(&mut self, value: Value) -> anyhow::Result<Value> {
+        if matches!(
+            value["operation"].as_str(),
+            Some(
+                "capabilities"
+                    | "inspect"
+                    | "context"
+                    | "settings-state"
+                    | "usage"
+                    | "goal"
+                    | "resources"
+            )
+        ) {
+            let id = value["sessionId"].as_str().context("missing-session")?;
+            return match value["operation"].as_str().unwrap() {
+                "context" => self.managed.context(id),
+                operation @ ("settings-state" | "usage" | "goal" | "resources") => {
+                    if self.managed.owns(id)? {
+                        self.managed.read_extended(id, operation, &self.boot)
+                    } else if operation == "settings-state" {
+                        let mut live = value.clone();
+                        live["operation"] = json!("live");
+                        self.request_inner(live)?;
+                        Ok(self.follower_settings_state(id))
+                    } else {
+                        Ok(
+                            json!({"available":false,"executionMode":"codex-follower","reason":"follower-operation-unverified"}),
+                        )
+                    }
+                }
+                "capabilities" => {
+                    let mut caps = self.managed.capabilities(
+                        id,
+                        &self.boot,
+                        value["experimentalEnabled"] == true,
+                    )?;
+                    if caps["executionMode"] == "codex-follower" {
+                        let mut live_request = value.clone();
+                        live_request["operation"] = json!("live");
+                        if let Ok(live) = self.request_inner(live_request) {
+                            caps["status"] = live["status"].clone();
+                            caps["reason"] = live["reason"].clone();
+                            for (op, enabled) in [
+                                ("send", live["sendEnabled"] == true),
+                                ("stop", live["stopEnabled"] == true),
+                                (
+                                    "approve",
+                                    live["approvals"]
+                                        .as_array()
+                                        .is_some_and(|a| a.iter().any(|x| x["supported"] == true)),
+                                ),
+                                (
+                                    "answer",
+                                    live["questions"]
+                                        .as_array()
+                                        .is_some_and(|a| a.iter().any(|x| x["supported"] == true)),
+                                ),
+                            ] {
+                                caps["features"][op] = if enabled {
+                                    json!({"available":true})
+                                } else {
+                                    json!({"available":false,"reason":"session-state-unavailable"})
+                                };
+                            }
+                            caps["features"]["settings"] =
+                                self.follower_settings_capability(id, &live);
+                        }
+                    }
+                    Ok(caps)
+                }
+                _ => {
+                    let result = self.managed.inspect(id, &self.boot)?;
+                    if result["reconciled"] == true {
+                        self.unresolved.remove(id);
+                    }
+                    Ok(result)
+                }
+            };
+        }
+        if value["operation"] == "resume" {
+            return self.managed.request(value, &self.boot, false);
+        }
+        // Managed controls already use this same durable ledger. Follower controls
+        // are wrapped before any native discovery/preflight can dispatch a write.
+        if let Some(id) = value["sessionId"].as_str() {
+            if self.managed.owns(id)? {
+                return self.managed.request(value, &self.boot, false);
+            }
+            if matches!(
+                value["operation"].as_str(),
+                Some("send" | "stop" | "approve" | "answer" | "settings")
+            ) {
+                let store = Store::open_default()?;
+                if let Some(session) = store.get_conversation_session(id)?
+                    && session.agent == AgentKind::Codex
+                {
+                    use sha2::Digest;
+                    let request: Request = serde_json::from_value(value.clone())?;
+                    crate::codex_managed::validate_device(request.device_id.as_deref())?;
+                    let request_id = request
+                        .request_id
+                        .as_deref()
+                        .context("invalid-request-id")?;
+                    uuid::Uuid::parse_str(request_id).context("invalid-request-id")?;
+                    let fingerprint =
+                        format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&value)?));
+                    let ledger = self.managed.ledger()?;
+                    if let Some(previous) = ledger.claim(
+                        request_id, id, &fingerprint, request.device_id.as_deref(),
+                        &json!({"operation":request.operation,"workspaceId":session.workspace_id,"executionMode":"codex-follower","runtimeBootId":self.boot,"expectedRevision":request.expected_revision,"turnId":request.turn_id}),
+                    )? {
+                        return Ok(previous);
+                    }
+                    let outcome = self.request_inner(value);
+                    if ledger.is_dispatched(request_id)? {
+                        if let Ok(ack) = &outcome
+                            && ack["accepted"] == true
+                        {
+                            ledger.finish(request_id, ack)?;
+                        }
+                        return outcome;
+                    }
+                    let ack = match outcome {
+                        Ok(ack) => ack,
+                        Err(_) => {
+                            json!({"accepted":false,"completed":false,"controlOutcome":"not-dispatched","requestId":request_id,"runtimeBootId":self.boot,"error":"control_preflight_rejected"})
+                        }
+                    };
+                    ledger.finish(request_id, &ack)?;
+                    return Ok(ack);
+                }
+            }
+        }
+        self.request_inner(value)
+    }
+    fn request_inner(&mut self, value: Value) -> anyhow::Result<Value> {
+        if value["operation"] == "diff" {
+            return web_diff(value);
+        }
+        if value["operation"] == "context" {
+            let request: Request = serde_json::from_value(value)?;
+            let id = request.session_id.as_deref().context("missing-session")?;
+            return self.managed.context(id);
+        }
+        if let Some(id) = value["sessionId"].as_str()
+            && self.managed.owns(id)?
+        {
+            return self.managed.request(value, &self.boot, false);
+        }
         let request: Request = serde_json::from_value(value)?;
         // Reject known-invalid input before claiming a request or installing a
         // control fence. The bridge shares this exact UTF-8 byte validation.
         if request.operation == "send" {
-            agentkib_codex_bridge::validate_send_text(
-                request.text.as_deref().context("missing-text")?,
+            crate::codex_managed::normalize_input(
+                request.input.as_ref(),
+                request.text.as_deref(),
+                request.resource_refs.as_deref(),
             )?;
         }
         anyhow::ensure!(
             matches!(
                 request.operation.as_str(),
-                "catalog" | "events" | "live" | "send" | "stop" | "approve" | "answer"
+                "catalog" | "events" | "live" | "send" | "stop" | "approve" | "answer" | "settings"
             ),
             "web-operation-unsupported"
         );
@@ -173,7 +443,36 @@ impl Service {
             data_dir: agentkib_store::default_data_dir()?,
         };
         if request.operation == "catalog" {
-            return web_catalog(&source);
+            let mut catalog = web_catalog(&source)?;
+            let managed = self.managed.catalog()?;
+            let indexed_aliases = self.managed.indexed_aliases()?;
+            if !managed.is_empty() {
+                let store = Store::open_default()?;
+                let managed_workspaces: BTreeSet<_> = managed
+                    .iter()
+                    .filter_map(|s| s["workspace_id"].as_str())
+                    .collect();
+                if let Some(workspaces) = catalog["workspaces"].as_array_mut() {
+                    for workspace in store.list_workspaces()? {
+                        if managed_workspaces.contains(workspace.id.as_str())
+                            && !workspaces.iter().any(|w| w["id"] == workspace.id)
+                        {
+                            workspaces.push(json!({"id":workspace.id,"name":workspace.name,"path":workspace.path}));
+                        }
+                    }
+                }
+                catalog["indexEnabled"] = json!(true);
+            }
+            if let Some(sessions) = catalog["sessions"].as_array_mut() {
+                let ids: BTreeSet<_> = managed.iter().filter_map(|s| s["id"].as_str()).collect();
+                sessions.retain(|s| {
+                    !s["id"]
+                        .as_str()
+                        .is_some_and(|id| ids.contains(id) || indexed_aliases.contains(id))
+                });
+                sessions.extend(managed);
+            }
+            return Ok(catalog);
         }
         let epoch = source.availability_epoch()?;
         let id = request
@@ -190,7 +489,7 @@ impl Service {
             .get_conversation_session(id)?
             .context("session-unavailable")?;
         let workspace = store.workspace_path(&session.workspace_id)?;
-        if self.unresolved.contains(id) {
+        if self.unresolved.contains(id) || self.managed.has_unconfirmed(id)? {
             anyhow::ensure!(request.operation == "live", "control-outcome-unconfirmed");
             return Ok(json!({"sessionId":id,"runtimeBootId":self.boot,
                 "status":"outcome-unknown","revision":null,"turnId":null,
@@ -371,6 +670,9 @@ impl Service {
                         deadline,
                     ) {
                         Ok(runner) => runner,
+                        Err(error) if error.to_string() == "unverified-installation" => {
+                            return self.unsupported(&request, "unverified-installation");
+                        }
                         Err(_) => return self.unsupported(&request, "open-in-original-client"),
                     };
                     self.antigravity.insert(id.to_owned(), runner);
@@ -473,25 +775,12 @@ impl Service {
                             return self.unsupported(&request, "live-session-busy");
                         }
                     }
-                    let home = dirs::home_dir().context("home-unavailable")?;
-                    let compatibility = agentkib_codex_bridge::Compatibility::inspect(
-                        Path::new("/Applications/ChatGPT.app/Contents/Resources/app.asar"),
-                        &home.join(format!(
-                            ".vscode/extensions/openai.chatgpt-{}-darwin-arm64/package.json",
-                            agentkib_codex_bridge::EXTENSION_VERSION
-                        )),
-                    );
-                    if !compatibility.is_known() {
-                        return self.unsupported(&request, "unverified-installation");
-                    }
-                    let connected = agentkib_codex_bridge::Bridge::connect(
-                        &home.join(".codex/ipc/ipc.sock"),
-                        compatibility,
-                    )
-                    .and_then(|mut bridge| {
-                        bridge.select(&uuid)?;
-                        Ok(bridge)
-                    });
+                    let socket = codex_home().join("ipc/ipc.sock");
+                    let connected = agentkib_codex_bridge::Bridge::connect_installed(&socket)
+                        .and_then(|mut bridge| {
+                            bridge.select(&uuid)?;
+                            Ok(bridge)
+                        });
                     match connected {
                         Ok(bridge) => {
                             self.bridges.insert(id.into(), bridge);
@@ -501,6 +790,11 @@ impl Service {
                 }
                 self.recency.retain(|entry| entry != id);
                 self.recency.push(id.into());
+                let command_ledger = if request.operation != "live" {
+                    Some(self.managed.ledger()?)
+                } else {
+                    None
+                };
                 let bridge = self.bridges.get_mut(id).context("live-unavailable")?;
                 if bridge
                     .state()
@@ -510,7 +804,13 @@ impl Service {
                     self.recency.retain(|entry| entry != id);
                     return self.unsupported(&request, "session-identity-changed");
                 }
-                if bridge.refresh().is_err() {
+                if (if request.operation == "live" {
+                    bridge.observe_live()
+                } else {
+                    bridge.refresh()
+                })
+                .is_err()
+                {
                     self.bridges.remove(id);
                     self.recency.retain(|entry| entry != id);
                     return self.unsupported(&request, "open-in-original-client");
@@ -543,7 +843,7 @@ impl Service {
                     };
                     validate_session_access(&source, epoch, &store, &session, &workspace)?;
                     return Ok(
-                        json!({"sessionId":id,"runtimeBootId":self.boot,"status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"stopEnabled":codex_stop_enabled(controls,state.status(),state.active_turn()),"approvals":approvals,"questions":questions}),
+                        json!({"sessionId":id,"runtimeBootId":self.boot,"executionMode":"codex-follower","status":status,"revision":state.revision(),"turnId":state.active_turn(),"sendEnabled":controls && state.status()==agentkib_codex_bridge::Status::Idle,"stopEnabled":codex_stop_enabled(controls,state.status(),state.active_turn()),"approvals":approvals,"questions":questions}),
                     );
                 }
                 anyhow::ensure!(
@@ -552,16 +852,36 @@ impl Service {
                         && request.expected_revision == state.revision(),
                     "stale-or-disabled-control"
                 );
-                let authorize =
-                    || validate_session_access(&source, epoch, &store, &session, &workspace);
+                let authorize = || {
+                    validate_session_access(&source, epoch, &store, &session, &workspace)?;
+                    // This fallible hook runs immediately before the bridge writes.
+                    // If persistence fails, zero request bytes may be sent.
+                    command_ledger
+                        .as_ref()
+                        .context("control-ledger-unavailable")?
+                        .dispatch(
+                            request
+                                .request_id
+                                .as_deref()
+                                .context("invalid-request-id")?,
+                        )
+                };
                 let dispatch = || {
                     dispatched = true;
                     self.unresolved.insert(id.to_owned());
                 };
                 let outcome = if request.operation == "send" {
-                    let text = request.text.as_deref().context("missing-text")?;
-                    bridge.send_text_at_revision_with_authorization(
-                        text,
+                    let input = crate::codex_managed::normalize_input(
+                        request.input.as_ref(),
+                        request.text.as_deref(),
+                        request.resource_refs.as_deref(),
+                    )?;
+                    bridge.send_input_at_revision_with_authorization(
+                        &input,
+                        request
+                            .request_id
+                            .as_deref()
+                            .context("invalid-request-id")?,
                         request.expected_revision,
                         authorize,
                         dispatch,
@@ -578,6 +898,16 @@ impl Service {
                         request.question_id.as_ref().context("missing-question")?,
                         request.turn_id.as_deref().context("missing-turn")?,
                         request.answers.as_ref().context("missing-answers")?,
+                        request.expected_revision,
+                        authorize,
+                        dispatch,
+                    )
+                } else if request.operation == "settings" {
+                    anyhow::ensure!(!request.reset_defaults, "follower-defaults-unavailable");
+                    let current = bridge.thread_settings()["settings"]["current"].clone();
+                    let settings = follower_thread_settings(&request, &workspace, &current)?;
+                    bridge.update_thread_settings_at_revision_with_authorization(
+                        &settings,
                         request.expected_revision,
                         authorize,
                         dispatch,
@@ -865,8 +1195,55 @@ fn idle_candidates<'a>(
         .collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn safe_approval(approval: agentkib_codex_bridge::Approval, controls: bool) -> Value {
+/// Expanded projection is used only by separately verified native adapters.
+/// Legacy browsers receive the original narrow projection at the HTTP boundary.
+pub(super) fn safe_approval_extended(
+    approval: agentkib_codex_bridge::Approval,
+    controls: bool,
+) -> Value {
+    let details = approval.details.clone();
+    let valid_identity = (approval.request_id.as_i64().is_some()
+        || approval
+            .request_id
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s.len() <= 256))
+        && !approval.turn_id.is_empty()
+        && details["turnId"]
+            .as_str()
+            .is_none_or(|id| id == approval.turn_id);
+    let options = agentkib_codex_bridge::native_approval_options(&approval.method, &details);
+    let complete = match approval.method.as_str() {
+        "item/fileChange/requestApproval" => details["changes"]
+            .as_array()
+            .is_some_and(|c| !c.is_empty() && c.iter().all(complete_file_change)),
+        "item/commandExecution/requestApproval" | "item/permissions/requestApproval" => {
+            details["cwd"]
+                .as_str()
+                .is_some_and(|p| Path::new(p).is_absolute())
+        }
+        _ => false,
+    };
+    let mut basic = safe_approval(approval, controls);
+    if controls && valid_identity && complete && !options.is_empty() {
+        basic["requiresExtendedApproval"] = json!(basic["supported"] != true);
+        basic["supported"] = json!(true);
+        basic["unsupportedReason"] = Value::Null;
+        basic["decisionOptions"] = json!(options);
+        // The helper rejected unknown fields before these known scope fields
+        // become visible. A label alone never represents an expanded grant.
+        basic["requestContext"] = json!({
+            "reason":details["reason"],"cwd":details["cwd"],
+            "networkApprovalContext":details["networkApprovalContext"],
+            "additionalPermissions":details["additionalPermissions"],
+            "permissions":details["permissions"],"grantRoot":details["grantRoot"],
+            "proposedExecpolicyAmendment":details["proposedExecpolicyAmendment"],
+            "proposedNetworkPolicyAmendments":details["proposedNetworkPolicyAmendments"]
+        });
+    }
+    basic
+}
+
+pub(super) fn safe_approval(approval: agentkib_codex_bridge::Approval, controls: bool) -> Value {
     let details = approval.details;
     let command_request = approval.method == "item/commandExecution/requestApproval";
     // Pinned official schema: omitted kind means command, not terminal input.
@@ -961,7 +1338,6 @@ fn safe_approval(approval: agentkib_codex_bridge::Approval, controls: bool) -> V
         "environmentId":if command_request && valid_metadata {details["environmentId"].clone()} else {Value::Null}})
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn complete_file_change(change: &Value) -> bool {
     let Some(object) = change.as_object() else {
         return false;
@@ -995,6 +1371,36 @@ fn complete_file_change(change: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follower_settings_require_a_supported_platform_and_attached_owner() {
+        let service = Service::default();
+        let state = service.follower_settings_state("unattached-session");
+        assert_eq!(state["available"], false);
+        assert_eq!(state["executionMode"], "codex-follower");
+        assert_eq!(
+            state["reason"],
+            if cfg!(target_os = "macos") {
+                "open-in-original-client"
+            } else {
+                "platform-unsupported"
+            }
+        );
+        // An idle status must not grant settings control without a native owner.
+        for status in ["idle", "running", "outcome-unknown"] {
+            let capability = service
+                .follower_settings_capability("unattached-session", &json!({"status":status}));
+            assert_eq!(capability["available"], false);
+            assert_eq!(
+                capability["reason"],
+                if cfg!(target_os = "macos") {
+                    "follower-operation-unverified"
+                } else {
+                    "platform-unsupported"
+                }
+            );
+        }
+    }
 
     #[test]
     fn codex_stop_is_unavailable_while_the_previous_outcome_is_unknown() {
@@ -1553,6 +1959,29 @@ sleep 5
         )
     }
     #[test]
+    fn extended_approval_preserves_offered_scope_and_requires_live_identity() {
+        let approval = agentkib_codex_bridge::Approval {
+            request_id: json!(5),
+            turn_id: "turn".into(),
+            method: "item/permissions/requestApproval".into(),
+            details: json!({"turnId":"turn","cwd":test_cwd(),"permissions":{"network":{"enabled":true}}}),
+        };
+        let result = safe_approval_extended(approval.clone(), true);
+        assert_eq!(result["supported"], true);
+        assert_eq!(result["requiresExtendedApproval"], true);
+        assert_eq!(result["decisionOptions"][1]["decision"]["scope"], "session");
+        assert_eq!(safe_approval(approval.clone(), true)["supported"], false);
+        for request_id in [Value::Null, json!({"id":5}), json!(1.5), json!("")] {
+            let mut invalid = approval.clone();
+            invalid.request_id = request_id;
+            assert_eq!(safe_approval_extended(invalid, true)["supported"], false);
+        }
+        let mut stale = approval.clone();
+        stale.details["turnId"] = json!("different-turn");
+        assert_eq!(safe_approval_extended(stale, true)["supported"], false);
+        assert_eq!(safe_approval_extended(approval, false)["supported"], false);
+    }
+    #[test]
     fn file_approval_requires_full_known_change_not_a_path_summary() {
         let good = json!({"changes":[{"path":test_file(),"kind":{"type":"add"},"diff":"QA\n"}]});
         assert_eq!(file_approval(good.clone())["supported"], true);
@@ -1787,6 +2216,55 @@ sleep 5
         );
     }
     #[test]
+    fn follower_settings_use_current_model_and_reject_uncatalogued_values() {
+        let workspace = std::env::temp_dir();
+        let request: Request = serde_json::from_value(json!({
+            "operation":"settings",
+            "mode":"plan",
+            "policyId":"full-access-on-request"
+        }))
+        .unwrap();
+        let projected = follower_thread_settings(
+            &request,
+            &workspace,
+            &json!({"model":"owner-model","effort":"high"}),
+        )
+        .unwrap();
+        assert_eq!(
+            projected["collaborationMode"]["settings"]["model"],
+            "owner-model"
+        );
+        assert_eq!(projected["model"], "owner-model");
+        assert_eq!(projected["effort"], "high");
+        assert_eq!(
+            projected["collaborationMode"]["settings"]["reasoning_effort"],
+            "high"
+        );
+        assert_eq!(projected["approvalPolicy"], "never");
+        assert_eq!(projected["sandboxPolicy"]["type"], "dangerFullAccess");
+
+        for field in [
+            json!({"model":"invented-model"}),
+            json!({"effort":"medium"}),
+            json!({"serviceTier":"fast"}),
+        ] {
+            let mut value = json!({"operation":"settings","mode":"plan"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(field.as_object().unwrap().clone());
+            let request: Request = serde_json::from_value(value).unwrap();
+            assert!(
+                follower_thread_settings(
+                    &request,
+                    &workspace,
+                    &json!({"model":"owner-model","effort":"high"})
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
     fn unsupported_permissions_never_offer_decisions() {
         let value = safe_approval(
             agentkib_codex_bridge::Approval {
@@ -1799,5 +2277,371 @@ sleep 5
         );
         assert_eq!(value["supported"], false);
         assert_eq!(value["availableDecisions"], json!([]));
+    }
+}
+
+/// The Web facade accepts registered workspace IDs and a narrow read-only Git contract.
+fn web_diff(value: Value) -> anyhow::Result<Value> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Request {
+        operation: String,
+        workspace_id: String,
+        kind: agentkib_git::GitDiffKind,
+        path: Option<String>,
+        oid: Option<String>,
+    }
+    let request: Request = serde_json::from_value(value)?;
+    anyhow::ensure!(request.operation == "diff", "invalid-operation");
+    let store = Store::open_default()?;
+    let path = store
+        .workspace_path(&request.workspace_id)?
+        .canonicalize()?;
+    anyhow::ensure!(!sensitive_diff_root(&path), "diff-sensitive-path");
+    if let Some(summary) = agentkib_git::workspace_summary(&path)? {
+        anyhow::ensure!(
+            summary.worktree_root.canonicalize()? == path,
+            "diff-workspace-must-be-repository-root"
+        );
+    }
+    if let Some(file) = &request.path {
+        anyhow::ensure!(!sensitive_diff_path(file), "diff-sensitive-path");
+        anyhow::ensure!(
+            !file.is_empty()
+                && !std::path::Path::new(file).is_absolute()
+                && !file.contains('\\')
+                && !file.split('/').any(|p| p.is_empty() || p == "."),
+            "diff-invalid-path"
+        );
+        // Git interprets pathspec magic even after `--`. This endpoint accepts filenames.
+        anyhow::ensure!(
+            !file.contains(['*', '?', '[', ']', ':']),
+            "diff-invalid-path"
+        );
+    }
+    let result = checked_web_diff(
+        &path,
+        &agentkib_git::GitDiffRequest {
+            kind: request.kind,
+            path: request.path,
+            oid: request.oid,
+        },
+    )?;
+    anyhow::ensure!(
+        store
+            .workspace_path(&request.workspace_id)?
+            .canonicalize()?
+            == path,
+        "workspace-unavailable"
+    );
+    Ok(serde_json::to_value(result)?)
+}
+
+fn checked_web_diff(
+    path: &std::path::Path,
+    request: &agentkib_git::GitDiffRequest,
+) -> anyhow::Result<Option<agentkib_git::GitDiff>> {
+    let check_paths = || -> anyhow::Result<()> {
+        let files = agentkib_git::diff_files(path, request)?.unwrap_or_default();
+        if let Some(selected) = &request.path {
+            anyhow::ensure!(
+                files
+                    .iter()
+                    .any(|file| &file.path == selected || file.old_path.as_ref() == Some(selected)),
+                "diff-path-not-changed-file"
+            );
+        }
+        for file in files {
+            if request.path.as_ref().is_none_or(|selected| {
+                selected == &file.path || file.old_path.as_ref() == Some(selected)
+            }) {
+                anyhow::ensure!(
+                    !sensitive_diff_path(&file.path)
+                        && file
+                            .old_path
+                            .as_deref()
+                            .is_none_or(|p| !sensitive_diff_path(p)),
+                    "diff-sensitive-path"
+                );
+            }
+        }
+        Ok(())
+    };
+    check_paths()?;
+    let result = agentkib_git::diff(path, request)?;
+    // Revalidate the same comparison after concurrent Git activity before exposing bytes.
+    check_paths()?;
+    Ok(result)
+}
+
+fn sensitive_diff_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    lower.split('/').any(|part| {
+        part == ".."
+            || part == ".git"
+            || part == ".ssh"
+            || part == ".aws"
+            || part == ".agentkib"
+            || part == "ai.agentkib"
+            || part == "ai.agentkib.dev"
+            || part == ".codex"
+            || part == ".npmrc"
+            || part == ".netrc"
+            || part == ".env"
+            || part.starts_with(".env.")
+            || part.contains("credential")
+            || part.contains("privatekey")
+            || part.contains("private_key")
+            || part.contains("private-key")
+            || sensitive_auth_name(part)
+            || part == "secret"
+            || part.starts_with("secret.")
+            || part == "secrets"
+            || part.starts_with("secrets.")
+            || part.starts_with("id_rsa")
+            || part.starts_with("id_ed25519")
+            || [".pem", ".key", ".p12", ".pfx", ".jks", ".kdbx", ".keystore"]
+                .iter()
+                .any(|suffix| part.ends_with(suffix))
+    })
+}
+
+fn sensitive_auth_name(part: &str) -> bool {
+    let base = part.split('.').next().unwrap_or(part);
+    matches!(
+        base,
+        "auth"
+            | "oauth"
+            | "token"
+            | "tokens"
+            | "access_token"
+            | "access-token"
+            | "accesstoken"
+            | "refresh_token"
+            | "refresh-token"
+            | "refreshtoken"
+    )
+}
+fn sensitive_diff_root(path: &std::path::Path) -> bool {
+    let parts = path
+        .components()
+        .map(|p| p.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    parts.iter().enumerate().any(|(i, part)| {
+        matches!(
+            part.as_str(),
+            ".git"
+                | ".ssh"
+                | ".gnupg"
+                | ".aws"
+                | ".azure"
+                | ".claude"
+                | ".gemini"
+                | ".agentkib"
+                | "ai.agentkib"
+                | "ai.agentkib.dev"
+        ) || (part == ".codex"
+            && !(parts.get(i + 1).is_some_and(|p| p == "worktrees") && parts.get(i + 2).is_some()))
+    })
+}
+#[cfg(test)]
+mod diff_safety_tests {
+    use super::*;
+    use agentkib_git::{GitDiffKind, GitDiffRequest};
+
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+
+    fn fixture(track_sensitive_file: bool) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path();
+        git(path, &["init", "-b", "main"]);
+        git(path, &["config", "user.name", "AgentKib Test"]);
+        git(path, &["config", "user.email", "test@example.invalid"]);
+        std::fs::write(path.join("code.txt"), "before\n").unwrap();
+        if track_sensitive_file {
+            std::fs::write(path.join(".env"), "fixture-before\n").unwrap();
+        }
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        directory
+    }
+
+    fn request(kind: GitDiffKind) -> GitDiffRequest {
+        GitDiffRequest {
+            kind,
+            path: None,
+            oid: None,
+        }
+    }
+
+    #[test]
+    fn staged_diff_ignores_untracked_sensitive_files() {
+        let directory = fixture(false);
+        let path = directory.path();
+        std::fs::write(path.join("code.txt"), "staged-code\n").unwrap();
+        git(path, &["add", "code.txt"]);
+        std::fs::write(path.join(".env"), "untracked-fixture\n").unwrap();
+        let result = checked_web_diff(path, &request(GitDiffKind::Staged))
+            .unwrap()
+            .unwrap();
+        assert!(result.patch.contains("+staged-code"));
+        assert!(!result.patch.contains("untracked-fixture"));
+        assert!(
+            checked_web_diff(path, &request(GitDiffKind::Worktree))
+                .unwrap()
+                .unwrap()
+                .patch
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn checks_sensitive_paths_only_in_the_requested_index_layer() {
+        for kind in [GitDiffKind::Worktree, GitDiffKind::Staged] {
+            let directory = fixture(true);
+            let path = directory.path();
+            std::fs::write(path.join("code.txt"), "safe-change\n").unwrap();
+            std::fs::write(path.join(".env"), "sensitive-change\n").unwrap();
+            let staged = if kind == GitDiffKind::Worktree {
+                ".env"
+            } else {
+                "code.txt"
+            };
+            git(path, &["add", staged]);
+            let result = checked_web_diff(path, &request(kind)).unwrap().unwrap();
+            assert!(result.patch.contains("+safe-change"));
+            assert!(!result.patch.contains("sensitive-change"));
+            let other_kind = if kind == GitDiffKind::Worktree {
+                GitDiffKind::Staged
+            } else {
+                GitDiffKind::Worktree
+            };
+            assert_eq!(
+                checked_web_diff(path, &request(other_kind))
+                    .unwrap_err()
+                    .to_string(),
+                "diff-sensitive-path"
+            );
+            let mut wrong_layer = request(other_kind);
+            wrong_layer.path = Some("code.txt".into());
+            assert_eq!(
+                checked_web_diff(path, &wrong_layer)
+                    .unwrap_err()
+                    .to_string(),
+                "diff-path-not-changed-file"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_copy_uses_the_same_detection_as_the_patch() {
+        let directory = fixture(true);
+        let path = directory.path();
+        git(path, &["config", "diff.renames", "copies"]);
+        std::fs::copy(path.join(".env"), path.join("settings.txt")).unwrap();
+        std::fs::write(path.join(".env"), "fixture-after\n").unwrap();
+        git(path, &["add", "."]);
+        let files = agentkib_git::diff_files(path, &request(GitDiffKind::Staged))
+            .unwrap()
+            .unwrap();
+        let copied = files
+            .iter()
+            .find(|file| file.path == "settings.txt")
+            .unwrap();
+        assert_eq!(copied.old_path.as_deref(), Some(".env"));
+        let mut selected = request(GitDiffKind::Staged);
+        selected.path = Some("settings.txt".into());
+        assert_eq!(
+            checked_web_diff(path, &selected).unwrap_err().to_string(),
+            "diff-sensitive-path"
+        );
+    }
+
+    #[test]
+    fn staged_and_commit_renames_check_both_sensitive_endpoints() {
+        for (from, to) in [(".env", "settings.txt"), ("code.txt", ".env.local")] {
+            let directory = fixture(true);
+            let path = directory.path();
+            git(path, &["mv", from, to]);
+            let mut staged = request(GitDiffKind::Staged);
+            // Selecting the ordinary endpoint must not expose the sensitive one.
+            staged.path = Some(if from.starts_with('.') { to } else { from }.into());
+            assert_eq!(
+                checked_web_diff(path, &staged).unwrap_err().to_string(),
+                "diff-sensitive-path"
+            );
+            git(path, &["commit", "-m", "rename"]);
+            let output = std::process::Command::new("git")
+                .current_dir(path)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            let mut commit = request(GitDiffKind::Commit);
+            commit.oid = Some(String::from_utf8(output.stdout).unwrap().trim().into());
+            assert_eq!(
+                checked_web_diff(path, &commit).unwrap_err().to_string(),
+                "diff-sensitive-path"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_secrets_before_reading_patch() {
+        for name in [
+            ".env",
+            "nested/.env.local",
+            ".git/config",
+            "credentials.json",
+            "auth.json",
+            "oauth.json",
+            "token.txt",
+            "access-token.json",
+            "refresh_token",
+            "private-key.pem",
+            "server.jks",
+            "db.kdbx",
+            "../secret",
+            ".agentkib/relay/registration.json",
+            "ai.agentkib/codex-managed/executions.sqlite",
+            "ai.agentkib.dev/web/web.json",
+        ] {
+            assert!(sensitive_diff_path(name), "{name}");
+        }
+        for name in [
+            "src/main.rs",
+            "docs/authentication.md",
+            "packages/oauth-client/index.ts",
+        ] {
+            assert!(!sensitive_diff_path(name), "{name}");
+        }
+    }
+    #[test]
+    fn rejects_private_state_roots_but_allows_codex_worktrees() {
+        for name in [
+            "/home/me/.codex",
+            "/home/me/.codex/sessions/project",
+            "/home/me/.codex/logs",
+            "/home/me/.ssh/project",
+            "/home/me/.claude/projects/repo",
+            "/Users/me/Library/Application Support/ai.agentkib/web",
+            "/Users/me/Library/Application Support/ai.agentkib.dev",
+            "/home/me/.local/share/ai.agentkib",
+            "/home/me/.agentkib",
+        ] {
+            assert!(sensitive_diff_root(std::path::Path::new(name)), "{name}");
+        }
+        assert!(!sensitive_diff_root(std::path::Path::new(
+            "/home/me/.codex/worktrees/abcd/project"
+        )));
+        assert!(!sensitive_diff_root(std::path::Path::new(
+            "/home/me/projects/project"
+        )));
     }
 }

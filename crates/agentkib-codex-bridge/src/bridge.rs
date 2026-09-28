@@ -8,6 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+const LIVE_OWNER_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+const LIVE_FULL_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const LIVE_DRAIN_BUDGET: Duration = Duration::from_millis(50);
+const LIVE_DRAIN_LIMIT: usize = 32;
+
+enum PollEvent {
+    Empty,
+    Notification,
+    Resubscribed,
+}
+
 /// Opt-in, local-only facade. IDs/commands supplied by a caller are not forwarded verbatim.
 pub struct Bridge {
     connection: Connection,
@@ -15,9 +26,30 @@ pub struct Bridge {
     controls_enabled: bool,
     selected: Option<SessionState>,
     endpoint: PathBuf,
+    last_owner_check: Option<Instant>,
+    last_full_refresh: Option<Instant>,
+    resync_after_mutation: bool,
 }
 
 impl Bridge {
+    pub fn connect_installed(socket: &Path) -> Result<Self> {
+        let connection = Connection::connect(socket)?;
+        let compatibility = connection
+            .peer_executable()
+            .map(Compatibility::for_router)
+            .unwrap_or_default();
+        ensure!(compatibility.is_known(), "unverified-installation");
+        Ok(Self {
+            connection,
+            compatibility,
+            controls_enabled: false,
+            selected: None,
+            endpoint: socket.to_owned(),
+            last_owner_check: None,
+            last_full_refresh: None,
+            resync_after_mutation: false,
+        })
+    }
     pub fn connect(socket: &Path, compatibility: Compatibility) -> Result<Self> {
         Ok(Self {
             connection: Connection::connect(socket)?,
@@ -25,6 +57,9 @@ impl Bridge {
             controls_enabled: false,
             selected: None,
             endpoint: socket.to_owned(),
+            last_owner_check: None,
+            last_full_refresh: None,
+            resync_after_mutation: false,
         })
     }
 
@@ -44,6 +79,69 @@ impl Bridge {
     }
     pub fn state(&self) -> Option<&SessionState> {
         self.selected.as_ref()
+    }
+
+    pub fn supports_thread_settings(&self) -> bool {
+        self.compatibility.supports_thread_settings()
+    }
+
+    pub fn thread_settings(&self) -> Value {
+        let Some(state) = self.selected.as_ref() else {
+            return json!({"available":false,"reason":"state-unavailable"});
+        };
+        let Some(snapshot) = state.snapshot() else {
+            return json!({"available":false,"reason":"state-unavailable"});
+        };
+        let saved = &snapshot["latestThreadSettings"];
+        let supported = self.supports_thread_settings();
+        let policy = follower_policy_id(saved);
+        json!({
+            "available": supported,
+            "executionMode": "codex-follower",
+            "settings": {
+                // The owner snapshot is native evidence, unlike a client-side
+                // next-turn selection waiting to be sent to app-server.
+                "applicationStatus": if supported { "confirmed" } else { "unknown" },
+                "current": {
+                    "model": saved.get("model").unwrap_or(&snapshot["latestModel"]),
+                    "effort": saved.get("effort").unwrap_or(&snapshot["latestReasoningEffort"]),
+                    "mode": saved.get("collaborationMode").and_then(|value| value.get("mode")).unwrap_or(&snapshot["latestCollaborationMode"]["mode"]),
+                    "serviceTier": saved.get("serviceTier").unwrap_or(&Value::Null),
+                    "policyId": policy,
+                },
+                "defaults": {"model":null,"effort":null,"serviceTier":null},
+                "writable": {
+                    // The follower snapshot has the current values but no host
+                    // model catalog. Do not accept arbitrary browser strings.
+                    "model": false,
+                    "effort": false,
+                    "mode": supported,
+                    "serviceTier": false,
+                    "policy": supported,
+                    "restoreDefaults": false,
+                },
+            },
+            "collaborationModes": if supported {
+                json!([{"id":"default","name":"Default"},{"id":"plan","name":"Plan"}])
+            } else {
+                json!([])
+            },
+            "policies": [
+                {"id":"workspace-write-on-request","name":"Workspace write · ask when needed","description":"Can edit the workspace; risky actions still require user approval."},
+                {"id":"full-access-on-request","name":"Full access · no approval prompts","description":"Can access the computer and network without prompting for approvals."},
+                {"id":"workspace-write-auto-review","name":"Workspace write · agent review","description":"Can edit the workspace; the native agent reviews approval requests."}
+            ],
+            "revision": state.revision(),
+            "reason": if supported{Value::Null}else{json!("follower-operation-unverified")},
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_live_checks_due(&mut self, full: bool) {
+        self.last_owner_check = None;
+        if full {
+            self.last_full_refresh = None;
+        }
     }
 
     pub fn select(&mut self, conversation: &str) -> Result<()> {
@@ -83,6 +181,117 @@ impl Bridge {
                 }
             }
             anyhow::bail!("no compatible owner snapshot received; read-only mode");
+        })();
+        if result.is_err() {
+            self.invalidate(Status::Unsupported);
+        } else {
+            let now = Instant::now();
+            self.last_owner_check = Some(now);
+            self.last_full_refresh = Some(now);
+            self.resync_after_mutation = false;
+        }
+        result
+    }
+
+    /// Reads the existing follower stream without asking the owner to serialize
+    /// its full conversation on every Web live poll. Mutations still call refresh().
+    pub fn observe_live(&mut self) -> Result<()> {
+        let state = self.selected.as_ref().context("no selected session")?;
+        if state.revision().is_none() {
+            return self.select(&state.conversation.clone());
+        }
+        if self.resync_after_mutation
+            || self
+                .last_full_refresh
+                .is_none_or(|at| at.elapsed() >= LIVE_FULL_REFRESH_INTERVAL)
+        {
+            return self.refresh();
+        }
+        let result = (|| {
+            let before = self
+                .selected
+                .as_ref()
+                .context("no selected session")?
+                .snapshot_count;
+            if self
+                .last_owner_check
+                .is_none_or(|at| at.elapsed() >= LIVE_OWNER_CHECK_INTERVAL)
+            {
+                let state = self.selected.as_ref().context("no selected session")?;
+                let id = state.conversation.clone();
+                let owner = state.owner.clone();
+                let mut resubscribe_requested = false;
+                let selected = &mut self.selected;
+                let response = self.connection.request(
+                    "thread-owner-discovery",
+                    json!({"hostId":"local", "conversationId":id}),
+                    None,
+                    |message| {
+                        let state = selected.as_mut().context("no selected session")?;
+                        if following_status_requested(&message, state) {
+                            resubscribe_requested = true;
+                            Ok(())
+                        } else {
+                            state.notification(message)
+                        }
+                    },
+                )?;
+                ensure!(
+                    response["handledByClientId"] == owner,
+                    "session owner changed"
+                );
+                self.last_owner_check = Some(Instant::now());
+                if resubscribe_requested {
+                    return self.refresh();
+                }
+            }
+            // Codex may publish several patches per turn. Consume a bounded
+            // batch so a busy session does not fall further behind each poll.
+            let drain_until = Instant::now() + LIVE_DRAIN_BUDGET;
+            let mut resubscribed = false;
+            for index in 0..LIVE_DRAIN_LIMIT {
+                if Instant::now() >= drain_until {
+                    break;
+                }
+                let timeout = if index == 0 {
+                    Duration::from_millis(10)
+                } else {
+                    Duration::from_millis(1)
+                };
+                match self.poll_once(timeout)? {
+                    PollEvent::Empty => break,
+                    PollEvent::Notification => {}
+                    PollEvent::Resubscribed => {
+                        resubscribed = true;
+                        break;
+                    }
+                }
+            }
+            if resubscribed {
+                let until = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < until {
+                    self.poll(until.saturating_duration_since(Instant::now()))?;
+                    if self
+                        .selected
+                        .as_ref()
+                        .is_some_and(|state| state.snapshot_count > before)
+                    {
+                        break;
+                    }
+                }
+                ensure!(
+                    self.selected
+                        .as_ref()
+                        .is_some_and(|state| state.snapshot_count > before),
+                    "no compatible owner refresh snapshot received"
+                );
+            }
+            let state = self.selected.as_ref().context("no selected session")?;
+            ensure!(state.revision().is_some(), "session stream invalidated");
+            if state.snapshot_count > before {
+                self.last_full_refresh = Some(Instant::now());
+            }
+            Ok(())
         })();
         if result.is_err() {
             self.invalidate(Status::Unsupported);
@@ -137,11 +346,20 @@ impl Bridge {
         })();
         if result.is_err() {
             self.invalidate(Status::Unsupported);
+        } else {
+            let now = Instant::now();
+            self.last_owner_check = Some(now);
+            self.last_full_refresh = Some(now);
+            self.resync_after_mutation = false;
         }
         result
     }
 
     pub fn poll(&mut self, timeout: Duration) -> Result<()> {
+        self.poll_once(timeout).map(|_| ())
+    }
+
+    fn poll_once(&mut self, timeout: Duration) -> Result<PollEvent> {
         let deadline = Instant::now() + timeout.min(Duration::from_secs(3));
         match self.connection.receive(deadline) {
             Ok(Some(message)) => {
@@ -149,13 +367,14 @@ impl Bridge {
                     if following_status_requested(&message, state) {
                         self.connection.broadcast("thread-stream-following-changed",
                             json!({"conversationId":state.conversation,"hostId":"local","following":true}), &state.owner)?;
+                        return Ok(PollEvent::Resubscribed);
                     } else {
                         state.notification(message)?;
                     }
                 }
-                Ok(())
+                Ok(PollEvent::Notification)
             }
-            Ok(None) => Ok(()),
+            Ok(None) => Ok(PollEvent::Empty),
             Err(error) => {
                 self.invalidate(Status::Disconnected);
                 Err(error)
@@ -194,6 +413,85 @@ impl Bridge {
         dispatch: impl FnOnce(),
     ) -> Result<()> {
         crate::validate_send_text(text)?;
+        self.send_input_inner(
+            &json!([{"type":"text","text":text,"text_elements":[]}]),
+            None,
+            revision,
+            authorize,
+            dispatch,
+        )
+    }
+
+    /// Carries the browser request identity into native history so a lost receipt
+    /// can be checked without comparing message text or replaying a turn.
+    pub fn send_input_at_revision_with_authorization(
+        &mut self,
+        input: &Value,
+        client_id: &str,
+        revision: Option<u64>,
+        authorize: impl FnOnce() -> Result<()>,
+        dispatch: impl FnOnce(),
+    ) -> Result<()> {
+        uuid::Uuid::parse_str(client_id).context("invalid-message-identity")?;
+        self.send_input_inner(input, Some(client_id), revision, authorize, dispatch)
+    }
+
+    fn send_input_inner(
+        &mut self,
+        input: &Value,
+        client_id: Option<&str>,
+        revision: Option<u64>,
+        authorize: impl FnOnce() -> Result<()>,
+        dispatch: impl FnOnce(),
+    ) -> Result<()> {
+        let items = input.as_array().context("invalid-input")?;
+        ensure!(!items.is_empty() && items.len() <= 11, "invalid-input-size");
+        let mut text_bytes = 0;
+        for item in items {
+            let obj = item.as_object().context("invalid-input-item")?;
+            match item["type"].as_str() {
+                Some("text") => {
+                    ensure!(
+                        obj.keys()
+                            .all(|k| matches!(k.as_str(), "type" | "text" | "text_elements")),
+                        "invalid-text-input"
+                    );
+                    let text = item["text"].as_str().context("missing-text")?;
+                    crate::validate_send_text(text)?;
+                    text_bytes += text.len();
+                    ensure!(text_bytes <= 16384, "text-too-large");
+                    ensure!(
+                        item.get("text_elements")
+                            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+                        "unsupported-text-elements"
+                    );
+                }
+                Some("localImage" | "mention") => {
+                    ensure!(
+                        obj.keys()
+                            .all(|k| matches!(k.as_str(), "type" | "path" | "name")),
+                        "invalid-file-input"
+                    );
+                    let path = item["path"].as_str().context("missing-input-path")?;
+                    let path = std::path::Path::new(path);
+                    ensure!(
+                        path.is_absolute()
+                            && path.is_file()
+                            && path.canonicalize()?.as_path() == path,
+                        "invalid-input-path"
+                    );
+                    if item["type"] == "mention" {
+                        ensure!(
+                            item["name"]
+                                .as_str()
+                                .is_some_and(|s| !s.is_empty() && s.len() <= 255),
+                            "invalid-input-name"
+                        );
+                    }
+                }
+                _ => anyhow::bail!("unsupported-input-kind"),
+            }
+        }
         self.ready()?;
         let _operation = OperationGuard::acquire(
             &self.endpoint,
@@ -213,8 +511,74 @@ impl Bridge {
             "session is not idle; sending is disabled"
         );
         let id = state.conversation.clone();
-        self.mutate_with_authorization("thread-follower-start-turn", json!({"conversationId":id,
-            "turnStart":{"request":{"threadId":id,"input":[{"type":"text","text":text,"text_elements":[]}]}}}), authorize, dispatch).map(|_| ())
+        let mut request = json!({"threadId":id,"input":input});
+        if let Some(client_id) = client_id {
+            request["clientUserMessageId"] = json!(client_id);
+        }
+        self.mutate_with_authorization(
+            "thread-follower-start-turn",
+            json!({"conversationId":id,
+            "turnStart":{"request":request}}),
+            authorize,
+            dispatch,
+        )
+        .map(|_| ())
+    }
+
+    /// Updates only the owner protocol fields verified for the exact Desktop
+    /// allowlist. The owner condition prevents a concurrent model/effort change
+    /// from being overwritten after our final stream refresh.
+    pub fn update_thread_settings_at_revision_with_authorization(
+        &mut self,
+        thread_settings: &Value,
+        revision: Option<u64>,
+        authorize: impl FnOnce() -> Result<()>,
+        dispatch: impl FnOnce(),
+    ) -> Result<()> {
+        ensure!(
+            self.supports_thread_settings(),
+            "follower-operation-unverified"
+        );
+        self.ready()?;
+        let _operation = OperationGuard::acquire(
+            &self.endpoint,
+            self.selected
+                .as_ref()
+                .context("no selected session")?
+                .conversation_id(),
+        )?;
+        self.refresh()?;
+        let state = self.selected.as_ref().context("no selected session")?;
+        ensure!(
+            revision.is_some() && revision == state.revision(),
+            "session revision changed; nothing sent"
+        );
+        ensure!(
+            state.status() == Status::Idle,
+            "session is not idle; settings are disabled"
+        );
+        validate_thread_settings(
+            thread_settings,
+            state.snapshot().context("missing owner snapshot")?,
+        )?;
+        let snapshot = state.snapshot().unwrap();
+        let condition = json!({
+            "ifModelEquals": snapshot["latestModel"],
+            "ifEffortEquals": snapshot["latestReasoningEffort"],
+        });
+        let response = self.mutate_with_authorization(
+            "thread-follower-update-thread-settings",
+            json!({
+                "conversationId": state.conversation_id(),
+                "threadSettings": thread_settings,
+                "activeTurnId": null,
+                "condition": condition,
+            }),
+            authorize,
+            dispatch,
+        )?;
+        ensure!(response["applied"] == true, "owner rejected stale settings");
+        Ok(())
     }
 
     /// Interrupts the selected turn only. Even a matching owner receipt does not
@@ -412,33 +776,14 @@ impl Bridge {
             .into_iter()
             .find(|q| &q["requestId"] == id && q["turnId"] == turn && q["supported"] == true)
             .context("question no longer pending or unsupported")?;
-        let rows = pending["questions"]
-            .as_array()
-            .context("invalid questions")?;
-        let map = answers.as_object().context("invalid answers")?;
-        ensure!(map.len() == rows.len(), "answer keys mismatch");
-        let mut response = serde_json::Map::new();
-        for row in rows {
-            let key = row["id"].as_str().context("invalid question id")?;
-            let values = map
-                .get(key)
-                .and_then(Value::as_array)
-                .context("missing answer")?;
-            ensure!(values.len() == 1, "invalid answer cardinality");
-            let text = values[0]
-                .as_str()
-                .filter(|s| !s.trim().is_empty() && s.len() <= 8192)
-                .context("invalid answer")?;
-            ensure!(
-                row["allowCustom"] == true
-                    || row["options"]
-                        .as_array()
-                        .is_some_and(|opts| opts.iter().any(|o| o["label"] == text)),
-                "answer not offered"
-            );
-            response.insert(key.to_owned(), json!({"answers":values}));
-        }
-        self.mutate_with_authorization("thread-follower-submit-user-input", json!({"conversationId":state.conversation,"requestId":id,"response":{"answers":response}}), authorize, dispatch).map(|_| ())
+        let response = crate::validate_native_answers(&pending["questions"], answers)?;
+        self.mutate_with_authorization(
+            "thread-follower-submit-user-input",
+            json!({"conversationId":state.conversation,"requestId":id,"response":response}),
+            authorize,
+            dispatch,
+        )
+        .map(|_| ())
     }
 
     fn ready(&self) -> Result<()> {
@@ -497,6 +842,7 @@ impl Bridge {
             state.status = previous_status;
             return response;
         }
+        self.resync_after_mutation = true;
         if following_requested && self.connection.is_connected() {
             self.connection.broadcast(
                 "thread-stream-following-changed",
@@ -528,6 +874,9 @@ impl Bridge {
     }
 
     fn unfollow(&mut self) {
+        self.last_owner_check = None;
+        self.last_full_refresh = None;
+        self.resync_after_mutation = false;
         if let Some(state) = self.selected.take() {
             let _ = self.connection.broadcast(
                 "thread-stream-following-changed",
@@ -535,6 +884,170 @@ impl Bridge {
                 &state.owner,
             );
         }
+    }
+}
+
+fn validate_thread_settings(settings: &Value, snapshot: &Value) -> Result<()> {
+    let object = settings.as_object().context("invalid-thread-settings")?;
+    ensure!(
+        !object.is_empty()
+            && object.keys().all(|key| matches!(
+                key.as_str(),
+                "model"
+                    | "effort"
+                    | "serviceTier"
+                    | "collaborationMode"
+                    | "approvalPolicy"
+                    | "approvalsReviewer"
+                    | "sandboxPolicy"
+            )),
+        "unsupported-thread-setting"
+    );
+    if let Some(model) = settings.get("model") {
+        ensure!(
+            model
+                .as_str()
+                .is_some_and(|value| !value.is_empty() && value.len() <= 256),
+            "invalid-model"
+        );
+    }
+    if let Some(effort) = settings.get("effort") {
+        ensure!(
+            effort.is_null()
+                || matches!(
+                    effort.as_str(),
+                    Some(
+                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                    )
+                ),
+            "invalid-thread-setting"
+        );
+    }
+    for key in ["serviceTier"] {
+        if let Some(value) = settings.get(key) {
+            ensure!(
+                value.is_null()
+                    || value
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty() && text.len() <= 128),
+                "invalid-thread-setting"
+            );
+        }
+    }
+    if let Some(mode) = settings.get("collaborationMode") {
+        let mode = mode.as_object().context("invalid-collaboration-mode")?;
+        ensure!(
+            mode.keys()
+                .all(|key| matches!(key.as_str(), "mode" | "settings")),
+            "invalid-collaboration-mode"
+        );
+        ensure!(
+            matches!(mode["mode"].as_str(), Some("default" | "plan")),
+            "invalid-collaboration-mode"
+        );
+        let nested = mode["settings"]
+            .as_object()
+            .context("invalid-collaboration-mode")?;
+        ensure!(
+            nested.keys().all(|key| matches!(
+                key.as_str(),
+                "model" | "reasoning_effort" | "developer_instructions"
+            )),
+            "invalid-collaboration-mode"
+        );
+        ensure!(
+            nested["developer_instructions"].is_null(),
+            "invalid-collaboration-mode"
+        );
+        let model = nested["model"]
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .context("invalid-collaboration-mode")?;
+        ensure!(
+            settings["model"].as_str() == Some(model),
+            "invalid-collaboration-mode"
+        );
+        ensure!(
+            nested["reasoning_effort"].is_null()
+                || matches!(
+                    nested["reasoning_effort"].as_str(),
+                    Some(
+                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                    )
+                ),
+            "invalid-collaboration-mode"
+        );
+    }
+    if settings.get("approvalPolicy").is_some()
+        || settings.get("approvalsReviewer").is_some()
+        || settings.get("sandboxPolicy").is_some()
+    {
+        ensure!(
+            settings.get("approvalPolicy").is_some()
+                && settings.get("approvalsReviewer").is_some()
+                && settings.get("sandboxPolicy").is_some(),
+            "partial-permission-setting"
+        );
+        let approval = settings["approvalPolicy"]
+            .as_str()
+            .context("invalid-approval-policy")?;
+        let reviewer = settings["approvalsReviewer"]
+            .as_str()
+            .context("invalid-approvals-reviewer")?;
+        let sandbox = &settings["sandboxPolicy"];
+        match sandbox["type"].as_str() {
+            Some("dangerFullAccess") => {
+                ensure!(
+                    approval == "never" && reviewer == "user",
+                    "invalid-permission-profile"
+                );
+                ensure!(
+                    sandbox.as_object().is_some_and(|value| value.len() == 1),
+                    "invalid-sandbox-policy"
+                )
+            }
+            Some("workspaceWrite") => {
+                ensure!(
+                    approval == "on-request" && matches!(reviewer, "user" | "agent"),
+                    "invalid-permission-profile"
+                );
+                ensure!(sandbox["networkAccess"] == false, "invalid-sandbox-policy");
+                let cwd = snapshot["cwd"]
+                    .as_str()
+                    .and_then(|path| Path::new(path).canonicalize().ok())
+                    .context("owner-workspace-unavailable")?;
+                ensure!(
+                    sandbox["writableRoots"]
+                        .as_array()
+                        .is_some_and(|roots| roots.len() == 1
+                            && roots.iter().all(|root| root
+                                .as_str()
+                                .and_then(|path| Path::new(path).canonicalize().ok())
+                                .as_ref()
+                                == Some(&cwd))),
+                    "invalid-sandbox-policy"
+                );
+            }
+            _ => anyhow::bail!("invalid-sandbox-policy"),
+        }
+    }
+    Ok(())
+}
+
+fn follower_policy_id(settings: &Value) -> Value {
+    match (
+        settings["approvalPolicy"].as_str(),
+        settings["approvalsReviewer"].as_str(),
+        settings["sandboxPolicy"]["type"].as_str(),
+    ) {
+        (Some("on-request"), Some("user"), Some("workspaceWrite")) => {
+            json!("workspace-write-on-request")
+        }
+        (Some("on-request"), Some("agent"), Some("workspaceWrite")) => {
+            json!("workspace-write-auto-review")
+        }
+        (Some("never"), Some("user"), Some("dangerFullAccess")) => json!("full-access-on-request"),
+        _ => Value::Null,
     }
 }
 
@@ -735,5 +1248,32 @@ mod operation_tests {
         drop(first);
         assert!(OperationGuard::acquire(endpoint, "conversation-a").is_ok());
         drop((other, other_endpoint));
+    }
+
+    #[test]
+    fn thread_settings_accept_only_verified_profiles_and_consistent_mode() {
+        assert_eq!(
+            crate::method_version("thread-follower-update-thread-settings"),
+            Some(2)
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().canonicalize().unwrap();
+        let snapshot =
+            json!({"cwd":cwd,"latestModel":"mock-model","latestReasoningEffort":"medium"});
+        for settings in [
+            json!({"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false}}),
+            json!({"approvalPolicy":"on-request","approvalsReviewer":"agent","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false}}),
+            json!({"approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}),
+            json!({"model":"mock-model","effort":"high","collaborationMode":{"mode":"plan","settings":{"model":"mock-model","reasoning_effort":"high","developer_instructions":null}}}),
+        ] {
+            validate_thread_settings(&settings, &snapshot).unwrap();
+        }
+        for settings in [
+            json!({"approvalPolicy":"never","approvalsReviewer":"agent","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false}}),
+            json!({"approvalPolicy":"on-request","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"}}),
+            json!({"model":"other","collaborationMode":{"mode":"plan","settings":{"model":"mock-model","reasoning_effort":"medium","developer_instructions":null}}}),
+        ] {
+            assert!(validate_thread_settings(&settings, &snapshot).is_err());
+        }
     }
 }

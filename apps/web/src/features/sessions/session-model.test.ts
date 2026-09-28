@@ -5,6 +5,10 @@ import { isValidMessage, mergeLatestPage } from "./session-model";
 describe("session model", () => {
   it("validates both text and UTF-8 byte limits", () => {
     expect(isValidMessage("hello")).toBe(true);
+    expect(isValidMessage("", true)).toBe(true);
+    expect(isValidMessage(" ", true)).toBe(true);
+    expect(isValidMessage("文".repeat(6000), true)).toBe(false);
+    expect(isValidMessage("a".repeat(16001), true)).toBe(false);
     expect(isValidMessage(" ")).toBe(false);
     expect(isValidMessage("文".repeat(6000))).toBe(false);
   });

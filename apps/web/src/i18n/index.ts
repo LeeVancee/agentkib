@@ -5,7 +5,7 @@ const zh = {
     "会话、凭据和控制请求使用明文 HTTP，可能被局域网攻击者读取或篡改。仅在你信任的局域网试用。",
   lanAcknowledge: "我了解明文风险，并确认与电脑在同一局域网",
   lanPermission:
-    "请使用 Chromium 浏览器并允许本地网络访问。桌面需开启托管网页局域网访问；页面刷新后需重新配对。",
+    "请使用 Chromium 浏览器并允许本地网络访问。请在桌面远程访问的高级设置中开启局域网访问；页面刷新后需重新配对。",
   lanFailure:
     "无法确认连接。请检查地址、桌面服务、防火墙、访客 Wi-Fi 隔离及浏览器本地网络权限；不要关闭浏览器安全保护。",
   lanInvalid: "请输入完整的私有 IPv4 HTTP 地址与端口，例如 http://192.168.1.10:1422。",
@@ -21,7 +21,8 @@ const zh = {
   code: "配对码",
   name: "浏览器名称",
   pair: "请求连接",
-  scope: "授权范围包含全部已登记及以后新增的工作区。发送与审批需要分别授权。",
+  scope:
+    "历史读取包含全部已登记及以后新增的工作区。发送、审批、任务管理和文件访问分别授权；任务管理和文件访问还受桌面授权目录限制。",
   pending: "等待桌面 AgentKib 确认",
   verify: "核对两端校验数字，再在桌面端确认",
   expires: "有效期至",
@@ -120,7 +121,7 @@ const en: Words = {
     "Conversations, credentials and controls use plain HTTP. LAN attackers may read or alter them. Try this only on a network you trust.",
   lanAcknowledge: "I understand the risk and am on the same LAN as the computer",
   lanPermission:
-    "Use Chromium and allow local network access. Enable hosted LAN access on desktop. Refreshing this page requires pairing again.",
+    "Use Chromium and allow local network access. Enable LAN access in the advanced remote access settings on desktop. Refreshing this page requires pairing again.",
   lanFailure:
     "Connection could not be confirmed. Check the address, desktop service, firewall, guest Wi-Fi isolation and browser local network permission. Do not disable browser protections.",
   lanInvalid: "Enter a private IPv4 HTTP address and port, e.g. http://192.168.1.10:1422.",
@@ -139,7 +140,7 @@ const en: Words = {
   name: "Browser name",
   pair: "Request connection",
   scope:
-    "Access covers all registered and future workspaces. Sending and approvals require separate grants.",
+    "History access covers all registered and future workspaces. Sending, approvals, task management and file access require separate grants; task management and files are also limited to directories authorized on desktop.",
   pending: "Waiting for desktop confirmation",
   verify: "Compare the verification numbers on both devices, then confirm on desktop",
   expires: "Expires",
@@ -247,7 +248,7 @@ const tw: Words = {
     "對話、憑據和控制請求使用明文 HTTP，可能被區域網路攻擊者讀取或竄改。僅在你信任的網路試用。",
   lanAcknowledge: "我了解明文風險，並確認與電腦在同一區域網路",
   lanPermission:
-    "請使用 Chromium 瀏覽器並允許本機網路存取。桌面需開啟託管網頁區域網路存取；頁面重新整理後需重新配對。",
+    "請使用 Chromium 瀏覽器並允許本機網路存取。請在桌面遠端存取的進階設定中啟用區域網路存取；頁面重新整理後需重新配對。",
   lanFailure:
     "無法確認連線。請檢查位址、桌面服務、防火牆、訪客 Wi-Fi 隔離與瀏覽器本機網路權限；不要關閉瀏覽器安全保護。",
   lanInvalid: "請輸入完整的私有 IPv4 HTTP 位址與連接埠，例如 http://192.168.1.10:1422。",
@@ -263,7 +264,8 @@ const tw: Words = {
   code: "配對碼",
   name: "瀏覽器名稱",
   pair: "請求連接",
-  scope: "授權範圍包含全部已登記及以後新增的工作區。傳送與審批需要分別授權。",
+  scope:
+    "歷史讀取包含全部已登記及以後新增的工作區。傳送、審批、任務管理和檔案存取分別授權；任務管理和檔案存取還受桌面授權目錄限制。",
   pending: "等待桌面 AgentKib 確認",
   verify: "核對兩端驗證數字，再在桌面端確認",
   expires: "有效期限",
@@ -360,7 +362,7 @@ const ja: Words = {
     "会話、認証情報、操作は平文 HTTP で送信され、LAN 内の攻撃者に読み取り・改ざんされる可能性があります。信頼するネットワークでのみ試してください。",
   lanAcknowledge: "リスクを理解し、コンピューターと同じ LAN に接続しています",
   lanPermission:
-    "Chromium でローカルネットワークへのアクセスを許可してください。デスクトップで LAN アクセスを有効にします。ページ更新後は再ペアリングが必要です。",
+    "Chromium でローカルネットワークへのアクセスを許可してください。デスクトップのリモートアクセス詳細設定で LAN アクセスを有効にします。ページ更新後は再ペアリングが必要です。",
   lanFailure:
     "接続を確認できません。アドレス、デスクトップ、ファイアウォール、ゲスト Wi-Fi の分離、ブラウザーのローカルネットワーク権限を確認してください。保護機能を無効にしないでください。",
   lanInvalid:
@@ -380,7 +382,7 @@ const ja: Words = {
   name: "ブラウザー名",
   pair: "接続をリクエスト",
   scope:
-    "登録済み・今後追加するすべてのワークスペースが対象です。送信と承認には個別の許可が必要です。",
+    "履歴の閲覧は登録済み・今後追加するすべてのワークスペースが対象です。送信、承認、タスク管理、ファイルへのアクセスには個別の許可が必要です。タスク管理とファイルはデスクトップで許可したディレクトリに制限されます。",
   pending: "デスクトップでの確認を待っています",
   verify: "両方の確認番号を照合し、デスクトップで承認してください",
   expires: "有効期限",

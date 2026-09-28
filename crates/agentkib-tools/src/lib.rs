@@ -3091,19 +3091,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn execution_timeout_covers_descendants_holding_output_open() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let directory = tempfile::tempdir().unwrap();
-        let wrapper = directory.path().join("wrapper");
-        std::fs::write(&wrapper, "#!/bin/sh\n(sleep 5) &\nexit 0\n").unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let args = ["-c".to_owned(), "(sleep 5) &\nexit 0\n".to_owned()];
 
         let started = std::time::Instant::now();
         let cancelled = AtomicBool::new(false);
-        let outcome =
-            run_action_with_timeout(&wrapper, &[], StdDuration::from_millis(100), &cancelled)
-                .await
-                .unwrap();
+        let outcome = run_action_with_timeout(
+            Path::new("/bin/sh"),
+            &args,
+            StdDuration::from_millis(100),
+            &cancelled,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(outcome.status, AgentToolExecutionStatus::TimedOut);
         assert!(started.elapsed() < StdDuration::from_secs(2));
@@ -3112,22 +3111,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_interrupts_descendant_output_drain() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
-        let wrapper = directory.path().join("wrapper");
         let ready = directory.path().join("ready");
         let release = directory.path().join("release");
         let args = [
+            "-c".to_owned(),
+            "(sleep 5) &\nprintf ready > \"$1\"\nwhile [ ! -e \"$2\" ]; do sleep 0.01; done\nexit 0\n".to_owned(),
+            "agentkib-cancellation-test".to_owned(),
             ready.to_string_lossy().into_owned(),
             release.to_string_lossy().into_owned(),
         ];
-        std::fs::write(
-            &wrapper,
-            "#!/bin/sh\n(sleep 5) &\nprintf ready > \"$1\"\nwhile [ ! -e \"$2\" ]; do sleep 0.01; done\nexit 0\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cancelled = std::sync::Arc::new(AtomicBool::new(false));
         let worker_cancelled = std::sync::Arc::clone(&cancelled);
         let signal = std::thread::spawn(move || {
@@ -3148,8 +3141,13 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        let result =
-            run_action_with_timeout(&wrapper, &args, StdDuration::from_secs(5), &cancelled).await;
+        let result = run_action_with_timeout(
+            Path::new("/bin/sh"),
+            &args,
+            StdDuration::from_secs(5),
+            &cancelled,
+        )
+        .await;
         assert!(
             signal.join().unwrap(),
             "wrapper never reached the ready gate"
@@ -3163,44 +3161,52 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn dropping_version_probe_terminates_descendants() {
-        use std::os::unix::fs::PermissionsExt;
-
         let directory = tempfile::tempdir().unwrap();
-        let probe = directory.path().join("probe");
         let descendant_ready = directory.path().join("descendant-ready");
         let trigger = directory.path().join("trigger");
         let survived = directory.path().join("survived");
-        std::fs::write(
-            &probe,
-            "#!/bin/sh\n(printf ready > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.05; done; printf survived > \"$3\") &\nwait\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let task_probe = probe.clone();
         let task_ready = descendant_ready.clone();
         let task_trigger = trigger.clone();
         let task_survived = survived.clone();
-        let task = tokio::spawn(async move {
+        let mut task = tokio::spawn(async move {
             let ready = task_ready.to_string_lossy().into_owned();
             let trigger = task_trigger.to_string_lossy().into_owned();
             let survived = task_survived.to_string_lossy().into_owned();
-            probe_version(&task_probe, &[&ready, &trigger, &survived]).await
+            // Execute the installed shell, not a just-written executable fixture:
+            // a concurrent fork can retain its writer FD and cause Linux ETXTBSY.
+            probe_version(Path::new("/bin/sh"), &[
+                "-c",
+                r#"(printf ready > "$1"; while [ ! -e "$2" ]; do sleep 0.05; done; printf survived > "$3") &
+wait"#,
+                "agentkib-probe-test",
+                &ready, &trigger, &survived,
+            ]).await
         });
-        tokio::time::timeout(StdDuration::from_secs(15), async {
-            while !descendant_ready.exists() {
-                tokio::time::sleep(StdDuration::from_millis(10)).await;
+        tokio::select! {
+            result = &mut task => panic!("probe exited before its descendant became ready: {result:?}"),
+            ready = tokio::time::timeout(StdDuration::from_secs(15), async {
+                while !descendant_ready.exists() {
+                    tokio::time::sleep(StdDuration::from_millis(10)).await;
+                }
+            }) => {
+                if ready.is_err() {
+                    task.abort();
+                    let result = task.await;
+                    panic!("probe descendant did not start; aborted probe: {result:?}");
+                }
             }
-        })
-        .await
-        .expect("probe descendant did not start");
+        }
         assert!(
             !survived.exists(),
             "probe descendant ran before cancellation"
         );
 
         task.abort();
-        let _ = task.await;
+        assert!(
+            task.await
+                .expect_err("probe should be cancelled")
+                .is_cancelled()
+        );
         std::fs::write(&trigger, "continue").unwrap();
         tokio::time::sleep(StdDuration::from_millis(500)).await;
 

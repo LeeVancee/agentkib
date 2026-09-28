@@ -1,0 +1,147 @@
+{
+  "date": "2026-09-27",
+  "results": [
+    {
+      "binary": "/opt/homebrew/bin/codex",
+      "version": "codex-cli 0.155.1",
+      "isolatedHome": true,
+      "loopbackSyntheticModel": true,
+      "nativeModeDirectory": [
+        {
+          "name": "Plan",
+          "mode": "plan",
+          "model": null,
+          "reasoning_effort": "medium"
+        },
+        {
+          "name": "Default",
+          "mode": "default",
+          "model": null,
+          "reasoning_effort": null
+        }
+      ],
+      "turnModeReadbacks": [
+        {
+          "mode": "plan",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        },
+        {
+          "mode": "default",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        },
+        {
+          "mode": "plan",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        }
+      ],
+      "nativePlanItemDeltaAndHistory": true,
+      "nativePlanQuestionAnsweredAndResolved": true,
+      "resumeReturnsMode": false,
+      "resumeWithoutExplicitModeHasEmptyNativeModeInstruction": true,
+      "planAfterResumeConfirmationSource": "native-settings-event-after-explicit-turn",
+      "goalOmittedStatusAndBudgetPreserved": true,
+      "goalExplicitNullClearsBudget": true,
+      "goalPausedAndBlockedUpdatesDoNotActivate": true,
+      "nativeBudgetExhaustion": {
+        "status": "budgetLimited",
+        "tokensUsed": 2,
+        "tokenBudget": 1
+      },
+      "goalUpdatesPreserveNonzeroUsageAndLimitedStatus": true,
+      "nativeBudgetLimitOverridesRequestedActivation": true,
+      "limitedGoalNeedsExplicitActivationAfterBudgetIncrease": true,
+      "limitedGoalUsageSurvivesRestartWithoutContinuation": true,
+      "pausedGoalSurvivesRestartWithoutContinuation": true,
+      "nativePausedGoalResumesOnExplicitActivation": true,
+      "nativeGoalClearReadback": true,
+      "activeNativeGoalPauseStopsContinuation": true,
+      "modelRequestCount": 13,
+      "notCovered": [
+        "Official owner/follower UI channel",
+        "Real model planning quality or mutation restraint",
+        "Real account usage-limit exhaustion",
+        "Mobile/public relay"
+      ],
+      "outcome": "passed"
+    },
+    {
+      "binary": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+      "version": "codex-cli 0.158.0-alpha.2.1",
+      "isolatedHome": true,
+      "loopbackSyntheticModel": true,
+      "nativeModeDirectory": [
+        {
+          "name": "Plan",
+          "mode": "plan",
+          "model": null,
+          "reasoning_effort": "medium"
+        },
+        {
+          "name": "Default",
+          "mode": "default",
+          "model": null,
+          "reasoning_effort": null
+        }
+      ],
+      "turnModeReadbacks": [
+        {
+          "mode": "plan",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        },
+        {
+          "mode": "default",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        },
+        {
+          "mode": "plan",
+          "model": "gpt-5.5",
+          "effort": "low",
+          "nativeInstructionsResolvedFromNull": true
+        }
+      ],
+      "nativePlanItemDeltaAndHistory": true,
+      "nativePlanQuestionAnsweredAndResolved": true,
+      "resumeReturnsMode": true,
+      "resumeWithoutExplicitModeHasEmptyNativeModeInstruction": false,
+      "planAfterResumeConfirmationSource": "native-resume-response",
+      "goalOmittedStatusAndBudgetPreserved": true,
+      "goalExplicitNullClearsBudget": true,
+      "goalPausedAndBlockedUpdatesDoNotActivate": true,
+      "nativeBudgetExhaustion": {
+        "status": "budgetLimited",
+        "tokensUsed": 2,
+        "tokenBudget": 1
+      },
+      "goalUpdatesPreserveNonzeroUsageAndLimitedStatus": true,
+      "nativeBudgetLimitOverridesRequestedActivation": true,
+      "limitedGoalNeedsExplicitActivationAfterBudgetIncrease": true,
+      "limitedGoalUsageSurvivesRestartWithoutContinuation": true,
+      "pausedGoalSurvivesRestartWithoutContinuation": true,
+      "nativePausedGoalResumesOnExplicitActivation": true,
+      "nativeGoalClearReadback": true,
+      "activeNativeGoalPauseStopsContinuation": true,
+      "modelRequestCount": 13,
+      "notCovered": [
+        "Official owner/follower UI channel",
+        "Real model planning quality or mutation restraint",
+        "Real account usage-limit exhaustion",
+        "Mobile/public relay"
+      ],
+      "outcome": "passed"
+    }
+  ],
+  "notes": [
+    "Real app-server with loopback deterministic model; not real-account/owner-follower acceptance.",
+    "Initial 0.158 probe expected a same-value settings event; native resume already returns confirmed collaborationMode. Corrected probe to accept native readback, then reran both versions successfully."
+  ]
+}

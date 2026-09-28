@@ -3,23 +3,38 @@ import { Button } from "@/components/ui/button";
 import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-react";
 import { PairingLayout } from "@/features/connection/pairing-layout";
 import { useSession } from "@/features/sessions/session-context";
+import { codePairingCopy } from "./code-pairing-copy";
 export function PairingPage() {
-  const { t, access, pair, code, setCode, name, setName, busy, locale, post, origin, disconnect } =
-    useSession();
+  const {
+    t,
+    access,
+    pair,
+    code,
+    setCode,
+    name,
+    setName,
+    busy,
+    locale,
+    post,
+    connection,
+    disconnect,
+  } = useSession();
+  const direct = connection.type === "same-origin" && access?.pairingMode === "code";
+  const copy = codePairingCopy[locale];
   return !access ? (
     <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center text-muted-foreground">
       <p role="status">{t.loading}</p>
     </main>
   ) : access.status === "unpaired" ? (
-    <PairingLayout words={t}>
+    <PairingLayout words={direct ? { ...t, code: copy.code } : t} direct={direct}>
       <div className="grid size-14 place-items-center rounded-2xl border bg-muted/50 text-foreground">
         <MonitorSmartphone size={30} />
       </div>
-      <h1>{t.pairTitle}</h1>
-      <p>{t.pairInfo}</p>
+      <h1>{direct ? copy.title : t.pairTitle}</h1>
+      <p>{direct ? copy.info : t.pairInfo}</p>
       <form onSubmit={pair}>
         <label>
-          {t.code}
+          {direct ? copy.code : t.code}
           <Input
             className="h-14 text-center text-2xl tracking-[0.4em] tabular-nums"
             value={code}
@@ -38,14 +53,14 @@ export function PairingPage() {
         </label>
         <aside className="info">
           <ShieldCheck size={19} />
-          <span>{t.scope}</span>
+          <span>{direct ? copy.scope : t.scope}</span>
         </aside>
         <Button variant="default" className="h-11" disabled={busy || code.length !== 8}>
-          {t.pair}
+          {direct ? copy.connect : t.pair}
           <ChevronRight size={17} />
         </Button>
       </form>
-      <small className="text-muted-foreground">{t.safety}</small>
+      <small className="text-muted-foreground">{direct ? copy.safety : t.safety}</small>
     </PairingLayout>
   ) : access.status === "pending" ? (
     <PairingLayout words={t} pending>
@@ -77,7 +92,7 @@ export function PairingPage() {
       <Button
         variant="default"
         className="h-11"
-        onClick={() => (origin ? disconnect?.() : void post("logout", {}))}
+        onClick={() => (connection.type === "lan-http" ? disconnect?.() : void post("logout", {}))}
       >
         {t.again}
       </Button>

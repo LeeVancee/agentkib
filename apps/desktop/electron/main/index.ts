@@ -194,6 +194,35 @@ async function startApplication(): Promise<void> {
   const sharedControl = createWebControlState();
   webAccess = new WebAccessService({
     sharedControl,
+    onPairingRequested: showMainWindow,
+    bundledFrpcPath: app.isPackaged
+      ? path.join(process.resourcesPath, "bin", process.platform === "win32" ? "frpc.exe" : "frpc")
+      : path.resolve(
+          app.getAppPath(),
+          "build/frpc",
+          process.platform === "win32" ? "frpc.exe" : "frpc",
+        ),
+    createRelayCsr: async (params) => {
+      if (!runtimeHandshake) throw new Error("runtime_unavailable");
+      return requireRuntime().request(RUNTIME_METHODS.relayCreateCsr, params) as Promise<{
+        csrPem: string;
+      }>;
+    },
+    receiptRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.controlReceipt, params);
+    },
+    verifiedCodex: process.platform === "darwin",
+    workspaceRequest: async () => {
+      if (!runtimeHandshake) throw new Error("runtime_unavailable");
+      return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
+        { id: string; name: string; path: string }[]
+      >;
+    },
+    managedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
+    },
     verifiedClaudeManaged: process.platform === "darwin",
     verifiedAntigravityManaged: true,
     acceptanceSessionId: acceptanceSession(process.env),
@@ -210,6 +239,21 @@ async function startApplication(): Promise<void> {
   lanWebAccess = new WebAccessService({
     mode: "lan",
     sharedControl,
+    receiptRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.controlReceipt, params);
+    },
+    verifiedCodex: process.platform === "darwin",
+    workspaceRequest: async () => {
+      if (!runtimeHandshake) throw new Error("runtime_unavailable");
+      return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
+        { id: string; name: string; path: string }[]
+      >;
+    },
+    managedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
+    },
     verifiedClaudeManaged: process.platform === "darwin",
     verifiedAntigravityManaged: true,
     dataDir: path.join(electronDataPath, "web-lan"),
@@ -254,6 +298,7 @@ async function startApplication(): Promise<void> {
   };
   powerMonitor.on("suspend", () => {
     systemSuspended = true;
+    void webAccess?.suspendRelay();
     updatePowerActivity();
   });
   powerMonitor.on("lock-screen", () => {
@@ -262,6 +307,7 @@ async function startApplication(): Promise<void> {
   });
   powerMonitor.on("resume", () => {
     systemSuspended = false;
+    void webAccess?.resumeRelay();
     updatePowerActivity();
   });
   powerMonitor.on("unlock-screen", () => {

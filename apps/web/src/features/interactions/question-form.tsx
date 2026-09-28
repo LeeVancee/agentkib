@@ -1,3 +1,4 @@
+import { codexCopy } from "@/features/sessions/codex-copy";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -137,7 +138,9 @@ export function QuestionForm({
       q.id,
       [
         ...(own(choices, q.id) ?? []),
-        ...(own(useCustom, q.id) && own(custom, q.id)?.trim() ? [own(custom, q.id)!.trim()] : []),
+        ...(own(useCustom, q.id) && own(custom, q.id)?.trim()
+          ? [q.isSecret || q.secret ? own(custom, q.id)! : own(custom, q.id)!.trim()]
+          : []),
       ],
     ]),
   );
@@ -179,7 +182,14 @@ export function QuestionForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        if (enabled && !busy && valid) onSubmit(answers);
+        if (enabled && !busy && valid) {
+          onSubmit(answers);
+          if (request.questions.some((question) => question.isSecret || question.secret)) {
+            setCustom({});
+            setChoices({});
+            setUseCustom({});
+          }
+        }
       }}
     >
       {request.questions.map((q) => (
@@ -234,16 +244,32 @@ export function QuestionForm({
                 />
                 {copy.other}
               </label>
-              {own(useCustom, q.id) && (
-                <Textarea
-                  aria-label={`${q.question} · ${copy.other}`}
-                  maxLength={MAX_ANSWER_LENGTH}
-                  value={own(custom, q.id) ?? ""}
-                  onChange={(event) =>
-                    setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
-                  }
-                />
-              )}
+              {own(useCustom, q.id) &&
+                (q.isSecret || q.secret ? (
+                  <div className="space-y-2">
+                    <Input
+                      type="password"
+                      autoComplete="new-password"
+                      spellCheck={false}
+                      aria-label={`${q.question} · ${copy.other}`}
+                      maxLength={MAX_ANSWER_LENGTH}
+                      value={own(custom, q.id) ?? ""}
+                      onChange={(event) =>
+                        setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">{codexCopy[locale].secret}</p>
+                  </div>
+                ) : (
+                  <Textarea
+                    aria-label={`${q.question} · ${copy.other}`}
+                    maxLength={MAX_ANSWER_LENGTH}
+                    value={own(custom, q.id) ?? ""}
+                    onChange={(event) =>
+                      setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
+                    }
+                  />
+                ))}
             </>
           )}
         </fieldset>

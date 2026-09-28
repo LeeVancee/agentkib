@@ -5,6 +5,34 @@ use anyhow::bail;
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use serde_json::Value;
+#[cfg(any(target_os = "macos", test))]
+use std::io::{self, Write};
+
+#[cfg(any(target_os = "macos", test))]
+const MAX_SNAPSHOT_SIZE: usize = 48 * 1024 * 1024;
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct ByteCounter(usize);
+
+#[cfg(any(target_os = "macos", test))]
+impl Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn json_size(value: &Value) -> Result<usize> {
+    let mut bytes = ByteCounter::default();
+    serde_json::to_writer(&mut bytes, value)?;
+    Ok(bytes.0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -46,6 +74,8 @@ pub struct SessionState {
     valid_stream: bool,
     #[cfg(any(target_os = "macos", test))]
     pub(crate) snapshot_count: u64,
+    #[cfg(any(target_os = "macos", test))]
+    snapshot_size: usize,
 }
 
 impl SessionState {
@@ -59,6 +89,7 @@ impl SessionState {
             status: Status::WaitingForSnapshot,
             valid_stream: true,
             snapshot_count: 0,
+            snapshot_size: 0,
         }
     }
     pub fn status(&self) -> Status {
@@ -78,6 +109,7 @@ impl SessionState {
     pub(crate) fn invalidate(&mut self, status: Status) {
         self.revision = None;
         self.snapshot = None;
+        self.snapshot_size = 0;
         self.status = status;
         self.valid_stream = false;
     }
@@ -151,11 +183,8 @@ impl SessionState {
         snapshot["requests"].as_array().into_iter().flatten().filter_map(|r| {
             let p = &r["params"];
             if r["method"] != "item/tool/requestUserInput" || p["threadId"] != self.conversation || p["turnId"] != turn || !(r["id"].is_string() || r["id"].is_i64()) { return None; }
-            let rows = p["questions"].as_array().map(Vec::as_slice).unwrap_or_default();
-            let mut ids = std::collections::HashSet::new();
-            let supported = !rows.is_empty() && rows.len() <= 16 && rows.iter().all(|q| q["id"].as_str().is_some_and(|id| !id.is_empty() && ids.insert(id)) && q["question"].as_str().is_some_and(|s| !s.is_empty()) && q.get("isSecret").is_none_or(|v| v == false) && q.get("isMultiSelect").is_none_or(|v| v == false) && q["options"].as_array().is_some_and(|opts| { let mut labels = std::collections::HashSet::new(); (!opts.is_empty() || q["isOther"] == true) && opts.iter().all(|o| o["label"].as_str().is_some_and(|label| !label.is_empty() && labels.insert(label))) }));
-            let questions: Vec<_> = rows.iter().map(|q| serde_json::json!({"id":q["id"],"header":q["header"],"question":q["question"],"options":q["options"],"multiSelect":false,"allowCustom":q["isOther"] == true})).collect();
-            Some(serde_json::json!({"requestId":r["id"],"turnId":turn,"method":r["method"],"supported":supported,"questions":questions}))
+            let projected = crate::project_native_questions(p)?;
+            Some(serde_json::json!({"requestId":r["id"],"turnId":turn,"method":r["method"],"supported":projected["supported"],"questions":projected["questions"]}))
         }).collect()
     }
 
@@ -224,20 +253,35 @@ impl SessionState {
             self.revision.is_none_or(|old| revision > old),
             "stale stream revision"
         );
-        let mut snapshot = match change["type"].as_str() {
-            Some("snapshot") => change["conversationState"].clone(),
+        let (mut snapshot, snapshot_size) = match change["type"].as_str() {
+            Some("snapshot") => {
+                let value = change["conversationState"].clone();
+                let size = json_size(&value)?;
+                (value, size)
+            }
             Some("patches") => {
                 ensure!(
                     self.revision.is_some() && change["baseRevision"].as_u64() == self.revision,
                     "stream revision gap"
                 );
-                let mut value = self.snapshot.clone().context("snapshot missing")?;
+                // A failed patch invalidates and drops the whole state in notification(),
+                // so no full-history clone is needed for rollback.
+                let mut value = self.snapshot.take().context("snapshot missing")?;
+                let mut size = self.snapshot_size;
                 let patches = change["patches"].as_array().context("invalid patches")?;
                 ensure!(patches.len() <= 4096, "patch limit exceeded");
                 for patch in patches {
-                    apply_patch(&mut value, patch)?;
+                    let (old_size, new_size) = apply_patch(&mut value, patch)?;
+                    size = size
+                        .checked_sub(old_size)
+                        .and_then(|remaining| remaining.checked_add(new_size))
+                        .context("snapshot size overflow")?;
+                    ensure!(
+                        size <= MAX_SNAPSHOT_SIZE,
+                        "snapshot limit exceeded ({size} bytes)"
+                    );
                 }
-                value
+                (value, size)
             }
             _ => bail!("unknown stream change"),
         };
@@ -251,9 +295,10 @@ impl SessionState {
         );
         let turns = conversation_turns(&snapshot)?;
         // Bound accumulated state as well as individual frames; patches can grow it indefinitely.
+        // Leave headroom under the transport frame bound for the IPC envelope.
         ensure!(
-            serde_json::to_vec(&snapshot)?.len() <= 8 * 1024 * 1024,
-            "snapshot limit exceeded"
+            snapshot_size <= MAX_SNAPSHOT_SIZE,
+            "snapshot limit exceeded ({snapshot_size} bytes)"
         );
         self.status = match snapshot["threadRuntimeStatus"]["type"].as_str() {
             Some("active") => Status::Running,
@@ -280,6 +325,7 @@ impl SessionState {
             self.snapshot_count += 1;
         }
         self.snapshot = Some(snapshot.take());
+        self.snapshot_size = snapshot_size;
         // Concurrent submissions can leave an in-progress history placeholder
         // without a confirmed turn ID. Do not report it as a controllable run,
         // nor discard it to manufacture idle; later owner updates may resolve it.
@@ -324,7 +370,7 @@ fn conversation_turns(snapshot: &Value) -> Result<Vec<&Value>> {
 
 // Codex stream patches use Immer array paths, not JSON Pointer strings.
 #[cfg(any(target_os = "macos", test))]
-fn apply_patch(root: &mut Value, patch: &Value) -> Result<()> {
+fn apply_patch(root: &mut Value, patch: &Value) -> Result<(usize, usize)> {
     let path = patch["path"]
         .as_array()
         .context("patch path must be an array")?;
@@ -340,8 +386,9 @@ fn apply_patch(root: &mut Value, patch: &Value) -> Result<()> {
     );
     if path.is_empty() {
         ensure!(op == "replace", "unsupported root operation");
+        let old_size = json_size(root)?;
         *root = patch["value"].clone();
-        return Ok(());
+        return Ok((old_size, json_size(root)?));
     }
     let mut parent = root;
     for component in &path[..path.len() - 1] {
@@ -356,6 +403,9 @@ fn apply_patch(root: &mut Value, patch: &Value) -> Result<()> {
         };
     }
     let last = path.last().unwrap();
+    // JSON serialization is compositional: replacing one parent subtree changes
+    // the whole snapshot size by exactly the difference of these two sizes.
+    let old_size = json_size(parent)?;
     match parent {
         Value::Object(object) => {
             let key = last.as_str().context("object key must be a string")?;
@@ -388,7 +438,7 @@ fn apply_patch(root: &mut Value, patch: &Value) -> Result<()> {
         }
         _ => bail!("patch parent is not a container"),
     }
-    Ok(())
+    Ok((old_size, json_size(parent)?))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -420,5 +470,48 @@ mod question_tests {
         assert_eq!(state.questions()[0]["supported"], false);
         state.snapshot.as_mut().unwrap()["requests"][0]["params"]["turnId"] = json!("old");
         assert!(state.questions().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn patch_subtree_deltas_match_full_json_size() {
+        let mut state = SessionState::new("thread".into(), "owner".into());
+        let change = |revision: u64, change: Value| {
+            json!({"type":"broadcast","sourceClientId":"owner","version":11,
+                "method":"thread-stream-state-changed","params":{"hostId":"local","conversationId":"thread",
+                "change":{"revision":revision,"type":if revision == 1 {"snapshot"} else {"patches"},
+                "conversationState":if revision == 1 {change.clone()} else {Value::Null},
+                "baseRevision":revision-1,"patches":if revision == 1 {Value::Null} else {change}}}})
+        };
+        state.notification(change(1, json!({"id":"thread","hostId":"local","turns":[],
+            "requests":[],"threadRuntimeStatus":{"type":"idle"},"payload":{"items":["a","b"],"label":"old"}}))).unwrap();
+        for (revision, patch) in [
+            (
+                2,
+                json!({"op":"add","path":["payload","items",1],"value":"中文\\\""}),
+            ),
+            (
+                3,
+                json!({"op":"replace","path":["payload","label"],"value":"new"}),
+            ),
+            (4, json!({"op":"remove","path":["payload","items",0]})),
+            (
+                5,
+                json!({"op":"add","path":["payload","extra"],"value":{"x":[1,2]}}),
+            ),
+        ] {
+            state
+                .notification(change(revision, json!([patch])))
+                .unwrap();
+            assert_eq!(
+                state.snapshot_size,
+                json_size(state.snapshot().unwrap()).unwrap()
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { QuotaPopover } from "@/features/quota/QuotaPopover";
+import { WebPairingPrompt } from "@/features/remote/WebPairingPrompt";
 import { cachedEffectiveLocale, initializeI18n } from "./core/i18n";
 import { applyPlatformAttribute } from "./core/platform";
 import { desktopApi } from "./core/desktop";
@@ -52,7 +53,10 @@ async function bootstrap() {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         {surface !== "quota-popover" && <BenchmarkCommitMarker />}
-        <AppDialogProvider>{app}</AppDialogProvider>
+        <AppDialogProvider>
+          {app}
+          {surface !== "quota-popover" && <WebPairingPrompt />}
+        </AppDialogProvider>
       </QueryClientProvider>
     </StrictMode>,
   );

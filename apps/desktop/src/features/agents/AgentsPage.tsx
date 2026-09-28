@@ -159,7 +159,7 @@ export function AgentsPage({
     <div className="grid gap-3 pb-8">
       <SidebarPanel>
         <section className="agent-sidebar-tools">
-          <div className="grid gap-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
             <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
               <Search size={14} className="text-muted-foreground" />
               <Input

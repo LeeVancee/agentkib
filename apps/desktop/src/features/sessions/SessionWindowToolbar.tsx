@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MoreHorizontal, RefreshCw } from "lucide-react";
+import { ArrowUpRight, LayoutDashboard, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -75,6 +75,10 @@ export function SessionWindowToolbar() {
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
+            <DropdownMenuItem onClick={() => hub.select()}>
+              <LayoutDashboard size={15} />
+              {tr("sessions.backOverview")}
+            </DropdownMenuItem>
             {canContinue && (
               <DropdownMenuItem onClick={continueSession}>
                 <ArrowUpRight size={15} />

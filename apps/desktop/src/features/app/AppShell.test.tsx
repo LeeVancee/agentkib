@@ -7,7 +7,7 @@ import { useAppStore } from "@/stores/app-store";
 import { AppShell, WindowNavigationControls } from "./AppShell";
 
 vi.mock("@tanstack/react-router", () => ({
-  useLocation: () => "/settings",
+  useLocation: () => ({ href: "/settings" }),
 }));
 
 describe("WindowNavigationControls", () => {
@@ -25,14 +25,14 @@ describe("WindowNavigationControls", () => {
     const buttons = [...container.querySelectorAll("button")];
 
     expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
-      "收起侧栏",
       "后退",
       "前进",
+      "收起侧栏",
     ]);
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
     expect((buttons[1] as HTMLButtonElement).disabled).toBe(true);
-    expect((buttons[2] as HTMLButtonElement).disabled).toBe(true);
-    expect(buttons[1].getAttribute("aria-keyshortcuts")).toBe("Meta+[");
-    expect(buttons[2].getAttribute("aria-keyshortcuts")).toBe("Meta+]");
+    expect(buttons[0].getAttribute("aria-keyshortcuts")).toBe("Meta+[");
+    expect(buttons[1].getAttribute("aria-keyshortcuts")).toBe("Meta+]");
   });
 
   it("toggles the sidebar and invokes enabled history actions", () => {

@@ -1196,7 +1196,10 @@ impl CodexProvider {
             !session.spawned_from_database && session.spawned_by_session_id.is_none();
         let needs_forked =
             !session.forked_from_database && session.forked_from_session_id.is_none();
-        if !needs_origin && !needs_spawned && !needs_forked {
+        let needs_agent_details = session.origin == SessionOrigin::Auxiliary
+            && session.agent_path.is_none()
+            && session.agent_nickname.is_none();
+        if !needs_origin && !needs_spawned && !needs_forked && !needs_agent_details {
             return session;
         }
         let Some(header) = read_codex_header(&session.transcript) else {
@@ -1214,6 +1217,12 @@ impl CodexProvider {
         }
         if needs_forked {
             session.forked_from_session_id = header.forked_from_session_id;
+        }
+        if session.agent_path.is_none() {
+            session.agent_path = header.agent_path;
+        }
+        if session.agent_nickname.is_none() {
+            session.agent_nickname = header.agent_nickname;
         }
         session
     }
@@ -1388,6 +1397,8 @@ struct CodexNativeSession {
 struct CodexMetadata {
     origin: SessionOrigin,
     origin_authoritative: bool,
+    agent_path: Option<String>,
+    agent_nickname: Option<String>,
     spawned_by_session_id: Option<String>,
     forked_from_session_id: Option<String>,
 }
@@ -1429,6 +1440,8 @@ fn classify_codex_metadata(
     CodexMetadata {
         origin,
         origin_authoritative,
+        agent_path: codex_agent_source_field(source.as_ref(), "agent_path"),
+        agent_nickname: codex_agent_source_field(source.as_ref(), "agent_nickname"),
         spawned_by_session_id: database_parent.or(parsed_source.spawned_by_session_id),
         forked_from_session_id: database_fork,
     }
@@ -3407,6 +3420,66 @@ mod tests {
             sessions[0].forked_from_session_id.as_deref(),
             Some("fork-from-header")
         );
+    }
+
+    #[test]
+    fn codex_recovers_subagent_title_from_header_when_database_has_no_agent_metadata() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let transcript = dir.path().join("header-only-subagent.jsonl");
+        fs::write(
+            &transcript,
+            format!(
+                "{}\n",
+                codex_meta_line(
+                    "header-only-subagent",
+                    serde_json::json!({
+                        "subagent": {
+                            "thread_spawn": {
+                                "agent_path": "/root/fix_title_bug",
+                                "agent_nickname": "Cedar"
+                            }
+                        }
+                    }),
+                    serde_json::Value::Null,
+                )
+            ),
+        )
+        .unwrap();
+        let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads(
+                    id TEXT,
+                    rollout_path TEXT,
+                    cwd TEXT,
+                    title TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER,
+                    source TEXT
+                );",
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, '', 1, 2, NULL)",
+                rusqlite::params![
+                    "header-only-subagent",
+                    transcript.display().to_string(),
+                    workspace.display().to_string(),
+                ],
+            )
+            .unwrap();
+        drop(database);
+
+        let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+            .list_sessions(&workspace)
+            .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].origin, SessionOrigin::Auxiliary);
+        assert_eq!(sessions[0].title.as_deref(), Some("fix_title_bug"));
     }
 
     #[test]

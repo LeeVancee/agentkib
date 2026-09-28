@@ -374,6 +374,67 @@ describe("SessionDirectory", () => {
     ]);
   });
 
+  it("preserves an ordered workspace while its sessions have not loaded yet", () => {
+    const pendingWorkspace = {
+      id: "workspace-pending",
+      name: "Pending workspace",
+      path: "/projects/pending",
+    } as WorkspaceSummary;
+    const loadedWorkspace = {
+      id: "workspace-loaded",
+      name: "Loaded workspace",
+      path: "/projects/loaded",
+    } as WorkspaceSummary;
+    const thirdWorkspace = {
+      id: "workspace-third",
+      name: "Third workspace",
+      path: "/projects/third",
+    } as WorkspaceSummary;
+    const loadedSession = {
+      ...first,
+      id: "loaded-session",
+      workspace_id: loadedWorkspace.id,
+    };
+    const thirdSession = {
+      ...first,
+      id: "third-session",
+      workspace_id: thirdWorkspace.id,
+    };
+    useSessionViewStore.setState({
+      workspaceOrder: [pendingWorkspace.id, loadedWorkspace.id, thirdWorkspace.id],
+    });
+    hub = {
+      ...hub,
+      workspaces: [pendingWorkspace, loadedWorkspace, thirdWorkspace],
+      sessions: [loadedSession, thirdSession],
+      selected: loadedSession,
+      selectedWorkspace: loadedWorkspace,
+    };
+
+    const { container, rerender } = render(<SessionDirectory />);
+    dragEntry(workspaceHeading(thirdWorkspace), workspaceHeading(loadedWorkspace));
+
+    expect(useSessionViewStore.getState().workspaceOrder).toEqual([
+      pendingWorkspace.id,
+      thirdWorkspace.id,
+      loadedWorkspace.id,
+    ]);
+
+    hub = {
+      ...hub,
+      sessions: [
+        { ...first, id: "pending-session", workspace_id: pendingWorkspace.id },
+        ...hub.sessions,
+      ],
+    };
+    rerender(<SessionDirectory />);
+    expect(orderedWorkspacePaths(container)).toEqual([
+      pendingWorkspace.path,
+      thirdWorkspace.path,
+      loadedWorkspace.path,
+    ]);
+  });
+
   it("does not reorder workspaces across remote hosts", () => {
     const remoteWorkspace = {
       id: "remote-workspace",

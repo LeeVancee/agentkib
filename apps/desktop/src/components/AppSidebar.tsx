@@ -17,6 +17,7 @@ import {
   GitCompareArrows,
   Menu,
   MonitorSmartphone,
+  RefreshCw,
   Settings,
   SlidersHorizontal,
   Star,
@@ -30,6 +31,7 @@ import { useAppStore } from "@/stores/app-store";
 import {
   ariaShortcut,
   currentAppPlatform,
+  formatShortcut,
   getShortcutDefinition,
   type ShortcutId,
 } from "@/core/keyboard-shortcuts";
@@ -88,6 +90,7 @@ export function AppSidebar(props: {
   onSettings: () => void;
   onRemoteSettings?: () => void;
   onOpenSearch?: () => void;
+  onRefresh?: () => void;
   searchOpen?: boolean;
   collapsed: boolean;
   context?: AppSidebarContext;
@@ -303,6 +306,28 @@ export function AppSidebar(props: {
             ))}
           </nav>
           <div className="activity-bar-footer flex flex-col gap-1.5">
+            {props.onRefresh && (
+              <ActivityBarTooltip label={tr("menu.refreshCurrent")}>
+                <Button
+                  variant="bare"
+                  size="content"
+                  className="activity-bar-item"
+                  type="button"
+                  aria-keyshortcuts={ariaShortcut(
+                    getShortcutDefinition("refresh-current"),
+                    platform,
+                  )}
+                  title={`${tr("menu.refreshCurrent")} (${formatShortcut(getShortcutDefinition("refresh-current"), platform)})`}
+                  onClick={() => {
+                    setMobileOpen(false);
+                    props.onRefresh?.();
+                  }}
+                >
+                  <RefreshCw size={19} />
+                  <span className="sr-only">{tr("menu.refreshCurrent")}</span>
+                </Button>
+              </ActivityBarTooltip>
+            )}
             <ActivityBarTooltip label={tr("sessions.remote")}>
               <Button
                 variant="bare"

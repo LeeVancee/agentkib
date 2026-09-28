@@ -46,6 +46,8 @@
 :root {
   --window-safe-top: 16px;
   --window-toolbar-height: var(--window-safe-top);
+  --window-controls-left: 0px;
+  --window-controls-right: 0px;
   --sidebar-rail-width: 52px;
   --sidebar-panel-width: var(--sidebar-expanded-width);
   --sidebar-width: calc(var(--sidebar-rail-width) + var(--sidebar-panel-width));
@@ -80,6 +82,12 @@
 :root[data-platform="windows"],
 :root[data-platform="linux"] {
   --window-safe-top: 0px;
+  --window-toolbar-height: 52px;
+  --window-controls-left: env(titlebar-area-x, 0px);
+  --window-controls-right: max(
+    0px,
+    calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)))
+  );
 }
 
 /* Each accent owns a complete semantic palette in both effective modes. */
@@ -547,6 +555,8 @@ button {
   -webkit-app-region: drag;
 }
 .app-shell > .app-window-toolbar {
+  left: var(--window-controls-left);
+  right: var(--window-controls-right);
   pointer-events: none;
   -webkit-app-region: no-drag;
 }
@@ -779,7 +789,7 @@ button {
   position: fixed;
   z-index: 65;
   top: var(--window-safe-top);
-  left: calc(var(--sidebar-rail-width) + 0.875rem);
+  left: calc(var(--window-controls-left) + var(--sidebar-rail-width) + 0.875rem);
   display: flex;
   height: 52px;
   align-items: center;
@@ -799,6 +809,8 @@ button {
   display: flex;
   min-width: 0;
   align-items: center;
+  padding-left: var(--window-controls-left);
+  padding-right: var(--window-controls-right);
   border-bottom: 1px solid var(--border-subtle);
   background: color-mix(in srgb, var(--background) 96%, transparent);
   backdrop-filter: blur(16px);
@@ -1099,20 +1111,20 @@ button {
     content: "";
     pointer-events: none;
   }
-  :root[data-platform="macos"] .app-shell > .app-window-toolbar {
+  .app-shell > .app-window-toolbar {
     height: 52px;
     background: var(--sidebar);
     pointer-events: auto;
     -webkit-app-region: drag;
   }
   .app-shell-header {
-    --header-content-offset: max(var(--sidebar-width), 208px);
+    --header-content-offset: max(var(--sidebar-width), calc(208px + var(--window-controls-left)));
     grid-column: 1 / -1;
     padding-left: var(--header-content-offset);
     border-bottom: 0;
     background: var(--sidebar);
     transition: padding-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
-    -webkit-app-region: no-drag;
+    -webkit-app-region: drag;
   }
   .app-shell-header::before {
     position: absolute;
@@ -1295,7 +1307,7 @@ button {
   .app-window-navigation-controls,
   :root[data-platform="windows"] .app-window-navigation-controls,
   :root[data-platform="linux"] .app-window-navigation-controls {
-    left: 3.75rem;
+    left: calc(3.75rem + var(--window-controls-left));
   }
   :root[data-platform="macos"] .app-window-navigation-controls {
     left: 8.75rem;

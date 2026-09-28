@@ -144,6 +144,9 @@ app.on("before-quit", (event) => {
 });
 
 nativeTheme.on("updated", () => {
+  if (process.platform !== "darwin" && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setTitleBarOverlay(mainWindowTitleBarOverlay());
+  }
   sendRendererEvent("agentkib:theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });
 
@@ -895,6 +898,14 @@ function requireRefreshCoordinator(): ElectronRefreshCoordinator {
   return refreshCoordinator;
 }
 
+function mainWindowTitleBarOverlay() {
+  return {
+    color: "#00000000",
+    symbolColor: nativeTheme.shouldUseDarkColors ? "#f4f4f5" : "#1f2937",
+    height: 52,
+  };
+}
+
 async function createMainWindow(): Promise<void> {
   const window = new BrowserWindow({
     title: "AgentKib",
@@ -910,7 +921,10 @@ async function createMainWindow(): Promise<void> {
           titleBarStyle: "hiddenInset" as const,
           trafficLightPosition: { x: 15, y: 17 },
         }
-      : {}),
+      : {
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: mainWindowTitleBarOverlay(),
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

@@ -1,25 +1,7 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { formatShortcut, getShortcutDefinition } from "@/core/keyboard-shortcuts";
-import { CircleHelp, MoreHorizontal, RefreshCw } from "lucide-react";
 
-export function AppToolbar({
-  breadcrumb,
-  onRefresh,
-  onOpenHelp,
-}: {
-  breadcrumb: string[];
-  onRefresh: () => void;
-  onOpenHelp: () => void;
-}) {
+export function AppToolbar({ breadcrumb }: { breadcrumb: string[] }) {
   const { tr } = useI18n();
   return (
     <div className={navigationStyles.appToolbarContent}>
@@ -30,34 +12,6 @@ export function AppToolbar({
             <span>{part}</span>
           </span>
         ))}
-      </div>
-      <div className="app-toolbar-actions flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            className={navigationStyles.appToolbarMore}
-            aria-label={tr("common.moreActions")}
-            title={tr("common.moreActions")}
-          >
-            <MoreHorizontal size={17} />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-52">
-            <DropdownMenuItem onClick={onRefresh}>
-              <RefreshCw size={15} />
-              {tr("menu.refreshCurrent")}
-              <DropdownMenuShortcut>
-                {formatShortcut(getShortcutDefinition("refresh-current"))}
-              </DropdownMenuShortcut>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onOpenHelp}>
-              <CircleHelp size={15} />
-              {tr("shortcuts.openHelp")}
-              <DropdownMenuShortcut>
-                {formatShortcut(getShortcutDefinition("open-help"))}
-              </DropdownMenuShortcut>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
     </div>
   );

@@ -98,7 +98,6 @@ function RootLayout() {
         onSettings={openSettings}
         onRefresh={() => void refreshCurrentView()}
         onOpenSearch={() => setSearchOpen(true)}
-        onOpenHelp={() => setShortcutHelpOpen(true)}
         canGoBack={appHistory.canGoBack}
         canGoForward={appHistory.canGoForward}
         onBack={appHistory.goBack}
@@ -135,7 +134,6 @@ function AppShellRouter({
   onSettings,
   onRefresh,
   onOpenSearch,
-  onOpenHelp,
   canGoBack,
   canGoForward,
   onBack,
@@ -153,7 +151,6 @@ function AppShellRouter({
   onSettings: () => void;
   onRefresh: () => void;
   onOpenSearch: () => void;
-  onOpenHelp: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
   onBack: () => void;
@@ -209,6 +206,7 @@ function AppShellRouter({
   const sidebar = (
     <AppSidebar
       searchOpen={searchOpen}
+      onRefresh={onRefresh}
       active={isSettings ? "settings" : isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
@@ -273,7 +271,7 @@ function AppShellRouter({
         isSettings ? undefined : isSessions ? (
           <SessionWindowToolbar />
         ) : (
-          <AppToolbar breadcrumb={breadcrumb} onRefresh={onRefresh} onOpenHelp={onOpenHelp} />
+          <AppToolbar breadcrumb={breadcrumb} />
         )
       }
       mainClassName={

@@ -1106,7 +1106,7 @@ button {
     -webkit-app-region: drag;
   }
   .app-shell-header {
-    --header-content-offset: max(var(--sidebar-width), 176px);
+    --header-content-offset: max(var(--sidebar-width), 208px);
     grid-column: 1 / -1;
     padding-left: var(--header-content-offset);
     border-bottom: 0;
@@ -1125,7 +1125,7 @@ button {
     pointer-events: none;
   }
   :root[data-platform="macos"] .app-shell-header {
-    --header-content-offset: max(var(--sidebar-width), 216px);
+    --header-content-offset: max(var(--sidebar-width), 248px);
     grid-row: 1;
   }
   :root[data-platform="macos"] .app-window-navigation-controls {
@@ -1302,10 +1302,10 @@ button {
   }
 
   .app-toolbar-content {
-    padding-left: 8rem;
+    padding-left: 10rem;
   }
   :root[data-platform="macos"] .app-toolbar-content {
-    padding-left: 12.75rem;
+    padding-left: 14.75rem;
   }
 }
 
@@ -1373,11 +1373,11 @@ button {
   }
   .app-shell-sidebar-collapsed .app-toolbar-content,
   .app-shell-no-context .app-toolbar-content {
-    padding-left: 8rem;
+    padding-left: 10rem;
   }
   :root[data-platform="macos"] .app-shell-sidebar-collapsed .app-toolbar-content,
   :root[data-platform="macos"] .app-shell-no-context .app-toolbar-content {
-    padding-left: 12.75rem;
+    padding-left: 14.75rem;
   }
   .app-sidebar-dual:not(.app-sidebar-open) {
     visibility: hidden;
@@ -1396,7 +1396,8 @@ button {
   .app-sidebar,
   .app-sidebar-item,
   .app-sidebar-collapse-button,
-  .app-history-button {
+  .app-history-button,
+  .app-global-search-button {
     transition: none;
   }
   .app-sidebar-collapse-button svg {

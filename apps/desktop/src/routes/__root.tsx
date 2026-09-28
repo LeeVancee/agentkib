@@ -209,7 +209,6 @@ function AppShellRouter({
   const sidebar = (
     <AppSidebar
       searchOpen={searchOpen}
-      onOpenSearch={onOpenSearch}
       active={isSettings ? "settings" : isWorkspace ? "workspaces" : active}
       collapsed={sidebarCollapsed}
       entries={entries}
@@ -288,6 +287,7 @@ function AppShellRouter({
       canGoForward={canGoForward}
       onBack={onBack}
       onForward={onForward}
+      onOpenSearch={onOpenSearch}
     >
       {message && (
         <div

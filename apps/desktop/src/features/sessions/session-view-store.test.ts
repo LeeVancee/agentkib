@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary } from "@/core/types";
-import { useSessionViewStore } from "./session-view-store";
+import {
+  normalizeDirectoryOrder,
+  normalizeSessionDirectoryOrder,
+  useSessionViewStore,
+} from "./session-view-store";
 
 const source: ConversationSessionSummary = {
   id: "source",
@@ -23,6 +27,7 @@ const auxiliary: ConversationSessionSummary = {
 
 describe("session view source visibility", () => {
   beforeEach(() => {
+    localStorage.removeItem("agentkib.session-directory-order");
     useSessionViewStore.setState({
       agent: "all",
       host: "all",
@@ -40,6 +45,10 @@ describe("session view source visibility", () => {
     expect(useSessionViewStore.getState().showAuxiliary).toBe(false);
   });
 
+  it("keeps newly discovered sessions ahead of manually ordered sessions", () => {
+    expect(normalizeSessionDirectoryOrder(["saved"], ["new", "saved"])).toEqual(["new", "saved"]);
+  });
+
   it("reveals an explicitly targeted auxiliary session and expands its workspace", () => {
     useSessionViewStore.getState().revealSession(auxiliary);
     expect(useSessionViewStore.getState()).toMatchObject({
@@ -52,5 +61,50 @@ describe("session view source visibility", () => {
     useSessionViewStore.getState().setShowAuxiliary(false);
     useSessionViewStore.getState().revealSession({ ...source, sidechain: true });
     expect(useSessionViewStore.getState().showAuxiliary).toBe(false);
+  });
+
+  it("restores saved order and removes stale or duplicate IDs on its next write", async () => {
+    localStorage.setItem(
+      "agentkib.session-directory-order",
+      JSON.stringify({
+        workspaceOrder: ["deleted-workspace", "workspace-b", "workspace-b"],
+        sessionOrder: { workspace: ["deleted-session", "saved-session", "saved-session"] },
+      }),
+    );
+    vi.resetModules();
+    const { useSessionViewStore: restoredView } = await import("./session-view-store");
+    expect(restoredView.getState().workspaceOrder).toEqual([
+      "deleted-workspace",
+      "workspace-b",
+      "workspace-b",
+    ]);
+    expect(restoredView.getState().sessionOrder.workspace).toEqual([
+      "deleted-session",
+      "saved-session",
+      "saved-session",
+    ]);
+
+    restoredView
+      .getState()
+      .setWorkspaceOrder(
+        normalizeDirectoryOrder(restoredView.getState().workspaceOrder, [
+          "workspace-a",
+          "workspace-b",
+        ]),
+      );
+    restoredView
+      .getState()
+      .setSessionOrder(
+        "workspace",
+        normalizeDirectoryOrder(restoredView.getState().sessionOrder.workspace, [
+          "saved-session",
+          "new-session",
+        ]),
+      );
+
+    expect(JSON.parse(localStorage.getItem("agentkib.session-directory-order") ?? "{}")).toEqual({
+      workspaceOrder: ["workspace-b", "workspace-a"],
+      sessionOrder: { workspace: ["saved-session", "new-session"] },
+    });
   });
 });

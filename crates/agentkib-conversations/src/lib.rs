@@ -1095,7 +1095,7 @@ impl CodexProvider {
                 incomplete = true;
                 continue;
             }
-            let title = first_column_expression(&columns, &["name", "title", "preview"], "''");
+            let title = first_non_empty_column_expression(&columns, &["name", "title", "preview"]);
             let created =
                 first_column_expression(&columns, &["created_at_ms", "created_at"], "NULL");
             let updated = first_column_expression(
@@ -1117,8 +1117,10 @@ impl CodexProvider {
             let parent = first_column_expression(&columns, &["parent_thread_id"], "NULL");
             let forked = first_column_expression(&columns, &["forked_from_id"], "NULL");
             let thread_source = first_column_expression(&columns, &["thread_source"], "NULL");
+            let agent_path = first_column_expression(&columns, &["agent_path"], "NULL");
+            let agent_nickname = first_column_expression(&columns, &["agent_nickname"], "NULL");
             let sql = format!(
-                "SELECT id, rollout_path, cwd, {title}, {created}, {updated}, {branch}, {archived}, {source}, {parent}, {forked}, {thread_source} FROM threads"
+                "SELECT id, rollout_path, cwd, {title}, {created}, {updated}, {branch}, {archived}, {source}, {parent}, {forked}, {thread_source}, {agent_path}, {agent_nickname} FROM threads"
             );
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map([], |row| {
@@ -1131,17 +1133,23 @@ impl CodexProvider {
                 let forked = non_empty_string(row.get::<_, Option<String>>(10)?);
                 let thread_source = row.get::<_, Option<String>>(11)?;
                 let metadata = classify_codex_metadata(
-                    source_value,
+                    source_value.clone(),
                     thread_source.as_deref(),
                     parent.clone(),
                     forked.clone(),
                     source_malformed,
                 );
+                let agent_path = non_empty_string(row.get::<_, Option<String>>(12)?)
+                    .or_else(|| codex_agent_source_field(source_value.as_ref(), "agent_path"));
+                let agent_nickname = non_empty_string(row.get::<_, Option<String>>(13)?)
+                    .or_else(|| codex_agent_source_field(source_value.as_ref(), "agent_nickname"));
                 Ok(CodexNativeSession {
                     native_ref: row.get(0)?,
                     transcript: PathBuf::from(row.get::<_, String>(1)?),
                     cwd: PathBuf::from(row.get::<_, String>(2)?),
                     title: row.get::<_, Option<String>>(3)?,
+                    agent_path,
+                    agent_nickname,
                     origin: metadata.origin,
                     origin_authoritative: metadata.origin_authoritative,
                     source_present_in_database: source
@@ -1188,7 +1196,10 @@ impl CodexProvider {
             !session.spawned_from_database && session.spawned_by_session_id.is_none();
         let needs_forked =
             !session.forked_from_database && session.forked_from_session_id.is_none();
-        if !needs_origin && !needs_spawned && !needs_forked {
+        let needs_agent_details = session.origin == SessionOrigin::Auxiliary
+            && session.agent_path.is_none()
+            && session.agent_nickname.is_none();
+        if !needs_origin && !needs_spawned && !needs_forked && !needs_agent_details {
             return session;
         }
         let Some(header) = read_codex_header(&session.transcript) else {
@@ -1206,6 +1217,12 @@ impl CodexProvider {
         }
         if needs_forked {
             session.forked_from_session_id = header.forked_from_session_id;
+        }
+        if session.agent_path.is_none() {
+            session.agent_path = header.agent_path;
+        }
+        if session.agent_nickname.is_none() {
+            session.agent_nickname = header.agent_nickname;
         }
         session
     }
@@ -1270,24 +1287,27 @@ impl ConversationProvider for CodexProvider {
         let sessions = sessions
             .into_iter()
             .map(|session| self.enrich_session(session))
-            .map(|session| NativeSessionSummary {
-                native_ref: session.native_ref,
-                agent: AgentKind::Codex,
-                title: sanitize_title(session.title.as_deref()),
-                origin: session.origin,
-                spawned_by_session_id: session.spawned_by_session_id,
-                forked_from_session_id: session.forked_from_session_id,
-                created_at: session.created_at,
-                updated_at: session.updated_at,
-                message_count: None,
-                git_branch: sanitize_metadata(session.git_branch),
-                archived: session.archived,
-                sidechain: false,
-                availability: if paging::is_readable(&session.transcript) {
-                    SessionAvailability::Readable
-                } else {
-                    SessionAvailability::MetadataOnly
-                },
+            .map(|session| {
+                let title = codex_session_title(&session);
+                NativeSessionSummary {
+                    native_ref: session.native_ref,
+                    agent: AgentKind::Codex,
+                    title,
+                    origin: session.origin,
+                    spawned_by_session_id: session.spawned_by_session_id,
+                    forked_from_session_id: session.forked_from_session_id,
+                    created_at: session.created_at,
+                    updated_at: session.updated_at,
+                    message_count: None,
+                    git_branch: sanitize_metadata(session.git_branch),
+                    archived: session.archived,
+                    sidechain: false,
+                    availability: if paging::is_readable(&session.transcript) {
+                        SessionAvailability::Readable
+                    } else {
+                        SessionAvailability::MetadataOnly
+                    },
+                }
             })
             .collect();
         Ok(NativeSessionListing {
@@ -1358,6 +1378,8 @@ struct CodexNativeSession {
     transcript: PathBuf,
     cwd: PathBuf,
     title: Option<String>,
+    agent_path: Option<String>,
+    agent_nickname: Option<String>,
     origin: SessionOrigin,
     origin_authoritative: bool,
     source_present_in_database: bool,
@@ -1375,6 +1397,8 @@ struct CodexNativeSession {
 struct CodexMetadata {
     origin: SessionOrigin,
     origin_authoritative: bool,
+    agent_path: Option<String>,
+    agent_nickname: Option<String>,
     spawned_by_session_id: Option<String>,
     forked_from_session_id: Option<String>,
 }
@@ -1416,6 +1440,8 @@ fn classify_codex_metadata(
     CodexMetadata {
         origin,
         origin_authoritative,
+        agent_path: codex_agent_source_field(source.as_ref(), "agent_path"),
+        agent_nickname: codex_agent_source_field(source.as_ref(), "agent_nickname"),
         spawned_by_session_id: database_parent.or(parsed_source.spawned_by_session_id),
         forked_from_session_id: database_fork,
     }
@@ -1532,6 +1558,28 @@ fn non_empty_text(value: &str) -> Option<String> {
 
 fn non_empty_string(value: Option<String>) -> Option<String> {
     value.and_then(|value| non_empty_text(&value))
+}
+
+fn codex_agent_source_field(source: Option<&Value>, field: &str) -> Option<String> {
+    source
+        .and_then(|source| source.pointer(&format!("/subagent/thread_spawn/{field}")))
+        .and_then(Value::as_str)
+        .and_then(non_empty_text)
+}
+
+fn codex_session_title(session: &CodexNativeSession) -> Option<String> {
+    sanitize_title(session.title.as_deref()).or_else(|| {
+        if session.origin != SessionOrigin::Auxiliary {
+            return None;
+        }
+        session
+            .agent_path
+            .as_deref()
+            .and_then(|path| path.trim_end_matches('/').rsplit('/').next())
+            .filter(|name| !name.is_empty() && *name != "root")
+            .and_then(|name| sanitize_title(Some(name)))
+            .or_else(|| sanitize_title(session.agent_nickname.as_deref()))
+    })
 }
 
 fn json_non_empty_string(value: Option<&Value>) -> Option<String> {
@@ -2735,6 +2783,19 @@ fn first_column_expression(
     }
 }
 
+fn first_non_empty_column_expression(columns: &BTreeSet<String>, candidates: &[&str]) -> String {
+    let existing = candidates
+        .iter()
+        .filter(|column| columns.contains(**column))
+        .map(|column| format!("NULLIF(TRIM({column}), '')"))
+        .collect::<Vec<_>>();
+    match existing.as_slice() {
+        [] => "NULL".into(),
+        [only] => only.clone(),
+        values => format!("COALESCE({})", values.join(", ")),
+    }
+}
+
 fn timestamp_from_integer(value: i64) -> Option<DateTime<Utc>> {
     if value.abs() >= 10_000_000_000 {
         Utc.timestamp_millis_opt(value).single()
@@ -2892,6 +2953,134 @@ mod tests {
         assert!(provider.verified_control_id(id).is_err());
         fs::write(&transcript, "{\"type\":\"message\"}").unwrap();
         assert!(provider.verified_control_id(id).is_err());
+    }
+
+    #[test]
+    fn codex_subagent_uses_task_name_when_native_title_is_missing() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let transcript = dir.path().join("subagent.jsonl");
+        let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads(
+                    id TEXT,
+                    rollout_path TEXT,
+                    cwd TEXT,
+                    name TEXT,
+                    title TEXT,
+                    preview TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER,
+                    source TEXT,
+                    parent_thread_id TEXT,
+                    forked_from_id TEXT,
+                    thread_source TEXT,
+                    agent_path TEXT,
+                    agent_nickname TEXT
+                );",
+            )
+            .unwrap();
+        let spawned_source = serde_json::json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "parent",
+                    "agent_path": "/root/fix_title_bug",
+                    "agent_nickname": "Cedar"
+                }
+            }
+        })
+        .to_string();
+        let nickname_source = serde_json::json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "parent",
+                    "agent_nickname": "Cedar"
+                }
+            }
+        })
+        .to_string();
+        for (id, title, agent_path, agent_nickname, source) in [
+            (
+                "subagent-path",
+                "",
+                Some("/root/fix_title_bug"),
+                Some("Cedar"),
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-title",
+                "Codex title",
+                Some("/root/fix_title_bug"),
+                Some("Cedar"),
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-nickname",
+                "",
+                None,
+                Some("Cedar"),
+                nickname_source.as_str(),
+            ),
+            (
+                "subagent-source-path",
+                "",
+                None,
+                None,
+                spawned_source.as_str(),
+            ),
+            (
+                "subagent-source-nickname",
+                "",
+                None,
+                None,
+                nickname_source.as_str(),
+            ),
+            (
+                "interactive",
+                "",
+                Some("/root/should_not_be_used"),
+                Some("Cedar"),
+                "cli",
+            ),
+        ] {
+            database
+                .execute(
+                    "INSERT INTO threads VALUES (
+                        ?1, ?2, ?3, NULL, ?4, NULL, 1, 2, ?5, ?6, NULL, ?7, ?8, ?9
+                    )",
+                    rusqlite::params![
+                        id,
+                        transcript.display().to_string(),
+                        workspace.display().to_string(),
+                        title,
+                        source,
+                        (source != "cli").then_some("parent"),
+                        if source == "cli" { "user" } else { "subagent" },
+                        agent_path,
+                        agent_nickname,
+                    ],
+                )
+                .unwrap();
+        }
+        drop(database);
+
+        let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+            .list_sessions(&workspace)
+            .unwrap();
+        let title_for = |id| {
+            sessions
+                .iter()
+                .find(|session| session.native_ref == id)
+                .and_then(|session| session.title.as_deref())
+        };
+        assert_eq!(title_for("subagent-path"), Some("fix_title_bug"));
+        assert_eq!(title_for("subagent-title"), Some("Codex title"));
+        assert_eq!(title_for("subagent-nickname"), Some("Cedar"));
+        assert_eq!(title_for("subagent-source-path"), Some("fix_title_bug"));
+        assert_eq!(title_for("subagent-source-nickname"), Some("Cedar"));
+        assert_eq!(title_for("interactive"), None);
     }
 
     #[test]
@@ -3231,6 +3420,66 @@ mod tests {
             sessions[0].forked_from_session_id.as_deref(),
             Some("fork-from-header")
         );
+    }
+
+    #[test]
+    fn codex_recovers_subagent_title_from_header_when_database_has_no_agent_metadata() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let transcript = dir.path().join("header-only-subagent.jsonl");
+        fs::write(
+            &transcript,
+            format!(
+                "{}\n",
+                codex_meta_line(
+                    "header-only-subagent",
+                    serde_json::json!({
+                        "subagent": {
+                            "thread_spawn": {
+                                "agent_path": "/root/fix_title_bug",
+                                "agent_nickname": "Cedar"
+                            }
+                        }
+                    }),
+                    serde_json::Value::Null,
+                )
+            ),
+        )
+        .unwrap();
+        let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads(
+                    id TEXT,
+                    rollout_path TEXT,
+                    cwd TEXT,
+                    title TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER,
+                    source TEXT
+                );",
+            )
+            .unwrap();
+        database
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, '', 1, 2, NULL)",
+                rusqlite::params![
+                    "header-only-subagent",
+                    transcript.display().to_string(),
+                    workspace.display().to_string(),
+                ],
+            )
+            .unwrap();
+        drop(database);
+
+        let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+            .list_sessions(&workspace)
+            .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].origin, SessionOrigin::Auxiliary);
+        assert_eq!(sessions[0].title.as_deref(), Some("fix_title_bug"));
     }
 
     #[test]

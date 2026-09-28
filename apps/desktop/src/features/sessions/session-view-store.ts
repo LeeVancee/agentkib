@@ -3,6 +3,72 @@ import type { AgentKind, ConversationSessionSummary } from "@/core/types";
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
+const SESSION_DIRECTORY_ORDER_STORAGE_KEY = "agentkib.session-directory-order";
+
+export function normalizeDirectoryOrder(savedOrder: string[], availableIds: string[]) {
+  const available = new Set(availableIds);
+  const seen = new Set<string>();
+  const normalized = savedOrder.filter((id) => {
+    if (!available.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return [...normalized, ...availableIds.filter((id) => !seen.has(id))];
+}
+
+export function normalizeSessionDirectoryOrder(savedOrder: string[], availableIds: string[]) {
+  const available = new Set(availableIds);
+  const saved = new Set(savedOrder.filter((id) => available.has(id)));
+  const normalized = normalizeDirectoryOrder(savedOrder, availableIds);
+  return [
+    ...availableIds.filter((id) => !saved.has(id)),
+    ...normalized.filter((id) => saved.has(id)),
+  ];
+}
+
+function initialSessionDirectoryOrder() {
+  try {
+    const value = localStorage?.getItem(SESSION_DIRECTORY_ORDER_STORAGE_KEY);
+    if (!value) return { workspaceOrder: [], sessionOrder: {} };
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return { workspaceOrder: [], sessionOrder: {} };
+    const record = parsed as Record<string, unknown>;
+    return {
+      workspaceOrder: Array.isArray(record.workspaceOrder)
+        ? record.workspaceOrder.filter((id): id is string => typeof id === "string")
+        : [],
+      sessionOrder:
+        record.sessionOrder && typeof record.sessionOrder === "object"
+          ? Object.fromEntries(
+              Object.entries(record.sessionOrder).flatMap(([workspaceId, ids]) =>
+                Array.isArray(ids)
+                  ? [[workspaceId, ids.filter((id): id is string => typeof id === "string")]]
+                  : [],
+              ),
+            )
+          : {},
+    };
+  } catch {
+    return { workspaceOrder: [], sessionOrder: {} };
+  }
+}
+
+function persistSessionDirectoryOrder(
+  workspaceOrder: string[],
+  sessionOrder: Record<string, string[]>,
+) {
+  try {
+    localStorage?.setItem(
+      SESSION_DIRECTORY_ORDER_STORAGE_KEY,
+      JSON.stringify({ workspaceOrder, sessionOrder }),
+    );
+  } catch {
+    // Persisting sidebar order is best-effort in restricted webviews.
+  }
+}
+
+const initialDirectoryOrder = initialSessionDirectoryOrder();
+
 // View-only state survives navigation, but never persists transcript content to disk.
 export const useSessionViewStore = create<{
   agent: AgentKind | "all";
@@ -10,6 +76,8 @@ export const useSessionViewStore = create<{
   filter: SessionRecordFilter;
   showAuxiliary: boolean;
   collapsed: Record<string, boolean>;
+  workspaceOrder: string[];
+  sessionOrder: Record<string, string[]>;
   scrollTop: number;
   revealSession: (session: ConversationSessionSummary) => void;
   setAgent: (agent: AgentKind | "all") => void;
@@ -17,6 +85,8 @@ export const useSessionViewStore = create<{
   setFilter: (filter: SessionRecordFilter) => void;
   setShowAuxiliary: (showAuxiliary: boolean) => void;
   toggleWorkspace: (id: string) => void;
+  setWorkspaceOrder: (workspaceOrder: string[]) => void;
+  setSessionOrder: (workspaceId: string, sessionOrder: string[]) => void;
   setScrollTop: (scrollTop: number) => void;
   resetFilters: () => void;
 }>((set) => ({
@@ -25,6 +95,7 @@ export const useSessionViewStore = create<{
   filter: "current",
   showAuxiliary: false,
   collapsed: {},
+  ...initialDirectoryOrder,
   scrollTop: 0,
   revealSession: (session) =>
     set((state) => ({
@@ -48,6 +119,17 @@ export const useSessionViewStore = create<{
   setShowAuxiliary: (showAuxiliary) => set({ showAuxiliary }),
   toggleWorkspace: (id) =>
     set((state) => ({ collapsed: { ...state.collapsed, [id]: !state.collapsed[id] } })),
+  setWorkspaceOrder: (workspaceOrder) =>
+    set((state) => {
+      persistSessionDirectoryOrder(workspaceOrder, state.sessionOrder);
+      return { workspaceOrder };
+    }),
+  setSessionOrder: (workspaceId, order) =>
+    set((state) => {
+      const sessionOrder = { ...state.sessionOrder, [workspaceId]: order };
+      persistSessionDirectoryOrder(state.workspaceOrder, sessionOrder);
+      return { sessionOrder };
+    }),
   setScrollTop: (scrollTop) => set({ scrollTop }),
   resetFilters: () => set({ agent: "all", filter: "current", host: "all", showAuxiliary: false }),
 }));

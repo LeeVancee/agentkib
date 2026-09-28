@@ -1460,17 +1460,19 @@ button {
 }
 
 @media (min-width: 1024px) {
-  :root[data-platform="macos"] .app-shell {
-    grid-template-rows: 52px 0 minmax(0, 1fr);
+  .app-shell {
     background: var(--sidebar);
   }
-  :root[data-platform="macos"] .app-shell::before {
+  :root[data-platform="macos"] .app-shell {
+    grid-template-rows: 52px 0 minmax(0, 1fr);
+  }
+  .app-shell::before {
     content: none;
   }
-  :root[data-platform="macos"] .app-shell::after {
+  .app-shell::after {
     position: absolute;
     z-index: 0;
-    inset: 52px 0 0 var(--sidebar-rail-width);
+    inset: calc(var(--window-safe-top) + 52px) 0 0 var(--sidebar-rail-width);
     border: 1px solid var(--border-subtle);
     border-bottom: 0;
     border-right: 0;
@@ -1485,20 +1487,34 @@ button {
     pointer-events: auto;
     -webkit-app-region: drag;
   }
-  :root[data-platform="macos"] .app-shell-header {
+  .app-shell-header {
+    --header-content-offset: max(var(--sidebar-width), 176px);
     grid-column: 1 / -1;
-    grid-row: 1;
-    padding-left: max(var(--sidebar-width), 216px);
+    padding-left: var(--header-content-offset);
     border-bottom: 0;
     background: var(--sidebar);
     transition: padding-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
     -webkit-app-region: no-drag;
   }
+  .app-shell-header::before {
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    left: var(--header-content-offset);
+    width: 1px;
+    background: var(--border-subtle);
+    content: "";
+    pointer-events: none;
+  }
+  :root[data-platform="macos"] .app-shell-header {
+    --header-content-offset: max(var(--sidebar-width), 216px);
+    grid-row: 1;
+  }
   :root[data-platform="macos"] .app-window-navigation-controls {
     top: 0;
     left: 88px;
   }
-  :root[data-platform="macos"] .app-sidebar-dual {
+  .app-sidebar-dual {
     position: relative;
     z-index: 1;
     grid-row: 3;
@@ -1506,42 +1522,41 @@ button {
     background: transparent;
     backdrop-filter: none;
   }
-  :root[data-platform="macos"]
-    .app-sidebar-dual:not(.app-sidebar-no-panel):not(.app-sidebar-panel-collapsed) {
+  .app-sidebar-dual:not(.app-sidebar-no-panel):not(.app-sidebar-panel-collapsed) {
     box-shadow: inset -1px 0 0 var(--border-subtle);
   }
-  :root[data-platform="macos"] .app-activity-bar {
+  .app-activity-bar {
     border-right: 0;
     border-radius: 0;
     background: var(--sidebar);
   }
-  :root[data-platform="macos"] .app-context-sidebar {
+  .app-context-sidebar {
     border-top-left-radius: 16px;
   }
-  :root[data-platform="macos"] .app-shell-main {
+  .app-shell-main {
     position: relative;
     z-index: 1;
     border-top-right-radius: 16px;
   }
-  :root[data-platform="macos"] .app-shell-sidebar-collapsed .app-shell-main,
-  :root[data-platform="macos"] .app-shell-no-context .app-shell-main {
+  .app-shell-sidebar-collapsed .app-shell-main,
+  .app-shell-no-context .app-shell-main {
     border-top-left-radius: 16px;
   }
-  :root[data-platform="macos"] .app-activity-bar,
-  :root[data-platform="macos"] .app-context-sidebar > .app-sidebar-content {
+  .app-activity-bar,
+  .app-context-sidebar > .app-sidebar-content {
     padding-top: 12px;
   }
-  :root[data-platform="macos"] .sidebar-resize-handle {
-    top: 52px;
+  .sidebar-resize-handle {
+    top: calc(var(--window-safe-top) + 52px);
   }
-  :root[data-platform="macos"] .app-shell-headerless .app-shell-main {
+  .app-shell-headerless .app-shell-main {
     grid-row: 3;
   }
-  :root[data-platform="macos"] .app-shell-headerless .settings-content {
+  .app-shell-headerless .settings-content {
     padding-top: 1.5rem;
   }
-  :root[data-platform="macos"] .app-shell-sidebar-collapsed .app-toolbar-content,
-  :root[data-platform="macos"] .app-shell-no-context .app-toolbar-content {
+  :root[data-platform] .app-shell-sidebar-collapsed .app-toolbar-content,
+  :root[data-platform] .app-shell-no-context .app-toolbar-content {
     padding-left: 1.5rem;
   }
 }

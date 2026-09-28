@@ -42,32 +42,6 @@ export function WindowNavigationControls({
       <Button
         variant="bare"
         size="content"
-        className="app-history-button"
-        type="button"
-        disabled={!canGoBack}
-        aria-label={tr("shortcuts.back")}
-        aria-keyshortcuts={ariaShortcut(backShortcut, platform)}
-        title={tr("shortcuts.back")}
-        onClick={onBack}
-      >
-        <ArrowLeft size={17} aria-hidden="true" />
-      </Button>
-      <Button
-        variant="bare"
-        size="content"
-        className="app-history-button"
-        type="button"
-        disabled={!canGoForward}
-        aria-label={tr("shortcuts.forward")}
-        aria-keyshortcuts={ariaShortcut(forwardShortcut, platform)}
-        title={tr("shortcuts.forward")}
-        onClick={onForward}
-      >
-        <ArrowRight size={17} aria-hidden="true" />
-      </Button>
-      <Button
-        variant="bare"
-        size="content"
         className="app-sidebar-collapse-button"
         type="button"
         aria-label={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
@@ -91,6 +65,32 @@ export function WindowNavigationControls({
             size={17}
           />
         </span>
+      </Button>
+      <Button
+        variant="bare"
+        size="content"
+        className="app-history-button"
+        type="button"
+        disabled={!canGoBack}
+        aria-label={tr("shortcuts.back")}
+        aria-keyshortcuts={ariaShortcut(backShortcut, platform)}
+        title={tr("shortcuts.back")}
+        onClick={onBack}
+      >
+        <ArrowLeft size={17} aria-hidden="true" />
+      </Button>
+      <Button
+        variant="bare"
+        size="content"
+        className="app-history-button"
+        type="button"
+        disabled={!canGoForward}
+        aria-label={tr("shortcuts.forward")}
+        aria-keyshortcuts={ariaShortcut(forwardShortcut, platform)}
+        title={tr("shortcuts.forward")}
+        onClick={onForward}
+      >
+        <ArrowRight size={17} aria-hidden="true" />
       </Button>
     </div>
   );

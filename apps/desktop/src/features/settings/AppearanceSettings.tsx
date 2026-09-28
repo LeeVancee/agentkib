@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Check, CircleAlert, Monitor, Moon, Sun } from "lucide-react";
 
 import { api } from "@/core/api";
+import { Button } from "@/components/ui/button";
 import {
   ACCENT_THEME_IDS,
   accentThemePreference,
@@ -306,9 +307,11 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
             const Icon = themeIcons[mode];
             const selected = selectedMode === mode;
             return (
-              <button
+              <Button
                 key={mode}
                 type="button"
+                variant="bare"
+                size="content"
                 className={previewStyles.themeChoiceCard}
                 aria-pressed={selected}
                 disabled={busy || !runtime}
@@ -322,7 +325,7 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                   </span>
                   {selected && <Check size={16} aria-hidden="true" />}
                 </span>
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -333,9 +336,11 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
           {ACCENT_THEME_IDS.map((theme) => {
             const selected = selectedAccent === theme;
             return (
-              <button
+              <Button
                 key={theme}
                 type="button"
+                variant="bare"
+                size="content"
                 className={previewStyles.themeChoiceCard}
                 aria-pressed={selected}
                 disabled={busy || !runtime}
@@ -346,7 +351,7 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                   <span className="truncate">{tr(`settings.accentTheme.${theme}`)}</span>
                   {selected && <Check size={16} aria-hidden="true" />}
                 </span>
-              </button>
+              </Button>
             );
           })}
         </div>

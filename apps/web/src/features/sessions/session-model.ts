@@ -2,10 +2,10 @@ import type { ConversationEventPage } from "@agentkib/web-client";
 export const MAX_MESSAGE_LENGTH = 16_000;
 const MAX_MESSAGE_BYTES = 16_384;
 const messageEncoder = new TextEncoder();
-export function isValidMessage(message: string) {
+export function isValidMessage(message: string, hasAttachments = false) {
   const text = message.trim();
   return (
-    !!text &&
+    (!!text || hasAttachments) &&
     message.length <= MAX_MESSAGE_LENGTH &&
     messageEncoder.encode(message).byteLength <= MAX_MESSAGE_BYTES
   );

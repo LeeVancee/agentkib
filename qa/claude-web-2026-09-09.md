@@ -12,7 +12,7 @@
 
 ## 真实本机 HTTP 验收：通过
 
-目标 `/Users/kouzen/Documents/data/test` 的 Claude 会话 `3121ec99-e4cb-465b-8056-0d653212b113`。
+目标 `/Users/REDACTED_USER/Documents/data/test` 的 Claude 会话 `REDACTED_CLAUDE_SESSION_ID`。
 使用真实 runtime + WebAccessService + 隔离数据库/随机 loopback 端口，完成配对及独立权限授权，通过 `/api/web/v1/send` 和 `/approve` 发送，而非直接 CLI 冒充 Web。
 
 | 测试 | 标记 | 结果 |
@@ -21,7 +21,7 @@
 | 原生拒绝 | AK-CLAUDE-WEB-1788941378015 | Web 收到 Bash `/usr/bin/true` 审批，提交 deny；Claude 报告未执行，tool_result 为错误拒绝；约 8.50 秒 |
 | 原生允许一次 | AK-CLAUDE-WEB-1788941407636 | Web 提交 allow；命令成功，tool_result 非错误，Claude 报告退出码 0；约 7.92 秒 |
 
-每次仅一条低风险消息，无并发提交；临时浏览器撤销、HTTP 关闭、runtime 与其自有 CLI 清理。真实测试默认跳过，必须显式提供指定 UUID 环境变量才能运行。
+每次仅一条低风险消息，无并发提交；临时浏览器撤销、HTTP 关闭、runtime 与其自有 CLI 清理。真实测试默认跳过；运行时必须设置 `AGENTKIB_CLAUDE_REAL_RUN=1`，并显式提供 UUID 格式的 `AGENTKIB_CLAUDE_REAL_SESSION` 和绝对路径 `AGENTKIB_CLAUDE_REAL_WORKSPACE`。
 
 ### 实际发现并处理的问题
 

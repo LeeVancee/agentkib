@@ -1,5 +1,7 @@
 //! LAN-only, mutually authenticated, read-only device transport.
+mod csr;
 mod tls;
+pub use csr::create_csr;
 
 use anyhow::{Context, Result, bail, ensure};
 use rand_core::{OsRng, RngCore};

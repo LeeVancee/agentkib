@@ -13,7 +13,7 @@
 
 ### 本机来源检查
 
-- Claude 测试目录 `/Users/kouzen/Documents/data/test/CLAUDE.md` 已存在；此前已确认原生历史登记及 AgentKib 工作区记录。
+- Claude 测试目录 `/Users/REDACTED_USER/Documents/data/test/CLAUDE.md` 已存在；此前已确认原生历史登记及 AgentKib 工作区记录。
 - OpenCode 本机数据库存在，按只读查询包含 3 条会话；后续只读验收不得启动会话。
 - OpenClaw 配置目录存在，但本次检查未发现 `agents/*/sessions` 历史文件。
 - 本机未发现默认 Hermes、Grok 配置目录；它们不能宣称真实记录验收通过。
@@ -35,9 +35,9 @@
 
 ### 隔离 runtime 的真实发现验证
 
-使用 `/tmp/agentkib-discovery-qa.0SrLXP` 独立数据目录及仅本机端口 47659，通过正常 runtime RPC 握手、刷新、读取报告与能力信息，不修改用户的 AgentKib 数据库、不发送 Agent 请求。
+使用 `/tmp/agentkib-discovery-qa.REDACTED` 独立数据目录及仅本机端口 47659，通过正常 runtime RPC 握手、刷新、读取报告与能力信息，不修改用户的 AgentKib 数据库、不发送 Agent 请求。
 
-- 协议版本 15；发现 38 个工作区，包含 `/Users/kouzen/Documents/data/test`。
+- 协议版本 15；发现 38 个工作区，包含 `/Users/REDACTED_USER/Documents/data/test`。
 - Codex、Claude、OpenCode 的本机来源成功；OpenCode SQLite 与旧 JSON 分别报告。
 - OpenClaw 配置有结果、JSONL 来源缺失；Hermes 与 Grok 默认历史来源缺失，未误报为已读到历史。
 - 三个新增历史来源声明 `history_read=true`、`continuation=false`、`control=none`。

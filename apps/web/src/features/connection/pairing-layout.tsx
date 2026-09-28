@@ -5,10 +5,12 @@ import type { Words } from "@/i18n";
 export function PairingLayout({
   words: t,
   pending = false,
+  direct = false,
   children,
 }: {
   words: Words;
   pending?: boolean;
+  direct?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -24,10 +26,12 @@ export function PairingLayout({
             <MonitorSmartphone size={20} aria-hidden="true" />
             <span>{t.code}</span>
           </li>
-          <li aria-current={pending ? "step" : undefined}>
-            <ShieldCheck size={20} aria-hidden="true" />
-            <span>{t.pending}</span>
-          </li>
+          {!direct && (
+            <li aria-current={pending ? "step" : undefined}>
+              <ShieldCheck size={20} aria-hidden="true" />
+              <span>{t.pending}</span>
+            </li>
+          )}
           <li>
             <MessagesSquare size={20} aria-hidden="true" />
             <span>{t.sessions}</span>

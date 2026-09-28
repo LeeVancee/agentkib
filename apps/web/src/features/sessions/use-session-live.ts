@@ -20,13 +20,13 @@ interface LiveSyncOptions {
   client: WebClient;
   fail: (error: unknown, generation?: number) => void;
   clear: () => void;
-  origin: string;
   accessRef: RefObject<Access | undefined>;
   syncAccess: () => Promise<Access | undefined>;
   setLive: Setter<Live | undefined>;
   setOnline: Setter<boolean>;
   setError: Setter<boolean>;
   refresh: (manual?: boolean) => Promise<void>;
+  hasDurablePending: (sessionId: string) => boolean;
   readinessEpoch: RefObject<number>;
   refreshRequired: RefObject<boolean>;
   setControlReady: Setter<boolean>;
@@ -47,13 +47,13 @@ export function useSessionLive({
   client,
   fail,
   clear,
-  origin,
   accessRef,
   syncAccess,
   setLive,
   setOnline,
   setError,
   refresh,
+  hasDurablePending,
   readinessEpoch,
   refreshRequired,
   setControlReady,
@@ -62,6 +62,7 @@ export function useSessionLive({
   live,
   setPage,
 }: LiveSyncOptions) {
+  const isLan = client.connection.type === "lan-http";
   useEffect(() => {
     const readable = new Set(
       sessions.filter((s) => s.availability === "readable").map((s) => s.id),
@@ -167,7 +168,7 @@ export function useSessionLive({
     };
     const onEnded = () => {
       if (closed || g !== generation.current) return;
-      if (origin) client.reset();
+      if (isLan) client.reset();
       clear();
       accessRef.current = {
         status: "ended",
@@ -186,7 +187,7 @@ export function useSessionLive({
           if (!closed && g === generation.current && selection.current === id) {
             setLive(state);
             setOnline(true);
-            if (origin) await refresh();
+            if (isLan || hasDurablePending(id)) await refresh();
           }
         } catch (e) {
           if (!closed) fail(e, g);
@@ -196,7 +197,7 @@ export function useSessionLive({
     const onError = () => {
       if (!closed && g === generation.current) {
         setOnline(false);
-        if (origin) {
+        if (isLan) {
           readinessEpoch.current++;
           refreshRequired.current = true;
           setControlReady(false);
@@ -223,8 +224,9 @@ export function useSessionLive({
     clear,
     fail,
     client,
-    origin,
+    isLan,
     refresh,
+    hasDurablePending,
     setControlReady,
     selection,
     setOnline,

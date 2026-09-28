@@ -11,12 +11,12 @@
 
 ## Candidate
 
-- Unsigned directory: `/tmp/agentkib-stability-2026-09-20-unsigned.K31CKc/mac-arm64/AgentKib.app`
-- Builder command: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --dir apps/desktop exec electron-builder --mac --arm64 --dir --publish never --config.directories.output=/tmp/agentkib-stability-2026-09-20-unsigned.K31CKc`
+- Unsigned directory: `/tmp/agentkib-stability-2026-09-20-unsigned.REDACTED/mac-arm64/AgentKib.app`
+- Builder command: `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --dir apps/desktop exec electron-builder --mac --arm64 --dir --publish never --config.directories.output=/tmp/agentkib-stability-2026-09-20-unsigned.REDACTED`
 - Signature check: ad-hoc linker signature only; `TeamIdentifier` is absent and no Developer ID identity was used.
 - Runtime SHA-256: `7144b0bd24e61f5c45f8e8b3b0c36d3096f371c51380613c5e2dc18e43d8d9ca`
 - Quota sidecar SHA-256: `fedb811ac46b82f560962874de85971b9486c80336a214b7ba0f2fb885e9d7cb`
-- Isolated launch data: `/tmp/agentkib-stability-qa-dev.CVRVnE` for the automatic ready/exit run and `/tmp/agentkib-stability-qa-live.MdjRr1` for the read-only UI run.
+- Isolated launch data: `/tmp/agentkib-stability-qa-dev.REDACTED` for the automatic ready/exit run and `/tmp/agentkib-stability-qa-live.REDACTED` for the read-only UI run.
 
 The installed AgentKib process already owned the production MCP port `47653`. It was left running and untouched. The candidate was therefore launched with the repository's existing Dev flavor, which uses `47654`, while both Electron and runtime data were redirected to the isolated directories above. The candidate completed its Runtime handshake, created a fresh database and remote identity, reached the home-data-ready marker, and exited cleanly in the automatic run. The live run exposed Runtime on `127.0.0.1:47654`; it was stopped after inspection and left no listener behind.
 
@@ -67,9 +67,9 @@ Focused verification of the updated source: `cargo test -p agentkib-runtime skil
 - Source revision at rebuild: `e788fd96a194e5ee9e769f1bcf17fb21b7d9dcf8`, with the stability changes still uncommitted.
 - New integration test: `cargo test -p agentkib-runtime --test stdio_shutdown` passed. It sends three Skill requests to a real Runtime process, closes stdin, and verifies one JSON-RPC response per request.
 - Updated Runtime verification: `cargo test -p agentkib-runtime` passed (121 unit tests and 1 stdio integration test); `cargo clippy -p agentkib-runtime --all-targets -- -D warnings`, `cargo fmt --all -- --check`, and `git diff --check` passed.
-- Rebuilt with Node 22 and pnpm 10.8.1 using `pnpm build`, followed by `pnpm --dir apps/desktop quota:prepare`. The unsigned directory candidate was packaged with `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --dir apps/desktop exec electron-builder --mac --arm64 --dir --publish never --config.directories.output=/tmp/agentkib-stability-postreview-2026-09-20-unsigned.r6R0bB`.
-- Current candidate: `/tmp/agentkib-stability-postreview-2026-09-20-unsigned.r6R0bB/mac-arm64/AgentKib.app`. Its packaged Runtime matches `target/release/agentkib-runtime` byte for byte; both have SHA-256 `7c3ead74975e9c6bf6f3ea61859802937fcf30dba64cb16979302985f8dcff76`. The quota sidecar SHA-256 is `fedb811ac46b82f560962874de85971b9486c80336a214b7ba0f2fb885e9d7cb`. The app has only an ad-hoc linker signature and no TeamIdentifier.
-- Isolated launch data: `/tmp/agentkib-stability-postreview-qa.ioCP8p`. The candidate exited 0 after `runtime-handshake` and `home-data-ready`, created a fresh `agentkib.db`, and left no listener on Dev port `47654`. Its packaged Runtime independently passed the same three-request EOF check with exactly one response per ID.
+- Rebuilt with Node 22 and pnpm 10.8.1 using `pnpm build`, followed by `pnpm --dir apps/desktop quota:prepare`. The unsigned directory candidate was packaged with `CSC_IDENTITY_AUTO_DISCOVERY=false pnpm --dir apps/desktop exec electron-builder --mac --arm64 --dir --publish never --config.directories.output=/tmp/agentkib-stability-postreview-2026-09-20-unsigned.REDACTED`.
+- Current candidate: `/tmp/agentkib-stability-postreview-2026-09-20-unsigned.REDACTED/mac-arm64/AgentKib.app`. Its packaged Runtime matches `target/release/agentkib-runtime` byte for byte; both have SHA-256 `7c3ead74975e9c6bf6f3ea61859802937fcf30dba64cb16979302985f8dcff76`. The quota sidecar SHA-256 is `fedb811ac46b82f560962874de85971b9486c80336a214b7ba0f2fb885e9d7cb`. The app has only an ad-hoc linker signature and no TeamIdentifier.
+- Isolated launch data: `/tmp/agentkib-stability-postreview-qa.REDACTED`. The candidate exited 0 after `runtime-handshake` and `home-data-ready`, created a fresh `agentkib.db`, and left no listener on Dev port `47654`. Its packaged Runtime independently passed the same three-request EOF check with exactly one response per ID.
 
 The previous headed browser and UI checks cover unchanged Web and Electron frontend source. This follow-up verified the rebuilt package's startup and Runtime EOF behavior; it did not repeat those visual checks.
 

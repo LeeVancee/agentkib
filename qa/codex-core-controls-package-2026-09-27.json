@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-27T04:07:29.074Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "frpcVersion": "0.68.0",
+  "bundledWeb": true,
+  "bundledLicense": true,
+  "bundledRustCsr": true,
+  "isolatedProfile": true,
+  "startup": {
+    "schemaVersion": 1,
+    "createdAt": "2026-09-27T04:07:28.916Z",
+    "platform": "darwin",
+    "arch": "arm64",
+    "marks": [
+      {
+        "name": "electron-main-start",
+        "elapsedMs": 0.03
+      },
+      {
+        "name": "app-ready",
+        "elapsedMs": 185.69
+      },
+      {
+        "name": "runtime-spawn",
+        "elapsedMs": 269.8
+      },
+      {
+        "name": "window-created",
+        "elapsedMs": 488.45
+      },
+      {
+        "name": "runtime-handshake",
+        "elapsedMs": 569.25
+      },
+      {
+        "name": "runtime-info",
+        "elapsedMs": 581.09
+      },
+      {
+        "name": "renderer-first-commit",
+        "elapsedMs": 745.45
+      },
+      {
+        "name": "window-shown",
+        "elapsedMs": 745.45
+      },
+      {
+        "name": "home-data-ready",
+        "elapsedMs": 1320.51
+      }
+    ],
+    "memory": {
+      "electronRssKb": 558688,
+      "runtimeRssKb": 14224,
+      "combinedRssKb": 572912
+    }
+  },
+  "notarized": false,
+  "artifacts": {
+    "dmg": {
+      "path": "apps/desktop/release-electron/AgentKib_0.11.0_macos-arm64.dmg",
+      "sha256": "1b5bc560c9dc3371616f678e84144afdf3288f35e14fa93cb4a637e8bda11ecb"
+    },
+    "zip": {
+      "path": "apps/desktop/release-electron/AgentKib_0.11.0_macos-arm64.zip",
+      "sha256": "1f317ac50a65135288749e92ae99009ca00d221665dc5d7206c3299f16cf06f6"
+    },
+    "hostedWeb": {
+      "path": "apps/web/dist-hosted",
+      "deployed": true,
+      "deployedAt": "2026-09-27T04:53:00Z",
+      "revision": "057da8b81a3f3c9536a568287175af8e50c12176",
+      "productionUrl": "https://remote.agentkib.com",
+      "pagesUrl": "https://agentkib-remote.pages.dev"
+    }
+  }
+}

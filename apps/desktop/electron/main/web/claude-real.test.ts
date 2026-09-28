@@ -1,20 +1,26 @@
 // @vitest-environment node
+import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 // Explicit opt-in only: this test incurs one real Claude turn in the specified test session.
 import { expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
 import { WebAccessService } from "./service";
 import { PROTOCOL_VERSION } from "../../generated/runtime-protocol";
 import { claudeAcceptanceTarget } from "./claude-acceptance-target";
 
-it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-0d653212b113")(
+// Real execution requires separate opt-in plus an explicit test workspace/session.
+const nativeSession = process.env.AGENTKIB_CLAUDE_REAL_SESSION;
+const testWorkspace = process.env.AGENTKIB_CLAUDE_REAL_WORKSPACE;
+it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_RUN !== "1" || !nativeSession || !testWorkspace)(
   "real Claude test session receives one Web message and returns history",
   async () => {
+    expect(nativeSession).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+    expect(isAbsolute(testWorkspace!)).toBe(true);
     const root = await mkdtemp(join(tmpdir(), "agentkib-claude-acceptance-"));
     const data = join(root, "runtime");
     await mkdir(data);
@@ -54,7 +60,7 @@ it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-
         protocolVersion: PROTOCOL_VERSION,
         client: { name: "agentkib-electron", version: "0.9.0" },
       });
-      const workspace = await rpc("workspace.add", { path: "/Users/kouzen/Documents/data/test" });
+      const workspace = await rpc("workspace.add", { path: testWorkspace! });
       const sessions = await rpc("workspace.refreshSessions", {
         workspaceId: workspace.id,
         force: true,
@@ -116,15 +122,11 @@ it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-
       };
       const access = await http("access");
       csrf = access.csrfToken;
-      const code = await service.request({ operation: "generate-code" });
-      const paired = await http("pair", { code: code.code!.value, name: "Claude real acceptance" });
       const approvalDecision = process.env.AGENTKIB_CLAUDE_REAL_DECISION;
       const questionTest = process.env.AGENTKIB_CLAUDE_REAL_QUESTION === "1";
       expect(questionTest && !!approvalDecision).toBe(false);
       expect([undefined, "allow", "deny"]).toContain(approvalDecision);
-      await service.request({
-        operation: "approve",
-        id: paired.pending.id,
+      const deviceId = await approveLegacyBrowser(service, cookie, {
         send: true,
         approve: !!approvalDecision,
       });
@@ -204,7 +206,7 @@ it.skipIf(process.env.AGENTKIB_CLAUDE_REAL_SESSION !== "3121ec99-e4cb-465b-8056-
           (event: any) => event.kind === "agent-message" && event.content?.includes(marker),
         ),
       ).toBe(true);
-      await service.request({ operation: "revoke", id: paired.pending.id });
+      await service.request({ operation: "revoke", id: deviceId });
       console.log("Claude real Web send + history return passed", marker);
     } finally {
       await service?.shutdown();

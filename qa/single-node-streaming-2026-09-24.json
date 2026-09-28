@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-24T02:59:50.457Z",
+  "environment": "local HTTP, sparse files, shared 2 MiB/s output, no packet loss",
+  "metrics": [
+    {
+      "fileMiB": 512,
+      "transferredMiB": 8,
+      "seconds": 3.909939542,
+      "peakRssDeltaMiB": 34.5,
+      "controlP95Ms": 1.786875000000009
+    },
+    {
+      "fileMiB": 8192,
+      "transferredMiB": 8,
+      "seconds": 4.019032333,
+      "peakRssDeltaMiB": 3.90625,
+      "controlP95Ms": 2.0744589999994787
+    }
+  ]
+}

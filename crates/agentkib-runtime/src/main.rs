@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 
 mod antigravity_runner;
 mod claude_runner;
+mod codex_managed;
 mod obsidian;
+mod relay_csr;
 mod skill_worker;
 mod web;
 
@@ -214,7 +216,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                if request.method == agentkib_protocol::WEB_REQUEST_METHOD {
+                if request.method == agentkib_protocol::WEB_REQUEST_METHOD
+                    || request.method == agentkib_protocol::CODEX_MANAGED_METHOD
+                    || request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
+                {
                     if let Some(response) = web_worker.submit(request) {
                         write_response(&mut stdout, response)?;
                     }
@@ -857,6 +862,7 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
     let method = request.method.clone();
     match method.as_str() {
         HANDSHAKE_METHOD => handle_handshake(request),
+        agentkib_protocol::RELAY_CREATE_CSR_METHOD => command_response(request, relay_csr::create),
         SHUTDOWN_METHOD => (RpcResponse::success(request.id, Value::Null), true),
         SCAN_WORKSPACE_METHOD => command_response(request, scan_workspace),
         PREPARE_MANIFEST_METHOD => command_response(request, prepare_manifest),

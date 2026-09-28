@@ -2,10 +2,34 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConnectionScreen } from "./connection-page";
+import { connectionCopy } from "./connection-copy";
+import { dictionaries, type Locale } from "@/i18n";
 
 afterEach(cleanup);
 
 describe("ConnectionScreen", () => {
+  it.each(Object.keys(connectionCopy) as Locale[])(
+    "keeps help and preferences optional without granting LAN consent in %s",
+    (locale) => {
+      const onConnect = vi.fn();
+      render(<ConnectionScreen initialLocale={locale} onConnect={onConnect} />);
+      const preferences = screen.getByRole("button", { name: dictionaries[locale].preferences });
+      const help = screen.getByRole("button", { name: connectionCopy[locale].addressHelp });
+      expect(preferences).toHaveAttribute("aria-expanded", "false");
+      expect(help).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(preferences);
+      fireEvent.click(help);
+      expect(preferences).toHaveAttribute("aria-expanded", "true");
+      expect(help).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(dictionaries[locale].lanRisk)).toBeInTheDocument();
+      expect(screen.getByRole("checkbox")).not.toBeChecked();
+      expect(screen.getByRole("button", { name: dictionaries[locale].connect })).toBeDisabled();
+      expect(onConnect).not.toHaveBeenCalled();
+      fireEvent.click(help);
+      expect(help).toHaveAttribute("aria-expanded", "false");
+    },
+  );
+
   it("requires consent and shows an error for an invalid address", () => {
     const onConnect = vi.fn();
     render(<ConnectionScreen onConnect={onConnect} />);

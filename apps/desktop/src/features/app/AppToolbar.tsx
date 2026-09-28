@@ -1,3 +1,4 @@
+import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
 import {
   DropdownMenu,
@@ -21,8 +22,8 @@ export function AppToolbar({
 }) {
   const { tr } = useI18n();
   return (
-    <div className="app-toolbar-content">
-      <div className="app-toolbar-breadcrumb" aria-label={tr("common.breadcrumb")}>
+    <div className={navigationStyles.appToolbarContent}>
+      <div className={navigationStyles.appToolbarBreadcrumb} aria-label={tr("common.breadcrumb")}>
         {breadcrumb.map((part, index) => (
           <span key={part + "-" + index}>
             {index > 0 ? <em>/</em> : null}
@@ -30,10 +31,10 @@ export function AppToolbar({
           </span>
         ))}
       </div>
-      <div className="app-toolbar-actions">
+      <div className="app-toolbar-actions flex shrink-0 items-center gap-1.5 pointer-events-auto [-webkit-app-region:no-drag]">
         <DropdownMenu>
           <DropdownMenuTrigger
-            className="app-toolbar-more"
+            className={navigationStyles.appToolbarMore}
             aria-label={tr("common.moreActions")}
             title={tr("common.moreActions")}
           >

@@ -1,3 +1,4 @@
+import { navigationStyles } from "@/components/navigationStyles";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@base-ui/react/tooltip";
 import {
@@ -208,8 +209,9 @@ export function AppSidebar(props: {
       size="content"
       data-sidebar-navigate
       className={cn(
-        "app-sidebar-item workspace-sidebar-child",
-        props.workspacePage === page && "app-sidebar-item-active",
+        navigationStyles.appSidebarItem,
+        "workspace-sidebar-child min-h-[34px] gap-2 py-[7px] px-2 text-xs!",
+        props.workspacePage === page && navigationStyles.appSidebarItemActive,
       )}
       aria-current={props.workspacePage === page ? "page" : undefined}
       onClick={() => props.onWorkspaceNavigate?.(page)}
@@ -258,7 +260,7 @@ export function AppSidebar(props: {
         )}
       >
         <div className="app-activity-bar">
-          <div className="activity-bar-brand">
+          <div className="activity-bar-brand [&_img]:size-[38px] [&_img]:object-contain">
             <img src={logo} alt="" aria-hidden="true" />
             <span className="sr-only">AgentKib</span>
           </div>
@@ -268,7 +270,10 @@ export function AppSidebar(props: {
               className="activity-bar-search"
             />
           )}
-          <nav className="activity-bar-navigation" aria-label={tr("common.primaryNavigation")}>
+          <nav
+            className="activity-bar-navigation flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto [scrollbar-width:none]"
+            aria-label={tr("common.primaryNavigation")}
+          >
             {props.entries.map(({ id, label, icon: Icon, badge, shortcut }) => (
               <ActivityBarTooltip key={id} label={tr(label)}>
                 <Button
@@ -288,12 +293,16 @@ export function AppSidebar(props: {
                 >
                   <Icon size={20} />
                   <span className="sr-only">{tr(label)}</span>
-                  {!!badge && <em className="activity-bar-badge">{badge}</em>}
+                  {!!badge && (
+                    <em className="activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] bg-sidebar-primary text-sidebar-primary-foreground text-[9px] leading-[15px] not-italic">
+                      {badge}
+                    </em>
+                  )}
                 </Button>
               </ActivityBarTooltip>
             ))}
           </nav>
-          <div className="activity-bar-footer">
+          <div className="activity-bar-footer flex flex-col gap-1.5">
             <ActivityBarTooltip label={tr("sessions.remote")}>
               <Button
                 variant="bare"
@@ -346,12 +355,14 @@ export function AppSidebar(props: {
           <div className="app-sidebar-content">
             <div className="app-sidebar-header">
               <SidebarBrand />
-              <h2 className="context-sidebar-title">{panelTitle}</h2>
+              <h2 className="context-sidebar-title m-0 px-2 text-[14px] font-[650] text-sidebar-foreground">
+                {panelTitle}
+              </h2>
             </div>
             <div ref={scrollRef} className="context-sidebar-scroll">
               {active === "workspaces" && (
                 <nav
-                  className="workspace-sidebar-directory"
+                  className="workspace-sidebar-directory grid gap-1.5"
                   aria-label={tr("sidebar.allWorkspaces")}
                 >
                   {(props.workspaces ?? []).map((workspace) => {
@@ -361,14 +372,15 @@ export function AppSidebar(props: {
                       <div key={workspace.id} className="workspace-sidebar-group">
                         <div
                           className={cn(
-                            "workspace-sidebar-row",
-                            selected && "workspace-sidebar-row-active",
+                            "workspace-sidebar-row flex items-center rounded-[8px]",
+                            selected &&
+                              "workspace-sidebar-row-active bg-[color-mix(in_srgb,var(--sidebar-accent)_50%,transparent)]",
                           )}
                         >
                           <Button
                             variant="bare"
                             size="content"
-                            className="workspace-sidebar-toggle"
+                            className="workspace-sidebar-toggle grid w-[22px] h-9 flex-[0_0_22px] place-items-center text-muted-foreground rounded-[6px] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg]:transition-transform [&_svg]:duration-160 [&_svg]:ease-[ease] motion-reduce:[&_svg]:transition-none"
                             aria-label={
                               tr(expanded ? "common.collapseSidebar" : "common.expandSidebar") +
                               ": " +
@@ -382,7 +394,10 @@ export function AppSidebar(props: {
                           <Button
                             variant="bare"
                             size="content"
-                            className="app-sidebar-item workspace-sidebar-name"
+                            className={cn(
+                              navigationStyles.appSidebarItem,
+                              "workspace-sidebar-name min-w-0 gap-[7px] pl-0.5 pr-1.5",
+                            )}
                             data-sidebar-navigate
                             title={workspace.name}
                             onClick={() => {
@@ -396,7 +411,7 @@ export function AppSidebar(props: {
                             </span>
                             {workspace.status === "attention" && (
                               <span
-                                className="app-sidebar-status-dot"
+                                className="app-sidebar-status-dot size-[0.4375rem] shrink-0 rounded-full bg-[var(--amber)]"
                                 aria-label={tr("status.workspace.attention")}
                               />
                             )}
@@ -406,11 +421,11 @@ export function AppSidebar(props: {
                           </Button>
                         </div>
                         {expanded && (
-                          <div className="workspace-sidebar-children">
+                          <div className="workspace-sidebar-children grid gap-0.5 mt-1 mb-2 ml-2.5 pl-2.5 border-l border-sidebar-border">
                             {selected ? (
                               <>
                                 {workspaceTaskEntries.map(renderWorkspaceEntry)}
-                                <div className="workspace-sidebar-divider" />
+                                <div className="workspace-sidebar-divider mx-2 my-1 border-t border-sidebar-border" />
                                 {workspaceDevelopmentEntries.map(renderWorkspaceEntry)}
                                 {(!!props.changeCount || props.workspacePage === "changes") && (
                                   <Button
@@ -418,9 +433,10 @@ export function AppSidebar(props: {
                                     size="content"
                                     data-sidebar-navigate
                                     className={cn(
-                                      "app-sidebar-item workspace-sidebar-child",
+                                      navigationStyles.appSidebarItem,
+                                      "workspace-sidebar-child min-h-[34px] gap-2 py-[7px] px-2 text-xs!",
                                       props.workspacePage === "changes" &&
-                                        "app-sidebar-item-active",
+                                        navigationStyles.appSidebarItemActive,
                                     )}
                                     aria-current={
                                       props.workspacePage === "changes" ? "page" : undefined
@@ -429,7 +445,7 @@ export function AppSidebar(props: {
                                   >
                                     <GitCompareArrows size={15} />
                                     <span>{tr("nav.changes")}</span>
-                                    <em className="app-sidebar-item-badge">
+                                    <em className="app-sidebar-item-badge grid min-w-5 h-5 place-items-center rounded-[0.4375rem] bg-sidebar-primary px-[0.3rem] text-sidebar-primary-foreground text-[0.6875rem] tabular-nums font-[650] leading-none">
                                       {props.changeCount ?? 0}
                                     </em>
                                   </Button>
@@ -443,7 +459,10 @@ export function AppSidebar(props: {
                                     variant="bare"
                                     size="content"
                                     data-sidebar-navigate
-                                    className="app-sidebar-item workspace-sidebar-child"
+                                    className={cn(
+                                      navigationStyles.appSidebarItem,
+                                      "workspace-sidebar-child min-h-[34px] gap-2 py-[7px] px-2 text-xs!",
+                                    )}
                                     onClick={() => props.onOpenWorkspace?.(workspace, page)}
                                   >
                                     <Icon size={15} />
@@ -465,20 +484,20 @@ export function AppSidebar(props: {
                 </nav>
               )}
               {context?.kind === "agents" && (
-                <div className="app-sidebar-group agent-sidebar-filters">
+                <div className="app-sidebar-group grid gap-0.5 agent-sidebar-filters mb-3">
                   {agentFilters.map(([id, label]) => (
                     <Button
                       key={id}
                       variant="bare"
                       size="content"
                       className={cn(
-                        "app-sidebar-item",
-                        context.filter === id && "app-sidebar-item-active",
+                        navigationStyles.appSidebarItem,
+                        context.filter === id && navigationStyles.appSidebarItemActive,
                       )}
                       aria-pressed={context.filter === id}
                       onClick={() => context.onFilterChange(id)}
                     >
-                      <span className="app-sidebar-item-icon">
+                      <span className={navigationStyles.appSidebarItemIcon}>
                         {id === "all" ? <Bot size={16} /> : <SlidersHorizontal size={16} />}
                       </span>
                       {tr(label)}

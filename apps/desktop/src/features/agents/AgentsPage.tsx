@@ -158,7 +158,7 @@ export function AgentsPage({
   return (
     <div className="grid gap-3 pb-8">
       <SidebarPanel>
-        <section className="agent-sidebar-tools">
+        <section className="agent-sidebar-tools mb-3">
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
             <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
               <Search size={14} className="text-muted-foreground" />
@@ -189,7 +189,7 @@ export function AgentsPage({
         </section>
 
         <div className="grid gap-4">
-          <div className="agent-sidebar-list">
+          <div className="agent-sidebar-list [&_small]:leading-normal">
             <div className="grid gap-1">
               {visibleAgentKinds.map((agent) => {
                 const item = installations.find((value) => value.agent === agent);

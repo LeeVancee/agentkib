@@ -42,7 +42,7 @@ export function WindowNavigationControls({
       <Button
         variant="bare"
         size="content"
-        className="app-sidebar-collapse-button"
+        className="app-sidebar-collapse-button max-lg:hidden grid size-6 place-items-center border-0 bg-transparent text-[color:color-mix(in_srgb,var(--sidebar-foreground)_58%,transparent)] transition-[transform,scale,color] duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] pointer-events-auto [-webkit-app-region:no-drag] hover:scale-[1.06] hover:text-sidebar-accent-foreground active:scale-[0.92] focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 motion-reduce:transition-none"
         type="button"
         aria-label={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
         aria-keyshortcuts={ariaShortcut(getShortcutDefinition("toggle-sidebar"), platform)}
@@ -69,7 +69,7 @@ export function WindowNavigationControls({
       <Button
         variant="bare"
         size="content"
-        className="app-history-button"
+        className="app-history-button grid size-6 place-items-center text-[color:color-mix(in_srgb,var(--foreground)_58%,transparent)] transition-[transform,scale,color] duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] enabled:hover:scale-[1.06] enabled:hover:text-foreground enabled:active:scale-[0.92] disabled:text-[color:color-mix(in_srgb,var(--foreground)_28%,transparent)] disabled:cursor-default focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 motion-reduce:transition-none"
         type="button"
         disabled={!canGoBack}
         aria-label={tr("shortcuts.back")}
@@ -82,7 +82,7 @@ export function WindowNavigationControls({
       <Button
         variant="bare"
         size="content"
-        className="app-history-button"
+        className="app-history-button grid size-6 place-items-center text-[color:color-mix(in_srgb,var(--foreground)_58%,transparent)] transition-[transform,scale,color] duration-180 ease-[cubic-bezier(0.22,1,0.36,1)] enabled:hover:scale-[1.06] enabled:hover:text-foreground enabled:active:scale-[0.92] disabled:text-[color:color-mix(in_srgb,var(--foreground)_28%,transparent)] disabled:cursor-default focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2 motion-reduce:transition-none"
         type="button"
         disabled={!canGoForward}
         aria-label={tr("shortcuts.forward")}

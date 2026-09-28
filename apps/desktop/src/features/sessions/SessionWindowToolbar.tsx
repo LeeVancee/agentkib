@@ -1,3 +1,5 @@
+import { cn } from "@/lib/utils";
+import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, LayoutDashboard, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,8 +23,8 @@ export function SessionWindowToolbar() {
   const workspace = hub.selectedWorkspace;
   if (!selected)
     return (
-      <div className="app-toolbar-content">
-        <div className="app-toolbar-breadcrumb" aria-label={tr("common.breadcrumb")}>
+      <div className={navigationStyles.appToolbarContent}>
+        <div className={navigationStyles.appToolbarBreadcrumb} aria-label={tr("common.breadcrumb")}>
           {tr("sessions.nav")}
         </div>
       </div>
@@ -41,7 +43,7 @@ export function SessionWindowToolbar() {
     });
   };
   return (
-    <div className="app-toolbar-content session-window-toolbar">
+    <div className={cn(navigationStyles.appToolbarContent, "session-window-toolbar")}>
       <AgentIcon agent={selected.agent} compact />
       <h1 className="session-window-title" title={displaySessionTitle(selected.title, tr)}>
         {displaySessionTitle(selected.title, tr)}
@@ -71,7 +73,10 @@ export function SessionWindowToolbar() {
       </div>
       <div className="session-window-menu">
         <DropdownMenu>
-          <DropdownMenuTrigger className="app-toolbar-more" aria-label={tr("common.moreActions")}>
+          <DropdownMenuTrigger
+            className={navigationStyles.appToolbarMore}
+            aria-label={tr("common.moreActions")}
+          >
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">

@@ -1,3 +1,4 @@
+import { navigationStyles } from "@/components/navigationStyles";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -310,11 +311,14 @@ export function SettingsSidebar(props: {
     <div className={props.embedded ? "settings-sidebar-content" : "app-sidebar-content"}>
       <div className="app-sidebar-header">
         {!props.embedded && (
-          <div className="app-sidebar-header-row">
+          <div className="app-sidebar-header-row flex min-w-0 items-center justify-between gap-2">
             <Button
               variant="bare"
               size="content"
-              className="app-sidebar-item app-sidebar-back-item app-settings-back"
+              className={cn(
+                navigationStyles.appSidebarItem,
+                "app-sidebar-back-item text-[color:color-mix(in_srgb,var(--sidebar-foreground)_58%,transparent)] app-settings-back",
+              )}
               type="button"
               title={tr("settings.backToApp")}
               onClick={() => {
@@ -322,7 +326,7 @@ export function SettingsSidebar(props: {
                 onBack();
               }}
             >
-              <span className="app-sidebar-item-icon">
+              <span className={navigationStyles.appSidebarItemIcon}>
                 <ArrowLeft size={18} />
               </span>
               <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
@@ -368,12 +372,15 @@ export function SettingsSidebar(props: {
               data-sidebar-navigate
               variant="bare"
               size="content"
-              className={cn("app-sidebar-item", active === id && "app-sidebar-item-active")}
+              className={cn(
+                navigationStyles.appSidebarItem,
+                active === id && navigationStyles.appSidebarItemActive,
+              )}
               aria-current={active === id ? "page" : undefined}
               title={tr(label)}
               onClick={() => select(id)}
             >
-              <span className="app-sidebar-item-icon">
+              <span className={navigationStyles.appSidebarItemIcon}>
                 <Icon size={18} />
               </span>
               <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
@@ -386,7 +393,7 @@ export function SettingsSidebar(props: {
             const sectionResults = results.filter((result) => result.section === id);
             if (!sectionResults.length) return null;
             return (
-              <section className="app-sidebar-group mt-1" key={id}>
+              <section className="app-sidebar-group grid gap-0.5 mt-1" key={id}>
                 <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">
                   {tr(label)}
                 </p>
@@ -397,8 +404,11 @@ export function SettingsSidebar(props: {
                     variant="bare"
                     size="content"
                     className={cn(
-                      "app-sidebar-item min-h-10 pl-3",
-                      active === id && activeTarget === result.target && "app-sidebar-item-active",
+                      navigationStyles.appSidebarItem,
+                      "min-h-10 pl-3",
+                      active === id &&
+                        activeTarget === result.target &&
+                        navigationStyles.appSidebarItemActive,
                     )}
                     aria-current={
                       active === id && activeTarget === result.target ? "location" : undefined

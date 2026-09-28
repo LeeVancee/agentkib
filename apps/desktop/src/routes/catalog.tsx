@@ -1,3 +1,4 @@
+import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -256,7 +257,10 @@ function CatalogPage({
               aria-label={tr("nav.assets")}
             >
               <TabsTrigger
-                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                className={cn(
+                  navigationStyles.appSidebarItem,
+                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                )}
                 value="instructions"
               >
                 <FileCode2 size={15} />
@@ -269,7 +273,10 @@ function CatalogPage({
                 </Badge>
               </TabsTrigger>
               <TabsTrigger
-                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                className={cn(
+                  navigationStyles.appSidebarItem,
+                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                )}
                 value="skills"
               >
                 <Sparkles size={15} />
@@ -282,7 +289,10 @@ function CatalogPage({
                 </Badge>
               </TabsTrigger>
               <TabsTrigger
-                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                className={cn(
+                  navigationStyles.appSidebarItem,
+                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                )}
                 value="mcp"
               >
                 <PlugZap size={15} />
@@ -295,7 +305,10 @@ function CatalogPage({
                 </Badge>
               </TabsTrigger>
               <TabsTrigger
-                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                className={cn(
+                  navigationStyles.appSidebarItem,
+                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                )}
                 value="memory"
               >
                 <Brain size={15} />
@@ -313,7 +326,10 @@ function CatalogPage({
                 </Badge>
               </TabsTrigger>
               <TabsTrigger
-                className="app-sidebar-item !h-10 !flex-none !justify-start gap-2 px-3"
+                className={cn(
+                  navigationStyles.appSidebarItem,
+                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                )}
                 value="other"
               >
                 <Boxes size={15} />

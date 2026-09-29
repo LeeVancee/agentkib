@@ -1272,7 +1272,7 @@ button {
   }
   :root[data-platform="windows"] .sidebar-mobile-trigger,
   :root[data-platform="linux"] .sidebar-mobile-trigger {
-    left: calc(var(--window-controls-left) + 7rem);
+    left: calc(var(--window-controls-left) + 0.75rem);
   }
   .sidebar-mobile-backdrop {
     position: fixed;

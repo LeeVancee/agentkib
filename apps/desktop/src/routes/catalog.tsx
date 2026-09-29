@@ -409,7 +409,7 @@ function GlobalMemoryInbox({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex w-full max-w-full flex-wrap items-center gap-2 sm:w-auto">
             <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm text-muted-foreground">
               {tr("assets.memories")}
               <strong className="font-semibold text-foreground">{records.length}</strong>

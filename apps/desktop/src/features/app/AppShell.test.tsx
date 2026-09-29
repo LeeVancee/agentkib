@@ -6,8 +6,11 @@ import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { AppShell, WindowNavigationControls } from "./AppShell";
 
+// 与真实 useLocation 一样支持 select：否则 AppShell 每次渲染都拿到新对象作为滚动缓存的 key。
+const testLocation = { href: "/settings", pathname: "/settings" };
 vi.mock("@tanstack/react-router", () => ({
-  useLocation: () => ({ href: "/settings" }),
+  useLocation: (options?: { select?: (location: typeof testLocation) => unknown }) =>
+    options?.select ? options.select(testLocation) : testLocation,
 }));
 
 describe("WindowNavigationControls", () => {

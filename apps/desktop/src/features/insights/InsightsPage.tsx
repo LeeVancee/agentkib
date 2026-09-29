@@ -15,7 +15,7 @@ import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useMemo, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import {
   Activity,
   Award,
@@ -78,14 +78,26 @@ export function InsightsPage({
   section: InsightsSection;
   workspaces: WorkspaceSummary[];
 }) {
-  const { formatCompactNumber, formatRelativeTime, localizeMessage, tr } = useI18n();
+  const { formatCompactNumber, formatNumber, formatRelativeTime, locale, localizeMessage, tr } =
+    useI18n();
+  const formatDay = (value: string) =>
+    new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(new Date(`${value}T00:00:00`));
   const [agent, setAgent] = useState<"all" | AgentKind>("all");
   const [workspaceId, setWorkspaceId] = useState("all");
   const [repository, setRepository] = useState("all");
   const [range, setRange] = useState<"52w" | "year">("52w");
   const [metric, setMetric] = useState<HeatmapMetric>("tokens");
+  // 选中的工作区/仓库被移除后，标签会回落成"全部"；查询也必须按"全部"发，不能继续带着旧 id。
+  const activeWorkspaceId = workspaces.some((value) => value.id === workspaceId)
+    ? workspaceId
+    : "all";
+  const activeRepository = workspaces.some((value) => value.repository_group_id === repository)
+    ? repository
+    : "all";
+  const day = useLocalDay();
   const query = useMemo<InsightsQuery>(() => {
-    const today = new Date();
+    const [year, month, date] = day.split("-").map(Number);
+    const today = new Date(year, month - 1, date);
     const from =
       range === "year"
         ? new Date(today.getFullYear(), 0, 1)
@@ -96,10 +108,10 @@ export function InsightsPage({
       from: localDate(from),
       to: localDate(today),
       agent: tokenView && agent !== "all" ? agent : undefined,
-      workspace_id: tokenView && workspaceId !== "all" ? workspaceId : undefined,
-      repository_group_id: commitView && repository !== "all" ? repository : undefined,
+      workspace_id: tokenView && activeWorkspaceId !== "all" ? activeWorkspaceId : undefined,
+      repository_group_id: commitView && activeRepository !== "all" ? activeRepository : undefined,
     };
-  }, [agent, workspaceId, repository, range, section]);
+  }, [agent, activeWorkspaceId, activeRepository, range, section, day]);
   const viewQuery = useInsightsView(query);
   const refreshJobQuery = useInsightsRefreshJob();
   const view = viewQuery.data;
@@ -116,11 +128,13 @@ export function InsightsPage({
     view?.status.running === true ||
     refreshJob?.state === "queued" ||
     refreshJob?.state === "running";
+  // 换了筛选条件、新数据还没到时，显示的是上一组条件的数据（keepPreviousData）。
+  // 必须标出来，否则旧的总数会顶着新的筛选标签显示。
+  const stale = viewQuery.isPlaceholderData === true;
+  // 刷新任务失败由路由顶部统一提示（那里也有手动刷新的错误），这里不再重复一份。
   const error =
     (viewQuery.error ? localizeMessage(viewQuery.error) : "") ||
-    (refreshJobQuery.error ? localizeMessage(refreshJobQuery.error) : "") ||
-    (refreshJob?.state === "failed" ? refreshJob.error : undefined) ||
-    "";
+    (refreshJobQuery.error ? localizeMessage(refreshJobQuery.error) : "");
   const metricLabels: Record<HeatmapMetric, string> = {
     tokens: "Token",
     my_commits: tr("insights.myCommits"),
@@ -179,12 +193,31 @@ export function InsightsPage({
   }
 
   return (
-    <div className="relative grid gap-5">
+    <div
+      className={cn(
+        "relative grid gap-5",
+        stale && "[&>*:not(:first-child)]:opacity-60 [&>*:not(:first-child)]:transition-opacity",
+      )}
+      aria-busy={stale || undefined}
+    >
       <section className="grid gap-3">
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {busy && <Badge variant="secondary">{tr("tray.refreshInsights")}</Badge>}
+          {busy ? (
+            <Badge variant="secondary" role="status">
+              {tr("tray.refreshInsights")}
+            </Badge>
+          ) : (
+            stale && (
+              <Badge variant="secondary" role="status">
+                {tr("insights.refreshing")}
+              </Badge>
+            )
+          )}
           {error && (
-            <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <div
+              role="alert"
+              className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
               <CircleAlert size={16} />
               {error}
             </div>
@@ -222,7 +255,7 @@ export function InsightsPage({
                   if (value !== null) setAgent(String(value) as typeof agent);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("workspace.allAgents")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.filterAgent")}>
                   <SelectValue>
                     {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
                   </SelectValue>
@@ -239,17 +272,16 @@ export function InsightsPage({
             )}
             {showTokenFilters && (
               <Select
-                value={workspaceId}
+                value={activeWorkspaceId}
                 onValueChange={(value) => {
                   if (value !== null) setWorkspaceId(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("workspace.all")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.filterWorkspace")}>
                   <SelectValue>
-                    {workspaceId === "all"
+                    {activeWorkspaceId === "all"
                       ? tr("workspace.all")
-                      : (workspaces.find((value) => value.id === workspaceId)?.name ??
-                        tr("workspace.all"))}
+                      : workspaces.find((value) => value.id === activeWorkspaceId)?.name}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -264,17 +296,16 @@ export function InsightsPage({
             )}
             {showCommitFilters && (
               <Select
-                value={repository}
+                value={activeRepository}
                 onValueChange={(value) => {
                   if (value !== null) setRepository(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.allRepositories")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.filterRepository")}>
                   <SelectValue>
-                    {repository === "all"
+                    {activeRepository === "all"
                       ? tr("insights.allRepositories")
-                      : (repositoryOptions.find(([id]) => id === repository)?.[1] ??
-                        tr("insights.allRepositories"))}
+                      : repositoryOptions.find(([id]) => id === activeRepository)?.[1]}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -294,7 +325,7 @@ export function InsightsPage({
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.range52w")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.filterRange")}>
                   <SelectValue>
                     {range === "52w" ? tr("insights.range52w") : tr("insights.rangeYear")}
                   </SelectValue>
@@ -385,6 +416,17 @@ export function InsightsPage({
                           year={range === "year" ? heatmapYear : undefined}
                         />
                         <div
+                          // 几百个色块对读屏没有意义：整张图作为一张图片，用文字摘要代替。
+                          role="img"
+                          aria-label={tr("insights.heatmapSummary", {
+                            metric: metricLabels[metric],
+                            from: formatDay(query.from!),
+                            to: formatDay(query.to!),
+                            active: formatNumber(
+                              points.filter((value) => value[metric] > 0).length,
+                            ),
+                            peak: formatCompactNumber(points.length ? max : 0),
+                          })}
                           className="[--heatmap-cell-size:11px] grid w-full grid-flow-col grid-rows-[repeat(7,11px)] auto-cols-[11px] gap-1 max-[1200px]:[--heatmap-cell-size:8px] max-[1200px]:grid-rows-[repeat(7,8px)] max-[1200px]:auto-cols-[8px] max-[1200px]:gap-[2px]"
                           style={{
                             gridTemplateColumns: `repeat(${heatmapColumns}, var(--heatmap-cell-size))`,
@@ -425,7 +467,7 @@ export function InsightsPage({
                   <div className="flex items-center justify-end gap-1 border-t border-border px-5 py-3 text-[10px] text-muted-foreground">
                     <span>{tr("insights.less")}</span>
                     {[0, 1, 2, 3, 4].map((level) => (
-                      <i key={level} className={heatmapCellClass(level)} />
+                      <i key={level} className={heatmapCellClass(level)} aria-hidden="true" />
                     ))}
                     <span>{tr("insights.more")}</span>
                   </div>
@@ -1089,7 +1131,7 @@ function TokenTrendCard({
   metric: HeatmapMetric;
   metricLabel: string;
 }) {
-  const { locale, tr } = useI18n();
+  const { formatCompactNumber, locale, tr } = useI18n();
   const monthly = new Map<string, number>();
   for (const point of points) {
     const key = point.date.slice(0, 7);
@@ -1124,7 +1166,15 @@ function TokenTrendCard({
               className="h-[170px] w-full overflow-visible"
               preserveAspectRatio="none"
               role="img"
-              aria-label={trendLabel}
+              aria-label={tr("insights.trendSummary", {
+                label: trendLabel,
+                values: series
+                  .map(
+                    ([key, value]) =>
+                      `${monthFormatter.format(new Date(`${key}-01T00:00:00`))} ${formatCompactNumber(value)}`,
+                  )
+                  .join(", "),
+              })}
             >
               {[26, 67, 108, 150].map((y) => (
                 <line
@@ -1326,6 +1376,18 @@ function formatMilestoneValue(
   tr: ReturnType<typeof useI18n>["tr"],
 ) {
   return tr(`milestones.value.${category}`, { value: formatCompactNumber(value) });
+}
+/**
+ * 本地日期（YYYY-MM-DD），跨过午夜后更新。窗口一直开着时，查询范围要跟着换到新的一天，
+ * 否则"今天"那一格和连续天数一直缺失。每分钟检查一次，睡眠唤醒后也能追上。
+ */
+function useLocalDay() {
+  const [day, setDay] = useState(() => localDate(new Date()));
+  useEffect(() => {
+    const timer = window.setInterval(() => setDay(localDate(new Date())), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return day;
 }
 function localDate(value: Date) {
   const year = value.getFullYear();

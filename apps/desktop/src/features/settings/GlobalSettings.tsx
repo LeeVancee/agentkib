@@ -1,5 +1,4 @@
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
 import { useI18n } from "@/core/useI18n";
 import { useMemo, useState, type ReactNode } from "react";
 import { useOptionalQueryClient } from "@/features/home/home-query";
@@ -970,9 +969,7 @@ function GitIdentitySettings() {
           >
             <GitCommitHorizontal size={15} className="text-muted-foreground" />
             <span className="min-w-0">
-              <strong className="block break-all text-sm font-medium">
-                {metadataLabel(identity.label, tr)}
-              </strong>
+              <strong className="block break-all text-sm font-medium">{tr(identity.label)}</strong>
               <small className="mt-1 block text-xs text-muted-foreground">
                 {identity.source} · {identity.id.slice(0, 10)}…
               </small>
@@ -991,13 +988,4 @@ function GitIdentitySettings() {
       </div>
     </SettingsSection>
   );
-}
-
-function metadataLabel(value: string, tr: TFunction) {
-  if (value === "__unknown_model__") return tr("insights.unknownModel");
-  if (value === "__unlinked_workspace__") return tr("insights.unlinkedWorkspace");
-  if (value === "仓庫 Git 身份") return tr("settings.gitIdentityRepository");
-  if (value === "全局 Git 身份") return tr("settings.gitIdentityGlobal");
-  if (value === "历史邮箱别名") return tr("settings.gitIdentityAlias");
-  return value.startsWith("settings.gitIdentity") ? tr(value) : value;
 }

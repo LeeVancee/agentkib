@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -79,6 +79,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const [extraRootsText, setExtraRootsText] = useState<string>();
   const [relayBroker, setRelayBroker] = useState("");
   const [frpcPath, setFrpcPath] = useState("");
+  const frpcHintId = useId();
   const [inviteCode, setInviteCode] = useState("");
   const [grants, setGrants] = useState<
     Record<
@@ -552,6 +553,20 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
               {r.failureCodes[status.relay.failure.code]}
             </p>
           )}
+          {status?.relay?.connectorExit && (
+            <p className="text-xs text-muted-foreground">
+              {status.relay.connectorExit.code !== undefined && (
+                <>
+                  {r.exitCode}: {status.relay.connectorExit.code}
+                </>
+              )}
+              {status.relay.connectorExit.signal && (
+                <>
+                  {r.exitSignal}: {status.relay.connectorExit.signal}
+                </>
+              )}
+            </p>
+          )}
           {status?.relay?.retryAt && status.relay.retryAt > now && (
             <p className="text-xs text-muted-foreground">
               {r.retryAt} {formatDateTime(new Date(status.relay.retryAt))}
@@ -601,10 +616,14 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
                 {r.frpc}
                 <Input
                   value={frpcPath}
+                  aria-describedby={frpcHintId}
                   placeholder={r.bundled}
                   onChange={(e) => setFrpcPath(e.target.value)}
                 />
               </label>
+              <p id={frpcHintId} className="text-xs text-muted-foreground">
+                {r.frpcHint}
+              </p>
               <label className="block">
                 {r.bandwidth}
                 <Input

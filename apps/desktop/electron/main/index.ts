@@ -154,7 +154,7 @@ app.on("before-quit", (event) => {
   nativeShell?.destroy();
   void (async () => {
     try {
-      await Promise.allSettled([webAccess?.shutdown(), lanWebAccess?.shutdown()]);
+      await Promise.allSettled([webAccess?.dispose(), lanWebAccess?.dispose()]);
     } finally {
       await runtimeHost?.stop();
     }

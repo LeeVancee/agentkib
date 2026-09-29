@@ -280,6 +280,29 @@ function isControlRequest(method: string | undefined, path: string): boolean {
   // 其余 /codex/* POST（重命名、归档、队列等）一律按控制请求处理；inspect 是只读探测。
   return method === "POST" && path.startsWith("/codex/") && path !== "/codex/inspect";
 }
+/**
+ * relay broker 只能是 HTTPS origin（可带结尾的 "/"），返回规范化后的 origin。
+ * 类型不对或无法解析时抛 invalid_relay_configuration，而不是把 URL 的 TypeError 原样抛给设置页。
+ */
+function relayBrokerOrigin(value: unknown): string {
+  let url: URL | undefined;
+  try {
+    if (typeof value === "string") url = new URL(value.trim());
+  } catch {
+    url = undefined;
+  }
+  if (
+    !url ||
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    throw new Error("invalid_relay_configuration");
+  return url.origin;
+}
 /** 读取 runtime 快照上的字段；快照不是对象或缺少该字段时返回 undefined。 */
 function snapshotField(snapshot: unknown, key: string): unknown {
   return snapshot !== null && typeof snapshot === "object" && key in snapshot
@@ -335,6 +358,7 @@ export class WebAccessService {
   private previewStarting?: Promise<void>;
   private relay?: RelayManager;
   private relayEpoch = 0;
+  private disposed = false;
   private remotePairingInitialized = false;
   private contextArtifactRefs = new Map<
     string,
@@ -565,7 +589,18 @@ export class WebAccessService {
     this.adminQueue = result.catch(() => undefined);
     return result;
   }
+  /**
+   * 应用退出时调用。排在正在执行的桌面操作之后：否则进行到一半的 remote-enable 会在
+   * shutdown 之后重新监听端口、再建一个 RelayManager（连带一个 frpc）。之后的操作一律拒绝。
+   */
+  dispose(): Promise<void> {
+    this.disposed = true;
+    const result = this.adminQueue.then(() => this.shutdown());
+    this.adminQueue = result.catch(() => undefined);
+    return result;
+  }
   private async admin(input: WebAdminRequest): Promise<WebAdminStatus> {
+    if (this.disposed) throw new Error("web_unavailable");
     if (!input || typeof input !== "object") throw new Error("invalid_admin_request");
     if (["approve", "reject", "revoke", "set-access"].includes(input.operation))
       this.field((input as { id: string }).id);
@@ -590,22 +625,22 @@ export class WebAccessService {
           throw new Error("remote_enable_unavailable");
         if (input.reenroll && (typeof input.inviteCode !== "string" || !input.inviteCode.trim()))
           throw new Error("invitation_required_for_reenrollment");
-        if (input.brokerUrl === DEFAULT_RELAY_BROKER) {
+        const brokerUrl = relayBrokerOrigin(input.brokerUrl);
+        if (brokerUrl === DEFAULT_RELAY_BROKER) {
           const identity = await this.accountIdentity();
           if (identity?.accountClaimPending) throw new Error("account_claim_pending");
           if (identity?.accountId && !this.options.account)
             throw new Error("account_login_required");
           await this.options.account?.ensureDeviceOwner(identity?.accountId);
         }
-        const changedBroker =
-          !!this.config.relay && this.config.relay.brokerUrl !== input.brokerUrl;
+        const changedBroker = !!this.config.relay && this.config.relay.brokerUrl !== brokerUrl;
         const next = this.validateConfig({
           ...this.config,
           enabled: true,
           externalOrigin: changedBroker ? "" : this.config.externalOrigin,
           relay: {
             enabled: true,
-            brokerUrl: input.brokerUrl,
+            brokerUrl,
             ...(input.frpcPath ? { frpcPath: input.frpcPath } : {}),
           },
         });
@@ -828,11 +863,9 @@ export class WebAccessService {
       throw new Error("invalid_workspace_grants");
     if (input.relay) {
       const relay = input.relay;
-      const broker = new URL(relay.brokerUrl);
+      relayBrokerOrigin(relay.brokerUrl);
       if (
         typeof relay.enabled !== "boolean" ||
-        broker.protocol !== "https:" ||
-        broker.origin !== relay.brokerUrl ||
         (relay.frpcPath !== undefined &&
           (typeof relay.frpcPath !== "string" ||
             !isAbsolute(relay.frpcPath) ||
@@ -875,7 +908,7 @@ export class WebAccessService {
         ? {
             relay: {
               enabled: input.relay.enabled,
-              brokerUrl: input.relay.brokerUrl,
+              brokerUrl: relayBrokerOrigin(input.relay.brokerUrl),
               ...(input.relay.frpcPath ? { frpcPath: input.relay.frpcPath } : {}),
             },
           }
@@ -933,6 +966,7 @@ export class WebAccessService {
     return result;
   }
   private async start(connectRelay = true) {
+    if (this.disposed) return;
     this.error = undefined;
     if (
       this.options.mode === "lan" &&
@@ -1112,6 +1146,7 @@ export class WebAccessService {
     await rename(file + ".tmp", file);
   }
   private startRelay(inviteCode?: string, reenroll?: boolean) {
+    if (this.disposed) return;
     const config = this.config.relay;
     if (!config?.enabled) return;
     const targets = this.relayTargets();
@@ -1119,6 +1154,7 @@ export class WebAccessService {
     this.relay = new RelayManager({
       brokerUrl: config.brokerUrl,
       frpcPath: config.frpcPath || this.options.bundledFrpcPath || "",
+      trustedFrpcPath: this.options.bundledFrpcPath || "",
       createCsr:
         this.options.createRelayCsr ?? (() => Promise.reject(new Error("runtime_unavailable"))),
       inviteCode,

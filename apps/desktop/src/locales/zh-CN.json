@@ -877,6 +877,8 @@
   "insights.workspaceFilter": "工作区筛选",
   "insights.repositoryFilter": "仓库筛选",
   "insights.range": "时间范围",
+  "insights.loadFailed": "统计加载失败",
+  "insights.retry": "重试",
   "insights.allRepositories": "全部仓库",
   "insights.range52w": "近 52 周",
   "insights.rangeYear": "今年",

@@ -880,6 +880,8 @@
   "insights.workspaceFilter": "Workspace filter",
   "insights.repositoryFilter": "Repository filter",
   "insights.range": "Time range",
+  "insights.loadFailed": "Couldn't load insights",
+  "insights.retry": "Retry",
   "insights.allRepositories": "All Repositories",
   "insights.range52w": "Last 52 Weeks",
   "insights.rangeYear": "This Year",

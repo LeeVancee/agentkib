@@ -877,6 +877,8 @@
   "insights.workspaceFilter": "ワークスペースフィルター",
   "insights.repositoryFilter": "リポジトリフィルター",
   "insights.range": "期間",
+  "insights.loadFailed": "統計を読み込めませんでした",
+  "insights.retry": "再試行",
   "insights.allRepositories": "すべてのリポジトリ",
   "insights.range52w": "直近 52 週",
   "insights.rangeYear": "今年",

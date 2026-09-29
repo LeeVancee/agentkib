@@ -877,6 +877,8 @@
   "insights.workspaceFilter": "工作區篩選",
   "insights.repositoryFilter": "儲存庫篩選",
   "insights.range": "時間範圍",
+  "insights.loadFailed": "統計載入失敗",
+  "insights.retry": "重試",
   "insights.allRepositories": "所有儲存庫",
   "insights.range52w": "近 52 週",
   "insights.rangeYear": "今年",

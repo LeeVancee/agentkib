@@ -39,3 +39,13 @@ export function buildHeatmapMonthMarkers(
   }
   return [...markers.values()];
 }
+
+/**
+ * 52 周几乎总会跨 13 个自然月：保留最近的 12 个（当月最重要），而不是丢掉当月。
+ * 开头的残月如果离下一个标签不足 2 列，文字会重叠，也去掉。
+ */
+export function trimHeatmapMonthMarkers(markers: HeatmapMonthMarker[], limit = 12) {
+  const readable =
+    markers.length > 1 && markers[1].column - markers[0].column < 2 ? markers.slice(1) : markers;
+  return readable.slice(-limit);
+}

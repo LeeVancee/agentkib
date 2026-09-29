@@ -452,7 +452,7 @@ it("shows code-only full access without confirmation or per-workspace grants for
   render(<WebAccessSettings />);
   expect(await screen.findByText("Trusted phone")).toBeTruthy();
   expect(screen.getByText("Full remote access")).toBeTruthy();
-  expect(screen.getByText(/A valid access code grants full remote access/)).toBeTruthy();
+  expect(screen.getByText(/authorizes all AgentKib workspaces at the selected level/)).toBeTruthy();
   expect(screen.queryByText("Pending browsers")).toBeNull();
   fireEvent.click(screen.getByText("Advanced connection and permissions"));
   expect(screen.queryByRole("checkbox", { name: "Private project" })).toBeNull();
@@ -462,6 +462,46 @@ it("shows code-only full access without confirmation or per-workspace grants for
   ).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
   await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: "revoke", id: "full" }));
+});
+
+it("generates a read-only code and changes an authorized device's access level", async () => {
+  const user = userEvent.setup();
+  request.mockResolvedValue({
+    ...status,
+    config: { ...status.config, enabled: true },
+    running: true,
+    pairingMode: "code",
+    devices: [
+      {
+        id: "tablet",
+        name: "Tablet",
+        accessMode: "full",
+        accessLevel: "read",
+        send: false,
+        approve: false,
+        files: true,
+      },
+    ],
+  });
+  render(<WebAccessSettings />);
+  expect(await screen.findByText("Tablet")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Access level: Tablet" }).textContent).toContain(
+    "Read-only (sessions and files)",
+  );
+
+  await user.click(screen.getByText("Advanced connection and permissions"));
+  await user.click(screen.getByRole("combobox", { name: "Access level" }));
+  await user.click(await screen.findByRole("option", { name: "Read-only (sessions and files)" }));
+  await user.click(screen.getByRole("button", { name: "Generate 8-digit access code" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({ operation: "generate-code", access: "read" }),
+  );
+
+  await user.click(screen.getByRole("combobox", { name: "Access level: Tablet" }));
+  await user.click(await screen.findByRole("option", { name: "Full remote access" }));
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith({ operation: "set-access", id: "tablet", access: "full" }),
+  );
 });
 
 it("keeps legacy grant settings explicitly separate on code-only hosts", async () => {

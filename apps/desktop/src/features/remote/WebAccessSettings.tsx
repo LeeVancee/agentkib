@@ -16,6 +16,7 @@ import {
   SettingsNotice,
 } from "@/features/settings/components/SettingsLayout";
 import type {
+  WebAccessLevel,
   WebAdminRequest,
   WebAdminStatus,
   WebConfig,
@@ -41,6 +42,8 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const c = { ...webSettingsCopy[locale], ...(lan ? l : {}) };
   const fieldPrefix = lan ? "lan-web" : "web";
   const [status, setStatus] = useState<WebAdminStatus>();
+  // 默认保持原有行为（完全控制）；用户可在生成授权码前切换为只读。
+  const [codeLevel, setCodeLevel] = useState<WebAccessLevel>("full");
   const codeAccess = !lan && status?.pairingMode === "code";
   const showLegacyPermissions =
     !codeAccess ||
@@ -153,6 +156,27 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
     status?.running &&
     !status.config.relay?.enabled &&
     (!status.relay || status.relay.phase === "disabled");
+  const levelLabel = (level: WebAccessLevel) =>
+    level === "read" ? c.readOnlyAccess : c.fullAccess;
+  const generateCode = () =>
+    run({ operation: "generate-code", ...(codeAccess ? { access: codeLevel } : {}) });
+  const accessLevelSelect = codeAccess ? (
+    <Select
+      value={codeLevel}
+      disabled={busy}
+      onValueChange={(value) => {
+        if (value === "read" || value === "full") setCodeLevel(value);
+      }}
+    >
+      <SelectTrigger className="h-9 w-auto" aria-label={c.accessLevel}>
+        <SelectValue>{levelLabel(codeLevel)}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
+        <SelectItem value="full">{c.fullAccess}</SelectItem>
+      </SelectContent>
+    </Select>
+  ) : null;
   const pairingCode =
     status?.code && status.code.expiresAt > now ? (
       <SettingsNotice className="items-center justify-end gap-3">
@@ -161,6 +185,11 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           <p>
             {c.expires} {formatDateTime(new Date(status.code.expiresAt))}
           </p>
+          {codeAccess && (
+            <p>
+              {c.accessLevel}: {levelLabel(status.code.access)}
+            </p>
+          )}
         </div>
         <Button
           variant="outline"
@@ -356,13 +385,16 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           {c.save}
         </Button>
         {(lan || manualAccess) && (
-          <Button
-            variant="outline"
-            disabled={busy || !status?.running}
-            onClick={() => void run({ operation: "generate-code" })}
-          >
-            {codeAccess ? c.generateAccess : c.generate}
-          </Button>
+          <>
+            {accessLevelSelect}
+            <Button
+              variant="outline"
+              disabled={busy || !status?.running}
+              onClick={() => void generateCode()}
+            >
+              {codeAccess ? c.generateAccess : c.generate}
+            </Button>
+          </>
         )}
       </div>
       {manualAccess && (
@@ -512,13 +544,12 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
             </p>
           )}
           {status?.relay?.phase === "ready" && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void run({ operation: "generate-code" })}
-            >
-              {codeAccess ? c.generateAccess : c.generate}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {accessLevelSelect}
+              <Button variant="outline" disabled={busy} onClick={() => void generateCode()}>
+                {codeAccess ? c.generateAccess : c.generate}
+              </Button>
+            </div>
           )}
           {status?.relay?.phase === "ready" && status.relay.publicUrl && (
             <div className="space-y-2">
@@ -667,31 +698,56 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
           <SettingsCopy>
             <strong>{device.name}</strong>
             <small>
-              {device.accessMode === "full"
-                ? c.fullAccess
-                : [
-                    c.read,
-                    device.send && c.send,
-                    device.approve && c.approve,
-                    device.manage && c.manage,
-                    device.files && c.files,
-                    device.attachments && c.attachments,
-                    device.advancedControl && c.advancedControl,
-                    device.organize && c.organize,
-                    device.settings && c.settings,
-                    device.extendedApproval && c.extendedApproval,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
+              {device.accessLevel
+                ? levelLabel(device.accessLevel)
+                : device.accessMode === "full"
+                  ? c.fullAccess
+                  : [
+                      c.read,
+                      device.send && c.send,
+                      device.approve && c.approve,
+                      device.manage && c.manage,
+                      device.files && c.files,
+                      device.attachments && c.attachments,
+                      device.advancedControl && c.advancedControl,
+                      device.organize && c.organize,
+                      device.settings && c.settings,
+                      device.extendedApproval && c.extendedApproval,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
             </small>
           </SettingsCopy>
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() => void run({ operation: "revoke", id: device.id })}
-          >
-            {c.revoke}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {codeAccess && device.accessLevel && (
+              <Select
+                value={device.accessLevel}
+                disabled={busy}
+                onValueChange={(value) => {
+                  if ((value === "read" || value === "full") && value !== device.accessLevel)
+                    void run({ operation: "set-access", id: device.id, access: value });
+                }}
+              >
+                <SelectTrigger
+                  className="h-9 w-auto"
+                  aria-label={`${c.accessLevel}: ${device.name}`}
+                >
+                  <SelectValue>{levelLabel(device.accessLevel)}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="read">{c.readOnlyAccess}</SelectItem>
+                  <SelectItem value="full">{c.fullAccess}</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run({ operation: "revoke", id: device.id })}
+            >
+              {c.revoke}
+            </Button>
+          </div>
         </SettingsRow>
       ))}
     </SettingsSection>

@@ -166,6 +166,83 @@ describe("same-origin one-time code full authorization", () => {
     );
   });
 
+  it("grants a read-only code history and files but rejects every write", async () => {
+    const b = await browser();
+    const status = await service.request({ operation: "generate-code", access: "read" });
+    expect(status.code!.access).toBe("read");
+    const result = await b.api("pair", { code: status.code!.value, name: "Tablet" });
+    expect(result.status).toBe(200);
+    expect(result.data.device).toMatchObject({
+      accessMode: "full",
+      files: true,
+      send: false,
+      approve: false,
+      manage: false,
+      attachments: false,
+      advancedControl: false,
+      organize: false,
+      settings: false,
+      extendedApproval: false,
+    });
+    expect((await service.request({ operation: "status" })).devices[0].accessLevel).toBe("read");
+    expect((await b.api("catalog")).status).toBe(200);
+    expect((await b.api("files/workspaces")).data.workspaces).toEqual([
+      { id: "first", name: "First" },
+    ]);
+    const send = await b.api("send", {
+      sessionId: "session-first",
+      text: "test",
+      expectedRevision: 1,
+      bootId: b.access.bootId,
+      requestId: randomUUID(),
+    });
+    expect(send.status).toBe(403);
+    const create = await b.api("managed/create", {
+      workspaceId: "first",
+      bootId: b.access.bootId,
+      requestId: randomUUID(),
+    });
+    expect(create.status).toBe(403);
+    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "create" }));
+    expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "send" }));
+  });
+
+  it("changes a paired device between read-only and full access from the desktop", async () => {
+    const b = await browser();
+    const paired = await b.api("pair", {
+      code: (await service.request({ operation: "generate-code", access: "read" })).code!.value,
+      name: "Tablet",
+    });
+    const id = paired.data.device.id;
+    const send = () =>
+      b.api("send", {
+        sessionId: "session-first",
+        text: "test",
+        expectedRevision: 1,
+        bootId: b.access.bootId,
+        requestId: randomUUID(),
+      });
+    expect((await send()).status).toBe(403);
+
+    const upgraded = await service.request({ operation: "set-access", id, access: "full" });
+    expect(upgraded.devices[0]).toMatchObject({ id, accessLevel: "full", send: true });
+    expect((await send()).status).toBe(200);
+
+    await service.request({ operation: "set-access", id, access: "read" });
+    expect((await send()).status).toBe(403);
+    const saved = JSON.parse(await readFile(join(dir, "web-access.json"), "utf8"));
+    expect(saved.credentials[0].device).toMatchObject({ id, send: false, files: true });
+  });
+
+  it("rejects unknown access levels and devices", async () => {
+    await expect(
+      service.request({ operation: "generate-code", access: "admin" as never }),
+    ).rejects.toThrow("invalid_admin_request");
+    await expect(
+      service.request({ operation: "set-access", id: "missing", access: "full" }),
+    ).rejects.toThrow("device_not_found");
+  });
+
   it("rejects invented workspace IDs and removed workspaces, without accepting client paths", async () => {
     const b = await browser();
     await b.api("pair", { code: await code(), name: "Phone" });

@@ -52,6 +52,7 @@ import {
   agentSupportsInsights,
   buildHeatmapMonthMarkers,
   insightsAgentKinds,
+  trimHeatmapMonthMarkers,
 } from "@/features/insights/insights";
 import type {
   AgentUsageBreakdown,
@@ -129,10 +130,15 @@ export function InsightsPage({
   };
   const max = Math.max(1, ...points.map((point) => point[metric]));
   const padding = points.length ? (new Date(`${points[0].date}T00:00:00`).getDay() + 6) % 7 : 0;
-  const heatmapYear = points.length ? Number(points[0].date.slice(0, 4)) : new Date().getFullYear();
+  // 年份取自请求本身：切换到"今年"时，旧的 52 周数据还作为占位显示，points[0] 可能是去年。
+  const heatmapYear = Number(query.from!.slice(0, 4));
   const heatmapPadding =
     range === "year" ? (new Date(heatmapYear, 0, 1).getDay() + 6) % 7 : padding;
-  const heatmapDays = range === "year" ? new Date(heatmapYear + 1, 0, 0).getDate() : points.length;
+  // 全年天数（365/366）。new Date(y + 1, 0, 0).getDate() 只是 12 月的天数 31。
+  const heatmapDays =
+    range === "year"
+      ? (Date.UTC(heatmapYear + 1, 0, 1) - Date.UTC(heatmapYear, 0, 1)) / 86_400_000
+      : points.length;
   const heatmapColumns = Math.max(1, Math.ceil((heatmapPadding + heatmapDays) / 7));
   const repositoryOptions = [
     ...new Map(
@@ -147,7 +153,30 @@ export function InsightsPage({
   const showMetricTabs = section === "overview";
   const filterClass = "h-10 min-w-[132px] max-[520px]:min-w-0 max-[520px]:flex-1";
 
-  if (!view) return <InsightsSkeleton section={section} />;
+  if (!view) {
+    // 首次加载（或切换筛选后）失败时没有旧数据可显示；不能一直停在骨架屏，要给出错误和重试入口。
+    if (viewQuery.isError)
+      return (
+        <Card className="rounded-2xl border-border bg-card shadow-sm">
+          <div
+            role="alert"
+            className="grid justify-items-center gap-3 px-6 py-10 text-center text-sm"
+          >
+            <CircleAlert size={20} className="text-destructive" />
+            <strong>{tr("insights.loadFailed")}</strong>
+            <p className="text-muted-foreground">{localizeMessage(viewQuery.error)}</p>
+            <Button
+              variant="outline"
+              disabled={viewQuery.isFetching}
+              onClick={() => void viewQuery.refetch()}
+            >
+              {tr("insights.retry")}
+            </Button>
+          </div>
+        </Card>
+      );
+    return <InsightsSkeleton section={section} />;
+  }
 
   return (
     <div className="relative grid gap-5">
@@ -565,7 +594,7 @@ function HeatmapMonths({
           column: Math.floor((padding + dayOfYear) / 7) + 1,
         };
       })
-    : buildHeatmapMonthMarkers(points, padding, locale).slice(0, 12);
+    : trimHeatmapMonthMarkers(buildHeatmapMonthMarkers(points, padding, locale));
   return (
     <div
       className={cn(

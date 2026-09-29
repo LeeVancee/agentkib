@@ -873,6 +873,8 @@
   "insights.title": "你的 Agent 協作軌跡",
   "insights.refresh": "重新整理統計",
   "insights.refreshing": "正在重新整理",
+  "insights.loadFailed": "統計載入失敗",
+  "insights.retry": "重試",
   "insights.allRepositories": "所有儲存庫",
   "insights.range52w": "近 52 週",
   "insights.rangeYear": "今年",

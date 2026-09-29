@@ -873,6 +873,8 @@
   "insights.title": "你的 Agent 协作轨迹",
   "insights.refresh": "刷新统计",
   "insights.refreshing": "正在刷新",
+  "insights.loadFailed": "统计加载失败",
+  "insights.retry": "重试",
   "insights.allRepositories": "全部仓库",
   "insights.range52w": "近 52 周",
   "insights.rangeYear": "今年",

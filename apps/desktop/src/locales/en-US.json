@@ -876,6 +876,8 @@
   "insights.title": "Your Agent Collaboration Journey",
   "insights.refresh": "Refresh Insights",
   "insights.refreshing": "Refreshing",
+  "insights.loadFailed": "Couldn't load insights",
+  "insights.retry": "Retry",
   "insights.allRepositories": "All Repositories",
   "insights.range52w": "Last 52 Weeks",
   "insights.rangeYear": "This Year",

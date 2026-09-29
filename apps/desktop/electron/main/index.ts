@@ -944,11 +944,14 @@ function requireRefreshCoordinator(): ElectronRefreshCoordinator {
   return refreshCoordinator;
 }
 
+// 必须与 styles.css 中窗口工具栏的高度（52px）一致，否则系统标题栏按钮与页面顶栏错位。
+const WINDOW_TOOLBAR_HEIGHT = 52;
+
 function mainWindowTitleBarOverlay() {
   return {
     color: "#00000000",
     symbolColor: nativeTheme.shouldUseDarkColors ? "#f4f4f5" : "#1f2937",
-    height: 52,
+    height: WINDOW_TOOLBAR_HEIGHT,
   };
 }
 

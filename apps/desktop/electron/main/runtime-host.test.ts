@@ -15,7 +15,7 @@ const readline = require("node:readline");
 const fs = require("node:fs");
 const mode = process.env.FAKE_RUNTIME_MODE;
 if (mode === "exit-before-handshake") process.exit(12);
-if (mode === "ignore-sigterm") process.on("SIGTERM", () => {});
+if (mode === "ignore-sigterm" || mode === "stuck-ignore-sigterm") process.on("SIGTERM", () => {});
 if (mode === "restart-once") {
   const marker = process.env.FAKE_RUNTIME_MARKER;
   if (!fs.existsSync(marker)) {
@@ -32,7 +32,7 @@ const respond = (request, result) => process.stdout.write(JSON.stringify({
 lines.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.method === "agentkib.handshake") {
-    if (mode === "never-handshake") return;
+    if (mode === "never-handshake" || mode === "stuck-ignore-sigterm") return;
     const send = () => respond(request, {
       protocolVersion: ${PROTOCOL_VERSION},
       runtime: { name: "fake-runtime", version: "0.0.0" },
@@ -242,5 +242,14 @@ describe("DesktopRuntimeHost", () => {
     await vi.waitFor(() =>
       expect(children[0].exitCode !== null || children[0].signalCode !== null).toBe(true),
     );
+  });
+
+  it("force-kills a runtime that times out the handshake and ignores SIGTERM", async () => {
+    const host = createHost(() => "stuck-ignore-sigterm", 0, 100);
+    await expect(host.start()).rejects.toThrow("did not complete the handshake in time");
+    const child = children[0];
+    await vi.waitFor(() => expect(child.signalCode ?? child.exitCode).not.toBeNull(), {
+      timeout: 2_000,
+    });
   });
 });

@@ -475,8 +475,8 @@ export class WebAccessService {
   private isFullAccess(device?: WebDevice) {
     return this.options.mode !== "lan" && device?.accessMode === "full";
   }
-  private fullAccess(hash: string) {
-    const device = this.grant(hash);
+  private fullAccess(hash: string, permission?: "advancedControl") {
+    const device = this.grant(hash, permission);
     if (!this.isFullAccess(device)) throw new HttpError(403, "permission_denied");
     return device;
   }
@@ -703,6 +703,9 @@ export class WebAccessService {
           credential.device = previous;
           throw error;
         }
+        // 已连接的浏览器还拿着旧的 /access 快照（控件按旧权限显示）。断开它的流让它重连，
+        // 重连时会重新同步权限；不发 access-ended，否则客户端会当成被注销。
+        this.endStreams(credential.hash, null);
         break;
       }
       case "approve": {
@@ -2582,10 +2585,14 @@ export class WebAccessService {
     if (++rate.count > limit) throw new HttpError(429, "rate_limited");
     this.rates.set(key, rate);
   }
-  private endStreams(hash?: string, event: "access-ended" | "unavailable" = "access-ended") {
+  /**
+   * event 为 null 时只关闭连接、不发事件：客户端按普通断线处理，重连时重新读取 /access，
+   * 从而拿到新的权限（与工作区授权撤销时关闭流的做法一致）。
+   */
+  private endStreams(hash?: string, event: "access-ended" | "unavailable" | null = "access-ended") {
     for (const [res, owner] of this.streams)
       if (!hash || hash === owner) {
-        res.write(`event: ${event}\ndata: {}\n\n`);
+        if (event) res.write(`event: ${event}\ndata: {}\n\n`);
         res.end();
         this.streams.delete(res);
       }
@@ -3356,17 +3363,19 @@ export class WebAccessService {
       path === "/codex/context-options"
     ) {
       const sessionId = this.field(url.searchParams.get("sessionId"));
-      const device = this.fullAccess(hash);
+      // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
+      // 只读设备即便是 full 模式也不能读取。
+      const device = this.fullAccess(hash, "advancedControl");
       const workspaceId = await this.codexScope(sessionId, hash);
       let result: unknown;
       if (path === "/codex/session-settings") {
         const settings = await this.runtime({ operation: "settings-state", sessionId });
-        this.fullAccess(hash);
+        this.fullAccess(hash, "advancedControl");
         const usage = await this.runtime({ operation: "usage", sessionId });
         result = { sessionId, ...this.projectSettings(settings, usage) };
       } else if (path === "/codex/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
-        this.fullAccess(hash);
+        this.fullAccess(hash, "advancedControl");
         const capabilities = await this.runtime({
           operation: "capabilities",
           sessionId,
@@ -3383,7 +3392,8 @@ export class WebAccessService {
         result = (await this.contextResources(sessionId, device, workspaceId, directoryId))
           .response;
       }
-      if (this.fullAccess(hash).id !== device.id) throw new HttpError(401, "access_ended");
+      if (this.fullAccess(hash, "advancedControl").id !== device.id)
+        throw new HttpError(401, "access_ended");
       await this.codexScope(sessionId, hash);
       return this.json(res, 200, result);
     }

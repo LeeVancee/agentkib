@@ -525,6 +525,30 @@ it("hides an expired pairing code at its deadline without a per-second clock", a
   expect(screen.queryByText("12345678")).toBeNull();
 });
 
+it("re-arms the deadline timer when it fires before the pairing code expires", async () => {
+  vi.useFakeTimers();
+  const expiresAt = Date.now() + 5_000;
+  request.mockResolvedValue({
+    ...status,
+    config: { ...status.config, enabled: true },
+    running: true,
+    pairingMode: "code",
+    code: { value: "12345678", expiresAt, access: "full" },
+  });
+  render(<WebAccessSettings />);
+  await act(async () => {});
+  // 系统时钟回拨 2 秒：计时器按原定 5 秒触发时，Date.now() 仍早于截止时间。
+  vi.setSystemTime(Date.now() - 2_000);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  expect(screen.getByText("12345678")).toBeTruthy();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_000);
+  });
+  expect(screen.queryByText("12345678")).toBeNull();
+});
+
 it("keeps legacy grant settings explicitly separate on code-only hosts", async () => {
   request.mockResolvedValue({
     ...status,

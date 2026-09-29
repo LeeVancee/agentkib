@@ -177,7 +177,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#rejectReadiness(stoppingError);
 
     const child = this.#child;
-    if (!child || child.exitCode !== null) {
+    if (!child || hasExited(child)) {
       this.#rejectPending(stoppingError);
       return;
     }
@@ -277,7 +277,9 @@ export class DesktopRuntimeHost extends EventEmitter {
     // Consumers must invalidate runtime-backed services immediately, even when
     // the OS process has not delivered its exit event yet.
     this.emit("exit", { code: child.exitCode, signal: null, expected: this.#state === "stopping" });
-    if (child.exitCode === null) child.kill();
+    // 失败的进程可能忽略 SIGTERM（例如卡在打开数据库）；句柄在这里就被替换掉了，
+    // 之后 stop() 再也够不到它，所以当场升级到 SIGKILL，避免与重启后的新进程并存。
+    terminate(child);
     this.#scheduleRestart(error);
   }
 
@@ -418,6 +420,15 @@ function deferred<T>(): Deferred<T> {
   };
   void value.promise.catch(() => undefined);
   return value;
+}
+
+function terminate(child: ChildProcessWithoutNullStreams) {
+  if (hasExited(child)) return;
+  child.kill("SIGTERM");
+  const timer = setTimeout(() => {
+    if (!hasExited(child)) child.kill("SIGKILL");
+  }, FORCE_KILL_GRACE_MS);
+  child.once("exit", () => clearTimeout(timer));
 }
 
 function hasExited(child: ChildProcessWithoutNullStreams): boolean {

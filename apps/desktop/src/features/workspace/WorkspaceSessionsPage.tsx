@@ -134,8 +134,10 @@ export function WorkspaceSessionsPage({
   const [filter, setFilter] = useState<SessionFilter>("current");
   const [refreshing, setRefreshing] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
-  // 会话列表的错误；会话记录的错误来自下面的 transcript 查询。
-  const [listError, setError] = useState<unknown>("");
+  // 会话列表的错误（带发生时间）；会话记录的错误来自下面的 transcript 查询。
+  const [listError, setListError] = useState<{ reason: unknown; at: number }>();
+  const setError = (reason: unknown) =>
+    setListError(reason === "" ? undefined : { reason, at: Date.now() });
   const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
@@ -295,6 +297,12 @@ export function WorkspaceSessionsPage({
     onResumeConsumed?.();
   }, [onResumeConsumed, resumeContinuation, revealSession, sessions]);
 
+  // 切换会话时清掉列表错误，与之前"换会话即清空错误"的行为一致。
+  const [errorSessionId, setErrorSessionId] = useState(selected?.id);
+  if (selected?.id !== errorSessionId) {
+    setErrorSessionId(selected?.id);
+    setListError(undefined);
+  }
   const readableSessionId = selected?.availability === "readable" ? selected.id : undefined;
   const transcriptKey = sessionTranscriptKey(readableSessionId ?? "");
   // 第一页是最新的记录窗口，之后每一页都更早。staleTime 无限 + gcTime 0：
@@ -324,8 +332,10 @@ export function WorkspaceSessionsPage({
   const reading = transcriptQuery.isLoading;
   const loadingEarlier = transcriptQuery.isFetchingNextPage;
   const transcriptError = readableSessionId ? transcriptQuery.error : null;
-  const historyError = !!transcriptError;
-  const rawError: unknown = transcriptError ?? listError;
+  // 两种错误同时存在时显示较新的那个。
+  const historyError =
+    !!transcriptError && (!listError || transcriptQuery.errorUpdatedAt >= listError.at);
+  const rawError: unknown = historyError ? transcriptError : (listError?.reason ?? "");
   const error = rawError === "" || rawError == null ? "" : localizeMessage(rawError);
   // 旧游标失效时从最新窗口重新读取，丢弃已加载的更早页面。
   const reloadTranscript = () => void queryClient.resetQueries({ queryKey: transcriptKey });

@@ -361,6 +361,37 @@ describe("WorkspaceSessionsPage", () => {
     expect(api.sessionEvents).toHaveBeenLastCalledWith(cachedSession.id);
   });
 
+  it("shows a newer list refresh error instead of an older transcript error", async () => {
+    vi.mocked(api.sessionEvents).mockRejectedValue(new Error("TRANSCRIPT_CURSOR_STALE"));
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        initialSessionId={cachedSession.id}
+        targetAgents={["claude-code"]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "This history page has expired or the file has changed. Retry to reload the latest records.",
+      ),
+    ).toBeTruthy();
+
+    vi.mocked(api.refreshWorkspaceSessions).mockRejectedValue(new Error("session scan failed"));
+    const refresh = screen.getByLabelText("Refresh sessions");
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(refresh);
+    expect(await screen.findByText(/session scan failed/)).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "This history page has expired or the file has changed. Retry to reload the latest records.",
+      ),
+    ).toBeNull();
+  });
+
   it("opens the session selected from the home page and consumes the route target", async () => {
     const selected = { ...cachedSession, id: "selected-session", title: "Selected from home" };
     vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession, selected]);

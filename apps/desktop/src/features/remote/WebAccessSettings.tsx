@@ -51,7 +51,8 @@ function useDeadlineClock(...deadlines: Array<number | undefined>) {
     const delay = Math.min(Math.max(0, next - Date.now()), MAX_TIMEOUT_MS);
     const timer = window.setTimeout(() => setNow(Date.now()), delay);
     return () => window.clearTimeout(timer);
-  }, [next]);
+    // 依赖 now：计时器提前触发时 next 不变，要靠 now 的变化重新挂一个计时器。
+  }, [next, now]);
   return now;
 }
 

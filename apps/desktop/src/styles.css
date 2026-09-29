@@ -472,6 +472,9 @@ button {
 
 /* Application shell: layout variables are shared by the desktop and settings shells. */
 .app-shell {
+  /* 与 :root 同名但必须在这里重新声明：自定义属性在声明它的元素上计算，
+     :root 版本只会用到默认的 250px；AppShell 在本元素内联设置
+     --sidebar-expanded-width，这里重新计算才能跟随拖拽宽度。 */
   --sidebar-rail-width: 52px;
   --sidebar-panel-width: var(--sidebar-expanded-width);
   --sidebar-width: calc(var(--sidebar-rail-width) + var(--sidebar-panel-width));
@@ -1336,6 +1339,7 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   .app-shell,
+  .app-shell-header,
   .app-context-sidebar,
   .activity-bar-item,
   .workspace-sidebar-toggle svg {

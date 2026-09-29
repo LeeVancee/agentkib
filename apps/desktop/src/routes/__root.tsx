@@ -244,12 +244,9 @@ function AppShellRouter({
       secondary={
         isSettings ? (
           <SettingsSidebar
-            embedded
             active={settingsSection}
             activeTarget={search.settingsTarget}
-            collapsed={false}
             onSelect={setSettingsSection}
-            onBack={() => onNavigate("home")}
           />
         ) : undefined
       }

@@ -1,85 +1,46 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
+import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { settingsTargetId } from "./components/SettingsLayout";
 
 describe("SettingsSidebar v9 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
+  beforeEach(() => useSidebarViewStore.setState({ settingsQuery: "" }));
   afterEach(cleanup);
 
-  it("closes the settings drawer when global search opens without losing the search action", () => {
-    const onOpenSearch = vi.fn();
-    const props = {
-      active: "general" as const,
-      onSelect: vi.fn(),
-      onBack: vi.fn(),
-      onOpenSearch,
-      collapsed: false,
-    };
-    const { container, rerender } = render(<SettingsSidebar {...props} searchOpen={false} />);
-    fireEvent.click(screen.getByRole("button", { name: tr("settings.navigation") }));
-    expect(container.querySelector(".app-sidebar-open")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: tr("search.open") }));
-    expect(onOpenSearch).toHaveBeenCalledOnce();
-    rerender(<SettingsSidebar {...props} searchOpen />);
-    expect(container.querySelector(".app-sidebar-open")).toBeNull();
-    rerender(<SettingsSidebar {...props} searchOpen={false} />);
-    fireEvent.click(screen.getByRole("button", { name: tr("settings.navigation") }));
-    expect(container.querySelector(".app-sidebar-open")).toBeTruthy();
-    rerender(<SettingsSidebar {...props} searchOpen />);
-    expect(container.querySelector(".app-sidebar-open")).toBeNull();
-    expect(onOpenSearch).toHaveBeenCalledOnce();
-  });
-
-  it("keeps global search separate from the local settings filter", () => {
-    const onOpenSearch = vi.fn();
-    const onSelect = vi.fn();
-    const { container } = render(
-      <SettingsSidebar
-        active="general"
-        onBack={() => undefined}
-        onSelect={onSelect}
-        onOpenSearch={onOpenSearch}
-        collapsed={false}
-      />,
-    );
-    const localSearch = screen.getByRole("searchbox", { name: "Search settings…" });
-    fireEvent.change(localSearch, { target: { value: "Vault" } });
-    fireEvent.click(screen.getByRole("button", { name: tr("search.open") }));
-    expect(onOpenSearch).toHaveBeenCalledOnce();
-    expect((localSearch as HTMLInputElement).value).toBe("Vault");
-    expect(onSelect).not.toHaveBeenCalled();
-    const row = container.querySelector(".app-sidebar-header-row")!;
-    expect(row.querySelectorAll("button")).toHaveLength(2);
+  it("keeps the settings search when the embedded sidebar remounts", () => {
+    const view = render(<SettingsSidebar active="general" onSelect={() => undefined} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings…" }), {
+      target: { value: "Vault" },
+    });
+    view.unmount();
+    render(<SettingsSidebar active="general" onSelect={() => undefined} />);
+    expect(
+      (screen.getByRole("searchbox", { name: "Search settings…" }) as HTMLInputElement).value,
+    ).toBe("Vault");
     expect(screen.getByRole("button", { name: "Obsidian" })).toBeTruthy();
   });
 
-  it("shows only the back entry and nine settings sections", () => {
+  it("shows the nine settings sections and the local search without a back entry", () => {
     const { container } = render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
-        <SettingsSidebar
-          active="general"
-          onSelect={() => undefined}
-          onBack={() => undefined}
-          onSettings={() => undefined}
-          collapsed={false}
-          onCollapsedChange={() => undefined}
-        />
+        <SettingsSidebar active="general" onSelect={() => undefined} />
       </ShortcutHelpProvider>,
     );
 
     expect(container.querySelectorAll("kbd")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Keyboard shortcuts" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     expect(screen.getByRole("button", { name: "Theme & appearance" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tools & updates" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search settings…" })).toBeTruthy();
-    expect(screen.getAllByRole("button")).toHaveLength(11);
+    expect(screen.getAllByRole("button")).toHaveLength(9);
     expect(screen.getByRole("button", { name: "Remote connections" })).toBeTruthy();
   });
 
@@ -87,12 +48,7 @@ describe("SettingsSidebar v9 navigation", () => {
     const onSelect = vi.fn();
     render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
-        <SettingsSidebar
-          active="general"
-          onSelect={onSelect}
-          onBack={() => undefined}
-          collapsed={false}
-        />
+        <SettingsSidebar active="general" onSelect={onSelect} />
       </ShortcutHelpProvider>,
     );
 
@@ -113,8 +69,6 @@ describe("SettingsSidebar v9 navigation", () => {
           active="integrations"
           activeTarget="integrations-obsidian"
           onSelect={onSelect}
-          onBack={() => undefined}
-          collapsed={false}
         />
         <div id={settingsTargetId("integrations-obsidian")} tabIndex={-1} />
       </ShortcutHelpProvider>,
@@ -151,12 +105,7 @@ describe("SettingsSidebar v9 navigation", () => {
   it("shows an empty state and clears the search", () => {
     render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
-        <SettingsSidebar
-          active="general"
-          onSelect={() => undefined}
-          onBack={() => undefined}
-          collapsed={false}
-        />
+        <SettingsSidebar active="general" onSelect={() => undefined} />
       </ShortcutHelpProvider>,
     );
 
@@ -170,12 +119,7 @@ describe("SettingsSidebar v9 navigation", () => {
   it("recomputes search matches when the locale changes", async () => {
     render(
       <ShortcutHelpProvider openShortcutHelp={() => undefined}>
-        <SettingsSidebar
-          active="general"
-          onSelect={() => undefined}
-          onBack={() => undefined}
-          collapsed={false}
-        />
+        <SettingsSidebar active="general" onSelect={() => undefined} />
       </ShortcutHelpProvider>,
     );
 

@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { ArrowLeft, ArrowRight, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const mainClassName =
   "app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm";
@@ -44,7 +44,6 @@ export function WindowNavigationControls({
   const storedSidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const sidebarCollapsed = !sidebarFixed && storedSidebarCollapsed;
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
-  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const platform = currentAppPlatform();
   const backShortcut = getShortcutDefinition("history-back");
   const forwardShortcut = getShortcutDefinition("history-forward");
@@ -63,10 +62,7 @@ export function WindowNavigationControls({
         data-collapsed={sidebarCollapsed}
         disabled={!hasSidebarPanel || sidebarFixed}
         title={tr(sidebarCollapsed ? "common.expandSidebar" : "common.collapseSidebar")}
-        onClick={() => {
-          setSidebarPeek(false);
-          setSidebarCollapsed(!sidebarCollapsed);
-        }}
+        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
       >
         <span className="app-sidebar-collapse-icon" aria-hidden="true">
           <PanelLeftClose
@@ -159,8 +155,6 @@ export function AppShell({
   const storedSidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const sidebarFixed = sidebarMode === "settings";
   const sidebarCollapsed = !sidebarFixed && storedSidebarCollapsed;
-  const sidebarPeek = useAppStore((state) => state.sidebarPeek);
-  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
   const locationKey = useLocation({ select: (location) => location.href });
   const sidebarWidth = useSidebarWidthStore();
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
@@ -176,22 +170,6 @@ export function AppShell({
   const visibleSidebarWidth = Math.min(sidebarWidth.width, maxSidebarWidth);
   const [scrollOffsets] = useState(() => new Map<string, number>());
   const scrollContainerRef = useRetainedScroll(locationKey, scrollOffsets);
-  const previousSidebarMode = useRef(sidebarMode);
-  const [sidebarMotion, setSidebarMotion] = useState<"to-primary" | "to-settings" | null>(null);
-
-  useLayoutEffect(() => {
-    if (previousSidebarMode.current === sidebarMode) return;
-    previousSidebarMode.current = sidebarMode;
-    setSidebarMotion(sidebarMode === "settings" ? "to-settings" : "to-primary");
-
-    const timeout = window.setTimeout(() => setSidebarMotion(null), 280);
-    return () => window.clearTimeout(timeout);
-  }, [sidebarMode]);
-
-  useEffect(() => {
-    if (!sidebarCollapsed && sidebarPeek) setSidebarPeek(false);
-  }, [sidebarCollapsed, sidebarPeek, setSidebarPeek]);
-
   return (
     <div
       style={{ "--sidebar-expanded-width": `${visibleSidebarWidth}px` } as CSSProperties}
@@ -202,7 +180,6 @@ export function AppShell({
         sidebarCollapsed && "app-shell-sidebar-collapsed",
         !hasSidebarPanel && "app-shell-no-context",
         sidebarWidth.dragging && "app-shell-sidebar-resizing",
-        sidebarMotion && `app-shell-sidebar-motion-${sidebarMotion}`,
       )}
     >
       <WindowToolbar />

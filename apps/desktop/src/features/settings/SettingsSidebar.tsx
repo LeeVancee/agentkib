@@ -2,14 +2,11 @@ import { navigationStyles } from "@/components/navigationStyles";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SidebarSearchButton } from "@/components/SidebarSearchButton";
-import { useEffect, useId, useState, type ComponentType } from "react";
+import type { ComponentType } from "react";
 import {
-  ArrowLeft,
   Database,
   FolderSearch,
   Keyboard,
-  Menu,
   MonitorSmartphone,
   PackageSearch,
   Palette,
@@ -21,8 +18,6 @@ import {
 } from "lucide-react";
 import { tr } from "@/core/i18n";
 import { cn } from "@/lib/utils";
-import { useAppStore } from "@/stores/app-store";
-import { clearSidebarPeekCloseTimer, scheduleSidebarPeekClose } from "@/features/app/sidebar-peek";
 import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 import { focusSettingsTarget } from "./components/SettingsLayout";
 
@@ -246,55 +241,22 @@ const searchEntries: Array<{
   },
 ];
 
+/**
+ * 设置页的二级导航，嵌在主侧边栏的上下文面板里（见 routes/__root.tsx）。
+ * 窄窗口抽屉、折叠与返回按钮都由 AppSidebar 负责；搜索词保存在 sidebar-view-store，
+ * 在设置页之间切换时保留。
+ */
 export function SettingsSidebar(props: {
-  embedded?: boolean;
   active: SettingsSection;
   activeTarget?: SettingsTarget;
   onSelect: (section: SettingsSection, target?: SettingsTarget) => void;
-  onBack: () => void;
-  onOpenSearch?: () => void;
-  searchOpen?: boolean;
-  onSettings?: () => void;
-  collapsed: boolean;
-  onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const { t: tr } = useTranslation();
-  const { active, activeTarget, onSelect, onBack, collapsed } = props;
-  const [mobileOpen, setMobileOpen] = useState(false);
-  useEffect(() => {
-    if (props.searchOpen) setMobileOpen(false);
-  }, [props.searchOpen]);
-  const [localQuery, setLocalQuery] = useState("");
-  const savedQuery = useSidebarViewStore((state) => state.settingsQuery);
-  const setSavedQuery = useSidebarViewStore((state) => state.setSettingsQuery);
-  const query = props.embedded ? savedQuery : localQuery;
-  const setQuery = props.embedded ? setSavedQuery : setLocalQuery;
-  const sidebarPeek = useAppStore((state) => state.sidebarPeek);
-  const setSidebarPeek = useAppStore((state) => state.setSidebarPeek);
-  const sidebarId = useId();
-
-  useEffect(() => {
-    if (!mobileOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMobileOpen(false);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [mobileOpen]);
-
-  const handleSidebarMouseEnter = () => {
-    if (!collapsed) return;
-    clearSidebarPeekCloseTimer();
-    setSidebarPeek(true);
-  };
-
-  const handleSidebarMouseLeave = () => {
-    if (!collapsed) return;
-    scheduleSidebarPeekClose(setSidebarPeek);
-  };
+  const { active, activeTarget, onSelect } = props;
+  const query = useSidebarViewStore((state) => state.settingsQuery);
+  const setQuery = useSidebarViewStore((state) => state.setSettingsQuery);
 
   const select = (section: SettingsSection, target?: SettingsTarget) => {
-    setMobileOpen(false);
     if (target && active === section && activeTarget === target && focusSettingsTarget(target)) {
       return;
     }
@@ -315,35 +277,9 @@ export function SettingsSidebar(props: {
       )
     : [];
 
-  const content = (
-    <div className={props.embedded ? "settings-sidebar-content" : "app-sidebar-content"}>
+  return (
+    <div className="settings-sidebar-content">
       <div className="app-sidebar-header">
-        {!props.embedded && (
-          <div className="app-sidebar-header-row flex min-w-0 items-center justify-between gap-2">
-            <Button
-              variant="bare"
-              size="content"
-              className={cn(
-                navigationStyles.appSidebarItem,
-                "app-sidebar-back-item text-[color:color-mix(in_srgb,var(--sidebar-foreground)_58%,transparent)] app-settings-back",
-              )}
-              type="button"
-              title={tr("settings.backToApp")}
-              onClick={() => {
-                setMobileOpen(false);
-                onBack();
-              }}
-            >
-              <span className={navigationStyles.appSidebarItemIcon}>
-                <ArrowLeft size={18} />
-              </span>
-              <span className="app-sidebar-item-label min-w-0 flex-1 truncate text-left">
-                {tr("settings.backToApp")}
-              </span>
-            </Button>
-            {props.onOpenSearch && <SidebarSearchButton onOpenSearch={props.onOpenSearch} />}
-          </div>
-        )}
         <label className="relative block">
           <Search
             size={16}
@@ -439,47 +375,6 @@ export function SettingsSidebar(props: {
         )}
       </nav>
     </div>
-  );
-  if (props.embedded) return content;
-
-  return (
-    <>
-      <Button
-        variant="bare"
-        size="content"
-        className={cn("sidebar-mobile-trigger", mobileOpen && "invisible")}
-        type="button"
-        aria-expanded={mobileOpen}
-        aria-controls={sidebarId}
-        aria-label={tr("settings.navigation")}
-        onClick={() => setMobileOpen(true)}
-      >
-        <Menu size={19} />
-      </Button>
-      {mobileOpen && (
-        <Button
-          variant="bare"
-          size="content"
-          className="sidebar-mobile-backdrop"
-          type="button"
-          aria-label={tr("common.close")}
-          onClick={() => setMobileOpen(false)}
-        />
-      )}
-      <aside
-        id={sidebarId}
-        className={cn(
-          "app-sidebar",
-          collapsed && "app-sidebar-collapsed",
-          collapsed && sidebarPeek && "app-sidebar-peek",
-          mobileOpen && "app-sidebar-open",
-        )}
-        onPointerEnter={handleSidebarMouseEnter}
-        onPointerLeave={handleSidebarMouseLeave}
-      >
-        {content}
-      </aside>
-    </>
   );
 }
 

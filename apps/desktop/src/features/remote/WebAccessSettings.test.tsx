@@ -504,6 +504,27 @@ it("generates a read-only code and changes an authorized device's access level",
   );
 });
 
+it("hides an expired pairing code at its deadline without a per-second clock", async () => {
+  vi.useFakeTimers();
+  const setInterval = vi.spyOn(window, "setInterval");
+  const expiresAt = Date.now() + 5_000;
+  request.mockResolvedValue({
+    ...status,
+    config: { ...status.config, enabled: true },
+    running: true,
+    pairingMode: "code",
+    code: { value: "12345678", expiresAt, access: "full" },
+  });
+  render(<WebAccessSettings />);
+  await act(async () => {});
+  expect(screen.getByText("12345678")).toBeTruthy();
+  expect(setInterval).not.toHaveBeenCalledWith(expect.any(Function), 1000);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000);
+  });
+  expect(screen.queryByText("12345678")).toBeNull();
+});
+
 it("keeps legacy grant settings explicitly separate on code-only hosts", async () => {
   request.mockResolvedValue({
     ...status,

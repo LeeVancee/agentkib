@@ -34,6 +34,27 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+// setTimeout 的最大延迟约 24.8 天，超过会立即触发。
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+/**
+ * 返回"当前时间"，只在下一个截止时间到达时刷新一次。
+ * 页面里依赖时间的只有配对码过期和 relay 重试时间，没必要每秒重渲染整个设置页。
+ */
+function useDeadlineClock(...deadlines: Array<number | undefined>) {
+  const [now, setNow] = useState(() => Date.now());
+  const next = Math.min(
+    ...deadlines.filter((deadline): deadline is number => deadline !== undefined && deadline > now),
+  );
+  useEffect(() => {
+    if (!Number.isFinite(next)) return;
+    const delay = Math.min(Math.max(0, next - Date.now()), MAX_TIMEOUT_MS);
+    const timer = window.setTimeout(() => setNow(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [next]);
+  return now;
+}
+
 export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   const { locale, tr, formatDateTime } = useI18n();
   const lan = target === "lan";
@@ -76,11 +97,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   >({});
   const mounted = useRef(false);
   const locked = useRef(false);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const now = useDeadlineClock(status?.code?.expiresAt, status?.relay?.retryAt);
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = subscribeWebStatus(target, {
@@ -408,6 +425,14 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   return (
     <SettingsSection title={c.title}>
       {!lan && <RemoteAccountSettings />}
+      {lan &&
+        status?.running && (
+          // 运行期间常驻：明文风险不是一次性确认就能消除的，用户需要随时知道自己暴露在什么网络上。
+          <SettingsNotice tone="warning" inset={false} className="text-sm">
+            <strong>{l.plaintextActiveTitle}</strong>
+            <p>{l.plaintextActive}</p>
+          </SettingsNotice>
+        )}
       <SettingsNotice>{codeAccess ? c.codeScope : c.scope}</SettingsNotice>
       {status?.acceptanceSessionId && (
         <SettingsNotice>

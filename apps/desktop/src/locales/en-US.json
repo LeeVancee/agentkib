@@ -953,6 +953,7 @@
   "assets.type": "Type",
   "assets.size": "Size",
   "context.environment": "Simulated Runtime",
+  "context.agent": "Agent",
   "context.workingDirectory": "Working Directory",
   "context.resolve": "Resolve Effective Context",
   "context.capabilities": "Visible Capabilities",

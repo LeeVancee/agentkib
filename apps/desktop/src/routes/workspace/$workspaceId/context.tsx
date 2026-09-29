@@ -29,17 +29,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { AgentKind, ContextPreview } from "../../../core/types";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
     <div className="flex flex-wrap gap-2">
@@ -115,14 +105,14 @@ function ContextPage({
         </div>
         <div className="grid gap-4 p-4">
           <div className="grid gap-1.5">
-            <Label className="text-xs text-muted-foreground">Agent</Label>
+            <Label className="text-xs text-muted-foreground">{tr("context.agent")}</Label>
             <Select
               value={agent}
               onValueChange={(value) => {
                 if (value !== null) setAgent(String(value) as AgentKind);
               }}
             >
-              <SelectTrigger className="h-10 w-full" aria-label="Agent">
+              <SelectTrigger className="h-10 w-full" aria-label={tr("context.agent")}>
                 <SelectValue>{agentLabels[agent]}</SelectValue>
               </SelectTrigger>
               <SelectContent>

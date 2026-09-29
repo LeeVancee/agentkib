@@ -55,7 +55,6 @@ import { normalizePlatform, primaryShortcutModifier, usesSystemTrayWording } fro
 import type { SettingsSection as SettingsSectionId } from "./SettingsSidebar";
 import type {
   ActivityRecord,
-  AgentKind,
   AppIconPreference,
   CloseBehavior,
   DiscoveryReport,
@@ -75,6 +74,7 @@ import { cn } from "@/lib/utils";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
@@ -84,17 +84,6 @@ const settingsControlClass =
 const appIconAssets: Record<AppIconPreference, string> = {
   white: appIconWhite,
   black: appIconBlack,
-};
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
 };
 
 export type GlobalSettingsProps = {

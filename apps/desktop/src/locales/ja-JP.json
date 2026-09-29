@@ -948,6 +948,7 @@
   "assets.type": "種類",
   "assets.size": "サイズ",
   "context.environment": "ランタイムをシミュレート",
+  "context.agent": "Agent",
   "context.workingDirectory": "作業ディレクトリ",
   "context.resolve": "有効なコンテキストを解析",
   "context.capabilities": "表示可能な機能",

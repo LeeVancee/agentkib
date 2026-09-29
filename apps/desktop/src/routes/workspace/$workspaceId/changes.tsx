@@ -26,18 +26,8 @@ import {
 } from "lucide-react";
 import { cn, withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
-import type { AgentKind, ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import type { ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Empty({
   icon: Icon,
   title,

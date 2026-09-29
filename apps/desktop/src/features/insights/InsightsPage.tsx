@@ -65,21 +65,10 @@ import type {
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
 import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type HeatmapMetric = "tokens" | "my_commits" | "all_commits" | "attributed_commits" | "sessions";
 export type InsightsSection = "overview" | "tokens" | "commits" | "milestones" | "sources";
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  antigravity: "Antigravity",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 export function InsightsPage({
   section,

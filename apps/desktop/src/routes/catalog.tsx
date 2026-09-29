@@ -1,6 +1,6 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -24,7 +24,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
@@ -242,107 +241,67 @@ function CatalogPage({
   );
   const pendingMemoryLabel = pending ? tr("memory.pendingCount", { count: pending }) : undefined;
   const AssetPage = AssetCatalogPage;
+  const catalogSections: Array<{
+    id: AssetSection;
+    label: string;
+    icon: ComponentType<{ size?: number }>;
+    count: number;
+    badgeLabel?: string;
+    highlight?: boolean;
+  }> = [
+    {
+      id: "instructions",
+      label: tr("assets.instructions"),
+      icon: FileCode2,
+      count: instructionAssets.length,
+    },
+    { id: "skills", label: tr("assets.skills"), icon: Sparkles, count: skillAssets.length },
+    { id: "mcp", label: "MCP", icon: PlugZap, count: connectionAssets.length },
+    {
+      id: "memory",
+      label: tr("assets.memories"),
+      icon: Brain,
+      count: memories.length,
+      badgeLabel: pendingMemoryLabel,
+      highlight: !!pending,
+    },
+    { id: "other", label: tr("assets.hooksProfiles"), icon: Boxes, count: otherAssets.length },
+  ];
   return (
     <div className="relative grid gap-5 pb-8">
       <SidebarPanel>
-        <nav className="catalog-sidebar-navigation">
-          <Tabs
-            orientation="vertical"
-            value={section}
-            onValueChange={(value) => onSection(value as AssetSection)}
-          >
-            <TabsList
-              className="catalog-sidebar-tabs !h-auto !w-full items-stretch bg-transparent p-0"
-              variant="default"
-              aria-label={tr("nav.assets")}
+        {/* 这是切换本页分区的导航，不是带面板的 Tabs：用按钮 + aria-current。 */}
+        <nav className="catalog-sidebar-navigation grid gap-0.5" aria-label={tr("nav.assets")}>
+          {catalogSections.map(({ id, label, icon: Icon, count, badgeLabel, highlight }) => (
+            <Button
+              key={id}
+              variant="bare"
+              size="content"
+              data-sidebar-navigate
+              className={cn(
+                navigationStyles.appSidebarItem,
+                "h-10 gap-2 px-3",
+                section === id && navigationStyles.appSidebarItemActive,
+              )}
+              aria-current={section === id ? "page" : undefined}
+              onClick={() => onSection(id)}
             >
-              <TabsTrigger
+              <Icon size={15} />
+              {label}
+              <Badge
+                variant="secondary"
                 className={cn(
-                  navigationStyles.appSidebarItem,
-                  "!h-10 !flex-none !justify-start gap-2 px-3",
+                  "ml-auto min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
+                  highlight &&
+                    "border-[color-mix(in_srgb,var(--amber)_45%,transparent)] bg-[color-mix(in_srgb,var(--amber)_16%,transparent)] text-[var(--amber)]",
                 )}
-                value="instructions"
+                aria-label={badgeLabel}
+                title={badgeLabel}
               >
-                <FileCode2 size={15} />
-                {tr("assets.instructions")}
-                <Badge
-                  variant="secondary"
-                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-                >
-                  {instructionAssets.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger
-                className={cn(
-                  navigationStyles.appSidebarItem,
-                  "!h-10 !flex-none !justify-start gap-2 px-3",
-                )}
-                value="skills"
-              >
-                <Sparkles size={15} />
-                {tr("assets.skills")}
-                <Badge
-                  variant="secondary"
-                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-                >
-                  {skillAssets.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger
-                className={cn(
-                  navigationStyles.appSidebarItem,
-                  "!h-10 !flex-none !justify-start gap-2 px-3",
-                )}
-                value="mcp"
-              >
-                <PlugZap size={15} />
-                MCP
-                <Badge
-                  variant="secondary"
-                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-                >
-                  {connectionAssets.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger
-                className={cn(
-                  navigationStyles.appSidebarItem,
-                  "!h-10 !flex-none !justify-start gap-2 px-3",
-                )}
-                value="memory"
-              >
-                <Brain size={15} />
-                {tr("assets.memories")}
-                <Badge
-                  variant="secondary"
-                  className={cn(
-                    "min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
-                    pending && "border-amber-300 bg-amber-100 text-amber-800",
-                  )}
-                  aria-label={pendingMemoryLabel}
-                  title={pendingMemoryLabel}
-                >
-                  {memories.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger
-                className={cn(
-                  navigationStyles.appSidebarItem,
-                  "!h-10 !flex-none !justify-start gap-2 px-3",
-                )}
-                value="other"
-              >
-                <Boxes size={15} />
-                {tr("assets.hooksProfiles")}
-                <Badge
-                  variant="secondary"
-                  className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-                >
-                  {otherAssets.length}
-                </Badge>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+                {count}
+              </Badge>
+            </Button>
+          ))}
         </nav>
       </SidebarPanel>
       {section === "instructions" && (
@@ -418,7 +377,7 @@ function GlobalMemoryInbox({
               className={cn(
                 "inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm",
                 pendingCount > 0
-                  ? "border-amber-300/70 bg-amber-50 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+                  ? "border-[color-mix(in_srgb,var(--amber)_40%,transparent)] bg-[color-mix(in_srgb,var(--amber)_10%,transparent)] text-[var(--amber)]"
                   : "border-border bg-background text-muted-foreground",
               )}
             >
@@ -426,7 +385,7 @@ function GlobalMemoryInbox({
               <strong className="font-semibold">{pendingCount}</strong>
             </span>
             {approvedCount > 0 && (
-              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--green)_40%,transparent)] bg-[color-mix(in_srgb,var(--green)_10%,transparent)] px-3 text-sm text-[var(--green)]">
                 {tr("status.memory.approved")}
                 <strong className="font-semibold">{approvedCount}</strong>
               </span>

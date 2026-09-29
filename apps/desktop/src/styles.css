@@ -1020,20 +1020,6 @@ button {
   border-top: 0;
 }
 
-.catalog-sidebar-navigation [data-slot="tabs"] {
-  width: 100%;
-}
-.catalog-sidebar-tabs .app-sidebar-item [data-slot="badge"] {
-  margin-left: auto;
-}
-.catalog-sidebar-tabs .app-sidebar-item[data-active] {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
-  box-shadow: none;
-}
-.catalog-sidebar-tabs .app-sidebar-item:hover {
-  background: var(--sidebar-accent);
-}
 .settings-sidebar-content .app-sidebar-nav {
   overflow: visible;
   padding: 0;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -73,6 +73,71 @@ describe("InsightsPage", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 
+  it("marks placeholder data from the previous filters as loading", () => {
+    state.view = {
+      data: { summary, status: { running: false }, heatmap: days("2026-01-01", 7) },
+      isPlaceholderData: true,
+    };
+    const { container, rerender } = render(<InsightsPage section="overview" workspaces={[]} />);
+    expect(screen.getByRole("status").textContent).toBe(tr("insights.refreshing"));
+    expect(container.firstElementChild!.getAttribute("aria-busy")).toBe("true");
+    state.view = { ...state.view, isPlaceholderData: false };
+    rerender(<InsightsPage section="overview" workspaces={[]} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(container.firstElementChild!.hasAttribute("aria-busy")).toBe(false);
+  });
+
+  it("stops filtering by a workspace that was removed, matching the All label", async () => {
+    state.view = { data: { summary, status: { running: false }, heatmap: [] } };
+    const workspaces = [{ id: "w1", name: "Alpha" }] as never[];
+    const { rerender } = render(<InsightsPage section="tokens" workspaces={workspaces} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: tr("insights.filterWorkspace") }));
+    await user.click(await screen.findByRole("option", { name: "Alpha" }));
+    expect(state.queries.at(-1)).toMatchObject({ workspace_id: "w1" });
+
+    const before = state.queries.length;
+    rerender(<InsightsPage section="tokens" workspaces={[]} />);
+    // 移除后的第一次渲染就不能再带旧 id（不依赖 Select 组件自己把值重置回去）。
+    for (const query of state.queries.slice(before))
+      expect((query as { workspace_id?: string }).workspace_id).toBeUndefined();
+    expect(
+      screen.getByRole("combobox", { name: tr("insights.filterWorkspace") }).textContent,
+    ).toContain(tr("workspace.all"));
+  });
+
+  it("moves the query range to the new day after midnight while the page stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 1, 23, 59, 30));
+    state.view = { data: { summary, status: { running: false }, heatmap: [] } };
+    render(<InsightsPage section="overview" workspaces={[]} />);
+    expect(state.queries.at(-1)).toMatchObject({ to: "2026-03-01" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(state.queries.at(-1)).toMatchObject({ from: "2025-03-04", to: "2026-03-02" });
+  });
+
+  it("names filters by purpose and summarizes the heatmap and trend for screen readers", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 2, 1, 12));
+    const heatmap = days("2026-02-01", 3).map((value, index) => ({ ...value, tokens: index * 5 }));
+    state.view = { data: { summary, status: { running: false }, heatmap } };
+    render(<InsightsPage section="overview" workspaces={[]} />);
+    for (const key of [
+      "insights.filterAgent",
+      "insights.filterWorkspace",
+      "insights.filterRepository",
+      "insights.filterRange",
+    ])
+      expect(screen.getByRole("combobox", { name: tr(key) })).toBeTruthy();
+    const map = screen.getByRole("img", { name: /Mar 1, 2026/ });
+    expect(map.getAttribute("aria-label")).toBe(
+      "Token, Mar 3, 2025 to Mar 1, 2026: 2 active days, peak 10",
+    );
+    expect(screen.getByRole("img", { name: /Token Trend: Feb 15/ })).toBeTruthy();
+  });
+
   it("lays out the whole calendar year, even while last year's 52-week data is a placeholder", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 2, 1, 12));
@@ -83,7 +148,7 @@ describe("InsightsPage", () => {
     };
     const { container } = render(<InsightsPage section="overview" workspaces={[]} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("combobox", { name: tr("insights.range52w") }));
+    await user.click(screen.getByRole("combobox", { name: tr("insights.filterRange") }));
     await user.click(await screen.findByRole("option", { name: tr("insights.rangeYear") }));
     expect(state.queries.at(-1)).toMatchObject({ from: "2026-01-01", to: "2026-03-01" });
     // 2026-01-01 是周四：前面补 3 格，(3 + 365) / 7 → 53 列。

@@ -119,8 +119,8 @@ export function AppSidebar(props: {
   const platform = currentAppPlatform();
 
   useEffect(() => {
-    if (props.searchOpen) setMobileOpen(false);
-  }, [props.searchOpen]);
+    if (props.searchOpen || active === "settings") setMobileOpen(false);
+  }, [active, props.searchOpen]);
   useEffect(() => {
     if (
       props.activeWorkspaceId &&
@@ -262,7 +262,7 @@ export function AppSidebar(props: {
         )}
       >
         <div className="app-activity-bar">
-          <div className="activity-bar-brand [&_img]:size-[38px] [&_img]:object-contain">
+          <div className="activity-bar-brand grid size-[38px] place-items-center [&_img]:size-6 [&_img]:object-contain">
             <img src={logo} alt="" aria-hidden="true" />
             <span className="sr-only">AgentKib</span>
           </div>
@@ -352,6 +352,7 @@ export function AppSidebar(props: {
                 aria-current={active === "settings" ? "page" : undefined}
                 aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
                 onClick={() => {
+                  setMobileOpen(false);
                   props.onSettings();
                 }}
               >

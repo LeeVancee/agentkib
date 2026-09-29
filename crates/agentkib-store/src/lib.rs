@@ -2268,7 +2268,17 @@ impl Store {
 
     pub fn list_git_identities(&self) -> Result<Vec<GitIdentitySummary>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, label, source, enabled FROM git_identities ORDER BY source, label",
+            // Older databases stored display text. Derive built-in labels from stable
+            // source identifiers so every response uses the current translation keys.
+            "SELECT id,
+                    CASE
+                      WHEN source GLOB 'repository:*' THEN 'settings.gitIdentityRepository'
+                      WHEN source = 'git-global' THEN 'settings.gitIdentityGlobal'
+                      WHEN source = 'manual' THEN 'settings.gitIdentityAlias'
+                      ELSE label
+                    END AS label,
+                    source, enabled
+             FROM git_identities ORDER BY source, label",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(GitIdentitySummary {

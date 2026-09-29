@@ -63,3 +63,9 @@ export function insightsRefreshError(
   if (manual && !(succeededAt > manual.at)) return manual.message;
   return job?.state === "failed" && job.error ? localize(job.error) : "";
 }
+
+export function insightsMetadataLabel(value: string, tr: (key: string) => string) {
+  if (value === "__unknown_model__") return tr("insights.unknownModel");
+  if (value === "__unlinked_workspace__") return tr("insights.unlinkedWorkspace");
+  return value;
+}

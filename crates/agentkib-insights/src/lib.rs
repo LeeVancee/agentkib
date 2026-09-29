@@ -228,6 +228,7 @@ pub struct InsightsStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitIdentitySummary {
     pub id: String,
+    /// Translation key for built-in identity sources; literal label for other sources.
     pub label: String,
     pub source: String,
     pub enabled: bool,

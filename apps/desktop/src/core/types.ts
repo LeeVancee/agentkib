@@ -843,6 +843,7 @@ export interface InsightsView {
 }
 export interface GitIdentitySummary {
   id: string;
+  /** Translation key for built-in identity sources; literal label for other sources. */
   label: string;
   source: string;
   enabled: boolean;

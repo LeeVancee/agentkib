@@ -1322,6 +1322,11 @@ button {
   :root[data-platform="macos"] .app-window-navigation-controls {
     left: 8.75rem;
   }
+  /* 抽屉打开时是模态对话框。固定定位的后退/前进/搜索按钮层级（65）高于抽屉（60），
+     会盖在抽屉第一行上，点击落到历史导航；打开期间隐藏它们。 */
+  .app-shell:has(.app-sidebar-open) .app-window-navigation-controls {
+    visibility: hidden;
+  }
 
   .app-toolbar-content {
     padding-left: 10rem;

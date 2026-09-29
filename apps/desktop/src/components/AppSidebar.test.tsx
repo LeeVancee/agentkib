@@ -12,14 +12,22 @@ import type { WorkspaceSummary } from "@/core/types";
 import { useSidebarViewStore } from "@/features/app/sidebar-view-store";
 
 vi.mock("@/features/sessions/SessionDirectory", () => ({
-  SessionDirectory: ({ onMenuOpenChange }: { onMenuOpenChange?: (open: boolean) => void }) => (
-    <>
-      <button data-session-entry>Example session</button>
-      <button onClick={() => onMenuOpenChange?.(true)}>Open directory menu</button>
-      <button onClick={() => onMenuOpenChange?.(false)}>Close directory menu</button>
-    </>
-  ),
+  SessionDirectory: () => <button data-session-entry>Example session</button>,
 }));
+
+function mockDesktopLayout(desktop: boolean) {
+  const original = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (media: string) => ({
+      media,
+      matches: desktop,
+      addEventListener() {},
+      removeEventListener() {},
+    }),
+  });
+  return () => Object.defineProperty(window, "matchMedia", { configurable: true, value: original });
+}
 
 describe("AppSidebar v8 navigation", () => {
   beforeAll(() => initializeI18n("en-US"));
@@ -120,21 +128,105 @@ describe("AppSidebar v8 navigation", () => {
   });
 
   it("keeps the activity bar accessible while the context panel is collapsed", async () => {
-    const onNavigate = vi.fn();
-    const { container } = render(
+    const restore = mockDesktopLayout(true);
+    try {
+      useAppStore.getState().setSidebarCollapsed(true);
+      const onNavigate = vi.fn();
+      const { container } = render(
+        <AppSidebar
+          active="sessions"
+          entries={createGlobalNavigation(0)}
+          onNavigate={onNavigate}
+          onSettings={vi.fn()}
+          collapsed
+          context={{ kind: "sessions" }}
+        />,
+      );
+      expect(container.querySelector(".app-context-sidebar")?.hasAttribute("inert")).toBe(true);
+      await userEvent.setup().click(screen.getByRole("button", { name: tr("nav.agents") }));
+      expect(onNavigate).toHaveBeenCalledWith("agents");
+      expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not rewrite the desktop collapse preference from the narrow-window drawer", async () => {
+    const restore = mockDesktopLayout(false);
+    try {
+      useAppStore.getState().setSidebarCollapsed(true);
+      const onNavigate = vi.fn();
+      render(
+        <AppSidebar
+          active="home"
+          entries={createGlobalNavigation(0)}
+          onNavigate={onNavigate}
+          onSettings={vi.fn()}
+          collapsed
+        />,
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: tr("common.primaryNavigation") }));
+      await user.click(screen.getByRole("button", { name: tr("nav.agents") }));
+      expect(onNavigate).toHaveBeenCalledWith("agents");
+      expect(useAppStore.getState().sidebarCollapsed).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("moves focus into the drawer, closes on Escape and returns focus to the trigger", async () => {
+    render(
       <AppSidebar
-        active="sessions"
+        active="home"
         entries={createGlobalNavigation(0)}
-        onNavigate={onNavigate}
+        onNavigate={vi.fn()}
         onSettings={vi.fn()}
-        collapsed
-        context={{ kind: "sessions" }}
+        collapsed={false}
       />,
     );
-    expect(container.querySelector(".app-context-sidebar")?.hasAttribute("inert")).toBe(true);
-    await userEvent.setup().click(screen.getByRole("button", { name: tr("nav.agents") }));
-    expect(onNavigate).toHaveBeenCalledWith("agents");
-    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    // 焦点陷阱只考虑可见元素（getClientRects 非空）；jsdom 没有布局，这里模拟为可见。
+    const rects = vi
+      .spyOn(HTMLElement.prototype, "getClientRects")
+      .mockReturnValue([{}] as unknown as DOMRectList);
+    try {
+      const user = userEvent.setup();
+      const trigger = screen.getByRole("button", { name: tr("common.primaryNavigation") });
+      await user.click(trigger);
+      const drawer = screen.getByRole("dialog", { name: tr("common.primaryNavigation") });
+      expect(drawer.contains(document.activeElement)).toBe(true);
+      // 第一个可聚焦项带 tooltip：第一次 Escape 先关闭 tooltip，第二次才关闭抽屉。
+      await user.keyboard("{Escape}");
+      if (screen.queryByRole("dialog")) await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      rects.mockRestore();
+    }
+  });
+
+  it("names workspace toggles by workspace and shows an empty state without workspaces", () => {
+    const workspace: WorkspaceSummary = {
+      id: "repo",
+      name: "repo",
+      path: "/repo",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    const props = {
+      active: "workspaces" as const,
+      entries: createGlobalNavigation(0),
+      onNavigate: vi.fn(),
+      onSettings: vi.fn(),
+      collapsed: false,
+    };
+    const view = render(<AppSidebar {...props} workspaces={[workspace]} />);
+    expect(screen.getByRole("button", { name: "Expand repo" })).toBeTruthy();
+    view.unmount();
+    render(<AppSidebar {...props} workspaces={[]} />);
+    expect(screen.getByText(tr("sidebar.noWorkspaces"))).toBeTruthy();
   });
 
   it("opens global search beside the non-clickable brand", async () => {

@@ -61,6 +61,9 @@ export type AppSidebarContext =
   | { kind: "global" }
   | { kind: "agents"; filter: AgentFilter; onFilterChange: (filter: AgentFilter) => void };
 
+// 与 styles.css 中窄窗口抽屉的断点（max-width: 1023px）一致。
+const DESKTOP_LAYOUT_QUERY = "(min-width: 1024px)";
+
 const agentFilters: Array<[AgentFilter, string]> = [
   ["all", "agents.filter.all"],
   ["enabled", "agents.filter.enabled"],
@@ -130,7 +133,7 @@ export function AppSidebar(props: {
   }, [props.activeWorkspaceId, setWorkspaceExpanded]);
 
   useEffect(() => {
-    const desktop = window.matchMedia("(min-width: 1024px)");
+    const desktop = window.matchMedia(DESKTOP_LAYOUT_QUERY);
     const closeOnDesktop = () => {
       if (desktop.matches) setMobileOpen(false);
     };
@@ -192,8 +195,11 @@ export function AppSidebar(props: {
   };
   const navigate = (page: GlobalPage) => {
     const needsPanel = ["workspaces", "sessions", "agents", "catalog"].includes(page);
-    if (needsPanel && active !== "settings") expandPanel();
-    else setMobileOpen(false);
+    if (needsPanel && active !== "settings") {
+      // 窄窗口抽屉里面板本来就展开；只有桌面布局才需要（并持久化）展开偏好，
+      // 否则在抽屉里点一下会悄悄改掉桌面端的折叠设置。
+      if (window.matchMedia(DESKTOP_LAYOUT_QUERY).matches) expandPanel();
+    } else setMobileOpen(false);
     props.onNavigate(page);
   };
   const panelTitle =
@@ -252,7 +258,9 @@ export function AppSidebar(props: {
         ref={asideRef}
         role={mobileOpen ? "dialog" : undefined}
         aria-modal={mobileOpen || undefined}
-        aria-label={tr("common.primaryNavigation")}
+        // 只有作为抽屉对话框时才需要名称；否则内部的 <nav> 已经叫"主导航"，
+        // 再给 aside 同名会出现两个同名地标。
+        aria-label={mobileOpen ? tr("common.primaryNavigation") : undefined}
         className={cn(
           "app-sidebar app-sidebar-dual",
           active === "sessions" && "app-sidebar-sessions",
@@ -406,11 +414,10 @@ export function AppSidebar(props: {
                             variant="bare"
                             size="content"
                             className="workspace-sidebar-toggle grid w-[22px] h-9 flex-[0_0_22px] place-items-center text-muted-foreground rounded-[6px] [&_svg]:transition-transform [&_svg]:duration-160 [&_svg]:ease-[ease] motion-reduce:[&_svg]:transition-none"
-                            aria-label={
-                              tr(expanded ? "common.collapseSidebar" : "common.expandSidebar") +
-                              ": " +
-                              workspace.name
-                            }
+                            aria-label={tr(
+                              expanded ? "sidebar.collapseWorkspace" : "sidebar.expandWorkspace",
+                              { name: workspace.name },
+                            )}
                             aria-expanded={expanded}
                             onClick={() => setWorkspaceExpanded(workspace.id, !expanded)}
                           >
@@ -503,7 +510,7 @@ export function AppSidebar(props: {
                   })}
                   {!props.workspaces?.length && (
                     <p className="px-3 py-6 text-sm text-muted-foreground">
-                      {tr("common.notFound")}
+                      {tr("sidebar.noWorkspaces")}
                     </p>
                   )}
                 </nav>

@@ -1,7 +1,9 @@
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { useOptionalQueryClient } from "@/features/home/home-query";
+import { settingsKeys, useGitIdentities, useIndexedWorkspaceCount } from "./settings-query";
 import {
   Check,
   CircleAlert,
@@ -686,18 +688,14 @@ function ConversationPrivacySettings({
 }) {
   const { t: tr } = useTranslation();
   const dialogs = useAppDialogs();
-  const [indexedCount, setIndexedCount] = useState(0);
+  const queryClient = useOptionalQueryClient();
+  const workspaceIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  // 统计失败时显示 0，和之前静默忽略错误的行为一致。
+  const indexedCount = useIndexedWorkspaceCount(workspaceIds).data ?? 0;
+  const setIndexedCount = (count: number) =>
+    queryClient.setQueryData(settingsKeys.indexedWorkspaceCount(workspaceIds), count);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const loadCount = async () => {
-    const statuses = await Promise.all(
-      workspaces.map((workspace) => api.workspaceSessionStatus(workspace.id)),
-    );
-    setIndexedCount(statuses.filter((items) => items.some((item) => item.last_success_at)).length);
-  };
-  useEffect(() => {
-    void loadCount().catch(() => undefined);
-  }, [workspaces]);
   const toggle = async (enabled: boolean) => {
     setBusy(true);
     setError("");
@@ -913,26 +911,30 @@ function CloseBehaviorSelect({
 
 function GitIdentitySettings() {
   const { t: tr } = useTranslation();
-  const [identities, setIdentities] = useState<GitIdentitySummary[]>([]);
+  const queryClient = useOptionalQueryClient();
+  const identitiesQuery = useGitIdentities();
+  const identities: GitIdentitySummary[] = identitiesQuery.data ?? [];
   const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
-  const load = async () => {
-    try {
-      setIdentities(await api.gitIdentities());
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, []);
+  const [actionError, setError] = useState("");
+  const error =
+    actionError || (identitiesQuery.error ? localizeMessage(identitiesQuery.error) : "");
+  const reload = () => queryClient.invalidateQueries({ queryKey: settingsKeys.gitIdentities() });
   const add = async () => {
     if (!email.trim()) return;
     try {
       setError("");
       await api.addGitIdentityAlias(email);
       setEmail("");
-      await load();
+      await reload();
+    } catch (reason) {
+      setError(localizeMessage(reason));
+    }
+  };
+  const setEnabled = async (id: string, enabled: boolean) => {
+    try {
+      setError("");
+      await api.setGitIdentityEnabled(id, enabled);
+      await reload();
     } catch (reason) {
       setError(localizeMessage(reason));
     }
@@ -977,10 +979,7 @@ function GitIdentitySettings() {
             </span>
             <Switch
               checked={identity.enabled}
-              onCheckedChange={async (checked) => {
-                await api.setGitIdentityEnabled(identity.id, checked);
-                await load();
-              }}
+              onCheckedChange={(checked) => void setEnabled(identity.id, checked)}
             />
           </Label>
         ))}

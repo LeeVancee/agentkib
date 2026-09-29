@@ -353,6 +353,29 @@ describe("useAppNavigation guards", () => {
     expect(state.workspaceDrafts[workspace.id]).toBe(draft);
   });
 
+  it("goes to the workspace list when Workspaces is chosen from inside a workspace", async () => {
+    const workspace: WorkspaceSummary = {
+      id: "workspace-1",
+      path: "C:/workspace",
+      name: "Workspace",
+      status: "healthy",
+      asset_count: 0,
+      warning_count: 0,
+      sources: [],
+    };
+    useWorkspaceStore.setState({ selectedWorkspace: workspace, project: workspace.path });
+    testDoubles.location.pathname = "/workspace/workspace-1";
+    const { result } = renderHook(() => useAppNavigation());
+
+    await act(async () => result.current.navigateGlobal("workspaces"));
+
+    // 导航记忆里存的正是当前工作区；这里不能再"恢复"到它，否则列表页永远到不了。
+    expect(testDoubles.navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/workspaces" }),
+    );
+    expect(useWorkspaceStore.getState().selectedWorkspace).toBeUndefined();
+  });
+
   it("refreshes the home route instead of retained workspace state", async () => {
     const workspace: WorkspaceSummary = {
       id: "workspace-1",

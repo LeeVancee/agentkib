@@ -330,8 +330,11 @@ export function useAppNavigation() {
     searchPatch: Partial<AppSearch> = {},
   ) => {
     const saved = navigationLocations.current.get(nextPage);
+    // 从别处点"工作区"时回到上次打开的工作区；已经在工作区里再点一次则回到列表，
+    // 否则列表页永远到不了。
     if (
       nextPage === "workspaces" &&
+      route.kind !== "workspace" &&
       saved?.route.kind === "workspace" &&
       Object.keys(searchPatch).length === 0
     ) {

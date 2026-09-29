@@ -8,7 +8,7 @@ import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
-import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
+import { mergeTranscriptPages, WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -382,5 +382,29 @@ describe("WorkspaceSessionsPage", () => {
 
     await waitFor(() => expect(api.sessionEvents).toHaveBeenCalledWith(selected.id));
     expect(onInitialSessionConsumed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("mergeTranscriptPages", () => {
+  const event = (id: string) => ({
+    id,
+    kind: "agent-message" as const,
+    content: id,
+    attachment_count: 0,
+    truncated: false,
+  });
+
+  it("orders earlier pages first, de-duplicates events and keeps only the oldest scan budget", () => {
+    const latest = {
+      events: [event("b"), event("c")],
+      warnings: ["TRANSCRIPT_SCAN_BUDGET", "OTHER"],
+      next_cursor: "older",
+    };
+    const earlier = { events: [event("a"), event("b")], warnings: ["TRANSCRIPT_SCAN_BUDGET"] };
+    const merged = mergeTranscriptPages([latest, earlier] as never);
+    expect(merged.events.map(({ id }) => id)).toEqual(["a", "b", "c"]);
+    expect(merged.warnings).toEqual(["TRANSCRIPT_SCAN_BUDGET", "OTHER"]);
+    expect(merged.nextCursor).toBeUndefined();
+    expect(mergeTranscriptPages([latest] as never).nextCursor).toBe("older");
   });
 });

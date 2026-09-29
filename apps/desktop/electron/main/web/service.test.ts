@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
@@ -1132,6 +1132,15 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await http(`/escape/${dir.split("/").at(-1)}/index.html`)).status).toBe(200);
     await symlink("/etc/hosts", join(dir, "outside"));
     expect((await http("/outside")).status).toBe(403);
+  });
+  it("rejects directories and oversized assets before reading them into memory", async () => {
+    await mkdir(join(dir, "assets"));
+    expect((await http("/assets")).status).toBe(404);
+    const large = join(dir, "large.js");
+    await writeFile(large, "");
+    await truncate(large, 16 * 1024 * 1024 + 1);
+    // 稀疏文件：大小超限但不占用磁盘，服务端应只看元数据就拒绝。
+    expect((await http("/large.js")).status).toBe(413);
   });
   it("uses configured external HTTPS origin, never trusts forwarded headers", async () => {
     await service.request({

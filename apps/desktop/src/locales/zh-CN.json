@@ -944,6 +944,7 @@
   "assets.type": "类型",
   "assets.size": "大小",
   "context.environment": "模拟运行环境",
+  "context.agent": "Agent",
   "context.workingDirectory": "工作目录",
   "context.resolve": "解析有效上下文",
   "context.capabilities": "可见能力",

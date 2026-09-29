@@ -73,6 +73,19 @@ it("shows an address-only QR and link only for a running listener", async () => 
   );
 });
 
+it("keeps a plaintext warning visible only while the LAN listener runs", async () => {
+  request.mockResolvedValue({ ...status, running: true });
+  const view = render(<WebAccessSettings target="lan" />);
+  expect(await screen.findByText("LAN direct connection is not encrypted")).toBeVisible();
+  expect(screen.getByText(/capture the access token/)).toBeVisible();
+  view.unmount();
+
+  request.mockResolvedValue(status);
+  render(<WebAccessSettings target="lan" />);
+  await screen.findByRole("switch", { name: "Enable LAN direct connection" });
+  expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
+});
+
 it("does not reuse local browser authorization when granting LAN access", async () => {
   request.mockResolvedValue({
     ...status,

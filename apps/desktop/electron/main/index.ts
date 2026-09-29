@@ -21,6 +21,7 @@ import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost, type RuntimeHostStatus } from "./runtime-host";
 import { registerRuntimeIpc } from "./ipc/runtime";
+import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
@@ -80,6 +81,7 @@ let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
 let quitAcknowledgementTimer: NodeJS.Timeout | undefined;
 const startupBenchmark = new StartupBenchmark();
+const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime: requireRuntime });
 
 // renderer 必须在此时间内回执退出请求，否则视为无响应并直接退出。
 const QUIT_ACKNOWLEDGEMENT_TIMEOUT_MS = 3_000;
@@ -195,9 +197,23 @@ async function startApplication(): Promise<void> {
     process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
   });
 
-  const sharedControl = createWebControlState();
+  // 本机与 LAN 两个 Web 服务共用同一个 runtime 与控制栅栏，只有传输和数据目录不同。
+  const sharedWebOptions = {
+    sharedControl: createWebControlState(),
+    receiptRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.controlReceipt, params),
+    workspaceRequest: () =>
+      requestWhenRuntimeReady<{ id: string; name: string; path: string }[]>(
+        RUNTIME_METHODS.listWorkspaces,
+        {},
+      ),
+    managedRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.codexManaged, params),
+    runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
+    verifiedCodex: process.platform === "darwin",
+    verifiedClaudeManaged: process.platform === "darwin",
+    verifiedAntigravityManaged: true,
+  } satisfies Partial<ConstructorParameters<typeof WebAccessService>[0]>;
   webAccess = new WebAccessService({
-    sharedControl,
+    ...sharedWebOptions,
     onPairingRequested: showMainWindow,
     bundledFrpcPath: app.isPackaged
       ? path.join(process.resourcesPath, "bin", process.platform === "win32" ? "frpc.exe" : "frpc")
@@ -206,66 +222,20 @@ async function startApplication(): Promise<void> {
           "build/frpc",
           process.platform === "win32" ? "frpc.exe" : "frpc",
         ),
-    createRelayCsr: async (params) => {
-      if (!runtimeHandshake) throw new Error("runtime_unavailable");
-      return requireRuntime().request(RUNTIME_METHODS.relayCreateCsr, params) as Promise<{
-        csrPem: string;
-      }>;
-    },
-    receiptRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.controlReceipt, params);
-    },
-    verifiedCodex: process.platform === "darwin",
-    workspaceRequest: async () => {
-      if (!runtimeHandshake) throw new Error("runtime_unavailable");
-      return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
-        { id: string; name: string; path: string }[]
-      >;
-    },
-    managedRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
-    },
-    verifiedClaudeManaged: process.platform === "darwin",
-    verifiedAntigravityManaged: true,
+    createRelayCsr: (params) =>
+      requestWhenRuntimeReady<{ csrPem: string }>(RUNTIME_METHODS.relayCreateCsr, params),
     acceptanceSessionId: acceptanceSession(process.env),
     dataDir: path.join(electronDataPath, "web"),
     staticDir: app.isPackaged
       ? path.join(process.resourcesPath, "web")
       : path.resolve(app.getAppPath(), "../web/dist"),
-    runtimeRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
-    },
   });
   await webAccess.initialize();
   lanWebAccess = new WebAccessService({
+    ...sharedWebOptions,
     mode: "lan",
-    sharedControl,
-    receiptRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.controlReceipt, params);
-    },
-    verifiedCodex: process.platform === "darwin",
-    workspaceRequest: async () => {
-      if (!runtimeHandshake) throw new Error("runtime_unavailable");
-      return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
-        { id: string; name: string; path: string }[]
-      >;
-    },
-    managedRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
-    },
-    verifiedClaudeManaged: process.platform === "darwin",
-    verifiedAntigravityManaged: true,
     dataDir: path.join(electronDataPath, "web-lan"),
     staticDir: "",
-    runtimeRequest: (params) => {
-      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
-      return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
-    },
   });
   await lanWebAccess.initialize();
   registerApplicationIpc();
@@ -331,21 +301,17 @@ async function startApplication(): Promise<void> {
 
 function registerApplicationIpc(): void {
   if (ipcHandlersRegistered) return;
-  ipcMain.handle("agentkib:runtime:handshake", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:runtime:handshake", () => {
     if (!runtimeHandshake) throw new Error("AgentKib runtime is not ready");
     return runtimeHandshake;
   });
-  ipcMain.handle("agentkib:runtime:status", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:runtime:status", () => {
     return requireRuntime().status;
   });
-  ipcMain.handle("agentkib:runtime:retry", async (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:runtime:retry", async () => {
     await requireRuntime().retry();
   });
-  ipcMain.handle("agentkib:benchmark:mark", async (event, name: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:benchmark:mark", async (event, name: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
     if (
       name !== "renderer-first-commit" &&
@@ -493,8 +459,7 @@ function registerUpdateIpc(): void {
   });
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
-  ipcMain.handle("agentkib:updates:check", async (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:updates:check", async () => {
     if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") return undefined;
     const result = await autoUpdater.checkForUpdates();
     const update = result?.updateInfo;
@@ -514,8 +479,7 @@ function registerUpdateIpc(): void {
       install_mode: process.platform === "linux" && !process.env.APPIMAGE ? "manual" : "in-app",
     };
   });
-  ipcMain.handle("agentkib:updates:install", async (event, version: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:updates:install", async (event, version: unknown) => {
     if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") {
       throw new Error("errors.updateUnavailableInDevelopment");
     }
@@ -550,8 +514,7 @@ function registerUpdateIpc(): void {
 }
 
 function registerShellIpc(): void {
-  ipcMain.handle("agentkib:shell:open-directory", async (event, title: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:open-directory", async (_event, title: unknown) => {
     const window = mainWindow;
     if (!window) throw new Error("AgentKib window is not ready");
     const result = await dialog.showOpenDialog(window, {
@@ -560,16 +523,14 @@ function registerShellIpc(): void {
     });
     return result.canceled ? undefined : result.filePaths[0];
   });
-  ipcMain.handle("agentkib:shell:open-external", async (event, value: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:open-external", async (_event, value: unknown) => {
     const target = new URL(requireText(value, "url"));
     if (target.protocol !== "https:" && target.protocol !== "http:") {
       throw new Error("Only HTTP(S) external URLs are supported");
     }
     await shell.openExternal(target.toString());
   });
-  ipcMain.handle("agentkib:shell:open-files-and-folders-settings", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:open-files-and-folders-settings", () => {
     const settingsUrl =
       process.platform === "darwin"
         ? "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
@@ -579,19 +540,16 @@ function registerShellIpc(): void {
     if (!settingsUrl) throw new Error("Opening file and folder settings is not supported");
     return shell.openExternal(settingsUrl);
   });
-  ipcMain.handle("agentkib:shell:open-quota-dashboard", (event, request: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:open-quota-dashboard", (_event, request: unknown) => {
     const navigation = requireObject(request, "navigation request");
     if (navigation.page !== "quota") throw new Error("Only quota navigation is supported");
     showMainWindow();
     mainWindow?.webContents.send("agentkib:navigate", navigation);
   });
-  ipcMain.handle("agentkib:shell:hide-window", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:hide-window", (event) => {
     BrowserWindow.fromWebContents(event.sender)?.hide();
   });
-  ipcMain.handle("agentkib:shell:quit", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:shell:quit", () => {
     approveQuit();
   });
   // 单向消息：这里抛错会变成主进程未捕获异常，所以只做判断不抛错。
@@ -600,14 +558,12 @@ function registerShellIpc(): void {
     if (quitAcknowledgementTimer) clearTimeout(quitAcknowledgementTimer);
     quitAcknowledgementTimer = undefined;
   });
-  ipcMain.handle("agentkib:settings:set-close-behavior", (event, value: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-close-behavior", (_event, value: unknown) => {
     const next = optionalCloseBehavior(value);
     closeBehavior = next;
     return requireRuntime().request(RUNTIME_METHODS.setCloseBehavior, { value: next ?? null });
   });
-  ipcMain.handle("agentkib:settings:set-locale", (event, preference: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-locale", (_event, preference: unknown) => {
     return requireRuntime()
       .request<ElectronRuntimeInfo>(RUNTIME_METHODS.setLocale, {
         preference: requireString(preference, "preference"),
@@ -617,23 +573,20 @@ function registerShellIpc(): void {
         return withElectronRuntimeCapabilities(runtime);
       });
   });
-  ipcMain.handle("agentkib:settings:set-theme", (event, preference: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-theme", (_event, preference: unknown) => {
     const next = requireThemePreference(preference);
     nativeTheme.themeSource = next;
     return requireRuntime()
       .request(RUNTIME_METHODS.setThemePreference, { preference: next })
       .then(withElectronRuntimeCapabilities);
   });
-  ipcMain.handle("agentkib:settings:set-accent-theme", (event, preference: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-accent-theme", (_event, preference: unknown) => {
     const next = requireAccentThemePreference(preference);
     return requireRuntime()
       .request(RUNTIME_METHODS.setAccentThemePreference, { preference: next })
       .then(withElectronRuntimeCapabilities);
   });
-  ipcMain.handle("agentkib:settings:set-app-icon", (event, preference: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-app-icon", (_event, preference: unknown) => {
     const next = requireAppIconPreference(preference);
     return requireRuntime()
       .request(RUNTIME_METHODS.setAppIconPreference, { preference: next })
@@ -643,8 +596,7 @@ function registerShellIpc(): void {
         return withElectronRuntimeCapabilities(runtime);
       });
   });
-  ipcMain.handle("agentkib:settings:set-sidebar-width", (event, preference: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:settings:set-sidebar-width", (_event, preference: unknown) => {
     const next = requireSidebarWidthPreference(preference);
     return requireRuntime()
       .request(RUNTIME_METHODS.setSidebarWidthPreference, { preference: next })
@@ -653,12 +605,10 @@ function registerShellIpc(): void {
 }
 
 function registerHomeIpc(): void {
-  ipcMain.handle("agentkib:remote:request", (event, input: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.remoteRequest, requireRemoteRequest(input));
-  });
-  ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
-    assertTrustedRenderer(event);
+  forward("agentkib:remote:request", RUNTIME_METHODS.remoteRequest, (input: unknown) =>
+    requireRemoteRequest(input),
+  );
+  handle("agentkib:web:request", (_event, input: unknown) => {
     const request = input as Parameters<WebAccessService["request"]>[0];
     if (request?.target !== undefined && request.target !== "lan")
       throw new Error("invalid_web_target");
@@ -666,35 +616,25 @@ function registerHomeIpc(): void {
     if (!service) throw new Error("web_unavailable");
     return service.request(request);
   });
-  ipcMain.handle("agentkib:home:runtime", async (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:runtime", async () => {
     const runtime = await requireRuntime().request(RUNTIME_METHODS.runtimeInfo, {});
     return withElectronRuntimeCapabilities(runtime);
   });
-  ipcMain.handle("agentkib:home:workspaces", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {});
-  });
-  ipcMain.handle("agentkib:home:agent-installations", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listAgentInstallations, {});
-  });
-  ipcMain.handle("agentkib:home:agent-tools", (event, force: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.agentToolsStatus, {
-      force: force === undefined ? false : requireBoolean(force, "force"),
-    });
-  });
-  ipcMain.handle("agentkib:home:execute-agent-tool", (event, agent: unknown, actionId: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.agentToolExecute, {
+  forward("agentkib:home:workspaces", RUNTIME_METHODS.listWorkspaces);
+  forward("agentkib:home:agent-installations", RUNTIME_METHODS.listAgentInstallations);
+  forward("agentkib:home:agent-tools", RUNTIME_METHODS.agentToolsStatus, (force: unknown) => ({
+    force: force === undefined ? false : requireBoolean(force, "force"),
+  }));
+  forward(
+    "agentkib:home:execute-agent-tool",
+    RUNTIME_METHODS.agentToolExecute,
+    (agent: unknown, actionId: unknown) => ({
       agent: requireString(agent, "agent"),
       action_id: requireText(actionId, "actionId"),
       confirmed: true,
-    });
-  });
-  ipcMain.handle("agentkib:home:catalog-assets", (event, input: unknown) => {
-    assertTrustedRenderer(event);
+    }),
+  );
+  handle("agentkib:home:catalog-assets", (_event, input: unknown) => {
     const value = requireObject(input, "catalog query");
     return requireRuntime().request(RUNTIME_METHODS.searchCatalogAssets, {
       query: value.query === undefined ? "" : requireText(value.query, "query"),
@@ -703,130 +643,93 @@ function registerHomeIpc(): void {
       limit: optionalPositiveInteger(value.limit, "limit") ?? 500,
     });
   });
-  ipcMain.handle("agentkib:home:global-memories", (event, status: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:global-memories", (_event, status: unknown) => {
     if (status !== undefined && !MEMORY_STATUSES.has(requireString(status, "status"))) {
       throw new Error(`Unsupported memory status: ${String(status)}`);
     }
     return requireRuntime().request(RUNTIME_METHODS.listGlobalMemories, { status });
   });
-  ipcMain.handle("agentkib:home:activity", (event, limit: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listActivity, {
-      limit: optionalPositiveInteger(limit, "limit") ?? 200,
-    });
-  });
-  ipcMain.handle("agentkib:home:scan-roots", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listScanRoots, {});
-  });
-  ipcMain.handle("agentkib:home:add-scan-root", (event, rootPath: unknown, maxDepth: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.addScanRoot, {
+  forward("agentkib:home:activity", RUNTIME_METHODS.listActivity, (limit: unknown) => ({
+    limit: optionalPositiveInteger(limit, "limit") ?? 200,
+  }));
+  forward("agentkib:home:scan-roots", RUNTIME_METHODS.listScanRoots);
+  forward(
+    "agentkib:home:add-scan-root",
+    RUNTIME_METHODS.addScanRoot,
+    (rootPath: unknown, maxDepth: unknown) => ({
       path: requireString(rootPath, "path"),
       maxDepth: requirePositiveInteger(maxDepth, "maxDepth"),
-    });
-  });
-  ipcMain.handle("agentkib:home:remove-scan-root", (event, id: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.removeScanRoot, {
-      id: requireString(id, "id"),
-    });
-  });
-  ipcMain.handle("agentkib:home:refresh-discovery", (event, force: unknown) => {
-    assertTrustedRenderer(event);
+    }),
+  );
+  forward("agentkib:home:remove-scan-root", RUNTIME_METHODS.removeScanRoot, (id: unknown) => ({
+    id: requireString(id, "id"),
+  }));
+  handle("agentkib:home:refresh-discovery", (_event, force: unknown) => {
     return requireRefreshCoordinator().request(
       "discovery",
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  ipcMain.handle("agentkib:home:discovery-report", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.discoveryReport, {});
-  });
-  ipcMain.handle("agentkib:home:excluded-workspaces", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listExcludedWorkspaces, {});
-  });
-  ipcMain.handle("agentkib:home:remote-gateways", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.listRemoteGateways, {});
-  });
-  ipcMain.handle("agentkib:home:refresh-gateways", (event, force: unknown) => {
-    assertTrustedRenderer(event);
+  forward("agentkib:home:discovery-report", RUNTIME_METHODS.discoveryReport);
+  forward("agentkib:home:excluded-workspaces", RUNTIME_METHODS.listExcludedWorkspaces);
+  forward("agentkib:home:remote-gateways", RUNTIME_METHODS.listRemoteGateways);
+  handle("agentkib:home:refresh-gateways", (_event, force: unknown) => {
     return requireRefreshCoordinator().request(
       "gateways",
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  ipcMain.handle("agentkib:home:save-remote-gateway", (event, input: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.saveRemoteGateway, {
+  forward(
+    "agentkib:home:save-remote-gateway",
+    RUNTIME_METHODS.saveRemoteGateway,
+    (input: unknown) => ({
       input: requireObject(input, "remote gateway"),
-    });
-  });
-  ipcMain.handle("agentkib:home:refresh-remote-gateway", (event, id: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.refreshRemoteGateway, {
+    }),
+  );
+  forward(
+    "agentkib:home:refresh-remote-gateway",
+    RUNTIME_METHODS.refreshRemoteGateway,
+    (id: unknown) => ({
       id: requireString(id, "id"),
-    });
-  });
-  ipcMain.handle("agentkib:home:remove-remote-gateway", (event, id: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.removeRemoteGateway, {
+    }),
+  );
+  forward(
+    "agentkib:home:remove-remote-gateway",
+    RUNTIME_METHODS.removeRemoteGateway,
+    (id: unknown) => ({
       id: requireString(id, "id"),
-    });
-  });
-  ipcMain.handle("agentkib:home:insights-view", (event, query: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.insightsView, {
-      query: requireObject(query, "insights query"),
-    });
-  });
-  ipcMain.handle("agentkib:home:refresh-insights", (event, force: unknown) => {
-    assertTrustedRenderer(event);
+    }),
+  );
+  forward("agentkib:home:insights-view", RUNTIME_METHODS.insightsView, (query: unknown) => ({
+    query: requireObject(query, "insights query"),
+  }));
+  handle("agentkib:home:refresh-insights", (_event, force: unknown) => {
     return requireRefreshCoordinator().request(
       "insights",
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  ipcMain.handle("agentkib:home:insights-summary", (event, query: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.insightsSummary, {
-      query: requireObject(query, "insights query"),
-    });
-  });
-  ipcMain.handle("agentkib:home:insights-status", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.insightsStatus, {});
-  });
-  ipcMain.handle("agentkib:home:quota-collector-status", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.quotaCollectorStatus, {});
-  });
-  ipcMain.handle("agentkib:home:quota-snapshot", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.quotaSnapshot, {});
-  });
-  ipcMain.handle("agentkib:home:quota-preferences", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.quotaPreferences, {});
-  });
-  ipcMain.handle("agentkib:home:set-quota-preferences", (event, preferences: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.setQuotaPreferences, {
+  forward("agentkib:home:insights-summary", RUNTIME_METHODS.insightsSummary, (query: unknown) => ({
+    query: requireObject(query, "insights query"),
+  }));
+  forward("agentkib:home:insights-status", RUNTIME_METHODS.insightsStatus);
+  forward("agentkib:home:quota-collector-status", RUNTIME_METHODS.quotaCollectorStatus);
+  forward("agentkib:home:quota-snapshot", RUNTIME_METHODS.quotaSnapshot);
+  forward("agentkib:home:quota-preferences", RUNTIME_METHODS.quotaPreferences);
+  forward(
+    "agentkib:home:set-quota-preferences",
+    RUNTIME_METHODS.setQuotaPreferences,
+    (preferences: unknown) => ({
       preferences: requireObject(preferences, "quota preferences"),
-    });
-  });
-  ipcMain.handle("agentkib:home:refresh-quota", (event, force: unknown) => {
-    assertTrustedRenderer(event);
+    }),
+  );
+  handle("agentkib:home:refresh-quota", (_event, force: unknown) => {
     return requireRefreshCoordinator().request(
       "quota",
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  ipcMain.handle("agentkib:home:set-local-auto-refresh", async (event, enabled: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:set-local-auto-refresh", async (_event, enabled: unknown) => {
     const runtime = await requireRuntime().request<ElectronRuntimeInfo>(
       RUNTIME_METHODS.setLocalAutoRefresh,
       {
@@ -836,8 +739,7 @@ function registerHomeIpc(): void {
     requireRefreshCoordinator().activityChanged();
     return withElectronRuntimeCapabilities(runtime);
   });
-  ipcMain.handle("agentkib:home:set-quota-auto-refresh", (event, enabled: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:set-quota-auto-refresh", (_event, enabled: unknown) => {
     return requireRuntime()
       .request<ElectronRuntimeInfo>(RUNTIME_METHODS.setQuotaAutoRefresh, {
         value: requireBoolean(enabled, "enabled"),
@@ -849,43 +751,34 @@ function registerHomeIpc(): void {
         return withElectronRuntimeCapabilities(runtime);
       });
   });
-  ipcMain.handle("agentkib:home:set-quota-prompt-seen", (event, seen: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:set-quota-prompt-seen", (_event, seen: unknown) => {
     return requireRuntime()
       .request(RUNTIME_METHODS.setQuotaPromptSeen, {
         value: requireBoolean(seen, "seen"),
       })
       .then(withElectronRuntimeCapabilities);
   });
-  ipcMain.handle("agentkib:home:refresh-status", (event) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:refresh-status", () => {
     return requireRefreshCoordinator().statuses();
   });
-  ipcMain.handle("agentkib:home:storage-overview", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.storageOverview, {});
-  });
-  ipcMain.handle(
+  forward("agentkib:home:storage-overview", RUNTIME_METHODS.storageOverview);
+  forward(
     "agentkib:home:storage-children",
-    (event, workspaceId: unknown, relativePath: unknown) => {
-      assertTrustedRenderer(event);
-      return requireRuntime().request(RUNTIME_METHODS.storageChildren, {
-        workspaceId: requireString(workspaceId, "workspaceId"),
-        relativePath: requireText(relativePath, "relativePath"),
-      });
-    },
+    RUNTIME_METHODS.storageChildren,
+    (workspaceId: unknown, relativePath: unknown) => ({
+      workspaceId: requireString(workspaceId, "workspaceId"),
+      relativePath: requireText(relativePath, "relativePath"),
+    }),
   );
-  ipcMain.handle("agentkib:home:refresh-storage", (event, force: unknown) => {
-    assertTrustedRenderer(event);
+  handle("agentkib:home:refresh-storage", (_event, force: unknown) => {
     return requireRefreshCoordinator().request(
       "storage",
       force === undefined ? true : requireBoolean(force, "force"),
     );
   });
-  ipcMain.handle(
+  handle(
     "agentkib:home:open-storage-path",
-    async (event, workspaceId: unknown, relativePath: unknown) => {
-      assertTrustedRenderer(event);
+    async (_event, workspaceId: unknown, relativePath: unknown) => {
       const target = await requireRuntime().request<string>(RUNTIME_METHODS.resolveStoragePath, {
         workspaceId: requireString(workspaceId, "workspaceId"),
         relativePath: requireText(relativePath, "relativePath"),
@@ -894,57 +787,47 @@ function registerHomeIpc(): void {
       if (error) throw new Error(error);
     },
   );
-  ipcMain.handle("agentkib:home:cancel-storage", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.cancelStorage, {});
-  });
-  ipcMain.handle("agentkib:home:update-onboarding", (event, onboardingEvent: unknown) => {
-    assertTrustedRenderer(event);
+  forward("agentkib:home:cancel-storage", RUNTIME_METHODS.cancelStorage);
+  handle("agentkib:home:update-onboarding", (_event, onboardingEvent: unknown) => {
     return requireRuntime()
       .request(RUNTIME_METHODS.updateOnboarding, {
         event: requireObject(onboardingEvent, "onboarding event"),
       })
       .then(withElectronRuntimeCapabilities);
   });
-  ipcMain.handle("agentkib:home:obsidian-integration", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.obsidianIntegration, {});
-  });
-  ipcMain.handle("agentkib:home:add-obsidian-vault", (event, vaultPath: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.addObsidianVault, {
+  forward("agentkib:home:obsidian-integration", RUNTIME_METHODS.obsidianIntegration);
+  forward(
+    "agentkib:home:add-obsidian-vault",
+    RUNTIME_METHODS.addObsidianVault,
+    (vaultPath: unknown) => ({
       path: requireString(vaultPath, "path"),
-    });
-  });
-  ipcMain.handle(
-    "agentkib:home:link-obsidian-workspace",
-    (event, workspaceId: unknown, vaultPath: unknown, relativeTarget: unknown) => {
-      assertTrustedRenderer(event);
-      return requireRuntime().request(RUNTIME_METHODS.linkObsidianWorkspace, {
-        workspaceId: requireString(workspaceId, "workspaceId"),
-        vaultPath: requireString(vaultPath, "vaultPath"),
-        relativeTarget: optionalString(relativeTarget, "relativeTarget"),
-      });
-    },
+    }),
   );
-  ipcMain.handle("agentkib:home:unlink-obsidian-workspace", (event, workspaceId: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.unlinkObsidianWorkspace, {
+  forward(
+    "agentkib:home:link-obsidian-workspace",
+    RUNTIME_METHODS.linkObsidianWorkspace,
+    (workspaceId: unknown, vaultPath: unknown, relativeTarget: unknown) => ({
+      workspaceId: requireString(workspaceId, "workspaceId"),
+      vaultPath: requireString(vaultPath, "vaultPath"),
+      relativeTarget: optionalString(relativeTarget, "relativeTarget"),
+    }),
+  );
+  forward(
+    "agentkib:home:unlink-obsidian-workspace",
+    RUNTIME_METHODS.unlinkObsidianWorkspace,
+    (workspaceId: unknown) => ({
       id: requireString(workspaceId, "workspaceId"),
-    });
-  });
-  ipcMain.handle("agentkib:home:open-obsidian", (event) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.openObsidian, {});
-  });
-  ipcMain.handle("agentkib:home:open-obsidian-workspace", (event, workspaceId: unknown) => {
-    assertTrustedRenderer(event);
-    return requireRuntime().request(RUNTIME_METHODS.openObsidianWorkspace, {
+    }),
+  );
+  forward("agentkib:home:open-obsidian", RUNTIME_METHODS.openObsidian);
+  forward(
+    "agentkib:home:open-obsidian-workspace",
+    RUNTIME_METHODS.openObsidianWorkspace,
+    (workspaceId: unknown) => ({
       id: requireString(workspaceId, "workspaceId"),
-    });
-  });
-  ipcMain.handle("agentkib:workspace:doctor-summaries", (event, ids: unknown) => {
-    assertTrustedRenderer(event);
+    }),
+  );
+  handle("agentkib:workspace:doctor-summaries", (_event, ids: unknown) => {
     if (!Array.isArray(ids)) throw new TypeError("workspaceIds must be an array");
     const workspaceIds = ids.map((id) => requireString(id, "workspaceId"));
     if (workspaceIds.length > 100) throw new RangeError("workspaceIds cannot exceed 100 items");
@@ -963,6 +846,18 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
 function requireRuntime(): DesktopRuntimeHost {
   if (!runtimeHost) throw new Error("AgentKib runtime host is not initialized");
   return runtimeHost;
+}
+
+/**
+ * Web 服务使用的 runtime 请求：握手完成前立即以 runtime_unavailable 失败，
+ * 不像 IPC 那样排队等待，避免远程请求在 runtime 重启期间堆积。
+ */
+async function requestWhenRuntimeReady<TResult = unknown>(
+  method: string,
+  params: unknown,
+): Promise<TResult> {
+  if (!runtimeHandshake) throw new Error("runtime_unavailable");
+  return requireRuntime().request<TResult>(method, params);
 }
 
 function requireRefreshCoordinator(): ElectronRefreshCoordinator {
@@ -1149,6 +1044,9 @@ async function registerRendererProtocol(): Promise<void> {
     try {
       contents = await readFile(assetPath);
     } catch {
+      // 路由走 hash history，只有无扩展名的路径才可能是页面入口。缺失的脚本、样式等
+      // 资源直接 404，否则会以 200 + HTML 返回，报错变成难以排查的语法错误。
+      if (path.extname(relativePath)) return new Response("Not found", { status: 404 });
       assetPath = path.join(rendererRoot, "index.html");
       contents = await readFile(assetPath);
     }

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
@@ -3377,8 +3377,11 @@ export class WebAccessService {
     const rel = relative(root, file);
     if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(root, rel) !== file)
       throw new HttpError(403, "invalid_path");
+    // 先看元数据：目录直接 404，超大文件在读入内存之前就拒绝。
+    const info = await stat(file);
+    if (!info.isFile()) throw new HttpError(404, "not_found");
+    if (info.size > 16 * 1024 * 1024) throw new HttpError(413, "asset_too_large");
     const data = await readFile(file);
-    if (data.length > 16 * 1024 * 1024) throw new HttpError(413, "asset_too_large");
     const mime: Record<string, string> = {
       ".html": "text/html; charset=utf-8",
       ".js": "text/javascript",

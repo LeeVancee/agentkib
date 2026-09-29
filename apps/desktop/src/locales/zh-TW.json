@@ -944,6 +944,7 @@
   "assets.type": "類型",
   "assets.size": "大小",
   "context.environment": "模擬執行環境",
+  "context.agent": "Agent",
   "context.workingDirectory": "工作目錄",
   "context.resolve": "解析有效內容",
   "context.capabilities": "可見能力",

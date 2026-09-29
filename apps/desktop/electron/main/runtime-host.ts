@@ -9,6 +9,7 @@ import {
 } from "../generated/runtime-protocol";
 
 const HEALTHY_RUNTIME_RESET_MS = 30_000;
+const FORCE_KILL_GRACE_MS = 500;
 
 export type RuntimeHostState = "starting" | "ready" | "restarting" | "failed" | "stopping";
 
@@ -30,6 +31,7 @@ interface RuntimeHostOptions {
   environment?: NodeJS.ProcessEnv;
   maxRestarts?: number;
   shutdownTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   spawnProcess?: RuntimeProcessFactory;
 }
 
@@ -80,9 +82,15 @@ export class RuntimeRequestError extends Error {
 
 export class DesktopRuntimeHost extends EventEmitter {
   readonly #options: Required<
-    Pick<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">
+    Pick<
+      RuntimeHostOptions,
+      "maxRestarts" | "shutdownTimeoutMs" | "handshakeTimeoutMs" | "spawnProcess"
+    >
   > &
-    Omit<RuntimeHostOptions, "maxRestarts" | "shutdownTimeoutMs" | "spawnProcess">;
+    Omit<
+      RuntimeHostOptions,
+      "maxRestarts" | "shutdownTimeoutMs" | "handshakeTimeoutMs" | "spawnProcess"
+    >;
   readonly #pending = new Map<number, PendingRequest>();
   #child?: ChildProcessWithoutNullStreams;
   #lines?: Interface;
@@ -100,6 +108,8 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#options = {
       maxRestarts: 3,
       shutdownTimeoutMs: 2_000,
+      // 冷启动时 runtime 要打开数据库，Windows 上还可能被杀毒扫描拖慢，留足余量。
+      handshakeTimeoutMs: 20_000,
       spawnProcess: spawn as RuntimeProcessFactory,
       ...options,
     };
@@ -182,9 +192,14 @@ export class DesktopRuntimeHost extends EventEmitter {
       await exited;
     })();
     await Promise.race([gracefulShutdown, delay(this.#options.shutdownTimeoutMs)]);
-    if (child.exitCode === null) {
-      child.kill();
-      await Promise.race([exited, delay(500)]);
+    if (!hasExited(child)) {
+      child.kill("SIGTERM");
+      await Promise.race([exited, delay(FORCE_KILL_GRACE_MS)]);
+    }
+    // 忽略 SIGTERM 的 runtime 不能在应用退出后变成孤儿进程。
+    if (!hasExited(child)) {
+      child.kill("SIGKILL");
+      await Promise.race([exited, delay(FORCE_KILL_GRACE_MS)]);
     }
   }
 
@@ -220,10 +235,16 @@ export class DesktopRuntimeHost extends EventEmitter {
         child.once("error", reject);
       });
 
-      const handshake = await this.#requestNow<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
-        protocolVersion: PROTOCOL_VERSION,
-        client: { name: "agentkib-electron", version: this.#options.clientVersion },
-      });
+      // 进程已启动但一直不回握手时，所有排队请求都会永久挂起；超时后交给
+      // 常规失败路径（杀进程、按退避重启，超过上限进入 failed）。
+      const handshake = await withTimeout(
+        this.#requestNow<RuntimeHandshakeResult>(RUNTIME_METHODS.handshake, {
+          protocolVersion: PROTOCOL_VERSION,
+          client: { name: "agentkib-electron", version: this.#options.clientVersion },
+        }),
+        this.#options.handshakeTimeoutMs,
+        "AgentKib runtime did not complete the handshake in time",
+      );
       if (handshake.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(
           `Runtime returned protocol ${handshake.protocolVersion}; expected ${PROTOCOL_VERSION}`,
@@ -399,8 +420,27 @@ function deferred<T>(): Deferred<T> {
   return value;
 }
 
+function hasExited(child: ChildProcessWithoutNullStreams): boolean {
+  // 被信号终止时 exitCode 为 null，必须同时检查 signalCode。
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function delay(milliseconds: number): Promise<void> {

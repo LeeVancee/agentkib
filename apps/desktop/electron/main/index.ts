@@ -78,7 +78,11 @@ let startupFailureWindow: BrowserWindow | undefined;
 let ipcHandlersRegistered = false;
 let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
+let quitAcknowledgementTimer: NodeJS.Timeout | undefined;
 const startupBenchmark = new StartupBenchmark();
+
+// renderer 必须在此时间内回执退出请求，否则视为无响应并直接退出。
+const QUIT_ACKNOWLEDGEMENT_TIMEOUT_MS = 3_000;
 
 // Keep the desktop window comfortably above the renderer's 1024px compact breakpoint.
 // 1280px is Tailwind's default `xl` breakpoint and leaves room for the desktop layout.
@@ -425,14 +429,29 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
+function approveQuit(): void {
+  if (quitAcknowledgementTimer) clearTimeout(quitAcknowledgementTimer);
+  quitAcknowledgementTimer = undefined;
+  quitApproved = true;
+  app.quit();
+}
+
 function requestRendererQuitGuard(): void {
   const window = mainWindow;
-  if (!window || window.isDestroyed()) {
-    quitApproved = true;
-    app.quit();
+  if (!window || window.isDestroyed() || window.webContents.isCrashed()) {
+    approveQuit();
     return;
   }
   showMainWindow();
+  // 已在等待确认时不重复发送，避免叠加多个退出对话框。
+  if (quitAcknowledgementTimer) return;
+  // preload 收到退出请求后会立刻回执。收不到回执说明 renderer 已卡死、崩溃
+  // 或尚未挂载退出守卫，此时不能让用户（或系统关机）永远等下去。
+  quitAcknowledgementTimer = setTimeout(() => {
+    quitAcknowledgementTimer = undefined;
+    process.stderr.write("AgentKib renderer did not acknowledge quit; quitting without guard.\n");
+    approveQuit();
+  }, QUIT_ACKNOWLEDGEMENT_TIMEOUT_MS);
   window.webContents.send("agentkib:quit-requested");
 }
 
@@ -479,7 +498,9 @@ function registerUpdateIpc(): void {
     if (!app.isPackaged || process.env.AGENTKIB_DEV === "1") return undefined;
     const result = await autoUpdater.checkForUpdates();
     const update = result?.updateInfo;
-    if (!update || update.version === app.getVersion()) {
+    // updateInfo 在"没有更新"时也会返回远端最新版本；远端比本地旧（例如本地是
+    // 预发布版）时按字符串比较会误报更新，随后 downloadUpdate 失败。
+    if (!result?.isUpdateAvailable || !update) {
       pendingUpdateVersion = undefined;
       return undefined;
     }
@@ -571,8 +592,13 @@ function registerShellIpc(): void {
   });
   ipcMain.handle("agentkib:shell:quit", (event) => {
     assertTrustedRenderer(event);
-    quitApproved = true;
-    app.quit();
+    approveQuit();
+  });
+  // 单向消息：这里抛错会变成主进程未捕获异常，所以只做判断不抛错。
+  ipcMain.on("agentkib:quit-acknowledged", (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return;
+    if (quitAcknowledgementTimer) clearTimeout(quitAcknowledgementTimer);
+    quitAcknowledgementTimer = undefined;
   });
   ipcMain.handle("agentkib:settings:set-close-behavior", (event, value: unknown) => {
     assertTrustedRenderer(event);

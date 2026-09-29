@@ -20,7 +20,11 @@ const desktopApi = Object.freeze({
     onWindowActivity: (listener: (active: boolean) => void) =>
       subscribe("agentkib:window-activity", listener),
     onQuitRequested: (listener: () => void) =>
-      subscribe("agentkib:quit-requested", () => listener()),
+      subscribe("agentkib:quit-requested", () => {
+        // 先回执再处理：主进程据此区分"renderer 正在询问用户"和"renderer 已卡死"。
+        ipcRenderer.send("agentkib:quit-acknowledged");
+        listener();
+      }),
     onThemeChanged: (listener: (theme: "light" | "dark") => void) =>
       subscribe("agentkib:theme-changed", listener),
     onRefreshState: (listener: (status: RefreshJobStatus) => void) =>

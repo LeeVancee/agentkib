@@ -207,6 +207,41 @@ describe("same-origin one-time code full authorization", () => {
     expect(runtime).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "send" }));
   });
 
+  it("rejects every read-only control and advanced read, not just send and create", async () => {
+    const b = await browser();
+    const status = await service.request({ operation: "generate-code", access: "read" });
+    await b.api("pair", { code: status.code!.value, name: "Tablet" });
+    runtime.mockClear();
+    const base = {
+      sessionId: "session-first",
+      expectedRevision: 1,
+      bootId: b.access.bootId,
+      requestId: randomUUID(),
+    };
+    const writes: [string, Record<string, unknown>][] = [
+      ["approve", { ...base, approvalId: "approval", decision: "accept" }],
+      ["answer", { ...base, questionId: "question", answers: {} }],
+      ["stop", base],
+      ["codex/rename", { ...base, title: "Renamed" }],
+      ["codex/goal-set", { ...base, intent: "start", objective: "Ship it" }],
+      ["managed/adopt", { ...base, workspaceId: "first" }],
+      ["attachments?sessionId=session-first&name=a.txt&mime=text/plain", { data: "x" }],
+      ["attachments/delete", { sessionId: "session-first", id: "attachment" }],
+    ];
+    for (const [path, body] of writes)
+      expect({ path, status: (await b.api(path, body)).status }).toEqual({ path, status: 403 });
+    for (const path of [
+      "codex/session-settings?sessionId=session-first",
+      "codex/goals?sessionId=session-first",
+      "codex/context-options?sessionId=session-first",
+    ])
+      expect({ path, status: (await b.api(path)).status }).toEqual({ path, status: 403 });
+    // 被拒绝的请求一个都不能到达 runtime / managed。
+    const reached = runtime.mock.calls.map(([input]) => (input as { operation: string }).operation);
+    expect(reached.filter((operation) => !["catalog", "live"].includes(operation))).toEqual([]);
+    expect(managed).not.toHaveBeenCalledWith(expect.objectContaining({ operation: "adopt" }));
+  });
+
   it("changes a paired device between read-only and full access from the desktop", async () => {
     const b = await browser();
     const paired = await b.api("pair", {
@@ -232,6 +267,26 @@ describe("same-origin one-time code full authorization", () => {
     expect((await send()).status).toBe(403);
     const saved = JSON.parse(await readFile(join(dir, "web-access.json"), "utf8"));
     expect(saved.credentials[0].device).toMatchObject({ id, send: false, files: true });
+  });
+
+  it("drops a browser's live stream without ending access when its level changes", async () => {
+    const b = await browser();
+    const paired = await b.api("pair", {
+      code: (await service.request({ operation: "generate-code", access: "read" })).code!.value,
+      name: "Tablet",
+    });
+    const stream = await fetch(`${origin}/api/web/v1/stream?sessionId=session-first`, {
+      headers: { Cookie: b.cookie, Origin: origin, "X-CSRF-Token": b.access.csrfToken },
+    });
+    expect(stream.status).toBe(200);
+    const body = stream.text();
+    await service.request({ operation: "set-access", id: paired.data.device.id, access: "full" });
+    // 流被关闭（text() 才会结束），但不能带 access-ended，否则浏览器会当成被注销。
+    expect(await body).not.toContain("access-ended");
+    expect((await b.api("access")).data).toMatchObject({
+      status: "approved",
+      device: { send: true },
+    });
   });
 
   it("rejects unknown access levels and devices", async () => {

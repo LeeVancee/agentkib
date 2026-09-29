@@ -50,7 +50,8 @@ function useDeadlineClock(...deadlines: Array<number | undefined>) {
     const delay = Math.min(Math.max(0, next - Date.now()), MAX_TIMEOUT_MS);
     const timer = window.setTimeout(() => setNow(Date.now()), delay);
     return () => window.clearTimeout(timer);
-  }, [next]);
+    // 依赖 now：计时器提前触发时 next 不变，要靠 now 的变化重新挂一个计时器。
+  }, [next, now]);
   return now;
 }
 
@@ -423,14 +424,6 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   );
   return (
     <SettingsSection title={c.title}>
-      {lan &&
-        status?.running && (
-          // 运行期间常驻：明文风险不是一次性确认就能消除的，用户需要随时知道自己暴露在什么网络上。
-          <SettingsNotice tone="warning" inset={false} className="text-sm">
-            <strong>{l.plaintextActiveTitle}</strong>
-            <p>{l.plaintextActive}</p>
-          </SettingsNotice>
-        )}
       <SettingsNotice>{codeAccess ? c.codeScope : c.scope}</SettingsNotice>
       {status?.acceptanceSessionId && (
         <SettingsNotice>

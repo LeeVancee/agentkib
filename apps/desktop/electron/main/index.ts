@@ -26,6 +26,7 @@ import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell"
 import { ElectronRefreshCoordinator } from "./refresh-coordinator";
 import { StartupBenchmark } from "./startup-benchmark";
 import { firstCloseDecision } from "./close-behavior";
+import { createQuitGuard } from "./quit-guard";
 import { normalizeReleaseNotes } from "./release-notes";
 import {
   optionalCloseBehavior,
@@ -79,12 +80,18 @@ let startupFailureWindow: BrowserWindow | undefined;
 let ipcHandlersRegistered = false;
 let closePromptOpen = false;
 let benchmarkCompletionStarted = false;
-let quitAcknowledgementTimer: NodeJS.Timeout | undefined;
+let rendererUnresponsive = false;
 const startupBenchmark = new StartupBenchmark();
 const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime: requireRuntime });
 
-// renderer 必须在此时间内回执退出请求，否则视为无响应并直接退出。
-const QUIT_ACKNOWLEDGEMENT_TIMEOUT_MS = 3_000;
+const quitGuard = createQuitGuard({
+  approveQuit: () => {
+    quitApproved = true;
+    app.quit();
+  },
+  onTimeout: () =>
+    process.stderr.write("AgentKib renderer did not acknowledge quit; quitting without guard.\n"),
+});
 
 // Keep the desktop window comfortably above the renderer's 1024px compact breakpoint.
 // 1280px is Tailwind's default `xl` breakpoint and leaves room for the desktop layout.
@@ -396,29 +403,19 @@ function showMainWindow(): void {
 }
 
 function approveQuit(): void {
-  if (quitAcknowledgementTimer) clearTimeout(quitAcknowledgementTimer);
-  quitAcknowledgementTimer = undefined;
-  quitApproved = true;
-  app.quit();
+  quitGuard.approve();
 }
 
 function requestRendererQuitGuard(): void {
-  const window = mainWindow;
-  if (!window || window.isDestroyed() || window.webContents.isCrashed()) {
-    approveQuit();
-    return;
-  }
-  showMainWindow();
-  // 已在等待确认时不重复发送，避免叠加多个退出对话框。
-  if (quitAcknowledgementTimer) return;
-  // preload 收到退出请求后会立刻回执。收不到回执说明 renderer 已卡死、崩溃
-  // 或尚未挂载退出守卫，此时不能让用户（或系统关机）永远等下去。
-  quitAcknowledgementTimer = setTimeout(() => {
-    quitAcknowledgementTimer = undefined;
-    process.stderr.write("AgentKib renderer did not acknowledge quit; quitting without guard.\n");
-    approveQuit();
-  }, QUIT_ACKNOWLEDGEMENT_TIMEOUT_MS);
-  window.webContents.send("agentkib:quit-requested");
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  quitGuard.request(
+    window && {
+      isAlive: () => !window.isDestroyed() && !window.webContents.isCrashed(),
+      isUnresponsive: () => rendererUnresponsive,
+      show: showMainWindow,
+      sendQuitRequest: () => window.webContents.send("agentkib:quit-requested"),
+    },
+  );
 }
 
 function requestNativeRefresh(kind: "discovery" | "insights" | "quota" | "all"): void {
@@ -555,8 +552,7 @@ function registerShellIpc(): void {
   // 单向消息：这里抛错会变成主进程未捕获异常，所以只做判断不抛错。
   ipcMain.on("agentkib:quit-acknowledged", (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) return;
-    if (quitAcknowledgementTimer) clearTimeout(quitAcknowledgementTimer);
-    quitAcknowledgementTimer = undefined;
+    quitGuard.acknowledged();
   });
   handle("agentkib:settings:set-close-behavior", (_event, value: unknown) => {
     const next = optionalCloseBehavior(value);
@@ -930,6 +926,16 @@ async function createMainWindow(): Promise<void> {
   window.on("hide", updateWindowActivity);
   window.on("minimize", updateWindowActivity);
   window.on("restore", updateWindowActivity);
+  // renderer 卡死或崩溃时，等待中的退出请求不必再等回执。
+  rendererUnresponsive = false;
+  window.on("unresponsive", () => {
+    rendererUnresponsive = true;
+    quitGuard.rendererUnavailable();
+  });
+  window.on("responsive", () => {
+    rendererUnresponsive = false;
+  });
+  window.webContents.on("render-process-gone", () => quitGuard.rendererUnavailable());
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL

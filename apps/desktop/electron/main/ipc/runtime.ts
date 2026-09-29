@@ -4,23 +4,13 @@ import type { DesktopRuntimeHost } from "../runtime-host";
 import {
   optionalPositiveInteger,
   optionalString,
+  requireAgentKind,
   requireBoolean,
   requireObject,
   requirePositiveInteger,
   requireString,
   requireText,
 } from "./validation";
-
-const KNOWN_AGENTS = new Set([
-  "codex",
-  "claude-code",
-  "cursor",
-  "opencode",
-  "open-claw",
-  "hermes",
-  "antigravity",
-  "deepseek-harness",
-]);
 
 interface RuntimeIpcOptions {
   runtime(): DesktopRuntimeHost;
@@ -50,12 +40,10 @@ export function registerRuntimeIpc({
       "agentkib:workspace:resolve-context",
       (event, project: unknown, cwd: unknown, agent: unknown) => {
         assertTrustedRenderer(event);
-        const parsedAgent = requireString(agent, "agent");
-        if (!KNOWN_AGENTS.has(parsedAgent)) throw new Error(`Unsupported agent: ${parsedAgent}`);
         return runtime().request(RUNTIME_METHODS.resolveContext, {
           project: requireString(project, "project"),
           cwd: requireString(cwd, "cwd"),
-          agent: parsedAgent,
+          agent: requireAgentKind(agent),
         });
       },
     );

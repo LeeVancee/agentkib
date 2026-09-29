@@ -15,6 +15,7 @@ const readline = require("node:readline");
 const fs = require("node:fs");
 const mode = process.env.FAKE_RUNTIME_MODE;
 if (mode === "exit-before-handshake") process.exit(12);
+if (mode === "ignore-sigterm") process.on("SIGTERM", () => {});
 if (mode === "restart-once") {
   const marker = process.env.FAKE_RUNTIME_MARKER;
   if (!fs.existsSync(marker)) {
@@ -42,7 +43,7 @@ lines.on("line", (line) => {
     return;
   }
   if (request.method === "agentkib.shutdown") {
-    if (mode === "ignore-shutdown") return;
+    if (mode === "ignore-shutdown" || mode === "ignore-sigterm") return;
     respond(request, null);
     process.exit(0);
   }
@@ -72,13 +73,14 @@ describe("DesktopRuntimeHost", () => {
     vi.restoreAllMocks();
   });
 
-  function createHost(mode: () => string, maxRestarts = 3) {
+  function createHost(mode: () => string, maxRestarts = 3, handshakeTimeoutMs?: number) {
     const marker = path.join(directory, "restart.marker");
     const host = new DesktopRuntimeHost({
       executablePath: process.execPath,
       clientVersion: "test",
       maxRestarts,
       shutdownTimeoutMs: 200,
+      ...(handshakeTimeoutMs === undefined ? {} : { handshakeTimeoutMs }),
       spawnProcess: (_executablePath, _args, options) => {
         const child = spawn(process.execPath, [script], {
           ...options,
@@ -216,5 +218,29 @@ describe("DesktopRuntimeHost", () => {
 
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(host.status.state).toBe("stopping");
+  });
+
+  it("force-kills a runtime that ignores both shutdown and SIGTERM", async () => {
+    const host = createHost(() => "ignore-sigterm");
+    await host.start();
+    const child = children[0];
+
+    await host.stop();
+
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+
+  it("fails startup when the runtime never answers the handshake", async () => {
+    const host = createHost(() => "never-handshake", 0, 100);
+    const starting = expect(host.start()).rejects.toThrow("did not complete the handshake in time");
+    const waiting = expect(host.request("echo", {})).rejects.toBeInstanceOf(
+      RuntimeUnavailableError,
+    );
+
+    await Promise.all([starting, waiting]);
+    expect(host.status.state).toBe("failed");
+    await vi.waitFor(() =>
+      expect(children[0].exitCode !== null || children[0].signalCode !== null).toBe(true),
+    );
   });
 });

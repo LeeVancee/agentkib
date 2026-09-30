@@ -115,14 +115,75 @@ export const TYPESCRIPT_SESSION_READ_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_SESSION_INDEX_METHODS = new Set<string>([
+  RUNTIME_METHODS.setSessionIndexEnabled,
   RUNTIME_METHODS.refreshWorkspaceSessions,
   RUNTIME_METHODS.clearSessionIndex,
 ]);
 
 export const TYPESCRIPT_SESSION_HANDOFF_METHODS = new Set<string>([
   RUNTIME_METHODS.prepareSessionHandoff,
+  RUNTIME_METHODS.planSessionMcpConnection,
   RUNTIME_METHODS.sanitizeSessionHandoff,
   RUNTIME_METHODS.planSessionHandoff,
   RUNTIME_METHODS.continueSessionHandoff,
   RUNTIME_METHODS.launchSessionHandoff,
+]);
+
+export const TYPESCRIPT_OBSIDIAN_METHODS = new Set<string>([
+  RUNTIME_METHODS.obsidianIntegration,
+  RUNTIME_METHODS.addObsidianVault,
+  RUNTIME_METHODS.linkObsidianWorkspace,
+  RUNTIME_METHODS.unlinkObsidianWorkspace,
+  RUNTIME_METHODS.openObsidian,
+  RUNTIME_METHODS.openObsidianWorkspace,
+]);
+
+export const TYPESCRIPT_SKILL_METHODS = new Set<string>([
+  RUNTIME_METHODS.listSkillCatalog,
+  RUNTIME_METHODS.discoverSkills,
+  RUNTIME_METHODS.listInstalledSkills,
+  RUNTIME_METHODS.prepareSkillInstall,
+  RUNTIME_METHODS.applySkillOperation,
+  RUNTIME_METHODS.checkSkillUpdates,
+  RUNTIME_METHODS.prepareSkillUpdate,
+  RUNTIME_METHODS.rollbackSkill,
+  RUNTIME_METHODS.uninstallSkill,
+  RUNTIME_METHODS.listRemovedSkills,
+  RUNTIME_METHODS.restoreSkill,
+  RUNTIME_METHODS.readSkillFile,
+]);
+
+export const TYPESCRIPT_AGENT_TOOL_METHODS = new Set<string>([
+  RUNTIME_METHODS.agentToolsStatus,
+  RUNTIME_METHODS.agentToolExecute,
+]);
+
+export const TYPESCRIPT_MCP_METHODS = new Set<string>([
+  RUNTIME_METHODS.mcpHubStatus,
+  RUNTIME_METHODS.updateMcpNetwork,
+  RUNTIME_METHODS.startMcpOAuth,
+  RUNTIME_METHODS.listMcpServers,
+  RUNTIME_METHODS.getMcpServer,
+  RUNTIME_METHODS.saveMcpServer,
+  RUNTIME_METHODS.saveMcpLocalValues,
+  RUNTIME_METHODS.removeMcpServer,
+  RUNTIME_METHODS.probeMcpRuntime,
+  RUNTIME_METHODS.listMcpRuntimes,
+  RUNTIME_METHODS.restartMcpRuntime,
+  RUNTIME_METHODS.stopMcpRuntime,
+  RUNTIME_METHODS.scanNativeMcp,
+  RUNTIME_METHODS.planMcpMigration,
+  RUNTIME_METHODS.searchMcpRegistry,
+  RUNTIME_METHODS.refreshMcpRegistry,
+  RUNTIME_METHODS.listMcpInstallations,
+  RUNTIME_METHODS.installMcp,
+  RUNTIME_METHODS.updateMcp,
+  RUNTIME_METHODS.uninstallMcp,
+]);
+
+export const TYPESCRIPT_REMOTE_GATEWAY_METHODS = new Set<string>([
+  RUNTIME_METHODS.listRemoteGateways,
+  RUNTIME_METHODS.saveRemoteGateway,
+  RUNTIME_METHODS.refreshRemoteGateway,
+  RUNTIME_METHODS.removeRemoteGateway,
 ]);

@@ -15,6 +15,9 @@ export class SessionIndex {
   invalidate(): void {
     this.#epoch++;
   }
+  generation(): bigint {
+    return this.#epoch;
+  }
   close(): void {
     this.#closed = true;
     this.invalidate();

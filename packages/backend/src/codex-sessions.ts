@@ -191,6 +191,50 @@ export class CodexSessions {
       throw error;
     }
   }
+  verifiedControlIds(nativeRefs: Iterable<string>): Set<string> {
+    const expected = new Set(
+      [...nativeRefs].flatMap((value) => {
+        const id = uuid(value);
+        return id ? [id] : [];
+      }),
+    );
+    if (!expected.size) return new Set();
+
+    const home = this.home();
+    const current = this.databases(home);
+    const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
+    const verified = new Set<string>();
+    for (const file of databases) {
+      if (verified.size === expected.size) break;
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        const sql = new Sql(db);
+        db.exec("PRAGMA busy_timeout=5000");
+        const columns = new Set(
+          sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
+        );
+        if (!["id", "rollout_path"].every((column) => columns.has(column))) continue;
+        const pending = [...expected].filter((id) => !verified.has(id));
+        for (let start = 0; start < pending.length; start += 500) {
+          const ids = pending.slice(start, start + 500);
+          const rows = sql.rows(
+            `SELECT id, rollout_path FROM threads WHERE id IN (${ids.map(() => "?").join(",")})`,
+            ...ids,
+          );
+          for (const row of rows) {
+            const id = uuid(String(row.id));
+            if (!id || !expected.has(id)) continue;
+            const rawPath = String(row.rollout_path);
+            const transcript = path.isAbsolute(rawPath) ? rawPath : path.join(home, rawPath);
+            if (verifiedCodexControlId(transcript, id)) verified.add(id);
+          }
+        }
+      } finally {
+        db.close();
+      }
+    }
+    return verified;
+  }
   list(workspace: string | null) {
     const home = this.home(),
       current = this.databases(home),
@@ -308,5 +352,34 @@ export class CodexSessions {
         .map(([, value]) => value),
       incomplete,
     };
+  }
+}
+
+function uuid(value: string): string | null {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+    ? value.toLowerCase()
+    : null;
+}
+
+function verifiedCodexControlId(transcript: string, expectedId: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = regularOpen(transcript);
+    const bytes = Buffer.allocUnsafe(64 * 1024);
+    const size = readSync(fd, bytes, 0, bytes.length, 0);
+    const newline = bytes.indexOf(10, 0);
+    if (newline < 0 || newline >= size) return false;
+    const firstLine = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, newline));
+    const value: unknown = JSON.parse(firstLine);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const row = value as { type?: unknown; payload?: unknown };
+    if (row.type !== "session_meta" || !row.payload || typeof row.payload !== "object")
+      return false;
+    const id = (row.payload as { id?: unknown }).id;
+    return typeof id === "string" && uuid(id) === expectedId;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }

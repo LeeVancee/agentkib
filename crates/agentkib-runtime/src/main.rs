@@ -16,7 +16,6 @@ mod claude_runner;
 mod codex_managed;
 mod migration;
 mod obsidian;
-mod relay_csr;
 mod skill_worker;
 mod web;
 
@@ -254,12 +253,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 write_response(&mut stdout, response)?;
-                // Flush the handshake before binding the MCP listener. Electron can render its
-                // shell immediately while subsequent business requests remain queued on stdin.
+                // Keep background workers out of the handshake response path so Electron can
+                // render its shell while the remaining services initialize.
                 if handshake_succeeded {
-                    initialize_mcp_hub()?;
                     initialize_skill_hub()?;
-                    remote_worker.initialize();
                 }
             }
             RuntimeEvent::EndOfInput => {
@@ -315,17 +312,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn initialize_mcp_hub() -> anyhow::Result<()> {
-    if MCP_HUB.get().is_some() {
-        return Ok(());
-    }
-    let hub = agentkib_mcp::HubController::new(load_mcp_network_settings())?;
-    hub.start()?;
-    MCP_HUB
-        .set(hub)
-        .map_err(|_| anyhow::anyhow!("AgentKib MCP Hub was initialized more than once"))
-}
-
 fn initialize_skill_hub() -> anyhow::Result<()> {
     if SKILL_HUB.get().is_some() {
         return Ok(());
@@ -366,7 +352,6 @@ enum RuntimeEvent {
 }
 
 enum RemoteWork {
-    Initialize,
     Request(RpcRequest),
 }
 
@@ -404,16 +389,15 @@ impl RemoteWorker {
                         Ok::<_, anyhow::Error>(service)
                     })());
                 }
-                if let RemoteWork::Request(request) = work {
-                    let result = match initialized.as_ref().expect("initialized above") {
-                        Ok(service) => service.request(request.params),
-                        Err(_) => Err(anyhow::anyhow!("remote-unavailable")),
-                    };
-                    let _ = events.send(RuntimeEvent::RemoteFinished {
-                        request_id: request.id,
-                        result: Box::new(result),
-                    });
-                }
+                let RemoteWork::Request(request) = work;
+                let result = match initialized.as_ref().expect("initialized above") {
+                    Ok(service) => service.request(request.params),
+                    Err(_) => Err(anyhow::anyhow!("remote-unavailable")),
+                };
+                let _ = events.send(RuntimeEvent::RemoteFinished {
+                    request_id: request.id,
+                    result: Box::new(result),
+                });
             }
             if let Some(Ok(service)) = initialized {
                 service.shutdown();
@@ -424,12 +408,6 @@ impl RemoteWorker {
             handle: Some(handle),
             stopped,
             service,
-        }
-    }
-
-    fn initialize(&self) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.try_send(RemoteWork::Initialize);
         }
     }
 
@@ -869,7 +847,6 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         "backend.nativeDiscovery" => command_response(request, migration::discover),
         "backend.nativeInspect" => command_response(request, migration::inspect),
         HANDSHAKE_METHOD => handle_handshake(request),
-        agentkib_protocol::RELAY_CREATE_CSR_METHOD => command_response(request, relay_csr::create),
         SHUTDOWN_METHOD => (RpcResponse::success(request.id, Value::Null), true),
         SCAN_WORKSPACE_METHOD => command_response(request, scan_workspace),
         PREPARE_MANIFEST_METHOD => command_response(request, prepare_manifest),
@@ -3128,9 +3105,7 @@ where
 fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
     let data_dir = agentkib_store::default_data_dir()?;
     let preferences = load_preferences_root(&data_dir);
-    let hub = mcp_hub()?;
-    let network = hub.settings();
-    let hub_status = hub.status();
+    let network = load_mcp_network_settings();
     let development = std::env::var("AGENTKIB_APP_FLAVOR").as_deref() == Ok("ai.agentkib.dev");
     let locale_preference: String =
         stored_value(&preferences, "locale_preference", "system".to_owned());
@@ -3167,14 +3142,13 @@ fn runtime_info(_: EmptyRequest) -> anyhow::Result<Value> {
         "database_path": data_dir.join("agentkib.db"),
         "mcp_package_root": agentkib_mcp::installation_root()?,
         "mcp_hub": {
-            "running": hub_status.running,
-            "bind_address": hub_status.bind_address,
+            "running": false,
+            "bind_address": if network.lan_enabled { "0.0.0.0" } else { "127.0.0.1" },
             "port": network.port,
             "lan_enabled": network.lan_enabled,
-            "accessible_addresses": hub_status.accessible_addresses,
-            "runtime_count": hub_status.runtime_count,
-            "error_count": hub_status.error_count,
-            "last_error": hub_status.last_error,
+            "accessible_addresses": [],
+            "runtime_count": 0,
+            "error_count": 0,
         },
         "mcp_network": network,
         "openclaw_config": home.as_ref().map(|path| path.join(".openclaw/openclaw.json")),

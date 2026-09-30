@@ -94,6 +94,98 @@ export function validateSessionArchive(
   return manifest;
 }
 
+export function searchSessionArchive(
+  dataDir: string,
+  workspaceId: string,
+  archiveId: string,
+  query: string,
+  limit: number,
+) {
+  if (Array.from(query).length > 256)
+    throw new Error("Session archive query exceeds 256 characters");
+  const manifest = validateSessionArchive(dataDir, workspaceId, archiveId);
+  const bytes = readSafeFile(
+    archiveChunksPath(dataDir, workspaceId, manifest.archive_id),
+    maxArchiveBytes,
+  );
+  const chunks = bytes
+    .toString("utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line, index) => {
+      if (Buffer.byteLength(line) > maxChunkBytes)
+        throw new Error(`Session archive chunk ${index + 1} exceeds the 64 KiB limit`);
+      return archiveChunk.parse(JSON.parse(line));
+    });
+  const needle = query.toLocaleLowerCase("und");
+  const hits = chunks
+    .slice()
+    .reverse()
+    .filter(
+      (chunk) =>
+        !needle ||
+        chunk.content.toLocaleLowerCase("und").includes(needle) ||
+        `${chunk.block_id} turn_id=${chunk.turn_id} ${chunk.block_type}`
+          .toLocaleLowerCase("und")
+          .includes(needle),
+    )
+    .slice(0, Math.min(20, Math.max(1, limit)))
+    .map((chunk) => {
+      const current = Number(chunk.chunk_id.slice(6)) || 1;
+      const first = Math.max(1, current - Math.max(0, chunk.part - 1));
+      const last = first + Math.max(0, chunk.parts - 1);
+      return {
+        ...chunk,
+        first_chunk_id: `chunk-${String(first).padStart(6, "0")}`,
+        last_chunk_id: `chunk-${String(last).padStart(6, "0")}`,
+        snippet: archiveSnippet(chunk.content, needle, 500),
+      };
+    })
+    .reverse();
+  return { archive_id: archiveId, chunk_count: manifest.chunk_count, hits };
+}
+
+export function readSessionArchiveChunk(
+  dataDir: string,
+  workspaceId: string,
+  archiveId: string,
+  chunkId: string,
+) {
+  if (!/^chunk-[0-9]{6}$/.test(chunkId)) throw new Error("Invalid session archive chunk ID");
+  const manifest = validateSessionArchive(dataDir, workspaceId, archiveId);
+  const bytes = readSafeFile(
+    archiveChunksPath(dataDir, workspaceId, manifest.archive_id),
+    maxArchiveBytes,
+  );
+  for (const [index, line] of bytes.toString("utf8").split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    if (Buffer.byteLength(line) > maxChunkBytes)
+      throw new Error(`Session archive chunk ${index + 1} exceeds the 64 KiB limit`);
+    const chunk = archiveChunk.parse(JSON.parse(line));
+    if (chunk.chunk_id === chunkId) return chunk;
+  }
+  throw new Error("Session archive chunk was not found");
+}
+
+function archiveChunksPath(dataDir: string, workspaceId: string, archiveId: string): string {
+  return path.join(
+    dataDir,
+    "continuations",
+    sha256(workspaceId).slice(0, 32),
+    archiveId,
+    "chunks.jsonl",
+  );
+}
+
+function archiveSnippet(content: string, needle: string, maximum: number): string {
+  const lower = content.toLocaleLowerCase("und");
+  const start = needle ? Math.max(0, lower.indexOf(needle) - Math.floor(maximum / 4)) : 0;
+  let output = Array.from(content.slice(start)).slice(0, maximum).join("");
+  if (start > 0) output = `…${output}`;
+  if (output.length < content.slice(start).length) output += "…";
+  return output;
+}
+
 function splitUtf8(value: string): string[] {
   if (!value) return [""];
   const parts: string[] = [];

@@ -327,7 +327,7 @@ export class Git {
     return {
       patch,
       binary: patch.includes("GIT binary patch") || patch.includes("Binary files "),
-      submodule: patch.includes("Subproject commit "),
+      submodule: patch.includes("Subproject commit ") || patch.includes("-Subproject commit "),
       encoding_lossy: !isUtf8(result.bytes),
       truncated: result.truncated,
     };

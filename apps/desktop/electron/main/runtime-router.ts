@@ -19,6 +19,11 @@ import {
   TYPESCRIPT_SESSION_READ_METHODS,
   TYPESCRIPT_SESSION_INDEX_METHODS,
   TYPESCRIPT_SESSION_HANDOFF_METHODS,
+  TYPESCRIPT_OBSIDIAN_METHODS,
+  TYPESCRIPT_SKILL_METHODS,
+  TYPESCRIPT_AGENT_TOOL_METHODS,
+  TYPESCRIPT_MCP_METHODS,
+  TYPESCRIPT_REMOTE_GATEWAY_METHODS,
   NATIVE_REMOTE_SESSION_INDEX_CHANGED,
   type NativeContext,
   type WorkspacePlan,
@@ -175,11 +180,131 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
 
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
     if (method === NATIVE_CONTEXT) return this.typescript.request<TResult>(method, params);
+    if (method === RUNTIME_METHODS.relayCreateCsr)
+      return this.typescript.request<TResult>(method, params);
+    if (method === RUNTIME_METHODS.remoteRequest)
+      return this.typescript.request<TResult>(method, params);
+    if (method === RUNTIME_METHODS.controlReceipt)
+      return this.typescript.request<TResult>(method, params);
+    if (
+      method === RUNTIME_METHODS.codexManaged &&
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "operation" in params &&
+      [
+        "options",
+        "create",
+        "adopt",
+        "release",
+        "reconcile",
+        "resume",
+        "queue-list",
+        "unarchive",
+        "settings-state",
+        "capabilities",
+        "inspect",
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "steer",
+        "queue-add",
+        "queue-update",
+        "queue-delete",
+        "queue-reorder",
+        "rename",
+        "archive",
+        "settings",
+        "goal-set",
+        "goal-pause",
+        "goal-resume",
+        "goal-clear",
+        "fork",
+      ].includes(String(params.operation))
+    ) {
+      const result = await this.typescript.request<unknown>(method, params);
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        !Array.isArray(result) &&
+        "__runtimeBackend" in result &&
+        result.__runtimeBackend === "rust"
+      )
+        return this.rust.request<TResult>(method, params);
+      return result as TResult;
+    }
+    if (
+      method === RUNTIME_METHODS.webRequest &&
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "operation" in params &&
+      [
+        "live",
+        "capabilities",
+        "inspect",
+        "resume",
+        "queue-list",
+        "unarchive",
+        "settings-state",
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "steer",
+        "queue-add",
+        "queue-update",
+        "queue-delete",
+        "queue-reorder",
+        "rename",
+        "archive",
+        "settings",
+        "goal-set",
+        "goal-pause",
+        "goal-resume",
+        "goal-clear",
+        "fork",
+      ].includes(String(params.operation))
+    ) {
+      const result = await this.typescript.request<unknown>(method, params);
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        !Array.isArray(result) &&
+        "__runtimeBackend" in result &&
+        result.__runtimeBackend === "rust"
+      )
+        return this.rust.request<TResult>(method, params);
+      if (
+        typeof result === "object" &&
+        result !== null &&
+        !Array.isArray(result) &&
+        "executionMode" in result &&
+        result.executionMode === "codex-follower" &&
+        ["capabilities", "settings-state"].includes(String(params.operation))
+      )
+        return this.rust.request<TResult>(method, params);
+      return result as TResult;
+    }
+    if (
+      method === RUNTIME_METHODS.webRequest &&
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "operation" in params &&
+      ["diff", "catalog", "events", "context", "usage", "goal", "resources"].includes(
+        String(params.operation),
+      )
+    )
+      return this.typescript.request<TResult>(method, params);
     if (
       method === RUNTIME_METHODS.prepareSessionHandoff ||
-      method === RUNTIME_METHODS.planSessionHandoff
+      method === RUNTIME_METHODS.planSessionHandoff ||
+      method === RUNTIME_METHODS.planSessionMcpConnection ||
+      method === RUNTIME_METHODS.planMcpMigration
     ) {
-      const mcpHubStatus = await this.rust.request<unknown>(RUNTIME_METHODS.mcpHubStatus, {});
+      const mcpHubStatus = await this.typescript.request<unknown>(RUNTIME_METHODS.mcpHubStatus, {});
       const values =
         typeof params === "object" && params !== null && !Array.isArray(params)
           ? (params as Record<string, unknown>)
@@ -190,23 +315,10 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       return this.#workspaceRequest<TResult>(method, params);
     if (method === RUNTIME_METHODS.setQuotaPreferences)
       return this.typescript.request<TResult>(method, params);
-    if (method === RUNTIME_METHODS.clearSessionIndex) {
-      // The remaining remote gateway must revoke snapshots before the TS-owned cache is cleared.
-      if (
-        typeof params !== "object" ||
-        params === null ||
-        Array.isArray(params) ||
-        ("workspaceId" in params &&
-          params.workspaceId !== null &&
-          params.workspaceId !== undefined &&
-          typeof params.workspaceId !== "string")
-      )
-        return this.typescript.request<TResult>(method, params);
-      const generation = this.#generation;
+    if (TYPESCRIPT_SESSION_INDEX_METHODS.has(method)) {
+      const result = await this.typescript.request<TResult>(method, params);
       await this.rust.request(NATIVE_REMOTE_SESSION_INDEX_CHANGED, {});
-      if (generation !== this.#generation || this.#state !== "ready")
-        throw new RuntimeUnavailableError(new Error("Backend changed during session index clear"));
-      return this.typescript.request<TResult>(method, params);
+      return result;
     }
     if (
       TYPESCRIPT_READ_METHODS.has(method) ||
@@ -216,18 +328,25 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       TYPESCRIPT_INSIGHT_METHODS.has(method) ||
       TYPESCRIPT_SESSION_READ_METHODS.has(method) ||
       TYPESCRIPT_SESSION_INDEX_METHODS.has(method) ||
-      TYPESCRIPT_SESSION_HANDOFF_METHODS.has(method)
+      TYPESCRIPT_SESSION_HANDOFF_METHODS.has(method) ||
+      TYPESCRIPT_OBSIDIAN_METHODS.has(method) ||
+      TYPESCRIPT_SKILL_METHODS.has(method) ||
+      TYPESCRIPT_AGENT_TOOL_METHODS.has(method) ||
+      TYPESCRIPT_MCP_METHODS.has(method) ||
+      TYPESCRIPT_REMOTE_GATEWAY_METHODS.has(method)
     )
       return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
       const preferences = await this.typescript.request<Record<string, unknown>>(method, params);
-      if (method === RUNTIME_METHODS.setSessionIndexEnabled)
-        await this.rust.request(NATIVE_REMOTE_SESSION_INDEX_CHANGED, {});
       const runtime = await this.rust.request<Record<string, unknown>>(
         RUNTIME_METHODS.runtimeInfo,
         {},
       );
-      return { ...runtime, ...preferences } as TResult;
+      const mcpHub = await this.typescript.request<Record<string, unknown>>(
+        RUNTIME_METHODS.mcpHubStatus,
+        {},
+      );
+      return { ...runtime, ...preferences, mcp_hub: mcpHub } as TResult;
     }
     if (method === RUNTIME_METHODS.runtimeInfo) {
       const runtime = await this.rust.request<Record<string, unknown>>(method, params);
@@ -235,7 +354,11 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         BACKEND_PREFERENCES,
         {},
       );
-      return { ...runtime, ...preferences } as TResult;
+      const mcpHub = await this.typescript.request<Record<string, unknown>>(
+        RUNTIME_METHODS.mcpHubStatus,
+        {},
+      );
+      return { ...runtime, ...preferences, mcp_hub: mcpHub } as TResult;
     }
     return this.rust.request<TResult>(method, params);
   }

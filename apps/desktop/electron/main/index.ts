@@ -194,6 +194,8 @@ async function startApplication(): Promise<void> {
             clientVersion: app.getVersion(),
             createTransport: createUtilityTransport,
             environment: {
+              AGENTKIB_APP_FLAVOR: appFlavor,
+              AGENTKIB_APP_NAME: appDisplayName,
               AGENTKIB_APP_VERSION: app.getVersion(),
               AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
               AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",

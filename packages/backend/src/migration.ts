@@ -92,6 +92,7 @@ export const TYPESCRIPT_ASSET_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_INSIGHT_METHODS = new Set<string>([
+  RUNTIME_METHODS.refreshInsights,
   RUNTIME_METHODS.insightsSummary,
   RUNTIME_METHODS.insightsHeatmap,
   RUNTIME_METHODS.agentUsageBreakdown,
@@ -110,9 +111,18 @@ export const TYPESCRIPT_SESSION_READ_METHODS = new Set<string>([
   RUNTIME_METHODS.workspaceSessions,
   RUNTIME_METHODS.workspaceSessionStatus,
   RUNTIME_METHODS.sessionEvents,
+  RUNTIME_METHODS.sessionDocument,
 ]);
 
 export const TYPESCRIPT_SESSION_INDEX_METHODS = new Set<string>([
   RUNTIME_METHODS.refreshWorkspaceSessions,
   RUNTIME_METHODS.clearSessionIndex,
+]);
+
+export const TYPESCRIPT_SESSION_HANDOFF_METHODS = new Set<string>([
+  RUNTIME_METHODS.prepareSessionHandoff,
+  RUNTIME_METHODS.sanitizeSessionHandoff,
+  RUNTIME_METHODS.planSessionHandoff,
+  RUNTIME_METHODS.continueSessionHandoff,
+  RUNTIME_METHODS.launchSessionHandoff,
 ]);

@@ -8,10 +8,12 @@ import { fileTime } from "./asset-scanner";
 import { userHome } from "./mcp-config-read";
 import { jsonTimestamp } from "./session-history";
 import { Sql } from "./sql";
-import { isProbeWorkspace } from "./paths";
+import { isDirectory, isProbeWorkspace, pathIdentity } from "./paths";
 import { GrokSessions } from "./grok-sessions";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
+import { scanNativeHomeAssets } from "./native-home-assets";
+import { resolveCommand } from "./command-resolution";
 import { utcNow, type DiscoveryCandidate } from "./workspaces";
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -24,6 +26,7 @@ interface ProviderResult {
   errors: string[];
   status: string;
   reasons: string[];
+  source_diagnostics?: Record<string, unknown>[];
 }
 
 /** Discovery adapters for providers whose workspace index is independent of conversation history. */
@@ -68,6 +71,18 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
       read: (_home: string) => readGrok(environment),
     },
     {
+      agent: "opencode",
+      source: "sqlite-and-legacy",
+      path: openCodeDataHome(environment),
+      read: (home: string) => readOpenCode(home),
+    },
+    {
+      agent: "antigravity",
+      source: "config-and-cli",
+      path: path.join(userHome(environment), ".gemini"),
+      read: (home: string) => readAntigravity(home),
+    },
+    {
       agent: "cursor",
       source: "workspace-storage",
       path: cursorStorage(environment),
@@ -87,18 +102,20 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
       const result = item.read(item.path),
         finished_at = utcNow();
       candidates.push(...result.candidates);
-      source_diagnostics.push({
-        agent: item.agent,
-        source: item.source,
-        path: item.path,
-        started_at,
-        finished_at,
-        candidate_count: result.candidates.length,
-        included_count: null,
-        skipped_count: null,
-        status: result.status,
-        reasons: result.reasons,
-      });
+      if (result.source_diagnostics) source_diagnostics.push(...result.source_diagnostics);
+      else
+        source_diagnostics.push({
+          agent: item.agent,
+          source: item.source,
+          path: item.path,
+          started_at,
+          finished_at,
+          candidate_count: result.candidates.length,
+          included_count: null,
+          skipped_count: null,
+          status: result.status,
+          reasons: result.reasons,
+        });
       errors.push(
         ...result.errors.map((error) => `${item.agent} workspace discovery failed: ${error}`),
       );
@@ -126,7 +143,249 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
     candidates: normalizeDiscoveryCandidates(candidates, environment),
     errors,
     source_diagnostics,
+    home_assets: scanNativeHomeAssets(environment),
+    installations: agentInstallations(environment),
   };
+}
+
+function agentInstallations(environment: NodeJS.ProcessEnv) {
+  const home = userHome(environment),
+    xdg =
+      environment.XDG_CONFIG_HOME && path.isAbsolute(environment.XDG_CONFIG_HOME)
+        ? environment.XDG_CONFIG_HOME
+        : process.platform === "win32"
+          ? (environment.APPDATA ?? path.join(home, "AppData/Roaming"))
+          : process.platform === "darwin"
+            ? path.join(home, "Library/Application Support")
+            : path.join(home, ".config"),
+    cursorHome = path.join(home, ".cursor"),
+    cursorData = cursorDataHome(environment),
+    opencodeConfig = environment.OPENCODE_CONFIG_DIR ?? path.join(xdg, "opencode"),
+    opencodeData = openCodeDataHome(environment),
+    homes: Record<string, string> = {
+      codex: codexHome(environment),
+      "claude-code": environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"),
+      cursor: cursorHome,
+      opencode: opencodeConfig,
+      "open-claw": environment.OPENCLAW_STATE_DIR ?? path.join(home, ".openclaw"),
+      hermes: environment.HERMES_HOME ?? path.join(home, ".hermes"),
+      "grok-build": environment.GROK_HOME ?? path.join(home, ".grok"),
+      antigravity: path.join(home, ".gemini"),
+      "deepseek-harness": deepseekHome(environment),
+    },
+    commands: Record<string, string> = {
+      codex: "codex",
+      "claude-code": "claude",
+      cursor: "cursor",
+      opencode: "opencode",
+      "open-claw": "openclaw",
+      hermes: "hermes",
+      "grok-build": "grok",
+      antigravity: "agy",
+      "deepseek-harness": "dsh",
+    };
+  return Object.entries(homes).map(([agent, agentHome]) => {
+    const configured =
+        isDirectory(agentHome) ||
+        (agent === "cursor" && isDirectory(cursorData)) ||
+        (agent === "opencode" && isDirectory(opencodeData)),
+      warnings: string[] = [];
+    if (agent === "deepseek-harness") {
+      const file = path.join(agentHome, "storages/workspace.json");
+      if (isFile(file))
+        try {
+          readDeepSeek(file);
+        } catch (error) {
+          warnings.push(error instanceof Error ? error.message : String(error));
+        }
+    }
+    return {
+      agent,
+      installed:
+        resolveCommand(commands[agent]!, environment) !== null || appInstalled(agent, environment),
+      configured,
+      version: null,
+      home: agentHome,
+      warnings,
+    };
+  });
+}
+
+function cursorDataHome(environment: NodeJS.ProcessEnv): string {
+  const home = userHome(environment),
+    config =
+      environment.XDG_CONFIG_HOME && path.isAbsolute(environment.XDG_CONFIG_HOME)
+        ? environment.XDG_CONFIG_HOME
+        : path.join(home, ".config");
+  return (
+    environment.CURSOR_DATA_DIR ??
+    (process.platform === "linux"
+      ? path.join(config, "Cursor")
+      : process.platform === "win32"
+        ? path.join(environment.APPDATA ?? path.join(home, "AppData/Roaming"), "Cursor")
+        : path.join(home, "Library/Application Support/Cursor"))
+  );
+}
+
+function appInstalled(agent: string, environment: NodeJS.ProcessEnv): boolean {
+  const home = userHome(environment);
+  if (process.platform === "darwin") {
+    const bundles: Record<string, string> = {
+      codex: "Codex.app",
+      cursor: "Cursor.app",
+      opencode: "OpenCode.app",
+      antigravity: "Antigravity.app",
+    };
+    const bundle = bundles[agent];
+    return bundle
+      ? [path.join("/Applications", bundle), path.join(home, "Applications", bundle)].some((root) =>
+          isFile(path.join(root, "Contents/Info.plist")),
+        )
+      : false;
+  }
+  if (process.platform === "win32") {
+    const local = environment.LOCALAPPDATA ?? path.join(home, "AppData/Local"),
+      programFiles = environment.ProgramFiles ?? "C:\\Program Files",
+      candidates =
+        agent === "cursor"
+          ? [
+              path.join(local, "Programs/cursor/Cursor.exe"),
+              path.join(local, "Programs/Cursor/Cursor.exe"),
+              path.join(local, "Microsoft/WindowsApps/Cursor.exe"),
+              path.join(programFiles, "Cursor/Cursor.exe"),
+            ]
+          : agent === "opencode"
+            ? [
+                path.join(local, "Programs/OpenCode/OpenCode.exe"),
+                path.join(local, "OpenCode/OpenCode.exe"),
+              ]
+            : agent === "antigravity"
+              ? [
+                  path.join(local, "Programs/Antigravity/Antigravity.exe"),
+                  path.join(local, "Programs/Antigravity/Antigravity IDE.exe"),
+                  path.join(local, "Programs/Antigravity IDE/Antigravity IDE.exe"),
+                  path.join(programFiles, "Antigravity/Antigravity.exe"),
+                  path.join(programFiles, "Antigravity/Antigravity IDE.exe"),
+                  path.join(programFiles, "Antigravity IDE/Antigravity IDE.exe"),
+                ]
+              : [];
+    return candidates.some(isFile);
+  }
+  if (process.platform === "linux") return linuxDesktopAppInstalled(agent, environment);
+  return false;
+}
+
+function linuxDesktopAppInstalled(agent: string, environment: NodeJS.ProcessEnv): boolean {
+  const home = userHome(environment),
+    dataHome =
+      environment.XDG_DATA_HOME && path.isAbsolute(environment.XDG_DATA_HOME)
+        ? environment.XDG_DATA_HOME
+        : path.join(home, ".local/share"),
+    dataDirectories = (environment.XDG_DATA_DIRS ?? "/usr/local/share:/usr/share")
+      .split(path.delimiter)
+      .filter((value) => path.isAbsolute(value)),
+    roots = [dataHome, ...dataDirectories].map((root) => path.join(root, "applications")),
+    ids: Record<string, string[]> = {
+      cursor: ["cursor", "cursor-url-handler"],
+      opencode: ["ai.opencode.desktop", "opencode-desktop"],
+      antigravity: ["antigravity", "com.google.antigravity"],
+    },
+    wanted = ids[agent];
+  if (agent === "cursor") {
+    const candidates = [
+      "/usr/bin/cursor",
+      "/usr/share/cursor/cursor",
+      "/opt/Cursor/cursor",
+      "/opt/cursor/cursor",
+    ];
+    if (candidates.some((file) => resolveCommand(file, environment))) return true;
+    const applications = path.join(home, "Applications");
+    try {
+      if (
+        readdirSync(applications, { withFileTypes: true })
+          .filter((entry) => entry.isFile() && entry.name.toLowerCase().includes("cursor"))
+          .some(
+            (entry) =>
+              entry.name.endsWith(".AppImage") &&
+              resolveCommand(path.join(applications, entry.name), environment),
+          )
+      )
+        return true;
+    } catch {}
+  }
+  if (!wanted) return false;
+  for (const root of roots) {
+    for (const file of desktopFiles(root, 2)) {
+      const stem = path.basename(file, ".desktop").toLowerCase();
+      if (!wanted.some((id) => stem === id || stem.startsWith(`${id}-`))) continue;
+      const command = desktopCommand(file);
+      if (
+        command &&
+        !["sh", "bash", "dash", "zsh", "fish", "flatpak", "snap"].includes(
+          path.basename(command),
+        ) &&
+        resolveCommand(command, environment)
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+function desktopFiles(directory: string, depth: number): string[] {
+  if (depth <= 0) return [];
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap((entry) => {
+    const file = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) return [];
+    if (entry.isDirectory()) return desktopFiles(file, depth - 1);
+    return entry.isFile() && path.extname(entry.name) === ".desktop" ? [file] : [];
+  });
+}
+
+function desktopCommand(file: string): string | null {
+  let content: string;
+  try {
+    content = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  let section = false,
+    exec: string | null = null,
+    tryExec: string | null = null,
+    hasTryExec = false;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("[") && line.endsWith("]")) {
+      section = line === "[Desktop Entry]";
+      continue;
+    }
+    if (!section || line.startsWith("#")) continue;
+    if (line.startsWith("TryExec=")) {
+      hasTryExec = true;
+      tryExec = firstDesktopToken(line.slice(8));
+    } else if (line.startsWith("Exec=")) exec = firstDesktopToken(line.slice(5));
+  }
+  const selected = hasTryExec ? tryExec : exec;
+  return selected && !selected.includes("%") ? selected : null;
+}
+
+function firstDesktopToken(value: string): string | null {
+  const tokens = value.match(/(?:"(?:\\.|[^"\\])*"|\\S)+/g);
+  if (!tokens?.length) return null;
+  const token = tokens[0]!.replace(/^"|"$/g, "").replaceAll(/\\(.)/g, "$1");
+  if (token !== "env") return token;
+  return (
+    tokens
+      .slice(1)
+      .map((item) => item.replace(/^"|"$/g, ""))
+      .find((item) => !item.startsWith("-") && !/^[^/]+=/.test(item)) ?? null
+  );
 }
 
 function cursorStorage(environment: NodeJS.ProcessEnv): string {
@@ -149,6 +408,251 @@ function deepseekHome(environment: NodeJS.ProcessEnv): string {
 
 function codexHome(environment: NodeJS.ProcessEnv): string {
   return environment.CODEX_HOME ?? path.join(userHome(environment), ".codex");
+}
+
+function openCodeDataHome(environment: NodeJS.ProcessEnv): string {
+  const home = userHome(environment),
+    data =
+      environment.XDG_DATA_HOME && path.isAbsolute(environment.XDG_DATA_HOME)
+        ? environment.XDG_DATA_HOME
+        : process.platform === "linux"
+          ? path.join(home, ".local/share")
+          : process.platform === "win32"
+            ? (environment.LOCALAPPDATA ?? path.join(home, "AppData/Local"))
+            : path.join(home, "Library/Application Support");
+  return path.join(data, "opencode");
+}
+
+function readAntigravity(home: string): ProviderResult {
+  const exists = isDirectory(home);
+  return {
+    candidates: [],
+    errors: [],
+    status: exists ? "empty" : "missing",
+    reasons: exists ? [] : ["missing-directory"],
+  };
+}
+
+function readOpenCode(dataHome: string): ProviderResult {
+  const candidates: DiscoveryCandidate[] = [],
+    errors: string[] = [],
+    diagnostics: Record<string, unknown>[] = [],
+    database = path.join(dataHome, "opencode.db"),
+    sqliteStarted = utcNow();
+  if (!isFile(database)) {
+    diagnostics.push(
+      diagnostic("sqlite", database, sqliteStarted, "missing", null, ["missing-file"]),
+    );
+  } else {
+    try {
+      const connection = new DatabaseSync(database, { readOnly: true });
+      let values: DiscoveryCandidate[];
+      try {
+        const query = new Sql(connection),
+          projects = new Set(
+            query.rows("PRAGMA table_info(project)").map((row) => String(row.name)),
+          ),
+          sessions = new Set(
+            query.rows("PRAGMA table_info(session)").map((row) => String(row.name)),
+          );
+        values = [];
+        if (projects.has("worktree")) values.push(...openCodeRows(query, "project", "worktree", 0));
+        if (sessions.has("directory"))
+          values.push(...openCodeRows(query, "session", "directory", 1));
+      } finally {
+        connection.close();
+      }
+      const unique = mergeCandidates(values);
+      candidates.push(...unique);
+      diagnostics.push(
+        diagnostic(
+          "sqlite",
+          database,
+          sqliteStarted,
+          unique.length ? "succeeded" : "empty",
+          unique.length,
+          [],
+        ),
+      );
+    } catch (error) {
+      errors.push(String(error));
+      diagnostics.push(
+        diagnostic("sqlite", database, sqliteStarted, "failed", null, ["source-read-failed"]),
+      );
+    }
+  }
+
+  const legacyRoot = path.join(dataHome, "storage/project"),
+    legacyStarted = utcNow();
+  if (!isDirectory(legacyRoot)) {
+    diagnostics.push(
+      diagnostic("legacy-json", legacyRoot, legacyStarted, "missing", null, ["missing-directory"]),
+    );
+  } else {
+    try {
+      const databasePaths = new Set(candidates.map((value) => pathIdentity(value.path))),
+        legacy = readLegacyOpenCode(dataHome).filter(
+          (value) => !databasePaths.has(pathIdentity(value.path)),
+        );
+      candidates.push(...legacy);
+      diagnostics.push(
+        diagnostic(
+          "legacy-json",
+          legacyRoot,
+          legacyStarted,
+          legacy.length ? "succeeded" : "empty",
+          legacy.length,
+          [],
+        ),
+      );
+    } catch (error) {
+      errors.push(String(error));
+      diagnostics.push(
+        diagnostic("legacy-json", legacyRoot, legacyStarted, "failed", null, [
+          "source-read-failed",
+        ]),
+      );
+    }
+  }
+  return {
+    candidates,
+    errors,
+    status: errors.length ? "partial" : candidates.length ? "succeeded" : "empty",
+    reasons: errors.length ? ["source-read-failed"] : [],
+    source_diagnostics: diagnostics,
+  };
+}
+
+function openCodeRows(sql: Sql, table: "project" | "session", column: string, sessions: 0 | 1) {
+  const columns = new Set(sql.rows(`PRAGMA table_info(${table})`).map((row) => String(row.name))),
+    timestampExpression =
+      columns.has("time_updated") && columns.has("time_created")
+        ? "MAX(COALESCE(time_updated, time_created))"
+        : columns.has("time_updated")
+          ? "MAX(time_updated)"
+          : columns.has("time_created")
+            ? "MAX(time_created)"
+            : "NULL",
+    rows = sql.rows(
+      `SELECT ${column} AS workspace, ${sessions ? "COUNT(*)" : "0"} AS count, ${timestampExpression} AS updated FROM ${table} WHERE ${column} IS NOT NULL AND ${column} != '' GROUP BY ${column}`,
+    );
+  return rows.flatMap((row) =>
+    typeof row.workspace === "string"
+      ? [
+          candidate(
+            row.workspace,
+            "opencode",
+            "session-cwd",
+            integerTimestamp(row.updated),
+            false,
+            count(row.count),
+          ),
+        ]
+      : [],
+  );
+}
+
+function readLegacyOpenCode(dataHome: string): DiscoveryCandidate[] {
+  const root = path.join(dataHome, "storage/project"),
+    sessionsRoot = path.join(dataHome, "storage/session"),
+    output: DiscoveryCandidate[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isFile() || path.extname(entry.name) !== ".json") continue;
+    const file = path.join(root, entry.name);
+    let value: Record<string, unknown> | null;
+    try {
+      value = asRecord(JSON.parse(readFileSync(file, "utf8")));
+    } catch {
+      continue;
+    }
+    if (typeof value?.worktree !== "string") continue;
+    const sessionDirectory =
+        typeof value.id === "string" ? path.join(sessionsRoot, value.id) : null,
+      sessionCount =
+        sessionDirectory && isDirectory(sessionDirectory)
+          ? readdirSync(sessionDirectory, { withFileTypes: true }).filter(
+              (item) => item.isFile() && path.extname(item.name) === ".json",
+            ).length
+          : 0,
+      updated = asRecord(value.time),
+      at = jsonTimestamp(updated?.updated ?? updated?.created) ?? fileTime(file);
+    output.push(candidate(value.worktree, "opencode", "session-cwd", at, false, sessionCount));
+  }
+  return output;
+}
+
+function mergeCandidates(values: DiscoveryCandidate[]): DiscoveryCandidate[] {
+  const unique = new Map<string, DiscoveryCandidate>();
+  for (const value of values) {
+    const key = pathIdentity(value.path),
+      previous = unique.get(key);
+    if (!previous) unique.set(key, value);
+    else {
+      previous.session_count = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        previous.session_count + value.session_count,
+      );
+      if (
+        value.last_active_at &&
+        (!previous.last_active_at || value.last_active_at > previous.last_active_at)
+      )
+        previous.last_active_at = value.last_active_at;
+    }
+  }
+  return [...unique.values()];
+}
+
+function diagnostic(
+  source: string,
+  sourcePath: string,
+  started_at: string,
+  status: string,
+  candidate_count: number | null,
+  reasons: string[],
+) {
+  return {
+    agent: "opencode",
+    source,
+    path: sourcePath,
+    started_at,
+    finished_at: utcNow(),
+    candidate_count,
+    included_count: null,
+    skipped_count: null,
+    status,
+    reasons,
+  };
+}
+
+function providerDiagnostic(
+  agent: string,
+  source: string,
+  sourcePath: string,
+  started_at: string,
+  status: string,
+  candidate_count: number | null,
+  reasons: string[],
+) {
+  return {
+    agent,
+    source,
+    path: sourcePath,
+    started_at,
+    finished_at: utcNow(),
+    candidate_count,
+    included_count: null,
+    skipped_count: null,
+    status,
+    reasons,
+  };
+}
+
+function isFile(value: string): boolean {
+  try {
+    return statSync(value).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function readClaude(home: string): ProviderResult {
@@ -244,7 +748,9 @@ function readGrok(environment: NodeJS.ProcessEnv): ProviderResult {
 function readOpenClaw(home: string, environment: NodeJS.ProcessEnv): ProviderResult {
   const candidates: DiscoveryCandidate[] = [],
     errors: string[] = [],
+    source_diagnostics: Record<string, unknown>[] = [],
     config = path.join(home, "openclaw.json");
+  const configStarted = utcNow();
   try {
     const root = asRecord(JSON5.parse(readFileSync(config, "utf8")));
     if (!root) throw new Error("OpenClaw configuration must be an object");
@@ -272,9 +778,36 @@ function readOpenClaw(home: string, environment: NodeJS.ProcessEnv): ProviderRes
     for (const key of ["list", "entries"])
       for (const item of Array.isArray(agents?.[key]) ? agents[key] : [])
         add(asRecord(item)?.workspace);
+    const count = candidates.filter((value) => value.evidence === "configured-workspace").length;
+    source_diagnostics.push(
+      providerDiagnostic(
+        "open-claw",
+        "config",
+        config,
+        configStarted,
+        count ? "succeeded" : "empty",
+        count,
+        [],
+      ),
+    );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(String(error));
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT",
+      detail = missing ? null : String(error);
+    if (detail) errors.push(detail);
+    source_diagnostics.push(
+      providerDiagnostic(
+        "open-claw",
+        "config",
+        config,
+        configStarted,
+        missing ? "missing" : "failed",
+        null,
+        [missing ? "missing-file" : "source-read-failed"],
+      ),
+    );
   }
+  const sessionsRoot = path.join(home, "agents"),
+    sessionsStarted = utcNow();
   const result = new OpenClawSessions(environment).list(null);
   for (const { cwd, session } of result.sessions) {
     if (!cwd) continue;
@@ -283,12 +816,34 @@ function readOpenClaw(home: string, environment: NodeJS.ProcessEnv): ProviderRes
       session_cwds: [cwd],
     });
   }
+  source_diagnostics.push(
+    providerDiagnostic(
+      "open-claw",
+      "sessions-jsonl",
+      sessionsRoot,
+      sessionsStarted,
+      result.incomplete
+        ? "partial"
+        : result.sessions.length
+          ? "succeeded"
+          : isDirectory(sessionsRoot)
+            ? "empty"
+            : "missing",
+      result.incomplete ? null : result.sessions.length,
+      result.incomplete
+        ? ["source-read-failed"]
+        : isDirectory(sessionsRoot)
+          ? []
+          : ["missing-directory"],
+    ),
+  );
   const incomplete = result.incomplete || errors.length > 0;
   return {
     candidates,
     errors,
     status: incomplete ? "partial" : candidates.length ? "succeeded" : "empty",
     reasons: incomplete ? ["source-read-failed"] : [],
+    source_diagnostics,
   };
 }
 
@@ -399,14 +954,9 @@ function readCursor(storage: string) {
       status: "missing",
       reasons: ["missing-directory"],
     };
-  let directories: string[];
-  try {
-    directories = readdirSync(storage, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map((entry) => path.join(storage, entry.name));
-  } catch (error) {
-    throw error;
-  }
+  const directories = readdirSync(storage, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+    .map((entry) => path.join(storage, entry.name));
   for (const directory of directories) {
     const file = path.join(directory, "workspace.json");
     try {

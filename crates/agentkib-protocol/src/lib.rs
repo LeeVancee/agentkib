@@ -27,6 +27,7 @@ pub const REFRESH_WORKSPACE_SESSIONS_METHOD: &str = "workspace.refreshSessions";
 pub const LIST_WORKSPACE_OPENERS_METHOD: &str = "workspace.openers";
 pub const OPEN_WORKSPACE_WITH_APP_METHOD: &str = "workspace.openWith";
 pub const SESSION_EVENTS_METHOD: &str = "session.events";
+pub const SESSION_DOCUMENT_METHOD: &str = "sessions.readDocument";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
 pub const LIST_AGENT_INSTALLATIONS_METHOD: &str = "agents.listInstallations";
@@ -231,6 +232,7 @@ export const RUNTIME_METHODS = {{
   listWorkspaceOpeners: "{LIST_WORKSPACE_OPENERS_METHOD}",
   openWorkspaceWithApp: "{OPEN_WORKSPACE_WITH_APP_METHOD}",
   sessionEvents: "{SESSION_EVENTS_METHOD}",
+  sessionDocument: "{SESSION_DOCUMENT_METHOD}",
   runtimeInfo: "{RUNTIME_INFO_METHOD}",
   listWorkspaces: "{LIST_WORKSPACES_METHOD}",
   listAgentInstallations: "{LIST_AGENT_INSTALLATIONS_METHOD}",

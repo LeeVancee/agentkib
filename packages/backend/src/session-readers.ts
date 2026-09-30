@@ -12,6 +12,8 @@ import { SessionStore, type NativeSession } from "./session-store";
 import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
+import type { SessionDocument } from "./session-model";
+import { readClaudeDocument, readCodexDocument } from "./session-document-providers";
 
 export const SESSION_AGENTS = [
   "codex",
@@ -104,33 +106,35 @@ export class SessionReaders {
       value,
     );
     const { native, workspace } = await this.resolve(sessionId);
+    return this.#readEvents(native, workspace, cursor ?? null, limit ?? 50);
+  }
+  async #readEvents(
+    native: NativeSession,
+    workspace: string,
+    offset: string | null,
+    count: number,
+  ): Promise<ConversationEventPage> {
     const ref = native.native_ref,
-      count = limit ?? 50,
-      offset = cursor ?? null;
-    switch (native.agent) {
+      agent = native.agent;
+    switch (agent) {
       case "codex":
       case "claude-code": {
-        const provider = native.agent === "codex" ? this.#codex : this.#claude;
+        const provider = agent === "codex" ? this.#codex : this.#claude;
         const source = provider
           .list(null)
           .sessions.find((value) => value.session.native_ref === ref);
         if (!source)
           throw new Error(
-            native.agent === "codex"
+            agent === "codex"
               ? "Codex session is no longer available"
               : "Claude session is no longer available",
           );
-        return this.#paging.read(source.transcript, offset, count, native.agent);
+        return this.#paging.read(source.transcript, offset, count, agent);
       }
       case "grok-build":
-        return this.#paging.read(this.#grok.resolve(ref).transcript, offset, count, native.agent);
+        return this.#paging.read(this.#grok.resolve(ref).transcript, offset, count, agent);
       case "open-claw":
-        return this.#paging.read(
-          this.#openclaw.resolve(ref).transcript,
-          offset,
-          count,
-          native.agent,
-        );
+        return this.#paging.read(this.#openclaw.resolve(ref).transcript, offset, count, agent);
       case "hermes": {
         const { source } = this.#hermes.resolve(ref);
         return source.type === "sqlite"
@@ -144,5 +148,47 @@ export class SessionReaders {
       default:
         throw new Error("Conversation provider is unavailable");
     }
+  }
+  async document(sessionId: string): Promise<SessionDocument> {
+    const summary = this.store.get(sessionId);
+    if (!summary) throw new Error("Conversation metadata is no longer available");
+    if (summary.availability !== "readable")
+      throw new Error("Conversation transcript is no longer available");
+    if (!(SESSION_AGENTS as readonly string[]).includes(summary.agent))
+      throw new Error("Conversation provider is unavailable");
+    const { native, workspace } = await this.resolve(sessionId);
+    if (native.agent === "codex") {
+      const source = this.#codex
+        .list(null)
+        .sessions.find((candidate) => candidate.session.native_ref === native.native_ref);
+      if (!source) throw new Error("Codex session is no longer available");
+      return readCodexDocument(
+        summary as Parameters<typeof readCodexDocument>[0],
+        source.transcript,
+      );
+    }
+    if (native.agent === "claude-code") {
+      const source = this.#claude
+        .list(null)
+        .sessions.find((candidate) => candidate.session.native_ref === native.native_ref);
+      if (!source) throw new Error("Claude session is no longer available");
+      return readClaudeDocument(
+        summary as Parameters<typeof readClaudeDocument>[0],
+        source.transcript,
+        native.sidechain,
+      );
+    }
+    if (native.agent === "opencode")
+      return this.#opencode.readDocument(workspace, native.native_ref, {
+        ...summary,
+        agent: native.agent,
+      });
+    if (native.agent === "antigravity")
+      return this.#antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent });
+    if (native.agent === "open-claw") throw new Error("OpenClaw session documents are unsupported");
+    if (native.agent === "hermes") throw new Error("Hermes session documents are unsupported");
+    if (native.agent === "grok-build")
+      throw new Error("Grok Build session documents are unsupported");
+    throw new Error("Conversation provider is unavailable");
   }
 }

@@ -4,8 +4,8 @@ Rust → TypeScript 遷移清單
 
 - [x] 1. 資料庫寫入、工作區管理、探索與剩餘應用設定（已完成）。
 - [x] 2. 配置／資產、原生資產掃描、診斷修復、變更套用、記憶（已完成）。
-- [ ] 3. 會話讀取、原生會話探索、索引、交接與續接（進行中）。
-- [ ] 4. Git、使用統計、成就（進行中）。
+- [x] 3. 會話讀取、原生會話探索、索引、交接與續接（已完成；MCP gateway 設定計畫屬第 6 批）。
+- [x] 4. Git、使用統計、成就（已完成）。
 - [ ] 5. Skills、Agent 工具、Obsidian 整合。
 - [ ] 6. MCP 設定、程序管理、OAuth、套件安裝。
 - [ ] 7. 遠端閘道、Web、Agent 橋接。
@@ -14,17 +14,23 @@ Rust → TypeScript 遷移清單
 
 第一批已完成：TypeScript 負責工作區新增／刷新／排除／還原、掃描根目錄新增／移除、探索結果入庫與報告、剩餘應用偏好寫入；維持 schema 15、外鍵與交易、Rust 資料相容性，以及錯誤與重啟行為。遷移期間的原生資產／會話讀取器與資料庫升級由 Rust 提供，分別在第 2、3、9 批移除；不能將整個工作區或探索操作交回 Rust 代跑。
 
-第 2、3、4 批目前已接到 TypeScript 的功能：九種 Agent 的工作區資產掃描、工作區刷新／探索所用的資產檢查、manifest 匯入、九種 Agent 的上下文解析、安裝清單與資產搜尋、記憶提議／審核／全文搜尋；會話快取列表與索引狀態；Git 概況／歷史分頁／提交檔案／差異；統計概況／熱圖／Agent、模型、工作區、儲存庫分類／合併視圖／狀態，成就讀取與 Git 身分設定。Git 指令已支援非同步回覆、輸出上限、逾時與正常關閉時清理子程序。
+第 2、3、4 批目前已接到 TypeScript 的功能：九種 Agent 的工作區資產掃描、工作區刷新／探索所用的資產檢查、manifest 匯入、九種 Agent 的上下文解析、安裝清單與資產搜尋、記憶提議／審核／全文搜尋；會話快取列表與索引狀態；Git 概況／歷史分頁／提交檔案／差異；統計概況／熱圖／Agent、模型、工作區、儲存庫分類／合併視圖／狀態，成就讀取／解鎖狀態寫入與 Git 身分設定。Git 指令已支援非同步回覆、輸出上限、逾時與正常關閉時清理子程序。
 
-第 3 批已完成但尚待整合的模組：會話索引交易、部分來源失敗保留既有資料、別名歸屬與穩定雜湊 ID；Codex、Claude、Grok Build、OpenClaw、Hermes、OpenCode 與 Antigravity 原生會話中繼資料讀取器。七個讀取器已和 Rust 索引結果比對；保留父子／分叉關係、側鏈判斷、Grok 封存移動後的穩定 ID、OpenClaw instance 歸屬，以及 Hermes 多設定檔／SQLite 中繼資料優先與 JSONL 備援。讀取會話標頭／尾端時維持原有大小上限，目錄探索計數與 Hermes 每個資料庫 500 筆限制也保留。原生會話讀取器現已整合至 TypeScript 索引刷新；原生工作區／安裝探索適配器仍由 Rust 提供。
+第 3 批已整合的索引與探索：會話索引交易、部分來源失敗保留既有資料、別名歸屬與穩定雜湊 ID；Codex、Claude、Grok Build、OpenClaw、Hermes、OpenCode 與 Antigravity 原生會話中繼資料讀取器。七個讀取器已和 Rust 索引結果比對；保留父子／分叉關係、側鏈判斷、Grok 封存移動後的穩定 ID、OpenClaw instance 歸屬，以及 Hermes 多設定檔／SQLite 中繼資料優先與 JSONL 備援。讀取會話標頭／尾端時維持原有大小上限，目錄探索計數與 Hermes 每個資料庫 500 筆限制也保留。原生讀取器現已整合至 TypeScript 索引刷新。原生探索、九種 Agent 安裝狀態、home assets 和 scan roots 現已由 TypeScript 組成 `refreshDiscovery` snapshot，Rust 原生探索不再位於正式路由。Codex、Claude、OpenCode 和 Antigravity 的原生 session document parser 現由 TypeScript `sessions.readDocument` 路由執行；handoff 預覽、續接規劃、ChangeSet／archive 規劃、套用前範圍驗證、審核後檔案與 archive 寫入、封存完整性驗證、CLI 命令準備及跨平台終端啟動均已切到 TypeScript。handoff 檔案仍會一併加入 `.gitignore` 規則。續接所需的 MCP gateway 設定計畫仍由 Rust 提供，歸第 6 批 MCP 設定遷移。Grok Build、OpenClaw、Hermes 維持原有不支援匯出行為。
 
-第 3、4 批仍需完成：原生探索與索引刷新的正式整合、中性文件匯出、交接／續接；使用統計原生採集、增量匯入與成就解鎖寫入。這兩批的完成框維持未勾選。
+第 3 批完成核查：型別、格式、相關 lint、後端 bundle 與 diff 檢查通過；已透過 computer use 開啟 AgentKib 開發版，確認工作區概覽、會話清單、TypeScript 分支標籤及「在工作區續接」入口正常。續接的 MCP gateway 設定計畫維持在第 6 批範圍。
+
+第 4 批使用統計正式刷新已由 TypeScript 接管：Claude stats-cache、OpenClaw usage-cost、Hermes 多設定檔 SQLite、DeepSeek Harness projection-cache 和 Codex JSONL／SQLite checkpoint 都由 TypeScript 採集；Codex 保留追加讀取、尾端不完整行重試、截斷／替換重建、模型資料庫回退、來源刪除只在完整探索時生效、workspace salted identity 重映射，以及和 usage 事件／cursor／checkpoint 的同交易提交。provider 失敗更新不可用狀態而保留最後成功統計。Git 統計的 refs／HEAD 指紋、提交、全域／repo email 發現、身份重分類與統計入庫也由 TypeScript 負責；成就讀取會執行與 Rust 相同門檻日期和特殊成就解鎖持久化。
+
+第 4 批驗收：型別、格式、相關 lint、後端正式 bundle 與 diff 檢查通過；已透過 computer use 重啟並打開 AgentKib Dev（127.0.0.1:1420），由洞察頁實際觸發 TypeScript 統計刷新。Codex 覆蓋日期、token 趨勢、commit 指標、成就牆和資料來源狀態正常呈現；本機缺少 Claude stats-cache、OpenClaw CLI、Hermes state.db、DeepSeek Harness projection cache 的錯誤詳情與 Rust provider unavailable 行為一致，最後成功統計保留。
 
 所有既有功能保留；操作失敗不跨後端重送。第三方 CodexBar 預編譯二進位可保留。完成全部功能遷移及 macOS、Windows、Linux 安裝包驗收前，不移除 Rust。
 
 第一批驗證：桌面完整測試 962 項通過、1 項略過；Rust Runtime／Store 回歸測試 236 項通過；九種 Agent 的資料格式與 Rust 比對通過。TypeScript 型別、格式、相關 lint、Rust clippy、正式構建，以及實際 Electron utility process 的工作區／探索操作和兩個後端各自重啟後的資料保留均通過。
 
-目前剩餘 7 批。這批在 macOS arm64 驗證；Windows、Linux 的實機與安裝包驗收仍列在第 9 批。第 3 批已將 `backend.nativeContext` 及七種 Agent 的會話索引／事件讀取切到 TypeScript；仍需移除 `backend.nativeDiscovery` 原生探索適配器（`backend.nativeInspect` 已退出正式路由，目前只用於遷移比對），並完成文件匯出及交接／續接。原生 `backend.sessionIndexChanged` 工作執行緒隔離 RPC 已移除；遠端閘道快取撤銷通知暫留至第 7 批。第 9 批移除 Rust 資料庫升級與構建依賴。
+以下為遷移過程記錄，按進度先後排列；其中的待辦狀態是記錄當時的狀態，當前批次狀態以本檔上方清單為準。
+
+當時剩餘 7 批。這批在 macOS arm64 驗證；Windows、Linux 的實機與安裝包驗收仍列在第 9 批。第 3 批已將 `backend.nativeContext`、原生 discovery snapshot 及七種 Agent 的會話索引／事件讀取切到 TypeScript；`backend.nativeInspect` 已退出正式路由，目前只用於遷移比對。Codex、Claude、OpenCode 和 Antigravity 文件解析、handoff 預覽、續接規劃、archive 寫入、變更套用、驗證與跨平台終端啟動已遷入 TypeScript。續接所需的 MCP gateway 設定計畫歸第 6 批。原生 `backend.sessionIndexChanged` 工作執行緒隔離 RPC 已移除；遠端閘道快取撤銷通知暫留至第 7 批。第 9 批移除 Rust 資料庫升級與構建依賴。
 
 第 2、3、4 批階段驗證：桌面完整回歸 968 項通過、1 項略過；補上 Claude 原生中繼資料讀取器後，遷移比對／路由共 26 項通過。型別、格式、變更範圍 lint、後端 bundle 與 diff 檢查通過；實際 Electron 44 utility process 已驗證資產／manifest、非同步 Git、統計視圖、會話快取、記憶提議／審核／搜尋，以及 TS／Rust 各自重啟後的資料保留。stdio EOF 能等待非同步 Git 回覆送出再退出。尚未整合的會話讀取器只驗證模組與 Rust 結果一致，不代表原生刷新、事件讀取或續接已遷移完成。
 
@@ -60,6 +66,6 @@ ACP 階段驗證：桌面完整回歸 988 項通過、1 項略過，涵蓋 Rust 
 
 索引整合階段驗證：遷移比對／路由 45 項通過，包含七種 Provider 公開事件讀取、Antigravity ACP 部分來源刷新與 last-good 記錄保留、索引狀態、清除、停用及錯誤來源不刪資料。Electron 44／Node 24.18.1 utility process 驗證原生索引刷新、分頁、清除、停用／重新啟用、Agent 路徑清單與 Rust 對照，以及遠端快照撤銷；Rust Runtime 原生通知修改已重建並通過。
 
-第 3 批 TypeScript Agent 路徑上下文完成：工作區與探索計畫所用的九個 Agent home 和 AgentKib skills home 已由 TypeScript 按原生平台目錄／環境變數規則計算，並依路徑身分去重及排序；`backend.nativeContext` 正式路由移至 TypeScript。Electron 44／Node 24.18.1 utility process 的回歸 smoke 已將完整路徑清單逐項與 Rust 比對。原生探索 snapshot、文件匯出與交接／續接仍待完成。
+第 3 批 TypeScript Agent 路徑上下文完成：工作區與探索計畫所用的九個 Agent home 和 AgentKib skills home 已由 TypeScript 按原生平台目錄／環境變數規則計算，並依路徑身分去重及排序；`backend.nativeContext` 正式路由移至 TypeScript。Electron 44／Node 24.18.1 utility process 的回歸 smoke 已將完整路徑清單逐項與 Rust 比對。原生探索 snapshot 已移出 Rust 正式路由；中性文件匯出與交接／續接仍待完成。
 
-第 3 批探索遷移進行中：掃描根目錄遍歷已由 TypeScript 接手，保留深度 1–8、忽略目錄、符號連結／重解析點與跨檔案系統防護、專案標記、根目錄正規化、repository group ID 及逐根診斷；正式 refreshDiscovery 會把已啟用根目錄交給 TypeScript。Codex state SQLite、Claude history／sessions-index、Cursor workspaceStorage 和 DeepSeek Harness workspace.json 也已由 TypeScript 探索，路由會排除相同 Rust provider 的候選與診斷以免重複；Rust 暫時仍提供其餘五種 Agent provider 與所有 home 資產。OpenCode、OpenClaw、Hermes、Grok Build、Antigravity 的安裝狀態、探索來源與 home 資產，以及九種 Agent home 資產掃描仍待移植，故不會在全部來源移植前取代完整 snapshot。
+第 3 批原生探索遷移已接入正式路由：TypeScript 組合九種 Agent 安裝狀態、各原生候選與來源診斷、allowlist home assets、AgentKib skills 和 scan-root 候選，不再向 Rust 索取 discovery snapshot。掃描根目錄保留深度 1–8、忽略目錄、連結／重解析點與跨檔案系統防護、專案標記、根目錄正規化、Git repository group ID 及逐根診斷；原生來源涵蓋 Codex state SQLite、Claude history/index、Cursor workspaceStorage、OpenCode SQLite/legacy JSON、OpenClaw 設定/JSONL、Hermes profiles/SQLite/JSONL、Grok sessions/archive、Antigravity 空來源與 DeepSeek workspace.json。這是程式整合狀態，整批開發版檢查尚待第 3 批其他工作完成後進行。

@@ -22,6 +22,7 @@ export const RUNTIME_METHODS = {
   listWorkspaceOpeners: "workspace.openers",
   openWorkspaceWithApp: "workspace.openWith",
   sessionEvents: "session.events",
+  sessionDocument: "sessions.readDocument",
   runtimeInfo: "runtime.info",
   listWorkspaces: "workspaces.list",
   listAgentInstallations: "agents.listInstallations",

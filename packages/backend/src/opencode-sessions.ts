@@ -3,6 +3,8 @@ import { Commands } from "./commands";
 import { resolveCommand } from "./command-resolution";
 import type { NativeSession } from "./session-store";
 import { hasText, type ConversationEvent, type ConversationEventPage } from "./session-events";
+import { compactJson, finishDocument, type DocumentSource } from "./session-document-providers";
+import type { SessionDocument } from "./session-model";
 
 const i64 = z.bigint().min(-9223372036854775808n).max(9223372036854775807n);
 const optionalInteger = i64.nullable().optional();
@@ -58,6 +60,86 @@ export class OpenCodeSessions {
   async readHandoff(workspace: string, nativeRef: string) {
     return parseOpenCodeHandoff(await this.#export(workspace, nativeRef));
   }
+  async readDocument(
+    workspace: string,
+    nativeRef: string,
+    source: DocumentSource,
+  ): Promise<SessionDocument> {
+    const session = exportSession(await this.#export(workspace, nativeRef));
+    const turns: SessionDocument["turns"] = [];
+    const losses = new Map<SessionDocument["losses"][number]["code"], number>();
+    const addLoss = (code: SessionDocument["losses"][number]["code"]) =>
+      losses.set(code, (losses.get(code) ?? 0) + 1);
+    for (const [index, message] of session.messages.entries()) {
+      if (message.info.role !== "user" && message.info.role !== "assistant") continue;
+      const role = message.info.role;
+      const blocks: SessionDocument["turns"][number]["blocks"] = [];
+      for (const raw of message.parts) {
+        const part =
+          raw !== null && typeof raw === "object" && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : {};
+        if (part.type === "text") {
+          if (typeof part.text === "string") blocks.push({ type: "text", text: part.text });
+        } else if (part.type === "reasoning") addLoss("reasoning-excluded");
+        else if (part.type === "tool") {
+          const callId = typeof part.callID === "string" ? part.callID : "missing-call-id";
+          const name = typeof part.tool === "string" ? part.tool : "tool";
+          const state =
+            part.state !== null && typeof part.state === "object"
+              ? (part.state as Record<string, unknown>)
+              : null;
+          const input = state?.input;
+          blocks.push({
+            type: "tool-call",
+            call_id: callId,
+            name,
+            input: input === undefined ? "" : compactJson(input),
+          });
+          const status = state?.status;
+          if (status === "completed" || status === "error" || status === "failed") {
+            const output =
+              state && Object.hasOwn(state, "output")
+                ? state.output
+                : state && Object.hasOwn(state, "error")
+                  ? state.error
+                  : state?.message;
+            blocks.push({
+              type: "tool-result",
+              call_id: callId,
+              output:
+                output === undefined
+                  ? `OpenCode tool result status: ${status}`
+                  : typeof output === "string"
+                    ? output
+                    : compactJson(output),
+              is_error: status === "error" || status === "failed",
+            });
+          }
+        } else if (part.type === "file") {
+          const url = part.url;
+          const parsed = typeof url === "string" ? parseDataUrl(url) : null;
+          if (parsed)
+            blocks.push({
+              type: "attachment",
+              kind: parsed.mediaType.startsWith("image/") ? "image" : "document",
+              media_type: parsed.mediaType,
+              filename: typeof part.filename === "string" ? part.filename : undefined,
+              inline_base64: parsed.data,
+            });
+          else addLoss("external-attachment");
+        } else addLoss("damaged-record");
+      }
+      if (blocks.length)
+        turns.push({
+          id: `turn-${index}`,
+          role,
+          timestamp: millis(message.info.time?.created),
+          blocks,
+        });
+    }
+    return finishDocument(source, turns, losses);
+  }
   async #export(workspace: string, nativeRef: string): Promise<Buffer> {
     const executable = resolveCommand("opencode", this.env);
     if (executable === null)
@@ -80,6 +162,16 @@ export class OpenCodeSessions {
     });
     return result.bytes;
   }
+}
+
+function parseDataUrl(value: string): { mediaType: string; data: string } | null {
+  if (!value.startsWith("data:")) return null;
+  const comma = value.indexOf(",");
+  if (comma < 0) return null;
+  const metadata = value.slice(5, comma).split(";");
+  const mediaType = metadata[0];
+  if (!mediaType || !metadata.slice(1).some((item) => item.toLowerCase() === "base64")) return null;
+  return { mediaType, data: value.slice(comma + 1) };
 }
 
 /** Retain signed 64-bit JSON timestamps before JavaScript rounds them. */

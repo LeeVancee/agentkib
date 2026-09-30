@@ -334,6 +334,7 @@ export class Insights {
       ["workspaces", [1, 5, 10, 25, 50, 100], workspaceCount],
       ["agents", [1, 2, 3, 4, 5], agentCount],
     ];
+    this.sql.transaction(() => this.refreshAchievementUnlocks(tracks));
     return [
       ...tracks.flatMap(([category, thresholds, progress]) =>
         thresholds.map((threshold) => ({
@@ -365,6 +366,137 @@ export class Insights {
         unlocked_at,
       };
     });
+  }
+  private refreshAchievementUnlocks(tracks: [string, number[], number][]): void {
+    const unlock = (code: string, at: string | null) => {
+      if (!at) return;
+      this.sql.run(
+        "INSERT INTO achievement_unlocks(code,unlocked_at,rule_version) VALUES (?,?,1) ON CONFLICT(code) DO UPDATE SET unlocked_at=excluded.unlocked_at, rule_version=1 WHERE achievement_unlocks.rule_version=0",
+        code,
+        at,
+      );
+    };
+    const startOfDay = (day: string) => `${day}T00:00:00.000Z`;
+    for (const [category, thresholds] of tracks)
+      for (const threshold of thresholds) {
+        const saved = this.sql.one(
+          "SELECT rule_version FROM achievement_unlocks WHERE code=?",
+          `${category}-${threshold}`,
+        );
+        if (saved && positive(saved.rule_version) > 0) continue;
+        const day = this.achievementThresholdDay(category, threshold);
+        if (day) unlock(`${category}-${threshold}`, startOfDay(day));
+      }
+    const first = (sql: string) => {
+      const value = this.sql.one(sql)?.value;
+      if (typeof value !== "string") return null;
+      return timestamp(value);
+    };
+    unlock(
+      "special-first-changeset",
+      first("SELECT MIN(created_at) AS value FROM audit_events WHERE action='changeset.apply'"),
+    );
+    unlock(
+      "special-first-memory",
+      first(
+        "SELECT MIN(approved_at) AS value FROM memories WHERE status='approved' AND approved_at IS NOT NULL",
+      ),
+    );
+    const shared = this.firstSharedWorkspaceDay();
+    if (shared) unlock("special-shared-workspace", startOfDay(shared));
+    unlock(
+      "special-exact-attribution",
+      first(
+        "SELECT MIN(c.authored_at) AS value FROM commit_attributions a JOIN git_commits c ON c.repository_group_id=a.repository_group_id AND c.commit_hash=a.commit_hash WHERE a.confidence='exact'",
+      ),
+    );
+    const night = this.sql
+      .rows(
+        "SELECT occurred_at AS value FROM usage_events WHERE occurred_at IS NOT NULL AND date_precision='exact' AND (total_tokens>0 OR session_count>0) ORDER BY occurred_at",
+      )
+      .map((row) => timestamp(row.value))
+      .find((value) => value !== null && new Date(value).getHours() < 5);
+    if (night) unlock("special-night-owl", night);
+    const activeDays = this.active({});
+    const comeback = activeDays.find(
+      (day, index) =>
+        index > 0 &&
+        Date.parse(`${day}T00:00:00Z`) - Date.parse(`${activeDays[index - 1]}T00:00:00Z`) >=
+          31 * 86400000,
+    );
+    if (comeback) unlock("special-comeback", startOfDay(comeback));
+    const delivery = this.sql.one(
+      "SELECT MIN(d.day) AS value FROM usage_daily d WHERE (d.total_tokens>0 OR d.session_count>0) AND EXISTS(SELECT 1 FROM git_commits c WHERE c.day=d.day AND c.is_mine=1)",
+    )?.value;
+    if (typeof delivery === "string") unlock("special-same-day-delivery", startOfDay(delivery));
+  }
+  private achievementThresholdDay(category: string, threshold: number): string | null {
+    if (category === "active-days") return this.active({})[threshold - 1] ?? null;
+    if (category === "streak") {
+      const days = this.active({});
+      let run = 0;
+      let previous: string | undefined;
+      for (const day of days) {
+        run =
+          previous &&
+          Date.parse(`${day}T00:00:00Z`) - Date.parse(`${previous}T00:00:00Z`) === 86400000
+            ? run + 1
+            : 1;
+        if (run >= threshold) return day;
+        previous = day;
+      }
+      return null;
+    }
+    if (category === "workspaces") {
+      const rows = this.sql.rows(
+        "SELECT day,workspace_id FROM usage_daily WHERE workspace_id!='' AND (total_tokens>0 OR session_count>0) ORDER BY day,workspace_id",
+      );
+      const seen = new Set<string>();
+      for (const row of rows) {
+        seen.add(String(row.workspace_id));
+        if (seen.size >= threshold) return String(row.day);
+      }
+      return null;
+    }
+    if (category === "agents") {
+      const rows = this.sql.rows(
+        "SELECT MIN(day) AS day FROM usage_daily WHERE total_tokens>0 OR session_count>0 GROUP BY surface_agent ORDER BY MIN(day)",
+      );
+      const day = rows[threshold - 1]?.day;
+      return typeof day === "string" ? day : null;
+    }
+    const column =
+      category === "token"
+        ? "total_tokens"
+        : category === "session"
+          ? "session_count"
+          : category === "commit"
+            ? "is_mine"
+            : null;
+    if (!column) return null;
+    const table = category === "commit" ? "git_commits" : "usage_daily";
+    const rows = this.sql.rows(
+      `SELECT day,SUM(${column}) AS amount FROM ${table} GROUP BY day ORDER BY day`,
+    );
+    let cumulative = 0;
+    for (const row of rows) {
+      cumulative += positive(row.amount);
+      if (cumulative >= threshold) return String(row.day);
+    }
+    return null;
+  }
+  private firstSharedWorkspaceDay(): string | null {
+    const agents = new Map<string, Set<string>>();
+    for (const row of this.sql.rows(
+      "SELECT day,workspace_id,surface_agent FROM usage_daily WHERE workspace_id!='' AND (total_tokens>0 OR session_count>0) ORDER BY day,workspace_id,surface_agent",
+    )) {
+      const workspace = String(row.workspace_id);
+      const seen = agents.get(workspace) ?? new Set<string>();
+      seen.add(String(row.surface_agent));
+      agents.set(workspace, seen);
+      if (seen.size >= 2) return String(row.day);
+    }
+    return null;
   }
   identities() {
     return this.rows(Q.identities).map((row) => ({

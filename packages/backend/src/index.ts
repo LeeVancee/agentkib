@@ -1,6 +1,12 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
+import { handoffFormat, sanitizeHandoffExport } from "./session-handoff";
+import { prepareSessionHandoff } from "./session-continuation";
+import { planSessionHandoff } from "./session-handoff-plan";
+import { applySessionHandoff } from "./session-handoff-apply";
+import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-launch";
 import { SessionIndex } from "./session-index";
+import { InsightRefresh } from "./insight-refresh";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
 import { discoverConfiguredWorkspaces } from "./native-discovery-configured";
@@ -65,12 +71,14 @@ export class TypeScriptBackend {
   #doctor?: Doctor;
   #sessions?: SessionReaders;
   #sessionIndex?: SessionIndex;
+  #insightRefresh?: InsightRefresh;
 
   constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
 
   close(): void {
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
+    this.#insightRefresh = undefined;
     this.#sessions?.close();
     this.#sessions = undefined;
     this.#commands.close();
@@ -199,6 +207,13 @@ export class TypeScriptBackend {
         ...process.env,
         ...this.environment,
       });
+      this.#insightRefresh = new InsightRefresh(
+        store.sql,
+        this.#commands,
+        this.#git,
+        { ...process.env, ...this.environment },
+        () => store.insights.achievements(),
+      );
       this.#context = new Context(store.catalog, this.#commands, {
         ...process.env,
         ...this.environment,
@@ -218,7 +233,47 @@ export class TypeScriptBackend {
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
     if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
+    if (method === RUNTIME_METHODS.sessionDocument) {
+      const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
+      return this.#sessions!.document(sessionId);
+    }
+    if (method === RUNTIME_METHODS.prepareSessionHandoff)
+      return prepareSessionHandoff(
+        params,
+        this.#sessions!,
+        this.#store.sessions,
+        this.#store,
+        this.#commands!,
+        { ...process.env, ...this.environment },
+      );
+    if (method === RUNTIME_METHODS.planSessionHandoff)
+      return planSessionHandoff(
+        params,
+        this.#sessions!,
+        this.#store.sessions,
+        this.#store,
+        this.#dataDir,
+        { ...process.env, ...this.environment },
+        this.#commands,
+      );
+    if (method === RUNTIME_METHODS.continueSessionHandoff)
+      return this.#continueSessionHandoff(params);
+    if (method === RUNTIME_METHODS.launchSessionHandoff)
+      return prepareHandoffLaunch(params, this.#store, this.#commands, {
+        ...process.env,
+        ...this.environment,
+      }).then((prepared) =>
+        launchPreparedHandoff(prepared, this.#dataDir!, { ...process.env, ...this.environment }),
+      );
+    if (method === RUNTIME_METHODS.sanitizeSessionHandoff) {
+      const request = parameters(
+        z.object({ format: handoffFormat, editedContent: z.string() }),
+        params,
+      );
+      return sanitizeHandoffExport(request.editedContent, request.format);
+    }
     if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
       return this.#store.sessions.request(method, params);
     if (TYPESCRIPT_INSIGHT_METHODS.has(method)) return this.#store.insights.request(method, params);
@@ -451,6 +506,31 @@ export class TypeScriptBackend {
       }
       default:
         throw new RpcFault(-32601, "Method not found");
+    }
+  }
+
+  async #continueSessionHandoff(value: unknown): Promise<unknown> {
+    const environment = { ...process.env, ...this.environment };
+    const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
+    const prepared = await prepareHandoffLaunch(
+      request.launchRequest,
+      this.#store!,
+      this.#commands,
+      environment,
+    );
+    applySessionHandoff(value, this.#store!, this.#dataDir!, environment);
+    try {
+      const receipt = await launchPreparedHandoff(prepared, this.#dataDir!, environment);
+      return { status: "launched", receipt };
+    } catch (error) {
+      return {
+        status: "applied-launch-failed",
+        error: {
+          key: "errors.handoff.launchAfterApplyFailed",
+          params: {},
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      };
     }
   }
 

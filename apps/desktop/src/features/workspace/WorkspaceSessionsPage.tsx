@@ -1,3 +1,4 @@
+import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -90,6 +91,7 @@ export function WorkspaceSessionsPage({
   targetAgents: AgentKind[];
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
+  const [showClaude, setShowClaude] = useState(false);
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -402,6 +404,9 @@ export function WorkspaceSessionsPage({
                 </Badge>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
+                  Claude Code
+                </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
@@ -805,6 +810,14 @@ export function WorkspaceSessionsPage({
           </div>
         </Card>
       </div>
+      {showClaude && (
+        <ClaudeSessionPanel
+          key={workspace.id}
+          workspaceId={workspace.id}
+          initialSessionId={selected?.agent === "claude-code" ? selected.id : undefined}
+          onClose={() => setShowClaude(false)}
+        />
+      )}
       {showHandoff && selected && (
         <SessionHandoffDialog
           workspace={workspace}

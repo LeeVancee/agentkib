@@ -945,6 +945,11 @@ pub struct VerifiedClaudeControlTarget {
 }
 
 impl VerifiedClaudeControlTarget {
+    /// Native transcript already checked by the provider; revalidate before use.
+    pub fn transcript_path(&self) -> &Path {
+        &self.transcript
+    }
+
     pub fn revalidate(&self) -> Result<()> {
         let id = uuid::Uuid::parse_str(&self.session_id)?;
         let reader = BufReader::new(File::open(&self.transcript)?.take(256 * 1024));

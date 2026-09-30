@@ -1,0 +1,56 @@
+[
+  {
+    "role": "user",
+    "type": "text"
+  },
+  {
+    "role": "user",
+    "type": "text"
+  },
+  {
+    "role": "user",
+    "type": "image",
+    "mediaType": "image/png",
+    "bytes": 95,
+    "sha256": "4f53aad3f14de29b6627045fd1da8db81ddb354fdeab573f675a77e350bc7c96",
+    "pngMagic": true,
+    "dimensions": [
+      32,
+      32
+    ]
+  },
+  {
+    "role": "user",
+    "type": "text"
+  },
+  {
+    "role": "assistant",
+    "type": "thinking"
+  },
+  {
+    "role": "assistant",
+    "type": "tool_use",
+    "name": "Read"
+  },
+  {
+    "role": "user",
+    "type": "tool_result"
+  },
+  {
+    "role": "assistant",
+    "type": "tool_use",
+    "name": "Read"
+  },
+  {
+    "role": "user",
+    "type": "tool_result"
+  },
+  {
+    "role": "assistant",
+    "type": "thinking"
+  },
+  {
+    "role": "assistant",
+    "type": "text"
+  }
+]

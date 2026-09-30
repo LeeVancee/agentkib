@@ -92,6 +92,7 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface DesktopApi {
+  claude: { request(input: Record<string, unknown>): Promise<unknown> };
   web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
   platform: NodeJS.Platform;
   events: {

@@ -1,0 +1,56 @@
+{
+  "root": "/private/tmp/agentkib-claude-v1-native-2026-09-30-flash-vision",
+  "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830",
+  "started": "2026-09-30T06:11:09.402Z",
+  "modelSends": 1,
+  "requestedModel": "deepseek-flash",
+  "mcpPort": 49276,
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "f3a0f368-28b6-44f3-8cf9-f44a8467871f",
+  "sourceSessionId": "f5772967-b358-44ae-ad9c-e25844461af0",
+  "emptyWithoutModel": true,
+  "webSameSession": true,
+  "sendAccepted": true,
+  "status": "idle",
+  "reason": null,
+  "model": "deepseek-flash",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 19968,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 20025,
+    "iterations": [],
+    "output_tokens": 1438,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "approvalCount": 0,
+  "reply": "- **Secret marker:** `88026bf9-1569-4798-b5d6-b2581411a540`\n- **Project decision:** storage namespace `cobalt-lake`\n\nI couldn't name the color: the attached image failed to render (the harness returned \"[Unsupported Image]\"), so I have no way to determine its content without running commands, which you asked me not to do.",
+  "markerPresent": true,
+  "decisionPresent": true,
+  "imageColorPresent": false,
+  "webEvents": 5,
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "runtimeRestartHistory": true,
+  "failure": "expected false to be true // Object.is equality",
+  "settingsUnchanged": true,
+  "elapsedMs": 19533,
+  "launchCount": 1
+}

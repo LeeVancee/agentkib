@@ -233,6 +233,9 @@ const desktopApi = Object.freeze({
   remote: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:remote:request", request),
   }),
+  claude: Object.freeze({
+    request: (request: unknown) => ipcRenderer.invoke("agentkib:claude:request", request),
+  }),
   web: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),
   }),

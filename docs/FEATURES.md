@@ -90,7 +90,7 @@ AgentKib distinguishes an installed app or CLI from local data left behind after
 ### Web access and continuation
 
 - Pairing grants read access first. Sending and approvals are separate per-browser permissions and also require the host control switch.
-- On a verified macOS Claude Code installation, Web control starts an AgentKib-managed `claude --resume` process for the selected indexed session. It does not take over an existing terminal, and viewing history never starts a model.
+- Claude Code desktop/Web control shares one execution service on verified macOS `2.1.263` / `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Text/images/files, approvals/questions, cancellation and durable receipts are implemented. LAN uploads remain disabled; Windows/Linux control and real-device acceptance are not implied. See [Claude usage](CLAUDE-WEB.md) and [current QA](../qa/claude-managed-2026-09-30.md).
 - Codex Web control follows an already-open official owner session and remains gated to explicit acceptance builds. Unknown versions, unsupported platforms, missing owners, and unverified interaction shapes remain read-only.
 - Antigravity Web control manages only sessions returned by the official ACP server. It negotiates ACP v1 capabilities, checks the indexed session and workspace again, and requires exact revision, turn, request, and offered permission option matches.
 - A request receipt does not mean a turn or approval completed. Disconnects and uncertain outcomes are never retried automatically.
@@ -193,7 +193,7 @@ AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉�
 ### Web 访问与续接
 
 - 配对首先授予读取权限；发送和审批是单独的浏览器权限，同时还需要打开主机控制开关。
-- 对经过验证的 macOS Claude Code 安装，Web 控制会为所选的已索引会话启动 AgentKib 托管的 `claude --resume` 进程。它不会接管已有终端，查看历史也不会启动模型。
+- Claude Code 桌面/Web 在已验证 macOS `2.1.263` / `2.1.285` 上共用执行服务：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。已实现文本/图片/文件、审批/问题、取消与持久回执；LAN 仍禁上传，Windows/Linux 控制及真实设备验收不据此宣称通过。详见 [Claude 使用说明](CLAUDE-WEB.md) 与[本轮 QA](../qa/claude-managed-2026-09-30.md)。
 - Codex Web 控制跟随官方客户端中已打开的 owner 会话，并继续只在明确的验收构建中开放。版本未知、平台不支持、没有 owner 或交互结构未经验证时保持只读。
 - Antigravity Web 控制只管理官方 ACP server 返回的会话。运行时协商 ACP v1 能力，重新核验索引会话和工作区，并要求 revision、turn、request 与服务端提供的权限选项全部精确匹配。
 - 请求回执不代表轮次或审批已经完成。断线或结果不明确时不会自动重试。

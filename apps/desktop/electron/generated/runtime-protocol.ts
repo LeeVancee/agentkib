@@ -65,6 +65,7 @@ export const RUNTIME_METHODS = {
   setSidebarWidthPreference: "settings.setSidebarWidthPreference",
   remoteRequest: "remote.request",
   webRequest: "web.request",
+  claudeManaged: "claude.managed",
   codexManaged: "codex.managed",
   relayCreateCsr: "relay.createCsr",
   controlReceipt: "control.receipt",

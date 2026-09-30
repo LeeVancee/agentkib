@@ -1,0 +1,44 @@
+{
+  "events": [
+    {
+      "timestamp": "2026-09-30T05:00:01.236Z",
+      "status": 502,
+      "retryAttempt": 1
+    },
+    {
+      "timestamp": "2026-09-30T05:00:01.858Z",
+      "status": 502,
+      "retryAttempt": 2
+    },
+    {
+      "timestamp": "2026-09-30T05:00:03.129Z",
+      "status": 502,
+      "retryAttempt": 3
+    },
+    {
+      "timestamp": "2026-09-30T05:00:05.284Z",
+      "status": 502,
+      "retryAttempt": 4
+    },
+    {
+      "timestamp": "2026-09-30T05:00:09.804Z",
+      "status": 502,
+      "retryAttempt": 5
+    },
+    {
+      "timestamp": "2026-09-30T05:00:18.638Z",
+      "status": 502,
+      "retryAttempt": 6
+    },
+    {
+      "timestamp": "2026-09-30T05:00:36.441Z",
+      "status": 502,
+      "retryAttempt": 7
+    },
+    {
+      "timestamp": "2026-09-30T05:01:10.359Z",
+      "status": 502,
+      "retryAttempt": 8
+    }
+  ]
+}

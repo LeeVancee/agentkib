@@ -1,0 +1,10 @@
+{
+  "observedAt": "2026-09-30T06:46:21.899621+00:00",
+  "case": "complete-fixed",
+  "cliPid": 4283,
+  "trackedPgid": 4283,
+  "method": "ps -axo pid,pgid,stat; exact pid/pgid only",
+  "matchingProcesses": [],
+  "modelInvoked": false,
+  "note": "Original observation kill(-PGID,0) returned EPERM after native completion. Read-only follow-up found no matching process; original Vitest failure remains recorded."
+}

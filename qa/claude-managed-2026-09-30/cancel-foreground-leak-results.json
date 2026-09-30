@@ -1,0 +1,33 @@
+{
+  "root": "/private/tmp/agentkib-claude-lifecycle-2026-09-30-cancel-fixed",
+  "runtimeSha256": "4f40e929f88e430084a394d6094eeca44a1c44fd20375d6ad5f58f17fc60a700",
+  "started": "2026-09-30T06:25:17.641Z",
+  "modelSends": 1,
+  "requestedModel": "deepseek-v4-pro",
+  "mode": "cancel",
+  "mcpPort": 53844,
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "live",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "1565019b-524a-4cf4-807e-ad3f5f5f256f",
+  "sourceSessionId": "fd4d6cf4-ab92-449e-b376-590bbde304d5",
+  "emptyWithoutModel": true,
+  "webSameSession": true,
+  "approvalCount": 0,
+  "nativeApprovalObserved": false,
+  "nativeUserObserved": false,
+  "nativeSleepObserved": true,
+  "cliPid": 87390,
+  "ownedSleepPid": 87536,
+  "cancelledState": "idle",
+  "lastOutcome": "cancelled",
+  "ownedProcessGroupExited": false,
+  "failure": "expected false to be true // Object.is equality",
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "settingsUnchanged": true,
+  "elapsedMs": 10755,
+  "launchCount": 1
+}

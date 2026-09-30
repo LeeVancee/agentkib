@@ -16,7 +16,12 @@ export default defineConfig({
       fileName: () => "backend.cjs",
     },
     rollupOptions: {
-      external: ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      external: [
+        "electron",
+        "ws",
+        ...builtinModules,
+        ...builtinModules.map((name) => `node:${name}`),
+      ],
     },
   },
 });

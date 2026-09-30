@@ -57,6 +57,12 @@ export class SessionReaders {
     this.#antigravity.close();
     this.#paging.clear();
   }
+  verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
+    return this.#codex.verifiedControlIds(nativeRefs);
+  }
+  codexHome(): string {
+    return this.#codex.home();
+  }
   async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
     switch (agent) {
       case "opencode":
@@ -107,6 +113,22 @@ export class SessionReaders {
     );
     const { native, workspace } = await this.resolve(sessionId);
     return this.#readEvents(native, workspace, cursor ?? null, limit ?? 50);
+  }
+  async eventsForNative(
+    agent: SessionAgent,
+    nativeRef: string,
+    workspace: string,
+    cursor: string | null,
+    limit: number,
+  ): Promise<ConversationEventPage> {
+    if (!nativeRef || nativeRef.length > 4096 || limit < 1 || limit > 100)
+      throw new Error("invalid-request");
+    const listing = await this.list(agent, workspace);
+    const native = listing.sessions.find(
+      (candidate) => candidate.native_ref === nativeRef && candidate.agent === agent,
+    );
+    if (!native) throw new Error("session-unavailable");
+    return this.#readEvents(native, workspace, cursor, limit);
   }
   async #readEvents(
     native: NativeSession,

@@ -7,6 +7,22 @@ import { applySessionHandoff } from "./session-handoff-apply";
 import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-launch";
 import { SessionIndex } from "./session-index";
 import { InsightRefresh } from "./insight-refresh";
+import { ObsidianIntegration } from "./obsidian";
+import { Skills } from "./skills";
+import { AgentTools } from "./agent-tools";
+import { McpManager } from "./mcp";
+import { McpBuiltins } from "./mcp-builtin";
+import { McpHub, type McpNetworkSettings } from "./mcp-hub";
+import { McpOAuth } from "./mcp-oauth";
+import { planSessionMcpConnection } from "./mcp-continuation";
+import { scanNativeMcp } from "./mcp-native-scan";
+import { planNativeMcpMigration } from "./mcp-migration-plan";
+import { webDiff } from "./web-diff";
+import { WebReadRequests } from "./web-read";
+import { RemoteGateways } from "./remote-gateways";
+import { RemoteAgent } from "./remote-agent";
+import { createRelayCsr } from "./relay-csr";
+import { readControlReceipt } from "./control-receipt";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
 import { discoverConfiguredWorkspaces } from "./native-discovery-configured";
@@ -16,7 +32,7 @@ import { manifestSchema } from "./manifest";
 import { userHome } from "./mcp-config-read";
 import { applyRequest } from "./changes";
 import { TYPESCRIPT_SESSION_READ_METHODS } from "./migration";
-import { TYPESCRIPT_INSIGHT_METHODS } from "./migration";
+import { TYPESCRIPT_INSIGHT_METHODS, TYPESCRIPT_MCP_METHODS } from "./migration";
 import { scanWorkspace, inspectWorkspace } from "./asset-scanner";
 import { prepareManifest } from "./default-manifest";
 import { parameters } from "./rpc";
@@ -70,8 +86,17 @@ export class TypeScriptBackend {
   #context?: Context;
   #doctor?: Doctor;
   #sessions?: SessionReaders;
+  #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
   #insightRefresh?: InsightRefresh;
+  #obsidian?: ObsidianIntegration;
+  #skills?: Skills;
+  #agentTools?: AgentTools;
+  #mcp?: McpManager;
+  #mcpHub?: McpHub;
+  #mcpOAuth?: McpOAuth;
+  #remoteGateways?: RemoteGateways;
+  #remoteAgent?: RemoteAgent;
 
   constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
 
@@ -79,8 +104,21 @@ export class TypeScriptBackend {
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
     this.#insightRefresh = undefined;
+    this.#obsidian = undefined;
+    this.#skills = undefined;
+    this.#agentTools = undefined;
+    this.#mcp?.close();
+    this.#mcp = undefined;
+    void this.#mcpHub?.close();
+    this.#mcpHub = undefined;
+    this.#mcpOAuth = undefined;
+    this.#remoteGateways = undefined;
+    this.#remoteAgent?.close();
+    this.#remoteAgent = undefined;
+    this.#webRead?.close();
     this.#sessions?.close();
     this.#sessions = undefined;
+    this.#webRead = undefined;
     this.#commands.close();
     this.#git = undefined;
     this.#context = undefined;
@@ -183,6 +221,11 @@ export class TypeScriptBackend {
           "session-cache",
           "session-events",
           "session-index",
+          "skills",
+          "agent-tools",
+          "obsidian",
+          "mcp",
+          "remote-gateways",
         ],
       };
     }
@@ -214,10 +257,44 @@ export class TypeScriptBackend {
         { ...process.env, ...this.environment },
         () => store.insights.achievements(),
       );
+      this.#obsidian = new ObsidianIntegration(dataDir);
+      this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir);
+      this.#agentTools = new AgentTools(dataDir);
+      this.#mcp = new McpManager(
+        store.sql,
+        { ...process.env, ...this.environment },
+        dataDir,
+        this.#commands,
+      );
       this.#context = new Context(store.catalog, this.#commands, {
         ...process.env,
         ...this.environment,
       });
+      const storedNetwork = readPreferences(dataDir).mcp_network;
+      const validNetwork = z
+        .object({
+          port: z.number().int().min(1).max(65535),
+          lan_enabled: z.boolean(),
+          lan_risk_accepted: z.boolean(),
+        })
+        .safeParse(storedNetwork);
+      const network: McpNetworkSettings = validNetwork.success
+        ? validNetwork.data
+        : {
+            port: this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? 47654 : 47653,
+            lan_enabled: false,
+            lan_risk_accepted: false,
+          };
+      this.#mcp.setNetwork(network);
+      this.#mcpOAuth = new McpOAuth(this.#mcp, () => this.#mcpHub?.status().port ?? network.port);
+      this.#mcpHub = new McpHub(
+        this.#mcp,
+        store,
+        new McpBuiltins(store, this.#context, dataDir),
+        this.#mcpOAuth,
+        network,
+      );
+      this.#remoteGateways = new RemoteGateways(dataDir);
       this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
       this.#sessions = new SessionReaders(store.sessions, this.#commands, {
         ...process.env,
@@ -227,13 +304,152 @@ export class TypeScriptBackend {
         const value = readPreferences(dataDir).session_index_enabled;
         return typeof value === "boolean" ? value : true;
       });
-      return null;
+      this.#webRead = new WebReadRequests(
+        store,
+        this.#sessions,
+        dataDir,
+        () => this.#sessionIndex?.generation() ?? -1n,
+        { ...process.env, ...this.environment },
+      );
+      this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
+      return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
     }
     if (!this.#store || !this.#dataDir)
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.controlReceipt) return readControlReceipt(this.#dataDir, params);
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
+      return this.#webRead!.managedOptions();
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
+      return this.#webRead!.managedReconcile(params);
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "resume")
+      return this.#webRead!.managedResume(params);
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "queue-list")
+      return this.#webRead!.managedQueueList(params);
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
+      return this.#webRead!.managedUnarchive(params);
+    if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
+      return this.#webRead!.managedSettingsState(params);
+    if (
+      method === RUNTIME_METHODS.codexManaged &&
+      ["capabilities", "inspect"].includes(String(params.operation))
+    )
+      return this.#webRead!.managedQuery(params);
+    if (
+      method === RUNTIME_METHODS.codexManaged &&
+      ["create", "adopt", "release"].includes(String(params.operation))
+    )
+      return this.#webRead!.managedLifecycle(params);
+    if (
+      method === RUNTIME_METHODS.codexManaged &&
+      [
+        "send",
+        "stop",
+        "approve",
+        "answer",
+        "steer",
+        "queue-add",
+        "queue-update",
+        "queue-delete",
+        "queue-reorder",
+        "rename",
+        "archive",
+        "settings",
+        "goal-set",
+        "goal-pause",
+        "goal-resume",
+        "goal-clear",
+        "fork",
+      ].includes(String(params.operation))
+    )
+      return this.#webRead!.managedControl(params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
+    if (method === RUNTIME_METHODS.webRequest) {
+      if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
+      if (params.operation === "live") return this.#webRead!.request(params);
+      if (params.operation === "settings-state") return this.#webRead!.managedSettingsState(params);
+      if (params.operation === "queue-list") return this.#webRead!.managedQueueList(params);
+      if (["capabilities", "inspect"].includes(String(params.operation)))
+        return this.#webRead!.managedQuery(params);
+      if (params.operation === "resume") return this.#webRead!.managedResume(params);
+      if (params.operation === "unarchive") return this.#webRead!.managedUnarchive(params);
+      if (
+        [
+          "send",
+          "stop",
+          "approve",
+          "answer",
+          "steer",
+          "queue-add",
+          "queue-update",
+          "queue-delete",
+          "queue-reorder",
+          "rename",
+          "archive",
+          "settings",
+          "goal-set",
+          "goal-pause",
+          "goal-resume",
+          "goal-clear",
+          "fork",
+        ].includes(String(params.operation))
+      )
+        return this.#webRead!.managedControl(params);
+      if (
+        params.operation === "catalog" ||
+        params.operation === "events" ||
+        params.operation === "context" ||
+        params.operation === "usage" ||
+        params.operation === "goal" ||
+        params.operation === "resources"
+      )
+        return this.#webRead!.request(params);
+    }
+    if (method.startsWith("skills.")) return this.#skills!.request(method, params);
+    if (method === RUNTIME_METHODS.agentToolsStatus)
+      return this.#agentTools!.snapshot(params.force === true);
+    if (method === RUNTIME_METHODS.agentToolExecute) return this.#agentTools!.execute(params);
+    if (method === RUNTIME_METHODS.listRemoteGateways) return this.#remoteGateways!.list();
+    if (method === RUNTIME_METHODS.remoteRequest) return this.#remoteAgent!.request(params);
+    if (method === RUNTIME_METHODS.saveRemoteGateway) {
+      const request = parameters(z.object({ input: z.unknown() }), params);
+      return this.#remoteGateways!.save(request.input);
+    }
+    if (method === RUNTIME_METHODS.refreshRemoteGateway)
+      return this.#remoteGateways!.refresh(params);
+    if (method === RUNTIME_METHODS.removeRemoteGateway) return this.#remoteGateways!.remove(params);
+    if (method === RUNTIME_METHODS.relayCreateCsr) return createRelayCsr(params);
+    if (TYPESCRIPT_MCP_METHODS.has(method)) return this.#mcpRequest(method, params);
+    if (method === RUNTIME_METHODS.obsidianIntegration) return this.#obsidian!.integration();
+    if (method === RUNTIME_METHODS.addObsidianVault) {
+      const request = parameters(z.object({ path: z.string() }), params);
+      return this.#obsidian!.addVault(request.path);
+    }
+    if (method === RUNTIME_METHODS.linkObsidianWorkspace) {
+      const request = parameters(
+        z.object({
+          workspaceId: z.string(),
+          vaultPath: z.string(),
+          relativeTarget: z.string().nullable().optional(),
+        }),
+        params,
+      );
+      return this.#obsidian!.linkWorkspace(
+        request.workspaceId,
+        request.vaultPath,
+        request.relativeTarget,
+      );
+    }
+    if (method === RUNTIME_METHODS.unlinkObsidianWorkspace) {
+      const request = parameters(z.object({ id: z.string() }), params);
+      return this.#obsidian!.unlinkWorkspace(request.id);
+    }
+    if (method === RUNTIME_METHODS.openObsidian) return this.#obsidian!.openApp();
+    if (method === RUNTIME_METHODS.openObsidianWorkspace) {
+      const request = parameters(z.object({ id: z.string() }), params);
+      return this.#obsidian!.openWorkspace(request.id);
+    }
     if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
     if (method === RUNTIME_METHODS.sessionDocument) {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
@@ -258,6 +474,8 @@ export class TypeScriptBackend {
         { ...process.env, ...this.environment },
         this.#commands,
       );
+    if (method === RUNTIME_METHODS.planSessionMcpConnection)
+      return planSessionMcpConnection(params, this.#store);
     if (method === RUNTIME_METHODS.continueSessionHandoff)
       return this.#continueSessionHandoff(params);
     if (method === RUNTIME_METHODS.launchSessionHandoff)
@@ -509,6 +727,180 @@ export class TypeScriptBackend {
     }
   }
 
+  async #mcpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const manager = this.#mcp!;
+    switch (method) {
+      case RUNTIME_METHODS.listMcpServers: {
+        const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
+        return manager.list(request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.mcpHubStatus:
+        return this.#mcpHub!.status();
+      case RUNTIME_METHODS.updateMcpNetwork: {
+        const request = parameters(z.object({ settings: z.unknown() }), params);
+        const settings = parameters(
+          z.object({
+            port: z.number().int().min(1).max(65535),
+            lan_enabled: z.boolean(),
+            lan_risk_accepted: z.boolean(),
+          }),
+          request.settings,
+        );
+        const previous = this.#mcpHub!.status();
+        const previousSettings: McpNetworkSettings = {
+          port: previous.port,
+          lan_enabled: previous.lan_enabled,
+          lan_risk_accepted:
+            z
+              .object({ lan_risk_accepted: z.boolean() })
+              .safeParse(readPreferences(this.#dataDir!).mcp_network).data?.lan_risk_accepted ??
+            false,
+        };
+        const status = await this.#mcpHub!.update(settings);
+        try {
+          writePreference(this.#dataDir!, "mcp_network", settings);
+          manager.setNetwork(settings);
+          return status;
+        } catch (error) {
+          await this.#mcpHub!.update(previousSettings).catch(() => undefined);
+          manager.setNetwork(previousSettings);
+          throw error;
+        }
+      }
+      case RUNTIME_METHODS.startMcpOAuth: {
+        const request = parameters(
+          z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return this.#mcpOAuth!.start(request.serverId, request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.getMcpServer: {
+        const request = parameters(
+          z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.get(request.serverId, request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.saveMcpServer: {
+        const request = parameters(
+          z.object({ server: z.unknown(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.save(
+          request.server as Parameters<McpManager["save"]>[0],
+          request.project ?? undefined,
+        );
+      }
+      case RUNTIME_METHODS.saveMcpLocalValues: {
+        const request = parameters(
+          z.object({
+            serverId: z.string(),
+            env: z.record(z.string(), z.string()),
+            headers: z.record(z.string(), z.string()),
+            project: z.string().nullable().optional(),
+          }),
+          params,
+        );
+        return manager.saveLocal(
+          request.serverId,
+          request.env,
+          request.headers,
+          request.project ?? undefined,
+        );
+      }
+      case RUNTIME_METHODS.removeMcpServer: {
+        const request = parameters(
+          z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.remove(request.serverId, request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.probeMcpRuntime: {
+        const request = parameters(
+          z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.probe(request.serverId, request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.listMcpRuntimes:
+        return manager.runtimes();
+      case RUNTIME_METHODS.restartMcpRuntime: {
+        const request = parameters(
+          z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.restart(request.serverId, request.project ?? undefined);
+      }
+      case RUNTIME_METHODS.stopMcpRuntime: {
+        const request = parameters(
+          z.object({ serverId: z.string().nullable().optional() }),
+          params,
+        );
+        return manager.stop(request.serverId ?? undefined);
+      }
+      case RUNTIME_METHODS.scanNativeMcp: {
+        const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
+        return scanNativeMcp({ project: request.project ?? undefined }, this.#store!, {
+          ...process.env,
+          ...this.environment,
+        });
+      }
+      case RUNTIME_METHODS.planMcpMigration:
+        return planNativeMcpMigration(params, this.#store!, manager, {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.searchMcpRegistry:
+      case RUNTIME_METHODS.refreshMcpRegistry: {
+        const request = parameters(z.object({ query: z.string() }), params);
+        return manager.searchRegistry(request.query, method === RUNTIME_METHODS.refreshMcpRegistry);
+      }
+      case RUNTIME_METHODS.listMcpInstallations:
+        return manager.installations();
+      case RUNTIME_METHODS.installMcp: {
+        const request = parameters(
+          z.object({
+            entry: z.unknown(),
+            project: z.string().nullable().optional(),
+            confirmed: z.boolean(),
+          }),
+          params,
+        );
+        return manager.install(
+          request.entry as import("./mcp").RegistryEntry,
+          request.project ?? undefined,
+          request.confirmed,
+        );
+      }
+      case RUNTIME_METHODS.updateMcp: {
+        const request = parameters(
+          z.object({
+            installationId: z.string(),
+            entry: z.unknown(),
+            project: z.string().nullable().optional(),
+            confirmed: z.boolean(),
+          }),
+          params,
+        );
+        return manager.update(
+          request.installationId,
+          request.entry as import("./mcp").RegistryEntry,
+          request.project ?? undefined,
+          request.confirmed,
+        );
+      }
+      case RUNTIME_METHODS.uninstallMcp: {
+        const request = parameters(
+          z.object({ installationId: z.string(), confirmed: z.boolean() }),
+          params,
+        );
+        return manager.uninstall(request.installationId, request.confirmed);
+      }
+      default:
+        return undefined;
+    }
+  }
+
   async #continueSessionHandoff(value: unknown): Promise<unknown> {
     const environment = { ...process.env, ...this.environment };
     const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
@@ -542,7 +934,14 @@ export class TypeScriptBackend {
   }
 
   #preferences() {
-    return preferenceSnapshot(this.#dataDir!, this.environment);
+    return {
+      ...preferenceSnapshot(this.#dataDir!, this.environment),
+      mcp_network: readPreferences(this.#dataDir!).mcp_network ?? {
+        port: this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? 47654 : 47653,
+        lan_enabled: false,
+        lan_risk_accepted: false,
+      },
+    };
   }
 }
 

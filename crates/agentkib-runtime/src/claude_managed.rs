@@ -1070,6 +1070,8 @@ fn target_fingerprint(target: &VerifiedClaudeControlTarget) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+// 产品只在 macOS 启用托管；非 Unix 平台没有外部进程检查实现。
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn ensure_no_external_owner(native_id: &str) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1093,6 +1095,7 @@ fn ensure_no_external_owner(native_id: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(unix)]
 fn process_mentions_session(line: &str, id: &str) -> bool {
     let words: Vec<_> = line.split_whitespace().collect();
     words.iter().any(|w| w.rsplit('/').next() == Some("claude"))

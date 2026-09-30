@@ -801,7 +801,7 @@ impl Runner {
         runner
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn mock_cleanup_gate(
         started: mpsc::Sender<()>,
         released: mpsc::Receiver<()>,
@@ -1342,7 +1342,7 @@ fn check_version() -> Result<(PathBuf, String)> {
     check_version_info(executable)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn check_version_at(executable: PathBuf) -> Result<PathBuf> {
     check_version_info(executable).map(|(path, _)| path)
 }

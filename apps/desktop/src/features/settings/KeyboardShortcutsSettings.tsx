@@ -1,4 +1,5 @@
 import { useI18n } from "@/core/useI18n";
+import { Button } from "@/components/ui/button";
 import {
   currentAppPlatform,
   formatShortcut,
@@ -6,13 +7,22 @@ import {
   type ShortcutGroup,
 } from "@/core/keyboard-shortcuts";
 import { SettingsPage, SettingsPageHeader, SettingsSection } from "./components/SettingsLayout";
+import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 
 export function KeyboardShortcutsSettings() {
   const { tr } = useI18n();
   const platform = currentAppPlatform();
+  const { openShortcutHelp } = useShortcutHelp();
   return (
     <SettingsPage>
-      <SettingsPageHeader title={tr("settings.section.shortcuts")} />
+      <SettingsPageHeader
+        title={tr("settings.section.shortcuts")}
+        action={
+          <Button variant="outline" size="sm" onClick={openShortcutHelp}>
+            {tr("settings.viewShortcuts")}
+          </Button>
+        }
+      />
       <SettingsSection title={tr("shortcuts.group.navigation")} target="shortcuts-list">
         <ShortcutRows group="navigation" platform={platform} />
       </SettingsSection>

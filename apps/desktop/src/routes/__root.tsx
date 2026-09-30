@@ -47,6 +47,9 @@ function RootLayout() {
     refreshJobs,
     navigation,
     workspaces,
+    workspacesPending,
+    workspacesError,
+    retryWorkspaces,
     openWorkspace,
     navigateGlobal,
     openSettings,
@@ -92,6 +95,9 @@ function RootLayout() {
         active={globalPage}
         entries={navigation}
         workspaces={workspaces}
+        workspacesPending={workspacesPending}
+        workspacesError={workspacesError}
+        onRetryWorkspaces={() => void retryWorkspaces()}
         message={message}
         refreshJobs={refreshJobs}
         onNavigate={navigateGlobal}
@@ -128,6 +134,9 @@ function AppShellRouter({
   active,
   entries,
   workspaces,
+  workspacesPending,
+  workspacesError,
+  onRetryWorkspaces,
   message,
   refreshJobs,
   onNavigate,
@@ -145,6 +154,9 @@ function AppShellRouter({
   active: GlobalPage;
   entries: SidebarEntry<GlobalPage>[];
   workspaces: WorkspaceSummary[];
+  workspacesPending: boolean;
+  workspacesError?: string;
+  onRetryWorkspaces: () => void;
   message: string;
   refreshJobs: RefreshJobStatus[];
   onNavigate: (page: GlobalPage) => void;
@@ -222,6 +234,9 @@ function AppShellRouter({
         }
         return left.name.localeCompare(right.name);
       })}
+      workspacesPending={workspacesPending}
+      workspacesError={workspacesError}
+      onRetryWorkspaces={onRetryWorkspaces}
       activeWorkspaceId={route.kind === "workspace" ? route.workspaceId : undefined}
       workspacePage={route.kind === "workspace" ? route.page : undefined}
       changeCount={

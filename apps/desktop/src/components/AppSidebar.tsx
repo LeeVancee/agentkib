@@ -97,6 +97,9 @@ export function AppSidebar(props: {
   collapsed: boolean;
   context?: AppSidebarContext;
   workspaces?: WorkspaceSummary[];
+  workspacesPending?: boolean;
+  workspacesError?: string;
+  onRetryWorkspaces?: () => void;
   favoriteWorkspaceIds?: string[];
   onOpenWorkspace?: (workspace: WorkspaceSummary, page?: Page) => void;
   onCollapsedChange?: (collapsed: boolean) => void;
@@ -508,11 +511,33 @@ export function AppSidebar(props: {
                       </div>
                     );
                   })}
-                  {!props.workspaces?.length && (
+                  {!props.workspaces?.length && props.workspacesPending && (
                     <p className="px-3 py-6 text-sm text-muted-foreground">
-                      {tr("sidebar.noWorkspaces")}
+                      {tr("common.loading")}
                     </p>
                   )}
+                  {!props.workspaces?.length && props.workspacesError && (
+                    <div className="grid justify-items-start gap-2 px-3 py-4">
+                      <p role="alert" className="text-sm text-destructive">
+                        {props.workspacesError}
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        onClick={props.onRetryWorkspaces}
+                      >
+                        {tr("errors.retryPage")}
+                      </Button>
+                    </div>
+                  )}
+                  {!props.workspaces?.length &&
+                    !props.workspacesPending &&
+                    !props.workspacesError && (
+                      <p className="px-3 py-6 text-sm text-muted-foreground">
+                        {tr("sidebar.noWorkspaces")}
+                      </p>
+                    )}
                 </nav>
               )}
               {context?.kind === "agents" && (

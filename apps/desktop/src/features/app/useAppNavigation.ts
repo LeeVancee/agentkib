@@ -42,7 +42,11 @@ export function useAppNavigation() {
   const globalPage = routeGlobalPage;
   const appMode = route.kind === "settings" ? "settings" : "main";
   const queryClient = useOptionalQueryClient();
-  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const {
+    data: workspaces = [],
+    isPending: workspacesPending,
+    error: workspaceLoadError,
+  } = useHomeWorkspaces();
   const { data: globalMemories = [] } = useHomeMemories();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const settingsSection = search.settingsSection ?? "general";
@@ -153,6 +157,9 @@ export function useAppNavigation() {
 
   const loadGlobal = async () => {
     await queryClient.invalidateQueries({ queryKey: homeKeys.all });
+  };
+  const retryWorkspaces = async () => {
+    await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
   };
 
   const refreshDiscovery = async () => {
@@ -386,9 +393,7 @@ export function useAppNavigation() {
             section ??
             navigationLocations.current.get("settings")?.search.settingsSection ??
             "general",
-          settingsTarget: section
-            ? undefined
-            : navigationLocations.current.get("settings")?.search.settingsTarget,
+          settingsTarget: undefined,
         }) as never,
     });
   };
@@ -498,6 +503,9 @@ export function useAppNavigation() {
       globalMemories.filter((item) => item.status === "pending").length,
     ),
     workspaces,
+    workspacesPending,
+    workspacesError: workspaceLoadError ? localizeMessage(workspaceLoadError) : undefined,
+    retryWorkspaces,
     openWorkspace,
     navigateGlobal,
     openSettings,

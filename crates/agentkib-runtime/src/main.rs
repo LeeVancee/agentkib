@@ -17,6 +17,7 @@ mod claude_runner;
 mod codex_managed;
 mod continuation_worker;
 mod native_import;
+mod migration;
 mod obsidian;
 mod relay_csr;
 mod skill_worker;
@@ -904,6 +905,12 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
 
     let method = request.method.clone();
     match method.as_str() {
+        "backend.nativeContext" => command_response(request, migration::context),
+        "backend.nativeDiscovery" => command_response(request, migration::discover),
+        "backend.nativeInspect" => command_response(request, migration::inspect),
+        "backend.sessionIndexChanged" => {
+            command_response(request, migration::session_index_changed)
+        }
         HANDSHAKE_METHOD => handle_handshake(request),
         agentkib_protocol::RELAY_CREATE_CSR_METHOD => command_response(request, relay_csr::create),
         SHUTDOWN_METHOD => (RpcResponse::success(request.id, Value::Null), true),

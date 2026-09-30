@@ -5,9 +5,31 @@ import {
   type RuntimeRpcError,
 } from "@agentkib/runtime-protocol";
 import { BackendStore } from "./store";
-import { preferenceSnapshot, writePreference } from "./preferences";
+import {
+  preferenceSnapshot,
+  writePreference,
+  writePreferences,
+  readPreferences,
+  readOnboarding,
+  parseQuotaPreferences,
+  normalizeQuotaPreferences,
+} from "./preferences";
+import {
+  refreshReceipt,
+  type NativeContext,
+  type WorkspacePlan,
+  type WorkspaceInspection,
+  type DiscoverySnapshot,
+  type DiscoveryPlan,
+  type InspectedWorkspace,
+} from "./workspaces";
 
-import { BACKEND_INITIALIZE, BACKEND_PREFERENCES } from "./migration";
+import {
+  BACKEND_INITIALIZE,
+  BACKEND_PREFERENCES,
+  BACKEND_PLAN_WORKSPACE,
+  BACKEND_PLAN_DISCOVERY,
+} from "./migration";
 
 class RpcFault extends Error {
   constructor(
@@ -92,7 +114,13 @@ export class TypeScriptBackend {
           version: this.environment.AGENTKIB_APP_VERSION ?? "0.13.0",
         },
         pid: process.pid,
-        capabilities: ["shared-schema-15", "preferences", "cached-workspace-reads"],
+        capabilities: [
+          "shared-schema-15",
+          "preferences",
+          "cached-workspace-reads",
+          "workspace-writes",
+          "discovery-persistence",
+        ],
       };
     }
     if (method === RUNTIME_METHODS.shutdown) {
@@ -114,6 +142,128 @@ export class TypeScriptBackend {
         detail: "TypeScript backend has not been initialized",
       });
     switch (method) {
+      case BACKEND_PLAN_WORKSPACE: {
+        if (params.operation !== "add" && params.operation !== "refresh")
+          invalid("Invalid workspace operation");
+        const value = string(params, params.operation === "add" ? "path" : "id");
+        const context = object(params.context) as unknown as NativeContext;
+        return this.#store.workspaces.prepareWorkspace(params.operation, value, context);
+      }
+      case BACKEND_PLAN_DISCOVERY:
+        return this.#store.workspaces.prepareDiscovery(
+          object(params.snapshot) as unknown as DiscoverySnapshot,
+          object(params.context) as unknown as NativeContext,
+        );
+      case RUNTIME_METHODS.addWorkspace:
+      case RUNTIME_METHODS.refreshWorkspace: {
+        string(params, method === RUNTIME_METHODS.addWorkspace ? "path" : "id");
+        const plan = object(params._plan) as unknown as WorkspacePlan;
+        const inspection = object(params._inspection) as unknown as WorkspaceInspection;
+        const id =
+          method === RUNTIME_METHODS.addWorkspace
+            ? this.#store.workspaces.addWorkspace(plan, inspection)
+            : this.#store.workspaces.refreshWorkspace(plan, inspection);
+        return this.#store.getWorkspace(id);
+      }
+      case RUNTIME_METHODS.excludeWorkspace:
+        this.#store.workspaces.excludeWorkspace(string(params, "id"));
+        return null;
+      case RUNTIME_METHODS.restoreExcludedWorkspace:
+        this.#store.workspaces.restoreExcludedWorkspace(string(params, "path"));
+        return null;
+      case RUNTIME_METHODS.addScanRoot: {
+        const value = string(params, "path");
+        const depth = unsigned(params.maxDepth, "maxDepth");
+        return this.#store.workspaces.addScanRoot(value, depth);
+      }
+      case RUNTIME_METHODS.removeScanRoot:
+        this.#store.workspaces.removeScanRoot(string(params, "id"));
+        return null;
+      case RUNTIME_METHODS.refreshDiscovery: {
+        const plan = object(params._plan) as unknown as DiscoveryPlan;
+        const snapshot = object(params._snapshot) as unknown as DiscoverySnapshot;
+        if (!Array.isArray(params._inspections)) invalid("Missing workspace inspections");
+        const queued = string(params, "_queuedAt");
+        const started = string(params, "_startedAt");
+        this.#store.workspaces.syncDiscovery(
+          plan,
+          snapshot,
+          params._inspections as InspectedWorkspace[],
+          started,
+        );
+        return refreshReceipt(queued, started);
+      }
+      case RUNTIME_METHODS.discoveryReport:
+        return this.#store.workspaces.discoveryReport();
+      case RUNTIME_METHODS.quotaPreferences:
+        return (
+          parseQuotaPreferences(readPreferences(this.#dataDir).quota_popover) ?? {
+            hidden_providers: [],
+            hidden_windows: [],
+          }
+        );
+      case RUNTIME_METHODS.setQuotaPreferences: {
+        const preferences = parseQuotaPreferences(params.preferences);
+        if (!preferences) invalid("Invalid quota preferences");
+        const normalized = normalizeQuotaPreferences(preferences);
+        writePreference(this.#dataDir, "quota_popover", normalized);
+        return normalized;
+      }
+      case RUNTIME_METHODS.setSessionIndexEnabled:
+      case RUNTIME_METHODS.setLocalAutoRefresh:
+      case RUNTIME_METHODS.setQuotaPromptSeen:
+      case RUNTIME_METHODS.setQuotaAutoRefresh: {
+        const keys: Record<string, string> = {
+          [RUNTIME_METHODS.setSessionIndexEnabled]: "session_index_enabled",
+          [RUNTIME_METHODS.setLocalAutoRefresh]: "local_auto_refresh_enabled",
+          [RUNTIME_METHODS.setQuotaPromptSeen]: "quota_auto_refresh_prompt_seen",
+          [RUNTIME_METHODS.setQuotaAutoRefresh]: "quota_auto_refresh_enabled",
+        };
+        const aliases = ["value", "enabled", "seen"].filter((key) => key in params);
+        if (aliases.length !== 1 || typeof params[aliases[0]!] !== "boolean")
+          invalid("Expected exactly one boolean value");
+        writePreferences(this.#dataDir, {
+          [keys[method]!]: params[aliases[0]!],
+          ...(method === RUNTIME_METHODS.setQuotaAutoRefresh
+            ? { quota_auto_refresh_prompt_seen: true }
+            : {}),
+        });
+        return this.#preferences();
+      }
+      case RUNTIME_METHODS.updateOnboarding: {
+        const event = object(params.event);
+        const preferences = readOnboarding(readPreferences(this.#dataDir).onboarding);
+        switch (event.event) {
+          case "doctor-completed": {
+            const id = string(event, "workspace_id");
+            const count = unsigned(event.repairable_count, "repairable_count");
+            if (preferences.workspace_id !== id) preferences.repair_applied = false;
+            preferences.workspace_id = id;
+            preferences.doctor_completed = true;
+            preferences.repairable_count = count;
+            if (count === 0) preferences.acknowledged_version = 1;
+            break;
+          }
+          case "repair-applied":
+            preferences.workspace_id = string(event, "workspace_id");
+            preferences.repair_applied = true;
+            break;
+          case "dismissed":
+            preferences.acknowledged_version = 1;
+            break;
+          case "restarted":
+            Object.assign(preferences, readOnboarding(null));
+            break;
+          default:
+            invalid("Invalid onboarding event");
+        }
+        const { workspace_id, ...rest } = preferences;
+        writePreference(this.#dataDir, "onboarding", {
+          ...rest,
+          ...(workspace_id === null ? {} : { workspace_id }),
+        });
+        return this.#preferences();
+      }
       case RUNTIME_METHODS.listWorkspaces:
         return this.#store.listWorkspaces();
       case RUNTIME_METHODS.listScanRoots:
@@ -193,4 +343,15 @@ function object(value: unknown): Record<string, unknown> {
 
 function invalid(detail: string): never {
   throw new RpcFault(-32602, "Invalid method parameters", { detail });
+}
+
+function string(params: Record<string, unknown>, key: string): string {
+  const value = params[key];
+  if (typeof value !== "string") invalid(`${key} must be a string`);
+  return value;
+}
+function unsigned(value: unknown, key: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    invalid(`${key} must be a nonnegative integer`);
+  return value;
 }

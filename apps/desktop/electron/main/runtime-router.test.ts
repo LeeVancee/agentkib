@@ -1,6 +1,15 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { BACKEND_INITIALIZE, BACKEND_PREFERENCES } from "@agentkib/backend/migration";
+import {
+  BACKEND_INITIALIZE,
+  BACKEND_PREFERENCES,
+  BACKEND_PLAN_WORKSPACE,
+  BACKEND_PLAN_DISCOVERY,
+  NATIVE_CONTEXT,
+  NATIVE_INSPECT,
+  NATIVE_DISCOVERY,
+  NATIVE_SESSION_INDEX_CHANGED,
+} from "@agentkib/backend/migration";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
@@ -127,6 +136,113 @@ describe("RuntimeRouter migration ownership and recovery", () => {
       "typescript failure",
     );
     expect(rust.calls).not.toContain(RUNTIME_METHODS.setLocale);
+    await router.stop();
+  });
+
+  it("owns workspace mutations in TS and serializes scans with exclusions", async () => {
+    const rust = new Host();
+    const ts = new Host();
+    const router = new RuntimeRouter(rust, ts);
+    await router.start();
+    const scanning = gate();
+    const plan = { id: "workspace", path: "/fixture/project", sources: [] };
+    const inspection = { summary: null, assets: [], error: null };
+    rust.handler = (method) => {
+      if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
+      if (method === NATIVE_INSPECT)
+        return scanning.promise.then(() => [{ id: "workspace", inspection }]);
+      throw new Error(`Unexpected Rust operation: ${method}`);
+    };
+    ts.handler = (method, params) => {
+      if (method === BACKEND_PLAN_WORKSPACE) return plan;
+      if (method === RUNTIME_METHODS.addWorkspace) {
+        expect(params).toMatchObject({ _plan: plan, _inspection: inspection });
+        return { id: "workspace" };
+      }
+      return null;
+    };
+    const adding = router.request(RUNTIME_METHODS.addWorkspace, {
+      path: "/fixture/project",
+      _plan: { injected: true },
+    });
+    const excluding = router.request(RUNTIME_METHODS.excludeWorkspace, { id: "workspace" });
+    await vi.waitFor(() => expect(rust.calls).toContain(NATIVE_INSPECT));
+    expect(ts.calls).not.toContain(RUNTIME_METHODS.excludeWorkspace);
+    scanning.resolve();
+    expect(await adding).toEqual({ id: "workspace" });
+    expect(await excluding).toBeNull();
+    expect(rust.calls).not.toContain(RUNTIME_METHODS.addWorkspace);
+    expect(rust.calls).not.toContain(RUNTIME_METHODS.excludeWorkspace);
+    await router.stop();
+  });
+
+  it("keeps discovery persistence in TS and fences an operation across a process crash", async () => {
+    const rust = new Host();
+    const ts = new Host();
+    const router = new RuntimeRouter(rust, ts);
+    await router.start();
+    const snapshot = {
+      candidates: [],
+      installations: [],
+      home_assets: [],
+      errors: [],
+      source_diagnostics: [],
+    };
+    const plan = { workspaces: [], managed_homes: [] };
+    const scanning = gate();
+    let interrupted = false;
+    rust.handler = (method, params) => {
+      if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
+      if (method === NATIVE_DISCOVERY) {
+        expect(params).toEqual({ roots: [{ path: "/enabled", max_depth: 3 }] });
+        return snapshot;
+      }
+      if (method === NATIVE_INSPECT) return interrupted ? scanning.promise.then(() => []) : [];
+      return { data_dir: "/fixture" };
+    };
+    ts.handler = (method, params) => {
+      if (method === RUNTIME_METHODS.listScanRoots)
+        return [
+          { path: "/enabled", enabled: true, max_depth: 3 },
+          { path: "/disabled", enabled: false, max_depth: 8 },
+        ];
+      if (method === BACKEND_PLAN_DISCOVERY) return plan;
+      if (method === RUNTIME_METHODS.refreshDiscovery) {
+        expect(params).toMatchObject({ _plan: plan, _snapshot: snapshot, _inspections: [] });
+        return { kind: "discovery" };
+      }
+      return null;
+    };
+    expect(await router.request(RUNTIME_METHODS.refreshDiscovery, {})).toEqual({
+      kind: "discovery",
+    });
+    expect(rust.calls).not.toContain(RUNTIME_METHODS.refreshDiscovery);
+    interrupted = true;
+    const pending = expect(
+      router.request(RUNTIME_METHODS.refreshDiscovery, {}),
+    ).rejects.toBeInstanceOf(RuntimeUnavailableError);
+    await vi.waitFor(() =>
+      expect(rust.calls.filter((method) => method === NATIVE_INSPECT)).toHaveLength(2),
+    );
+    ts.crash();
+    scanning.resolve();
+    await pending;
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.refreshDiscovery)).toHaveLength(
+      1,
+    );
+    await router.stop();
+  });
+
+  it("writes the session-index preference in TS and invokes only the native worker fence", async () => {
+    const rust = new Host();
+    const ts = new Host();
+    const router = new RuntimeRouter(rust, ts);
+    await router.start();
+    ts.handler = () => ({ session_index_enabled: false });
+    const result = await router.request(RUNTIME_METHODS.setSessionIndexEnabled, { enabled: false });
+    expect(result).toMatchObject({ session_index_enabled: false });
+    expect(rust.calls).toContain(NATIVE_SESSION_INDEX_CHANGED);
+    expect(rust.calls).not.toContain(RUNTIME_METHODS.setSessionIndexEnabled);
     await router.stop();
   });
 

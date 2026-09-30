@@ -3202,6 +3202,69 @@ fn logical_asset_count(assets: &[AssetRecord]) -> usize {
 }
 
 fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> Result<()> {
+    scan_workspace_record(
+        id,
+        path,
+        |summary| {
+            connection.execute(
+                "UPDATE workspaces SET manifest_workspace_id = ?1, status = ?2, asset_count = ?3, warning_count = ?4, last_scanned_at = ?5 WHERE id = ?6",
+                params![summary.manifest_workspace_id, enum_string(summary.status)?, summary.asset_count as i64, summary.warning_count as i64, summary.scanned_at.to_rfc3339(), id],
+            )?;
+            connection.execute(
+                "DELETE FROM catalog_assets WHERE workspace_id = ?1",
+                params![id],
+            )?;
+            Ok(())
+        },
+        |asset| insert_catalog_asset(connection, asset),
+    )
+}
+
+/// Temporary migration adapter: native asset inspection without opening or writing the store.
+#[derive(serde::Serialize)]
+pub struct WorkspaceInspection {
+    pub summary: Option<WorkspaceInspectionSummary>,
+    pub assets: Vec<CatalogAsset>,
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct WorkspaceInspectionSummary {
+    pub manifest_workspace_id: Option<String>,
+    pub status: WorkspaceStatus,
+    pub asset_count: usize,
+    pub warning_count: u64,
+    pub scanned_at: DateTime<Utc>,
+}
+
+pub fn inspect_workspace(id: &str, path: &Path) -> WorkspaceInspection {
+    let mut summary = None;
+    let mut assets = Vec::new();
+    let result = scan_workspace_record(
+        id,
+        path,
+        |value| {
+            summary = Some(value);
+            Ok(())
+        },
+        |asset| {
+            assets.push(asset.clone());
+            Ok(())
+        },
+    );
+    WorkspaceInspection {
+        summary,
+        assets,
+        error: result.err().map(|error| error.to_string()),
+    }
+}
+
+fn scan_workspace_record(
+    id: &str,
+    path: &Path,
+    mut save_summary: impl FnMut(WorkspaceInspectionSummary) -> Result<()>,
+    mut save_asset: impl FnMut(&CatalogAsset) -> Result<()>,
+) -> Result<()> {
     if !path.is_dir() {
         bail!("Workspace does not exist: {}", path.display());
     }
@@ -3246,14 +3309,13 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
     } else {
         WorkspaceStatus::Attention
     };
-    connection.execute(
-        "UPDATE workspaces SET manifest_workspace_id = ?1, status = ?2, asset_count = ?3, warning_count = ?4, last_scanned_at = ?5 WHERE id = ?6",
-        params![manifest.as_ref().map(|value| value.workspace.id.clone()), enum_string(status)?, logical_asset_count(&scan.assets) as i64, warning_count as i64, Utc::now().to_rfc3339(), id],
-    )?;
-    connection.execute(
-        "DELETE FROM catalog_assets WHERE workspace_id = ?1",
-        params![id],
-    )?;
+    save_summary(WorkspaceInspectionSummary {
+        manifest_workspace_id: manifest.as_ref().map(|value| value.workspace.id.clone()),
+        status,
+        asset_count: logical_asset_count(&scan.assets),
+        warning_count,
+        scanned_at: Utc::now(),
+    })?;
     for asset in scan.assets {
         let skill = (asset.kind == AssetKind::Skill)
             .then(|| inspect_skill_entrypoint(&asset.path))
@@ -3283,55 +3345,49 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
                     .and_then(|value| value.modified().ok())
                     .map(DateTime::<Utc>::from)
             });
-        insert_catalog_asset(
-            connection,
-            &CatalogAsset {
-                id: catalog_id(
-                    CatalogScope::Workspace,
-                    Some(id),
-                    Some(asset.agent),
-                    asset.kind,
-                    &catalog_path,
-                ),
-                scope: CatalogScope::Workspace,
-                workspace_id: Some(id.to_string()),
-                agent: Some(asset.agent),
-                kind: asset.kind,
-                name,
-                path: catalog_path,
-                summary: asset.summary,
-                summary_key: asset.summary_key,
-                summary_params: asset.summary_params,
-                size: skill.as_ref().map_or(asset.size, |skill| skill.size),
-                modified_at,
-            },
-        )?;
+        save_asset(&CatalogAsset {
+            id: catalog_id(
+                CatalogScope::Workspace,
+                Some(id),
+                Some(asset.agent),
+                asset.kind,
+                &catalog_path,
+            ),
+            scope: CatalogScope::Workspace,
+            workspace_id: Some(id.to_string()),
+            agent: Some(asset.agent),
+            kind: asset.kind,
+            name,
+            path: catalog_path,
+            summary: asset.summary,
+            summary_key: asset.summary_key,
+            summary_params: asset.summary_params,
+            size: skill.as_ref().map_or(asset.size, |skill| skill.size),
+            modified_at,
+        })?;
     }
     if let Some(manifest) = manifest {
         let manifest_path = path.join(".agentkib/manifest.yaml");
-        insert_catalog_asset(
-            connection,
-            &CatalogAsset {
-                id: catalog_id(
-                    CatalogScope::Workspace,
-                    Some(id),
-                    None,
-                    AssetKind::Instruction,
-                    &manifest_path,
-                ),
-                scope: CatalogScope::Workspace,
-                workspace_id: Some(id.to_string()),
-                agent: None,
-                kind: AssetKind::Instruction,
-                name: "Shared project instructions".into(),
-                path: manifest_path.clone(),
-                summary: "AgentKib shared instructions".into(),
-                summary_key: Some("assets.summary.sharedInstructions".into()),
-                summary_params: Default::default(),
-                size: manifest.instructions.shared.len() as u64,
-                modified_at: None,
-            },
-        )?;
+        save_asset(&CatalogAsset {
+            id: catalog_id(
+                CatalogScope::Workspace,
+                Some(id),
+                None,
+                AssetKind::Instruction,
+                &manifest_path,
+            ),
+            scope: CatalogScope::Workspace,
+            workspace_id: Some(id.to_string()),
+            agent: None,
+            kind: AssetKind::Instruction,
+            name: "Shared project instructions".into(),
+            path: manifest_path.clone(),
+            summary: "AgentKib shared instructions".into(),
+            summary_key: Some("assets.summary.sharedInstructions".into()),
+            summary_params: Default::default(),
+            size: manifest.instructions.shared.len() as u64,
+            modified_at: None,
+        })?;
         for skill in manifest.skills {
             let asset_path = path.join(&skill.path);
             let entrypoint = if asset_path.is_dir() {
@@ -3344,56 +3400,50 @@ fn refresh_workspace_record(connection: &Connection, id: &str, path: &Path) -> R
                 .as_ref()
                 .map(|package| package.root.clone())
                 .unwrap_or(asset_path);
-            insert_catalog_asset(
-                connection,
-                &CatalogAsset {
-                    id: catalog_id(
-                        CatalogScope::Workspace,
-                        Some(id),
-                        None,
-                        AssetKind::Skill,
-                        &catalog_path,
-                    ),
-                    scope: CatalogScope::Workspace,
-                    workspace_id: Some(id.to_string()),
-                    agent: None,
-                    kind: AssetKind::Skill,
-                    name: skill.name,
-                    path: catalog_path,
-                    summary: "Shared Skill".into(),
-                    summary_key: Some("assets.summary.sharedSkill".into()),
-                    summary_params: Default::default(),
-                    size: package.as_ref().map_or(0, |package| package.size),
-                    modified_at: package.and_then(|package| package.modified_at),
-                },
-            )?;
+            save_asset(&CatalogAsset {
+                id: catalog_id(
+                    CatalogScope::Workspace,
+                    Some(id),
+                    None,
+                    AssetKind::Skill,
+                    &catalog_path,
+                ),
+                scope: CatalogScope::Workspace,
+                workspace_id: Some(id.to_string()),
+                agent: None,
+                kind: AssetKind::Skill,
+                name: skill.name,
+                path: catalog_path,
+                summary: "Shared Skill".into(),
+                summary_key: Some("assets.summary.sharedSkill".into()),
+                summary_params: Default::default(),
+                size: package.as_ref().map_or(0, |package| package.size),
+                modified_at: package.and_then(|package| package.modified_at),
+            })?;
         }
         for connection_definition in manifest.connections {
             let asset_path = manifest_path.clone();
             let key_path = asset_path.join(format!("connection-{}", connection_definition.name));
-            insert_catalog_asset(
-                connection,
-                &CatalogAsset {
-                    id: catalog_id(
-                        CatalogScope::Workspace,
-                        Some(id),
-                        None,
-                        AssetKind::Connection,
-                        &key_path,
-                    ),
-                    scope: CatalogScope::Workspace,
-                    workspace_id: Some(id.to_string()),
-                    agent: None,
-                    kind: AssetKind::Connection,
-                    name: connection_definition.name,
-                    path: asset_path.clone(),
-                    summary: "Shared MCP Connection".into(),
-                    summary_key: Some("assets.summary.sharedConnection".into()),
-                    summary_params: Default::default(),
-                    size: 0,
-                    modified_at: None,
-                },
-            )?;
+            save_asset(&CatalogAsset {
+                id: catalog_id(
+                    CatalogScope::Workspace,
+                    Some(id),
+                    None,
+                    AssetKind::Connection,
+                    &key_path,
+                ),
+                scope: CatalogScope::Workspace,
+                workspace_id: Some(id.to_string()),
+                agent: None,
+                kind: AssetKind::Connection,
+                name: connection_definition.name,
+                path: asset_path.clone(),
+                summary: "Shared MCP Connection".into(),
+                summary_key: Some("assets.summary.sharedConnection".into()),
+                summary_params: Default::default(),
+                size: 0,
+                modified_at: None,
+            })?;
         }
     }
     Ok(())

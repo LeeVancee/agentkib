@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { WorkspaceStore } from "./workspace-store";
+import { timestamp } from "./timestamps";
+export { timestamp } from "./timestamps";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 export const SHARED_SCHEMA_VERSION = 15;
@@ -7,7 +11,7 @@ const AGENTS = [
   "claude-code",
   "cursor",
   "opencode",
-  "openclaw",
+  "open-claw",
   "hermes",
   "grok-build",
   "antigravity",
@@ -15,14 +19,16 @@ const AGENTS = [
 ];
 const EVIDENCE = ["session-cwd", "configured-workspace", "scan-marker", "manual"];
 
-/** During coexistence Rust alone migrates and writes SQLite; TS reads the shared schema. */
+/** Rust owns schema upgrades; each migrated module owns its writes to shared schema 15. */
 export class BackendStore {
   readonly #database: DatabaseSync;
+  readonly workspaces: WorkspaceStore;
 
   constructor(databasePath: string) {
-    this.#database = new DatabaseSync(databasePath, { readOnly: true });
+    if (!existsSync(databasePath)) throw new Error("Shared database has not been initialized");
+    this.#database = new DatabaseSync(databasePath);
     try {
-      this.#database.exec("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;");
+      this.#database.exec("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
       const row = this.#database
         .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
         .get();
@@ -31,6 +37,7 @@ export class BackendStore {
           `TypeScript backend requires shared database schema ${SHARED_SCHEMA_VERSION}; received ${String(row?.value)}`,
         );
       }
+      this.workspaces = new WorkspaceStore(this.#database);
     } catch (error) {
       this.#database.close();
       throw error;
@@ -46,39 +53,52 @@ export class BackendStore {
     try {
       const result = this.#rows(
         "SELECT id, canonical_path, name, repository_group_id, manifest_workspace_id, status, asset_count, warning_count, last_active_at, last_scanned_at FROM workspaces ORDER BY COALESCE(last_active_at, last_scanned_at) DESC, name ASC",
-      ).map((row) => ({
-        id: row.id,
-        path: row.canonical_path,
-        name: row.name,
-        repository_group_id: row.repository_group_id,
-        manifest_workspace_id: row.manifest_workspace_id,
-        status: storedChoice(row.status, ["healthy", "attention"]),
-        asset_count: Math.max(0, Number(row.asset_count)),
-        warning_count: Math.max(0, Number(row.warning_count)),
-        last_active_at: timestamp(row.last_active_at, true),
-        last_scanned_at: timestamp(row.last_scanned_at, true),
-        sources: this.#rows(
-          "SELECT agent, evidence, session_count, last_active_at, session_cwds FROM workspace_sources WHERE workspace_id = ? ORDER BY last_active_at DESC",
-          String(row.id),
-        ).map((source) => {
-          const cwds: unknown = JSON.parse(String(source.session_cwds));
-          if (!Array.isArray(cwds) || cwds.some((cwd) => typeof cwd !== "string"))
-            throw new Error("Invalid stored session working directories");
-          return {
-            agent: source.agent === "" ? null : storedChoice(source.agent, AGENTS),
-            evidence: storedChoice(source.evidence, EVIDENCE),
-            session_count: Math.max(0, Number(source.session_count)),
-            last_active_at: timestamp(source.last_active_at, true),
-            ...(cwds.length ? { session_cwds: cwds } : {}),
-          };
-        }),
-      }));
+      ).map((row) => this.#workspace(row));
       this.#database.exec("COMMIT;");
       return result;
     } catch (error) {
       this.#database.exec("ROLLBACK;");
       throw error;
     }
+  }
+
+  getWorkspace(id: string): unknown {
+    const row = this.#rows(
+      "SELECT id, canonical_path, name, repository_group_id, manifest_workspace_id, status, asset_count, warning_count, last_active_at, last_scanned_at FROM workspaces WHERE id = ?",
+      id,
+    )[0];
+    if (!row) throw new Error("Workspace does not exist");
+    return this.#workspace(row);
+  }
+
+  #workspace(row: Row) {
+    return {
+      id: row.id,
+      path: row.canonical_path,
+      name: row.name,
+      repository_group_id: row.repository_group_id,
+      manifest_workspace_id: row.manifest_workspace_id,
+      status: storedChoice(row.status, ["healthy", "attention"]),
+      asset_count: Math.max(0, Number(row.asset_count)),
+      warning_count: Math.max(0, Number(row.warning_count)),
+      last_active_at: timestamp(row.last_active_at, true),
+      last_scanned_at: timestamp(row.last_scanned_at, true),
+      sources: this.#rows(
+        "SELECT agent, evidence, session_count, last_active_at, session_cwds FROM workspace_sources WHERE workspace_id = ? ORDER BY last_active_at DESC",
+        String(row.id),
+      ).map((source) => {
+        const cwds: unknown = JSON.parse(String(source.session_cwds));
+        if (!Array.isArray(cwds) || cwds.some((cwd) => typeof cwd !== "string"))
+          throw new Error("Invalid stored session working directories");
+        return {
+          agent: source.agent === "" ? null : storedChoice(source.agent, AGENTS),
+          evidence: storedChoice(source.evidence, EVIDENCE),
+          session_count: Math.max(0, Number(source.session_count)),
+          last_active_at: timestamp(source.last_active_at, true),
+          ...(cwds.length ? { session_cwds: cwds } : {}),
+        };
+      }),
+    };
   }
 
   listActivity(limit: number): unknown[] {
@@ -111,47 +131,6 @@ export class BackendStore {
     statement.setReadBigInts(true);
     return statement.all(...params);
   }
-}
-
-/** Match chrono's UTC serialization without dropping sub-millisecond precision. */
-export function timestamp(value: unknown, permissive = false): string | null {
-  if (value === null || value === undefined) return null;
-  if (
-    (typeof value === "bigint" || (typeof value === "string" && /^[+-]?\d+$/.test(value))) &&
-    permissive
-  ) {
-    const time = Number(value);
-    const date = new Date(Math.abs(time) >= 100_000_000_000 ? time : time * 1000);
-    return Number.isNaN(date.valueOf()) ? null : date.toISOString().replace(".000Z", "Z");
-  }
-  if (typeof value === "string") {
-    const match =
-      /^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2}):(\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})$/.exec(
-        value,
-      );
-    if (match) {
-      const leapSecond = match[3] === "60";
-      const local = `${match[1]}T${match[2]}:${leapSecond ? "59" : match[3]}`;
-      const wallClock = new Date(`${local}Z`);
-      const date = new Date(`${local}${match[5].toUpperCase()}`);
-      // Date normalizes dates such as February 30; chrono rejects them.
-      if (
-        !Number.isNaN(date.valueOf()) &&
-        !Number.isNaN(wallClock.valueOf()) &&
-        wallClock.toISOString().slice(0, 19) === local
-      ) {
-        const nanos = (match[4] ?? "").padEnd(9, "0");
-        const fraction =
-          Number(nanos) === 0
-            ? ""
-            : `.${nanos.slice(0, nanos.endsWith("000000") ? 3 : nanos.endsWith("000") ? 6 : 9)}`;
-        const utc = date.toISOString().slice(0, 19);
-        return `${leapSecond ? `${utc.slice(0, 17)}60` : utc}${fraction}Z`;
-      }
-    }
-  }
-  if (permissive) return null;
-  throw new Error("Invalid stored timestamp");
 }
 
 function storedChoice(value: unknown, choices: string[]): string {

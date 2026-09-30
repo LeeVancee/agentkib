@@ -5,6 +5,18 @@ import {
   TYPESCRIPT_READ_METHODS,
   TYPESCRIPT_PREFERENCE_METHODS,
   PREFERENCE_WRITE_METHODS,
+  TYPESCRIPT_WORKSPACE_METHODS,
+  BACKEND_PLAN_WORKSPACE,
+  BACKEND_PLAN_DISCOVERY,
+  NATIVE_CONTEXT,
+  NATIVE_DISCOVERY,
+  NATIVE_INSPECT,
+  NATIVE_SESSION_INDEX_CHANGED,
+  type NativeContext,
+  type WorkspacePlan,
+  type InspectedWorkspace,
+  type DiscoverySnapshot,
+  type DiscoveryPlan,
 } from "@agentkib/backend/migration";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import {
@@ -24,6 +36,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   #rustHandshake?: RuntimeHandshakeResult;
   #error?: Error;
   #preferenceWrites: Promise<void> = Promise.resolve();
+  #workspaceWrites: Promise<void> = Promise.resolve();
 
   constructor(
     readonly rust: RuntimeHost,
@@ -107,9 +120,22 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       return this.#dispatch<TResult>(method, params);
     };
     // Snapshot reads must not observe a remaining Rust writer's truncated file.
-    if (PREFERENCE_WRITE_METHODS.has(method) || method === RUNTIME_METHODS.runtimeInfo) {
+    if (
+      PREFERENCE_WRITE_METHODS.has(method) ||
+      method === RUNTIME_METHODS.runtimeInfo ||
+      method === RUNTIME_METHODS.quotaPreferences
+    ) {
       const result = this.#preferenceWrites.then(execute);
       this.#preferenceWrites = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    }
+    // Native scans happen outside SQLite transactions; serialize mutations so their plans stay current.
+    if (TYPESCRIPT_WORKSPACE_METHODS.has(method) || method === RUNTIME_METHODS.applyChanges) {
+      const result = this.#workspaceWrites.then(execute);
+      this.#workspaceWrites = result.then(
         () => undefined,
         () => undefined,
       );
@@ -140,10 +166,18 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   }
 
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
+    if (TYPESCRIPT_WORKSPACE_METHODS.has(method))
+      return this.#workspaceRequest<TResult>(method, params);
+    if (method === RUNTIME_METHODS.setQuotaPreferences)
+      return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_READ_METHODS.has(method))
       return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
       const preferences = await this.typescript.request<Record<string, unknown>>(method, params);
+      if (method === RUNTIME_METHODS.setSessionIndexEnabled)
+        await this.rust.request(NATIVE_SESSION_INDEX_CHANGED, {
+          value: preferences.session_index_enabled,
+        });
       const runtime = await this.rust.request<Record<string, unknown>>(
         RUNTIME_METHODS.runtimeInfo,
         {},
@@ -159,6 +193,75 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       return { ...runtime, ...preferences } as TResult;
     }
     return this.rust.request<TResult>(method, params);
+  }
+
+  async #workspaceRequest<TResult>(method: string, params: unknown): Promise<TResult> {
+    const generation = this.#generation;
+    const current = () => {
+      if (generation !== this.#generation || this.#state !== "ready")
+        throw new RuntimeUnavailableError(new Error("Backend changed during workspace operation"));
+    };
+    if (typeof params !== "object" || params === null || Array.isArray(params))
+      return this.typescript.request<TResult>(method, params);
+    const values = params as Record<string, unknown>;
+    if (method === RUNTIME_METHODS.addWorkspace || method === RUNTIME_METHODS.refreshWorkspace) {
+      const context =
+        method === RUNTIME_METHODS.addWorkspace
+          ? await this.rust.request<NativeContext>(NATIVE_CONTEXT, {})
+          : { agent_homes: [], agentkib_home: null };
+      current();
+      const plan = await this.typescript.request<WorkspacePlan>(BACKEND_PLAN_WORKSPACE, {
+        ...values,
+        operation: method === RUNTIME_METHODS.addWorkspace ? "add" : "refresh",
+        context,
+      });
+      current();
+      const scans = await this.rust.request<InspectedWorkspace[]>(NATIVE_INSPECT, {
+        workspaces: [{ id: plan.id, path: plan.path }],
+      });
+      if (scans.length !== 1 || scans[0]?.id !== plan.id)
+        throw new Error("Incomplete native workspace inspection");
+      current();
+      return this.typescript.request<TResult>(method, {
+        ...values,
+        _plan: plan,
+        _inspection: scans[0].inspection,
+      });
+    }
+    if (method === RUNTIME_METHODS.refreshDiscovery) {
+      const queuedAt = new Date().toISOString().replace(".000Z", "Z");
+      const startedAt = new Date().toISOString().replace(".000Z", "Z");
+      const roots = await this.typescript.request<
+        { path: string; enabled: boolean; max_depth: number }[]
+      >(RUNTIME_METHODS.listScanRoots, {});
+      current();
+      const snapshot = await this.rust.request<DiscoverySnapshot>(NATIVE_DISCOVERY, {
+        roots: roots
+          .filter((root) => root.enabled)
+          .map((root) => ({ path: root.path, max_depth: root.max_depth })),
+      });
+      current();
+      const context = await this.rust.request<NativeContext>(NATIVE_CONTEXT, {});
+      current();
+      const plan = await this.typescript.request<DiscoveryPlan>(BACKEND_PLAN_DISCOVERY, {
+        snapshot,
+        context,
+      });
+      current();
+      const inspections = await this.rust.request<InspectedWorkspace[]>(NATIVE_INSPECT, {
+        workspaces: plan.workspaces.map(({ id, path }) => ({ id, path })),
+      });
+      current();
+      return this.typescript.request<TResult>(method, {
+        ...values,
+        _plan: plan,
+        _snapshot: snapshot,
+        _inspections: inspections,
+        _queuedAt: queuedAt,
+        _startedAt: startedAt,
+      });
+    }
+    return this.typescript.request<TResult>(method, params);
   }
 
   #initialize(): void {
@@ -188,6 +291,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
           ...handshake.capabilities,
           "typescript-preferences",
           "typescript-cached-reads",
+          "typescript-workspaces",
         ],
       };
       this.#error = undefined;

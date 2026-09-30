@@ -105,6 +105,9 @@ async function runStartupGroup(profileKind, count) {
       cwd: desktopDirectory,
       env: {
         ...process.env,
+        // This harness compares Rust with the historical TS spike. Keep the
+        // new application's hybrid default from changing the Rust baseline.
+        AGENTKIB_BACKEND_MODE: "rust",
         AGENTKIB_BENCHMARK_DATA_DIR: profile.data,
         AGENTKIB_BENCHMARK_USER_DATA: profile.electron,
         AGENTKIB_STARTUP_BENCHMARK_FILE: timelinePath,

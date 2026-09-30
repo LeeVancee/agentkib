@@ -1,0 +1,237 @@
+import { EventEmitter } from "node:events";
+import {
+  BACKEND_INITIALIZE,
+  BACKEND_PREFERENCES,
+  TYPESCRIPT_READ_METHODS,
+  TYPESCRIPT_PREFERENCE_METHODS,
+  PREFERENCE_WRITE_METHODS,
+} from "@agentkib/backend/migration";
+import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
+import {
+  RuntimeUnavailableError,
+  type RuntimeHost,
+  type RuntimeHostState,
+  type RuntimeHostStatus,
+} from "./runtime-host";
+
+/** Own each method explicitly. Failed TS operations are never replayed through Rust. */
+export class RuntimeRouter extends EventEmitter implements RuntimeHost {
+  #state: RuntimeHostState = "stopping";
+  #readiness = readyCycle();
+  #generation = 0;
+  #initializing?: symbol;
+  #handshake?: RuntimeHandshakeResult;
+  #rustHandshake?: RuntimeHandshakeResult;
+  #error?: Error;
+  #preferenceWrites: Promise<void> = Promise.resolve();
+
+  constructor(
+    readonly rust: RuntimeHost,
+    readonly typescript: RuntimeHost,
+  ) {
+    super();
+    for (const host of [rust, typescript]) {
+      host.on("ready", (handshake: RuntimeHandshakeResult) => {
+        if (host === rust) this.#rustHandshake = handshake;
+        this.#initialize();
+      });
+      host.on("state", (status: RuntimeHostStatus) => {
+        if (this.#state === "stopping") return;
+        if (status.state === "failed") this.#fail(new Error(status.error ?? "Backend failed"));
+        else this.emit("state", this.status);
+      });
+      host.on("exit", (event: { expected: boolean }) => {
+        if (this.#state !== "stopping" && !event.expected) {
+          this.#generation += 1;
+          this.#initializing = undefined;
+          if (this.#state === "ready") this.#readiness = readyCycle();
+          this.#handshake = undefined;
+          if (host === rust) this.#rustHandshake = undefined;
+          if (this.#state !== "failed") this.#setState("restarting");
+        }
+        this.emit("exit", event);
+      });
+      for (const event of ["notification", "protocol-error", "restart-error", "crash-loop"]) {
+        host.on(event, (...args: unknown[]) => this.emit(event, ...args));
+      }
+    }
+  }
+
+  get status(): RuntimeHostStatus {
+    return {
+      state: this.#state,
+      restartCount: this.rust.status.restartCount + this.typescript.status.restartCount,
+      ...(this.#error ? { error: this.#error.message } : {}),
+    };
+  }
+
+  async start(): Promise<RuntimeHandshakeResult> {
+    if (this.#state !== "stopping") throw new Error("AgentKib runtime has already been started");
+    this.#readiness = readyCycle();
+    this.#error = undefined;
+    this.#generation += 1;
+    const generation = this.#generation;
+    this.#setState("starting");
+    for (const host of [this.rust, this.typescript]) {
+      void host.start().catch((error: unknown) => {
+        if (generation === this.#generation && this.#state !== "stopping")
+          this.#fail(asError(error));
+      });
+    }
+    return this.#readiness.promise;
+  }
+
+  async retry(): Promise<RuntimeHandshakeResult> {
+    if (this.#state === "ready") return this.#handshake!;
+    if (this.#state !== "failed") return this.#readiness.promise;
+    this.#readiness = readyCycle();
+    this.#error = undefined;
+    this.#generation += 1;
+    const generation = this.#generation;
+    this.#setState("starting");
+    for (const host of [this.rust, this.typescript]) {
+      void host
+        .retry()
+        .then(() => this.#initialize())
+        .catch((error: unknown) => {
+          if (generation === this.#generation && this.#state !== "stopping")
+            this.#fail(asError(error));
+        });
+    }
+    return this.#readiness.promise;
+  }
+
+  async request<TResult>(method: string, params: unknown): Promise<TResult> {
+    const execute = async () => {
+      await this.#waitUntilReady();
+      return this.#dispatch<TResult>(method, params);
+    };
+    // Snapshot reads must not observe a remaining Rust writer's truncated file.
+    if (PREFERENCE_WRITE_METHODS.has(method) || method === RUNTIME_METHODS.runtimeInfo) {
+      const result = this.#preferenceWrites.then(execute);
+      this.#preferenceWrites = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    }
+    return execute();
+  }
+
+  async stop(): Promise<void> {
+    if (this.#state === "stopping") return;
+    this.#generation += 1;
+    this.#setState("stopping");
+    this.#readiness.reject(new RuntimeUnavailableError(new Error("AgentKib runtime is stopping")));
+    const results = await Promise.allSettled([this.rust.stop(), this.typescript.stop()]);
+    const failed = results.filter((result) => result.status === "rejected");
+    if (failed.length)
+      throw new AggregateError(
+        failed.map((result) => result.reason),
+        "Backend shutdown failed",
+      );
+  }
+
+  async #waitUntilReady(): Promise<void> {
+    while (this.#state === "starting" || this.#state === "restarting")
+      await this.#readiness.promise;
+    if (this.#state !== "ready")
+      throw new RuntimeUnavailableError(this.#error ?? new Error("AgentKib runtime is stopping"));
+  }
+
+  async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
+    if (TYPESCRIPT_READ_METHODS.has(method))
+      return this.typescript.request<TResult>(method, params);
+    if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
+      const preferences = await this.typescript.request<Record<string, unknown>>(method, params);
+      const runtime = await this.rust.request<Record<string, unknown>>(
+        RUNTIME_METHODS.runtimeInfo,
+        {},
+      );
+      return { ...runtime, ...preferences } as TResult;
+    }
+    if (method === RUNTIME_METHODS.runtimeInfo) {
+      const runtime = await this.rust.request<Record<string, unknown>>(method, params);
+      const preferences = await this.typescript.request<Record<string, unknown>>(
+        BACKEND_PREFERENCES,
+        {},
+      );
+      return { ...runtime, ...preferences } as TResult;
+    }
+    return this.rust.request<TResult>(method, params);
+  }
+
+  #initialize(): void {
+    if (
+      this.#state === "stopping" ||
+      this.#state === "failed" ||
+      this.#state === "ready" ||
+      this.#initializing ||
+      this.rust.status.state !== "ready" ||
+      this.typescript.status.state !== "ready"
+    )
+      return;
+    const generation = this.#generation;
+    const attempt = Symbol();
+    this.#initializing = attempt;
+    void (async () => {
+      // Rust owns migrations during coexistence, including the legacy data-directory move.
+      await this.rust.request(RUNTIME_METHODS.listWorkspaces, {});
+      const info = await this.rust.request<{ data_dir: string }>(RUNTIME_METHODS.runtimeInfo, {});
+      await this.typescript.request(BACKEND_INITIALIZE, { dataDir: info.data_dir });
+      if (generation !== this.#generation || this.#state === "stopping") return;
+      const handshake = this.#rustHandshake;
+      if (!handshake) throw new Error("Rust runtime handshake is unavailable");
+      this.#handshake = {
+        ...handshake,
+        capabilities: [
+          ...handshake.capabilities,
+          "typescript-preferences",
+          "typescript-cached-reads",
+        ],
+      };
+      this.#error = undefined;
+      this.#setState("ready");
+      this.#readiness.resolve(this.#handshake);
+      this.emit("ready", this.#handshake);
+    })()
+      .catch((error: unknown) => {
+        if (
+          generation === this.#generation &&
+          this.#state !== "stopping" &&
+          this.rust.status.state === "ready" &&
+          this.typescript.status.state === "ready"
+        )
+          this.#fail(asError(error));
+      })
+      .finally(() => {
+        if (this.#initializing === attempt) this.#initializing = undefined;
+      });
+  }
+
+  #fail(error: Error): void {
+    this.#error = error;
+    this.#setState("failed");
+    this.#readiness.reject(new RuntimeUnavailableError(error));
+  }
+
+  #setState(state: RuntimeHostState): void {
+    this.#state = state;
+    this.emit("state", this.status);
+  }
+}
+
+function readyCycle() {
+  let resolve!: (value: RuntimeHandshakeResult) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<RuntimeHandshakeResult>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}

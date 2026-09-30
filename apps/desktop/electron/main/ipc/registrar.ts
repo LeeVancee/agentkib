@@ -1,5 +1,5 @@
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
-import type { DesktopRuntimeHost } from "../runtime-host";
+import type { RuntimeHost } from "../runtime-host";
 
 export type TrustedIpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
@@ -15,7 +15,7 @@ export interface IpcRegistrar {
 
 export function createIpcRegistrar(options: {
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
 }): IpcRegistrar {
   const handle: IpcRegistrar["handle"] = (channel, handler) => {
     ipcMain.handle(channel, (event, ...args: unknown[]) => {

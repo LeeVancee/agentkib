@@ -22,7 +22,9 @@ import {
 import { autoUpdater } from "electron-updater";
 import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src/core/types";
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
-import { DesktopRuntimeHost, type RuntimeHostStatus } from "./runtime-host";
+import { DesktopRuntimeHost, type RuntimeHostStatus, type RuntimeHost } from "./runtime-host";
+import { RuntimeRouter } from "./runtime-router";
+import { createUtilityTransport } from "./utility-runtime-transport";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
 import { ElectronNativeShell, resolveNativeShellTrayIcon } from "./native-shell";
@@ -68,8 +70,7 @@ let systemSuspended = false;
 let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
-let runtimeHost: DesktopRuntimeHost | undefined;
-let accountService: DesktopAccountService | undefined;
+let runtimeHost: RuntimeHost | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
@@ -172,7 +173,7 @@ async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
   await registerRendererProtocol();
 
-  runtimeHost = new DesktopRuntimeHost({
+  const rustHost = new DesktopRuntimeHost({
     executablePath: resolveRuntimeExecutable(),
     clientVersion: app.getVersion(),
     environment: {
@@ -184,6 +185,25 @@ async function startApplication(): Promise<void> {
       AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
     },
   });
+  const backendMode = process.env.AGENTKIB_BACKEND_MODE ?? "hybrid";
+  if (backendMode !== "rust" && backendMode !== "hybrid")
+    throw new Error(`Unsupported backend mode: ${backendMode}`);
+  runtimeHost =
+    backendMode === "rust"
+      ? rustHost
+      : new RuntimeRouter(
+          rustHost,
+          new DesktopRuntimeHost({
+            executablePath: path.join(app.getAppPath(), "dist-electron/backend.cjs"),
+            clientVersion: app.getVersion(),
+            createTransport: createUtilityTransport,
+            environment: {
+              AGENTKIB_APP_VERSION: app.getVersion(),
+              AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
+              AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+            },
+          }),
+        );
   runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
     startupBenchmark.setRuntimePid(handshake.pid);
@@ -895,7 +915,7 @@ function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   throw new Error("Rejected IPC from an unknown renderer");
 }
 
-function requireRuntime(): DesktopRuntimeHost {
+function requireRuntime(): RuntimeHost {
   if (!runtimeHost) throw new Error("AgentKib runtime host is not initialized");
   return runtimeHost;
 }
@@ -1191,7 +1211,7 @@ async function showStartupFailure(error: unknown): Promise<void> {
   window.once("closed", () => {
     if (startupFailureWindow === window) startupFailureWindow = undefined;
   });
-  const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The Rust runtime did not become ready.</p><code>${escapeHtml(message)}</code>`;
+  const html = `<!doctype html><meta charset="utf-8"><title>AgentKib startup error</title><style>body{font:14px system-ui;background:#111;color:#eee;padding:32px}code{white-space:pre-wrap;color:#fca5a5}</style><h1>AgentKib could not start</h1><p>The backend did not become ready.</p><code>${escapeHtml(message)}</code>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 

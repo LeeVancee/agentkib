@@ -9,6 +9,7 @@ import {
   RuntimeUnavailableError,
   type RuntimeHostStatus,
 } from "./runtime-host";
+import { createStdioTransport } from "./runtime-transport";
 
 const fakeRuntimeSource = String.raw`
 const readline = require("node:readline");
@@ -106,6 +107,39 @@ describe("DesktopRuntimeHost", () => {
     await expect(starting).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
     await expect(request).resolves.toEqual({ value: 7 });
     expect(host.status.state).toBe("ready");
+  });
+
+  it("recovers when creating a transport throws before a process exists", async () => {
+    const createTransport = vi.fn((options) => {
+      if (createTransport.mock.calls.length === 1) throw new Error("transport could not start");
+      return createStdioTransport({ ...options, args: [script] });
+    });
+    const host = new DesktopRuntimeHost({
+      executablePath: process.execPath,
+      clientVersion: "test",
+      maxRestarts: 1,
+      createTransport,
+    });
+    hosts.push(host);
+    await expect(host.start()).resolves.toMatchObject({ protocolVersion: PROTOCOL_VERSION });
+    expect(createTransport).toHaveBeenCalledTimes(2);
+    expect(host.status.restartCount).toBe(1);
+  });
+
+  it("reports a terminal transport creation failure only once", async () => {
+    const host = new DesktopRuntimeHost({
+      executablePath: process.execPath,
+      clientVersion: "test",
+      maxRestarts: 0,
+      createTransport: () => {
+        throw new Error("transport could not start");
+      },
+    });
+    hosts.push(host);
+    const crashLoop = vi.fn();
+    host.on("crash-loop", crashLoop);
+    await expect(host.start()).rejects.toBeInstanceOf(RuntimeUnavailableError);
+    expect(crashLoop).toHaveBeenCalledTimes(1);
   });
 
   it("classifies requests awaiting a failed handshake as runtime outages", async () => {

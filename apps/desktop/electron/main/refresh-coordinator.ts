@@ -10,7 +10,7 @@ import type {
   RuntimeInfo,
 } from "../../src/core/types";
 import { RUNTIME_METHODS } from "../generated/runtime-protocol";
-import { RuntimeUnavailableError, type DesktopRuntimeHost } from "./runtime-host";
+import { RuntimeUnavailableError, type RuntimeHost } from "./runtime-host";
 
 const REFRESH_KINDS: RefreshKind[] = ["discovery", "insights", "gateways", "quota", "storage"];
 const SCHEDULER_INTERVAL_MS = 60_000;
@@ -30,7 +30,7 @@ export interface QuotaScheduleState {
 }
 
 interface RefreshCoordinatorOptions {
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
   loadQuotaSchedule?(): Promise<QuotaScheduleState | undefined>;
   saveQuotaSchedule?(state: QuotaScheduleState): Promise<void>;
   isMainWindowVisible(): boolean;

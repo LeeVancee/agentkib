@@ -109,7 +109,9 @@ fn documents() -> Vec<SessionDocument> {
 
 #[test]
 fn native_sources_compose_with_all_five_enabled_target_formats() {
-    let workspace = Path::new("/synthetic/matrix-workspace");
+    // 使用平台绝对路径，Windows 不把 `/synthetic/...` 视为绝对路径。
+    let workspace = std::env::temp_dir().join("matrix-workspace");
+    let workspace = workspace.as_path();
     let docs = documents();
     assert_eq!(docs.len(), 8);
     let mut directions = 0;

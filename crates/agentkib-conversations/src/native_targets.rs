@@ -492,6 +492,11 @@ mod tests {
     use super::*;
     use crate::{SessionAttachmentKind, SessionDocumentSource};
 
+    /// 各平台都视为绝对路径的合成工作区；Windows 不接受 `/tmp/...` 形式。
+    fn synthetic_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     fn sample() -> SessionDocument {
         SessionDocument {
             schema_version: 1,
@@ -564,7 +569,7 @@ mod tests {
             AgentKind::OpenCode,
             document,
             "ses_00112233445566778899aabbccddeeff",
-            Path::new("/tmp/agentkib-synthetic"),
+            &synthetic_path("agentkib-synthetic"),
             Some(&NativeTargetModel {
                 provider_id: "test-provider".into(),
                 model_id: "test-model".into(),
@@ -665,7 +670,7 @@ mod tests {
                 AgentKind::Hermes,
                 &sample(),
                 "00112233-4455-6677-8899-aabbccddeeff",
-                Path::new("/tmp/agentkib-synthetic"),
+                &synthetic_path("agentkib-synthetic"),
                 None,
             )
             .unwrap()
@@ -709,7 +714,7 @@ mod tests {
                     AgentKind::Hermes,
                     &document,
                     "00112233-4455-6677-8899-aabbccddeeff",
-                    Path::new("/tmp/project"),
+                    &synthetic_path("project"),
                     None
                 )
                 .is_err()
@@ -761,7 +766,7 @@ mod tests {
                 AgentKind::OpenCode,
                 &sample(),
                 "ses_00112233445566778899aabbccddeeff",
-                Path::new("/tmp/project"),
+                &synthetic_path("project"),
                 None
             )
             .is_err()
@@ -771,7 +776,7 @@ mod tests {
                 AgentKind::GrokBuild,
                 &sample(),
                 "00112233-4455-6677-8899-aabbccddeeff",
-                Path::new("/tmp/project"),
+                &synthetic_path("project"),
                 None
             )
             .is_err()
@@ -781,7 +786,7 @@ mod tests {
                 AgentKind::Hermes,
                 &sample(),
                 "../bad",
-                Path::new("/tmp/project"),
+                &synthetic_path("project"),
                 None
             )
             .is_err()
@@ -807,7 +812,7 @@ mod tests {
                 AgentKind::OpenClaw,
                 &document,
                 id,
-                Path::new("/tmp/project"),
+                &synthetic_path("project"),
                 None,
             )
             .unwrap();
@@ -817,7 +822,7 @@ mod tests {
                     AgentKind::OpenClaw,
                     &document,
                     id,
-                    Path::new("/tmp/project"),
+                    &synthetic_path("project"),
                     None
                 )
                 .unwrap()
@@ -868,7 +873,7 @@ mod tests {
                 AgentKind::OpenClaw,
                 &sample(),
                 "../../bad",
-                Path::new("/tmp/project"),
+                &synthetic_path("project"),
                 None
             )
             .is_err()
@@ -910,7 +915,7 @@ mod tests {
                         target,
                         &document,
                         "00112233-4455-6677-8899-aabbccddeeff",
-                        Path::new("/tmp/project"),
+                        &synthetic_path("project"),
                         None,
                     )
                     .unwrap()

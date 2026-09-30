@@ -10,6 +10,8 @@ import { acpObject, acpTimestamp, stringifyAcpJson } from "./acp-json";
 import { AntigravityAcp, type AcpId } from "./antigravity-acp";
 import { AntigravityPaging } from "./antigravity-paging";
 import { parseAntigravityReplay } from "./antigravity-replay";
+import { finishDocument, type DocumentSource } from "./session-document-providers";
+import type { SessionDocument } from "./session-model";
 
 export interface AntigravitySession {
   id: string;
@@ -78,6 +80,21 @@ export class AntigravitySessions {
       omitted_tool_count: 0,
       warnings: parsed.warnings,
     };
+  }
+  async readDocument(nativeRef: string, source: DocumentSource): Promise<SessionDocument> {
+    const deadline = performance.now() + 15_000,
+      { session, updates } = await this.readReplay(nativeRef, deadline),
+      parsed = parseAntigravityReplay(updates, deadline);
+    return finishDocument(
+      {
+        ...source,
+        title: parsed.title ?? source.title ?? session.title,
+        created_at: source.created_at ?? session.created_at,
+        updated_at: parsed.updated_at ?? source.updated_at ?? session.updated_at,
+      },
+      parsed.turns,
+      parsed.losses,
+    );
   }
   optionalExecutable(): string | null {
     if (this.#closed) throw new Error("Antigravity session provider is closed");

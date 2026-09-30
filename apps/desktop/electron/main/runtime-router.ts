@@ -11,7 +11,6 @@ import {
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
   NATIVE_CONTEXT,
-  NATIVE_DISCOVERY,
   NATIVE_SCAN_ROOT_DISCOVERY,
   NATIVE_CONFIGURED_DISCOVERY,
   BACKEND_INSPECT,
@@ -19,6 +18,7 @@ import {
   TYPESCRIPT_INSIGHT_METHODS,
   TYPESCRIPT_SESSION_READ_METHODS,
   TYPESCRIPT_SESSION_INDEX_METHODS,
+  TYPESCRIPT_SESSION_HANDOFF_METHODS,
   NATIVE_REMOTE_SESSION_INDEX_CHANGED,
   type NativeContext,
   type WorkspacePlan,
@@ -175,6 +175,17 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
 
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
     if (method === NATIVE_CONTEXT) return this.typescript.request<TResult>(method, params);
+    if (
+      method === RUNTIME_METHODS.prepareSessionHandoff ||
+      method === RUNTIME_METHODS.planSessionHandoff
+    ) {
+      const mcpHubStatus = await this.rust.request<unknown>(RUNTIME_METHODS.mcpHubStatus, {});
+      const values =
+        typeof params === "object" && params !== null && !Array.isArray(params)
+          ? (params as Record<string, unknown>)
+          : {};
+      return this.typescript.request<TResult>(method, { ...values, mcpHubStatus });
+    }
     if (TYPESCRIPT_WORKSPACE_METHODS.has(method))
       return this.#workspaceRequest<TResult>(method, params);
     if (method === RUNTIME_METHODS.setQuotaPreferences)
@@ -204,7 +215,8 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       TYPESCRIPT_ASSET_METHODS.has(method) ||
       TYPESCRIPT_INSIGHT_METHODS.has(method) ||
       TYPESCRIPT_SESSION_READ_METHODS.has(method) ||
-      TYPESCRIPT_SESSION_INDEX_METHODS.has(method)
+      TYPESCRIPT_SESSION_INDEX_METHODS.has(method) ||
+      TYPESCRIPT_SESSION_HANDOFF_METHODS.has(method)
     )
       return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
@@ -240,7 +252,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     if (method === RUNTIME_METHODS.addWorkspace || method === RUNTIME_METHODS.refreshWorkspace) {
       const context =
         method === RUNTIME_METHODS.addWorkspace
-          ? await this.rust.request<NativeContext>(NATIVE_CONTEXT, {})
+          ? await this.typescript.request<NativeContext>(NATIVE_CONTEXT, {})
           : { agent_homes: [], agentkib_home: null };
       current();
       const plan = await this.typescript.request<WorkspacePlan>(BACKEND_PLAN_WORKSPACE, {
@@ -271,31 +283,26 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       const enabledRoots = roots
         .filter((root) => root.enabled)
         .map((root) => ({ path: root.path, max_depth: root.max_depth }));
-      const [snapshot, scanRoots, configured] = await Promise.all([
-        this.rust.request<DiscoverySnapshot>(NATIVE_DISCOVERY, { roots: [] }),
+      const [scanRoots, configured] = await Promise.all([
         this.typescript.request<
           Pick<DiscoverySnapshot, "candidates" | "errors" | "source_diagnostics">
         >(NATIVE_SCAN_ROOT_DISCOVERY, { roots: enabledRoots }),
         this.typescript.request<
-          Pick<DiscoverySnapshot, "candidates" | "errors" | "source_diagnostics">
+          Pick<
+            DiscoverySnapshot,
+            "candidates" | "errors" | "source_diagnostics" | "home_assets" | "installations"
+          >
         >(NATIVE_CONFIGURED_DISCOVERY, {}),
       ]);
-      const migratedAgents = new Set(["codex", "claude-code", "cursor", "deepseek-harness"]);
-      snapshot.candidates = snapshot.candidates.filter(
-        (candidate) => !candidate.source_agent || !migratedAgents.has(candidate.source_agent),
-      );
-      snapshot.source_diagnostics = snapshot.source_diagnostics.filter(
-        (diagnostic) =>
-          typeof diagnostic.agent !== "string" || !migratedAgents.has(diagnostic.agent),
-      );
-      snapshot.candidates.push(...scanRoots.candidates);
-      snapshot.candidates.push(...configured.candidates);
-      snapshot.errors.push(...scanRoots.errors);
-      snapshot.errors.push(...configured.errors);
-      snapshot.source_diagnostics.push(...scanRoots.source_diagnostics);
-      snapshot.source_diagnostics.push(...configured.source_diagnostics);
+      const snapshot: DiscoverySnapshot = {
+        candidates: [...scanRoots.candidates, ...configured.candidates],
+        installations: configured.installations,
+        home_assets: configured.home_assets,
+        errors: [...scanRoots.errors, ...configured.errors],
+        source_diagnostics: [...scanRoots.source_diagnostics, ...configured.source_diagnostics],
+      };
       current();
-      const context = await this.rust.request<NativeContext>(NATIVE_CONTEXT, {});
+      const context = await this.typescript.request<NativeContext>(NATIVE_CONTEXT, {});
       current();
       const plan = await this.typescript.request<DiscoveryPlan>(BACKEND_PLAN_DISCOVERY, {
         snapshot,

@@ -59,11 +59,17 @@ export class Git {
     const params = parameters(z.object({ workspaceId: z.string(), request: diffSchema }), value);
     return this.diff(this.workspacePath(params.workspaceId), params.request);
   }
-  run(root: string, args: string[], limit = 2 * MB, allowFailure = false) {
+  run(root: string, args: string[], limit = 2 * MB, allowFailure = false, strictOutput = false) {
     return this.commands.run(
       "git",
       ["-c", "color.ui=false", "-c", "core.quotepath=false", ...args],
-      { cwd: root, env: { ...this.environment, GIT_OPTIONAL_LOCKS: "0" }, limit, allowFailure },
+      {
+        cwd: root,
+        env: { ...this.environment, GIT_OPTIONAL_LOCKS: "0" },
+        limit,
+        allowFailure,
+        strictOutput,
+      },
     );
   }
   async repository(workspace: string): Promise<Repository | null> {

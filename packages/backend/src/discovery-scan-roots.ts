@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, statSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import path from "node:path";
 import { canonicalize, pathIdentity } from "./paths";
 import { isReparseOrSymlink } from "./native-files";
@@ -117,8 +118,7 @@ export function normalizeDiscoveryCandidates(
 ): DiscoveryCandidate[] {
   let home: string | null = null;
   try {
-    const configured = environment.HOME ?? environment.USERPROFILE;
-    if (configured) home = canonicalize(configured);
+    home = canonicalize(environment.HOME ?? environment.USERPROFILE ?? homedir());
   } catch {}
   const merged = new Map<string, DiscoveryCandidate>();
   for (const candidate of candidates) {
@@ -127,7 +127,9 @@ export function normalizeDiscoveryCandidates(
       ["open-claw", "hermes", "grok-build"].includes(candidate.source_agent ?? "");
     let resolved: string | null;
     try {
-      resolved = sessionRoot ? sessionWorkspaceRoot(candidate.path, home) : canonicalize(candidate.path);
+      resolved = sessionRoot
+        ? sessionWorkspaceRoot(candidate.path, home)
+        : canonicalize(candidate.path);
     } catch {
       continue;
     }
@@ -180,7 +182,9 @@ export function normalizeDiscoveryCandidates(
           .map(([, cwd]) => cwd);
     }
   }
-  return [...merged.values()];
+  return [...merged.entries()]
+    .sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
+    .map(([, candidate]) => candidate);
 }
 
 function sessionWorkspaceRoot(value: string, home: string | null): string | null {
@@ -252,10 +256,11 @@ export function discoverScanRoot(value: string, maxDepth: number): ScanRootResul
         const metadata = lstatSync(current, { bigint: true });
         if (isReparseOrSymlink(current, metadata) || metadata.dev !== device) continue;
         if (!metadata.isDirectory()) continue;
+        if (ignoredDirectories.has(entry.name)) continue;
         if (markers.some((name) => exists(path.join(current, name)))) {
           candidates.push(scanMarker(current));
         }
-        if (level + 1 < depth && !ignoredDirectories.has(entry.name)) visit(current, level + 1);
+        if (level + 1 < depth) visit(current, level + 1);
       } catch (error) {
         errors.push(String(error));
       }

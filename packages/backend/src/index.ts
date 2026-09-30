@@ -1,3 +1,25 @@
+import { Context } from "./context";
+import { SessionReaders } from "./session-readers";
+import { SessionIndex } from "./session-index";
+import { nativeContext } from "./native-context";
+import { discoverScanRoots } from "./discovery-scan-roots";
+import { discoverConfiguredWorkspaces } from "./native-discovery-configured";
+import { Doctor } from "./doctor";
+import { planWorkspace, ensureGateway } from "./change-plan";
+import { manifestSchema } from "./manifest";
+import { userHome } from "./mcp-config-read";
+import { applyRequest } from "./changes";
+import { TYPESCRIPT_SESSION_READ_METHODS } from "./migration";
+import { TYPESCRIPT_INSIGHT_METHODS } from "./migration";
+import { scanWorkspace, inspectWorkspace } from "./asset-scanner";
+import { prepareManifest } from "./default-manifest";
+import { parameters } from "./rpc";
+import { z } from "zod";
+import { BACKEND_INSPECT } from "./migration";
+import { RpcFault } from "./rpc";
+import { Commands } from "./commands";
+import { Git } from "./git";
+import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
 import path from "node:path";
 import {
   PROTOCOL_VERSION,
@@ -27,27 +49,34 @@ import {
 import {
   BACKEND_INITIALIZE,
   BACKEND_PREFERENCES,
+  NATIVE_CONTEXT,
+  NATIVE_SCAN_ROOT_DISCOVERY,
+  NATIVE_CONFIGURED_DISCOVERY,
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
 } from "./migration";
 
-class RpcFault extends Error {
-  constructor(
-    readonly code: number,
-    message: string,
-    readonly data?: unknown,
-  ) {
-    super(message);
-  }
-}
-
 export class TypeScriptBackend {
   #store?: BackendStore;
   #dataDir?: string;
+  #commands = new Commands();
+  #git?: Git;
+  #context?: Context;
+  #doctor?: Doctor;
+  #sessions?: SessionReaders;
+  #sessionIndex?: SessionIndex;
 
   constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
 
   close(): void {
+    this.#sessionIndex?.close();
+    this.#sessionIndex = undefined;
+    this.#sessions?.close();
+    this.#sessions = undefined;
+    this.#commands.close();
+    this.#git = undefined;
+    this.#context = undefined;
+    this.#doctor = undefined;
     this.#store?.close();
     this.#store = undefined;
     this.#dataDir = undefined;
@@ -74,22 +103,36 @@ export class TypeScriptBackend {
       const params = object("params" in value ? value.params : {});
       return { jsonrpc: "2.0", id, result: this.#request(value.method, params) };
     } catch (error) {
-      const fault =
-        error instanceof RpcFault
-          ? error
-          : new RpcFault(-32000, "AgentKib command failed", {
-              detail: error instanceof Error ? error.message : "Backend operation failed",
-            });
-      return {
-        jsonrpc: "2.0",
-        id,
-        error: {
-          code: fault.code,
-          message: fault.message,
-          ...(fault.data === undefined ? {} : { data: fault.data }),
-        },
-      };
+      return this.#failure(id, error);
     }
+  }
+
+  async handleAsync(value: unknown): Promise<ReturnType<TypeScriptBackend["handle"]>> {
+    const response = this.handle(value);
+    if (response.error) return response;
+    try {
+      return { ...response, result: await response.result };
+    } catch (error) {
+      return this.#failure(response.id, error);
+    }
+  }
+
+  #failure(id: unknown, error: unknown) {
+    const fault =
+      error instanceof RpcFault
+        ? error
+        : new RpcFault(-32000, "AgentKib command failed", {
+            detail: error instanceof Error ? error.message : "Backend operation failed",
+          });
+    return {
+      jsonrpc: "2.0" as const,
+      id,
+      error: {
+        code: fault.code,
+        message: fault.message,
+        ...(fault.data === undefined ? {} : { data: fault.data }),
+      },
+    };
   }
 
   #request(method: string, params: Record<string, unknown>): unknown {
@@ -120,6 +163,18 @@ export class TypeScriptBackend {
           "cached-workspace-reads",
           "workspace-writes",
           "discovery-persistence",
+          "native-assets",
+          "manifest-import",
+          "context-preview",
+          "context-doctor",
+          "changesets",
+          "catalog",
+          "memory",
+          "git",
+          "insight-reads",
+          "session-cache",
+          "session-events",
+          "session-index",
         ],
       };
     }
@@ -127,21 +182,94 @@ export class TypeScriptBackend {
       this.close();
       return null;
     }
+    if (method === NATIVE_SCAN_ROOT_DISCOVERY)
+      return discoverScanRoots(params.roots, this.environment);
+    if (method === NATIVE_CONFIGURED_DISCOVERY)
+      return discoverConfiguredWorkspaces(this.environment);
     if (method === BACKEND_INITIALIZE) {
       if (typeof params.dataDir !== "string" || !path.isAbsolute(params.dataDir))
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
       const store = new BackendStore(path.join(dataDir, "agentkib.db"));
       this.close();
+      this.#commands = new Commands();
       this.#store = store;
       this.#dataDir = dataDir;
+      this.#git = new Git(this.#commands, (id) => store.workspacePath(id), {
+        ...process.env,
+        ...this.environment,
+      });
+      this.#context = new Context(store.catalog, this.#commands, {
+        ...process.env,
+        ...this.environment,
+      });
+      this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
+      this.#sessions = new SessionReaders(store.sessions, this.#commands, {
+        ...process.env,
+        ...this.environment,
+      });
+      this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
+        const value = readPreferences(dataDir).session_index_enabled;
+        return typeof value === "boolean" ? value : true;
+      });
       return null;
     }
     if (!this.#store || !this.#dataDir)
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
+    if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
+      return this.#store.sessions.request(method, params);
+    if (TYPESCRIPT_INSIGHT_METHODS.has(method)) return this.#store.insights.request(method, params);
+    if (TYPESCRIPT_CATALOG_METHODS.has(method)) return this.#store.catalog.request(method, params);
+    if (TYPESCRIPT_GIT_METHODS.has(method)) return this.#git!.request(method, params);
     switch (method) {
+      case NATIVE_CONTEXT:
+        return nativeContext({ ...process.env, ...this.environment });
+      case RUNTIME_METHODS.refreshWorkspaceSessions:
+        return this.#sessionIndex!.refresh(params);
+      case RUNTIME_METHODS.clearSessionIndex:
+        return this.#sessionIndex!.clear(params);
+      case RUNTIME_METHODS.applyChanges:
+        return applyRequest(params, this.#store, this.#dataDir, {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.planChanges: {
+        const { project, manifest, includeHome } = parameters(
+          z.object({ project: z.string(), manifest: manifestSchema, includeHome: z.boolean() }),
+          params,
+        );
+        const network = readPreferences(this.#dataDir).mcp_network;
+        const parsed = z.object({ port: z.number().int().min(1).max(65535) }).safeParse(network);
+        ensureGateway(manifest, parsed.success ? parsed.data.port : 47653);
+        const home = userHome({ ...process.env, ...this.environment });
+        return planWorkspace(
+          project,
+          manifest,
+          includeHome
+            ? {
+                openclaw_config: path.join(home, ".openclaw/openclaw.json"),
+                hermes_config: path.join(home, ".hermes/config.yaml"),
+              }
+            : {},
+        );
+      }
+      case RUNTIME_METHODS.workspaceDoctorReport:
+      case RUNTIME_METHODS.workspaceDoctorSummaries:
+        return this.#doctor!.request(method, params);
+      case RUNTIME_METHODS.resolveContext:
+        return this.#context!.request(params);
+      case BACKEND_INSPECT:
+        return parameters(
+          z.object({ workspaces: z.array(z.object({ id: z.string(), path: z.string() })) }),
+          params,
+        ).workspaces.map(({ id, path }) => ({ id, inspection: inspectWorkspace(id, path) }));
+      case RUNTIME_METHODS.scanWorkspace:
+        return scanWorkspace(string(params, "project"));
+      case RUNTIME_METHODS.prepareManifest:
+        return prepareManifest(string(params, "project"));
       case BACKEND_PLAN_WORKSPACE: {
         if (params.operation !== "add" && params.operation !== "refresh")
           invalid("Invalid workspace operation");
@@ -222,12 +350,15 @@ export class TypeScriptBackend {
         const aliases = ["value", "enabled", "seen"].filter((key) => key in params);
         if (aliases.length !== 1 || typeof params[aliases[0]!] !== "boolean")
           invalid("Expected exactly one boolean value");
+        if (method === RUNTIME_METHODS.setSessionIndexEnabled) this.#sessionIndex!.invalidate();
         writePreferences(this.#dataDir, {
           [keys[method]!]: params[aliases[0]!],
           ...(method === RUNTIME_METHODS.setQuotaAutoRefresh
             ? { quota_auto_refresh_prompt_seen: true }
             : {}),
         });
+        if (method === RUNTIME_METHODS.setSessionIndexEnabled && !params[aliases[0]!])
+          this.#store.sessions.clear(null);
         return this.#preferences();
       }
       case RUNTIME_METHODS.updateOnboarding: {

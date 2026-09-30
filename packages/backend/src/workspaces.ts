@@ -12,6 +12,7 @@ export interface DiscoveryCandidate {
   session_count: number;
   repository_group_id: string | null;
   session_cwds?: string[] | null;
+  explicit_workspace?: boolean;
 }
 
 export interface CatalogAsset {

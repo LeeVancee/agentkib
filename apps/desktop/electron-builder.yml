@@ -17,6 +17,8 @@ electronLanguages:
   - zh-CN
   - zh-TW
 compression: normal
+asarUnpack:
+  - dist-electron/native/koffi/**
 extraResources:
   - from: ../../LICENSE
     to: licenses/AgentKib-LICENSE

@@ -190,7 +190,7 @@ async function startApplication(): Promise<void> {
       : new RuntimeRouter(
           rustHost,
           new DesktopRuntimeHost({
-            executablePath: path.join(app.getAppPath(), "dist-electron/backend.cjs"),
+            executablePath: path.join(__dirname, "backend.cjs"),
             clientVersion: app.getVersion(),
             createTransport: createUtilityTransport,
             environment: {

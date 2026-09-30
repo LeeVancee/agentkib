@@ -1,0 +1,111 @@
+{
+  "root": "/private/tmp/agentkib-claude-interaction-native-2026-09-30-pro-once",
+  "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830",
+  "started": "2026-09-30T06:07:34.500Z",
+  "modelSends": 1,
+  "requestedModel": "deepseek-v4-pro",
+  "permissionTestConstraint": "isolated local settings ask Write/Edit/Bash; permission-mode default",
+  "mcpPort": 64455,
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "2f0f4bf9-8620-4de1-9ae3-4c8f7a663ac2",
+  "sourceSessionId": "b48c0e72-a35b-4b80-b8d6-4ea4a306585d",
+  "emptyWithoutModel": true,
+  "webSameSession": true,
+  "sendAccepted": true,
+  "status": "idle",
+  "reason": null,
+  "model": "deepseek-v4-pro",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 39680,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 20548,
+    "iterations": [],
+    "output_tokens": 306,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "ownerApprovalAccepted": true,
+  "approvedTool": "Write",
+  "approvedExactSyntheticWrite": true,
+  "staleWebApproval": {
+    "status": 409,
+    "body": {
+      "error": "stale_state",
+      "controlOutcome": "not-dispatched"
+    }
+  },
+  "questionSupported": true,
+  "webAnswer": {
+    "status": 200,
+    "body": {
+      "accepted": true,
+      "completed": false,
+      "controlOutcome": "accepted",
+      "live": {
+        "approvals": [],
+        "cliVersion": "2.1.285 (Claude Code)",
+        "executionMode": "claude-managed",
+        "lastOutcome": null,
+        "model": "deepseek-v4-pro",
+        "permissionMode": "cli-configured",
+        "questions": [],
+        "reason": null,
+        "revision": 263,
+        "runtimeBootId": "507f486d-a134-4811-b840-bc8d79116d56",
+        "sendEnabled": false,
+        "sessionId": "2f0f4bf9-8620-4de1-9ae3-4c8f7a663ac2",
+        "sourceSessionId": "b48c0e72-a35b-4b80-b8d6-4ea4a306585d",
+        "status": "running",
+        "stopEnabled": true,
+        "streamText": "",
+        "streamTextTruncated": false,
+        "tokenUsage": null,
+        "turnId": "0b2d1508-c0f3-47ae-a53e-5e36f2c023ea",
+        "workspaceId": "9fcb8cfd-5e25-42b1-86a0-40fd94744b2c"
+      },
+      "requestId": "aaa2b24e-2559-43c4-8698-a7680ab9ac4d",
+      "runtimeBootId": "507f486d-a134-4811-b840-bc8d79116d56",
+      "sessionId": "2f0f4bf9-8620-4de1-9ae3-4c8f7a663ac2"
+    }
+  },
+  "staleOwnerAnswer": {
+    "accepted": false,
+    "completed": false,
+    "controlOutcome": "not-dispatched",
+    "requestId": "4ff06486-a601-447f-908a-4eebc085bf0b",
+    "error": "stale_state"
+  },
+  "reply": "Marker: 118c1f22-e667-4fde-b422-4c6c5b753330\nChosen namespace: cobalt-lake",
+  "eventKinds": [
+    "user-message",
+    "tool-summary",
+    "tool-summary",
+    "agent-message"
+  ],
+  "outputMatches": true,
+  "answerInReply": true,
+  "markerInReply": true,
+  "webEventCount": 4,
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "settingsUnchanged": true,
+  "elapsedMs": 8827,
+  "launchCount": 1
+}

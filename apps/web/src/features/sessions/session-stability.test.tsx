@@ -120,7 +120,8 @@ function createServer(initialLive: Live = idleLive) {
       return json({ error: { code: "unavailable" } }, 503);
     if (path.includes("/codex/context-options?")) return json(state.contextOptions ?? {});
     if (path.includes("/codex/goals?")) return json(state.goals ?? {});
-    if (path.includes("/codex/capabilities?")) return json(state.capabilities ?? {});
+    if (path.includes("/codex/capabilities?") || path.includes("/managed/capabilities?"))
+      return json(state.capabilities ?? {});
     if (path.includes("/requests/"))
       return json(state.receipt ?? { found: false, requestId: path.split("/").at(-1) });
     if (path.endsWith("/access")) return json(state.access);
@@ -273,7 +274,13 @@ describe("control outcome recovery", () => {
     );
 
     fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
-    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeEnabled());
+    await waitFor(() =>
+      expect(server.fetcher.mock.calls.some(([url]) => String(url).includes("/requests/"))).toBe(
+        true,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(readPending(pendingScope("", "browser"))).toHaveLength(1);
     expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
       1,
     );
@@ -825,4 +832,88 @@ describe("Codex composer with the real session controller", () => {
       expect(writes()).toHaveLength(1);
     },
   );
+});
+
+describe("Claude managed workflow", () => {
+  it("creates a Claude task with the same provider and does not offer Codex-only settings", async () => {
+    const server = createServer({ ...idleLive, executionMode: "claude-managed" });
+    server.state.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, manage: true },
+    };
+    const original = server.fetcher.getMockImplementation()!;
+    server.fetcher.mockImplementation(async (input, init) => {
+      if (String(input).includes("/managed/options"))
+        return json({ available: true, workspaces: catalog.workspaces });
+      return original(input, init);
+    });
+    server.state.mutation = async () => json({ accepted: true, sessionId: "session" });
+    render(<WebApplication />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建任务" }));
+    fireEvent.change(screen.getByLabelText("执行工具"), { target: { value: "claude-code" } });
+    await screen.findByText(/沿用主机 Claude Code/);
+    expect(screen.queryByLabelText("模型")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await screen.findByText("Secret history");
+    const creates = server.fetcher.mock.calls.filter(([url]) =>
+      String(url).endsWith("/managed/create"),
+    );
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body))).toMatchObject({
+      agent: "claude-code",
+      workspaceId: "workspace",
+      bootId: "boot",
+    });
+    expect(JSON.parse(String(creates[0][1]?.body))).not.toHaveProperty("model");
+    expect(server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/send"))).toHaveLength(
+      0,
+    );
+  });
+
+  it("requires the inspected history fingerprint before adopting and retains the original identity", async () => {
+    const server = createServer({
+      ...idleLive,
+      sendEnabled: false,
+      executionMode: "managed-resume",
+    });
+    server.state.access = {
+      ...approvedAccess,
+      device: { ...approvedAccess.device!, manage: true },
+    };
+    const original = server.fetcher.getMockImplementation()!;
+    let resolveInspect!: (response: Response) => void;
+    server.fetcher.mockImplementation(async (input, init) => {
+      if (String(input).includes("/managed/options"))
+        return json({ available: true, workspaces: catalog.workspaces });
+      if (String(input).includes("/managed/inspect?"))
+        return new Promise<Response>((resolve) => {
+          resolveInspect = resolve;
+        });
+      return original(input, init);
+    });
+    server.state.mutation = async () => json({ accepted: true, sessionId: "session" });
+    await openSession();
+    fireEvent.click(screen.getByRole("button", { name: "会话操作" }));
+    const adopt = await screen.findByRole("button", { name: "交给 AgentKib" });
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(adopt).toBeDisabled();
+    await waitFor(() => expect(resolveInspect).toBeTypeOf("function"));
+    await act(async () =>
+      resolveInspect(json({ sessionId: "session", handoffFingerprint: "snapshot-1" })),
+    );
+    expect(adopt).toBeEnabled();
+    fireEvent.click(adopt);
+    await waitFor(() =>
+      expect(
+        server.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/managed/adopt")),
+      ).toHaveLength(1),
+    );
+    const call = server.fetcher.mock.calls.find(([url]) => String(url).endsWith("/managed/adopt"))!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({
+      agent: "claude-code",
+      sessionId: "session",
+      handoffConfirmed: true,
+      handoffFingerprint: "snapshot-1",
+    });
+  });
 });

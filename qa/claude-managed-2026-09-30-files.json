@@ -1,0 +1,704 @@
+{
+  "source_revision": "057da8b81a3f3c9536a568287175af8e50c12176",
+  "baseline_dirty": true,
+  "baseline_file_count": 1151,
+  "scope": "Changes since this round baseline, not the complete HEAD diff. Manifest excludes its own hash.",
+  "files": [
+    {
+      "path": "README.md",
+      "baseline_sha256": "4a2d60eaeffcef5a5f6e197797e82bf3d6ca928bf35acbb36d5d1b678be0c4ee",
+      "current_sha256": "44c8219bbd057c68887c8fbd15354948d3712e3cfd568b3c77b7667a1739308e",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/api/index.ts",
+      "baseline_sha256": "132f94cee93f6720be9bcea5bff3930f391e65f8687f4a8df0c9c5167fa084f2",
+      "current_sha256": "256c2cb5ef4f2af70041ab0facac48a0d735276413c6634a81924ad0121b0984",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/generated/runtime-protocol.ts",
+      "baseline_sha256": "5e46594df0fa070ea5b9edd91bcdff86ed6b94064913bdb41d0c2b3dcf3fbd91",
+      "current_sha256": "28e112de129128b835309eee9bb604d19396891cf7c024a0786436addc60c345",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/main/index.ts",
+      "baseline_sha256": "0734f2078c7ccb8f3fd5362273422e486d0884b1ebbffcad04c7dc82c878b5e2",
+      "current_sha256": "f71a09d958669875c4d9d95ae405fa21db0a3a6971dbe7be5cd1ef6e1659c29d",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/artifacts.ts",
+      "baseline_sha256": "96f1c20d2a1ebbfd843240ca9ff6fd9f59bf0f4f6ffe1f693d23c15a7a05a1eb",
+      "current_sha256": "140b5fc607fec1650df7f752db5dc027a1531a1a494e71a2f7e5828c43e511b3",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/attachment-images.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "e285b1c463649067d30f0bff2f69645711f1eb48a8a4db822a62be83371cbdf4",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/attachment-images.ts",
+      "baseline_sha256": null,
+      "current_sha256": "75d852d8d2c92e8942969eec5d635289dc894f3ea3c12649763062eac09aca09",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/attachments.test.ts",
+      "baseline_sha256": "7a3bec4e5411e696b13fc6b8ea48838efac39300f7f5adf2db9d94144e90e4cd",
+      "current_sha256": "c097fbb45742011b8ee9d9ba7611d43be074d67c58e797643a60b4430bb53c53",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/attachments.ts",
+      "baseline_sha256": "7ac87154a339d8399d1f574348ee3513bc9728f2fa5e7e09451fd2d1acb48b64",
+      "current_sha256": "6e80234a57444662756a4a1dc0ab118a1c0f8ae77a10b8e5e1e04059d6ca3e9c",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-attachment-receipts.ts",
+      "baseline_sha256": null,
+      "current_sha256": "2f25e8ac1dac3cdf6d6b3ac9877998ad6d9b52b646eca5ad0838d3b40b1f5b8e",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-dispatch.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "7e0c9eec0f610562e728adfcd90d165c7fb42662a70badf267e871567d6a5864",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-dispatch.ts",
+      "baseline_sha256": null,
+      "current_sha256": "8bc762534b5c7c8974ba7aa8f3b77ffe38912b5d6338e6ae7ba64d01133915f2",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-host.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "35502c87e01ee90fdb1ee2a648fd1e01187803e4ada8b52bac5e1498f214b612",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-managed-external-adopt-real.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "94663ee651c25f62e7db052cbdff6edff8a5dbed21441bc68b8d867040e9d0bc",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-managed-interaction-real.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "e928f28c5dcfaee8b657ebf689ac86c9652c14ea1ec7e9c67ecf1cb3958c9076",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-managed-lifecycle-real.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "ff83b26f1919dae3354cbef83ca38483e0d2c5e40cd53ef3b78eb2ace4b411af",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-managed-real.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "c3f4ec9d90a7380b5b2645967952d4c203e61325854c5025189b13947259a497",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/claude-managed-resume-real.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "c89435b4a87e7f025e318c580764f6bad32fb6c92978158090e6d4877430d696",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/local-claude.test.ts",
+      "baseline_sha256": null,
+      "current_sha256": "6d26c46929bb581a8f430762bb19fccd3f7b8985454981f320bbb707d7559b84",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/local-claude.ts",
+      "baseline_sha256": null,
+      "current_sha256": "e75ba23dd93d7a2c88060b49ffc2ee596365a58a9017e4d1c3b275947ddb51d1",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/electron/main/web/service.ts",
+      "baseline_sha256": "e1aedd0b57a9cb5c2cb1b1b4e68d7e4f89764da6a035d2828d8cace0e1bcc5d7",
+      "current_sha256": "456d7cf3dcd839ae9c5cc23833a81ef0b636850a8dc2222e2c9886069cdce417",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/electron/preload/index.ts",
+      "baseline_sha256": "0acda0354ffc6c44f84eed225eae7b7290122424af0da60412cae032c9479891",
+      "current_sha256": "8c7fa1c53cbdde42e6b5cd6a340e25e1b51ab31ae099bb552f9fc29da09c04f2",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/src/core/api.ts",
+      "baseline_sha256": "3444df2cc0e0be82bde8999937105aa423850bb63b8b233322c06fce5c7e053e",
+      "current_sha256": "bae52a81c2d6a327b0b08aab42e3cb29f09e6eedbfbcddf4cb7a86f84b7902f1",
+      "status": "modified"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/ClaudeFilesPanel.test.tsx",
+      "baseline_sha256": null,
+      "current_sha256": "0f85b70dc9f96ffbf3cf8553f41f78e915a2c3cdb7882ce5d21ca4d217cbe7a6",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/ClaudeFilesPanel.tsx",
+      "baseline_sha256": null,
+      "current_sha256": "3cd3a6953a61ef8fddf273ffa56089b8c335579eb5a588d250461e5d3bbeda1c",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/ClaudeSessionPanel.test.tsx",
+      "baseline_sha256": null,
+      "current_sha256": "f07170b4ff16d387d5389199851e06a8f0e5fec2826088fadec3258832da2628",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/ClaudeSessionPanel.tsx",
+      "baseline_sha256": null,
+      "current_sha256": "5e1b4da8e5c24cedb024836f9a922c7dc97541360a76f759c4a199bbadc5094f",
+      "status": "added"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/WorkspaceSessionsPage.tsx",
+      "baseline_sha256": "05ebf4580441469c73a89bd4de1c18a3dfe3241e3885f3c25bcf3fe56cd2da84",
+      "current_sha256": "df6e5e8e9da7c668f89cb6a40b1aaaf99c3e67bf5f2a9379962e80a3fd99a76a",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/codex-composer.tsx",
+      "baseline_sha256": "f31dba503cf2c0cfbba4b207281543b584639fd60e241c8dd4296c2ed212db77",
+      "current_sha256": "29e2e4a89f41abad0eb60757f0701d387a0bcd00e1b2b7f2ccd8c1a803d4cc54",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/managed-tasks.test.tsx",
+      "baseline_sha256": "a83c0d288b70469eef1b5cb433b1dafd8475be522bdba2d55e4855ffefa46727",
+      "current_sha256": "cd215cef51933e3e772f201dd468f75e0c1c0e8283982dd919dd4af2286939f8",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/managed-tasks.tsx",
+      "baseline_sha256": "175b00f0e22d6fc152f5e7c106b07250fce8cc64a5851942a0c5b395d2763509",
+      "current_sha256": "b6c2073d51925fd33de858f23b6838ace3f6a7489e9dedb7154d44729de58396",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/pending-controls.ts",
+      "baseline_sha256": "413c0446bfebcfc850d8762aca627b82490ee9099f2f9064b308fe9b0aa542ba",
+      "current_sha256": "28a3edcb494ce4cea30efeb8f048ae3b0b0313c0b9c88dfaacf8ed42371a4238",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/session-display-state.test.ts",
+      "baseline_sha256": "5a1b9f0b050629bff032e8d3ae5b3a6710d0d359036103ac594b79abbf1a8d22",
+      "current_sha256": "f6bf0311ba53c6ad5a7e667526a86efca2812a20ec9a1ac124d3a068ff57d2d8",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/session-display-state.ts",
+      "baseline_sha256": "eff1e6faa61b858faae0db116117acb4f65bf49e8930e3124ae78ca0ff331c36",
+      "current_sha256": "46891afd913afa1390e61115d4e4e222684e124ccbaa4f7d6d3a22e664145c80",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/session-operations.tsx",
+      "baseline_sha256": "8f90c52ef9403ee98ec708b45c0eb8abf8d4d25af6936ef0c950b487d899a6c4",
+      "current_sha256": "9f44b22caeb1087fdddd8a5dfc02663a83bb15d87f883435377b99f39834fb13",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/session-reader.tsx",
+      "baseline_sha256": "2dd6ac5e4829422eff38bc248793209a7c8451d9ceeb54dd44ea0e72dd2b3b09",
+      "current_sha256": "96ba43cd2ce2326151e7914f1b21e45f80b21257fdd9c7a2ca8caee04d186530",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/session-stability.test.tsx",
+      "baseline_sha256": "56b972a4ce4d8a105b0d7d9d3224424a44244b6de788dd058ad83fa36b392986",
+      "current_sha256": "eb787e37d80bd78912836c910d4634028ded4d384887f58226c8941c01438725",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/use-session-controller.ts",
+      "baseline_sha256": "2f18506ed861f4f203be0bb1ff96f9c92d5a7afdfe7c8c437fcc9dee40028efc",
+      "current_sha256": "14d8c293b8b8ca63e0c1cf2d1ac0d6060caa76b47ceb8222b4827d5396705a30",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/features/sessions/web-layout-copy.ts",
+      "baseline_sha256": "0ec98490a2b956b08a8ad29a5186b27b8d61bc553d0f8106b13ac4b0ea33cddf",
+      "current_sha256": "6a1169aa2b02e6a0e2a344d0ca09f0a798b788d0d7cf0bbd4811a2307d28d54c",
+      "status": "modified"
+    },
+    {
+      "path": "apps/web/src/web-client.test.ts",
+      "baseline_sha256": "4839807fe2112dbc691384ba066dae456df2ef3f4186fb801050846ba75da817",
+      "current_sha256": "c03b1d554f698b27a86536921fdcddca57f00cc3accc6741a2533c1135f5d76e",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/lib.rs",
+      "baseline_sha256": "720d80a5e6a21e84a962a520bbf24ed3f8304d671599f38b435403638270453d",
+      "current_sha256": "650e47a978566ad150f2290dac8ac6ff36b5f9e40a98776c729975fe39bad07c",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-platform/src/process.rs",
+      "baseline_sha256": "9c46a6e52f6f6054b0e042354e5f70d3404ee1f28e606b7381b88dbe874b5d9c",
+      "current_sha256": "d59a62c7014f673fce4f0408528df6544135b885aeffe4f168ee6770256e68a0",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-platform/src/process/owned_tree.rs",
+      "baseline_sha256": null,
+      "current_sha256": "43070298d85fe0a3dc2f0722f75eaa94f86370325899288671d90fd3a652e1ed",
+      "status": "added"
+    },
+    {
+      "path": "crates/agentkib-protocol/src/lib.rs",
+      "baseline_sha256": "555d72ce599e2b86883841d0b16ad40ce53ef242bc29ef0e6c45b0b12e824c50",
+      "current_sha256": "1e062197adbdcfd94a72c05970a58b1e958d6b91ab2e2d10aebb67da24633717",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/claude_managed.rs",
+      "baseline_sha256": null,
+      "current_sha256": "09a0d3ff8fac30df60d49c54b5f94958ff8c215208cc5b457d237531bbea7a7a",
+      "status": "added"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/claude_managed_tests.rs",
+      "baseline_sha256": null,
+      "current_sha256": "c1c6869fa43c5339942ebfa5fd7cdec1f40c6857d05ce2ea2cf6ec828df8489a",
+      "status": "added"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/claude_runner.rs",
+      "baseline_sha256": "105613d3916d7aa973c43ab1cdd7866a3a9af0f4ee3e238e34c9ecab7b58ab8b",
+      "current_sha256": "78739c7dc08e95d288b8187a4dc83870c5a3ed7abe218928ab18bcda0d1a5820",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/main.rs",
+      "baseline_sha256": "0f3e1daa636b0c84b26d297cbe2392b366119dc3b49d0aa239d9a0475f0188ff",
+      "current_sha256": "955f0fafbd5e7732a88902482d2860faacaf94817f02671bb4955ba4f27e3ef2",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/web.rs",
+      "baseline_sha256": "a61b501e9d56a1c4138dcfe5762fee293dc9e00562ae629ff875413e260a738b",
+      "current_sha256": "8c943d5ae2c3eada0eb2cfd2249f4b284fd349574895084159667843201eab7a",
+      "status": "modified"
+    },
+    {
+      "path": "crates/agentkib-runtime/tests/claude_responsiveness.rs",
+      "baseline_sha256": null,
+      "current_sha256": "f8523e7aa07705db53da4bd06d08646e6e3ffc928215e3becc1fbc94c3eb0250",
+      "status": "added"
+    },
+    {
+      "path": "crates/agentkib-runtime/tests/fixtures/claude-2.1.285-foreground-bash.jsonl",
+      "baseline_sha256": null,
+      "current_sha256": "af94adc800963388eaed5d090a3646319bb4ec24e1c14f4524411820c33d22f1",
+      "status": "added"
+    },
+    {
+      "path": "docs/CLAUDE-WEB.md",
+      "baseline_sha256": "62eebf150119ba36859e7d0f1c424f5885a41373065e45ac11797b2d1ec5bfd8",
+      "current_sha256": "a571eddb54579bc7be3a02df5f0d6b8016f7e1d91945e8f353abd805361fa9fc",
+      "status": "modified"
+    },
+    {
+      "path": "docs/FEATURES.md",
+      "baseline_sha256": "5474648b40bf287b2c8e787f023f0cab513fb14e932e9b677085ebd4fb8a75ee",
+      "current_sha256": "0ce4f7ed53cbe59200065d0a97639f9f87fc5c5e95186785900944772dc1ee92",
+      "status": "modified"
+    },
+    {
+      "path": "packages/web-client/src/index.ts",
+      "baseline_sha256": "50e132fde475891d7192580bc52d4f7cf8071c2157c3b80fe8342c0259055364",
+      "current_sha256": "ae8ad6f9be87d876d780244fa5c2141dfaec121542a4537b23f01ab8bb75e5bc",
+      "status": "modified"
+    },
+    {
+      "path": "qa/claude-desktop-ui-interaction-2026-09-30.md",
+      "baseline_sha256": null,
+      "current_sha256": "1307060ea89b8e4eb231e31e521bb6903ffcdeb69d519ae8d8aa576b8ef64490",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-desktop-ui-interaction-2026-09-30/completed-reply.png",
+      "baseline_sha256": null,
+      "current_sha256": "f11fce7dc3ab642246fd938e74b5fd987dca56138509d57135c560bb0c09a65c",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-desktop-ui-interaction-2026-09-30/question-selected.png",
+      "baseline_sha256": null,
+      "current_sha256": "8879ee5eddd6a341eccde94aa530e7d6e328c27d338f0409f60c5079839b7233",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-desktop-ui-interaction-2026-09-30/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "9d2f956c2f43f298bdd3a9a96298b66950cb1cacd51738f80279a7c8f83713cd",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-desktop-ui-interaction-2026-09-30/write-approval.png",
+      "baseline_sha256": null,
+      "current_sha256": "0fe5dbc712a5c32440e1ce357a7953c213f27514099665861618d033d777bdd6",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-external-adopt-2026-09-30.md",
+      "baseline_sha256": null,
+      "current_sha256": "843104ba55bb710070c3cab69be497124c5e3ef2948130330f941f41e2bca11b",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-external-adopt-2026-09-30/continuation-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "167da6d1ff7a0a6f6e788ae27e0ed30ed38b12e05ad6aa56996c6853b8ecc7b0",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-external-adopt-2026-09-30/new-assistant-readonly-verification.json",
+      "baseline_sha256": null,
+      "current_sha256": "64216a23efd6e58f8472dccd4d6604f9c0381f7ebc538eb31da08795c3ad1bc6",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-external-adopt-2026-09-30/predispatch-evidence.json",
+      "baseline_sha256": null,
+      "current_sha256": "76300337f640451a890deb5dbbb9e305fd7af8f11ef70d098da975edc9bc0534",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-external-adopt-2026-09-30/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "d8ccf71fdd6f409e39e366fff6943abbdcbee34876de225582b4716679586155",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30.md",
+      "baseline_sha256": null,
+      "current_sha256": "4a30943ab81279bf2929dc344db35fa7daf9218df5af4ba5e720b24d2e88edd4",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/api-error-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "795799d74db251082a7956457a5ec39b7bc15a8b495a2554a6ba02f06f4b96bd",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-bash-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "df8cfc8dafad379577080e065790f88c18189c620961a16f70e93841a262b514",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-foreground-leak-results-frames.jsonl",
+      "baseline_sha256": null,
+      "current_sha256": "055bf1ca57911fc7e971fd65050277e5fc3f5e6dd039385877bb751d35be1a64",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-foreground-leak-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "ad72df4acc6874a223b9ff919f015eea3523fd09e50a08cca34ea4fcf6ef79df",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-question-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "2b0f73f9cb4ed9035311826fed69343e76055a3352d8eeac2a72e31d2bc09924",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-tree-native-frames.jsonl",
+      "baseline_sha256": null,
+      "current_sha256": "a5bf7cb00c158e1574b58ab3d3dd8b9ce27f8c40ba6b1cc99a5b59dd8c2d18d0",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cancel-tree-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "fa072d90630d5c1b1488797fdd22a14edc577da2d084b484937d6a05d6a57812",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cc-switch-mapped/connectivity.json",
+      "baseline_sha256": null,
+      "current_sha256": "04822511b542f9e1b1a9279fafadd740721daa937e4f493ea87396da92a1cc86",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cc-switch-mapped/mapping-diagnostic.json",
+      "baseline_sha256": null,
+      "current_sha256": "d145d1d7be44822c7e395914b960e5941797b458e47cbe466327942f9d853878",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cc-switch-mapped/proxy-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "06b85a504c0da69ced40c99c782a4507c52ef43e76b65e2abfd2d4ac51e589cc",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cc-switch-mapped/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "d9a23740d3a1dcc0bc6a86991c5a96b075cd3cf31a49e965430e3cd473229c6f",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cpa/connectivity.json",
+      "baseline_sha256": null,
+      "current_sha256": "8e32182dae2e0ed982e2eef0c149700d70ed5155a0fb72bc90550cc2252f24d8",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cpa/proxy-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "57a1670edc9814ad1c9a62d873bebf75163999449754a40316e9ae2e73921177",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/cpa/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "786d7b06c081c5b9249cf0bf44d6fbf7bc541f687b171ca322ac40cb93d2c1dc",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/crash-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "0067b807a4d0d5f18bc08a61a04ced8cb94f860077b9ffd54ea769c98403b93b",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/crash-strengthened-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "83d30e96bf6c98277e83c36532c7ad8414fdfb39ac9bd6ea4768beaeef5f0f65",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/deepseek/connectivity.json",
+      "baseline_sha256": null,
+      "current_sha256": "8e34692123448d50d3f5e4d51e0231505ff138eea2f5c8b158ab2c7a40659d1c",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/deepseek/native-blocks.json",
+      "baseline_sha256": null,
+      "current_sha256": "bdfb3a5ea8eccd8ae391d4a2077cbefd47709d28fe38c16d528067f1670ef7ed",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/deepseek/proxy-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "b33613cd966fed35f83f5d82c12d8f36c3aa9c23192f5b600d396fdb99612056",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/deepseek/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "ec29bbe264716dd6df731ba3b5ece3a38c5ec3f195b41977ddc85b010f857769",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/desktop-files.png",
+      "baseline_sha256": null,
+      "current_sha256": "d859d4054b201d1c886ba3c9bbc12dd92526989539f92380abbfa9955522888c",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/desktop-native-history.png",
+      "baseline_sha256": null,
+      "current_sha256": "44aa4923fcb4b4668dc923886db45b1e621681e97143d9b106a770d428fee99a",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/desktop-released.png",
+      "baseline_sha256": null,
+      "current_sha256": "3aae015b592c226647b4eddf5d15e3a0b08a79375f5f920671b85a9a66acb66f",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-haiku-vision/image-hash-evidence.json",
+      "baseline_sha256": null,
+      "current_sha256": "82f2cd1873711599706ddac77a8a80c5e3180880068d2ae48c90f204ef0fc811",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-haiku-vision/proxy-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "2ee1213b550a16a417ad9f25826f708a4b7dc31b72c9f0fbe1d60f86cfa5545e",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-haiku-vision/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "5a3e00cb0ddce61934fd6b10e7270ee20b6f59f424e6b71387154c2677c03b7c",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-haiku-vision/run-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "ff08a61b12e2e8540fe916ff9ffa0b5109ba69ac90b734c4a167871958771a10",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-vision/image-hash-evidence.json",
+      "baseline_sha256": null,
+      "current_sha256": "1ac3b7b0652cd2597a9d77eef86c848630d7094ca8132569f8e4cdd120b75db7",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-vision/native-blocks.json",
+      "baseline_sha256": null,
+      "current_sha256": "18cd07521edadf54fcc746af84fa5358df001a2acf4b231ec010637f9f452cab",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-vision/proxy-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "6a678767e68dc69a66c96e7c54a73fdf0a09f079de4bebdb0af9f7ddafd77d1d",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/flash-vision/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "8a5fefa91e4b4aa49a939e122dffa410b1d615a84ed258977129fd12f9872dce",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/foreground-complete-exit-observation.json",
+      "baseline_sha256": null,
+      "current_sha256": "235e2fc0c706341b61d400698c82b877ff0c5fa631bab2922abfd998d37f374a",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/foreground-complete-results-frames.jsonl",
+      "baseline_sha256": null,
+      "current_sha256": "af94adc800963388eaed5d090a3646319bb4ec24e1c14f4524411820c33d22f1",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/foreground-complete-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "b3ce6d7aa712419dd306f9ab7e6411db99b258dd6d35101682d57d31880f0130",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/image-review-evidence.md",
+      "baseline_sha256": null,
+      "current_sha256": "11342b164f70499b8fd8705f1edb122c9d82cd4eed358aba28543314b7fb2532",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/lifecycle-addendum.md",
+      "baseline_sha256": null,
+      "current_sha256": "efafef3f49e45cd964644ff1a086d321ac9c78684ed0e5118f17a951f6317b66",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/lifecycle-native-evidence.json",
+      "baseline_sha256": null,
+      "current_sha256": "3551c3c6ef1f3d2ea27eaad4264c78fe4abe5b8b7da7b7128b5ccf1d42e8543a",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/readonly-restart-verified.json",
+      "baseline_sha256": null,
+      "current_sha256": "b768a8c742f559f74adf470c87284df63ee1b28635b11420624d5a0b74b9439a",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "a092889597930abf418286390f177147842abb960d90294e178adf5b41516e8a",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/resume-addendum.md",
+      "baseline_sha256": null,
+      "current_sha256": "236a4f360122b4be0fa59601dd52a08275db0241e7a1801255e2c242b51906a2",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/resume-recovery-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "170c5137e3d3ddf6eceda6235173865043d8351080e6de72c872a14498bca3ac",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/resume-results.json",
+      "baseline_sha256": null,
+      "current_sha256": "f8db7f3496ddb47033b5169e9d0a5b1c16c63ea52c75a767e03b17af7c236e61",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/task-started-analysis.md",
+      "baseline_sha256": null,
+      "current_sha256": "503529f8dbc86375baeb6e8db62a79e4e45c27583b7b6d5803d178c31d9609ae",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/task-started-local-contract.json",
+      "baseline_sha256": null,
+      "current_sha256": "62dca82294beb94b216b449bb03da392dd20b497ddd98e74c966338331583283",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/user-model-retry/api-error-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "c5da20b8a9347e02951e6bc2c7f2ae2cb9e0892f5039bd65953bc3ae4d4131d0",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-2026-09-30/user-model-retry/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "0c176a75814f4477f8e1b636d2c61619364434d6ba03af89fe4fa0b914cba4a2",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-interaction-2026-09-30.md",
+      "baseline_sha256": null,
+      "current_sha256": "8f69522bb134d9f3e8c2708a58489deae96e1e7373f776a600e23cbcd8feb766",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-interaction-2026-09-30/native-tools-summary.json",
+      "baseline_sha256": null,
+      "current_sha256": "62c02c8bbcebf1751a6c14564f3611fff65fdb05b058bc0ee339059507715062",
+      "status": "added"
+    },
+    {
+      "path": "qa/claude-managed-interaction-2026-09-30/results.json",
+      "baseline_sha256": null,
+      "current_sha256": "967dfc999da6ffa3a42f83c88629714b0c20f36727a51cda97d4142e212587d3",
+      "status": "added"
+    },
+    {
+      "path": "qa/probes/claude-desktop-interaction-ui-2026-09-30.mjs",
+      "baseline_sha256": null,
+      "current_sha256": "2f4a8c36a6fdd2b7b4ec2ab7cecf644d5cc19f34629eafac818cd80de0daf6dc",
+      "status": "added"
+    },
+    {
+      "path": "qa/probes/claude-resume-readonly-recovery.py",
+      "baseline_sha256": null,
+      "current_sha256": "f3cd063747cdea2536c50f9dbba2cd28832af40e9f140b4d1e60fa06e34ebece",
+      "status": "added"
+    }
+  ]
+}

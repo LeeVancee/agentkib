@@ -16,15 +16,18 @@ use walkdir::WalkDir;
 mod antigravity;
 mod archive;
 mod continuation;
+mod cursor;
 mod grokbuild;
 mod hermes;
 mod history;
+pub mod native_targets;
 mod openclaw;
 mod opencode;
 mod paging;
 pub use antigravity::AntigravityProvider;
 pub use archive::*;
 pub use continuation::*;
+pub use cursor::CursorProvider;
 pub use grokbuild::GrokBuildProvider;
 pub use hermes::HermesProvider;
 pub use openclaw::OpenClawProvider;
@@ -945,6 +948,11 @@ pub struct VerifiedClaudeControlTarget {
 }
 
 impl VerifiedClaudeControlTarget {
+    /// Native transcript already checked by the provider; revalidate before use.
+    pub fn transcript_path(&self) -> &Path {
+        &self.transcript
+    }
+
     pub fn revalidate(&self) -> Result<()> {
         let id = uuid::Uuid::parse_str(&self.session_id)?;
         let reader = BufReader::new(File::open(&self.transcript)?.take(256 * 1024));
@@ -1019,6 +1027,7 @@ pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(OpenCodeProvider::default()),
+        Box::new(CursorProvider::default()),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
@@ -1031,6 +1040,7 @@ pub fn provider(agent: AgentKind) -> Option<Box<dyn ConversationProvider + Send 
         AgentKind::Codex => Some(Box::new(CodexProvider::default())),
         AgentKind::ClaudeCode => Some(Box::new(ClaudeProvider::default())),
         AgentKind::OpenCode => Some(Box::new(OpenCodeProvider::default())),
+        AgentKind::Cursor => Some(Box::new(CursorProvider::default())),
         AgentKind::OpenClaw => Some(Box::new(OpenClawProvider::default())),
         AgentKind::Hermes => Some(Box::new(HermesProvider::default())),
         AgentKind::GrokBuild => Some(Box::new(GrokBuildProvider::default())),
@@ -4672,3 +4682,6 @@ mod tests {
         assert!(sanitize_handoff_export(&markdown, HandoffFormat::Markdown, None).is_ok());
     }
 }
+
+#[cfg(test)]
+mod interop_matrix;

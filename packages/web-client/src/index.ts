@@ -1,5 +1,7 @@
 export interface ConversationSessionSummary {
   id: string;
+  /** Exact history-index identity for an already managed native session. */
+  indexedSessionId?: string;
   workspace_id: string;
   agent:
     | "codex"
@@ -161,10 +163,19 @@ export interface Live {
   sendEnabled: boolean;
   stopEnabled?: boolean;
   cancelling?: boolean;
+  lastOutcome?: "cancelled" | null;
   approvals: Approval[];
   questions?: UserQuestionRequest[];
   reason?: string;
-  executionMode?: "managed-resume" | "acp-managed" | "codex-managed" | "codex-follower";
+  executionMode?:
+    | "managed-resume"
+    | "claude-managed"
+    | "acp-managed"
+    | "codex-managed"
+    | "codex-follower";
+  cliVersion?: string;
+  model?: string;
+  tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;
   settings?: CodexSessionSettings;
@@ -203,7 +214,7 @@ export type ControlReceipt =
         sessionId?: string;
         reconciled?: boolean;
       } | null;
-      completionObserved: false;
+      completionObserved: boolean;
     };
 // A legacy prepared claim was durably terminated before dispatch. Its metadata
 // can be absent; it proves only that this exact request can leave the pending UI.
@@ -253,10 +264,45 @@ export interface CodexCapabilities {
   reason?: string;
   features: Partial<
     Record<
-      CodexAction | "attachments" | "context" | "resources" | "send",
+      CodexAction | "attachments" | "context" | "resources" | "send" | "files",
       { available: boolean; reason?: string }
     >
   >;
+}
+export type ManagedAgent = "codex" | "claude-code";
+export type SessionCapabilities = CodexCapabilities;
+export interface ManagedOptions {
+  available: boolean;
+  reason?: string;
+  cliVersion?: string;
+  models?: { id: string; name?: string; efforts?: string[] }[];
+  workspaces: { id: string; name: string }[];
+}
+export interface ManagedInspection {
+  sessionId: string;
+  handoffFingerprint?: string;
+  available?: boolean;
+  reason?: string;
+}
+export interface ManagedActionBody {
+  expectedRevision?: number;
+  agent?: ManagedAgent;
+  bootId: string;
+  requestId: string;
+  sessionId?: string;
+  workspaceId?: string;
+  name?: string;
+  model?: string;
+  effort?: string;
+  handoffConfirmed?: boolean;
+  handoffFingerprint?: string;
+}
+export interface ManagedActionResult {
+  accepted?: boolean;
+  sessionId?: string;
+  sourceSessionId?: string;
+  reconciled?: boolean;
+  live?: Live;
 }
 export interface UploadedAttachment {
   id: string;
@@ -580,6 +626,32 @@ export class WebClient {
       abort.abort();
       clearTimeout(timer);
     };
+  }
+  managedOptions(agent: ManagedAgent = "codex", signal?: AbortSignal) {
+    return this.request<ManagedOptions>(
+      agent === "codex" ? "managed/options" : `managed/options?${new URLSearchParams({ agent })}`,
+      undefined,
+      signal,
+    );
+  }
+  managedInspect(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+    return this.request<ManagedInspection>(
+      `managed/inspect?${new URLSearchParams({ sessionId, agent })}`,
+      undefined,
+      signal,
+    );
+  }
+  managedAction(operation: "create" | "adopt" | "release" | "reconcile", body: ManagedActionBody) {
+    return this.request<ManagedActionResult>(`managed/${operation}`, body);
+  }
+  sessionCapabilities(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+    return agent === "codex"
+      ? this.codexCapabilities(sessionId, signal)
+      : this.request<SessionCapabilities>(
+          `managed/capabilities?${new URLSearchParams({ sessionId, agent })}`,
+          undefined,
+          signal,
+        );
   }
   codexCapabilities(sessionId: string, signal?: AbortSignal) {
     return this.request<CodexCapabilities>(

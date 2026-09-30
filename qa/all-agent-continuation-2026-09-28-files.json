@@ -1,0 +1,173 @@
+{
+  "revision": "057da8b81a3f3c9536a568287175af8e50c12176",
+  "dirty": true,
+  "workspace": "/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib",
+  "comparison": "/tmp/agentkib-interop-2026-09-28/files.json",
+  "excluded_manifests": [
+    "qa/all-agent-continuation-2026-09-27-files.json",
+    "qa/all-agent-continuation-2026-09-28-files.json"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "baseline_sha256": "df78505f9b65b766bfd12cdfae240a389aab605bc720083fa145b15af94b3edd",
+      "sha256": "4a2d60eaeffcef5a5f6e197797e82bf3d6ca928bf35acbb36d5d1b678be0c4ee"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "baseline_sha256": "bf64fe8da279206b1ff69299181529d4cc37f038c6939ccdc45334145ef65702",
+      "sha256": "adacb7b52052d1def7629e2982e0e7484c95cf463e72e4b36177339b1c514b41"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/RemoteConnectionPanel.test.tsx",
+      "baseline_sha256": "e4a483eb9c40e21595ee428e99ae3529eaeac06fe655bb6e8d6ebf7e3b131652",
+      "sha256": "1963a040c5efe2bade02aa5c62b9a621a433af2ff3f2261378969b3e85e7b9dd"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/RemoteConnectionPanel.tsx",
+      "baseline_sha256": "8f46580a0cd3386f776c8df473d99f0f9b431d0a60c8ba9e48d110131078e5cf",
+      "sha256": "567b2d5cb584c3051ad8448a1ca09aab3472c39bb9f92713fcc9bdd95d3ed9ac"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/WebAccessSettings.test.tsx",
+      "baseline_sha256": "da11be28660f7bd508db466fdff792f8f597ba3b4b6b94488ccd820a2ae23a06",
+      "sha256": "3caec1be83ff7d4fc35e8b039bd8e29b8187f96dcd90076e02d21b0e8198e283"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/WebAccessSettings.tsx",
+      "baseline_sha256": "cadf352f91ce111d870ac6b9ebd6597cc80cf912207b7a524c0495c34388128b",
+      "sha256": "24b9b36d222ca3c5db8727eaf6a74fbe4e3d4014e5c0dabaf8093e58213b88c6"
+    },
+    {
+      "path": "apps/desktop/vite.config.ts",
+      "baseline_sha256": "9b0dda60fae40f473c89ae109bfb36c11276ffa3155c76489ed80d489b25b33f",
+      "sha256": "fae02ec1d95b0d328d5ca05873f959dbf387ea61055dea719485e3aa898b0c3b"
+    },
+    {
+      "path": "apps/web/src/features/catalog/catalog-copy.ts",
+      "baseline_sha256": "15fa5c005ed8e809d92c1d044f517e95ed2c6113eaf5a3fe38b3005df5df4d36",
+      "sha256": "a57dac1e6ccdb73f4e4a961471aa7a1021261b493063963f80f1a0ea2cfadf8a"
+    },
+    {
+      "path": "apps/web/src/features/catalog/session-details-dialog.tsx",
+      "baseline_sha256": "541cc10b66357453c531490e32df48d365d00324668498757e9770fa3c4c872d",
+      "sha256": "1ee99b022118a8088943d74e9064a281d9de71f1d78e2af7c6c6feecccd31495"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/antigravity.rs",
+      "baseline_sha256": "f122a9afa89150117c8afa1a63c54c01080d4635f2cd61a0ac18a799c152a353",
+      "sha256": "bf79c831647b10014e7a952a855952979959044a7018667810489c7782c51c4c"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/cursor.rs",
+      "baseline_sha256": "b70b54eb281fe004b42167ce838221bc353fe1150956df717841052e0a568b2c",
+      "sha256": "e027b287def56050a779990f3676d2b281a3040f73b9e1ca4b0dfe6a3bd6d767"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/grokbuild.rs",
+      "baseline_sha256": "48f848de516301e89bc1963cc0bc4673dee6fd81d611b4546f39478b0bdee5f4",
+      "sha256": "2ce7f27251f753b58f0370ac4c2873513ca489dae0beecb812594fd7342827b3"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/interop_matrix.rs",
+      "baseline_sha256": null,
+      "sha256": "0a8c1981306b0cf3aa983c771b60e7143c1eaf88ca3f11152f51143ddc3673ca"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/lib.rs",
+      "baseline_sha256": "4a84221f59464977d68f7dc7dbed9fbf1cf23ed43b2d626be022f67354aa459f",
+      "sha256": "720d80a5e6a21e84a962a520bbf24ed3f8304d671599f38b435403638270453d"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/openclaw.rs",
+      "baseline_sha256": "3b374fa984e1c9378a0f033f4c98848726509d3cff8bf0223e3f35e4e4d99a28",
+      "sha256": "8ca5a666e8434b1a1746412b00e2b22d62399ee310b08b79789899291e813b3c"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/openclaw_sqlite.rs",
+      "baseline_sha256": "f8320be37a2faab258b121952f373a7b05fd4e223ac0e49a1ce63bd0b3e92a46",
+      "sha256": "aa9f0d3780fd384f3a334793ccdefe7e0f822ad10cd995c072b6d90f1f8f1dac"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/opencode.rs",
+      "baseline_sha256": "2b9ac1ab103334cfbe03da449089e09ecad28f3eda483328791698153643c816",
+      "sha256": "a69e6fa79a8cf4324a5b25822690fb62415c8cf7e7a0a93af686c00a446c6948"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed.rs",
+      "baseline_sha256": "6bbbe0f355d412a280407378c7dbfb9d078f9a1e557fa5f3c673bf18b0f417ae",
+      "sha256": "e9d15e647ee4559b05c036d068abeb9769834c495bd733ad7333dacd6c184893"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/completion.rs",
+      "baseline_sha256": "4f5bb19b81604487d4e3538c71d06ca3e65b3a719a6f4d3ae83210db10b7947f",
+      "sha256": "89fed0b688ffaa893da6477e12e82078af924f52bf8c76c1208d21633834caee"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/state.rs",
+      "baseline_sha256": "5847d09204450ed890c1c8deeb9bedbfbf8d0b822deff5d1a2b1090cbf17d0f2",
+      "sha256": "a3ac63c9570c0d55b54ba4502cb76f3284bebeab7730250aac7570d75a342a92"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/transport.rs",
+      "baseline_sha256": "d7fa5134b6d82489c71cc509df4beaba7cf45b3df04e1189efc6e552ae08fe90",
+      "sha256": "3b00c26f6023617bcd474fae3f18be28bbe9184ccaf59f1753f760b7be5c903d"
+    },
+    {
+      "path": "docs/FEATURES.md",
+      "baseline_sha256": "11c2ec970f5457d45083f7fe0daedc5087029005d13b67bec84867bf69c57dcd",
+      "sha256": "5474648b40bf287b2c8e787f023f0cab513fb14e932e9b677085ebd4fb8a75ee"
+    },
+    {
+      "path": "docs/SESSION-INTEROPERABILITY.md",
+      "baseline_sha256": "a498552436060bd422e58c4caff0ac94ac9affc8dabb487a3092d507b83db274",
+      "sha256": "157ce0cb45cbd610ed440faba323ff76470d9d3dd985bec891b59be45a4d058b"
+    },
+    {
+      "path": "docs/WEB-SELF-HOSTING.md",
+      "baseline_sha256": "7dc369421ee51b6d7939f174e586bb316d9854cd34714ab73f688e22d22995ff",
+      "sha256": "081780694b5a1d958060da89dca0cbb9a41c5c3d6779400eee07d6c4ea4d426f"
+    },
+    {
+      "path": "qa/all-agent-continuation-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "8757d88e3ac9174a090d33564aeaf90f53fc5931a280bedcefe24cb0dbb053cf"
+    },
+    {
+      "path": "qa/codex-native-isolation-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "320b30c5275ee5421ed950de7ace65003353bde518b4958b06e251116648aa11"
+    },
+    {
+      "path": "qa/cursor-interop-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "98643bb5b49b32bd8f7f5e91624d27bc36dbdc716274873ae242174baedfa817"
+    },
+    {
+      "path": "qa/free-model-native-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "0a35a5bad0d01358dfae94fcaead3ed9176af6077d3627955b2c3781fe442def"
+    },
+    {
+      "path": "qa/interop-matrix-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "43bc6e0bc1687d4a501d76b21871ae1565adfd8c99bf67147f21d768518e86a2"
+    },
+    {
+      "path": "qa/probes/claude-native-reply.mjs",
+      "baseline_sha256": null,
+      "sha256": "80d6f81724363ff0cf6adc9ae4df76fa529a086f2b5cf4b122510798aa614aaa"
+    },
+    {
+      "path": "qa/probes/opencode-native-free.mjs",
+      "baseline_sha256": null,
+      "sha256": "37212f51732e4bfda7c25bbb7da7d88f99c7a578c5e2c47b9a3e77a37b74ef89"
+    },
+    {
+      "path": "qa/quality-gates-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "371429edbbf5f8c6d20d0d1fe0f7f7d8537080ed338f9837a7ab26783d2c91fe"
+    }
+  ],
+  "missing_baseline_files": []
+}

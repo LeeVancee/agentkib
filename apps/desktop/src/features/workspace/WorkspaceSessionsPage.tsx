@@ -1,3 +1,4 @@
+import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,8 @@ import {
 import { api } from "@/core/api";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
+import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { withAsyncCleanup } from "@/lib/utils";
 
@@ -90,6 +93,7 @@ export function WorkspaceSessionsPage({
   targetAgents: AgentKind[];
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
+  const [showClaude, setShowClaude] = useState(false);
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -232,6 +236,10 @@ export function WorkspaceSessionsPage({
   );
 
   const selected = sessions.find((session) => session.id === selectedId);
+  const sourceCapability = useSessionSourceCapability(
+    enabled && selected?.availability === "readable" ? selected.id : undefined,
+    readRevision,
+  );
   const selectedSources = selected
     ? sessionSourceDetails(selected, sessions, tr, formatDateTime)
     : [];
@@ -258,10 +266,6 @@ export function WorkspaceSessionsPage({
     }
     const target = sessions.find(({ id }) => id === resumeContinuation.sessionId);
     if (!target) return;
-    if (!canContinueFromHistory(target.agent)) {
-      onResumeConsumed?.();
-      return;
-    }
     revealSession(target);
     setFilter("all");
     setSelectedId(resumeContinuation.sessionId);
@@ -402,6 +406,9 @@ export function WorkspaceSessionsPage({
                 </Badge>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
+                  Claude Code
+                </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
@@ -694,18 +701,21 @@ export function WorkspaceSessionsPage({
                     )}
                   </div>
                 </div>
-                {selected.availability === "readable" &&
-                  canContinueFromHistory(selected.agent) &&
-                  events.length > 0 && (
-                    <Button
-                      variant="outline"
-                      className="shrink-0"
-                      onClick={() => setShowHandoff(true)}
-                    >
-                      <FileOutput size={14} />
-                      {tr("handoff.create")}
-                    </Button>
-                  )}
+                {selected.availability === "readable" && events.length > 0 && (
+                  <Button
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={!canContinueFromHistory(sourceCapability)}
+                    title={
+                      sourceCapability?.reason ||
+                      (!sourceCapability ? tr("handoff.checkingSource") : undefined)
+                    }
+                    onClick={() => setShowHandoff(true)}
+                  >
+                    <FileOutput size={14} />
+                    {tr("handoff.create")}
+                  </Button>
+                )}
               </>
             ) : (
               <div className="flex items-center gap-3 text-muted-foreground">
@@ -719,6 +729,34 @@ export function WorkspaceSessionsPage({
             )}
           </header>
           <div className="min-h-0 overflow-auto bg-muted/15">
+            {enabled && (
+              <NativeImportRecoveryPanel
+                workspaceId={workspace.id}
+                readableSourceIds={sessions
+                  .filter((session) => session.availability === "readable")
+                  .map((session) => session.id)}
+                onReview={(operation) => {
+                  const source = sessions.find(
+                    (session) =>
+                      session.id === operation.source_session_id &&
+                      session.availability === "readable",
+                  );
+                  if (!source) return;
+                  revealSession(source);
+                  setFilter("all");
+                  setSelectedId(source.id);
+                  setResumedRequest({
+                    sessionId: source.id,
+                    targetAgent: operation.launch_request.target_agent,
+                    historyBudgetTokens: 120_000,
+                    format: "markdown",
+                    autoPrepare: false,
+                  });
+                  setShowDetail(true);
+                  setShowHandoff(true);
+                }}
+              />
+            )}
             {error && (
               <div className="mx-5 mt-5">
                 {historyError ? (
@@ -805,8 +843,17 @@ export function WorkspaceSessionsPage({
           </div>
         </Card>
       </div>
+      {showClaude && (
+        <ClaudeSessionPanel
+          key={workspace.id}
+          workspaceId={workspace.id}
+          initialSessionId={selected?.agent === "claude-code" ? selected.id : undefined}
+          onClose={() => setShowClaude(false)}
+        />
+      )}
       {showHandoff && selected && (
         <SessionHandoffDialog
+          key={`${workspace.id}:${selected.id}`}
           workspace={workspace}
           session={selected}
           targetAgents={targetAgents}

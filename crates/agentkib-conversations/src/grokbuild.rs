@@ -16,6 +16,7 @@ use crate::paging;
 use crate::{
     ConversationEventPage, ConversationProvider, ConversationSessionSummary, HandoffContext,
     NativeSessionListing, NativeSessionSummary, SessionAvailability, SessionDocument,
+    SessionLossCode, finish_document,
 };
 
 #[derive(Default)]
@@ -165,18 +166,45 @@ impl ConversationProvider for GrokBuildProvider {
         )
     }
 
-    fn read_handoff_context(&self, _native_ref: &str) -> Result<HandoffContext> {
-        bail!("Grok Build session handoff is unsupported")
+    fn read_handoff_context(&self, native_ref: &str) -> Result<HandoffContext> {
+        Ok(read_original_turns(&self.resolve(native_ref)?.transcript)?.into_handoff())
     }
 
     fn read_session_document(
         &self,
-        _source: &ConversationSessionSummary,
-        _native_ref: &str,
-        _home: Option<&Path>,
+        source: &ConversationSessionSummary,
+        native_ref: &str,
+        home: Option<&Path>,
     ) -> Result<SessionDocument> {
-        bail!("Grok Build session documents are unsupported")
+        let parsed = read_original_turns(&self.resolve(native_ref)?.transcript)?;
+        finish_document(source, parsed.turns, parsed.losses, home)
     }
+}
+
+// xai-grok-sampling-types::ConversationItem is internally tagged by `type`.
+// It is not an OpenAI role wrapper: the discriminator must remain authoritative.
+fn read_original_turns(path: &Path) -> Result<crate::hermes::OriginalTurns> {
+    let mut parsed = crate::hermes::OriginalTurns::default();
+    for (line, record) in crate::hermes::read_original_jsonl(path)? {
+        match record.get("type").and_then(Value::as_str) {
+            Some("user" | "assistant" | "tool_result") => {
+                parsed.push_message(
+                    line,
+                    &record,
+                    record.get("type").and_then(Value::as_str),
+                    record.get("timestamp"),
+                )?;
+            }
+            Some("reasoning") => parsed.loss(SessionLossCode::ReasoningExcluded),
+            Some("system") => {}
+            // Backend tools are executed by the source provider. Their native
+            // replay state cannot be executed by a different provider.
+            Some("backend_tool_call") => parsed.loss(SessionLossCode::DamagedRecord),
+            _ => bail!("Unsupported Grok Build original-history record type"),
+        }
+    }
+    parsed.ensure_readable()?;
+    Ok(parsed)
 }
 
 fn summary(session: Session) -> NativeSessionSummary {
@@ -254,6 +282,17 @@ fn parse_summary(root: &Path, archived: bool, path: &Path) -> Result<Option<Sess
 }
 
 #[cfg(test)]
+pub(super) fn matrix_parse(path: &Path) -> Result<SessionDocument> {
+    let parsed = read_original_turns(path)?;
+    finish_document(
+        &crate::hermes::fixture_source(AgentKind::GrokBuild),
+        parsed.turns,
+        parsed.losses,
+        None,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -274,6 +313,74 @@ mod tests {
         )
         .unwrap();
         session
+    }
+
+    #[test]
+    fn original_import_rejects_damaged_user_even_when_assistant_is_readable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        for user in [r#"{"type":"user"}"#, r#"{"type":"user","content":null}"#] {
+            fs::write(
+                &path,
+                format!("{user}\n{{\"type\":\"assistant\",\"content\":\"answer\"}}\n"),
+            )
+            .unwrap();
+            assert!(read_original_turns(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn original_document_uses_grok_discriminators_and_flat_tool_fields() {
+        use crate::{SessionBlock, SessionLossCode};
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("project");
+        let session = write_session(dir.path(), "sessions/project/s1", &workspace, "id1".into());
+        let records = [
+            serde_json::json!({"type":"user","content":[{"type":"text","text":"original question"},{"type":"image","url":"data:image/png;base64,YWJj"}]}),
+            serde_json::json!({"type":"reasoning","role":"assistant","content":"must stay excluded"}),
+            serde_json::json!({"type":"assistant","content":"inspecting","tool_calls":[{"id":"call1","name":"read","arguments":"{}"}]}),
+            serde_json::json!({"type":"tool_result","tool_call_id":"call1","content":"result","images":[{"type":"image","url":"data:image/png;base64,ZGVm"}]}),
+            serde_json::json!({"type":"assistant","content":"answer"}),
+        ];
+        fs::write(
+            session.join("chat_history.jsonl"),
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let provider = GrokBuildProvider::with_home(dir.path().into());
+        let native = &provider.list_sessions(&workspace).unwrap()[0].native_ref;
+        let document = provider
+            .read_session_document(
+                &crate::hermes::fixture_source(AgentKind::GrokBuild),
+                native,
+                None,
+            )
+            .unwrap();
+        assert_eq!(document.turns.len(), 4);
+        assert!(
+            matches!(&document.turns[1].blocks[1], SessionBlock::ToolCall { call_id, name, .. } if call_id == "call1" && name == "read")
+        );
+        assert!(
+            matches!(&document.turns[2].blocks[0], SessionBlock::ToolResult { call_id, output, .. } if call_id == "call1" && output == "result")
+        );
+        assert!(matches!(
+            &document.turns[2].blocks[1],
+            SessionBlock::Attachment { .. }
+        ));
+        assert_eq!(document.losses.len(), 1);
+        assert_eq!(document.losses[0].code, SessionLossCode::ReasoningExcluded);
+        assert_eq!(
+            provider
+                .read_handoff_context(native)
+                .unwrap()
+                .messages
+                .len(),
+            3
+        );
     }
 
     #[test]

@@ -1,10 +1,16 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { api } from "@/core/api";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeI18n } from "@/core/i18n";
 import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
 import { Changes } from "./changes";
+
+vi.mock("@/core/api", () => ({
+  api: { continueSessionHandoff: vi.fn(), launchSessionHandoff: vi.fn() },
+}));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>();
@@ -85,5 +91,47 @@ describe("Changes", () => {
 
     expect(applyOnly.disabled).toBe(false);
     expect(applyAndContinue.disabled).toBe(false);
+  });
+  it("preserves an unknown native import for reconciliation without submitting it again", async () => {
+    vi.mocked(api.continueSessionHandoff).mockResolvedValue({
+      status: "import-outcome-unknown",
+      error: { key: "runtime.unknown" },
+    });
+    vi.mocked(api.launchSessionHandoff).mockResolvedValue({
+      target_agent: "opencode",
+      terminal: "Terminal",
+    });
+    const request: SessionHandoffLaunchRequest = {
+      mode: "native-import",
+      operation_id: "op",
+      plan_hash: "hash",
+      target_agent: "opencode",
+      workspace_id: "workspace",
+      capabilities: launchRequest.capabilities,
+    };
+    const onApplied = vi.fn();
+    const onLaunchCompleted = vi.fn();
+    const props = {
+      origin: "handoff" as const,
+      launchRequest: request,
+      onPlanHome: vi.fn(),
+      onApplied,
+      onLaunchCompleted,
+      onRejected: vi.fn(),
+      onApplyingChange: vi.fn(),
+    };
+    const { rerender } = render(
+      <Changes {...props} changeSet={{ ...changeSet, requires_home_approval: false }} />,
+    );
+    expect(screen.queryByRole("button", { name: "Apply only" })).toBeNull();
+    expect(screen.getByText(/target Agent CLI to create/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Apply and continue in OpenCode" }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(true));
+    rerender(<Changes {...props} />);
+    expect(screen.getByText("Import needs verification")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Check import and continue" }));
+    await waitFor(() => expect(onLaunchCompleted).toHaveBeenCalledTimes(1));
+    expect(api.continueSessionHandoff).toHaveBeenCalledTimes(1);
+    expect(api.launchSessionHandoff).toHaveBeenCalledWith(request);
   });
 });

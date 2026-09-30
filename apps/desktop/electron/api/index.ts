@@ -1,3 +1,4 @@
+import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
@@ -92,6 +93,11 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface DesktopApi {
+  claude: { request(input: Record<string, unknown>): Promise<unknown> };
+  account: {
+    request(input: DesktopAccountRequest): Promise<DesktopAccountStatus>;
+    onStatus(listener: (status: DesktopAccountStatus) => void): DesktopEventUnsubscribe;
+  };
   web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
   platform: NodeJS.Platform;
   events: {
@@ -207,6 +213,12 @@ export interface DesktopApi {
     sessionStatus(id: string): Promise<ConversationIndexStatus[]>;
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
+    sourceCapability(
+      sessionId: string,
+    ): Promise<import("../../src/core/types").ContinuationCapability>;
+    nativeImports(
+      workspaceId: string,
+    ): Promise<import("../../src/core/types").NativeImportOperation[]>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
     planMcpConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
@@ -222,6 +234,7 @@ export interface DesktopApi {
       acceptLosses: boolean,
       historyBudgetTokens: number,
       archiveId: string | undefined,
+      targetFingerprint?: string,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,

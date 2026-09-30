@@ -12,10 +12,13 @@ import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
 
 vi.mock("@/core/api", () => ({
   api: {
+    claudeRequest: vi.fn(),
     workspaceSessions: vi.fn(),
     workspaceSessionStatus: vi.fn(),
     refreshWorkspaceSessions: vi.fn(),
     sessionEvents: vi.fn(),
+    sessionSourceCapability: vi.fn(),
+    nativeImportOperations: vi.fn(),
   },
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -46,6 +49,8 @@ describe("WorkspaceSessionsPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
+    vi.mocked(api.nativeImportOperations).mockResolvedValue([]);
     useSessionViewStore.getState().resetFilters();
     vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession]);
     vi.mocked(api.workspaceSessionStatus).mockResolvedValue([]);
@@ -53,6 +58,37 @@ describe("WorkspaceSessionsPage", () => {
     vi.mocked(api.sessionEvents).mockResolvedValue({ events: [], warnings: [] });
   });
   afterEach(cleanup);
+
+  it("opens the Claude panel from the workspace without creating a model request", async () => {
+    vi.mocked(api.claudeRequest).mockImplementation(async (input) => {
+      if (input.operation === "options") return { available: true, workspaces: [workspace] };
+      if (input.operation === "catalog") return { sessions: [], workspaces: [workspace] };
+      throw new Error(`unexpected_claude_operation:${input.operation}`);
+    });
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["claude-code"]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Claude Code" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "New Claude task" })).toBeEnabled(),
+    );
+    expect(api.claudeRequest).toHaveBeenCalledWith({ operation: "options" });
+    expect(api.claudeRequest).toHaveBeenCalledWith({ operation: "catalog" });
+    expect(
+      vi
+        .mocked(api.claudeRequest)
+        .mock.calls.every(
+          ([input]) => input.operation === "options" || input.operation === "catalog",
+        ),
+    ).toBe(true);
+  });
 
   it("shows cached sessions before a non-forced background refresh", async () => {
     const background = deferred<ConversationSessionSummary[]>();
@@ -79,7 +115,7 @@ describe("WorkspaceSessionsPage", () => {
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "keeps %s history read-only in the workspace session view",
+    "allows %s history when its concrete format is supported",
     async (agent) => {
       const source = {
         ...cachedSession,
@@ -114,7 +150,9 @@ describe("WorkspaceSessionsPage", () => {
       );
 
       expect(await screen.findByText(`${agent} history content`)).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Continue in another Agent" })).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue in another Agent" })).toBeEnabled(),
+      );
     },
   );
 

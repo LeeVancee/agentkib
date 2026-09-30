@@ -1,0 +1,16 @@
+{
+  "newModelSends": 0,
+  "nativeExecutionDisabled": true,
+  "sourceResult": "/private/tmp/agentkib-claude-resume-2026-09-30-once/results.json",
+  "receiptCompletedAfterRestart": true,
+  "nativeReplyRestoredAfterRestart": true,
+  "exactRequestReplayAfterRestartAccepted": true,
+  "transcriptUnchanged": true,
+  "nativeToolUsesInResumeTurn": 0,
+  "nativeUserTurnsMatchingPrompt": 1,
+  "nativeSessionFiles": [
+    "7b244bd4-7c05-41d7-8fdc-7b38d68291f5.jsonl"
+  ],
+  "passed": true,
+  "runtimeExit": 0
+}

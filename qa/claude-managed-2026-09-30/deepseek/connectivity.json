@@ -1,0 +1,14 @@
+{
+  "provider": "DeepSeek",
+  "selectedOpus": "deepseek-v4-pro",
+  "selectedSonnet": "deepseek-v4-pro",
+  "selectedModel": "deepseek-v4-pro",
+  "cliModel": "opus",
+  "cliOpus": "claude-opus-5",
+  "loopback": false,
+  "scheme": "https",
+  "port": 443,
+  "tcp": "connected",
+  "failureType": "SSLCertVerificationError",
+  "errno": 1
+}

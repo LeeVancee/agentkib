@@ -27,6 +27,14 @@ describe("hosted remote entry", () => {
         "/connect",
       );
       expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: hostedCopy[locale].account })).toHaveAttribute(
+        "href",
+        "https://account.agentkib.com/",
+      );
+      expect(screen.getByRole("link", { name: hostedCopy[locale].account })).toHaveAttribute(
+        "referrerpolicy",
+        "no-referrer",
+      );
       expect(fetcher).not.toHaveBeenCalled();
     },
   );

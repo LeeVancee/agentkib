@@ -1,7 +1,6 @@
 {
   "name": "agentkib",
   "private": true,
-  "packageManager": "pnpm@10.8.1",
   "scripts": {
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
@@ -18,10 +17,11 @@
     "lint": "oxlint apps/desktop/src apps/desktop/electron",
     "lint:fix": "oxlint apps/desktop/src apps/desktop/electron --fix",
     "test": "pnpm --filter @agentkib/desktop test && pnpm test:web",
-    "typecheck": "pnpm --filter @agentkib/desktop typecheck && pnpm --filter @agentkib/web typecheck"
+    "typecheck": "pnpm --filter @agentkib/backend typecheck && pnpm --filter @agentkib/desktop typecheck && pnpm --filter @agentkib/web typecheck"
   },
   "devDependencies": {
     "oxfmt": "^0.64.0",
     "oxlint": "^1.79.0"
-  }
+  },
+  "packageManager": "pnpm@10.8.1"
 }

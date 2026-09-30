@@ -1,10 +1,10 @@
 {
   "name": "@agentkib/desktop",
-  "private": true,
   "version": "0.13.0",
+  "private": true,
   "description": "Desktop app for discovering, diagnosing, and synchronizing coding agent configuration.",
-  "author": "AgentKib contributors",
   "homepage": "https://github.com/starroyhq/agentkib",
+  "author": "AgentKib contributors",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
@@ -13,7 +13,7 @@
     "build": "pnpm build:electron",
     "build:electron": "pnpm protocol:generate && pnpm runtime:build && pnpm runtime:stage && pnpm relay:stage && pnpm --filter @agentkib/web build && pnpm build:web && pnpm electron:build",
     "build:web": "tsc -b && vite build",
-    "electron:build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts",
+    "electron:build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && pnpm backend:build",
     "runtime:build:dev": "cargo build -p agentkib-runtime --features dev-app",
     "runtime:build": "cargo build --release -p agentkib-runtime",
     "runtime:stage": "node scripts/stage-electron-runtime.mjs",
@@ -23,12 +23,15 @@
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",
     "benchmark:runtime": "node scripts/benchmark-runtime.mjs",
-    "test": "pnpm runtime:build:dev && vitest run",
+    "test": "pnpm runtime:build:dev && pnpm backend:build && vitest run",
     "typecheck": "tsc -b --pretty false",
-    "relay:stage": "node scripts/stage-frpc.mjs"
+    "relay:stage": "node scripts/stage-frpc.mjs",
+    "backend:build": "vite build --config vite.backend.config.ts"
   },
   "dependencies": {
     "@agentkib/agent-identity": "workspace:*",
+    "@agentkib/backend": "workspace:*",
+    "@agentkib/runtime-protocol": "workspace:*",
     "@agentkib/session-catalog": "workspace:*",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",

@@ -20,6 +20,8 @@ compression: normal
 extraResources:
   - from: ../../LICENSE
     to: licenses/AgentKib-LICENSE
+  - from: resources/quota/resources/licenses
+    to: licenses/quota
   - from: ../web/dist
     to: web
   - from: build/runtime

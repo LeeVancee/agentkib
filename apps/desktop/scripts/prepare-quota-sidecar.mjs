@@ -47,11 +47,11 @@ const releases = {
     format: "linux-tar",
   },
   "x86_64-pc-windows-msvc": {
-    version: "0.48.0",
-    asset: "Win-CodexBar-v0.48.0.tar.gz",
-    sha256: "67c60ddbc6072df0970e146771232bbe6991f8ae330016b42d37cdeb7129ccee",
-    url: "https://codeload.github.com/nesszer/Win-CodexBar/tar.gz/refs/tags/v0.48.0",
-    format: "cargo",
+    version: "0.60.3",
+    asset: "CodexBarCLI-v0.60.3-windows-x64.zip",
+    sha256: "2f61a448e340de2b87d2a5ca3d155da5fb3bddeac890c4896ba0bdd49325f020",
+    url: "https://github.com/nesszer/Win-CodexBar/releases/download/v0.60.3/CodexBarCLI-v0.60.3-windows-x64.zip",
+    format: "zip",
   },
 };
 
@@ -66,7 +66,7 @@ const desktopDirectory = resolve(scriptDirectory, "..");
 const quotaResourcesDirectory = join(desktopDirectory, "resources/quota/resources");
 const quotaBinariesDirectory = join(desktopDirectory, "resources/quota/binaries");
 const target =
-  process.env.AGENTKIB_QUOTA_TARGET ?? process.env.CARGO_BUILD_TARGET ?? rustHostTriple();
+  process.env.AGENTKIB_QUOTA_TARGET ?? process.env.CARGO_BUILD_TARGET ?? hostQuotaTarget();
 const release = releases[target];
 
 if (process.platform === "win32" && process.arch === "arm64") {
@@ -141,57 +141,37 @@ try {
         recursive: true,
       });
     }
-  } else {
-    const sourceDirectory = join(cacheRoot, "source");
-    const manifest = join(sourceDirectory, "rust/Cargo.toml");
-    try {
-      await access(manifest);
-    } catch {
-      await rm(sourceDirectory, { recursive: true, force: true });
-      await mkdir(sourceDirectory, { recursive: true });
-      const localArchive = join(sourceDirectory, release.asset);
-      await copyFile(archive, localArchive);
-      try {
-        const unpack = spawnSync("tar", ["-xzf", release.asset, "--strip-components", "1"], {
-          cwd: sourceDirectory,
-          stdio: "inherit",
-        });
-        if (unpack.status !== 0)
-          throw new Error("Failed to extract the Win-CodexBar source archive");
-      } finally {
-        await rm(localArchive, { force: true });
-      }
-    }
+  } else if (release.format === "zip") {
+    const unpack =
+      process.platform === "win32"
+        ? spawnSync(
+            "powershell.exe",
+            [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "Expand-Archive -LiteralPath $env:AGENTKIB_QUOTA_ARCHIVE -DestinationPath $env:AGENTKIB_QUOTA_DESTINATION -Force",
+            ],
+            {
+              env: {
+                ...process.env,
+                AGENTKIB_QUOTA_ARCHIVE: archive,
+                AGENTKIB_QUOTA_DESTINATION: extracted,
+              },
+              stdio: "inherit",
+            },
+          )
+        : spawnSync("unzip", ["-q", archive, "-d", extracted], { stdio: "inherit" });
+    if (unpack.status !== 0) throw new Error("Failed to extract the Win-CodexBar CLI archive");
 
-    const cargoTargetDirectory = join(cacheRoot, "cargo-target");
-    const build = spawnSync(
-      "cargo",
-      [
-        "build",
-        "--locked",
-        "--release",
-        "--manifest-path",
-        manifest,
-        "--bin",
-        "codexbar",
-        "--target",
-        target,
-      ],
-      {
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          CARGO_TARGET_DIR: cargoTargetDirectory,
-        },
-      },
-    );
-    if (build.status !== 0) throw new Error("Failed to build the Win-CodexBar CLI");
-
-    const source = join(cargoTargetDirectory, target, "release/codexbar.exe");
+    const source = join(extracted, "codexbar-cli.exe");
     await access(source);
     const resourceDirectory = join(quotaResourcesDirectory, "windows");
     await mkdir(resourceDirectory, { recursive: true });
     await copyFile(source, join(resourceDirectory, "agentkib-quota-sidecar.exe"));
+  } else {
+    throw new Error(`Unsupported quota archive format: ${release.format}`);
   }
   process.stdout.write(
     `AgentKib quota sidecar: prepared collector ${release.version} for ${target}.\n`,
@@ -200,12 +180,17 @@ try {
   await rm(extracted, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 
-function rustHostTriple() {
-  const result = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
-  if (result.status !== 0) throw new Error("Unable to determine Rust host triple");
-  const host = result.stdout.match(/^host:\s+(.+)$/m)?.[1]?.trim();
-  if (!host) throw new Error("rustc did not report a host triple");
-  return host;
+function hostQuotaTarget() {
+  const arch = { arm64: "aarch64", x64: "x86_64" }[process.arch];
+  const platform = {
+    darwin: "apple-darwin",
+    linux: "unknown-linux-gnu",
+    win32: "pc-windows-msvc",
+  }[process.platform];
+  if (!arch || !platform) {
+    throw new Error(`Unsupported quota host: ${process.platform}/${process.arch}`);
+  }
+  return `${arch}-${platform}`;
 }
 
 async function hasExpectedHash(path, expected, algorithm = "sha256") {

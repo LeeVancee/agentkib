@@ -1,6 +1,6 @@
 import type { IpcMainInvokeEvent } from "electron";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
-import type { DesktopRuntimeHost } from "../runtime-host";
+import type { RuntimeHost } from "../runtime-host";
 import { createIpcRegistrar } from "./registrar";
 import {
   optionalPositiveInteger,
@@ -14,7 +14,7 @@ import {
 } from "./validation";
 
 interface RuntimeIpcOptions {
-  runtime(): DesktopRuntimeHost;
+  runtime(): RuntimeHost;
   assertTrustedRenderer(event: IpcMainInvokeEvent): void;
   withRuntimeCapabilities(runtime: unknown): unknown;
 }

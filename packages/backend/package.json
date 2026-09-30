@@ -1,0 +1,20 @@
+{
+  "name": "@agentkib/backend",
+  "version": "0.13.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./migration": "./src/migration.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentkib/runtime-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^7.0.2"
+  }
+}

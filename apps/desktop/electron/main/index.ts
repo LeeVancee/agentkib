@@ -1,3 +1,5 @@
+import { DesktopAccountService } from "./account/service";
+import type { DesktopAccountRequest } from "./account/state";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { WebAccessService, createWebControlState } from "./web/service";
@@ -14,6 +16,7 @@ import {
   protocol,
   powerMonitor,
   shell,
+  safeStorage,
   type IpcMainInvokeEvent,
 } from "electron";
 import { autoUpdater } from "electron-updater";
@@ -64,6 +67,7 @@ let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: DesktopRuntimeHost | undefined;
+let accountService: DesktopAccountService | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
@@ -132,6 +136,7 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
+  accountService?.shutdown();
   refreshCoordinator?.stop();
   nativeShell?.destroy();
   void (async () => {
@@ -191,6 +196,18 @@ async function startApplication(): Promise<void> {
   const sharedControl = createWebControlState();
   webAccess = new WebAccessService({
     sharedControl,
+    account: {
+      signedIn: () => accountService?.signedIn ?? false,
+      accountId: () => accountService?.accountId,
+      ensureDeviceOwner: async (id) => {
+        if (id && !accountService) throw new Error("account_login_required");
+        await accountService?.ensureDeviceOwner(id);
+      },
+      registerDevice: (input) => {
+        if (!accountService) throw new Error("account_login_required");
+        return accountService.registerDevice(input);
+      },
+    },
     onPairingRequested: showMainWindow,
     bundledFrpcPath: app.isPackaged
       ? path.join(process.resourcesPath, "bin", process.platform === "win32" ? "frpc.exe" : "frpc")
@@ -235,6 +252,29 @@ async function startApplication(): Promise<void> {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
       return requireRuntime().request(RUNTIME_METHODS.webRequest, params);
     },
+  });
+  accountService = new DesktopAccountService({
+    directory: path.join(electronDataPath, "account"),
+    storage: {
+      available: () =>
+        safeStorage.isEncryptionAvailable() &&
+        (process.platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text"),
+      encrypt: (value) => safeStorage.encryptString(value),
+      decrypt: (value) => safeStorage.decryptString(value),
+    },
+    openExternal: (url) => shell.openExternal(url),
+    pauseRemote: () => webAccess!.request({ operation: "relay-stop" }),
+    identity: () => webAccess!.accountIdentity(),
+    bindIdentity: (id) => webAccess!.bindAccountIdentity(id),
+    prepareIdentityClaim: (id) => webAccess!.prepareAccountClaim(id),
+    onStatus: (status) => {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send("agentkib:account:status", status);
+    },
+  });
+  // Account network availability must not delay local conversations or window startup.
+  void accountService.initialize().catch(() => {
+    process.stderr.write("AgentKib account initialization failed\n");
   });
   await webAccess.initialize();
   lanWebAccess = new WebAccessService({
@@ -632,6 +672,17 @@ function registerShellIpc(): void {
 }
 
 function registerHomeIpc(): void {
+  ipcMain.handle("agentkib:account:request", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    if (
+      !mainWindow ||
+      event.sender !== mainWindow.webContents ||
+      event.senderFrame !== mainWindow.webContents.mainFrame
+    )
+      throw new Error("account_untrusted_renderer");
+    if (!accountService) throw new Error("account_unavailable");
+    return accountService.request(input as DesktopAccountRequest);
+  });
   ipcMain.handle("agentkib:remote:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.remoteRequest, requireRemoteRequest(input));

@@ -8,7 +8,13 @@ import { AttachmentStore, AttachmentError } from "./attachments";
 import { dispatchClaude } from "./claude-dispatch";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
-import { RelayManager, type RelayStatus } from "./relay/manager";
+import {
+  DEFAULT_RELAY_BROKER,
+  RelayManager,
+  validateRegistration,
+  type Registration,
+  type RelayStatus,
+} from "./relay/manager";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
 export function isPrivateIPv4(address: string): boolean {
@@ -206,6 +212,15 @@ export class WebAccessService {
         hosts: string[];
       }) => Promise<{ csrPem: string }>;
       bundledFrpcPath?: string;
+      account?: {
+        signedIn(): boolean;
+        accountId(): string | undefined;
+        ensureDeviceOwner(accountId?: string): Promise<void>;
+        registerDevice(input: {
+          registrationId: string;
+          credential: string;
+        }): Promise<Record<string, unknown>>;
+      };
       workspaceRequest?: () => Promise<{ id: string; name: string; path: string }[]>;
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
@@ -434,6 +449,13 @@ export class WebAccessService {
           throw new Error("remote_enable_unavailable");
         if (input.reenroll && (typeof input.inviteCode !== "string" || !input.inviteCode.trim()))
           throw new Error("invitation_required_for_reenrollment");
+        if (input.brokerUrl === DEFAULT_RELAY_BROKER) {
+          const identity = await this.accountIdentity();
+          if (identity?.accountClaimPending) throw new Error("account_claim_pending");
+          if (identity?.accountId && !this.options.account)
+            throw new Error("account_login_required");
+          await this.options.account?.ensureDeviceOwner(identity?.accountId);
+        }
         const changedBroker =
           !!this.config.relay && this.config.relay.brokerUrl !== input.brokerUrl;
         const next = this.validateConfig({
@@ -487,6 +509,10 @@ export class WebAccessService {
         break;
       }
       case "relay-stop":
+        await this.save({
+          ...this.config,
+          ...(this.config.relay ? { relay: { ...this.config.relay, enabled: false } } : {}),
+        });
         this.relayEpoch += 1;
         await this.relay?.stop();
         if (this.config.relay) this.config.relay.enabled = false;
@@ -870,6 +896,58 @@ export class WebAccessService {
       preview: { host: "127.0.0.1" as const, port: address.port },
     };
   }
+  /** Main-process account bridge only. Never included in WebAdminStatus or HTTP routes. */
+  async accountIdentity(): Promise<Registration | undefined> {
+    const directory = join(
+      this.options.dataDir,
+      "relay",
+      digest(DEFAULT_RELAY_BROKER).slice(0, 24),
+    );
+    try {
+      const value = JSON.parse(await readFile(join(directory, "registration.json"), "utf8"));
+      if (value.brokerUrl !== DEFAULT_RELAY_BROKER) throw new Error("invalid_account_registration");
+      return validateRegistration(value, DEFAULT_RELAY_BROKER);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+  async prepareAccountClaim(accountId: string): Promise<void> {
+    const identity = await this.accountIdentity();
+    if (!identity) throw new Error("account_device_missing");
+    if (identity.accountClaimPending && identity.accountClaimAccountId !== accountId)
+      throw new Error("account_claim_pending");
+    await this.request({ operation: "relay-stop" });
+    await this.writeAccountIdentity({
+      ...identity,
+      accountClaimPending: true,
+      accountClaimAccountId: accountId,
+    });
+  }
+  async bindAccountIdentity(accountId: string): Promise<void> {
+    const identity = await this.accountIdentity();
+    if (!identity || (identity.accountId && identity.accountId !== accountId))
+      throw new Error("account_device_conflict");
+    if (identity.accountClaimPending && identity.accountClaimAccountId !== accountId)
+      throw new Error("account_claim_pending");
+    const {
+      accountClaimPending: _pending,
+      accountClaimAccountId: _pendingOwner,
+      ...confirmed
+    } = identity;
+    await this.writeAccountIdentity({ ...confirmed, accountId });
+  }
+  private async writeAccountIdentity(identity: Registration): Promise<void> {
+    const value = validateRegistration(identity, DEFAULT_RELAY_BROKER);
+    const file = join(
+      this.options.dataDir,
+      "relay",
+      digest(DEFAULT_RELAY_BROKER).slice(0, 24),
+      "registration.json",
+    );
+    await writeFile(file + ".tmp", JSON.stringify(value), { mode: 0o600 });
+    await rename(file + ".tmp", file);
+  }
   private startRelay(inviteCode?: string, reenroll?: boolean) {
     const config = this.config.relay;
     if (!config?.enabled) return;
@@ -881,6 +959,19 @@ export class WebAccessService {
       createCsr:
         this.options.createRelayCsr ?? (() => Promise.reject(new Error("runtime_unavailable"))),
       inviteCode,
+      ...(config.brokerUrl === DEFAULT_RELAY_BROKER
+        ? {
+            authorizeAccount: (accountId?: string) =>
+              this.options.account?.ensureDeviceOwner(accountId) ?? Promise.resolve(),
+            ...(this.options.account?.signedIn()
+              ? {
+                  registrationAccountId: this.options.account.accountId(),
+                  registerAccount: (input: { registrationId: string; credential: string }) =>
+                    this.options.account!.registerDevice(input),
+                }
+              : {}),
+          }
+        : {}),
       reenroll,
       stateDirectory: join(this.options.dataDir, "relay", digest(config.brokerUrl).slice(0, 24)),
       target: targets.control,

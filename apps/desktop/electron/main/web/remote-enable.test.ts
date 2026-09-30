@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import type { RelayOptions, RelayStatus } from "./relay/manager";
 
 const { relays } = vi.hoisted(() => ({
@@ -15,7 +16,8 @@ const { relays } = vi.hoisted(() => ({
     report(status: RelayStatus): void;
   }[],
 }));
-vi.mock("./relay/manager", () => ({
+vi.mock("./relay/manager", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./relay/manager")>()),
   RelayManager: class {
     status: RelayStatus = { phase: "disabled" };
     constructor(readonly options: RelayOptions) {
@@ -300,5 +302,71 @@ describe("remote enable orchestration", () => {
     expect((await status()).devices).toEqual([]);
     const oldBrowser = await fetch(`http://127.0.0.1:${port}/api/web/v1/catalog`, { headers });
     expect(oldBrowser.status).toBe(401);
+  });
+});
+
+describe("account ownership and durable pause", () => {
+  async function saveIdentity(extra: object = {}) {
+    const directory = join(
+      dir,
+      "relay",
+      createHash("sha256").update(brokerUrl).digest("hex").slice(0, 24),
+    );
+    await mkdir(directory, { recursive: true });
+    const value = {
+      deviceId: "a".repeat(32),
+      credential: "b".repeat(43),
+      brokerUrl,
+      controlHost: "device.control.example.com",
+      previewHost: "device.preview.example.com",
+      tunnelHost: "tunnel.example.com",
+      tunnelPort: 443,
+      ...extra,
+    };
+    await writeFile(join(directory, "registration.json"), JSON.stringify(value));
+    return value;
+  }
+  it("refuses account-owned remote enable without an account bridge", async () => {
+    await saveIdentity({ accountId: "owner" });
+    await expect(service.request({ operation: "remote-enable", brokerUrl })).rejects.toThrow(
+      "account_login_required",
+    );
+    expect(relays).toHaveLength(0);
+  });
+  it("blocks an uncertain claim across restart until binding is confirmed", async () => {
+    await saveIdentity();
+    await service.prepareAccountClaim("owner");
+    expect((await service.accountIdentity())?.accountClaimPending).toBe(true);
+    expect((await service.accountIdentity())?.accountClaimAccountId).toBe("owner");
+    await expect(service.prepareAccountClaim("other")).rejects.toThrow("account_claim_pending");
+    await expect(service.bindAccountIdentity("other")).rejects.toThrow("account_claim_pending");
+    await service.shutdown();
+    service = new WebAccessService({
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: async () => ({}),
+    });
+    await service.initialize();
+    await expect(service.request({ operation: "remote-enable", brokerUrl })).rejects.toThrow(
+      "account_claim_pending",
+    );
+    await service.bindAccountIdentity("owner");
+    expect(await service.accountIdentity()).toMatchObject({
+      accountId: "owner",
+      deviceId: "a".repeat(32),
+      credential: "b".repeat(43),
+    });
+    expect((await service.accountIdentity())?.accountClaimPending).toBeUndefined();
+  });
+  it("writes disabled intent before stopping and retains browser grants", async () => {
+    await service.request({ operation: "remote-enable", brokerUrl });
+    await pairBrowser();
+    relays[0].stop.mockImplementationOnce(async () => {
+      const persisted = JSON.parse(await readFile(join(dir, "web-access.json"), "utf8"));
+      expect(persisted.config.relay.enabled).toBe(false);
+      expect(persisted.credentials).toHaveLength(1);
+    });
+    await service.request({ operation: "relay-stop" });
+    expect((await status()).devices).toHaveLength(1);
   });
 });

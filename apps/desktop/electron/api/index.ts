@@ -1,3 +1,4 @@
+import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
@@ -93,6 +94,10 @@ export interface DesktopRuntimeStatus {
 
 export interface DesktopApi {
   claude: { request(input: Record<string, unknown>): Promise<unknown> };
+  account: {
+    request(input: DesktopAccountRequest): Promise<DesktopAccountStatus>;
+    onStatus(listener: (status: DesktopAccountStatus) => void): DesktopEventUnsubscribe;
+  };
   web: { request(input: WebAdminRequest): Promise<WebAdminStatus> };
   platform: NodeJS.Platform;
   events: {

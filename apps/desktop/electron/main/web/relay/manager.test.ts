@@ -846,3 +846,37 @@ describe("isolated local transport fault exercise", () => {
       );
   }, 15_000);
 });
+
+describe("account device registration", () => {
+  it("persists account ownership with the pending identity and never stores an access token", async () => {
+    const path = await directory();
+    const registerAccount = vi.fn(async (input: { registrationId: string; credential: string }) => {
+      const pending = JSON.parse(await readFile(join(path, "registration-pending.json"), "utf8"));
+      expect(pending).toMatchObject({ ...input, accountId: "account-a" });
+      const { credential: _credential, ...description } = assignment;
+      return { ...description, accountId: "account-a" };
+    });
+    const { internal } = setup(path, { registrationAccountId: "account-a", registerAccount });
+    await internal.register(1);
+    expect(registerAccount).toHaveBeenCalledOnce();
+    const stored = JSON.parse(await readFile(join(path, "registration.json"), "utf8"));
+    expect(stored.accountId).toBe("account-a");
+    expect(stored.accessToken).toBeUndefined();
+    expect(stored.refreshToken).toBeUndefined();
+  });
+  it("does not retry an account registration under another logged-in account", async () => {
+    const path = await directory();
+    const first = setup(path, {
+      registrationAccountId: "account-a",
+      registerAccount: async () => {
+        throw new Error("response lost");
+      },
+    });
+    await expect(first.internal.register(1)).rejects.toThrow();
+    await first.manager.stop();
+    const registerAccount = vi.fn();
+    const second = setup(path, { registrationAccountId: "account-b", registerAccount });
+    await expect(second.internal.register(1)).rejects.toThrow("account_registration_pending");
+    expect(registerAccount).not.toHaveBeenCalled();
+  });
+});

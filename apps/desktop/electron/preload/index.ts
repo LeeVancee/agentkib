@@ -1,3 +1,4 @@
+import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus } from "../api";
 import type {
@@ -16,6 +17,12 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 const desktopApi = Object.freeze({
   platform: process.platform,
+  account: Object.freeze({
+    request: (input: DesktopAccountRequest) =>
+      ipcRenderer.invoke("agentkib:account:request", input),
+    onStatus: (listener: (status: DesktopAccountStatus) => void) =>
+      subscribe("agentkib:account:status", listener),
+  }),
   events: Object.freeze({
     onWindowActivity: (listener: (active: boolean) => void) =>
       subscribe("agentkib:window-activity", listener),

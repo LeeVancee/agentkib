@@ -24,6 +24,7 @@ import { webSettingsCopy } from "./web-settings-copy";
 import { lanSettingsCopy } from "./lan-settings-copy";
 import { remoteEntryCopy } from "./remote-entry-copy";
 import { ConnectionQr } from "./ConnectionQr";
+import { RemoteAccountSettings } from "./RemoteAccountSettings";
 import {
   Select,
   SelectContent,
@@ -374,6 +375,7 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   );
   return (
     <SettingsSection title={c.title}>
+      {!lan && <RemoteAccountSettings />}
       <SettingsNotice>{codeAccess ? c.codeScope : c.scope}</SettingsNotice>
       {status?.acceptanceSessionId && (
         <SettingsNotice>

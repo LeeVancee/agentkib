@@ -15,10 +15,14 @@ export const hostedCopy: Record<
     other: string;
     lan: string;
     lanNote: string;
+    account: string;
+    accountNote: string;
   }
 > = {
   "zh-CN": {
     title: "连接你的电脑",
+    account: "登录并选择电脑",
+    accountNote: "查看账号下的电脑。新浏览器首次连接仍需电脑上的八位远控授权码。",
     intro: "从电脑上的 AgentKib 开始，在手机上继续查看会话、处理请求和浏览产物。",
     steps: [
       "在电脑设置中打开「允许手机访问这台电脑」，开启远程访问。",
@@ -32,6 +36,8 @@ export const hostedCopy: Record<
   },
   "zh-TW": {
     title: "連接你的電腦",
+    account: "登入並選擇電腦",
+    accountNote: "查看帳號下的電腦。新瀏覽器首次連線仍需電腦上的八位遠端授權碼。",
     intro: "從電腦上的 AgentKib 開始，在手機上繼續查看對話、處理請求和瀏覽產物。",
     steps: [
       "在電腦設定中開啟「允許手機存取這台電腦」，啟用遠端存取。",
@@ -45,6 +51,9 @@ export const hostedCopy: Record<
   },
   "en-US": {
     title: "Connect your computer",
+    account: "Sign in and choose a computer",
+    accountNote:
+      "View computers on your account. A new browser still needs the computer’s eight-character remote access code to connect for the first time.",
     intro:
       "Start in AgentKib on your computer, then use your phone to read conversations, handle requests and view artifacts.",
     steps: [
@@ -59,6 +68,9 @@ export const hostedCopy: Record<
   },
   "ja-JP": {
     title: "パソコンに接続",
+    account: "ログインしてパソコンを選択",
+    accountNote:
+      "アカウントに登録されたパソコンを表示します。新しいブラウザーでの初回接続には、パソコンに表示される8桁のリモート認証コードが必要です。",
     intro:
       "パソコンの AgentKib から始めて、スマートフォンで会話の確認、リクエストの処理、成果物の閲覧を続けられます。",
     steps: [
@@ -91,6 +103,15 @@ export function HostedHome() {
         <div className="space-y-4">
           <h1 className="text-3xl font-medium md:text-4xl tracking-tight">{copy.title}</h1>
           <p className="text-sm leading-7 text-muted-foreground">{copy.intro}</p>
+          <a
+            href="https://account.agentkib.com/"
+            referrerPolicy="no-referrer"
+            className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground"
+          >
+            {copy.account}
+            <ArrowRight size={16} aria-hidden="true" />
+          </a>
+          <p className="text-sm leading-6 text-muted-foreground">{copy.accountNote}</p>
         </div>
         <ol className="space-y-5 rounded-2xl border bg-card p-4 md:p-8">
           {copy.steps.map((step, i) => {

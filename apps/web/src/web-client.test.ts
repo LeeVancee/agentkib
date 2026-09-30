@@ -252,3 +252,32 @@ it("preserves native goal intent and explicit null budget over the existing one-
     expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
   );
 });
+
+it("routes Claude managed reads and one-shot writes without changing the Codex default", async () => {
+  const transport = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    json({ available: true }),
+  );
+  const client = new WebClient(transport);
+  await client.managedOptions();
+  await client.managedOptions("claude-code");
+  await client.sessionCapabilities("session", "claude-code");
+  await client.managedInspect("session", "claude-code");
+  expect(transport.mock.calls.map(([url]) => url)).toEqual([
+    "/api/web/v1/managed/options",
+    "/api/web/v1/managed/options?agent=claude-code",
+    "/api/web/v1/managed/capabilities?sessionId=session&agent=claude-code",
+    "/api/web/v1/managed/inspect?sessionId=session&agent=claude-code",
+  ]);
+  transport.mockClear().mockRejectedValue(new Error("disconnected"));
+  await expect(
+    client.managedAction("adopt", {
+      agent: "claude-code",
+      sessionId: "session",
+      bootId: "boot",
+      requestId: "request",
+      handoffConfirmed: true,
+      handoffFingerprint: "snapshot",
+    }),
+  ).rejects.toThrow("disconnected");
+  expect(transport).toHaveBeenCalledTimes(1);
+});

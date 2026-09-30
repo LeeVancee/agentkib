@@ -1,0 +1,54 @@
+{
+  "sessionId": "fcb0d5c3-f474-4f41-a3c9-167f2fbafdb9",
+  "requests": [
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747324
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747325
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747326
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747328
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747332
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747342
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747360
+    },
+    {
+      "requestModel": "claude-opus-5-5-medium",
+      "upstreamModel": "claude-opus-5-5-medium",
+      "status": 502,
+      "createdAt": 1790747397
+    }
+  ],
+  "errorSummary": "forward failed: upstream client error (Connect)"
+}

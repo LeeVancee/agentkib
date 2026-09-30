@@ -12,6 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 mod antigravity_runner;
+mod claude_managed;
 mod claude_runner;
 mod codex_managed;
 mod obsidian;
@@ -217,6 +218,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if request.method == agentkib_protocol::WEB_REQUEST_METHOD
+                    || request.method == agentkib_protocol::CLAUDE_MANAGED_METHOD
                     || request.method == agentkib_protocol::CODEX_MANAGED_METHOD
                     || request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
                 {

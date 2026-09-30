@@ -1,0 +1,17 @@
+{
+  "nativeApiErrors": 8,
+  "statuses": {
+    "503": 8
+  },
+  "retryAttempts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "note": "Only one owner send and one CLI execution were started; CLI internally retried upstream 503 responses. No model/provider fallback or second case was launched."
+}

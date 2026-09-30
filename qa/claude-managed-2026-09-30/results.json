@@ -1,0 +1,33 @@
+{
+  "root": "/private/tmp/agentkib-claude-v1-native-2026-09-30-isolated-port",
+  "runtimeSha256": "d557ab0942ae6beaa2e5a190060cc52081f7b5b8d880a57fa1dabb213d07d36b",
+  "started": "2026-09-30T04:39:29.585Z",
+  "modelSends": 1,
+  "mcpPort": 59536,
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "c3329c2b-650e-46de-853b-6b4c4713629c",
+  "sourceSessionId": "fc34e7db-5956-4361-8974-bb26095b7fac",
+  "emptyWithoutModel": true,
+  "webSameSession": true,
+  "sendAccepted": true,
+  "status": "running",
+  "reason": null,
+  "model": "claude-opus-5",
+  "usage": null,
+  "approvalCount": 0,
+  "reply": "",
+  "markerPresent": false,
+  "decisionPresent": false,
+  "imageColorPresent": false,
+  "webEvents": 2,
+  "failure": "native_timeout",
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "settingsUnchanged": true,
+  "elapsedMs": 90446,
+  "launchCount": 1
+}

@@ -5,6 +5,7 @@ pub const PROTOCOL_VERSION: u32 = 15;
 pub const WEB_REQUEST_METHOD: &str = "web.request";
 pub const RELAY_CREATE_CSR_METHOD: &str = "relay.createCsr";
 pub const CONTROL_RECEIPT_METHOD: &str = "control.receipt";
+pub const CLAUDE_MANAGED_METHOD: &str = "claude.managed";
 pub const CODEX_MANAGED_METHOD: &str = "codex.managed";
 pub const REMOTE_REQUEST_METHOD: &str = "remote.request";
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
@@ -274,6 +275,7 @@ export const RUNTIME_METHODS = {{
   setSidebarWidthPreference: "{SET_SIDEBAR_WIDTH_PREFERENCE_METHOD}",
   remoteRequest: "{REMOTE_REQUEST_METHOD}",
   webRequest: "{WEB_REQUEST_METHOD}",
+  claudeManaged: "{CLAUDE_MANAGED_METHOD}",
   codexManaged: "{CODEX_MANAGED_METHOD}",
   relayCreateCsr: "{RELAY_CREATE_CSR_METHOD}",
   controlReceipt: "{CONTROL_RECEIPT_METHOD}",

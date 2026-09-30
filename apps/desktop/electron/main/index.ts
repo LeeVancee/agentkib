@@ -216,6 +216,10 @@ async function startApplication(): Promise<void> {
         { id: string; name: string; path: string }[]
       >;
     },
+    claudeManagedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.claudeManaged, params);
+    },
     managedRequest: (params) => {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
       return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
@@ -246,6 +250,10 @@ async function startApplication(): Promise<void> {
       return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
         { id: string; name: string; path: string }[]
       >;
+    },
+    claudeManagedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.claudeManaged, params);
     },
     managedRequest: (params) => {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
@@ -627,6 +635,11 @@ function registerHomeIpc(): void {
   ipcMain.handle("agentkib:remote:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.remoteRequest, requireRemoteRequest(input));
+  });
+  ipcMain.handle("agentkib:claude:request", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    if (!webAccess) throw new Error("runtime_unavailable");
+    return webAccess.localClaude(input);
   });
   ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
     assertTrustedRenderer(event);

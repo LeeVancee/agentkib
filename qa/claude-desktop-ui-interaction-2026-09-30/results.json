@@ -1,0 +1,57 @@
+{
+  "root": "/private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30",
+  "settingsUnchanged": true,
+  "runtimeSha256": "66fa91d437dd36f4532017a3a3bb32303002b7f1f02a6edcfb8469c738c24895",
+  "nativeSessionFiles": 1,
+  "launchCount": 1,
+  "userTurns": 1,
+  "tools": [
+    "Write",
+    "AskUserQuestion"
+  ],
+  "allToolsHaveSuccessfulResult": true,
+  "successfulToolResults": 2,
+  "toolResults": [
+    {
+      "toolUseId": "call_00_8qhWO9YGdcr3zuB7yOnC5888",
+      "isError": false,
+      "content": "File created successfully at: /private/tmp/agentkib-claude-desktop-interaction-ui-2026-09-30/workspace/ui-approved-marker.txt (file state is current in your context — no need to Read it back)"
+    },
+    {
+      "toolUseId": "call_00_ET_zluxI7CBlV88CP53lTkM0248",
+      "isError": false,
+      "content": "Your questions have been answered: \"Which synthetic namespace should this desktop test use?\"=\"cobalt-lake\". You can now continue with these answers in mind."
+    }
+  ],
+  "reply": "Marker: 00ea3334-f386-4e64-9248-c660638b35df\nSelected namespace: cobalt-lake",
+  "fileMatches": true,
+  "markerInReply": true,
+  "answerInReply": true,
+  "model": "deepseek-v4-pro",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 39680,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 20527,
+    "iterations": [],
+    "output_tokens": 317,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "status": "idle",
+  "sessionId": "274f603c-eedf-4efb-8872-532a9c91139b",
+  "nativeId": "466ea4e1-1ac2-4f5e-8561-422be0d2eb52",
+  "apiErrors": 0
+}

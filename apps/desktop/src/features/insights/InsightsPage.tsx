@@ -276,7 +276,10 @@ export function InsightsPage({
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.range52w")}>
+                <SelectTrigger
+                  className={filterClass}
+                  aria-label={range === "52w" ? tr("insights.range52w") : tr("insights.rangeYear")}
+                >
                   <SelectValue>
                     {range === "52w" ? tr("insights.range52w") : tr("insights.rangeYear")}
                   </SelectValue>

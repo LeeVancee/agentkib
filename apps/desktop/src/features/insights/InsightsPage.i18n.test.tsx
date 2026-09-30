@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, formatCompactNumber, initializeI18n, tr } from "@/core/i18n";
 import { InsightsPage } from "./InsightsPage";
@@ -51,6 +52,17 @@ describe("InsightsPage locale changes", () => {
     expect(screen.getAllByText(formatCompactNumber(123456)).length).toBeGreaterThan(0);
     expect(screen.getByRole("tab", { name: tr("common.sessions") })).toBe(sessions);
     expect(sessions.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps the range control accessible name in sync with the selected value", async () => {
+    const user = userEvent.setup();
+    render(<InsightsPage section="overview" workspaces={[]} />);
+
+    const range = screen.getByRole("combobox", { name: tr("insights.range52w") });
+    await user.click(range);
+    await user.click(await screen.findByRole("option", { name: tr("insights.rangeYear") }));
+
+    expect(screen.getByRole("combobox", { name: tr("insights.rangeYear") })).toBe(range);
   });
 
   it("retranslates metadata fallbacks computed by pure helpers", async () => {

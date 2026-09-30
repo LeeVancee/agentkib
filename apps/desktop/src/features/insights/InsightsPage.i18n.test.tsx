@@ -81,7 +81,6 @@ describe("InsightsPage locale changes", () => {
   });
 });
 
-
 describe("InsightsPage filters", () => {
   beforeEach(() => initializeI18n("en-US"));
   afterEach(cleanup);

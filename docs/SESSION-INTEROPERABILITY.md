@@ -52,6 +52,8 @@ OpenClaw 使用固定版本自带的写入函数维护原生索引与投影，�
 
 ## 证据
 
+- [9 月 30 日主线隔离导入与恢复复验](../qa/main-acceptance-interop-2026-09-30.md)：重新安装固定版本并核对公开 Runtime 链路；未完成免费模型真实回复，不提升完整原生互通等级。
+
 - [9 月 28 日增量 QA 与真实回复](../qa/all-agent-continuation-2026-09-28.md)
 - [40 组合与原生 TUI 验收](../qa/interop-matrix-2026-09-28.md)
 - [Cursor 官方导入深入实验](../qa/cursor-interop-2026-09-28.md)

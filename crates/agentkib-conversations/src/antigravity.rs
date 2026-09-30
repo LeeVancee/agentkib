@@ -1610,6 +1610,17 @@ fn validate_native_ref(value: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(super) fn matrix_parse(updates: &[Value]) -> Result<SessionDocument> {
+    let parsed = parse_replay(updates)?;
+    crate::continuation::finish_document(
+        &crate::hermes::fixture_source(AgentKind::Antigravity),
+        parsed.turns,
+        parsed.losses,
+        None,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

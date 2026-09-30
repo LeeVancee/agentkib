@@ -4337,7 +4337,7 @@ mod tests {
         );
 
         let error = store
-            .sync_conversation_sessions(&registered.id, AgentKind::Cursor, &[])
+            .sync_conversation_sessions(&registered.id, AgentKind::DeepSeekHarness, &[])
             .unwrap_err();
         assert_eq!(
             error.to_string(),

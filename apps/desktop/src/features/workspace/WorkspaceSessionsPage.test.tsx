@@ -17,6 +17,8 @@ vi.mock("@/core/api", () => ({
     workspaceSessionStatus: vi.fn(),
     refreshWorkspaceSessions: vi.fn(),
     sessionEvents: vi.fn(),
+    sessionSourceCapability: vi.fn(),
+    nativeImportOperations: vi.fn(),
   },
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -47,6 +49,8 @@ describe("WorkspaceSessionsPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
+    vi.mocked(api.nativeImportOperations).mockResolvedValue([]);
     useSessionViewStore.getState().resetFilters();
     vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession]);
     vi.mocked(api.workspaceSessionStatus).mockResolvedValue([]);
@@ -111,7 +115,7 @@ describe("WorkspaceSessionsPage", () => {
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "keeps %s history read-only in the workspace session view",
+    "allows %s history when its concrete format is supported",
     async (agent) => {
       const source = {
         ...cachedSession,
@@ -146,7 +150,9 @@ describe("WorkspaceSessionsPage", () => {
       );
 
       expect(await screen.findByText(`${agent} history content`)).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Continue in another Agent" })).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue in another Agent" })).toBeEnabled(),
+      );
     },
   );
 

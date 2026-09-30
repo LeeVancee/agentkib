@@ -41,7 +41,7 @@ Browse reviewed OpenAI Skills or inspect a public GitHub repository before addin
 
 ### Continue across agents
 
-Browse Codex, Claude Code, Antigravity ACP, OpenCode, OpenClaw, Hermes, and Grok Build session history. Codex, Claude Code, Antigravity ACP, and OpenCode sessions can be used to prepare a reviewed cross-agent handoff; the other sources remain read-only. AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts. Antigravity's current native-import and Desktop/CLI interoperability limits are documented in [Antigravity integration](docs/ANTIGRAVITY.md).
+Browse Codex, Claude Code, Antigravity ACP, OpenCode, supported Cursor CLI stores, OpenClaw schema-23 SQLite and legacy JSONL, Hermes, and Grok Build session history. Reviewed handoff availability is checked against the selected native history, including format and completeness checks. OpenCode 1.18.32, Hermes 0.21.5, and OpenClaw 2026.9.6 have experimental native-import adapters with durable recovery records; offline import/readback is verified, with OpenCode and Hermes also checked in their native terminal UIs after restart. New-target real model continuation remains unverified. One OpenClaw-to-Claude synthetic history has produced a correct real reply; full per-direction acceptance is still pending. See the [direction and version matrix](docs/SESSION-INTEROPERABILITY.md). AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts. Antigravity's current native-import and Desktop/CLI interoperability limits are documented in [Antigravity integration](docs/ANTIGRAVITY.md).
 
 ### Keep local tools current
 
@@ -75,8 +75,8 @@ Only use files from the official release and verify the matching `.sha256` check
 ## Support at a glance
 
 - **Discovery and context:** Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, Grok Build, and read-only DeepSeek Harness diagnostics.
-- **Session browsing:** Codex, Claude Code, Antigravity ACP, OpenCode, OpenClaw, Hermes, and Grok Build; the latter three are read-only sources.
-- **Reviewed handoff:** Codex, Claude Code, Antigravity ACP, and OpenCode sources, targeting supported local agents.
+- **Session browsing:** Codex, Claude Code, Antigravity ACP, OpenCode, supported Cursor CLI stores, OpenClaw schema-23 SQLite and legacy JSONL, Hermes, and Grok Build. Reading never modifies the original history.
+- **Reviewed handoff:** all eight sources above, subject to per-session parsing. Native import, context-file handoff, and Web control are separate capabilities; see the [compatibility matrix](docs/SESSION-INTEROPERABILITY.md) for restrictions and acceptance status.
 - **Tool management:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. Antigravity is detected and linked to official update guidance, but has no automatic package action. DeepSeek Harness is intentionally excluded.
 - **Interface:** English, Simplified Chinese, Traditional Chinese, and Japanese; light, dark, and system themes.
 - **Platforms:** macOS 13.3+, Windows 11, Ubuntu 22.04, and Fedora. ARM64 Windows and Linux packages remain Preview.

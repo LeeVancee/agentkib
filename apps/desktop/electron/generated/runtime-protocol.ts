@@ -76,6 +76,8 @@ export const RUNTIME_METHODS = {
   searchMemories: "memories.search",
   proposeMemory: "memories.propose",
   reviewMemory: "memories.review",
+  sessionSourceCapability: "sessions.sourceCapability",
+  listNativeImports: "sessions.nativeImports",
   prepareSessionHandoff: "sessions.prepareHandoff",
   sanitizeSessionHandoff: "sessions.sanitizeHandoff",
   planSessionHandoff: "sessions.planHandoff",

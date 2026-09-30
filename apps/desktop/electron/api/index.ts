@@ -213,6 +213,12 @@ export interface DesktopApi {
     sessionStatus(id: string): Promise<ConversationIndexStatus[]>;
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
+    sourceCapability(
+      sessionId: string,
+    ): Promise<import("../../src/core/types").ContinuationCapability>;
+    nativeImports(
+      workspaceId: string,
+    ): Promise<import("../../src/core/types").NativeImportOperation[]>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
     planMcpConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
@@ -228,6 +234,7 @@ export interface DesktopApi {
       acceptLosses: boolean,
       historyBudgetTokens: number,
       archiveId: string | undefined,
+      targetFingerprint?: string,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,

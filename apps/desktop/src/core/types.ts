@@ -1080,7 +1080,9 @@ export type SessionLossCode =
   | "unsupported-attachment"
   | "external-attachment"
   | "reasoning-excluded"
-  | "source-content-truncated";
+  | "source-content-truncated"
+  | "target-tool-summary"
+  | "target-attachment-omitted";
 export interface SessionLoss {
   code: SessionLossCode;
   count: number;
@@ -1138,6 +1140,7 @@ export interface SessionHandoffDraft {
   content: string;
   redaction_count: number;
   source_fingerprint: string;
+  target_fingerprint?: string;
   mode: SessionContinuationMode;
   native_capability: NativeImportCapability;
   capabilities: ContinuationCapabilities;
@@ -1151,6 +1154,14 @@ export interface SessionHandoffDraft {
 }
 export type SessionHandoffPreparation = { status: "ready"; draft: SessionHandoffDraft };
 export type SessionHandoffLaunchRequest =
+  | {
+      mode: "native-import";
+      operation_id: string;
+      workspace_id: string;
+      target_agent: AgentKind;
+      plan_hash: string;
+      capabilities?: ContinuationCapabilities;
+    }
   | {
       mode: "native-session";
       workspace_id: string;
@@ -1170,6 +1181,12 @@ export type SessionHandoffLaunchRequest =
       archive_hash?: string;
       capabilities?: ContinuationCapabilities;
     };
+export interface NativeImportOperation {
+  source_session_id: string;
+  launch_request: Extract<SessionHandoffLaunchRequest, { mode: "native-import" }>;
+  target_session_id?: string;
+  status: "prepared" | "outcome-unknown" | "verified" | "launched";
+}
 export interface PlannedSessionHandoff {
   change_set: ChangeSet;
   launch_request: SessionHandoffLaunchRequest;
@@ -1180,4 +1197,5 @@ export interface HandoffLaunchReceipt {
 }
 export type HandoffContinuationResult =
   | { status: "launched"; receipt: HandoffLaunchReceipt }
-  | { status: "applied-launch-failed"; error: LocalizedMessage };
+  | { status: "applied-launch-failed"; error: LocalizedMessage }
+  | { status: "import-outcome-unknown"; error: LocalizedMessage };

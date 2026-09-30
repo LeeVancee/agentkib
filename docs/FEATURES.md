@@ -52,7 +52,7 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - History opens with the latest 50 records (messages and tool summaries), displayed chronologically. Load earlier records on demand.
 - Codex and Claude Code JSONL histories are read from the tail with bounded scanning and memory, rather than loading the entire transcript before pagination. Antigravity ACP histories are replayed through the official ACP server with bounded pages and update budgets. OpenCode is read through its bounded export command; OpenClaw, Hermes, and Grok Build use their verified local history sources. Page byte limits may return fewer than 50 records; an empty scan window can still offer earlier records.
 - Damaged or oversized log records produce a warning. Very distant message/tool associations or ambiguous legacy metadata may be shown conservatively with a warning instead of requiring a full-file scan.
-- History pagination is read-only. Codex, Claude Code, Antigravity ACP, and OpenCode histories can be used as reviewed handoff sources. OpenClaw, Hermes, and Grok Build histories remain read-only and cannot be exported or continued from AgentKib.
+- History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor is limited to verified CLI stores, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Their offline native storage checks have passed; OpenCode/Hermes terminal history and restart checks also pass. New-target real replies remain unverified; one OpenClaw-to-Claude production-rendered history has a correct real reply, with full per-direction acceptance still pending. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
 
 ### Skill Hub
 
@@ -78,11 +78,11 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 | Codex | Yes | Yes | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes | Yes | Yes |
 | Antigravity | Yes | Yes | ACP sessions | ACP source only | Detect/docs |
-| Cursor | Yes | Yes | — | — | Yes |
+| Cursor | Yes | Yes | Verified CLI stores | CLI, per-session check | Yes |
 | OpenCode | Yes | Yes | Yes | Yes | Yes |
-| OpenClaw | Yes | Yes | Read-only | — | Yes |
-| Hermes | Yes | Yes | Read-only | — | Yes |
-| Grok Build | Yes | Yes | Read-only | — | Yes |
+| OpenClaw | Yes | Yes | Read-only | Per-session check | Yes |
+| Hermes | Yes | Yes | Read-only | Per-session check | Yes |
+| Grok Build | Yes | Yes | Read-only | Per-session check | Yes |
 | DeepSeek Harness | Beta, read-only | Diagnostics only | — | — | — |
 
 AgentKib distinguishes an installed app or CLI from local data left behind after uninstalling it. Agent Home writes require separate approval. Antigravity ACP sessions are not claimed to be the complete Desktop/IDE or CLI history store, and current stable interfaces cannot import foreign history into an Antigravity-native session. DeepSeek Harness remains a read-only Beta target and is never written to, configured for MCP, or included in tool management.
@@ -155,7 +155,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 默认加载最新 50 条记录（消息和工具摘要），按时间正序展示；更早记录按需加载。
 - Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。Antigravity ACP 历史通过官方 ACP server 有界回放。OpenCode 通过有界导出命令读取；OpenClaw、Hermes 和 Grok Build 使用各自经过校验的本机历史来源。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
 - 损坏或超大的日志记录会显示提示；距离过远的消息/工具关联，以及无法明确判断的旧格式元数据，会保守展示并提示，而非要求扫描完整文件。
-- 历史分页只读，不修改原记录。Codex、Claude Code、Antigravity ACP 与 OpenCode 历史可以作为经过审查的交接来源；OpenClaw、Hermes 和 Grok Build 历史保持只读，不能从 AgentKib 导出或续接。
+- 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 限已验证 CLI 格式，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。离线原生存储检查已通过，OpenCode/Hermes 终端历史与重启检查也已通过；新目标真实回复仍未验收。新版 OpenClaw 到 Claude 的生产转换载荷已有一轮正确真实回复，全部方向的完整交接验收尚未完成，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
 
 ### Skill Hub
 
@@ -181,11 +181,11 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | Codex | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Claude Code | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Antigravity | 支持 | 支持 | ACP 会话 | 仅作来源 | 检测/文档 |
-| Cursor | 支持 | 支持 | — | — | 支持 |
+| Cursor | 支持 | 支持 | 已验证 CLI 存储 | CLI，逐会话核验 | 支持 |
 | OpenCode | 支持 | 支持 | 支持 | 支持 | 支持 |
-| OpenClaw | 支持 | 支持 | 只读 | — | 支持 |
-| Hermes | 支持 | 支持 | 只读 | — | 支持 |
-| Grok Build | 支持 | 支持 | 只读 | — | 支持 |
+| OpenClaw | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Hermes | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Grok Build | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
 | DeepSeek Harness | Beta，只读 | 仅诊断 | — | — | — |
 
 AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉及 Agent Home 的写入会单独请求授权。Antigravity ACP 会话不代表完整的 Desktop/IDE 或 CLI 历史；当前稳定接口也不能把外部历史导入 Antigravity 原生会话。DeepSeek Harness 仍是只读 Beta 目标，不会被写入、配置 MCP 或纳入工具管理。

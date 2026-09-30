@@ -76,6 +76,8 @@ pub const LIST_MEMORIES_METHOD: &str = "memories.list";
 pub const SEARCH_MEMORIES_METHOD: &str = "memories.search";
 pub const PROPOSE_MEMORY_METHOD: &str = "memories.propose";
 pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
+pub const SESSION_SOURCE_CAPABILITY_METHOD: &str = "sessions.sourceCapability";
+pub const LIST_NATIVE_IMPORTS_METHOD: &str = "sessions.nativeImports";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
@@ -286,6 +288,8 @@ export const RUNTIME_METHODS = {{
   searchMemories: "{SEARCH_MEMORIES_METHOD}",
   proposeMemory: "{PROPOSE_MEMORY_METHOD}",
   reviewMemory: "{REVIEW_MEMORY_METHOD}",
+  sessionSourceCapability: "{SESSION_SOURCE_CAPABILITY_METHOD}",
+  listNativeImports: "{LIST_NATIVE_IMPORTS_METHOD}",
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",

@@ -543,6 +543,7 @@ impl AgentSupportCapabilities {
             agent,
             AgentKind::Codex
                 | AgentKind::ClaudeCode
+                | AgentKind::Cursor
                 | AgentKind::OpenCode
                 | AgentKind::OpenClaw
                 | AgentKind::Hermes
@@ -553,13 +554,9 @@ impl AgentSupportCapabilities {
             workspace_discovery: true,
             session_list,
             history_read: session_list,
-            continuation: matches!(
-                agent,
-                AgentKind::Codex
-                    | AgentKind::ClaudeCode
-                    | AgentKind::OpenCode
-                    | AgentKind::Antigravity
-            ),
+            // Coarse source availability; the Runtime still parses the selected
+            // session before exposing continuation for a concrete history.
+            continuation: session_list,
             control: matches!(agent, AgentKind::Codex | AgentKind::Antigravity)
                 .then_some(AgentControlSupport::Experimental)
                 .unwrap_or_default(),
@@ -1163,7 +1160,8 @@ mod tests {
 
         let cursor = AgentSupportCapabilities::for_agent(AgentKind::Cursor);
         assert!(cursor.workspace_discovery);
-        assert!(!cursor.session_list);
+        assert!(cursor.session_list);
+        assert!(cursor.continuation);
         assert_eq!(cursor.control, AgentControlSupport::None);
 
         let legacy: AgentInstallation = serde_json::from_value(serde_json::json!({

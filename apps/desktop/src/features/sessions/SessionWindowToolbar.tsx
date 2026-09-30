@@ -11,6 +11,7 @@ import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { displaySessionTitle } from "@/features/workspace/session-title";
+import { useSessionSourceCapability } from "./useSessionSourceCapability";
 import { useSessionHub } from "./SessionHubContext";
 
 export function SessionWindowToolbar() {
@@ -19,6 +20,9 @@ export function SessionWindowToolbar() {
   const navigate = useNavigate();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
+  const sourceCapability = useSessionSourceCapability(
+    selected && !selected.remote && selected.availability === "readable" ? selected.id : undefined,
+  );
   if (!selected)
     return (
       <div className="app-toolbar-content">
@@ -31,7 +35,7 @@ export function SessionWindowToolbar() {
     workspace &&
     !selected.remote &&
     selected.availability === "readable" &&
-    canContinueFromHistory(selected.agent);
+    canContinueFromHistory(sourceCapability);
   const continueSession = () => {
     if (!canContinue) return;
     void navigate({

@@ -3,6 +3,8 @@
 桌面与 Web 的 Claude 控制共用一个 Runtime 执行服务，使用本机 Claude CLI 的原生 `stream-json` 协议，而不是 Codex bridge。
 历史目录仍由现有 Claude provider 发现。可以准备新会话，也可以在确认原终端停止后续接有可验证 UUID、原工作目录及主会话记录的会话。准备空会话不启动 CLI 或调用模型。
 
+桌面跨 Agent 会话导入是另一条经过预览、确认和目标回读的流程，详见[互通兼容矩阵](SESSION-INTEROPERABILITY.md)。新增来源或原生导入适配不自动获得 Web 发送、审批或托管权限；本轮不扩展其他 Agent 的 Web 控制。
+
 ## 使用与边界
 
 - 本次适配版本为 macOS Claude Code `2.1.263`、`2.1.285`（精确版本门限，协议测试与真实验收状态分开记录）。用户需自行安装并完成 Claude 登录或供应商配置；AgentKib 不读取、复制或下发登录凭据。

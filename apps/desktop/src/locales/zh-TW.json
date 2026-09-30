@@ -1597,5 +1597,22 @@
   "workspace.discoveryComplete": "探索已完成",
   "workspace.discoveryScanning": "正在探索",
   "workspace.discoveryNotScanned": "尚未執行探索",
-  "workspace.discoveryReportedAt": "回報時間：{{time}}"
+  "workspace.discoveryReportedAt": "回報時間：{{time}}",
+  "handoff.checkingSource": "正在檢查此工作階段的原始歷史…",
+  "handoff.nativeImportApproval": "我授權目標 Agent CLI 在其原生儲存中建立本次已審查的工作階段",
+  "errors.handoff.importOutcomeUnknown": "原生匯入結果需要核對後才能繼續。",
+  "handoff.nativeImportWarning": "這些修改用於準備已審查的匯入內容。套用並繼續還會呼叫目標 Agent CLI，在其自身儲存中建立新的原生工作階段。",
+  "handoff.importNeedsCheck": "匯入結果需要核對",
+  "handoff.recovery.review": "重新審查",
+  "handoff.recovery.sourceUnavailable": "原始工作階段無法使用。請重新整理索引或恢復來源後重新審查。",
+  "handoff.recovery.title": "待復原的原生匯入",
+  "handoff.recovery.detail": "繼續前請核對中斷的匯入。復原只尋找既有目標工作階段，不重複匯入。僅準備好內容但沒有目標工作階段的操作需要重新預覽。",
+  "handoff.recovery.prepared": "已準備，尚未確認匯入",
+  "handoff.recovery.outcome-unknown": "匯入結果未知",
+  "handoff.recovery.verified": "已匯入，可以開啟",
+  "handoff.recovery.open": "開啟已匯入工作階段",
+  "handoff.recovery.check": "核對匯入並繼續",
+  "handoff.recovery.reload": "重新載入待復原匯入",
+  "handoff.loss.target-tool-summary": "目標將以文字摘要保留 {{count}} 筆工具記錄。",
+  "handoff.loss.target-attachment-omitted": "目標無法保留 {{count}} 個附件，匯入時會省略。"
 }

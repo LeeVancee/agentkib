@@ -6,12 +6,20 @@ import {
   TYPESCRIPT_PREFERENCE_METHODS,
   PREFERENCE_WRITE_METHODS,
   TYPESCRIPT_WORKSPACE_METHODS,
+  TYPESCRIPT_GIT_METHODS,
+  TYPESCRIPT_CATALOG_METHODS,
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
   NATIVE_CONTEXT,
   NATIVE_DISCOVERY,
-  NATIVE_INSPECT,
-  NATIVE_SESSION_INDEX_CHANGED,
+  NATIVE_SCAN_ROOT_DISCOVERY,
+  NATIVE_CONFIGURED_DISCOVERY,
+  BACKEND_INSPECT,
+  TYPESCRIPT_ASSET_METHODS,
+  TYPESCRIPT_INSIGHT_METHODS,
+  TYPESCRIPT_SESSION_READ_METHODS,
+  TYPESCRIPT_SESSION_INDEX_METHODS,
+  NATIVE_REMOTE_SESSION_INDEX_CHANGED,
   type NativeContext,
   type WorkspacePlan,
   type InspectedWorkspace,
@@ -166,18 +174,43 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   }
 
   async #dispatch<TResult>(method: string, params: unknown): Promise<TResult> {
+    if (method === NATIVE_CONTEXT) return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_WORKSPACE_METHODS.has(method))
       return this.#workspaceRequest<TResult>(method, params);
     if (method === RUNTIME_METHODS.setQuotaPreferences)
       return this.typescript.request<TResult>(method, params);
-    if (TYPESCRIPT_READ_METHODS.has(method))
+    if (method === RUNTIME_METHODS.clearSessionIndex) {
+      // The remaining remote gateway must revoke snapshots before the TS-owned cache is cleared.
+      if (
+        typeof params !== "object" ||
+        params === null ||
+        Array.isArray(params) ||
+        ("workspaceId" in params &&
+          params.workspaceId !== null &&
+          params.workspaceId !== undefined &&
+          typeof params.workspaceId !== "string")
+      )
+        return this.typescript.request<TResult>(method, params);
+      const generation = this.#generation;
+      await this.rust.request(NATIVE_REMOTE_SESSION_INDEX_CHANGED, {});
+      if (generation !== this.#generation || this.#state !== "ready")
+        throw new RuntimeUnavailableError(new Error("Backend changed during session index clear"));
+      return this.typescript.request<TResult>(method, params);
+    }
+    if (
+      TYPESCRIPT_READ_METHODS.has(method) ||
+      TYPESCRIPT_GIT_METHODS.has(method) ||
+      TYPESCRIPT_CATALOG_METHODS.has(method) ||
+      TYPESCRIPT_ASSET_METHODS.has(method) ||
+      TYPESCRIPT_INSIGHT_METHODS.has(method) ||
+      TYPESCRIPT_SESSION_READ_METHODS.has(method) ||
+      TYPESCRIPT_SESSION_INDEX_METHODS.has(method)
+    )
       return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
       const preferences = await this.typescript.request<Record<string, unknown>>(method, params);
       if (method === RUNTIME_METHODS.setSessionIndexEnabled)
-        await this.rust.request(NATIVE_SESSION_INDEX_CHANGED, {
-          value: preferences.session_index_enabled,
-        });
+        await this.rust.request(NATIVE_REMOTE_SESSION_INDEX_CHANGED, {});
       const runtime = await this.rust.request<Record<string, unknown>>(
         RUNTIME_METHODS.runtimeInfo,
         {},
@@ -216,7 +249,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         context,
       });
       current();
-      const scans = await this.rust.request<InspectedWorkspace[]>(NATIVE_INSPECT, {
+      const scans = await this.typescript.request<InspectedWorkspace[]>(BACKEND_INSPECT, {
         workspaces: [{ id: plan.id, path: plan.path }],
       });
       if (scans.length !== 1 || scans[0]?.id !== plan.id)
@@ -235,11 +268,32 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         { path: string; enabled: boolean; max_depth: number }[]
       >(RUNTIME_METHODS.listScanRoots, {});
       current();
-      const snapshot = await this.rust.request<DiscoverySnapshot>(NATIVE_DISCOVERY, {
-        roots: roots
-          .filter((root) => root.enabled)
-          .map((root) => ({ path: root.path, max_depth: root.max_depth })),
-      });
+      const enabledRoots = roots
+        .filter((root) => root.enabled)
+        .map((root) => ({ path: root.path, max_depth: root.max_depth }));
+      const [snapshot, scanRoots, configured] = await Promise.all([
+        this.rust.request<DiscoverySnapshot>(NATIVE_DISCOVERY, { roots: [] }),
+        this.typescript.request<
+          Pick<DiscoverySnapshot, "candidates" | "errors" | "source_diagnostics">
+        >(NATIVE_SCAN_ROOT_DISCOVERY, { roots: enabledRoots }),
+        this.typescript.request<
+          Pick<DiscoverySnapshot, "candidates" | "errors" | "source_diagnostics">
+        >(NATIVE_CONFIGURED_DISCOVERY, {}),
+      ]);
+      const migratedAgents = new Set(["codex", "claude-code", "cursor", "deepseek-harness"]);
+      snapshot.candidates = snapshot.candidates.filter(
+        (candidate) => !candidate.source_agent || !migratedAgents.has(candidate.source_agent),
+      );
+      snapshot.source_diagnostics = snapshot.source_diagnostics.filter(
+        (diagnostic) =>
+          typeof diagnostic.agent !== "string" || !migratedAgents.has(diagnostic.agent),
+      );
+      snapshot.candidates.push(...scanRoots.candidates);
+      snapshot.candidates.push(...configured.candidates);
+      snapshot.errors.push(...scanRoots.errors);
+      snapshot.errors.push(...configured.errors);
+      snapshot.source_diagnostics.push(...scanRoots.source_diagnostics);
+      snapshot.source_diagnostics.push(...configured.source_diagnostics);
       current();
       const context = await this.rust.request<NativeContext>(NATIVE_CONTEXT, {});
       current();
@@ -248,7 +302,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         context,
       });
       current();
-      const inspections = await this.rust.request<InspectedWorkspace[]>(NATIVE_INSPECT, {
+      const inspections = await this.typescript.request<InspectedWorkspace[]>(BACKEND_INSPECT, {
         workspaces: plan.workspaces.map(({ id, path }) => ({ id, path })),
       });
       current();

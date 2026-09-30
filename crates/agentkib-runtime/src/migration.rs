@@ -61,12 +61,9 @@ pub fn inspect(request: NativeInspectRequest) -> anyhow::Result<Value> {
     ))
 }
 
-/// Preferences are already written by TypeScript; retain the session worker fence until batch 3.
-pub fn session_index_changed(request: BoolRequest) -> anyhow::Result<()> {
+/// The TypeScript-owned index has changed; revoke remaining remote gateway snapshots without writing the index.
+pub fn remote_session_index_changed(_: EmptyRequest) -> anyhow::Result<()> {
     let _guard = session_index_write_lock()?;
     invalidate_session_index_refreshes();
-    if !request.value {
-        Store::open_default()?.clear_conversation_index(None)?;
-    }
     Ok(())
 }

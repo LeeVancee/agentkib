@@ -1,3 +1,7 @@
+import { SessionStore } from "./session-store";
+import { Insights } from "./insights";
+import { Sql } from "./sql";
+import { Catalog } from "./catalog";
 import { existsSync } from "node:fs";
 import { WorkspaceStore } from "./workspace-store";
 import { timestamp } from "./timestamps";
@@ -23,6 +27,10 @@ const EVIDENCE = ["session-cwd", "configured-workspace", "scan-marker", "manual"
 export class BackendStore {
   readonly #database: DatabaseSync;
   readonly workspaces: WorkspaceStore;
+  readonly sql: Sql;
+  readonly catalog: Catalog;
+  readonly insights: Insights;
+  readonly sessions: SessionStore;
 
   constructor(databasePath: string) {
     if (!existsSync(databasePath)) throw new Error("Shared database has not been initialized");
@@ -38,6 +46,10 @@ export class BackendStore {
         );
       }
       this.workspaces = new WorkspaceStore(this.#database);
+      this.sql = new Sql(this.#database);
+      this.catalog = new Catalog(this.sql);
+      this.insights = new Insights(this.sql);
+      this.sessions = new SessionStore(this.sql, (id) => this.workspacePath(id));
     } catch (error) {
       this.#database.close();
       throw error;
@@ -60,6 +72,16 @@ export class BackendStore {
       this.#database.exec("ROLLBACK;");
       throw error;
     }
+  }
+
+  workspacePath(id: string): string {
+    const row = this.#rows(
+      "SELECT canonical_path FROM workspaces WHERE id = ? OR manifest_workspace_id = ? LIMIT 1",
+      id,
+      id,
+    )[0];
+    if (!row) throw new Error("Workspace does not exist");
+    return String(row.canonical_path);
   }
 
   getWorkspace(id: string): unknown {

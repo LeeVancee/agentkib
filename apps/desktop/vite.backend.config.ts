@@ -3,6 +3,7 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  define: { "import.meta.url": "require('node:url').pathToFileURL(__filename).href" },
   build: {
     target: "node22",
     sourcemap: true,

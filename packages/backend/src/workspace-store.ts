@@ -404,7 +404,7 @@ export class WorkspaceStore {
   }
 }
 
-function catalogId(asset: CatalogAsset): string {
+export function catalogId(asset: CatalogAsset): string {
   const variant = (value: string) =>
     ({
       opencode: "OpenCode",

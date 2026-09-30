@@ -6,9 +6,9 @@ import {
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
   NATIVE_CONTEXT,
-  NATIVE_INSPECT,
+  BACKEND_INSPECT,
   NATIVE_DISCOVERY,
-  NATIVE_SESSION_INDEX_CHANGED,
+  NATIVE_REMOTE_SESSION_INDEX_CHANGED,
 } from "@agentkib/backend/migration";
 import {
   PROTOCOL_VERSION,
@@ -132,10 +132,25 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     ts.handler = () => {
       throw new Error("typescript failure");
     };
-    await expect(router.request(RUNTIME_METHODS.setLocale, {})).rejects.toThrow(
-      "typescript failure",
-    );
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.setLocale);
+    for (const method of [
+      RUNTIME_METHODS.setLocale,
+      RUNTIME_METHODS.scanWorkspace,
+      RUNTIME_METHODS.prepareManifest,
+      RUNTIME_METHODS.resolveContext,
+      RUNTIME_METHODS.workspaceDoctorReport,
+      RUNTIME_METHODS.workspaceDoctorSummaries,
+      RUNTIME_METHODS.planChanges,
+      RUNTIME_METHODS.applyChanges,
+      RUNTIME_METHODS.workspaceGitSummary,
+      RUNTIME_METHODS.insightsView,
+      RUNTIME_METHODS.workspaceSessions,
+      RUNTIME_METHODS.sessionEvents,
+      NATIVE_CONTEXT,
+      RUNTIME_METHODS.proposeMemory,
+    ]) {
+      await expect(router.request(method, {})).rejects.toThrow("typescript failure");
+      expect(rust.calls).not.toContain(method);
+    }
     await router.stop();
   });
 
@@ -149,11 +164,12 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     const inspection = { summary: null, assets: [], error: null };
     rust.handler = (method) => {
       if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
-      if (method === NATIVE_INSPECT)
-        return scanning.promise.then(() => [{ id: "workspace", inspection }]);
+
       throw new Error(`Unexpected Rust operation: ${method}`);
     };
     ts.handler = (method, params) => {
+      if (method === BACKEND_INSPECT)
+        return scanning.promise.then(() => [{ id: "workspace", inspection }]);
       if (method === BACKEND_PLAN_WORKSPACE) return plan;
       if (method === RUNTIME_METHODS.addWorkspace) {
         expect(params).toMatchObject({ _plan: plan, _inspection: inspection });
@@ -166,7 +182,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
       _plan: { injected: true },
     });
     const excluding = router.request(RUNTIME_METHODS.excludeWorkspace, { id: "workspace" });
-    await vi.waitFor(() => expect(rust.calls).toContain(NATIVE_INSPECT));
+    await vi.waitFor(() => expect(ts.calls).toContain(BACKEND_INSPECT));
     expect(ts.calls).not.toContain(RUNTIME_METHODS.excludeWorkspace);
     scanning.resolve();
     expect(await adding).toEqual({ id: "workspace" });
@@ -197,7 +213,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
         expect(params).toEqual({ roots: [{ path: "/enabled", max_depth: 3 }] });
         return snapshot;
       }
-      if (method === NATIVE_INSPECT) return interrupted ? scanning.promise.then(() => []) : [];
+
       return { data_dir: "/fixture" };
     };
     ts.handler = (method, params) => {
@@ -206,6 +222,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
           { path: "/enabled", enabled: true, max_depth: 3 },
           { path: "/disabled", enabled: false, max_depth: 8 },
         ];
+      if (method === BACKEND_INSPECT) return interrupted ? scanning.promise.then(() => []) : [];
       if (method === BACKEND_PLAN_DISCOVERY) return plan;
       if (method === RUNTIME_METHODS.refreshDiscovery) {
         expect(params).toMatchObject({ _plan: plan, _snapshot: snapshot, _inspections: [] });
@@ -222,7 +239,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
       router.request(RUNTIME_METHODS.refreshDiscovery, {}),
     ).rejects.toBeInstanceOf(RuntimeUnavailableError);
     await vi.waitFor(() =>
-      expect(rust.calls.filter((method) => method === NATIVE_INSPECT)).toHaveLength(2),
+      expect(ts.calls.filter((method) => method === BACKEND_INSPECT)).toHaveLength(2),
     );
     ts.crash();
     scanning.resolve();
@@ -233,7 +250,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     await router.stop();
   });
 
-  it("writes the session-index preference in TS and invokes only the native worker fence", async () => {
+  it("writes the session-index preference in TS and revokes remaining remote snapshots", async () => {
     const rust = new Host();
     const ts = new Host();
     const router = new RuntimeRouter(rust, ts);
@@ -241,8 +258,15 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     ts.handler = () => ({ session_index_enabled: false });
     const result = await router.request(RUNTIME_METHODS.setSessionIndexEnabled, { enabled: false });
     expect(result).toMatchObject({ session_index_enabled: false });
-    expect(rust.calls).toContain(NATIVE_SESSION_INDEX_CHANGED);
+    expect(rust.calls).toContain(NATIVE_REMOTE_SESSION_INDEX_CHANGED);
     expect(rust.calls).not.toContain(RUNTIME_METHODS.setSessionIndexEnabled);
+    ts.calls.length = 0;
+    await router.request(RUNTIME_METHODS.refreshWorkspaceSessions, { workspaceId: "workspace" });
+    expect(ts.calls).toContain(RUNTIME_METHODS.refreshWorkspaceSessions);
+    expect(rust.calls).not.toContain(RUNTIME_METHODS.refreshWorkspaceSessions);
+    await router.request(RUNTIME_METHODS.clearSessionIndex, { workspaceId: "workspace" });
+    expect(rust.calls).toContain(NATIVE_REMOTE_SESSION_INDEX_CHANGED);
+    expect(ts.calls).toContain(RUNTIME_METHODS.clearSessionIndex);
     await router.stop();
   });
 

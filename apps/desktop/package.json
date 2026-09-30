@@ -26,7 +26,7 @@
     "test": "pnpm runtime:build:dev && pnpm backend:build && vitest run",
     "typecheck": "tsc -b --pretty false",
     "relay:stage": "node scripts/stage-frpc.mjs",
-    "backend:build": "vite build --config vite.backend.config.ts"
+    "backend:build": "vite build --config vite.backend.config.ts && node scripts/stage-backend-native.mjs"
   },
   "dependencies": {
     "@agentkib/agent-identity": "workspace:*",
@@ -43,6 +43,7 @@
     "d3-hierarchy": "^3.1.2",
     "electron-updater": "^6.8.9",
     "i18next": "^25.5.2",
+    "koffi": "^2.15.1",
     "lucide-react": "^0.468.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
@@ -79,6 +80,7 @@
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11",
-    "wait-on": "^9.1.0"
+    "wait-on": "^9.1.0",
+    "yaml": "^2.9.1"
   }
 }

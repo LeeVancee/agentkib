@@ -65,3 +65,10 @@ describe("session display state", () => {
       expect(sessionDisplayState({ ...state, locale }).label).toBeTruthy();
   });
 });
+
+it("shows a cancelled Claude turn while leaving the idle send eligibility unchanged", () => {
+  const value = { ...state, live: { ...state.live!, lastOutcome: "cancelled" as const } };
+  expect(sessionDisplayState(value).label).toBe("已取消");
+  expect(value.canSend).toBe(true);
+  expect(sessionDisplayState({ ...value, online: false }).label).toBe("已断线");
+});

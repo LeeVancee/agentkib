@@ -79,6 +79,8 @@ pub enum SessionLossCode {
     ExternalAttachment,
     ReasoningExcluded,
     SourceContentTruncated,
+    TargetToolSummary,
+    TargetAttachmentOmitted,
 }
 
 impl SessionLossCode {
@@ -170,6 +172,8 @@ pub struct SessionHandoffDraftV2 {
     pub content: String,
     pub redaction_count: usize,
     pub source_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
     pub mode: SessionContinuationMode,
     pub native_capability: NativeImportCapability,
     pub capabilities: ContinuationCapabilities,

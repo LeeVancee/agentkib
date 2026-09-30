@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
@@ -40,6 +40,82 @@ fn read_frame(reader: &mut impl BufRead) -> Result<Option<Value>> {
     ))
 }
 const SUPPORTED_VERSION: &str = "2.1.263 (Claude Code)";
+const CURRENT_SUPPORTED_VERSION: &str = "2.1.285 (Claude Code)";
+
+/// Host-resolved input only: never accepts paths, URLs or arbitrary native roles.
+pub(crate) fn validate_content(content: &Value) -> Result<()> {
+    use base64::Engine;
+    if let Some(text) = content.as_str() {
+        ensure!(
+            !text.trim().is_empty() && text.len() <= 128 * 1024,
+            "invalid Claude text"
+        );
+        return Ok(());
+    }
+    let blocks = content.as_array().context("invalid Claude input blocks")?;
+    ensure!(
+        !blocks.is_empty() && blocks.len() <= 32,
+        "invalid Claude input count"
+    );
+    let mut text_bytes = 0;
+    let mut image_bytes = 0;
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => {
+                ensure!(
+                    block.as_object().is_some_and(|v| v.len() == 2),
+                    "invalid Claude text block"
+                );
+                let text = block["text"].as_str().context("invalid Claude text")?;
+                ensure!(!text.trim().is_empty(), "empty Claude text");
+                text_bytes += text.len();
+            }
+            Some("image") => {
+                ensure!(
+                    block.as_object().is_some_and(|v| v.len() == 2),
+                    "invalid Claude image block"
+                );
+                let source = &block["source"];
+                ensure!(
+                    source.as_object().is_some_and(|v| v.len() == 3) && source["type"] == "base64",
+                    "invalid Claude image source"
+                );
+                let encoded = source["data"]
+                    .as_str()
+                    .context("invalid Claude image data")?;
+                ensure!(
+                    encoded.len() <= (4_usize * 1024 * 1024).div_ceil(3) * 4,
+                    "Claude image exceeds 4 MiB"
+                );
+                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+                ensure!(
+                    !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024,
+                    "Claude image exceeds 4 MiB"
+                );
+                let valid = match source["media_type"].as_str() {
+                    Some("image/png") => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                    Some("image/jpeg") => bytes.starts_with(b"\xff\xd8\xff"),
+                    Some("image/gif") => {
+                        bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+                    }
+                    Some("image/webp") => {
+                        bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+                    }
+                    _ => false,
+                };
+                ensure!(valid, "Claude image format mismatch");
+                image_bytes += bytes.len();
+            }
+            _ => bail!("unsupported Claude input block"),
+        }
+    }
+    ensure!(text_bytes <= 128 * 1024, "Claude text exceeds 128 KiB");
+    ensure!(
+        image_bytes <= 12 * 1024 * 1024,
+        "Claude images exceed 12 MiB"
+    );
+    Ok(())
+}
 
 // Embedded 2.1.263 AskUserQuestion schema: answers are keyed by question text,
 // and multi-select values use comma-separated labels. New form kinds fail closed.
@@ -86,10 +162,129 @@ struct State {
     initialized: bool,
     init_id: String,
     pending_user: Option<Value>,
+    model: Option<String>,
+    usage: Option<Value>,
+    last_outcome: Option<String>,
     partial: bool,
+    foreground_bash_contract: bool,
+    cleanup_error: Option<String>,
+    bash_tool_ids: HashSet<String>,
+    foreground_tasks: HashMap<String, String>,
 }
 
 impl State {
+    fn observe_bash(&mut self, block: &Value, parent: &Value) -> Result<()> {
+        if !self.foreground_bash_contract || block["type"] != "tool_use" || block["name"] != "Bash"
+        {
+            return Ok(());
+        }
+        ensure!(
+            self.initialized
+                && self.status == "running"
+                && !self.turn_id.is_empty()
+                && parent.is_null(),
+            "Claude Bash outside current top-level turn"
+        );
+        let id = block["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .context("invalid Claude Bash tool ID")?;
+        ensure!(
+            self.bash_tool_ids.len() < 4096,
+            "too many Claude Bash tools"
+        );
+        self.bash_tool_ids.insert(id.to_owned());
+        Ok(())
+    }
+
+    fn task_frame(&mut self, frame: &Value) -> Result<()> {
+        ensure!(
+            self.foreground_bash_contract,
+            "Claude background tasks are unsupported in managed sessions"
+        );
+        let subtype = frame["subtype"].as_str().unwrap_or_default();
+        if subtype == "background_tasks_changed" {
+            ensure!(
+                frame["tasks"].as_array().is_some_and(Vec::is_empty),
+                "Claude background tasks are unsupported in managed sessions"
+            );
+            return Ok(());
+        }
+        ensure!(
+            self.initialized
+                && matches!(
+                    self.status.as_str(),
+                    "running" | "waiting-approval" | "waiting-input"
+                ),
+            "Claude task outside active turn"
+        );
+        let task = frame["task_id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .context("invalid Claude task ID")?;
+        match subtype {
+            "task_started" => {
+                let tool = frame["tool_use_id"]
+                    .as_str()
+                    .context("missing Claude task tool ID")?;
+                ensure!(
+                    frame["task_type"] == "local_bash"
+                        && frame["is_backgrounded"] == false
+                        && frame["owned_by_subagent"] != true
+                        && self.bash_tool_ids.contains(tool),
+                    "unverified Claude foreground Bash task"
+                );
+                ensure!(
+                    self.foreground_tasks.len() < 4096
+                        && !self.foreground_tasks.contains_key(task)
+                        && !self.foreground_tasks.values().any(|id| id == tool),
+                    "duplicate Claude foreground task"
+                );
+                self.foreground_tasks
+                    .insert(task.to_owned(), tool.to_owned());
+            }
+            "task_updated" => {
+                ensure!(
+                    self.foreground_tasks.contains_key(task),
+                    "unknown Claude foreground task"
+                );
+                let patch = frame["patch"]
+                    .as_object()
+                    .context("invalid Claude task patch")?;
+                ensure!(
+                    patch
+                        .get("is_backgrounded")
+                        .is_none_or(|value| value == false),
+                    "Claude background tasks are unsupported in managed sessions"
+                );
+                ensure!(
+                    patch.get("status").is_none_or(|value| matches!(
+                        value.as_str(),
+                        Some("pending" | "running" | "completed" | "failed" | "killed" | "paused")
+                    )),
+                    "invalid Claude task status"
+                );
+            }
+            "task_notification" => {
+                let tool = self
+                    .foreground_tasks
+                    .get(task)
+                    .context("unknown Claude foreground task")?;
+                ensure!(
+                    frame["tool_use_id"].as_str() == Some(tool.as_str())
+                        && matches!(
+                            frame["status"].as_str(),
+                            Some("completed" | "failed" | "stopped")
+                        ),
+                    "unverified Claude task completion"
+                );
+                self.foreground_tasks.remove(task);
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
     fn answer(&mut self, id: &Value, turn: &str, answers: &Value, revision: u64) -> Result<Value> {
         ensure!(
             revision == self.revision && turn == self.turn_id,
@@ -162,6 +357,7 @@ impl State {
             reason.push_str("… [truncated]");
         }
         self.reason = Some(reason);
+        self.last_outcome = None;
         self.approvals.clear();
         self.questions.clear();
         self.pending_user = None;
@@ -381,6 +577,9 @@ impl State {
             }
             "stream_event" => {
                 let event = &frame["event"];
+                if event["type"] == "content_block_start" {
+                    self.observe_bash(&event["content_block"], &frame["parent_tool_use_id"])?;
+                }
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta"
                 {
                     let text = event["delta"]["text"]
@@ -391,6 +590,11 @@ impl State {
                 }
             }
             "assistant" => {
+                if let Some(blocks) = frame["message"]["content"].as_array() {
+                    for block in blocks {
+                        self.observe_bash(block, &frame["parent_tool_use_id"])?;
+                    }
+                }
                 if !self.partial
                     && let Some(blocks) = frame["message"]["content"].as_array()
                 {
@@ -403,6 +607,11 @@ impl State {
                 self.partial = false;
             }
             "result" => {
+                ensure!(
+                    self.foreground_tasks.is_empty(),
+                    "Claude result with unresolved foreground tasks"
+                );
+                self.usage = frame.get("usage").cloned();
                 ensure!(
                     self.initialized,
                     "Claude resume failed before initialization"
@@ -435,14 +644,22 @@ impl State {
                 self.stream_text.clear();
             }
             "system" => {
-                // Background continuations cannot safely be associated with our one active turn.
-                ensure!(
-                    !matches!(
+                if frame["subtype"] == "init" {
+                    self.model = frame["model"].as_str().map(str::to_owned);
+                }
+                if matches!(
+                    frame["subtype"].as_str(),
+                    Some("task_started" | "background_tasks_changed")
+                ) || (self.foreground_bash_contract
+                    && matches!(
                         frame["subtype"].as_str(),
-                        Some("task_started" | "background_tasks_changed")
-                    ),
-                    "Claude background tasks are unsupported in managed sessions"
-                );
+                        Some("task_updated" | "task_notification")
+                    ))
+                {
+                    // 2.1.285 registers foreground Bash as tasks too. Association and
+                    // explicit foreground state are required; this grants no tool permission.
+                    self.task_frame(&frame)?;
+                }
             }
             "user" | "tool_progress" | "tool_use_summary" | "rate_limit_event" | "auth_status"
             | "prompt_suggestion" => {}
@@ -523,6 +740,9 @@ pub struct Runner {
     uuid: String,
     state: Arc<Mutex<State>>,
     worker: Mutex<Option<Worker>>,
+    fresh: AtomicBool,
+    #[cfg(test)]
+    executable: Option<PathBuf>,
 }
 
 struct SessionLock(File);
@@ -562,6 +782,44 @@ impl Runner {
         runner
     }
 
+    #[cfg(test)]
+    pub(crate) fn mock_cleanup_failure(status: &str) -> Self {
+        let runner = Self::mock_worker(status);
+        runner.state.lock().unwrap().turn_id = "cleanup-turn".into();
+        let shared = runner.state.clone();
+        let mut worker = runner.worker.lock().unwrap();
+        let stop = worker.as_ref().unwrap().stop.clone();
+        worker.as_mut().unwrap().join = Some(thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            let mut state = shared.lock().unwrap();
+            state.cleanup_error = Some("injected process enumeration failure".into());
+            state.fail("Claude process cleanup unconfirmed");
+        }));
+        drop(worker);
+        runner
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn mock_cleanup_gate(
+        started: mpsc::Sender<()>,
+        released: mpsc::Receiver<()>,
+    ) -> Self {
+        let runner = Self::mock_worker("idle");
+        let mut worker = runner.worker.lock().unwrap();
+        let stop = worker.as_ref().unwrap().stop.clone();
+        worker.as_mut().unwrap().join = Some(thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            started.send(()).unwrap();
+            released.recv().unwrap();
+        }));
+        drop(worker);
+        runner
+    }
+
     pub fn has_worker(&self) -> bool {
         self.worker
             .lock()
@@ -592,13 +850,21 @@ impl Runner {
             state.initialized = false;
             state.init_id.clear();
             state.seen_requests.clear();
+            state.bash_tool_ids.clear();
+            state.foreground_tasks.clear();
             state.revision += 1;
         }
         true
     }
 
     pub fn installation_supported() -> bool {
-        check_version().is_ok()
+        Self::installation_version().is_some()
+    }
+    pub fn installation_version() -> Option<String> {
+        let executable = agentkib_platform::command::resolve("claude")?;
+        check_version_info(executable)
+            .ok()
+            .map(|(_, version)| version)
     }
 
     pub fn new(workspace: PathBuf, uuid: String) -> Self {
@@ -610,7 +876,44 @@ impl Runner {
                 ..State::default()
             })),
             worker: Mutex::new(None),
+            fresh: AtomicBool::new(false),
+            #[cfg(test)]
+            executable: None,
         }
+    }
+
+    pub fn new_session(workspace: PathBuf, uuid: String) -> Self {
+        let runner = Self::new(workspace, uuid);
+        runner.fresh.store(true, Ordering::Release);
+        runner
+    }
+
+    #[cfg(test)]
+    pub fn set_test_executable(&mut self, path: PathBuf) {
+        self.executable = Some(path);
+    }
+
+    pub fn restore_revision(&self, revision: u64) -> Result<()> {
+        ensure!(!self.has_worker(), "Claude worker already started");
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
+        ensure!(state.status == "idle", "Claude state is not idle");
+        state.revision = revision;
+        Ok(())
+    }
+
+    pub fn shutdown(&self) -> Result<()> {
+        let worker = self.worker.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(worker);
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        ensure!(
+            state.cleanup_error.is_none(),
+            "Claude process cleanup unconfirmed: {}",
+            state.cleanup_error.as_deref().unwrap_or_default()
+        );
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Value {
@@ -622,7 +925,7 @@ impl Runner {
         while !state.stream_text.is_char_boundary(end) {
             end -= 1;
         }
-        json!({"status":state.status,"sendEnabled":state.status == "idle","stopEnabled":state.status != "idle" && !state.turn_id.is_empty() && state.reason.is_none(),"revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
+        json!({"lastOutcome":state.last_outcome,"model":state.model,"tokenUsage":state.usage,"status":state.status,"sendEnabled":state.status == "idle","stopEnabled":state.status != "idle" && !state.turn_id.is_empty() && state.reason.is_none(),"revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
     }
 
     pub fn send(&self, text: &str, expected_revision: u64) -> Result<()> {
@@ -641,6 +944,24 @@ impl Runner {
             !text.trim().is_empty() && text.len() <= 128 * 1024,
             "Claude message must contain 1–131072 bytes"
         );
+        self.send_content_with_start(json!(text), None, expected_revision, start)
+    }
+
+    pub fn send_content(&self, content: Value, turn_id: &str, revision: u64) -> Result<()> {
+        uuid::Uuid::parse_str(turn_id).context("invalid Claude turn ID")?;
+        validate_content(&content)?;
+        self.send_content_with_start(content, Some(turn_id), revision, |state, user| {
+            self.start(state, user)
+        })
+    }
+
+    fn send_content_with_start(
+        &self,
+        content: Value,
+        turn: Option<&str>,
+        expected_revision: u64,
+        start: impl FnOnce(&mut State, Value) -> Result<Worker>,
+    ) -> Result<()> {
         let mut worker = self
             .worker
             .lock()
@@ -652,12 +973,21 @@ impl Runner {
         ensure!(state.revision == expected_revision, "stale Claude revision");
         ensure!(state.status == "idle", "Claude session is busy or failed");
         let before_start = worker.is_none().then(|| state.clone());
-        let turn_id = uuid::Uuid::new_v4().to_string();
-        let user = json!({"type":"user","session_id":self.uuid,"parent_tool_use_id":null,"uuid":turn_id,"message":{"role":"user","content":text}});
+        let turn_id = turn
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let user = json!({"type":"user","session_id":self.uuid,"parent_tool_use_id":null,"uuid":turn_id,"message":{"role":"user","content":content}});
         state.turn_id = turn_id;
         state.stream_text.clear();
         state.partial = false;
         state.reason = None;
+        state.last_outcome = None;
+        ensure!(
+            state.cleanup_error.is_none(),
+            "Claude process cleanup unconfirmed"
+        );
+        state.bash_tool_ids.clear();
+        state.foreground_tasks.clear();
         state.status = "running".into();
         state.revision += 1;
         if let Some(worker) = worker.as_ref() {
@@ -736,7 +1066,19 @@ impl Runner {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("Claude state lock poisoned"))?;
+        ensure!(
+            state.cleanup_error.is_none(),
+            "Claude process cleanup unconfirmed: {}",
+            state.cleanup_error.as_deref().unwrap_or_default()
+        );
+        state.bash_tool_ids.clear();
+        state.foreground_tasks.clear();
         state.status = "idle".into();
+        state.last_outcome = Some("cancelled".into());
+        state.initialized = false;
+        state.init_id.clear();
+        state.seen_requests.clear();
+        state.partial = false;
         state.approvals.clear();
         state.questions.clear();
         state.pending_user = None;
@@ -778,15 +1120,27 @@ impl Runner {
         let lock = acquire_session_lock(&lock_dir.join(format!("{uuid}.lock")))?;
         // GUI launches may have only the system PATH. Resolve with the same
         // platform search rules as discovery, then launch the verified binary.
-        let executable = check_version()?;
+        #[cfg(not(test))]
+        let (executable, version) = check_version()?;
+        #[cfg(test)]
+        let (executable, version) = match &self.executable {
+            Some(path) => check_version_info(path.clone())?,
+            None => check_version()?,
+        };
+        state.foreground_bash_contract = version == CURRENT_SUPPORTED_VERSION;
         let mut command = Command::new(executable);
         #[cfg(unix)]
         command.process_group(0);
         // Non-Unix descendant cleanup needs a job object before it can be enabled.
         ensure!(cfg!(unix), "managed Claude process groups require Unix");
+        let fresh = self.fresh.load(Ordering::Acquire);
         let mut child = command
             .current_dir(&self.workspace)
-            .arg(format!("--resume={}", self.uuid))
+            .arg(format!(
+                "{}={}",
+                if fresh { "--session-id" } else { "--resume" },
+                self.uuid
+            ))
             .args([
                 "--print",
                 "--input-format",
@@ -795,8 +1149,6 @@ impl Runner {
                 "stream-json",
                 "--verbose",
                 "--include-partial-messages",
-                "--permission-mode",
-                "manual",
                 "--permission-prompts",
                 "host",
                 "--permission-prompt-tool",
@@ -807,6 +1159,9 @@ impl Runner {
             .stderr(Stdio::null())
             .spawn()
             .context("failed to start Claude")?;
+        #[cfg(target_os = "macos")]
+        let owned_tree = agentkib_platform::process::owned_tree::OwnedProcessTree::attach(&child);
+        self.fresh.store(false, Ordering::Release);
         // No error after this point may escape as a retryable startup failure.
         // Pipe setup failure has not sent input, but still needs child cleanup.
         let pipes = child.stdout.take().zip(child.stdin.take());
@@ -878,6 +1233,15 @@ impl Runner {
                         state.initialized || started.elapsed() < Duration::from_secs(30),
                         "Claude initialize timed out"
                     );
+                    #[cfg(target_os = "macos")]
+                    ensure!(
+                        owned_tree
+                            .as_ref()
+                            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                            .root_running()?,
+                        "Claude process exited before managed cleanup"
+                    );
+                    #[cfg(not(target_os = "macos"))]
                     if let Some(exit) = child.try_wait()? {
                         bail!("Claude process exited ({exit})");
                     }
@@ -914,7 +1278,23 @@ impl Runner {
                     }
                 }
             })();
-            terminate_owned_process_group(&mut child);
+            // Freeze the verified tree before terminating it: asking a shell to
+            // exit first can orphan newly detached grandchildren before capture.
+            #[cfg(target_os = "macos")]
+            let cleanup = owned_tree.and_then(|mut tree| tree.terminate(&mut child));
+            #[cfg(not(target_os = "macos"))]
+            let cleanup = {
+                terminate_owned_process_group(&mut child);
+                Ok::<(), std::io::Error>(())
+            };
+            if let Err(error) = cleanup {
+                // Best effort root termination cannot prove detached children exited.
+                let _ = child.kill();
+                let _ = child.try_wait();
+                let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.cleanup_error = Some(error.to_string());
+                state.fail(format!("Claude process cleanup unconfirmed: {error}"));
+            }
             if let Err(error) = result
                 && !worker_stop.load(Ordering::Acquire)
             {
@@ -939,6 +1319,7 @@ fn write_frame(writer: &SyncSender<Value>, frame: Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn terminate_owned_process_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
@@ -955,13 +1336,17 @@ fn terminate_owned_process_group(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-fn check_version() -> Result<PathBuf> {
+fn check_version() -> Result<(PathBuf, String)> {
     let executable =
         agentkib_platform::command::resolve("claude").context("Claude CLI unavailable")?;
-    check_version_at(executable)
+    check_version_info(executable)
 }
 
+#[cfg(all(test, unix))]
 fn check_version_at(executable: PathBuf) -> Result<PathBuf> {
+    check_version_info(executable).map(|(path, _)| path)
+}
+fn check_version_info(executable: PathBuf) -> Result<(PathBuf, String)> {
     let mut child = Command::new(&executable)
         .arg("--version")
         .stdin(Stdio::null())
@@ -980,10 +1365,11 @@ fn check_version_at(executable: PathBuf) -> Result<PathBuf> {
                 .take(4096)
                 .read_to_string(&mut output)?;
             ensure!(
-                status.success() && output.trim() == SUPPORTED_VERSION,
-                "managed Claude requires CLI 2.1.263"
+                status.success()
+                    && matches!(output.trim(), SUPPORTED_VERSION | CURRENT_SUPPORTED_VERSION),
+                "managed Claude requires CLI 2.1.263 or 2.1.285"
             );
-            return Ok(executable);
+            return Ok((executable, output.trim().to_owned()));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
@@ -1483,6 +1869,105 @@ mod tests {
         assert!(state.approvals.is_empty());
     }
 
+    fn foreground_state() -> State {
+        let mut state = active();
+        state.foreground_bash_contract = true;
+        state.frame(json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"sleep 30"}}]}})).unwrap();
+        state
+    }
+
+    fn foreground_start() -> Value {
+        json!({"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"bash-1","task_type":"local_bash","is_backgrounded":false})
+    }
+
+    #[test]
+    fn captured_2_1_285_foreground_bash_frames_are_correlated_without_completing_turn() {
+        let mut state = active();
+        state.foreground_bash_contract = true;
+        state.session_id = "17836aef-2d90-40c7-baa6-0c925ece4559".into();
+        for line in include_str!("../tests/fixtures/claude-2.1.285-foreground-bash.jsonl").lines() {
+            state.frame(serde_json::from_str(line).unwrap()).unwrap();
+        }
+        assert!(state.foreground_tasks.is_empty());
+        assert_eq!(state.status, "running");
+    }
+
+    #[test]
+    fn current_foreground_bash_lifecycle_stays_in_active_turn() {
+        let mut state = foreground_state();
+        state.frame(foreground_start()).unwrap();
+        state
+            .frame(json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}))
+            .unwrap();
+        state.frame(json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","is_backgrounded":false}})).unwrap();
+        assert_eq!(state.status, "running");
+        state.frame(json!({"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"bash-1","status":"completed"})).unwrap();
+        assert_eq!(state.status, "running");
+        state
+            .frame(json!({"type":"result","subtype":"success","is_error":false}))
+            .unwrap();
+        assert_eq!(state.status, "idle");
+    }
+
+    #[test]
+    fn foreground_bash_start_requires_exact_scope_and_correlation() {
+        for (key, value) in [
+            ("tool_use_id", json!("other")),
+            ("task_type", json!("local_agent")),
+            ("is_backgrounded", json!(true)),
+            ("is_backgrounded", Value::Null),
+            ("owned_by_subagent", json!(true)),
+        ] {
+            let mut state = foreground_state();
+            let mut frame = foreground_start();
+            frame[key] = value;
+            assert!(state.frame(frame).is_err(), "accepted {key}");
+        }
+        for key in ["task_id", "tool_use_id", "task_type", "is_backgrounded"] {
+            let mut state = foreground_state();
+            let mut frame = foreground_start();
+            frame.as_object_mut().unwrap().remove(key);
+            assert!(state.frame(frame).is_err(), "accepted missing {key}");
+        }
+        let mut unobserved = active();
+        unobserved.foreground_bash_contract = true;
+        assert!(unobserved.frame(foreground_start()).is_err());
+        let mut old = foreground_state();
+        old.foreground_bash_contract = false;
+        assert!(old.frame(foreground_start()).is_err());
+        assert!(
+            old.frame(json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn foreground_bash_background_upgrade_and_unresolved_result_fail_closed() {
+        let mut state = foreground_state();
+        state.frame(foreground_start()).unwrap();
+        assert!(state.frame(json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"is_backgrounded":true}})).is_err());
+        assert!(state.frame(json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1"}]})).is_err());
+        assert!(
+            state
+                .frame(json!({"type":"result","subtype":"success"}))
+                .is_err()
+        );
+        assert!(state.frame(json!({"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"other","status":"completed"})).is_err());
+        assert!(state.frame(json!({"type":"system","subtype":"task_notification","task_id":"unknown","tool_use_id":"bash-1","status":"completed"})).is_err());
+        assert!(state.frame(foreground_start()).is_err());
+    }
+
+    #[test]
+    fn streamed_tool_id_is_usable_but_previous_turn_is_not() {
+        let mut state = active();
+        state.foreground_bash_contract = true;
+        state.frame(json!({"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"bash-1","name":"Bash","input":{}}}})).unwrap();
+        state.frame(foreground_start()).unwrap();
+        state.frame(json!({"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"bash-1","status":"stopped"})).unwrap();
+        state.bash_tool_ids.clear();
+        assert!(state.frame(foreground_start()).is_err());
+    }
+
     #[test]
     fn session_lock_excludes_another_owner() {
         let directory = tempfile::tempdir().unwrap();
@@ -1648,6 +2133,19 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_failure_never_reports_cancelled_idle_or_successful_shutdown() {
+        let runner = Runner::mock_cleanup_failure("running");
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.turn_id = "turn".into();
+        }
+        assert!(runner.stop("turn", 0).is_err());
+        assert_eq!(runner.snapshot()["status"], "outcome-unknown");
+        assert!(runner.snapshot()["lastOutcome"].is_null());
+        assert!(runner.shutdown().is_err());
+    }
+
+    #[test]
     fn stop_waits_for_worker_exit_before_reporting_idle() {
         let runner = Arc::new(Runner::mock_worker("running"));
         {
@@ -1681,5 +2179,59 @@ mod tests {
         assert_eq!(complete["status"], "idle");
         assert_eq!(complete["revision"], 9);
         assert!(complete["reason"].is_null());
+    }
+    #[test]
+    fn native_image_input_accepts_known_media_and_rejects_paths_oversize_and_mismatch() {
+        use base64::Engine;
+        let png = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture");
+        let block =
+            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":png}});
+        assert!(validate_content(&json!([block.clone()])).is_ok());
+        assert!(
+            validate_content(&json!([{"type":"text","text":"describe"},block.clone()])).is_ok()
+        );
+        let mut wrong = block.clone();
+        wrong["source"]["media_type"] = json!("image/jpeg");
+        assert!(validate_content(&json!([wrong])).is_err());
+        assert!(
+            validate_content(
+                &json!([{"type":"image","source":{"type":"url","url":"file:///private/data"}}])
+            )
+            .is_err()
+        );
+        assert!(validate_content(&json!([{"type":"localImage","path":"/tmp/private"}])).is_err());
+        assert!(validate_content(&json!([])).is_err());
+        let mut bytes = vec![0u8; 4 * 1024 * 1024];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":base64::engine::general_purpose::STANDARD.encode(&bytes)}});
+        assert!(validate_content(&json!([image.clone(), image.clone(), image.clone()])).is_ok());
+        assert!(
+            validate_content(&json!([image.clone(), image.clone(), image.clone(), image])).is_err()
+        );
+        bytes.push(0);
+        let mut oversized = block;
+        oversized["source"]["data"] =
+            json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        assert!(validate_content(&json!([oversized])).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn version_gate_admits_exact_new_contract_but_not_adjacent_versions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("claude");
+        for (version, supported) in [("2.1.263", true), ("2.1.285", true), ("2.1.286", false)] {
+            std::fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{version} (Claude Code)'\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                check_version_at(executable.clone()).is_ok(),
+                supported,
+                "{version}"
+            );
+        }
     }
 }

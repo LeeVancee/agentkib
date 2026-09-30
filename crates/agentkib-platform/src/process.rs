@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+pub mod owned_tree;
+
 use std::io;
 use std::process::{Child, Command};
 

@@ -49,6 +49,9 @@ export type RelayStatus = {
 type Target = { host: "127.0.0.1"; port: number };
 export type RelayNode = { id: string; transport: "frp-wss"; host: string; port: number };
 export type Registration = {
+  accountId?: string;
+  accountClaimPending?: boolean;
+  accountClaimAccountId?: string;
   deviceId: string;
   credential: string;
   controlHost: string;
@@ -62,6 +65,12 @@ export type Registration = {
 export type RelayOptions = {
   brokerUrl?: string;
   inviteCode?: string;
+  registrationAccountId?: string;
+  registerAccount?: (input: {
+    registrationId: string;
+    credential: string;
+  }) => Promise<Record<string, unknown>>;
+  authorizeAccount?: (accountId?: string) => Promise<void>;
   reenroll?: boolean;
   stateDirectory: string;
   frpcPath: string;
@@ -76,6 +85,7 @@ export type RelayOptions = {
   onOrigins?: (origins: { publicUrl: string; previewUrl: string }) => void | Promise<void>;
 };
 type PendingRegistration = {
+  accountId?: string;
   reenroll?: boolean;
   brokerUrl: string;
   registrationId: string;
@@ -146,9 +156,29 @@ export function validateRegistration(value: unknown, brokerUrl: string): Registr
       throw new Error("Invalid relay node");
     node = { id: n.id, transport: "frp-wss", host: n.host, port: 443 };
   }
+  if (
+    data.accountId !== undefined &&
+    (typeof data.accountId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(data.accountId))
+  )
+    throw new Error("Invalid account owner");
+  if (
+    data.accountClaimAccountId !== undefined &&
+    (typeof data.accountClaimAccountId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(data.accountClaimAccountId))
+  )
+    throw new Error("Invalid pending account owner");
   if (data.protocolVersion === 2 && !node) throw new Error("Missing relay node");
   return {
     deviceId: data.deviceId,
+    ...(data.accountClaimPending === true
+      ? {
+          accountClaimPending: true,
+          ...(typeof data.accountClaimAccountId === "string"
+            ? { accountClaimAccountId: data.accountClaimAccountId }
+            : {}),
+        }
+      : {}),
+    ...(typeof data.accountId === "string" ? { accountId: data.accountId } : {}),
     credential: data.credential,
     controlHost: data.controlHost as string,
     previewHost: data.previewHost as string,
@@ -424,9 +454,15 @@ export class RelayManager {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
+    if (pending?.accountId && pending.accountId !== this.options.registrationAccountId)
+      throw new Error("account_registration_pending");
     if (!pending) {
-      if (!this.options.inviteCode) throw new Error("Relay invitation required");
+      if (!this.options.inviteCode && !this.options.registerAccount)
+        throw new Error("Relay invitation required");
       pending = {
+        ...(this.options.registerAccount && !this.options.inviteCode
+          ? { accountId: this.options.registrationAccountId }
+          : {}),
         brokerUrl: this.brokerUrl,
         registrationId: randomUUID(),
         credential: randomBytes(32).toString("base64url"),
@@ -436,15 +472,27 @@ export class RelayManager {
     }
     this.registration = undefined;
     this.active(generation);
-    const result = await this.api(
-      "/v1/register",
-      {
-        registrationId: pending.registrationId,
-        credential: pending.credential,
-        ...(this.options.inviteCode ? { invitation: this.options.inviteCode } : {}),
-      },
-      generation,
-    );
+    const result =
+      this.options.registerAccount && !this.options.inviteCode
+        ? await abortable(
+            this.options.registerAccount({
+              registrationId: pending.registrationId,
+              credential: pending.credential,
+            }),
+            this.abort!.signal,
+          )
+        : await this.api(
+            "/v1/register",
+            {
+              registrationId: pending.registrationId,
+              credential: pending.credential,
+              ...(this.options.inviteCode ? { invitation: this.options.inviteCode } : {}),
+            },
+            generation,
+          );
+    if (pending.accountId && result.accountId !== pending.accountId)
+      throw new Error("account_registration_mismatch");
+    this.active(generation);
     // A legacy server's supplied credential remains authoritative during migration.
     this.registration = validateRegistration(
       { ...result, credential: result.credential ?? pending.credential },
@@ -468,6 +516,9 @@ export class RelayManager {
     await chmod(this.options.stateDirectory, 0o700);
     this.report("registering");
     await this.register(generation);
+    this.active(generation);
+    if (this.registration?.accountClaimPending) throw new Error("account_claim_pending");
+    await this.options.authorizeAccount?.(this.registration?.accountId);
     this.active(generation);
     await this.authorize(generation);
     await abortable(

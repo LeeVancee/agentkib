@@ -16,7 +16,7 @@ let session: {
     device: { id: string; manage: boolean };
   };
   current: { agent: string };
-  live: { executionMode: string };
+  live: { executionMode: string; status?: string; revision?: number };
   selected: string;
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
@@ -60,7 +60,7 @@ describe("ManagedTasks", () => {
   afterEach(cleanup);
   async function show(create = false) {
     const view = render(<ManagedTasks create={create} />);
-    fireEvent.click(screen.getByRole("button", { name: create ? "New Codex task" : "Execution" }));
+    fireEvent.click(screen.getByRole("button", { name: create ? "New task" : "Execution" }));
     await screen.findByRole("button", { name: create ? "Create" : /Hand over|Release to/ });
     return view;
   }

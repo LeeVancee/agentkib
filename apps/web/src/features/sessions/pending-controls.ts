@@ -1,7 +1,8 @@
-import type { CodexAction } from "@agentkib/web-client";
+import type { CodexAction, ManagedAgent } from "@agentkib/web-client";
 /** Only command identity is persisted; never prompts, answers, tokens or approval details. */
 export type PendingControl = {
   requestId: string;
+  agent?: ManagedAgent;
   sessionId?: string;
   workspaceId?: string;
   kind:
@@ -67,17 +68,19 @@ export function readPending(scope: string): PendingControl[] {
           (typeof value.workspaceId !== "string" ||
             !value.workspaceId ||
             value.workspaceId.length > 256)) ||
+        (value.agent !== undefined && value.agent !== "codex" && value.agent !== "claude-code") ||
         (!value.sessionId && !value.workspaceId) ||
         typeof value.kind !== "string" ||
         !Object.hasOwn(pendingKinds, value.kind),
     )
   )
     throw new Error("pending_control_storage_invalid");
-  return entries.map(({ requestId, sessionId, workspaceId, kind }) => ({
+  return entries.map(({ requestId, sessionId, workspaceId, kind, agent }) => ({
     requestId,
     sessionId,
     workspaceId,
     kind,
+    ...(agent ? { agent } : {}),
   }));
 }
 export function rememberPending(scope: string, pending: PendingControl): void {
@@ -92,10 +95,13 @@ export function rememberPending(scope: string, pending: PendingControl): void {
   )
     throw new Error("control_outcome_unconfirmed");
   if (entries.length >= 100) throw new Error("pending_control_capacity");
-  const { requestId, sessionId, workspaceId, kind } = pending;
+  const { requestId, sessionId, workspaceId, kind, agent } = pending;
   sessionStorage.setItem(
     scope,
-    JSON.stringify([...entries, { requestId, sessionId, workspaceId, kind }]),
+    JSON.stringify([
+      ...entries,
+      { requestId, sessionId, workspaceId, kind, ...(agent ? { agent } : {}) },
+    ]),
   );
 }
 export function forgetPending(scope: string, requestId: string): void {

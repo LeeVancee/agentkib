@@ -1,0 +1,9 @@
+{
+  "providerName": "windsurfapi",
+  "ccSwitchOpusMapping": "claude-opus-5-5-medium",
+  "cliSettingsModel": "opus",
+  "cliSettingsOpusMapping": "claude-opus-5",
+  "cliUsesLocalProxy": true,
+  "acceptanceExplicitModel": "claude-opus-5-5-medium",
+  "globalSettingsModified": false
+}

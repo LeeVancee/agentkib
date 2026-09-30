@@ -146,6 +146,18 @@ export function registerRuntimeIpc({
         });
       },
     );
+    ipcMain.handle("agentkib:session:source-capability", (event, sessionId: unknown) => {
+      assertTrustedRenderer(event);
+      return runtimeRequest(event, RUNTIME_METHODS.sessionSourceCapability, {
+        sessionId: requireString(sessionId, "sessionId"),
+      });
+    });
+    ipcMain.handle("agentkib:session:native-imports", (event, workspaceId: unknown) => {
+      assertTrustedRenderer(event);
+      return runtimeRequest(event, RUNTIME_METHODS.listNativeImports, {
+        workspaceId: requireString(workspaceId, "workspaceId"),
+      });
+    });
     ipcMain.handle("agentkib:session:prepare-handoff", (event, request: unknown) => {
       assertTrustedRenderer(event);
       return runtimeRequest(event, RUNTIME_METHODS.prepareSessionHandoff, {
@@ -187,6 +199,7 @@ export function registerRuntimeIpc({
         acceptLosses: unknown,
         historyBudgetTokens: unknown,
         archiveId: unknown,
+        targetFingerprint: unknown,
       ) => {
         assertTrustedRenderer(event);
         return runtimeRequest(event, RUNTIME_METHODS.planSessionHandoff, {
@@ -202,6 +215,7 @@ export function registerRuntimeIpc({
           acceptLosses: requireBoolean(acceptLosses, "acceptLosses"),
           historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
           archiveId: optionalString(archiveId, "archiveId"),
+          targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
         });
       },
     );

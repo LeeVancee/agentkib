@@ -1,0 +1,58 @@
+{
+  "cliVersion": "2.1.285",
+  "binary": "/Users/kouzen/.local/share/claude/versions/2.1.285",
+  "sha256": "51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4",
+  "method": "Read-only byte search of embedded bundled JavaScript; no CLI/model execution",
+  "evidence": [
+    {
+      "offset": 177241316,
+      "needle": "Whether the task was registered",
+      "excerpt": "Whether the task was registered in the background (true) or in the foreground with the spawning tool call blocking on it (false). A resumed subagent is always registered in the background. A later move to the background arrives as task_updated patch.is_backgrounded. Set for local_agent and local_bash tasks.\"),spawn_depth:A().int().optional().describe(\"Nesting depth of a spawned subagent (local_agent) task: 1 for a top-level spawn, N+1 when spawned from inside a depth-N agent. Not set on other tasks.\"),task_type:o().optional(),workflow_name:o().optional().describe(\"meta.name from the workflow script (e.g. 'spec'). Only set when task_type is 'local_workflow'.\"),prompt:o().optional(),skip_trans"
+    },
+    {
+      "offset": 186408615,
+      "needle": "function N1n(e,n,r)",
+      "excerpt": "function N1n(e,n,r){let{command:s,description:g,shellCommand:h,agentId:b,caller:w,autoBackgroundArmed:D,shell:F}=e,B=h.taskOutput.taskId,K={...vf(B,\"local_bash\",g,r),type:\"local_bash\",status:\"running\",outputFile:lp(B),command:s,shell:F,cwd:oe(),shellCommand:h,lastReportedTotalLines:0,isBackgrounded:!1,agentId:b,caller:w,autoBackgroundArmed:D};return n.register(K),B}function NKe(e,n,r){let s=n.get(e);if(!op(s)||s.isBackgrounded||!s.shellCommand)return!1;return onn(e,s.shellCommand,s.description,n,s.toolUseId,r)}function MIt(e){if(op(e))return!e.isBackgrounded&&Boolean(e.shellCommand);return On(e)&&!e.isBackgrounded&&!L1n(e)&&!e.forkWorker}function rnn(e){return Object.values(e.tasks).some(MIt"
+    },
+    {
+      "offset": 180615492,
+      "needle": "Ii({type:\"system\",subtype:\"task_started\"",
+      "excerpt": "Ii({type:\"system\",subtype:\"task_started\",task_id:e.id,owned_by_subagent:qt(e),tool_use_id:e.toolUseId,description:e.description,subagent_type:\"agentType\"in e?e.agentType:void 0,is_backgrounded:\"isBackgrounded\"in o?o.isBackgrounded:void 0,spawn_depth:\"spawnDepth\"in o?o.spawnDepth:void 0,task_type:e.type,workflow_name:\"workflowName\"in e?e.workflowName:void 0,prompt:\"prompt\"in e?e.prompt:void 0,skip_transcript:e.skipTranscript,...Lee(e)&&{ambient:!0}})}function Zt(e,n){let r=!1;if(n((s)=>{let o=I(s.tasks,e);if(!o)return s;if(!ni(o.status))return s;if(!o.notified)return s;if(\"retain\"in o&&(o.evictAfter??1/0)>Date.now())return s;if(\"retain\"in o&&(o.keepaliveReasons?.size??0)>0)return s;if(o.type="
+    },
+    {
+      "offset": 180596027,
+      "needle": "function Pm(e)",
+      "excerpt": "function Pm(e){if(e.status!==\"running\"&&e.status!==\"pending\")return!1;if(\"isBackgrounded\"in e&&e.isBackgrounded===!1)return!1;return!0}function D0t(e){return e.type===\"mcp_task\"&&e.parked===!0}function c3e(e){return e.type===\"local_bash\"&&e.kind===\"monitor\"||e.type===\"monitor_mcp\"||e.type===\"monitor_ws\"&&e.ambient!==!0}function At(e){return e.type===\"monitor_ws\"&&e.ambient===!0&&e.frameLive?.explicit!==!0}function Ige(e){return At(e)}function Lee(e){return e.skipTranscript===!0||e.type===\"monitor_ws\"&&e.ambient===!0}function zMe(e){return e.type===\"in_process_teammate\"&&e.isIdle&&!dBn(e)}function kit(e){switch(e.type){case\"local_agent\":return e.abortController?.signal.aborted===!0;case\"in_pr"
+    },
+    {
+      "offset": 190999178,
+      "needle": "function y(e){return Object.values(e.tasks).filter((n)=>Pm(n)",
+      "excerpt": "function y(e){return Object.values(e.tasks).filter((n)=>Pm(n)&&!du(n)).map((n)=>({task_id:n.id,task_type:n.type,description:n.description,...Lee(n)&&{ambient:!0}}))}function Qyt(e){Ii({type:\"system\",subtype:\"background_tasks_changed\",tasks:y(e)})}\nexport{ZZn,Jyt,M2e,rXr,eer,fEn,mEn,oXr,jGt,ter,Qyt};\n// @bun @bytecode\n// Claude Code is a Beta product per Anthropic's Commercial Terms of Service.\n// By using Claude Code, you agree that all code acceptance or rejection decisions you make,\n// and the associated conversations in context, constitute Feedback under Anthropic's Commercial Terms,\n// and may be used to improve Anthropic's products, including training models.\n// You are responsible for"
+    },
+    {
+      "offset": 186490742,
+      "needle": "N1n({",
+      "excerpt": "N1n({command:Fe,shell:\"bash\",description:Ge||Fe,shellCommand:un,agentId:ye,caller:Se,autoBackgroundArmed:Tn},b,K);if(K)w?.({kind:\"background_hint\",toolUseId:K})}yield{type:\"progress\",fullOutput:It,output:vt,elapsedTimeSeconds:Po,totalLines:zt,totalBytes:rn,taskId:un.taskOutput.taskId,...mt?{timeoutMs:Wn}:void 0}}}finally{if(LF.stopPolling(un.taskOutput.taskId),!Bt&&un.status!==\"backgrounded\"){if(xn)U1n(xn,fr?LIt(fr,{command:Fe,shell:\"bash\"}):\"stopped\",b);un.cleanup()}}}async function apr(e,n,r,s,g,h){let b={diff:{files:[],moreFiles:0,unavailable:!0}};if(r)return Bsn(n),zg(e),b;let w=await s2e(n);if(w===null)return zg(e),b;if(s){if(w.paths.length===0&&!w.overflow&&!w.watchEnds)return{diff:null};return zg(e),b}let D=await lin(e,w.paths,w.overflow,g,h,w.shared);if(w.watchEnds)zg(e);return{diff:D}}var qj=\"ClaudeDesign\",FK=\"list\",lpr=`Work with Claude Design (claude.ai/design) \\u2014 a collaborative canvas for decks, prototypes, landing page"
+    },
+    {
+      "offset": 196956953,
+      "needle": "N1n({",
+      "excerpt": "N1n({command:M,shell:\"powershell\",description:B||M,shellCommand:D,agentId:k,caller:T,autoBackgroundArmed:Se},b,w);if(w)y?.({kind:\"background_hint\",toolUseId:w})}yield{type:\"progress\",fullOutput:re,output:de,elapsedTimeSeconds:We,totalLines:be,totalBytes:te,taskId:D.taskOutput.taskId,...F?{timeoutMs:ae}:void 0},ne=Date.now()+qs}}finally{if(LF.stopPolling(D.taskOutput.taskId),!ge&&D.status!==\"backgrounded\"){if(ie)U1n(ie,fe?LIt(fe,{command:M,shell:\"powershell\"}):\"stopped\",b);D.cleanup()}}}export{za as PowerShellTool};\n// @bun @bytecode\n// Claude Code is a Beta product per Anthropic's Commercial Terms of Service.\n// By using Claude Code, you agree that all code acceptance or rejection decisions you make,\n// and the associated conversations in context, constitute Feedback under Anthropic's Commercial Terms,\n// and may be used to improve Anthropic's products, including training models.\n// You are responsible for reviewing any code suggestion"
+    },
+    {
+      "offset": 186410702,
+      "needle": "function U1n(",
+      "excerpt": "function U1n(e,n,r){let s=r.get(e);if(!op(s)||s.isBackgrounded||s.notified)return;r.remove(e),Ei(e,n,{toolUseId:s.toolUseId,summary:s.description})}var Fcr={bash:Von,powershell:orn};function Ppe(e,n){if(e.interrupted)return{status:\"killed\",exitNote:void 0};if(e.noExitStatus)return{status:\"failed\",exitNote:void 0};if(n?.shell===void 0)return{status:e.code===0?\"completed\":\"failed\",exitNote:void 0};let{isError:r,message:s}=Fcr[n.shell](n.command,e.code,e.stdout,e.stderr);return r?{status:\"failed\",exitNote:void 0}:{status:\"completed\",exitNote:s}}function LIt(e,n){let{status:r}=Ppe(e,n);return r===\"killed\"?\"stopped\":r}function Srn({shellCommand:e,taskId:n,description:r,kind:s,toolUseId:g,agentId:"
+    },
+    {
+      "offset": 186411250,
+      "needle": "function LIt(",
+      "excerpt": "function LIt(e,n){let{status:r}=Ppe(e,n);return r===\"killed\"?\"stopped\":r}function Srn({shellCommand:e,taskId:n,description:r,kind:s,toolUseId:g,agentId:h,taskRegistry:b,cancelStallWatchdog:w,releaseBackgroundShellKeepalive:D}){return e.result.then(async(F)=>{w(),await krn(e);let B=RW()&&s!==\"monitor\"?await pDt(n,rLn).catch((Oe)=>{t(`LocalShellTask ${n}: output tail unreadable, delivering without it: ${String(Oe)}`);return}):void 0,K=!1,he=Ppe(F,void 0),{taskOutput:ye}=e,Se=ye.stdoutToFile?void 0:ye.pipedStdoutBytes,Ee=lp(n);b.update(n,(Oe)=>{if(Oe.status===\"killed\")return K=!0,Oe;if(he=Ppe(F,Oe),Oe.notified)return Oe;return{...Oe,status:he.status,result:{code:F.code,interrupted:F.interrupted"
+    },
+    {
+      "offset": 177861891,
+      "needle": "subtype:\"task_notification\"",
+      "excerpt": "subtype:\"task_notification\",task_id:e,tool_use_id:r?.toolUseId,status:n,...r?.reason!==void 0&&{reason:r.reason},output_file:r?.outputFile??\"\",summary:r?.summary??\"\",usage:r?.usage,...r?.resourceLinks&&{resource_links:[...r.resourceLinks]},...r?.skipTranscript!==void 0&&{skip_transcript:r.skipTranscript},...r?.ambient&&{ambient:!0}})}function go(){if(Pe()!==\"firstParty\")return!1;return!a.CLAUDE_CODE_DISABLE_FAST_MODE}function vo(){return Gpt()||IKn()}function ks(){return a.CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK&&!Tn()}function P$e(){return go()&&VBo()}function Fu(){return gp()||P$e()&&L5(\"user:ccr_inference\")&&!vo()}function Tn(){return Wa()&&lG()||vo()}function Bu(){return!Tn()&&ce().penguinM"
+    }
+  ]
+}

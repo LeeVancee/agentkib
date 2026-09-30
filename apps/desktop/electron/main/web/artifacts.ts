@@ -39,6 +39,7 @@ export interface ArtifactListing {
 }
 export interface ArtifactTicketOptions {
   artifactId: string;
+  expectedRevision?: string;
   bundleRootId?: string;
   ttlMs?: number;
   download?: boolean;
@@ -670,6 +671,8 @@ export class ArtifactService {
     const kind = kindFor(record.path);
     let entryPath = basename(record.path),
       revision = revisionOf(inspected.stat);
+    if (input.expectedRevision && input.expectedRevision !== revision)
+      reject(409, "artifact_changed");
     let bundle: Map<string, BundleFile> | undefined;
     if (kind === "html" && !input.download) {
       const rootRecord = input.bundleRootId ? await this.record(scope, input.bundleRootId) : record;
@@ -712,6 +715,12 @@ export class ArtifactService {
           }
           if (bundle!.size >= maxFiles) reject(413, "artifact_bundle_too_large");
           const snapshot = await this.snapshot(record, child, maxBytes - total, false);
+          if (
+            child === record.path &&
+            input.expectedRevision &&
+            snapshot.revision !== input.expectedRevision
+          )
+            reject(409, "artifact_changed");
           total += snapshot.bytes.length;
           bundle!.set(bundleRoot ? child.slice(bundleRoot.length + 1) : child, {
             bytes: snapshot.bytes,

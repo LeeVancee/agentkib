@@ -1,3 +1,4 @@
+import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus } from "../api";
 import type {
@@ -16,6 +17,12 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 
 const desktopApi = Object.freeze({
   platform: process.platform,
+  account: Object.freeze({
+    request: (input: DesktopAccountRequest) =>
+      ipcRenderer.invoke("agentkib:account:request", input),
+    onStatus: (listener: (status: DesktopAccountStatus) => void) =>
+      subscribe("agentkib:account:status", listener),
+  }),
   events: Object.freeze({
     onWindowActivity: (listener: (active: boolean) => void) =>
       subscribe("agentkib:window-activity", listener),
@@ -172,6 +179,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:refresh-sessions", id, force),
     sessionEvents: (id: string, cursor?: string, limit?: number) =>
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
+    sourceCapability: (sessionId: string) =>
+      ipcRenderer.invoke("agentkib:session:source-capability", sessionId),
+    nativeImports: (workspaceId: string) =>
+      ipcRenderer.invoke("agentkib:session:native-imports", workspaceId),
     prepareHandoff: (request: unknown) =>
       ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
     planMcpConnection: (workspaceId: string, targetAgent: string) =>
@@ -190,6 +201,7 @@ const desktopApi = Object.freeze({
       acceptLosses: boolean,
       historyBudgetTokens: number,
       archiveId: string | undefined,
+      targetFingerprint?: string,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
@@ -204,6 +216,7 @@ const desktopApi = Object.freeze({
         acceptLosses,
         historyBudgetTokens,
         archiveId,
+        targetFingerprint,
       ),
     continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
       ipcRenderer.invoke(
@@ -232,6 +245,9 @@ const desktopApi = Object.freeze({
   }),
   remote: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:remote:request", request),
+  }),
+  claude: Object.freeze({
+    request: (request: unknown) => ipcRenderer.invoke("agentkib:claude:request", request),
   }),
   web: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,8 @@ use crate::paging;
 use crate::{
     ConversationEvent, ConversationEventKind, ConversationEventPage, ConversationProvider,
     ConversationSessionSummary, HandoffContext, NativeSessionListing, NativeSessionSummary,
-    SessionAvailability, SessionDocument,
+    SessionAttachmentKind, SessionAvailability, SessionBlock, SessionDocument, SessionLossCode,
+    SessionRole, SessionTurn, finish_document,
 };
 
 const SQLITE_PAGE_SIZE: usize = 100;
@@ -205,18 +206,532 @@ impl ConversationProvider for HermesProvider {
         }
     }
 
-    fn read_handoff_context(&self, _native_ref: &str) -> Result<HandoffContext> {
-        bail!("Hermes session handoff is unsupported")
+    fn read_handoff_context(&self, native_ref: &str) -> Result<HandoffContext> {
+        Ok(self.read_original_turns(native_ref)?.into_handoff())
     }
 
     fn read_session_document(
         &self,
-        _source: &ConversationSessionSummary,
-        _native_ref: &str,
-        _home: Option<&Path>,
+        source: &ConversationSessionSummary,
+        native_ref: &str,
+        home: Option<&Path>,
     ) -> Result<SessionDocument> {
-        bail!("Hermes session documents are unsupported")
+        let parsed = self.read_original_turns(native_ref)?;
+        finish_document(source, parsed.turns, parsed.losses, home)
     }
+}
+
+impl HermesProvider {
+    fn read_original_turns(&self, native_ref: &str) -> Result<OriginalTurns> {
+        let session = self.resolve(native_ref)?;
+        let records = match session.source {
+            Source::Jsonl(path) => read_original_jsonl(&path)?,
+            Source::Sqlite { path, session_id } => read_sqlite_originals(&path, &session_id)?,
+        };
+        let mut parsed = OriginalTurns::default();
+        for (line, record) in records {
+            match record.get("type").and_then(Value::as_str) {
+                Some("session" | "init") => continue,
+                Some("reasoning" | "thinking" | "redacted_thinking") => {
+                    parsed.loss(SessionLossCode::ReasoningExcluded);
+                    continue;
+                }
+                Some("system" | "internal") => continue,
+                Some("message") | None => {}
+                Some(_) => bail!("Hermes transcript contains an unsupported record type"),
+            }
+            let message = record.get("message").unwrap_or(&record);
+            for flag in ["compacted", "_compressed_summary"] {
+                anyhow::ensure!(
+                    ![&record, message].iter().any(|value| matches!(
+                        value.get(flag),
+                        Some(Value::Bool(true))
+                    ) || value
+                        .get(flag)
+                        .and_then(Value::as_u64)
+                        == Some(1)),
+                    "Hermes compacted JSONL requires a verified generation reader before import"
+                );
+            }
+            if [&record, message].iter().any(|value| {
+                matches!(value.get("active"), Some(Value::Bool(false)))
+                    || value.get("active").and_then(Value::as_u64) == Some(0)
+            }) {
+                continue;
+            }
+            parsed.push_message(
+                line,
+                message,
+                message.get("role").and_then(Value::as_str),
+                record.get("timestamp"),
+            )?;
+        }
+        parsed.ensure_readable()?;
+        Ok(parsed)
+    }
+}
+
+// Read the original message rows in one SQLite snapshot, never the bounded UI
+// projection. The optional lifecycle columns must be interpreted before content
+// is imported, otherwise a rewind can resurrect messages the user removed.
+fn read_sqlite_originals(path: &Path, session_id: &str) -> Result<Vec<(usize, Value)>> {
+    crate::history::safe_regular_file(path, None)?;
+    let mut connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(std::time::Duration::from_millis(500))?;
+    let transaction = connection.transaction()?;
+    let columns = table_columns(&transaction, "messages")?;
+    anyhow::ensure!(
+        ["session_id", "role", "content"]
+            .iter()
+            .all(|name| columns.contains(*name)),
+        "Hermes messages schema is unsupported for original-history import"
+    );
+    let session_columns = table_columns(&transaction, "sessions")?;
+    if session_columns.contains("parent_session_id") {
+        let parent: Option<String> = transaction.query_row(
+            "SELECT parent_session_id FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            parent.is_none(),
+            "Hermes lineage sessions require a verified ancestor reader before import"
+        );
+    }
+    // Current Hermes compression keeps multiple generations and a deduplicated
+    // display order. Until that lineage is verified, reject rather than silently
+    // copying only the active summary or duplicating the preserved old turns.
+    for flag in ["compacted", "_compressed_summary"] {
+        if columns.contains(flag) {
+            let found: bool = transaction.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1 AND {} = 1)",
+                    quote_identifier(flag)
+                ),
+                [session_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !found,
+                "Hermes compacted history requires a verified generation reader before import"
+            );
+        }
+    }
+    let fields: Vec<&str> = [
+        "role",
+        "content",
+        "tool_calls",
+        "tool_call_id",
+        "timestamp",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "display_kind",
+    ]
+    .into_iter()
+    .filter(|name| columns.contains(*name))
+    .collect();
+    let active = if columns.contains("active") {
+        " AND active = 1"
+    } else {
+        ""
+    };
+    let order = if columns.contains("id") {
+        "id"
+    } else {
+        "rowid"
+    };
+    let lengths = fields
+        .iter()
+        .map(|name| {
+            format!(
+                "COALESCE(length(CAST({} AS BLOB)), 0)",
+                quote_identifier(name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let bytes: i64 = transaction.query_row(
+        &format!("SELECT COALESCE(SUM({lengths}), 0) FROM messages WHERE session_id = ?1{active}"),
+        [session_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        bytes >= 0 && bytes as u64 <= crate::MAX_TRANSCRIPT_BYTES,
+        "Hermes transcript exceeds the 256 MiB read limit"
+    );
+    let select = fields
+        .iter()
+        .map(|name| quote_identifier(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = transaction.prepare(&format!(
+        "SELECT {select} FROM messages WHERE session_id = ?1{active} ORDER BY {order}"
+    ))?;
+    let mut rows = statement.query([session_id])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut record = serde_json::Map::new();
+        for (index, name) in fields.iter().enumerate() {
+            let value = match row.get_ref(index)? {
+                rusqlite::types::ValueRef::Null => Value::Null,
+                rusqlite::types::ValueRef::Text(bytes) => {
+                    let text =
+                        std::str::from_utf8(bytes).context("Invalid UTF-8 in Hermes message")?;
+                    if *name == "tool_calls" {
+                        serde_json::from_str(text).context("Malformed Hermes tool_calls")?
+                    } else if *name == "content" && text.trim_start().starts_with('[') {
+                        // Hermes serializes multimodal content arrays as JSON;
+                        // ordinary JSON-looking text stays text unless an array
+                        // consists entirely of typed content blocks.
+                        match serde_json::from_str::<Value>(text) {
+                            Ok(Value::Array(parts))
+                                if !parts.is_empty()
+                                    && parts.iter().all(|part| {
+                                        part.get("type").and_then(Value::as_str).is_some()
+                                    }) =>
+                            {
+                                Value::Array(parts)
+                            }
+                            _ => Value::String(text.into()),
+                        }
+                    } else {
+                        Value::String(text.into())
+                    }
+                }
+                rusqlite::types::ValueRef::Integer(value) => value.into(),
+                rusqlite::types::ValueRef::Real(value) => serde_json::json!(value),
+                rusqlite::types::ValueRef::Blob(_) => bail!("Unsupported Hermes message blob"),
+            };
+            record.insert((*name).into(), value);
+        }
+        records.push((records.len() + 1, Value::Object(record)));
+    }
+    Ok(records)
+}
+
+/// Strict bounded acquisition: partial/malformed original records must not turn
+/// into a seemingly complete import. UI history remains tolerant independently.
+pub(super) fn read_original_jsonl(path: &Path) -> Result<Vec<(usize, Value)>> {
+    let bytes = crate::history::read_bounded(path, crate::MAX_TRANSCRIPT_BYTES)?;
+    bytes
+        .split(|byte| *byte == b'\n')
+        .enumerate()
+        .filter(|(_, line)| !line.iter().all(u8::is_ascii_whitespace))
+        .map(|(index, line)| {
+            anyhow::ensure!(
+                line.len() <= crate::MAX_LINE_BYTES,
+                "Original transcript record exceeds the 4 MiB read limit"
+            );
+            let value = serde_json::from_slice(line)
+                .with_context(|| format!("Malformed original transcript record {}", index + 1))?;
+            Ok((index + 1, value))
+        })
+        .collect()
+}
+
+#[derive(Default)]
+pub(super) struct OriginalTurns {
+    pub(super) turns: Vec<SessionTurn>,
+    pub(super) losses: BTreeMap<SessionLossCode, usize>,
+    calls: BTreeSet<String>,
+}
+
+impl OriginalTurns {
+    pub(super) fn loss(&mut self, code: SessionLossCode) {
+        *self.losses.entry(code).or_default() += 1;
+    }
+
+    pub(super) fn ensure_readable(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.turns.is_empty(),
+            "Conversation does not contain readable original records"
+        );
+        Ok(())
+    }
+
+    pub(super) fn into_handoff(self) -> HandoffContext {
+        let mut messages = Vec::new();
+        let mut omitted_tool_count = 0;
+        for turn in self.turns {
+            let mut text = Vec::new();
+            let mut attachment_count = 0;
+            for block in turn.blocks {
+                match block {
+                    SessionBlock::Text { text: value } => text.push(value),
+                    SessionBlock::Attachment { .. } => attachment_count += 1,
+                    _ => omitted_tool_count += 1,
+                }
+            }
+            if turn.role == SessionRole::Tool || (text.is_empty() && attachment_count == 0) {
+                continue;
+            }
+            messages.push(ConversationEvent {
+                id: turn.id,
+                kind: if turn.role == SessionRole::User {
+                    ConversationEventKind::UserMessage
+                } else {
+                    ConversationEventKind::AgentMessage
+                },
+                turn_id: None,
+                message_phase: None,
+                timestamp: turn.timestamp,
+                content: (!text.is_empty()).then(|| text.join("\n")),
+                tool_name: None,
+                tool_status: None,
+                duration_ms: None,
+                attachment_count,
+                truncated: false,
+            });
+        }
+        HandoffContext {
+            compact_summary: None,
+            messages,
+            omitted_tool_count,
+            warnings: self
+                .losses
+                .into_iter()
+                .map(|(code, count)| format!("Source conversion: {code:?} ({count})"))
+                .collect(),
+        }
+    }
+
+    pub(super) fn push_message(
+        &mut self,
+        index: usize,
+        message: &Value,
+        role: Option<&str>,
+        timestamp: Option<&Value>,
+    ) -> Result<()> {
+        let role = match role {
+            Some("user") => SessionRole::User,
+            Some("assistant") => SessionRole::Assistant,
+            Some("tool" | "tool_result" | "toolResult") => SessionRole::Tool,
+            Some("system" | "session_meta") => return Ok(()),
+            Some("reasoning" | "thinking") => {
+                self.loss(SessionLossCode::ReasoningExcluded);
+                return Ok(());
+            }
+            _ => bail!("Unsupported original message role"),
+        };
+        let mut has_reasoning = false;
+        for field in [
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+        ] {
+            if message.get(field).is_some_and(|value| !value.is_null()) {
+                has_reasoning = true;
+                self.loss(SessionLossCode::ReasoningExcluded);
+            }
+        }
+        let has_original_content = message.get("content").is_some_and(|value| !value.is_null());
+        let has_tool_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty());
+        let has_images = message
+            .get("images")
+            .and_then(Value::as_array)
+            .is_some_and(|images| !images.is_empty());
+        // Null text is legitimate for an assistant that emitted only tools or
+        // reasoning, but never proves that a missing user message was empty.
+        anyhow::ensure!(
+            has_original_content
+                || (role == SessionRole::Assistant
+                    && (has_tool_calls || has_reasoning || has_images)),
+            "Original message has missing or null content"
+        );
+        let mut blocks = Vec::new();
+        if role == SessionRole::Tool {
+            let call_id = message
+                .get("tool_call_id")
+                .or_else(|| message.get("toolCallId"))
+                .and_then(Value::as_str)
+                .context("Tool result has no call identity")?;
+            if !self.calls.contains(call_id) {
+                self.loss(SessionLossCode::OrphanToolResult);
+            }
+            let content = message
+                .get("content")
+                .context("Tool result has no content")?;
+            let mut result = Vec::new();
+            self.content_blocks(content, &mut result)?;
+            let output = result
+                .iter()
+                .filter_map(|block| match block {
+                    SessionBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(SessionBlock::ToolResult {
+                call_id: call_id.into(),
+                output,
+                is_error: message
+                    .get("isError")
+                    .or_else(|| message.get("is_error"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            });
+            blocks.extend(
+                result
+                    .into_iter()
+                    .filter(|block| matches!(block, SessionBlock::Attachment { .. })),
+            );
+        } else if let Some(content) = message.get("content") {
+            self.content_blocks(content, &mut blocks)?;
+        }
+        if let Some(calls) = message.get("tool_calls").filter(|value| !value.is_null()) {
+            anyhow::ensure!(
+                role == SessionRole::Assistant,
+                "Tool calls outside assistant message"
+            );
+            for call in calls.as_array().context("Tool calls must be an array")? {
+                self.tool_call(call, &mut blocks)?;
+            }
+        }
+        if let Some(images) = message.get("images") {
+            self.content_blocks(images, &mut blocks)?;
+        }
+        if !blocks.is_empty() {
+            self.turns.push(SessionTurn {
+                id: format!("turn-{index}"),
+                role,
+                timestamp: timestamp
+                    .or_else(|| message.get("timestamp"))
+                    .and_then(super::parse_json_timestamp),
+                blocks,
+            });
+        }
+        Ok(())
+    }
+
+    fn tool_call(&mut self, call: &Value, blocks: &mut Vec<SessionBlock>) -> Result<()> {
+        let call_id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .context("Tool call has no identity")?;
+        anyhow::ensure!(
+            self.calls.insert(call_id.into()),
+            "Duplicate tool call identity in original history"
+        );
+        let function = call.get("function").unwrap_or(call);
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .context("Tool call has no name")?;
+        let input = function
+            .get("arguments")
+            .or_else(|| function.get("input"))
+            .context("Tool call has no arguments")?;
+        blocks.push(SessionBlock::ToolCall {
+            call_id: call_id.into(),
+            name: name.into(),
+            input: json_content(input),
+        });
+        Ok(())
+    }
+
+    fn content_blocks(&mut self, content: &Value, blocks: &mut Vec<SessionBlock>) -> Result<()> {
+        match content {
+            Value::Null => {}
+            Value::String(text) => {
+                if !text.is_empty() {
+                    blocks.push(SessionBlock::Text { text: text.clone() });
+                }
+            }
+            Value::Array(parts) => {
+                for part in parts {
+                    match part.get("type").and_then(Value::as_str) {
+                        Some("text") => blocks.push(SessionBlock::Text {
+                            text: part
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .context("Text block has no text")?
+                                .into(),
+                        }),
+                        Some("thinking" | "reasoning" | "redacted_thinking") => {
+                            self.loss(SessionLossCode::ReasoningExcluded)
+                        }
+                        Some("toolCall" | "tool_use") => self.tool_call(part, blocks)?,
+                        Some("image" | "image_url" | "document") => {
+                            self.attachment(part, blocks)?
+                        }
+                        Some("input_audio" | "audio" | "video") => {
+                            self.loss(SessionLossCode::UnsupportedAttachment)
+                        }
+                        _ => bail!(
+                            "Unsupported original content block; import would lose unknown message content"
+                        ),
+                    }
+                }
+            }
+            _ => bail!("Unsupported original message content"),
+        }
+        Ok(())
+    }
+
+    fn attachment(&mut self, part: &Value, blocks: &mut Vec<SessionBlock>) -> Result<()> {
+        let source = part.get("source").unwrap_or(part);
+        let url = part
+            .get("url")
+            .or_else(|| part.pointer("/image_url/url"))
+            .and_then(Value::as_str);
+        let payload = if let Some(url) = url {
+            url.strip_prefix("data:")
+                .and_then(|value| value.split_once(";base64,"))
+                .map(|(mime, data)| (mime.to_owned(), data.to_owned()))
+        } else {
+            source
+                .get("data")
+                .and_then(Value::as_str)
+                .zip(
+                    source
+                        .get("media_type")
+                        .or_else(|| source.get("mimeType"))
+                        .and_then(Value::as_str),
+                )
+                .map(|(data, mime)| (mime.into(), data.into()))
+        };
+        let Some((media_type, data)) = payload else {
+            self.loss(SessionLossCode::ExternalAttachment);
+            return Ok(());
+        };
+        use base64::Engine;
+        anyhow::ensure!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&data)
+                .is_ok(),
+            "Invalid base64 attachment in original history"
+        );
+        blocks.push(SessionBlock::Attachment {
+            kind: if media_type.starts_with("image/") {
+                SessionAttachmentKind::Image
+            } else {
+                SessionAttachmentKind::Document
+            },
+            media_type,
+            filename: part
+                .get("filename")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            inline_base64: Some(data),
+        });
+        Ok(())
+    }
+}
+
+fn json_content(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn summary(session: Session) -> NativeSessionSummary {
@@ -1001,6 +1516,26 @@ fn read_sqlite_events(
 }
 
 #[cfg(test)]
+pub(super) fn fixture_source(agent: AgentKind) -> ConversationSessionSummary {
+    ConversationSessionSummary {
+        id: "source".into(),
+        workspace_id: "workspace".into(),
+        agent,
+        title: Some("fixture".into()),
+        origin: crate::SessionOrigin::Unknown,
+        spawned_by_session_id: None,
+        forked_from_session_id: None,
+        created_at: None,
+        updated_at: None,
+        message_count: None,
+        git_branch: None,
+        archived: false,
+        sidechain: false,
+        availability: SessionAvailability::Readable,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -1013,6 +1548,187 @@ mod tests {
             "cwd": cwd.to_string_lossy(),
         })
         .to_string()
+    }
+
+    #[test]
+    fn original_message_rejects_missing_user_body_but_accepts_explicit_empty_assistant() {
+        for message in [
+            serde_json::json!({"role":"user"}),
+            serde_json::json!({"role":"user","content":null}),
+        ] {
+            let mut parsed = OriginalTurns::default();
+            assert!(
+                parsed
+                    .push_message(1, &message, Some("user"), None)
+                    .is_err()
+            );
+        }
+        let mut parsed = OriginalTurns::default();
+        parsed
+            .push_message(
+                1,
+                &serde_json::json!({"content":""}),
+                Some("assistant"),
+                None,
+            )
+            .unwrap();
+        parsed
+            .push_message(
+                2,
+                &serde_json::json!({"content":null,"reasoning_content":"private"}),
+                Some("assistant"),
+                None,
+            )
+            .unwrap();
+        assert!(parsed.turns.is_empty());
+        assert_eq!(
+            parsed.losses.get(&SessionLossCode::ReasoningExcluded),
+            Some(&1)
+        );
+        assert!(
+            parsed
+                .push_message(
+                    3,
+                    &serde_json::json!({"content":null}),
+                    Some("assistant"),
+                    None
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn original_sqlite_preserves_full_text_tools_and_redacts_after_parsing() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("project");
+        fs::create_dir_all(&workspace).unwrap();
+        let db = Connection::open(dir.path().join("state.db")).unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT, cwd TEXT);
+            CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, tool_call_id TEXT, timestamp REAL, active INTEGER, compacted INTEGER, _compressed_summary INTEGER);").unwrap();
+        db.execute(
+            "INSERT INTO sessions VALUES ('s', ?1)",
+            [workspace.to_string_lossy()],
+        )
+        .unwrap();
+        let long_text = format!("{} API_KEY=secret-fixture", "中".repeat(100_000));
+        db.execute(
+            "INSERT INTO messages VALUES (1, 's', 'user', ?1, NULL, NULL, 12, 1, 0, 0)",
+            [&long_text],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO messages VALUES (2, 's', 'assistant', '', ?1, NULL, 11, 1, 0, 0)",
+            [r#"[{"id":"call1","function":{"name":"read","arguments":"{}"}}]"#],
+        )
+        .unwrap();
+        db.execute_batch("INSERT INTO messages VALUES (3, 's', 'tool', 'result', NULL, 'call1', 10, 1, 0, 0);
+            INSERT INTO messages VALUES (4, 's', 'user', 'rewound secret', NULL, NULL, 13, 0, 0, 0);").unwrap();
+        let provider = HermesProvider::with_home(dir.path().into());
+        let native = &provider.list_sessions(&workspace).unwrap()[0].native_ref;
+        let document = provider
+            .read_session_document(&fixture_source(AgentKind::Hermes), native, None)
+            .unwrap();
+        assert_eq!(document.turns.len(), 3);
+        assert!(
+            matches!(&document.turns[0].blocks[0], SessionBlock::Text { text } if text.len() > crate::MAX_MESSAGE_BYTES && !text.contains("secret-fixture"))
+        );
+        assert!(
+            matches!(&document.turns[1].blocks[0], SessionBlock::ToolCall { call_id, name, .. } if call_id == "call1" && name == "read")
+        );
+        assert!(
+            matches!(&document.turns[2].blocks[0], SessionBlock::ToolResult { call_id, output, .. } if call_id == "call1" && output == "result")
+        );
+        assert!(document.redaction_count > 0);
+        assert!(document.losses.is_empty());
+        let handoff = provider.read_handoff_context(native).unwrap();
+        assert_eq!(handoff.messages.len(), 1);
+        assert_eq!(handoff.omitted_tool_count, 2);
+    }
+
+    #[test]
+    fn original_sqlite_refuses_compaction_and_ancestor_ambiguity() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT, parent_session_id TEXT);
+            INSERT INTO sessions VALUES ('s', NULL);
+            CREATE TABLE messages(session_id TEXT, role TEXT, content TEXT, active INTEGER, compacted INTEGER);
+            INSERT INTO messages VALUES ('s', 'user', 'old', 0, 1);").unwrap();
+        assert!(
+            read_sqlite_originals(&path, "s")
+                .unwrap_err()
+                .to_string()
+                .contains("compacted")
+        );
+        db.execute_batch(
+            "UPDATE messages SET compacted = 0; UPDATE sessions SET parent_session_id = 'parent';",
+        )
+        .unwrap();
+        assert!(
+            read_sqlite_originals(&path, "s")
+                .unwrap_err()
+                .to_string()
+                .contains("ancestor")
+        );
+    }
+
+    #[test]
+    fn original_jsonl_retains_attachments_and_reports_only_explicit_losses() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("project");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        let records = [
+            serde_json::json!({"type":"session","id":"s","cwd":workspace}),
+            serde_json::json!({"role":"user","content":[{"type":"text","text":"hello"},{"type":"image_url","image_url":{"url":"data:image/png;base64,YWJj"}},{"type":"image_url","image_url":{"url":"https://example.test/private.png"}}]}),
+            serde_json::json!({"type":"reasoning","role":"assistant","content":"private thought"}),
+            serde_json::json!({"role":"assistant","content":"answer","reasoning_content":"private thought"}),
+        ];
+        fs::write(
+            dir.path().join("sessions/s.jsonl"),
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let provider = HermesProvider::with_home(dir.path().into());
+        let native = &provider.list_sessions(&workspace).unwrap()[0].native_ref;
+        let document = provider
+            .read_session_document(&fixture_source(AgentKind::Hermes), native, None)
+            .unwrap();
+        assert_eq!(document.turns.len(), 2);
+        assert!(
+            matches!(&document.turns[0].blocks[1], SessionBlock::Attachment { inline_base64: Some(data), .. } if data == "YWJj")
+        );
+        assert!(
+            document
+                .losses
+                .iter()
+                .any(|loss| loss.code == SessionLossCode::ExternalAttachment && loss.count == 1)
+        );
+        assert!(
+            document
+                .losses
+                .iter()
+                .any(|loss| loss.code == SessionLossCode::ReasoningExcluded && loss.count == 2)
+        );
+        assert!(
+            !serde_json::to_string(&document)
+                .unwrap()
+                .contains("private thought")
+        );
+    }
+
+    #[test]
+    fn original_jsonl_rejects_malformed_or_unknown_content_instead_of_partial_import() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        fs::write(&path, "{\"role\":\"user\",\"content\":\"good\"}\n{broken").unwrap();
+        assert!(read_original_jsonl(&path).is_err());
+        let mut parsed = OriginalTurns::default();
+        assert!(parsed.push_message(1, &serde_json::json!({"content":[{"type":"new-text","text":"must not disappear"}]}), Some("user"), None).is_err());
     }
 
     #[test]

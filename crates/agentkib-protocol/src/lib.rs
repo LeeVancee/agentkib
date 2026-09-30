@@ -5,6 +5,7 @@ pub const PROTOCOL_VERSION: u32 = 15;
 pub const WEB_REQUEST_METHOD: &str = "web.request";
 pub const RELAY_CREATE_CSR_METHOD: &str = "relay.createCsr";
 pub const CONTROL_RECEIPT_METHOD: &str = "control.receipt";
+pub const CLAUDE_MANAGED_METHOD: &str = "claude.managed";
 pub const CODEX_MANAGED_METHOD: &str = "codex.managed";
 pub const REMOTE_REQUEST_METHOD: &str = "remote.request";
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
@@ -75,6 +76,8 @@ pub const LIST_MEMORIES_METHOD: &str = "memories.list";
 pub const SEARCH_MEMORIES_METHOD: &str = "memories.search";
 pub const PROPOSE_MEMORY_METHOD: &str = "memories.propose";
 pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
+pub const SESSION_SOURCE_CAPABILITY_METHOD: &str = "sessions.sourceCapability";
+pub const LIST_NATIVE_IMPORTS_METHOD: &str = "sessions.nativeImports";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
@@ -274,6 +277,7 @@ export const RUNTIME_METHODS = {{
   setSidebarWidthPreference: "{SET_SIDEBAR_WIDTH_PREFERENCE_METHOD}",
   remoteRequest: "{REMOTE_REQUEST_METHOD}",
   webRequest: "{WEB_REQUEST_METHOD}",
+  claudeManaged: "{CLAUDE_MANAGED_METHOD}",
   codexManaged: "{CODEX_MANAGED_METHOD}",
   relayCreateCsr: "{RELAY_CREATE_CSR_METHOD}",
   controlReceipt: "{CONTROL_RECEIPT_METHOD}",
@@ -284,6 +288,8 @@ export const RUNTIME_METHODS = {{
   searchMemories: "{SEARCH_MEMORIES_METHOD}",
   proposeMemory: "{PROPOSE_MEMORY_METHOD}",
   reviewMemory: "{REVIEW_MEMORY_METHOD}",
+  sessionSourceCapability: "{SESSION_SOURCE_CAPABILITY_METHOD}",
+  listNativeImports: "{LIST_NATIVE_IMPORTS_METHOD}",
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",

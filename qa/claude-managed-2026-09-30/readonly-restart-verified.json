@@ -1,0 +1,11 @@
+{
+  "exit": 0,
+  "readErrors": [],
+  "state": "outcome-unknown",
+  "sendEnabled": false,
+  "approvalCount": 0,
+  "questionCount": 0,
+  "receiptStatus": "accepted",
+  "completionObserved": false,
+  "launchCount": 1
+}

@@ -21,7 +21,14 @@ impl Worker {
             let mut service = Service::default();
             while let Ok(request) = receiver.recv() {
                 let result = if request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD {
-                    service.managed.receipt(request.params)
+                    service
+                        .managed
+                        .receipt(request.params)
+                        .and_then(|receipt| service.claude_managed.receipt(receipt, &service.boot))
+                } else if request.method == agentkib_protocol::CLAUDE_MANAGED_METHOD {
+                    service
+                        .claude_managed
+                        .request(request.params, &service.boot, true)
                 } else if request.method == agentkib_protocol::CODEX_MANAGED_METHOD {
                     service.managed.request(request.params, &service.boot, true)
                 } else {
@@ -49,6 +56,7 @@ impl Worker {
                 request.params["operation"].as_str(),
                 Some(
                     "catalog"
+                        | "options"
                         | "events"
                         | "live"
                         | "capabilities"
@@ -192,6 +200,7 @@ fn follower_thread_settings(
 
 struct Service {
     managed: crate::codex_managed::Service,
+    claude_managed: crate::claude_managed::Service,
     boot: String,
     used: BTreeSet<String>,
     // Independent of the bridge cache: reconnect/eviction must not turn a lost
@@ -215,6 +224,7 @@ impl Default for Service {
     fn default() -> Self {
         Self {
             managed: crate::codex_managed::Service::default(),
+            claude_managed: crate::claude_managed::Service::default(),
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
             unresolved: BTreeSet::new(),
@@ -274,6 +284,14 @@ impl Service {
     }
 
     fn request(&mut self, value: Value) -> anyhow::Result<Value> {
+        if let Some(id) = value["sessionId"].as_str()
+            && self.claude_managed.is_claude(id)?
+            && (self.claude_managed.has_metadata(id)? || value["operation"] != "events")
+            && value["operation"] != "diff"
+        {
+            return self.claude_managed.request(value, &self.boot, false);
+        }
+
         if matches!(
             value["operation"].as_str(),
             Some(
@@ -444,8 +462,10 @@ impl Service {
         };
         if request.operation == "catalog" {
             let mut catalog = web_catalog(&source)?;
-            let managed = self.managed.catalog()?;
-            let indexed_aliases = self.managed.indexed_aliases()?;
+            let mut managed = self.managed.catalog()?;
+            managed.extend(self.claude_managed.catalog()?);
+            let mut indexed_aliases = self.managed.indexed_aliases()?;
+            indexed_aliases.extend(self.claude_managed.indexed_aliases()?);
             if !managed.is_empty() {
                 let store = Store::open_default()?;
                 let managed_workspaces: BTreeSet<_> = managed
@@ -1370,6 +1390,44 @@ fn complete_file_change(change: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn released_empty_claude_session_keeps_managed_event_routing_and_can_be_readopted() {
+        let (directory, managed, workspace) = crate::claude_managed::tests::fixture();
+        let mut service = super::Service {
+            claude_managed: managed,
+            ..Default::default()
+        };
+        let boot = service.boot.clone();
+        let id = || uuid::Uuid::new_v4().to_string();
+        let created = service
+            .claude_managed
+            .request(
+                serde_json::json!({"operation":"create","workspaceId":workspace,"requestId":id()}),
+                &boot,
+                true,
+            )
+            .unwrap();
+        let session = created["sessionId"].as_str().unwrap();
+        let released = service.claude_managed.request(serde_json::json!({"operation":"release","sessionId":session,"requestId":id(),"runtimeBootId":boot,"expectedRevision":0}), &boot, true).unwrap();
+        assert_eq!(released["accepted"], true);
+        assert!(!service.claude_managed.owns(session).unwrap());
+        assert!(service.claude_managed.has_metadata(session).unwrap());
+        let events = service
+            .request(serde_json::json!({"operation":"events","sessionId":session}))
+            .unwrap();
+        assert_eq!(events["events"], serde_json::json!([]));
+        let live = service.request(serde_json::json!({"operation":"live","sessionId":session,"experimentalEnabled":true})).unwrap();
+        assert_eq!(live["status"], "released");
+        assert_eq!(live["sendEnabled"], false);
+        let inspected = service.request(serde_json::json!({"operation":"inspect","sessionId":session,"experimentalEnabled":true})).unwrap();
+        let adopted = service.claude_managed.request(serde_json::json!({"operation":"adopt","sessionId":session,"requestId":id(),"handoffConfirmed":true,"handoffFingerprint":inspected["handoffFingerprint"]}), &boot, true).unwrap();
+        assert_eq!(adopted["sourceSessionId"], created["sourceSessionId"]);
+        let live = service.request(serde_json::json!({"operation":"live","sessionId":session,"experimentalEnabled":true})).unwrap();
+        assert_eq!(live["status"], "idle");
+        assert_eq!(live["sendEnabled"], true);
+        assert!(!directory.path().join("starts").exists());
+    }
     use super::*;
 
     #[test]

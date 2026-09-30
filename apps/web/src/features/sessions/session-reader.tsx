@@ -121,7 +121,7 @@ export function SessionReader() {
             current?.agent === "antigravity") &&
           access.experimentalEnabled &&
           access.device?.send ? (
-            current?.agent === "codex" ? (
+            current?.agent === "codex" || current?.agent === "claude-code" ? (
               <CodexComposer key={selected} />
             ) : (
               <form

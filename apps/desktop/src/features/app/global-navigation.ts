@@ -10,9 +10,9 @@ const globalNav: SidebarEntry<GlobalPage>[] = [
     icon: FolderGit2,
     shortcut: "navigate-workspaces",
   },
-  { id: "catalog", label: "nav.catalog", icon: Library, shortcut: "navigate-catalog" },
   { id: "agents", label: "nav.agents", icon: Bot, shortcut: "navigate-agents" },
   { id: "sessions", label: "sessions.nav", icon: MessageSquareText },
+  { id: "catalog", label: "nav.catalog", icon: Library, shortcut: "navigate-catalog" },
   { id: "quota", label: "nav.quota", icon: Gauge, shortcut: "navigate-quota" },
   { id: "insights", label: "nav.insights", icon: Award, shortcut: "navigate-insights" },
 ];

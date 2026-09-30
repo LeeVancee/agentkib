@@ -1,8 +1,10 @@
+import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
+import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage } from "@/features/skills/SkillHubPage";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
@@ -22,7 +24,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "../core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
@@ -240,88 +241,69 @@ function CatalogPage({
   );
   const pendingMemoryLabel = pending ? tr("memory.pendingCount", { count: pending }) : undefined;
   const AssetPage = AssetCatalogPage;
+  const catalogSections: Array<{
+    id: AssetSection;
+    label: string;
+    icon: ComponentType<{ size?: number }>;
+    count: number;
+    badgeLabel?: string;
+    highlight?: boolean;
+  }> = [
+    {
+      id: "instructions",
+      label: tr("assets.instructions"),
+      icon: FileCode2,
+      count: instructionAssets.length,
+    },
+    { id: "skills", label: tr("assets.skills"), icon: Sparkles, count: skillAssets.length },
+    { id: "mcp", label: "MCP", icon: PlugZap, count: connectionAssets.length },
+    {
+      id: "memory",
+      label: tr("assets.memories"),
+      icon: Brain,
+      count: memories.length,
+      badgeLabel: pendingMemoryLabel,
+      highlight: !!pending,
+    },
+    { id: "other", label: tr("assets.hooksProfiles"), icon: Boxes, count: otherAssets.length },
+  ];
   return (
     <div className="relative grid gap-5 pb-8">
-      <section className="w-fit max-w-full">
-        <Tabs value={section} onValueChange={(value) => onSection(value as AssetSection)}>
-          <TabsList
-            className="segmented-control !h-auto w-fit max-w-full justify-start"
-            variant="default"
-            aria-label={tr("nav.assets")}
-          >
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="instructions"
+      <SidebarPanel>
+        {/* 这是切换本页分区的导航，不是带面板的 Tabs：用按钮 + aria-current。 */}
+        <nav className="catalog-sidebar-navigation grid gap-0.5" aria-label={tr("nav.assets")}>
+          {catalogSections.map(({ id, label, icon: Icon, count, badgeLabel, highlight }) => (
+            <Button
+              key={id}
+              variant="bare"
+              size="content"
+              data-sidebar-navigate
+              className={cn(
+                navigationStyles.appSidebarItem,
+                "h-10 gap-2 px-3",
+                section === id && navigationStyles.appSidebarItemActive,
+              )}
+              aria-current={section === id ? "page" : undefined}
+              onClick={() => onSection(id)}
             >
-              <FileCode2 size={15} />
-              {tr("assets.instructions")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-              >
-                {instructionAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="skills"
-            >
-              <Sparkles size={15} />
-              {tr("assets.skills")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-              >
-                {skillAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="mcp"
-            >
-              <PlugZap size={15} />
-              MCP
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-              >
-                {connectionAssets.length}
-              </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="memory"
-            >
-              <Brain size={15} />
-              {tr("assets.memories")}
+              <Icon size={15} />
+              {label}
               <Badge
                 variant="secondary"
                 className={cn(
-                  "min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
-                  pending && "border-amber-300 bg-amber-100 text-amber-800",
+                  "ml-auto min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]",
+                  highlight &&
+                    "border-[color-mix(in_srgb,var(--amber)_45%,transparent)] bg-[color-mix(in_srgb,var(--amber)_16%,transparent)] text-[var(--amber)]",
                 )}
-                aria-label={pendingMemoryLabel}
-                title={pendingMemoryLabel}
+                aria-label={badgeLabel}
+                title={badgeLabel}
               >
-                {memories.length}
+                {count}
               </Badge>
-            </TabsTrigger>
-            <TabsTrigger
-              className="segmented-control-item h-9 min-h-9 flex-none gap-2 px-3 text-xs sm:text-sm"
-              value="other"
-            >
-              <Boxes size={15} />
-              {tr("assets.hooksProfiles")}
-              <Badge
-                variant="secondary"
-                className="min-w-5 justify-center rounded-full px-1.5 py-0 text-[11px]"
-              >
-                {otherAssets.length}
-              </Badge>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </section>
+            </Button>
+          ))}
+        </nav>
+      </SidebarPanel>
       {section === "instructions" && (
         <AssetPage assets={instructionAssets} workspaces={workspaces} onOpen={onOpen} />
       )}
@@ -361,6 +343,8 @@ function GlobalMemoryInbox({
   onReload: () => Promise<void>;
 }) {
   const { tr } = useI18n();
+  const pendingCount = records.filter((item) => item.status === "pending").length;
+  const approvedCount = records.filter((item) => item.status === "approved").length;
   const review = async (
     id: string,
     status: "approved" | "rejected" | "invalidated",
@@ -370,22 +354,62 @@ function GlobalMemoryInbox({
     await onReload();
   };
   return (
-    <Card className="rounded-xl border border-border bg-card shadow-sm overflow-hidden rounded-xl border border-border bg-card">
-      <CardHeader className="flex items-center justify-between gap-3 border-b border-border px-4 py-4">
-        <div>
-          <h2>{tr("memory.globalTitle")}</h2>
-          <p>
-            {tr("memory.globalPending", {
-              count: records.filter((item) => item.status === "pending").length,
-            })}
-          </p>
-        </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <div className="grid gap-4">
+    <div className="mx-auto grid w-full max-w-6xl gap-4 pb-8">
+      <Card className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-muted text-foreground">
+              <Brain size={21} />
+            </div>
+            <div className="min-w-0">
+              <CardTitle className="text-lg">{tr("memory.globalTitle")}</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {tr("memory.globalPending", { count: pendingCount })}
+              </p>
+            </div>
+          </div>
+          <div className="flex w-full max-w-full flex-wrap items-center gap-2 sm:w-auto">
+            <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm text-muted-foreground">
+              {tr("assets.memories")}
+              <strong className="font-semibold text-foreground">{records.length}</strong>
+            </span>
+            <span
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm",
+                pendingCount > 0
+                  ? "border-[color-mix(in_srgb,var(--amber)_40%,transparent)] bg-[color-mix(in_srgb,var(--amber)_10%,transparent)] text-[var(--amber)]"
+                  : "border-border bg-background text-muted-foreground",
+              )}
+            >
+              {tr("status.memory.pending")}
+              <strong className="font-semibold">{pendingCount}</strong>
+            </span>
+            {approvedCount > 0 && (
+              <span className="inline-flex h-9 items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--green)_40%,transparent)] bg-[color-mix(in_srgb,var(--green)_10%,transparent)] px-3 text-sm text-[var(--green)]">
+                {tr("status.memory.approved")}
+                <strong className="font-semibold">{approvedCount}</strong>
+              </span>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-9 rounded-lg"
+              aria-label={tr("common.refresh")}
+              title={tr("common.refresh")}
+              onClick={() => void onReload()}
+            >
+              <RefreshCw size={15} />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-4 sm:p-5">
           {records.map((record) => (
-            <div key={record.id} className="grid gap-2">
-              <span className="text-xs font-medium text-muted-foreground">
+            <div
+              key={record.id}
+              className="mb-3 grid gap-2 rounded-xl border border-border bg-background p-4 last:mb-0"
+            >
+              <span className="text-xs font-semibold text-muted-foreground">
                 {workspaces.find((item) => item.manifest_workspace_id === record.project_id)
                   ?.name ?? record.project_id.slice(0, 8)}
               </span>
@@ -393,11 +417,25 @@ function GlobalMemoryInbox({
             </div>
           ))}
           {!records.length && (
-            <CatalogEmpty title={tr("memory.empty")} text={tr("memory.globalEmptyText")} />
+            <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-border bg-muted/20 px-5 py-8 text-center">
+              <div className="grid max-w-lg justify-items-center gap-3">
+                <div className="grid size-12 place-items-center rounded-2xl border border-border bg-card text-muted-foreground shadow-sm">
+                  <Brain size={22} />
+                </div>
+                <div className="grid gap-1.5">
+                  <h3 className="m-0 text-base font-semibold text-foreground">
+                    {tr("memory.empty")}
+                  </h3>
+                  <p className="m-0 text-sm leading-relaxed text-muted-foreground">
+                    {tr("memory.globalEmptyText")}
+                  </p>
+                </div>
+              </div>
+            </div>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

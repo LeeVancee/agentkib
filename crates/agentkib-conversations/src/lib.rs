@@ -1208,7 +1208,8 @@ impl CodexProvider {
             !session.forked_from_database && session.forked_from_session_id.is_none();
         let needs_agent_details = session.origin == SessionOrigin::Auxiliary
             && session.agent_path.is_none()
-            && session.agent_nickname.is_none();
+            && (sanitize_title(session.title.as_deref()).is_none()
+                || session.agent_nickname.is_none());
         if !needs_origin && !needs_spawned && !needs_forked && !needs_agent_details {
             return session;
         }
@@ -3430,6 +3431,75 @@ mod tests {
             sessions[0].forked_from_session_id.as_deref(),
             Some("fork-from-header")
         );
+    }
+
+    #[test]
+    fn codex_recovers_subagent_task_name_from_missing_or_partial_database_metadata() {
+        for partial_metadata in [false, true] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let transcript = dir.path().join("header-only-subagent.jsonl");
+            fs::write(
+                &transcript,
+                format!(
+                    "{}\n",
+                    codex_meta_line(
+                        "header-only-subagent",
+                        serde_json::json!({
+                            "subagent": {
+                                "thread_spawn": {
+                                    "agent_path": "/root/fix_title_bug",
+                                    "agent_nickname": "Cedar"
+                                }
+                            }
+                        }),
+                        serde_json::Value::Null,
+                    )
+                ),
+            )
+            .unwrap();
+            let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+            database
+                .execute_batch(
+                    "CREATE TABLE threads(
+                        id TEXT,
+                        rollout_path TEXT,
+                        cwd TEXT,
+                        title TEXT,
+                        created_at INTEGER,
+                        updated_at INTEGER,
+                        source TEXT,
+                        agent_nickname TEXT,
+                        parent_thread_id TEXT,
+                        forked_from_id TEXT
+                    );",
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO threads VALUES (?1, ?2, ?3, '', 1, 2, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        "header-only-subagent",
+                        transcript.display().to_string(),
+                        workspace.display().to_string(),
+                        partial_metadata.then(|| serde_json::json!({"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}}).to_string()),
+                        partial_metadata.then_some("Cedar"),
+                        partial_metadata.then_some("parent"),
+                        partial_metadata.then_some("fork"),
+                    ],
+                )
+                .unwrap();
+            drop(database);
+
+            let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+                .list_sessions(&workspace)
+                .unwrap();
+
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].origin, SessionOrigin::Auxiliary);
+            assert_eq!(sessions[0].title.as_deref(), Some("fix_title_bug"));
+        }
     }
 
     #[test]

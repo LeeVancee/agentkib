@@ -5,7 +5,6 @@ type Updater<T> = T | ((current: T) => T);
 
 interface AppState {
   sidebarCollapsed: boolean;
-  sidebarPeek: boolean;
   favoriteWorkspaceIds: string[];
   runtime?: RuntimeInfo;
   navigationRequest?: AppNavigationRequest;
@@ -16,7 +15,6 @@ interface AppState {
 interface AppActions {
   reset: () => void;
   setSidebarCollapsed: (value: Updater<boolean>) => void;
-  setSidebarPeek: (value: Updater<boolean>) => void;
   toggleFavoriteWorkspace: (workspaceId: string) => void;
   setRuntime: (value: Updater<RuntimeInfo | undefined>) => void;
   setNavigationRequest: (value: Updater<AppNavigationRequest | undefined>) => void;
@@ -71,13 +69,11 @@ function persistFavoriteWorkspaceIds(value: string[]) {
 
 export const useAppStore = create<AppState & AppActions>((set) => ({
   sidebarCollapsed: initialSidebarCollapsed(),
-  sidebarPeek: false,
   favoriteWorkspaceIds: initialFavoriteWorkspaceIds(),
   quotaConfigureRequest: 0,
   reset: () =>
     set({
       sidebarCollapsed: false,
-      sidebarPeek: false,
       favoriteWorkspaceIds: [],
       runtime: undefined,
       navigationRequest: undefined,
@@ -90,7 +86,6 @@ export const useAppStore = create<AppState & AppActions>((set) => ({
       persistSidebarCollapsed(next);
       return { sidebarCollapsed: next };
     }),
-  setSidebarPeek: (value) => set((state) => ({ sidebarPeek: resolve(value, state.sidebarPeek) })),
   toggleFavoriteWorkspace: (workspaceId) =>
     set((state) => {
       const next = state.favoriteWorkspaceIds.includes(workspaceId)

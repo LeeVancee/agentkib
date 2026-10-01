@@ -830,7 +830,9 @@ export class McpManager {
       checkCurrent();
       await client.connect(transport, { timeout: 15_000 });
       checkCurrent();
-      const child = (transport as Transport & { _process?: import("node:child_process").ChildProcess })._process;
+      const child = (
+        transport as Transport & { _process?: import("node:child_process").ChildProcess }
+      )._process;
       if (child?.pid) {
         if (process.platform === "win32") {
           const tree = windowsProcessTree(child.pid);

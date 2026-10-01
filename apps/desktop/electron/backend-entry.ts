@@ -18,7 +18,10 @@ function dispatch(request: unknown, send: (response: unknown) => Promise<void>):
   const stopping = shutdown(request);
   if (stopping) closing = true;
   const task = (async () => {
-    if (stopping) await Promise.allSettled([...pending]);
+    if (stopping) {
+      backend.cancelPendingOperations();
+      await Promise.allSettled([...pending]);
+    }
     const response = await backend.handleAsync(request);
     await send(response);
     if (stopping && !response.error) process.exit(0);
@@ -59,6 +62,7 @@ if (process.parentPort) {
   });
   input.on("close", () => {
     closing = true;
+    backend.cancelPendingOperations();
     void Promise.allSettled([...pending]).then(async () => {
       try {
         await backend.closeAsync();

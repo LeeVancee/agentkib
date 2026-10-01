@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolveCommand } from "./command-resolution";
+import { randomUUID } from "node:crypto";
 
 type VaultSource = "discovered" | "manual";
 
@@ -24,7 +25,17 @@ const isWindows = process.platform === "win32";
 const isLinux = process.platform === "linux";
 
 export class ObsidianIntegration {
+  #writes: Promise<void> = Promise.resolve();
   constructor(private readonly dataDir: string) {}
+
+  #write<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#writes.then(operation);
+    this.#writes = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 
   async integration() {
     const stored = await this.#load();
@@ -52,30 +63,36 @@ export class ObsidianIntegration {
   async addVault(value: string) {
     const vault = await this.#validateVault(value);
     if (!vault) throw new Error(`Obsidian vault does not exist: ${value}`);
-    const stored = await this.#load();
-    stored.manual_vaults = [...new Set([...(stored.manual_vaults ?? []), vault])].sort();
-    await this.#save(stored);
+    await this.#write(async () => {
+      const stored = await this.#load();
+      stored.manual_vaults = [...new Set([...(stored.manual_vaults ?? []), vault])].sort();
+      await this.#save(stored);
+    });
     return this.integration();
   }
 
   async linkWorkspace(workspaceId: string, vaultPath: string, relativeTarget?: string | null) {
     const vault = await this.#validateVault(vaultPath);
     if (!vault) throw new Error(`Obsidian vault does not exist: ${vaultPath}`);
-    const stored = await this.#load();
-    const installedVaults = await this.integration();
-    if (!installedVaults.vaults.some((item) => item.path === vault))
-      throw new Error("The Obsidian vault must be added before it can be linked");
-    const target = await this.#resolveTarget(vault, relativeTarget ?? "");
-    const link = { workspace_id: workspaceId, vault_path: vault, target_path: target };
-    stored.workspace_links = { ...(stored.workspace_links ?? {}), [workspaceId]: link };
-    await this.#save(stored);
-    return link;
+    return this.#write(async () => {
+      const stored = await this.#load();
+      const installedVaults = await this.integration();
+      if (!installedVaults.vaults.some((item) => item.path === vault))
+        throw new Error("The Obsidian vault must be added before it can be linked");
+      const target = await this.#resolveTarget(vault, relativeTarget ?? "");
+      const link = { workspace_id: workspaceId, vault_path: vault, target_path: target };
+      stored.workspace_links = { ...(stored.workspace_links ?? {}), [workspaceId]: link };
+      await this.#save(stored);
+      return link;
+    });
   }
 
   async unlinkWorkspace(workspaceId: string) {
-    const stored = await this.#load();
-    delete stored.workspace_links?.[workspaceId];
-    await this.#save(stored);
+    await this.#write(async () => {
+      const stored = await this.#load();
+      delete stored.workspace_links?.[workspaceId];
+      await this.#save(stored);
+    });
   }
 
   async openApp() {
@@ -127,9 +144,16 @@ export class ObsidianIntegration {
   async #save(value: StoredIntegration) {
     await fs.mkdir(this.dataDir, { recursive: true });
     const target = path.join(this.dataDir, "obsidian-integration.json");
-    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(temporary, target);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+        mode: 0o600,
+        flag: "wx",
+      });
+      await fs.rename(temporary, target);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
   }
 
   async #validateVault(value: string): Promise<string | null> {

@@ -259,7 +259,7 @@ export function InsightsPage({
                   if (value !== null) setAgent(String(value) as typeof agent);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.filterAgent")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.agentFilter")}>
                   <SelectValue>
                     {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
                   </SelectValue>
@@ -281,7 +281,7 @@ export function InsightsPage({
                   if (value !== null) setWorkspaceId(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.filterWorkspace")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.workspaceFilter")}>
                   <SelectValue>
                     {activeWorkspaceId === "all"
                       ? tr("workspace.all")
@@ -305,7 +305,7 @@ export function InsightsPage({
                   if (value !== null) setRepository(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.filterRepository")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.repositoryFilter")}>
                   <SelectValue>
                     {activeRepository === "all"
                       ? tr("insights.allRepositories")
@@ -329,7 +329,7 @@ export function InsightsPage({
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.filterRange")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.range")}>
                   <SelectValue>{rangeLabels[range]}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>

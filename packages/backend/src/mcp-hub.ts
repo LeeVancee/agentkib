@@ -184,7 +184,13 @@ export class McpHub {
       return;
     }
     const host = headerValue(request.headers.host)?.toLowerCase();
+    const allowedOrigins = [
+      `http://127.0.0.1:${this.#settings.port}`,
+      `http://localhost:${this.#settings.port}`,
+    ];
+    const origin = headerValue(request.headers.origin);
     if (
+      (origin !== undefined && !allowedOrigins.includes(origin)) ||
       (scope.remote && !this.#settings.lan_enabled) ||
       (!this.#settings.lan_enabled &&
         host !== undefined &&
@@ -235,6 +241,18 @@ export class McpHub {
     ]);
     let sessionIdCreated: string | undefined;
     const transport = new StreamableHTTPServerTransport({
+      enableDnsRebindingProtection: true,
+      allowedOrigins,
+      ...(!this.#settings.lan_enabled
+        ? {
+            allowedHosts: [
+              "127.0.0.1",
+              "localhost",
+              `127.0.0.1:${this.#settings.port}`,
+              `localhost:${this.#settings.port}`,
+            ],
+          }
+        : {}),
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (id) => {
         sessionIdCreated = id;

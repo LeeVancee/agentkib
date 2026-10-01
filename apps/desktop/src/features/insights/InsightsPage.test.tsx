@@ -92,7 +92,7 @@ describe("InsightsPage", () => {
     const workspaces = [{ id: "w1", name: "Alpha" }] as never[];
     const { rerender } = render(<InsightsPage section="tokens" workspaces={workspaces} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("combobox", { name: tr("insights.filterWorkspace") }));
+    await user.click(screen.getByRole("combobox", { name: tr("insights.workspaceFilter") }));
     await user.click(await screen.findByRole("option", { name: "Alpha" }));
     expect(state.queries.at(-1)).toMatchObject({ workspace_id: "w1" });
 
@@ -102,7 +102,7 @@ describe("InsightsPage", () => {
     for (const query of state.queries.slice(before))
       expect((query as { workspace_id?: string }).workspace_id).toBeUndefined();
     expect(
-      screen.getByRole("combobox", { name: tr("insights.filterWorkspace") }).textContent,
+      screen.getByRole("combobox", { name: tr("insights.workspaceFilter") }).textContent,
     ).toContain(tr("workspace.all"));
   });
 
@@ -125,10 +125,10 @@ describe("InsightsPage", () => {
     state.view = { data: { summary, status: { running: false }, heatmap } };
     render(<InsightsPage section="overview" workspaces={[]} />);
     for (const key of [
-      "insights.filterAgent",
-      "insights.filterWorkspace",
-      "insights.filterRepository",
-      "insights.filterRange",
+      "insights.agentFilter",
+      "insights.workspaceFilter",
+      "insights.repositoryFilter",
+      "insights.range",
     ])
       expect(screen.getByRole("combobox", { name: tr(key) })).toBeTruthy();
     const map = screen.getByRole("img", { name: /Mar 1, 2026/ });
@@ -148,7 +148,7 @@ describe("InsightsPage", () => {
     };
     const { container } = render(<InsightsPage section="overview" workspaces={[]} />);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("combobox", { name: tr("insights.filterRange") }));
+    await user.click(screen.getByRole("combobox", { name: tr("insights.range") }));
     await user.click(await screen.findByRole("option", { name: tr("insights.rangeYear") }));
     expect(state.queries.at(-1)).toMatchObject({ from: "2026-01-01", to: "2026-03-01" });
     // 2026-01-01 是周四：前面补 3 格，(3 + 365) / 7 → 53 列。

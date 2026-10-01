@@ -15,6 +15,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonicalize, pathIdentity } from "./paths";
 import { Sql } from "./sql";
 import { Commands } from "./commands";
+import { windowsProcessTree } from "./native-process";
+import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import {
   type McpServer,
   effectiveMcp,
@@ -69,8 +71,26 @@ const AGENTS = new Set([
 ]);
 
 export class McpManager {
+  static readonly #idleTimeoutMs = 15 * 60_000;
+  static readonly #failureWindowMs = 5 * 60_000;
+  static readonly #failureLimit = 3;
   #network: NetworkSettings = { port: 47653, lan_enabled: false, lan_risk_accepted: false };
-  #active = new Map<string, { client: Client; transport: Transport; server_id: string }>();
+  #active = new Map<
+    string,
+    { client: Client; transport: Transport; server_id: string; tools: ToolDescriptor[] }
+  >();
+  #starting = new Map<
+    string,
+    { serverId: string; controller: AbortController; promise: Promise<ToolDescriptor[]> }
+  >();
+  #callQueues = new Map<string, Promise<void>>();
+  #connecting = new Set<{ serverId: string; controller: AbortController }>();
+  #pendingConnections = new Set<Promise<ToolDescriptor[]>>();
+  #closingClients = new Set<Promise<void>>();
+  #closed = false;
+  #reaper: NodeJS.Timeout;
+  #failures = new Map<string, { serverId: string; count: number; since: number }>();
+  #processTrees = new WeakMap<Transport, { terminate(): Promise<void> | void; close?(): void }>();
   #runtimeStatus = new Map<
     string,
     {
@@ -89,12 +109,27 @@ export class McpManager {
     readonly environment: NodeJS.ProcessEnv,
     readonly dataDir: string,
     readonly commands: Commands,
-  ) {}
+  ) {
+    this.#reaper = setInterval(() => this.#reapIdle(), 60_000);
+    this.#reaper.unref();
+  }
 
   close(): void {
-    for (const active of this.#active.values()) void active.client.close().catch(() => undefined);
-    this.#active.clear();
+    this.#closed = true;
+    clearInterval(this.#reaper);
+    this.stop();
     this.#runtimeStatus.clear();
+  }
+
+  async closeAsync(): Promise<void> {
+    const starting = [...this.#starting.values()].map(({ promise }) =>
+      promise.catch(() => undefined),
+    );
+    const connections = [...this.#pendingConnections].map((promise) =>
+      promise.catch(() => undefined),
+    );
+    this.close();
+    await Promise.allSettled([...this.#closingClients, ...starting, ...connections]);
   }
 
   list(project?: string): McpServer[] {
@@ -204,32 +239,66 @@ export class McpManager {
     if (server.allow_tools.length && !server.allow_tools.includes(toolName))
       throw new Error("Tool is not allowed by this MCP server configuration");
     const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    if (this.#closed) throw new Error("MCP manager is closed");
+    this.#assertRestartAllowed(configHash);
     let active = this.#active.get(configHash);
     if (!active) {
-      await this.#connect(server, true, project);
+      await this.#start(server, project);
       active = this.#active.get(configHash);
     }
     if (!active) throw new Error("MCP server connection was not retained");
+    const connection = active;
+    const execute = () => {
+      if (this.#closed || this.#active.get(configHash) !== connection)
+        throw new Error("MCP server connection was stopped");
+      return this.#callTool(configHash, connection, server, toolName, arguments_);
+    };
+    if (server.supports_parallel_tool_calls) return execute();
+    const result = (this.#callQueues.get(configHash) ?? Promise.resolve()).then(execute);
+    const queued = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#callQueues.set(configHash, queued);
+    void queued.then(() => {
+      if (this.#callQueues.get(configHash) === queued) this.#callQueues.delete(configHash);
+    });
+    return result;
+  }
+
+  async #callTool(
+    configHash: string,
+    active: {
+      client: Client;
+      transport: Transport;
+      server_id: string;
+      tools: ToolDescriptor[];
+    },
+    server: McpServer,
+    toolName: string,
+    arguments_: Record<string, unknown>,
+  ): Promise<unknown> {
     try {
+      const status = this.#runtimeStatus.get(configHash);
+      if (status && this.#active.get(configHash) === active)
+        this.#runtimeStatus.set(configHash, { ...status, last_used_at: new Date().toISOString() });
       const result = await active.client.callTool(
         { name: toolName, arguments: arguments_ },
         undefined,
         { timeout: 60_000 },
       );
-      const status = this.#runtimeStatus.get(configHash);
-      if (status)
-        this.#runtimeStatus.set(configHash, { ...status, last_used_at: new Date().toISOString() });
       return result;
     } catch (error) {
+      this.#recordFailure(configHash, server.id);
       const status = this.#runtimeStatus.get(configHash);
-      if (status)
+      if (status && this.#active.get(configHash) === active)
         this.#runtimeStatus.set(configHash, {
           ...status,
           state: "error",
           error: redactMcpError(error, server),
         });
-      await active.client.close().catch(() => undefined);
-      this.#active.delete(configHash);
+      await this.#closeClient(active).catch(() => undefined);
+      if (this.#active.get(configHash) === active) this.#active.delete(configHash);
       throw error;
     }
   }
@@ -604,7 +673,7 @@ export class McpManager {
       (item) => item.id === serverId,
     );
     if (!server) throw new Error("Unknown MCP server");
-    return this.#connect(server, true);
+    return this.#start(server, project);
   }
 
   async probeConfig(server: McpServer): Promise<ToolDescriptor[]> {
@@ -617,9 +686,18 @@ export class McpManager {
   }
 
   stop(serverId?: string): void {
+    for (const [configHash, failure] of this.#failures) {
+      if (!serverId || failure.serverId === serverId) this.#failures.delete(configHash);
+    }
+    for (const connecting of this.#connecting) {
+      if (!serverId || connecting.serverId === serverId) connecting.controller.abort();
+    }
+    for (const starting of this.#starting.values()) {
+      if (!serverId || starting.serverId === serverId) starting.controller.abort();
+    }
     for (const [configHash, active] of this.#active) {
       if (!serverId || active.server_id === serverId) {
-        void active.client.close().catch(() => undefined);
+        this.#dispose(active);
         this.#active.delete(configHash);
         const state = this.#runtimeStatus.get(configHash);
         if (state) this.#runtimeStatus.set(configHash, { ...state, state: "stopped" });
@@ -627,15 +705,97 @@ export class McpManager {
     }
   }
 
-  async #connect(server: McpServer, retain: boolean, project?: string): Promise<ToolDescriptor[]> {
+  #start(server: McpServer, project?: string): Promise<ToolDescriptor[]> {
+    const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    this.#assertRestartAllowed(configHash);
+    const active = this.#active.get(configHash);
+    if (active) return Promise.resolve(active.tools);
+    const existing = this.#starting.get(configHash);
+    if (existing && !existing.controller.signal.aborted) return existing.promise;
+    if (existing) this.#starting.delete(configHash);
+    const controller = new AbortController();
+    const promise = this.#connect(server, true, project, controller.signal);
+    const starting = { serverId: server.id, controller, promise };
+    this.#starting.set(configHash, starting);
+    void promise
+      .finally(() => {
+        if (this.#starting.get(configHash) === starting) this.#starting.delete(configHash);
+      })
+      .catch(() => undefined);
+    return promise;
+  }
+
+  #dispose(active: { client: Client; transport: Transport }): void {
+    const closing = this.#closeClient(active).catch(() => undefined);
+    this.#closingClients.add(closing);
+    void closing.finally(() => this.#closingClients.delete(closing));
+  }
+
+  async #closeClient(active: { client: Client; transport: Transport }): Promise<void> {
+    const child = (
+      active.transport as Transport & { _process?: import("node:child_process").ChildProcess }
+    )._process;
+    const closing = active.client.close();
+    const forceTimer = setTimeout(() => {
+      if (child?.exitCode !== null || child?.killed) return;
+      const tree = this.#processTrees.get(active.transport);
+      try {
+        if (tree) void Promise.resolve(tree.terminate()).catch(() => child.kill("SIGKILL"));
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, 500);
+    try {
+      await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, 1_500))]);
+    } finally {
+      clearTimeout(forceTimer);
+      this.#processTrees.get(active.transport)?.close?.();
+    }
+  }
+
+  async #connect(
+    server: McpServer,
+    retain: boolean,
+    project?: string,
+    signal?: AbortSignal,
+  ): Promise<ToolDescriptor[]> {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) controller.abort();
+    const attempt = { serverId: server.id, controller };
+    this.#connecting.add(attempt);
+    const connection = this.#connectNow(server, retain, project, controller.signal);
+    this.#pendingConnections.add(connection);
+    try {
+      return await connection;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      this.#connecting.delete(attempt);
+      this.#pendingConnections.delete(connection);
+    }
+  }
+
+  async #connectNow(
+    server: McpServer,
+    retain: boolean,
+    project: string | undefined,
+    signal: AbortSignal,
+  ): Promise<ToolDescriptor[]> {
+    const checkCurrent = () => {
+      if (this.#closed || signal?.aborted) throw new Error("MCP server connection was stopped");
+    };
+    checkCurrent();
     const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     let transport: Transport;
     if (server.transport === "stdio") {
       const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+      const linuxCommand = process.platform === "linux";
       transport = new StdioClientTransport({
-        command: server.command,
-        args: server.args,
+        command: linuxCommand ? "setsid" : server.command,
+        args: linuxCommand ? ["--", server.command, ...server.args] : server.args,
         cwd: server.cwd ?? undefined,
         env: safeEnvironment({ ...process.env, ...this.environment, ...server.env }),
         stderr: "ignore",
@@ -654,6 +814,10 @@ export class McpManager {
       });
     }
     const client = new Client({ name: "agentkib", version: "0.13.0" });
+    const cancel = () => {
+      void client.close().catch(() => undefined);
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
     const started = new Date().toISOString();
     this.#runtimeStatus.set(configHash, {
       server_id: server.id,
@@ -663,8 +827,31 @@ export class McpManager {
       started_at: started,
     });
     try {
+      checkCurrent();
       await client.connect(transport, { timeout: 15_000 });
+      checkCurrent();
+      const child = (transport as Transport & { _process?: import("node:child_process").ChildProcess })._process;
+      if (child?.pid) {
+        if (process.platform === "win32") {
+          const tree = windowsProcessTree(child.pid);
+          this.#processTrees.set(transport, tree);
+        } else if (process.platform === "darwin") {
+          const tree = MacOwnedProcessTree.attach(child);
+          this.#processTrees.set(transport, { terminate: () => tree.terminate(child) });
+        } else if (process.platform === "linux") {
+          this.#processTrees.set(transport, {
+            terminate: () => {
+              try {
+                process.kill(-child.pid!, "SIGKILL");
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+              }
+            },
+          });
+        }
+      }
       const result = await client.listTools({}, { timeout: 15_000 });
+      checkCurrent();
       const tools = result.tools
         .filter((tool) => server.allow_tools.length === 0 || server.allow_tools.includes(tool.name))
         .map((tool) => ({
@@ -686,13 +873,19 @@ export class McpManager {
             probedAt,
           );
       });
+      const previousOnclose = transport.onclose;
+      const previousOnerror = transport.onerror;
       transport.onclose = () => {
+        previousOnclose?.();
+        if (this.#active.get(configHash)?.client !== client) return;
         const current = this.#runtimeStatus.get(configHash);
         if (current?.state === "running")
           this.#runtimeStatus.set(configHash, { ...current, state: "stopped" });
         this.#active.delete(configHash);
       };
       transport.onerror = (transportError) => {
+        previousOnerror?.(transportError);
+        if (this.#active.get(configHash)?.client !== client) return;
         const current = this.#runtimeStatus.get(configHash);
         if (current)
           this.#runtimeStatus.set(configHash, {
@@ -709,9 +902,10 @@ export class McpManager {
         started_at: started,
         last_used_at: new Date().toISOString(),
       });
-      if (retain) this.#active.set(configHash, { client, transport, server_id: server.id });
+      this.#failures.delete(configHash);
+      if (retain) this.#active.set(configHash, { client, transport, server_id: server.id, tools });
       else {
-        await client.close();
+        await this.#closeClient({ client, transport });
         this.#runtimeStatus.set(configHash, {
           server_id: server.id,
           server_name: server.name,
@@ -722,17 +916,55 @@ export class McpManager {
       }
       return tools;
     } catch (error) {
-      await client.close().catch(() => undefined);
+      if (!this.#closed && !signal.aborted) this.#recordFailure(configHash, server.id);
+      await this.#closeClient({ client, transport }).catch(() => undefined);
       const detail = redactMcpError(error, server);
-      this.#runtimeStatus.set(configHash, {
-        server_id: server.id,
-        server_name: server.name,
-        config_hash: configHash,
-        state: "error",
-        started_at: started,
-        error: detail,
-      });
+      if (!this.#closed)
+        this.#runtimeStatus.set(configHash, {
+          server_id: server.id,
+          server_name: server.name,
+          config_hash: configHash,
+          state: signal?.aborted ? "stopped" : "error",
+          started_at: started,
+          error: detail,
+        });
       throw new Error(detail, { cause: error });
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+  }
+
+  #recordFailure(configHash: string, serverId: string): void {
+    const now = Date.now();
+    const previous = this.#failures.get(configHash);
+    this.#failures.set(
+      configHash,
+      previous && now - previous.since <= McpManager.#failureWindowMs
+        ? { ...previous, count: previous.count + 1 }
+        : { serverId, count: 1, since: now },
+    );
+  }
+
+  #assertRestartAllowed(configHash: string): void {
+    const failure = this.#failures.get(configHash);
+    if (!failure) return;
+    if (Date.now() - failure.since > McpManager.#failureWindowMs) {
+      this.#failures.delete(configHash);
+      return;
+    }
+    if (failure.count >= McpManager.#failureLimit)
+      throw new Error("MCP server restart limit reached; restart it explicitly from AgentKib");
+  }
+
+  #reapIdle(): void {
+    const cutoff = Date.now() - McpManager.#idleTimeoutMs;
+    for (const [configHash, active] of this.#active) {
+      const lastUsed = Date.parse(this.#runtimeStatus.get(configHash)?.last_used_at ?? "");
+      if (!Number.isFinite(lastUsed) || lastUsed > cutoff) continue;
+      this.#dispose(active);
+      this.#active.delete(configHash);
+      const status = this.#runtimeStatus.get(configHash);
+      if (status) this.#runtimeStatus.set(configHash, { ...status, state: "stopped" });
     }
   }
 

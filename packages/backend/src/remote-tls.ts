@@ -435,7 +435,10 @@ function positiveInteger(value: Buffer): Buffer {
   const normalized = Buffer.from(value);
   normalized[0] = normalized[0]! & 0x7f;
   if (normalized.every((byte) => byte === 0)) normalized[normalized.length - 1] = 1;
-  return normalized[0]! & 0x80 ? Buffer.concat([Buffer.from([0]), normalized]) : normalized;
+  let first = 0;
+  while (first < normalized.length - 1 && normalized[first] === 0) first += 1;
+  const magnitude = normalized.subarray(first);
+  return magnitude[0]! & 0x80 ? Buffer.concat([Buffer.from([0]), magnitude]) : magnitude;
 }
 
 function sequence(values: Buffer[]): Buffer {

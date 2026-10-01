@@ -116,6 +116,14 @@ export class TypeScriptBackend {
 
   constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
 
+  /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
+  cancelPendingOperations(): void {
+    this.#storage?.cancel();
+    this.#sessionIndex?.close();
+    this.#commands.close();
+    this.#mcp?.close();
+  }
+
   close(): void {
     this.#storage?.cancel();
     this.#storage = undefined;
@@ -151,10 +159,13 @@ export class TypeScriptBackend {
 
   closeAsync(): Promise<void> {
     if (this.#closing) return this.#closing;
+    this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
+    const mcp = this.#mcp;
     this.#claudeManaged = undefined;
     const closing = (async () => {
       try {
+        await mcp?.closeAsync();
         await claudeManaged?.shutdown();
       } catch (error) {
         if (!this.#claudeManaged) this.#claudeManaged = claudeManaged;

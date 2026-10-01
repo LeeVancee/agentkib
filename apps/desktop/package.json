@@ -20,6 +20,7 @@
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",
     "benchmark:runtime": "node scripts/benchmark-runtime.mjs",
+    "benchmark:memory": "node scripts/benchmark-backend-memory.mjs",
     "test": "pnpm backend:build && vitest run",
     "typecheck": "tsc -b --pretty false",
     "relay:stage": "node scripts/stage-frpc.mjs",

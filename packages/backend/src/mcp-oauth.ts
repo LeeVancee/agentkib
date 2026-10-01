@@ -1,8 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import {
-  auth,
-  type OAuthClientProvider,
-  type OAuthDiscoveryState,
+import type {
+  OAuthClientProvider,
+  OAuthDiscoveryState,
 } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
   OAuthClientInformationMixed,
@@ -44,6 +43,7 @@ export class McpOAuth {
     const state = randomBytes(32).toString("base64url");
     provider.stateValue = state;
     provider.authorizationUrl = undefined;
+    const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
     const result = await auth(provider, { serverUrl });
     const authorizationUrl = provider.getAuthorizationUrl();
     if (result !== "REDIRECT" || !authorizationUrl)
@@ -60,6 +60,7 @@ export class McpOAuth {
     if (issuer && expectedIssuer && issuer !== expectedIssuer)
       throw new Error("OAuth issuer did not match the discovered authorization server");
     this.#pending.delete(serverId);
+    const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
     await auth(pending.provider, { serverUrl: pending.server.url, authorizationCode: code });
     if (!pending.provider.hasTokens) throw new Error("OAuth provider did not return credentials");
   }

@@ -1,0 +1,3375 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-02",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "release": "27.0.0",
+    "cpu": "Apple M3",
+    "logicalCpuCount": 8,
+    "totalMemoryBytes": 17179869184
+  },
+  "baseline": "Current TypeScript memory optimized backend; only sql/store/session-readers/claude-sessions restored from HEAD for baseline artifact",
+  "gitHead": "e4c1f1d58d8b99e7652651b0e7ad575fc3b0a686",
+  "fixture500": {
+    "sessions": 500,
+    "transcriptLines": 50000,
+    "sqliteWorkspaces": 101,
+    "roundsPerVersion": 3,
+    "requestsPerMetricPerRound": 30,
+    "metrics": {
+      "sessionIndex": {
+        "beforeP50Ms": 62.98,
+        "afterP50Ms": 42.21,
+        "reductionPercent": 32.97872340425532,
+        "beforeP50Range": [
+          62.98,
+          62.9,
+          67.02
+        ],
+        "afterP50Range": [
+          35.78,
+          43.02,
+          42.21
+        ],
+        "beforeP95MedianMs": 74.07,
+        "afterP95MedianMs": 48.72
+      },
+      "largeSessionParse": {
+        "beforeP50Ms": 68.64,
+        "afterP50Ms": 21.63,
+        "reductionPercent": 68.48776223776224,
+        "beforeP50Range": [
+          67.11,
+          68.97,
+          68.64
+        ],
+        "afterP50Range": [
+          20.91,
+          21.63,
+          21.77
+        ],
+        "beforeP95MedianMs": 71.14,
+        "afterP95MedianMs": 23.09
+      },
+      "sqliteWorkspaceList": {
+        "beforeP50Ms": 1.31,
+        "afterP50Ms": 0.82,
+        "reductionPercent": 37.40458015267176,
+        "beforeP50Range": [
+          1.29,
+          1.32,
+          1.31
+        ],
+        "afterP50Range": [
+          0.81,
+          0.82,
+          0.85
+        ],
+        "beforeP95MedianMs": 1.65,
+        "afterP95MedianMs": 1.18
+      }
+    }
+  },
+  "fixture2000": {
+    "sessions": 2000,
+    "transcriptLines": 50000,
+    "sqliteWorkspaces": 501,
+    "roundsPerVersion": 1,
+    "requestsPerMetric": 30,
+    "metrics": {
+      "sessionIndex": {
+        "beforeP50Ms": 265.49,
+        "afterP50Ms": 174.91,
+        "reductionPercent": 34.11804587743418,
+        "beforeP50Range": [
+          265.49
+        ],
+        "afterP50Range": [
+          174.91
+        ],
+        "beforeP95MedianMs": 282.8,
+        "afterP95MedianMs": 185.43
+      },
+      "largeSessionParse": {
+        "beforeP50Ms": 290.08,
+        "afterP50Ms": 90.71,
+        "reductionPercent": 68.72931605074461,
+        "beforeP50Range": [
+          290.08
+        ],
+        "afterP50Range": [
+          90.71
+        ],
+        "beforeP95MedianMs": 294.12,
+        "afterP95MedianMs": 96.25
+      },
+      "sqliteWorkspaceList": {
+        "beforeP50Ms": 6.56,
+        "afterP50Ms": 3.97,
+        "reductionPercent": 39.481707317073166,
+        "beforeP50Range": [
+          6.56
+        ],
+        "afterP50Range": [
+          3.97
+        ],
+        "beforeP95MedianMs": 9.16,
+        "afterP95MedianMs": 4.41
+      }
+    }
+  },
+  "standard": {
+    "configuration": {
+      "cleanRuns": 3,
+      "reuseRuns": 5,
+      "workloadRuns": 100,
+      "skillCount": 0,
+      "idleMs": 0,
+      "transcriptLineCount": 5000,
+      "sessionCount": 1,
+      "sqliteWorkspaceCount": 100
+    },
+    "metrics": {
+      "sessionIndex": {
+        "beforeP50Ms": 3.65,
+        "afterP50Ms": 3.46,
+        "reductionPercent": 5.205479452054796,
+        "beforeP50Range": [
+          3.65
+        ],
+        "afterP50Range": [
+          3.46
+        ],
+        "beforeP95MedianMs": 4.43,
+        "afterP95MedianMs": 4.37
+      },
+      "largeSessionParse": {
+        "beforeP50Ms": 0.88,
+        "afterP50Ms": 0.73,
+        "reductionPercent": 17.045454545454554,
+        "beforeP50Range": [
+          0.88
+        ],
+        "afterP50Range": [
+          0.73
+        ],
+        "beforeP95MedianMs": 1.1,
+        "afterP95MedianMs": 1.07
+      },
+      "sqliteWorkspaceList": {
+        "beforeP50Ms": 1.3,
+        "afterP50Ms": 0.82,
+        "reductionPercent": 36.92307692307693,
+        "beforeP50Range": [
+          1.3
+        ],
+        "afterP50Range": [
+          0.82
+        ],
+        "beforeP95MedianMs": 1.72,
+        "afterP95MedianMs": 0.88
+      }
+    },
+    "workspaceScanBeforeP50Ms": 0.17,
+    "workspaceScanAfterP50Ms": 0.17
+  },
+  "startup": {
+    "clean": {
+      "beforeMedianMs": 297.44,
+      "afterMedianMs": 309.64,
+      "beforeSamples": [
+        {
+          "run": 1,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:04.677Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 32.6
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 92.19
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 197.66
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 240.45
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 241.14
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 305.26
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 346.41
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 436.55
+            }
+          ],
+          "memory": {
+            "electronRssKb": 613088,
+            "runtimeRssKb": 91088,
+            "combinedRssKb": 704176
+          }
+        },
+        {
+          "run": 2,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:06.373Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 42.92
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 66.9
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 130.96
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 174.73
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 175.45
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 205.83
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 213.58
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 295.36
+            }
+          ],
+          "memory": {
+            "electronRssKb": 610832,
+            "runtimeRssKb": 91200,
+            "combinedRssKb": 702032
+          }
+        },
+        {
+          "run": 3,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:08.146Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 40.44
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 65.38
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 136.48
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 185
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 185.67
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 207.28
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 214.46
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 297.44
+            }
+          ],
+          "memory": {
+            "electronRssKb": 609808,
+            "runtimeRssKb": 91104,
+            "combinedRssKb": 700912
+          }
+        }
+      ],
+      "afterSamples": [
+        {
+          "run": 1,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:04.173Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.03
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 72.57
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 131.93
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 210.9
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 260.04
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 260.77
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 304.33
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 353.55
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 430.13
+            }
+          ],
+          "memory": {
+            "electronRssKb": 611152,
+            "runtimeRssKb": 91056,
+            "combinedRssKb": 702208
+          }
+        },
+        {
+          "run": 2,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:05.866Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.03
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 39.91
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 63.39
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 138.98
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 176.79
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 177.54
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 208.95
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 243.72
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 309.64
+            }
+          ],
+          "memory": {
+            "electronRssKb": 613072,
+            "runtimeRssKb": 91184,
+            "combinedRssKb": 704256
+          }
+        },
+        {
+          "run": 3,
+          "profileKind": "clean",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:07.578Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.03
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 43.23
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 62.09
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 146.47
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 184.64
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 185.35
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 213.81
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 247.24
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 308.69
+            }
+          ],
+          "memory": {
+            "electronRssKb": 497312,
+            "runtimeRssKb": 70976,
+            "combinedRssKb": 568288
+          }
+        }
+      ]
+    },
+    "reused": {
+      "beforeMedianMs": 291.37,
+      "afterMedianMs": 284.31,
+      "beforeSamples": [
+        {
+          "run": 1,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:09.794Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 33.96
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 52.86
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 125.37
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 157.35
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 158.16
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 194.99
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 202.09
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 294.4
+            }
+          ],
+          "memory": {
+            "electronRssKb": 615376,
+            "runtimeRssKb": 91072,
+            "combinedRssKb": 706448
+          }
+        },
+        {
+          "run": 2,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:11.461Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 37.06
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 60.64
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 123.61
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 175.05
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 176.15
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 206.73
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 242.7
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 303.6
+            }
+          ],
+          "memory": {
+            "electronRssKb": 608144,
+            "runtimeRssKb": 89632,
+            "combinedRssKb": 697776
+          }
+        },
+        {
+          "run": 3,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:13.109Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 40.44
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 63.69
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 130.07
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 157.51
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 159.11
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 202.11
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 234.45
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 291.14
+            }
+          ],
+          "memory": {
+            "electronRssKb": 610208,
+            "runtimeRssKb": 89520,
+            "combinedRssKb": 699728
+          }
+        },
+        {
+          "run": 4,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:14.709Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 35.78
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 54.68
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 127.53
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 153.5
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 154.51
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 197.97
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 197.98
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 291.37
+            }
+          ],
+          "memory": {
+            "electronRssKb": 618928,
+            "runtimeRssKb": 89504,
+            "combinedRssKb": 708432
+          }
+        },
+        {
+          "run": 5,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:03:16.336Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 36.59
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 58.72
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 121.21
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 146.71
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 147.69
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 191.77
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 228.21
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 286.84
+            }
+          ],
+          "memory": {
+            "electronRssKb": 608816,
+            "runtimeRssKb": 89552,
+            "combinedRssKb": 698368
+          }
+        }
+      ],
+      "afterSamples": [
+        {
+          "run": 1,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:09.207Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 32.49
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 51.35
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 122.7
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 155.83
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 156.58
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 193.83
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 227.39
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 290.36
+            }
+          ],
+          "memory": {
+            "electronRssKb": 607968,
+            "runtimeRssKb": 91056,
+            "combinedRssKb": 699024
+          }
+        },
+        {
+          "run": 2,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:10.843Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 34.09
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 53.94
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 120.84
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 147.42
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 148.97
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 190.02
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 225.49
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 284.31
+            }
+          ],
+          "memory": {
+            "electronRssKb": 610032,
+            "runtimeRssKb": 89632,
+            "combinedRssKb": 699664
+          }
+        },
+        {
+          "run": 3,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:12.474Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 41.5
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 65.39
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 139.18
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 164.99
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 166.34
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 207.77
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 207.77
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 292.13
+            }
+          ],
+          "memory": {
+            "electronRssKb": 612576,
+            "runtimeRssKb": 89552,
+            "combinedRssKb": 702128
+          }
+        },
+        {
+          "run": 4,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:14.095Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 32.64
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 51.82
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 119.77
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 145.04
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 145.94
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 187.06
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 225.26
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 276.43
+            }
+          ],
+          "memory": {
+            "electronRssKb": 613152,
+            "runtimeRssKb": 89520,
+            "combinedRssKb": 702672
+          }
+        },
+        {
+          "run": 5,
+          "profileKind": "reused",
+          "schemaVersion": 1,
+          "createdAt": "2026-10-01T19:23:15.725Z",
+          "platform": "darwin",
+          "arch": "arm64",
+          "marks": [
+            {
+              "name": "electron-main-start",
+              "elapsedMs": 0.02
+            },
+            {
+              "name": "app-ready",
+              "elapsedMs": 34.07
+            },
+            {
+              "name": "runtime-spawn",
+              "elapsedMs": 52.93
+            },
+            {
+              "name": "window-created",
+              "elapsedMs": 121.08
+            },
+            {
+              "name": "runtime-handshake",
+              "elapsedMs": 147.29
+            },
+            {
+              "name": "runtime-info",
+              "elapsedMs": 149.06
+            },
+            {
+              "name": "window-shown",
+              "elapsedMs": 188.52
+            },
+            {
+              "name": "renderer-first-commit",
+              "elapsedMs": 223.06
+            },
+            {
+              "name": "home-data-ready",
+              "elapsedMs": 276.08
+            }
+          ],
+          "memory": {
+            "electronRssKb": 605776,
+            "runtimeRssKb": 89488,
+            "combinedRssKb": 695264
+          }
+        }
+      ]
+    }
+  },
+  "memory": {
+    "schemaVersion": 1,
+    "createdAt": "2026-10-01T19:25:36.064Z",
+    "label": "performance-ordered-final",
+    "runtime": "electron-utility-process",
+    "electron": "44.0.0",
+    "phases": {
+      "loaded": {
+        "rssP50MiB": 81.625,
+        "samples": [
+          {
+            "phase": "loaded",
+            "rss": 85590016,
+            "heapTotal": 10633216,
+            "heapUsed": 6900620,
+            "external": 2638933,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "loaded",
+            "rss": 85590016,
+            "heapTotal": 10633216,
+            "heapUsed": 6902608,
+            "external": 2638973,
+            "arrayBuffers": 0
+          }
+        ]
+      },
+      "initialized-idle": {
+        "rssP50MiB": 86.234375,
+        "samples": [
+          {
+            "phase": "initialized-idle",
+            "rss": 90308608,
+            "heapTotal": 11354112,
+            "heapUsed": 7902816,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90406912,
+            "heapTotal": 11354112,
+            "heapUsed": 7911992,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90406912,
+            "heapTotal": 11354112,
+            "heapUsed": 7912944,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90390528,
+            "heapTotal": 11354112,
+            "heapUsed": 7922400,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90423296,
+            "heapTotal": 11354112,
+            "heapUsed": 7929384,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90423296,
+            "heapTotal": 11354112,
+            "heapUsed": 7935968,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90423296,
+            "heapTotal": 11354112,
+            "heapUsed": 7936656,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 90423296,
+            "heapTotal": 11354112,
+            "heapUsed": 7937104,
+            "external": 2672660,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "initialized-idle",
+            "rss": 91471872,
+            "heapTotal": 11616256,
+            "heapUsed": 8911032,
+            "external": 2672660,
+            "arrayBuffers": 0
+          }
+        ]
+      },
+      "after-mcp-idle": {
+        "rssP50MiB": 94,
+        "samples": [
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98549760,
+            "heapTotal": 15695872,
+            "heapUsed": 11434628,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98549760,
+            "heapTotal": 15695872,
+            "heapUsed": 11441376,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98549760,
+            "heapTotal": 15695872,
+            "heapUsed": 11441800,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98566144,
+            "heapTotal": 15695872,
+            "heapUsed": 11456368,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98582528,
+            "heapTotal": 15695872,
+            "heapUsed": 11459604,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98582528,
+            "heapTotal": 15695872,
+            "heapUsed": 11460028,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98582528,
+            "heapTotal": 15695872,
+            "heapUsed": 11466592,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-mcp-idle",
+            "rss": 98582528,
+            "heapTotal": 15695872,
+            "heapUsed": 11467016,
+            "external": 3967702,
+            "arrayBuffers": 0
+          }
+        ]
+      },
+      "after-web-and-mcp-idle": {
+        "rssP50MiB": 94.921875,
+        "samples": [
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11649304,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11649728,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11650152,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11656464,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11656888,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11657312,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11657736,
+            "external": 3967702,
+            "arrayBuffers": 0
+          },
+          {
+            "phase": "after-web-and-mcp-idle",
+            "rss": 99532800,
+            "heapTotal": 16482304,
+            "heapUsed": 11658216,
+            "external": 3967702,
+            "arrayBuffers": 0
+          }
+        ]
+      }
+    },
+    "firstMcpMs": 59.11920900000041,
+    "firstWebMs": 17.141083000002254,
+    "builtinToolCount": 8,
+    "lifecycleValidation": "passed",
+    "machine": {
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M3"
+    },
+    "backendArtifactSha256": "697d85cf3135c1491bf6fcc93033240c8c48d4ee55669eb0b95e999d9ef34b3b",
+    "hashScope": "entry"
+  },
+  "validation": {
+    "typecheck": "passed backend/desktop",
+    "build": "passed production backend",
+    "lint": "passed with existing warnings",
+    "format": "passed",
+    "diff": "passed",
+    "differential": {
+      "outputs": [
+        {
+          "workspaces": "c422169f8aeb2c816f0a85f02e954d2d906c4fd241480da045bc459470d2ea1f",
+          "sessions": "47fb9a83f28b02da4f78a0468b4879935815ca6d013d16f822bf9752aa19c9d7",
+          "page": "581e00f4f6644b0c60b8fbe188256b4f563bd84f3fe094273ad2b8aeb68e39eb",
+          "nextPage": "525d6a61ead1c30ab11556534c565b04e19bb237554ee7d96f6712ac6aa75b0d",
+          "document": "c52820985808b4ba7ab3e5a60903f9a3033faa45f0256305f43f18ecd14bb1b9"
+        },
+        {
+          "workspaces": "c422169f8aeb2c816f0a85f02e954d2d906c4fd241480da045bc459470d2ea1f",
+          "sessions": "47fb9a83f28b02da4f78a0468b4879935815ca6d013d16f822bf9752aa19c9d7",
+          "page": "581e00f4f6644b0c60b8fbe188256b4f563bd84f3fe094273ad2b8aeb68e39eb",
+          "nextPage": "525d6a61ead1c30ab11556534c565b04e19bb237554ee7d96f6712ac6aa75b0d",
+          "document": "c52820985808b4ba7ab3e5a60903f9a3033faa45f0256305f43f18ecd14bb1b9"
+        }
+      ],
+      "identical": true,
+      "freshness": {
+        "probeAddRemove": "passed",
+        "append": "passed",
+        "delete": "passed"
+      },
+      "equalTimestampSourceOrder": {
+        "identical": true,
+        "hashes": [
+          "1afbaf873b15fc3f91b25fc55758a294ddea1722df37f9a0702b6ee7ad660a2d",
+          "1afbaf873b15fc3f91b25fc55758a294ddea1722df37f9a0702b6ee7ad660a2d"
+        ]
+      }
+    },
+    "tests": {
+      "firstRun": {
+        "passed": 1033,
+        "failed": 15,
+        "failures": [
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "registers IPC and starts the Runtime without blocking window creation"
+          },
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "exits benchmark mode when Runtime startup exhausts retries"
+          },
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "bounds the benchmark client's shutdown request"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "routes Claude release with both revision and Runtime identity without touching Codex"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "forwards a repeated text request to Runtime fingerprint replay after live revision advances"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "returns the original attachment receipt after completion and attachment deletion"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "keeps unknown owner attachment replay conflicts pinned without another dispatch"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "assigns the owner in the host and does not forward caller paths or device IDs"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "reports pre-dispatch validation definitively but leaves transport errors uncertain"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "passes an existing request to the authoritative fingerprint check despite a newer revision"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "binds release to the displayed revision and current Runtime identity"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "keeps attachments pinned across restart until a matching completed receipt"
+          },
+          {
+            "file": "apps/desktop/src/features/app/useAppNavigation.test.tsx",
+            "name": "goes to the workspace list when Workspaces is chosen from inside a workspace"
+          },
+          {
+            "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+            "name": "retranslates filter accessible names"
+          },
+          {
+            "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+            "name": "keeps purpose names stable while the selected range changes"
+          }
+        ]
+      },
+      "isolatedNavigationRerun": {
+        "passed": 15,
+        "failed": 0
+      },
+      "finalRun": {
+        "passed": 1034,
+        "failed": 14,
+        "failures": [
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "registers IPC and starts the Runtime without blocking window creation"
+          },
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "exits benchmark mode when Runtime startup exhausts retries"
+          },
+          {
+            "file": "apps/desktop/src/test/startup-flow.test.ts",
+            "name": "bounds the benchmark client's shutdown request"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "routes Claude release with both revision and Runtime identity without touching Codex"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "forwards a repeated text request to Runtime fingerprint replay after live revision advances"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "returns the original attachment receipt after completion and attachment deletion"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+            "name": "keeps unknown owner attachment replay conflicts pinned without another dispatch"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "assigns the owner in the host and does not forward caller paths or device IDs"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "reports pre-dispatch validation definitively but leaves transport errors uncertain"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "passes an existing request to the authoritative fingerprint check despite a newer revision"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "binds release to the displayed revision and current Runtime identity"
+          },
+          {
+            "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+            "name": "keeps attachments pinned across restart until a matching completed receipt"
+          },
+          {
+            "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+            "name": "retranslates filter accessible names"
+          },
+          {
+            "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+            "name": "keeps purpose names stable while the selected range changes"
+          }
+        ],
+        "sameAsPreviouslyReproducedBaseline": true
+      }
+    }
+  },
+  "artifactHashes": {
+    "before": "3f0c24006e72e38f14d9868d6c606427383496e1a030644442d6cd71b348cb23",
+    "after": "697d85cf3135c1491bf6fcc93033240c8c48d4ee55669eb0b95e999d9ef34b3b"
+  },
+  "sourceHashes": {
+    "packages/backend/src/sql.ts": "1e6514a06f5fa134791ee8c1d6e83ddfdb5ff5ea52fa050e4a128d889d1a62be",
+    "packages/backend/src/store.ts": "ce1e9bf2f22d2219855792896585799230c5898f36f807c5e5bde706e48bc78b",
+    "packages/backend/src/session-readers.ts": "7c085fd2fe04551cc6e30f6d8646cfb2f63ce48dfbbe759b3f7b27af23d23124",
+    "packages/backend/src/claude-sessions.ts": "caa53848c829fd87387578eaae603cf7353369e95959b35f314303e9cf9089b3",
+    "apps/desktop/scripts/benchmark-runtime.mjs": "a141c0e836659997957825b702d0abe4649b2960d5d32b0433eb8890ff2c65f7"
+  },
+  "raw": {
+    "before": [
+      {
+        "schemaVersion": 1,
+        "label": "scale-before",
+        "createdAt": "2026-10-01T19:09:16.730Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 199408,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.21,
+            "p95Ms": 0.34,
+            "minMs": 0.17,
+            "maxMs": 0.36
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 62.98,
+            "p95Ms": 74.07,
+            "minMs": 60.2,
+            "maxMs": 76.91
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 67.11,
+            "p95Ms": 69.39,
+            "minMs": 65.8,
+            "maxMs": 72.3
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 1.29,
+            "p95Ms": 1.5,
+            "minMs": 1.24,
+            "maxMs": 1.54
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.03,
+            "p95Ms": 0.05,
+            "minMs": 0.03,
+            "maxMs": 0.13
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.34,
+              0.22,
+              0.22,
+              0.24,
+              0.23,
+              0.2,
+              0.21,
+              0.2,
+              0.36,
+              0.25,
+              0.2,
+              0.19,
+              0.21,
+              0.21,
+              0.2,
+              0.31,
+              0.33,
+              0.22,
+              0.19,
+              0.18,
+              0.18,
+              0.17,
+              0.17,
+              0.19,
+              0.21,
+              0.19,
+              0.28,
+              0.24,
+              0.23,
+              0.21
+            ],
+            "sessionIndex": [
+              66.94,
+              70.91,
+              62.5,
+              74.07,
+              67.72,
+              64.65,
+              62.98,
+              63.61,
+              64.5,
+              76.91,
+              64.55,
+              64.52,
+              64.42,
+              61.06,
+              63.84,
+              61.25,
+              65.68,
+              66.54,
+              61.44,
+              62.82,
+              65.59,
+              60.2,
+              61.21,
+              60.92,
+              61.3,
+              62.49,
+              60.69,
+              62.06,
+              60.41,
+              62.39
+            ],
+            "largeSessionParse": [
+              69.39,
+              66.92,
+              67.02,
+              67.38,
+              67.38,
+              67.11,
+              66.28,
+              66.96,
+              66.01,
+              66.18,
+              66.42,
+              67.37,
+              67.2,
+              66.96,
+              67.21,
+              66.77,
+              68.26,
+              72.3,
+              68.42,
+              68.47,
+              67.85,
+              65.8,
+              67.72,
+              68.2,
+              66.21,
+              67.31,
+              67.02,
+              66.05,
+              67.24,
+              65.9
+            ],
+            "sqliteWorkspaceList": [
+              1.49,
+              1.36,
+              1.36,
+              1.3,
+              1.34,
+              1.29,
+              1.41,
+              1.5,
+              1.24,
+              1.27,
+              1.28,
+              1.3,
+              1.54,
+              1.32,
+              1.28,
+              1.27,
+              1.26,
+              1.25,
+              1.25,
+              1.24,
+              1.27,
+              1.24,
+              1.29,
+              1.29,
+              1.25,
+              1.25,
+              1.29,
+              1.33,
+              1.32,
+              1.34
+            ],
+            "sqliteActivityList": [
+              0.13,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.04,
+              0.04,
+              0.03,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.04,
+              0.05,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03
+            ]
+          }
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "label": "before-repeat-2",
+        "createdAt": "2026-10-01T19:22:05.566Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 207392,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.18,
+            "p95Ms": 0.27,
+            "minMs": 0.16,
+            "maxMs": 0.33
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 62.9,
+            "p95Ms": 69.16,
+            "minMs": 59.99,
+            "maxMs": 73
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 68.97,
+            "p95Ms": 71.14,
+            "minMs": 67.99,
+            "maxMs": 71.25
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 1.32,
+            "p95Ms": 1.89,
+            "minMs": 1.24,
+            "maxMs": 2.78
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.04,
+            "p95Ms": 0.07,
+            "minMs": 0.03,
+            "maxMs": 0.13
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.33,
+              0.19,
+              0.18,
+              0.24,
+              0.26,
+              0.18,
+              0.18,
+              0.2,
+              0.27,
+              0.17,
+              0.17,
+              0.17,
+              0.19,
+              0.18,
+              0.18,
+              0.18,
+              0.19,
+              0.19,
+              0.18,
+              0.17,
+              0.22,
+              0.17,
+              0.16,
+              0.17,
+              0.17,
+              0.18,
+              0.25,
+              0.26,
+              0.18,
+              0.19
+            ],
+            "sessionIndex": [
+              66.98,
+              66.57,
+              64.86,
+              68.71,
+              73,
+              67.09,
+              62.75,
+              62.9,
+              63.9,
+              63.67,
+              67.18,
+              62.12,
+              63.4,
+              66.12,
+              62.04,
+              63.33,
+              61.97,
+              62.88,
+              61.99,
+              62,
+              62.4,
+              59.99,
+              66.21,
+              69.16,
+              64.47,
+              61.55,
+              62.85,
+              62.39,
+              60.84,
+              62.41
+            ],
+            "largeSessionParse": [
+              71.14,
+              70.69,
+              69,
+              68.43,
+              69.63,
+              68.78,
+              68.61,
+              69.65,
+              68.43,
+              69.62,
+              68.87,
+              69.64,
+              70.95,
+              68.54,
+              68.9,
+              69.05,
+              68.89,
+              68.54,
+              69.53,
+              68.36,
+              67.99,
+              69.02,
+              69.89,
+              68.47,
+              69.36,
+              68.88,
+              68.97,
+              68.77,
+              71.25,
+              70.59
+            ],
+            "sqliteWorkspaceList": [
+              1.56,
+              1.49,
+              1.36,
+              1.46,
+              1.42,
+              1.45,
+              1.89,
+              1.32,
+              1.25,
+              1.3,
+              1.31,
+              1.31,
+              1.57,
+              1.36,
+              1.28,
+              1.36,
+              1.35,
+              1.5,
+              1.33,
+              1.29,
+              1.28,
+              1.31,
+              1.3,
+              1.28,
+              1.29,
+              2.78,
+              1.26,
+              1.25,
+              1.34,
+              1.24
+            ],
+            "sqliteActivityList": [
+              0.13,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.07,
+              0.07,
+              0.05,
+              0.05,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04
+            ]
+          }
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "label": "before-repeat-3",
+        "createdAt": "2026-10-01T19:22:12.639Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 206464,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.18,
+            "p95Ms": 0.3,
+            "minMs": 0.16,
+            "maxMs": 0.32
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 67.02,
+            "p95Ms": 74.7,
+            "minMs": 63.98,
+            "maxMs": 75.89
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 68.64,
+            "p95Ms": 71.95,
+            "minMs": 67.94,
+            "maxMs": 74.01
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 1.31,
+            "p95Ms": 1.65,
+            "minMs": 1.26,
+            "maxMs": 1.93
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.04,
+            "p95Ms": 0.05,
+            "minMs": 0.03,
+            "maxMs": 0.13
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.32,
+              0.19,
+              0.17,
+              0.25,
+              0.25,
+              0.18,
+              0.18,
+              0.3,
+              0.18,
+              0.18,
+              0.17,
+              0.17,
+              0.2,
+              0.19,
+              0.18,
+              0.19,
+              0.18,
+              0.18,
+              0.19,
+              0.17,
+              0.17,
+              0.16,
+              0.16,
+              0.17,
+              0.17,
+              0.18,
+              0.22,
+              0.2,
+              0.19,
+              0.18
+            ],
+            "sessionIndex": [
+              66.99,
+              74.7,
+              67.46,
+              75.89,
+              67.22,
+              68.93,
+              67.22,
+              68.01,
+              71.16,
+              67.06,
+              68.55,
+              69.69,
+              66.06,
+              68.29,
+              70.77,
+              65.33,
+              67.42,
+              67.98,
+              65.57,
+              67.02,
+              64.85,
+              66.38,
+              64.66,
+              65.36,
+              63.98,
+              65.91,
+              65.72,
+              65.16,
+              66.27,
+              64.4
+            ],
+            "largeSessionParse": [
+              71.95,
+              69.71,
+              74.01,
+              68.24,
+              68.39,
+              68.19,
+              69.55,
+              68.64,
+              69.03,
+              69,
+              69.13,
+              68.11,
+              69.3,
+              68.36,
+              68.59,
+              69.03,
+              67.94,
+              68.37,
+              68.6,
+              68.75,
+              68.27,
+              69.47,
+              68.45,
+              69.19,
+              68.34,
+              68.54,
+              68.81,
+              68.52,
+              68.97,
+              69.22
+            ],
+            "sqliteWorkspaceList": [
+              1.65,
+              1.5,
+              1.34,
+              1.35,
+              1.42,
+              1.4,
+              1.93,
+              1.32,
+              1.27,
+              1.27,
+              1.32,
+              1.34,
+              1.51,
+              1.6,
+              1.31,
+              1.3,
+              1.29,
+              1.27,
+              1.27,
+              1.26,
+              1.26,
+              1.28,
+              1.34,
+              1.32,
+              1.3,
+              1.34,
+              1.27,
+              1.26,
+              1.26,
+              1.27
+            ],
+            "sqliteActivityList": [
+              0.13,
+              0.05,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.05,
+              0.04,
+              0.04,
+              0.03,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.04
+            ]
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "schemaVersion": 1,
+        "label": "scale-ordered-sources",
+        "createdAt": "2026-10-01T19:20:33.040Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 177856,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.18,
+            "p95Ms": 0.27,
+            "minMs": 0.16,
+            "maxMs": 0.3
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 35.78,
+            "p95Ms": 46.51,
+            "minMs": 33.44,
+            "maxMs": 47.21
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 20.91,
+            "p95Ms": 21.64,
+            "minMs": 20.35,
+            "maxMs": 23.05
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 0.81,
+            "p95Ms": 1.09,
+            "minMs": 0.77,
+            "maxMs": 1.14
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.04,
+            "p95Ms": 0.05,
+            "minMs": 0.03,
+            "maxMs": 0.12
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.3,
+              0.19,
+              0.17,
+              0.26,
+              0.24,
+              0.19,
+              0.18,
+              0.2,
+              0.27,
+              0.18,
+              0.17,
+              0.17,
+              0.2,
+              0.19,
+              0.18,
+              0.2,
+              0.22,
+              0.19,
+              0.19,
+              0.17,
+              0.16,
+              0.16,
+              0.16,
+              0.17,
+              0.17,
+              0.17,
+              0.21,
+              0.23,
+              0.18,
+              0.17
+            ],
+            "sessionIndex": [
+              44.23,
+              47.21,
+              38.74,
+              46.51,
+              38,
+              37.44,
+              36.28,
+              35.29,
+              35.78,
+              37.92,
+              35.68,
+              37.99,
+              37.92,
+              44.93,
+              44.04,
+              37.78,
+              37.8,
+              35.57,
+              37.82,
+              34.5,
+              34.49,
+              34.17,
+              34.4,
+              33.97,
+              33.6,
+              34.08,
+              34.04,
+              33.88,
+              33.44,
+              34.01
+            ],
+            "largeSessionParse": [
+              23.05,
+              21.09,
+              21.26,
+              21.45,
+              21.45,
+              20.79,
+              21.42,
+              21.64,
+              21.55,
+              21.08,
+              21.04,
+              20.91,
+              20.83,
+              20.8,
+              20.69,
+              21.3,
+              21.43,
+              21.37,
+              20.35,
+              20.76,
+              20.95,
+              20.92,
+              20.49,
+              20.62,
+              20.39,
+              20.88,
+              20.51,
+              20.84,
+              20.9,
+              20.84
+            ],
+            "sqliteWorkspaceList": [
+              1.14,
+              0.92,
+              0.83,
+              0.81,
+              0.88,
+              0.94,
+              1.09,
+              0.8,
+              0.78,
+              0.78,
+              0.83,
+              0.83,
+              0.98,
+              0.87,
+              0.85,
+              0.79,
+              0.79,
+              0.81,
+              0.77,
+              0.79,
+              0.78,
+              0.79,
+              0.8,
+              0.77,
+              0.77,
+              0.81,
+              0.84,
+              0.91,
+              0.84,
+              0.81
+            ],
+            "sqliteActivityList": [
+              0.12,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.05,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.03
+            ]
+          }
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "label": "ordered-final-2",
+        "createdAt": "2026-10-01T19:22:17.557Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 174784,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.18,
+            "p95Ms": 0.29,
+            "minMs": 0.16,
+            "maxMs": 0.31
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 43.02,
+            "p95Ms": 48.72,
+            "minMs": 41.43,
+            "maxMs": 52.96
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 21.63,
+            "p95Ms": 23.09,
+            "minMs": 21.02,
+            "maxMs": 23.88
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 0.82,
+            "p95Ms": 1.18,
+            "minMs": 0.76,
+            "maxMs": 1.81
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.04,
+            "p95Ms": 0.06,
+            "minMs": 0.03,
+            "maxMs": 0.12
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.31,
+              0.19,
+              0.17,
+              0.25,
+              0.23,
+              0.18,
+              0.18,
+              0.18,
+              0.18,
+              0.29,
+              0.18,
+              0.17,
+              0.2,
+              0.19,
+              0.18,
+              0.19,
+              0.2,
+              0.19,
+              0.19,
+              0.17,
+              0.16,
+              0.16,
+              0.16,
+              0.18,
+              0.22,
+              0.18,
+              0.19,
+              0.19,
+              0.21,
+              0.17
+            ],
+            "sessionIndex": [
+              44.12,
+              52.96,
+              45.81,
+              47.39,
+              46.33,
+              46.25,
+              44.51,
+              43.59,
+              43.22,
+              43.8,
+              43.37,
+              44.75,
+              43.02,
+              45.06,
+              42.98,
+              43.7,
+              48.72,
+              42.55,
+              42.86,
+              42.21,
+              42.59,
+              41.48,
+              41.57,
+              41.49,
+              41.6,
+              41.57,
+              41.77,
+              41.43,
+              41.89,
+              41.44
+            ],
+            "largeSessionParse": [
+              23.88,
+              22.16,
+              22.02,
+              22.34,
+              22.03,
+              22.12,
+              22.07,
+              21.25,
+              21.2,
+              21.22,
+              21.09,
+              21.02,
+              21.59,
+              21.72,
+              21.67,
+              21.19,
+              21.16,
+              21.48,
+              21.28,
+              21.24,
+              21.23,
+              21.06,
+              21.52,
+              23.09,
+              21.96,
+              22.06,
+              22.41,
+              21.98,
+              21.75,
+              21.63
+            ],
+            "sqliteWorkspaceList": [
+              1.18,
+              0.97,
+              0.9,
+              0.9,
+              0.91,
+              0.83,
+              1.81,
+              0.83,
+              0.78,
+              0.82,
+              0.85,
+              0.88,
+              0.98,
+              0.91,
+              0.79,
+              0.82,
+              0.9,
+              0.96,
+              0.81,
+              0.77,
+              0.78,
+              0.76,
+              0.8,
+              0.77,
+              0.77,
+              0.77,
+              0.82,
+              0.8,
+              0.77,
+              0.79
+            ],
+            "sqliteActivityList": [
+              0.12,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.04,
+              0.03,
+              0.05,
+              0.06,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03
+            ]
+          }
+        }
+      },
+      {
+        "schemaVersion": 1,
+        "label": "ordered-final-3",
+        "createdAt": "2026-10-01T19:22:23.030Z",
+        "machine": {
+          "platform": "darwin",
+          "arch": "arm64",
+          "release": "27.0.0",
+          "cpu": "Apple M3",
+          "logicalCpuCount": 8,
+          "totalMemoryBytes": 17179869184
+        },
+        "build": {
+          "backend": "typescript",
+          "runtimeArtifact": "backend.cjs",
+          "electronEntry": "dist-electron/main.cjs"
+        },
+        "configuration": {
+          "cleanRuns": 0,
+          "reuseRuns": 0,
+          "workloadRuns": 30,
+          "skillCount": 0,
+          "idleMs": 0,
+          "transcriptLineCount": 50000,
+          "sessionCount": 500,
+          "sqliteWorkspaceCount": 100
+        },
+        "startup": {
+          "clean": [],
+          "reused": []
+        },
+        "workloads": {
+          "fixture": {
+            "workspaceFiles": 401,
+            "transcriptLines": 50000,
+            "sqliteWorkspaceCount": 101,
+            "skillCount": 0,
+            "sessionCount": 500
+          },
+          "runtimeRssKb": 171424,
+          "workspaceScan": {
+            "iterations": 30,
+            "p50Ms": 0.21,
+            "p95Ms": 0.38,
+            "minMs": 0.17,
+            "maxMs": 0.4
+          },
+          "sessionIndex": {
+            "iterations": 30,
+            "p50Ms": 42.21,
+            "p95Ms": 51.54,
+            "minMs": 40.27,
+            "maxMs": 53.34
+          },
+          "largeSessionParse": {
+            "iterations": 30,
+            "p50Ms": 21.77,
+            "p95Ms": 23.33,
+            "minMs": 21.44,
+            "maxMs": 25.86
+          },
+          "sqliteWorkspaceList": {
+            "iterations": 30,
+            "p50Ms": 0.85,
+            "p95Ms": 1.5,
+            "minMs": 0.8,
+            "maxMs": 1.91
+          },
+          "sqliteActivityList": {
+            "iterations": 30,
+            "p50Ms": 0.04,
+            "p95Ms": 0.08,
+            "minMs": 0.03,
+            "maxMs": 0.12
+          },
+          "rawMilliseconds": {
+            "workspaceScan": [
+              0.38,
+              0.22,
+              0.2,
+              0.33,
+              0.26,
+              0.21,
+              0.21,
+              0.2,
+              0.32,
+              0.2,
+              0.19,
+              0.21,
+              0.4,
+              0.26,
+              0.23,
+              0.27,
+              0.22,
+              0.23,
+              0.22,
+              0.19,
+              0.17,
+              0.18,
+              0.17,
+              0.18,
+              0.2,
+              0.19,
+              0.19,
+              0.29,
+              0.18,
+              0.17
+            ],
+            "sessionIndex": [
+              51.5,
+              53.34,
+              44.7,
+              51.54,
+              44.15,
+              43.89,
+              42.82,
+              44.36,
+              47.96,
+              42.9,
+              44.25,
+              42.06,
+              44.39,
+              41.76,
+              43.72,
+              42.21,
+              43.21,
+              42.18,
+              42.83,
+              41.35,
+              41,
+              41.21,
+              40.46,
+              40.56,
+              40.96,
+              40.91,
+              40.34,
+              40.27,
+              40.74,
+              40.75
+            ],
+            "largeSessionParse": [
+              25.86,
+              23.33,
+              22.69,
+              22.79,
+              22.54,
+              22.19,
+              22.57,
+              21.84,
+              21.53,
+              21.82,
+              21.44,
+              21.64,
+              21.79,
+              21.63,
+              21.93,
+              21.69,
+              21.64,
+              21.9,
+              21.61,
+              22.07,
+              21.6,
+              21.55,
+              21.91,
+              21.46,
+              21.58,
+              21.77,
+              21.73,
+              21.71,
+              21.49,
+              22.45
+            ],
+            "sqliteWorkspaceList": [
+              1.12,
+              0.94,
+              0.85,
+              0.88,
+              0.87,
+              0.8,
+              1.5,
+              1.91,
+              0.87,
+              0.81,
+              0.82,
+              0.94,
+              1.3,
+              0.89,
+              0.9,
+              0.85,
+              0.87,
+              0.86,
+              0.83,
+              0.82,
+              0.83,
+              0.82,
+              0.85,
+              0.82,
+              0.83,
+              0.84,
+              0.83,
+              0.94,
+              0.81,
+              0.81
+            ],
+            "sqliteActivityList": [
+              0.12,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.04,
+              0.03,
+              0.04,
+              0.04,
+              0.04,
+              0.04,
+              0.06,
+              0.04,
+              0.08,
+              0.05,
+              0.04,
+              0.04,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.03,
+              0.04,
+              0.03,
+              0.03,
+              0.04,
+              0.03
+            ]
+          }
+        }
+      }
+    ],
+    "largerBefore": {
+      "schemaVersion": 1,
+      "label": "scale-2000-before",
+      "createdAt": "2026-10-01T19:15:11.796Z",
+      "machine": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "release": "27.0.0",
+        "cpu": "Apple M3",
+        "logicalCpuCount": 8,
+        "totalMemoryBytes": 17179869184
+      },
+      "build": {
+        "backend": "typescript",
+        "runtimeArtifact": "backend.cjs",
+        "electronEntry": "dist-electron/main.cjs"
+      },
+      "configuration": {
+        "cleanRuns": 0,
+        "reuseRuns": 0,
+        "workloadRuns": 30,
+        "skillCount": 0,
+        "idleMs": 0,
+        "transcriptLineCount": 50000,
+        "sessionCount": 2000,
+        "sqliteWorkspaceCount": 500
+      },
+      "startup": {
+        "clean": [],
+        "reused": []
+      },
+      "workloads": {
+        "fixture": {
+          "workspaceFiles": 401,
+          "transcriptLines": 50000,
+          "sqliteWorkspaceCount": 501,
+          "skillCount": 0,
+          "sessionCount": 2000
+        },
+        "runtimeRssKb": 229184,
+        "workspaceScan": {
+          "iterations": 30,
+          "p50Ms": 0.17,
+          "p95Ms": 0.29,
+          "minMs": 0.14,
+          "maxMs": 0.31
+        },
+        "sessionIndex": {
+          "iterations": 30,
+          "p50Ms": 265.49,
+          "p95Ms": 282.8,
+          "minMs": 253.18,
+          "maxMs": 290.14
+        },
+        "largeSessionParse": {
+          "iterations": 30,
+          "p50Ms": 290.08,
+          "p95Ms": 294.12,
+          "minMs": 281.19,
+          "maxMs": 295.53
+        },
+        "sqliteWorkspaceList": {
+          "iterations": 30,
+          "p50Ms": 6.56,
+          "p95Ms": 9.16,
+          "minMs": 6.38,
+          "maxMs": 10.59
+        },
+        "sqliteActivityList": {
+          "iterations": 30,
+          "p50Ms": 0.03,
+          "p95Ms": 0.05,
+          "minMs": 0.03,
+          "maxMs": 0.15
+        },
+        "rawMilliseconds": {
+          "workspaceScan": [
+            0.31,
+            0.19,
+            0.16,
+            0.16,
+            0.16,
+            0.16,
+            0.22,
+            0.18,
+            0.19,
+            0.19,
+            0.17,
+            0.17,
+            0.18,
+            0.17,
+            0.17,
+            0.18,
+            0.22,
+            0.18,
+            0.17,
+            0.16,
+            0.15,
+            0.15,
+            0.15,
+            0.29,
+            0.19,
+            0.17,
+            0.16,
+            0.14,
+            0.14,
+            0.14
+          ],
+          "sessionIndex": [
+            253.18,
+            272.37,
+            282.8,
+            278.77,
+            272.6,
+            271.91,
+            265.18,
+            267.68,
+            267.74,
+            290.14,
+            264.42,
+            264.4,
+            279.34,
+            273.26,
+            273.95,
+            267.02,
+            263.91,
+            265.49,
+            264.74,
+            267.4,
+            265.06,
+            264.47,
+            264.55,
+            265.89,
+            264.36,
+            262.97,
+            265.79,
+            263.83,
+            263.15,
+            263.92
+          ],
+          "largeSessionParse": [
+            290.08,
+            289.37,
+            281.19,
+            291.49,
+            287.42,
+            284.55,
+            289.96,
+            289.35,
+            284.79,
+            284.58,
+            291.17,
+            285.61,
+            285.39,
+            284.57,
+            289.31,
+            287.52,
+            286.37,
+            295.53,
+            294.12,
+            291.15,
+            291,
+            292.1,
+            292.46,
+            290.25,
+            291.47,
+            290.36,
+            292.6,
+            292.59,
+            291.47,
+            290.41
+          ],
+          "sqliteWorkspaceList": [
+            8.52,
+            6.51,
+            6.47,
+            6.48,
+            6.55,
+            6.61,
+            6.65,
+            6.56,
+            6.58,
+            6.76,
+            10.59,
+            6.51,
+            6.41,
+            6.62,
+            6.59,
+            6.58,
+            6.6,
+            6.58,
+            6.58,
+            9.07,
+            6.39,
+            6.44,
+            6.56,
+            6.56,
+            6.42,
+            6.38,
+            6.43,
+            6.59,
+            9.16,
+            6.53
+          ],
+          "sqliteActivityList": [
+            0.15,
+            0.04,
+            0.04,
+            0.04,
+            0.04,
+            0.04,
+            0.04,
+            0.04,
+            0.05,
+            0.04,
+            0.04,
+            0.04,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.04,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03
+          ]
+        }
+      }
+    },
+    "largerAfter": {
+      "schemaVersion": 1,
+      "label": "scale-2000-ordered-final",
+      "createdAt": "2026-10-01T19:25:06.009Z",
+      "machine": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "release": "27.0.0",
+        "cpu": "Apple M3",
+        "logicalCpuCount": 8,
+        "totalMemoryBytes": 17179869184
+      },
+      "build": {
+        "backend": "typescript",
+        "runtimeArtifact": "backend.cjs",
+        "electronEntry": "dist-electron/main.cjs"
+      },
+      "configuration": {
+        "cleanRuns": 0,
+        "reuseRuns": 0,
+        "workloadRuns": 30,
+        "skillCount": 0,
+        "idleMs": 0,
+        "transcriptLineCount": 50000,
+        "sessionCount": 2000,
+        "sqliteWorkspaceCount": 500
+      },
+      "startup": {
+        "clean": [],
+        "reused": []
+      },
+      "workloads": {
+        "fixture": {
+          "workspaceFiles": 401,
+          "transcriptLines": 50000,
+          "sqliteWorkspaceCount": 501,
+          "skillCount": 0,
+          "sessionCount": 2000
+        },
+        "runtimeRssKb": 195584,
+        "workspaceScan": {
+          "iterations": 30,
+          "p50Ms": 0.17,
+          "p95Ms": 0.32,
+          "minMs": 0.14,
+          "maxMs": 0.33
+        },
+        "sessionIndex": {
+          "iterations": 30,
+          "p50Ms": 174.91,
+          "p95Ms": 185.43,
+          "minMs": 155.23,
+          "maxMs": 268.46
+        },
+        "largeSessionParse": {
+          "iterations": 30,
+          "p50Ms": 90.71,
+          "p95Ms": 96.25,
+          "minMs": 87.83,
+          "maxMs": 114.1
+        },
+        "sqliteWorkspaceList": {
+          "iterations": 30,
+          "p50Ms": 3.97,
+          "p95Ms": 4.41,
+          "minMs": 3.85,
+          "maxMs": 4.44
+        },
+        "sqliteActivityList": {
+          "iterations": 30,
+          "p50Ms": 0.03,
+          "p95Ms": 0.04,
+          "minMs": 0.03,
+          "maxMs": 0.14
+        },
+        "rawMilliseconds": {
+          "workspaceScan": [
+            0.33,
+            0.19,
+            0.17,
+            0.17,
+            0.17,
+            0.17,
+            0.21,
+            0.18,
+            0.18,
+            0.17,
+            0.18,
+            0.17,
+            0.18,
+            0.17,
+            0.17,
+            0.18,
+            0.2,
+            0.17,
+            0.19,
+            0.16,
+            0.32,
+            0.17,
+            0.16,
+            0.16,
+            0.16,
+            0.16,
+            0.16,
+            0.16,
+            0.15,
+            0.14
+          ],
+          "sessionIndex": [
+            155.23,
+            182.1,
+            185.43,
+            180.23,
+            176.65,
+            175.46,
+            172.35,
+            172.62,
+            175.42,
+            171.57,
+            170.36,
+            268.46,
+            175.75,
+            175.46,
+            174.91,
+            173.77,
+            174.63,
+            178.08,
+            174.51,
+            173.28,
+            174.95,
+            171.3,
+            174.25,
+            176.13,
+            172.65,
+            174.96,
+            175.96,
+            175.08,
+            170.53,
+            173.5
+          ],
+          "largeSessionParse": [
+            93.12,
+            89.45,
+            89.19,
+            91.85,
+            88.85,
+            88.25,
+            95.67,
+            87.83,
+            88.27,
+            90.66,
+            88.66,
+            89.39,
+            89.8,
+            89.33,
+            92.13,
+            89.58,
+            95.58,
+            91.73,
+            91.28,
+            91.43,
+            92.64,
+            91.02,
+            90.71,
+            91.68,
+            93.99,
+            114.1,
+            96.25,
+            88.43,
+            88.61,
+            90.77
+          ],
+          "sqliteWorkspaceList": [
+            4.41,
+            4.09,
+            4.08,
+            4.44,
+            4.02,
+            4.05,
+            3.96,
+            3.93,
+            3.98,
+            3.97,
+            3.99,
+            3.96,
+            4.21,
+            3.94,
+            3.95,
+            3.93,
+            3.9,
+            3.9,
+            4.05,
+            3.94,
+            3.9,
+            4.09,
+            4.19,
+            4.15,
+            3.94,
+            3.85,
+            4.06,
+            3.99,
+            3.95,
+            3.94
+          ],
+          "sqliteActivityList": [
+            0.14,
+            0.04,
+            0.03,
+            0.03,
+            0.04,
+            0.03,
+            0.03,
+            0.03,
+            0.04,
+            0.04,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03,
+            0.03
+          ]
+        }
+      }
+    },
+    "standardBeforeFile": "qa/runtime-benchmark-typescript-memory-optimized-2026-10-02.json",
+    "standardAfterFile": "qa/runtime-benchmark-performance-final-ordered-standard-2026-10-02.json"
+  },
+  "versions": {
+    "node": "26.3.0",
+    "electron": "44.0.0"
+  }
+}

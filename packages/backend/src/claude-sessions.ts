@@ -64,7 +64,10 @@ function scan(root: string, errors: string[]): string[] {
   visit(root, 1);
   return files;
 }
-function transcriptHeader(file: string): NativeSessionSource | null {
+function transcriptHeader(
+  file: string,
+  probeWorkspace = isProbeWorkspace,
+): NativeSessionSource | null {
   let nativeRef = path.basename(file, ".jsonl"),
     cwd: string | null = null,
     created: string | null = null,
@@ -83,7 +86,7 @@ function transcriptHeader(file: string): NativeSessionSource | null {
     created = earliest(created, at);
     updated = latest(updated, at);
   }
-  if (cwd === null || isProbeWorkspace(cwd)) return null;
+  if (cwd === null || probeWorkspace(cwd)) return null;
   return {
     cwd,
     transcript: file,
@@ -110,6 +113,26 @@ export class ClaudeSessions {
     return this.environment.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude");
   }
   list(workspace: string | null) {
+    // Many sessions share a cwd. Retain probe checks only within this scan so
+    // adding or removing the marker is visible on the next request.
+    const probes = new Map<string, boolean>();
+    const membership = new Map<string, boolean>();
+    const probeWorkspace = (cwd: string) => {
+      let result = probes.get(cwd);
+      if (result === undefined) {
+        result = isProbeWorkspace(cwd);
+        probes.set(cwd, result);
+      }
+      return result;
+    };
+    const belongs = (cwd: string) => {
+      let result = membership.get(cwd);
+      if (result === undefined) {
+        result = workspace === null || within(cwd, workspace);
+        membership.set(cwd, result);
+      }
+      return result;
+    };
     const home = this.home(),
       projects = path.join(home, "projects"),
       errors: string[] = [],
@@ -132,7 +155,7 @@ export class ClaudeSessions {
         if (!row) continue;
         const cwd = text(row.projectPath),
           nativeRef = text(row.sessionId);
-        if (cwd === null || nativeRef === null || isProbeWorkspace(cwd)) continue;
+        if (cwd === null || nativeRef === null || probeWorkspace(cwd)) continue;
         const transcript =
             text(row.fullPath) ?? path.join(path.dirname(index), `${nativeRef}.jsonl`),
           sidechain = typeof row.isSidechain === "boolean" ? row.isSidechain : false;
@@ -176,7 +199,7 @@ export class ClaudeSessions {
         continue;
       }
       try {
-        const session = transcriptHeader(file);
+        const session = transcriptHeader(file, probeWorkspace);
         if (!session) continue;
         const previous = sessions.get(session.session.native_ref);
         if (previous) update(previous, file);
@@ -212,10 +235,7 @@ export class ClaudeSessions {
         .sort(([a], [b]) => compareUtf8(a, b))
         .map(([, value]) => value)
         .filter(
-          (value) =>
-            isFile(value.transcript) &&
-            !isProbeWorkspace(value.cwd) &&
-            (workspace === null || within(value.cwd, workspace)),
+          (value) => isFile(value.transcript) && !probeWorkspace(value.cwd) && belongs(value.cwd),
         ),
       incomplete: false,
     };

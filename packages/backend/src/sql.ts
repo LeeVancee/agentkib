@@ -1,19 +1,28 @@
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue, StatementSync } from "node:sqlite";
 import { storedTime, utcNow } from "./workspaces";
 export type Row = Record<string, unknown>;
 export class Sql {
+  #statements = new Map<string, StatementSync>();
   constructor(readonly database: DatabaseSync) {}
-  rows(sql: string, ...values: SQLInputValue[]): Row[] {
+  #statement(sql: string): StatementSync {
+    const cached = this.#statements.get(sql);
+    if (cached) return cached;
     const statement = this.database.prepare(sql);
     statement.setReadBigInts(true);
-    return statement.all(...values);
+    // Dynamic IN queries can have many shapes. Bound retention per database.
+    if (this.#statements.size >= 64) this.#statements.delete(this.#statements.keys().next().value!);
+    this.#statements.set(sql, statement);
+    return statement;
+  }
+  rows(sql: string, ...values: SQLInputValue[]): Row[] {
+    return this.#statement(sql).all(...values);
   }
   one(sql: string, ...values: SQLInputValue[]): Row | undefined {
-    return this.rows(sql, ...values)[0];
+    return this.#statement(sql).get(...values);
   }
   run(sql: string, ...values: SQLInputValue[]): void {
-    this.database.prepare(sql).run(...values);
+    this.#statement(sql).run(...values);
   }
   transaction<T>(operation: () => T): T {
     this.database.exec("BEGIN IMMEDIATE");

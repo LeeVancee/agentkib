@@ -10,9 +10,7 @@ import {
   rmSync,
 } from "node:fs";
 import path from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonicalize, pathIdentity } from "./paths";
 import { Sql } from "./sql";
@@ -631,8 +629,10 @@ export class McpManager {
 
   async #connect(server: McpServer, retain: boolean, project?: string): Promise<ToolDescriptor[]> {
     const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     let transport: Transport;
     if (server.transport === "stdio") {
+      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
       transport = new StdioClientTransport({
         command: server.command,
         args: server.args,
@@ -642,6 +642,8 @@ export class McpManager {
         maxBufferSize: 10 * 1024 * 1024,
       });
     } else {
+      const { StreamableHTTPClientTransport } =
+        await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
       const url = new URL(server.url);
       const headers = { ...server.headers };
       transport = new StreamableHTTPClientTransport(url, {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, statSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, statSync, readFileSync, type Stats } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { parse as parseToml } from "smol-toml";
@@ -135,21 +135,49 @@ export function scanWorkspace(project: string) {
   const root = canonicalProject(project),
     assets: Asset[] = [],
     validation: { agent: string; warning: string }[] = [];
+  // Shared asset locations belong to several agents. Reuse filesystem work only
+  // within this scan so the next request still sees edits and removals.
+  const metadataCache = new Map<string, Stats | undefined>(),
+    directoryCache = new Map<string, string[]>(),
+    skillSizeCache = new Map<string, number>(),
+    validationCache = new Map<string, string | null>();
+  const metadataAt = (value: string): Stats | undefined => {
+    if (metadataCache.has(value)) return metadataCache.get(value);
+    let metadata: Stats | undefined;
+    try {
+      metadata = statSync(value, { throwIfNoEntry: false });
+    } catch {}
+    metadataCache.set(value, metadata);
+    return metadata;
+  };
+  const scannedRecord = (agent: string, kind: string, value: string, summary: string): Asset => {
+    let size: number | undefined;
+    if (kind === "skill") {
+      size = skillSizeCache.get(value);
+      if (size === undefined) {
+        size = inspectSkill(value).size;
+        skillSizeCache.set(value, size);
+      }
+    } else size = metadataAt(value)?.size;
+    return record(agent, kind, value, summary, size);
+  };
   for (const agent of AGENTS) {
     for (const [candidate, kind, summary] of ASSET_CANDIDATES[agent]!) {
-      const absolute = path.join(root, candidate);
-      let metadata;
-      try {
-        metadata = statSync(absolute);
-      } catch {
-        continue;
-      }
+      const absolute = path.join(root, candidate),
+        metadata = metadataAt(absolute);
+      if (!metadata) continue;
       if (metadata.isFile()) {
-        assets.push(record(agent, kind, absolute, summary));
-        const warning = validateNative(absolute);
+        assets.push(scannedRecord(agent, kind, absolute, summary));
+        if (!validationCache.has(absolute)) validationCache.set(absolute, validateNative(absolute));
+        const warning = validationCache.get(absolute);
         if (warning) validation.push({ agent, warning });
       } else if (metadata.isDirectory()) {
-        for (const value of walk(absolute, 4)) {
+        let files = directoryCache.get(absolute);
+        if (!files) {
+          files = walk(absolute, 4);
+          directoryCache.set(absolute, files);
+        }
+        for (const value of files) {
           const name = path.basename(value);
           if (
             kind === "skill"
@@ -159,7 +187,7 @@ export function scanWorkspace(project: string) {
                   [".opencode/plugins", ".opencode/tools"].includes(candidate) &&
                   /\.(js|ts)$/.test(name))
           )
-            assets.push(record(agent, kind, value, summary));
+            assets.push(scannedRecord(agent, kind, value, summary));
         }
       }
     }
@@ -208,8 +236,14 @@ export function scanWorkspace(project: string) {
   }
   return { root, manifest_exists, agents, assets: dedup, warnings };
 }
-function record(agent: string, kind: string, value: string, summary: string): Asset {
-  const size = kind === "skill" ? inspectSkill(value).size : statSync(value).size,
+function record(
+  agent: string,
+  kind: string,
+  value: string,
+  summary: string,
+  knownSize?: number,
+): Asset {
+  const size = knownSize ?? (kind === "skill" ? inspectSkill(value).size : statSync(value).size),
     key = summaryKey(summary);
   return {
     agent,

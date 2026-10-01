@@ -160,6 +160,16 @@ export class SessionReaders {
     if (!(SESSION_AGENTS as readonly string[]).includes(agent))
       throw new Error("Conversation provider is unavailable");
     const workspace = this.store.workspacePath(summary.workspace_id);
+    if (agent === "codex" || agent === "claude-code") {
+      // Resolve ownership and the transcript together for this request. Readers
+      // still check the file itself, and the next request discovers it afresh.
+      const provider = agent === "codex" ? this.#codex : this.#claude;
+      const source = provider
+        .list(workspace)
+        .sessions.find((candidate) => this.store.id(agent, candidate.session.native_ref) === id);
+      if (!source) throw new Error("Conversation transcript is no longer available");
+      return { summary, native: source.session, workspace, transcript: source.transcript };
+    }
     const listing = await this.list(agent as SessionAgent, workspace);
     const native = listing.sessions.find(
       (candidate) => this.store.id(agent, candidate.native_ref) === id,
@@ -176,8 +186,8 @@ export class SessionReaders {
       }),
       value,
     );
-    const { native, workspace } = await this.resolve(sessionId);
-    return this.#readEvents(native, workspace, cursor ?? null, limit ?? 50);
+    const { native, workspace, transcript } = await this.resolve(sessionId);
+    return this.#readEvents(native, workspace, cursor ?? null, limit ?? 50, transcript);
   }
   async eventsForNative(
     agent: SessionAgent,
@@ -200,12 +210,14 @@ export class SessionReaders {
     workspace: string,
     offset: string | null,
     count: number,
+    transcript?: string,
   ): Promise<ConversationEventPage> {
     const ref = native.native_ref,
       agent = native.agent;
     switch (agent) {
       case "codex":
       case "claude-code": {
+        if (transcript) return this.#paging.read(transcript, offset, count, agent);
         const provider = agent === "codex" ? this.#codex : this.#claude;
         const source = provider
           .list(null)
@@ -249,25 +261,16 @@ export class SessionReaders {
       throw new Error("Conversation transcript is no longer available");
     if (!(SESSION_AGENTS as readonly string[]).includes(summary.agent))
       throw new Error("Conversation provider is unavailable");
-    const { native, workspace } = await this.resolve(sessionId);
+    const { native, workspace, transcript } = await this.resolve(sessionId);
     if (native.agent === "codex") {
-      const source = this.#codex
-        .list(null)
-        .sessions.find((candidate) => candidate.session.native_ref === native.native_ref);
-      if (!source) throw new Error("Codex session is no longer available");
-      return readCodexDocument(
-        summary as Parameters<typeof readCodexDocument>[0],
-        source.transcript,
-      );
+      if (!transcript) throw new Error("Codex session is no longer available");
+      return readCodexDocument(summary as Parameters<typeof readCodexDocument>[0], transcript);
     }
     if (native.agent === "claude-code") {
-      const source = this.#claude
-        .list(null)
-        .sessions.find((candidate) => candidate.session.native_ref === native.native_ref);
-      if (!source) throw new Error("Claude session is no longer available");
+      if (!transcript) throw new Error("Claude session is no longer available");
       return readClaudeDocument(
         summary as Parameters<typeof readClaudeDocument>[0],
-        source.transcript,
+        transcript,
         native.sidechain,
       );
     }

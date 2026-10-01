@@ -13,6 +13,7 @@
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "benchmark:runtime": "pnpm --filter @agentkib/desktop benchmark:runtime",
+    "benchmark:memory": "pnpm --filter @agentkib/desktop benchmark:memory",
     "format": "oxfmt apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts apps/web/src apps/web/vite.config.ts packages",
     "format:check": "oxfmt --check apps/desktop/src apps/desktop/electron apps/desktop/vite*.config.ts apps/web/src apps/web/vite.config.ts packages",
     "lint": "oxlint apps/desktop/src apps/desktop/electron",

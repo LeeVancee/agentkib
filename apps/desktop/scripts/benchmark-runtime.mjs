@@ -37,6 +37,17 @@ const protocolVersion = Number(
 if (!Number.isInteger(protocolVersion)) throw new Error("Unable to read runtime protocol version");
 const cleanRuns = integerOption(options["clean-runs"], 5);
 const reuseRuns = integerOption(options["reuse-runs"], 10);
+const workloadRuns =
+  options["workload-runs"] === undefined ? undefined : integerOption(options["workload-runs"], 100);
+const skillCount = integerOption(options["skill-count"], 0);
+const transcriptLineCount = integerOption(options["transcript-lines"], 5_000);
+const sessionCount = integerOption(options["session-count"], 1);
+const sqliteWorkspaceCount = integerOption(options["workspace-count"], 100);
+if (!transcriptLineCount || !sessionCount)
+  throw new Error("Transcript and session counts must be positive");
+const idleMs = integerOption(options["idle-ms"], 0);
+if (workloadRuns === 0) throw new Error("--workload-runs must be positive");
+if (idleMs > 0 && idleMs < 2_000) throw new Error("--idle-ms must be at least 2000");
 
 let scratch;
 
@@ -70,7 +81,16 @@ async function main() {
         runtimeArtifact: path.basename(typescriptBackendPath),
         electronEntry: path.relative(desktopDirectory, electronEntry),
       },
-      configuration: { cleanRuns, reuseRuns },
+      configuration: {
+        cleanRuns,
+        reuseRuns,
+        workloadRuns,
+        skillCount,
+        idleMs,
+        transcriptLineCount,
+        sessionCount,
+        sqliteWorkspaceCount,
+      },
       startup,
       workloads,
     };
@@ -134,7 +154,26 @@ async function runRuntimeWorkloads() {
     CODEX_HOME: profile.codex,
     CLAUDE_CONFIG_DIR: profile.claude,
   };
-  const client = new RuntimeClient(process.execPath, runtimeEnvironment, [typescriptBackendPath]);
+  const argumentsList = [typescriptBackendPath];
+  if (idleMs > 0) {
+    const telemetryPath = path.join(profile.root, "benchmark-telemetry.cjs");
+    await writeFile(
+      telemetryPath,
+      `
+let cpu = process.cpuUsage(), at = performance.now();
+setInterval(() => {
+  const delta = process.cpuUsage(cpu), now = performance.now();
+  process.stderr.write("AGENTKIB_BENCHMARK_TELEMETRY:" + JSON.stringify({
+    memory: process.memoryUsage(),
+    cpuPercent: (delta.user + delta.system) / ((now - at) * 1000) * 100,
+  }) + "\\n");
+  cpu = process.cpuUsage(); at = now;
+}, 1000).unref();
+`,
+    );
+    argumentsList.unshift("--require", telemetryPath);
+  }
+  const client = new RuntimeClient(process.execPath, runtimeEnvironment, argumentsList);
   await client.start();
   try {
     await client.request("agentkib.handshake", {
@@ -143,26 +182,45 @@ async function runRuntimeWorkloads() {
     });
     await client.request("backend.initialize", { dataDir: profile.data });
     await client.request("runtime.info", {});
+    let idle;
+    if (idleMs > 0) {
+      // Discard the first interval, which includes module loading and initialization.
+      await new Promise((resolve) => setTimeout(resolve, idleMs + 1_000));
+      const samples = client.telemetry.slice(1);
+      if (!samples.length) throw new Error("No backend idle telemetry was captured");
+      idle = {
+        sampleCount: samples.length,
+        cpuPercentMean:
+          samples.reduce((total, sample) => total + sample.cpuPercent, 0) / samples.length,
+        samples,
+      };
+    }
 
     const added = await addWorkspace(client, fixture.workspace);
     for (const workspace of fixture.sqliteWorkspaces) {
       await addWorkspace(client, workspace);
     }
 
-    const scanMs = await measureRequests(10, () =>
+    const scanMs = await measureRequests(workloadRuns ?? 10, () =>
       client.request("workspace.scan", { project: fixture.workspace }),
     );
-    const sessionIndexMs = await measureRequests(5, () =>
+    const sessionIndexMs = await measureRequests(workloadRuns ?? 5, () =>
       client.request("workspace.refreshSessions", { workspaceId: added.id, force: true }),
     );
     const sessions = await client.request("workspace.sessions", { workspaceId: added.id });
-    const sessionId = sessions[0]?.id;
+    if (sessions.length !== sessionCount)
+      throw new Error(`Expected ${sessionCount} sessions, got ${sessions.length}`);
+    const sessionId = sessions.find(
+      (session) => session.title === "Large deterministic session",
+    )?.id;
     if (!sessionId) throw new Error("The deterministic session fixture was not indexed");
-    const sessionParseMs = await measureRequests(10, () =>
+    const sessionParseMs = await measureRequests(workloadRuns ?? 10, () =>
       client.request("session.events", { sessionId, limit: 500 }),
     );
-    const sqliteQueryMs = await measureRequests(25, () => client.request("workspaces.list", {}));
-    const activityQueryMs = await measureRequests(25, () =>
+    const sqliteQueryMs = await measureRequests(workloadRuns ?? 25, () =>
+      client.request("workspaces.list", {}),
+    );
+    const activityQueryMs = await measureRequests(workloadRuns ?? 25, () =>
       client.request("activity.list", { limit: 200 }),
     );
     const runtimeRssKb = await processTreeRssKb(client.pid);
@@ -172,7 +230,10 @@ async function runRuntimeWorkloads() {
         workspaceFiles: fixture.workspaceFiles,
         transcriptLines: fixture.transcriptLines,
         sqliteWorkspaceCount: fixture.sqliteWorkspaces.length + 1,
+        skillCount,
+        sessionCount,
       },
+      idle,
       runtimeRssKb,
       workspaceScan: summarize(scanMs),
       sessionIndex: summarize(sessionIndexMs),
@@ -257,7 +318,7 @@ async function createWorkloadFixture(profile) {
   const projectDirectory = path.join(profile.claude, "projects", "benchmark");
   await mkdir(projectDirectory, { recursive: true });
   const transcript = path.join(projectDirectory, "large-session.jsonl");
-  const transcriptLines = 5_000;
+  const transcriptLines = transcriptLineCount;
   const lines = [];
   for (let index = 0; index < transcriptLines; index += 1) {
     const role = index % 2 === 0 ? "user" : "assistant";
@@ -272,6 +333,24 @@ async function createWorkloadFixture(profile) {
     );
   }
   await writeFile(transcript, `${lines.join("\n")}\n`);
+  const entries = [];
+  for (let index = 1; index < sessionCount; index += 1) {
+    const sessionId = `session-${String(index).padStart(5, "0")}`;
+    const fullPath = path.join(projectDirectory, `${sessionId}.jsonl`);
+    await writeFile(
+      fullPath,
+      `${JSON.stringify({ type: "user", sessionId, cwd: workspace, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: `Fixture ${index}` } })}\n`,
+    );
+    entries.push({
+      sessionId,
+      fullPath,
+      projectPath: workspace,
+      summary: `Session ${index}`,
+      created: 1_767_225_600_000,
+      modified: 1_767_230_600_000,
+      messageCount: 1,
+    });
+  }
   await writeFile(
     path.join(projectDirectory, "sessions-index.json"),
     `${JSON.stringify({
@@ -286,12 +365,29 @@ async function createWorkloadFixture(profile) {
           modified: 1_767_230_600_000,
           messageCount: transcriptLines,
         },
+        ...entries,
       ],
     })}\n`,
   );
 
   const sqliteWorkspaces = [];
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < skillCount; index += 1) {
+    const directory = path.join(workspace, ".agents", "skills", String(index).padStart(4, "0"));
+    await mkdir(path.join(directory, "references"), { recursive: true });
+    await writeFile(
+      path.join(directory, "SKILL.md"),
+      `---\nname: skill-${index}\ndescription: Benchmark skill\n---\n# Benchmark\n`,
+    );
+    for (let file = 0; file < 5; file += 1) {
+      await writeFile(
+        path.join(directory, "references", `${file}.md`),
+        "Example benchmark content\n".repeat(20),
+      );
+      workspaceFiles += 1;
+    }
+    workspaceFiles += 1;
+  }
+  for (let index = 0; index < sqliteWorkspaceCount; index += 1) {
     const directory = path.join(
       profile.root,
       "sqlite-workspaces",
@@ -310,6 +406,7 @@ class RuntimeClient {
     this.argumentsList = argumentsList;
     this.nextId = 1;
     this.pending = new Map();
+    this.telemetry = [];
   }
 
   async start() {
@@ -318,6 +415,17 @@ class RuntimeClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.pid = this.child.pid;
+    let stderr = "";
+    this.child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      let end;
+      while ((end = stderr.indexOf("\n")) >= 0) {
+        const line = stderr.slice(0, end);
+        stderr = stderr.slice(end + 1);
+        const prefix = "AGENTKIB_BENCHMARK_TELEMETRY:";
+        if (line.startsWith(prefix)) this.telemetry.push(JSON.parse(line.slice(prefix.length)));
+      }
+    });
     const lines = readline.createInterface({ input: this.child.stdout });
     lines.on("line", (line) => {
       const response = JSON.parse(line);
@@ -470,6 +578,12 @@ function parseArguments(argumentsList) {
     "output",
     "clean-runs",
     "reuse-runs",
+    "workload-runs",
+    "skill-count",
+    "transcript-lines",
+    "session-count",
+    "workspace-count",
+    "idle-ms",
   ]);
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];

@@ -6,9 +6,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import { networkInterfaces } from "node:os";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpBuiltins } from "./mcp-builtin";
 import { BUILTIN_MCP_TOOLS } from "./mcp-builtin";
@@ -225,6 +224,15 @@ export class McpHub {
       response.writeHead(404).end();
       return;
     }
+    const [
+      { Server },
+      { StreamableHTTPServerTransport },
+      { CallToolRequestSchema, ListToolsRequestSchema },
+    ] = await Promise.all([
+      import("@modelcontextprotocol/sdk/server/index.js"),
+      import("@modelcontextprotocol/sdk/server/streamableHttp.js"),
+      import("@modelcontextprotocol/sdk/types.js"),
+    ]);
     let sessionIdCreated: string | undefined;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,

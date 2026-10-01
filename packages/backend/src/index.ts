@@ -23,7 +23,7 @@ import { planSessionMcpConnection } from "./mcp-continuation";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
-import { WebReadRequests } from "./web-read";
+import type { WebReadRequests } from "./web-read";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
@@ -373,13 +373,6 @@ export class TypeScriptBackend {
         const value = readPreferences(dataDir).session_index_enabled;
         return typeof value === "boolean" ? value : true;
       });
-      this.#webRead = new WebReadRequests(
-        store,
-        this.#sessions,
-        dataDir,
-        () => this.#sessionIndex?.generation() ?? -1n,
-        { ...process.env, ...this.environment },
-      );
       this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
       return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
     }
@@ -393,27 +386,27 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.claudeManaged) return this.#claudeManaged!.request(params);
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
-      return this.#webRead!.managedOptions();
+      return this.#withWebRead((owner) => owner.managedOptions());
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
-      return this.#webRead!.managedReconcile(params);
+      return this.#withWebRead((owner) => owner.managedReconcile(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "resume")
-      return this.#webRead!.managedResume(params);
+      return this.#withWebRead((owner) => owner.managedResume(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "queue-list")
-      return this.#webRead!.managedQueueList(params);
+      return this.#withWebRead((owner) => owner.managedQueueList(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "unarchive")
-      return this.#webRead!.managedUnarchive(params);
+      return this.#withWebRead((owner) => owner.managedUnarchive(params));
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "settings-state")
-      return this.#webRead!.managedSettingsState(params);
+      return this.#withWebRead((owner) => owner.managedSettingsState(params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
       ["capabilities", "inspect"].includes(String(params.operation))
     )
-      return this.#webRead!.managedQuery(params);
+      return this.#withWebRead((owner) => owner.managedQuery(params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
       ["create", "adopt", "release"].includes(String(params.operation))
     )
-      return this.#webRead!.managedLifecycle(params);
+      return this.#withWebRead((owner) => owner.managedLifecycle(params));
     if (
       method === RUNTIME_METHODS.codexManaged &&
       [
@@ -436,7 +429,7 @@ export class TypeScriptBackend {
         "fork",
       ].includes(String(params.operation))
     )
-      return this.#webRead!.managedControl(params);
+      return this.#withWebRead((owner) => owner.managedControl(params));
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
     if (method === RUNTIME_METHODS.listWorkspaceOpeners)
       return this.#workspaceApplications!.list(string(params, "workspaceId"));
@@ -449,13 +442,17 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "live") return this.#webRead!.request(params);
-      if (params.operation === "settings-state") return this.#webRead!.managedSettingsState(params);
-      if (params.operation === "queue-list") return this.#webRead!.managedQueueList(params);
+      if (params.operation === "live") return this.#withWebRead((owner) => owner.request(params));
+      if (params.operation === "settings-state")
+        return this.#withWebRead((owner) => owner.managedSettingsState(params));
+      if (params.operation === "queue-list")
+        return this.#withWebRead((owner) => owner.managedQueueList(params));
       if (["capabilities", "inspect"].includes(String(params.operation)))
-        return this.#webRead!.managedQuery(params);
-      if (params.operation === "resume") return this.#webRead!.managedResume(params);
-      if (params.operation === "unarchive") return this.#webRead!.managedUnarchive(params);
+        return this.#withWebRead((owner) => owner.managedQuery(params));
+      if (params.operation === "resume")
+        return this.#withWebRead((owner) => owner.managedResume(params));
+      if (params.operation === "unarchive")
+        return this.#withWebRead((owner) => owner.managedUnarchive(params));
       if (
         [
           "send",
@@ -477,7 +474,7 @@ export class TypeScriptBackend {
           "fork",
         ].includes(String(params.operation))
       )
-        return this.#webRead!.managedControl(params);
+        return this.#withWebRead((owner) => owner.managedControl(params));
       if (
         params.operation === "catalog" ||
         params.operation === "events" ||
@@ -486,8 +483,9 @@ export class TypeScriptBackend {
         params.operation === "goal" ||
         params.operation === "resources"
       )
-        if (params.operation !== "catalog") return this.#webRead!.request(params);
-      return this.#webRead!.request(params).then((value) => {
+        if (params.operation !== "catalog")
+          return this.#withWebRead((owner) => owner.request(params));
+      return this.#withWebRead((owner) => owner.request(params)).then((value) => {
         if (!value || typeof value !== "object" || Array.isArray(value)) return value;
         const catalog = value as Record<string, unknown>;
         const records = this.#claudeManaged!.catalog();
@@ -1156,6 +1154,29 @@ export class TypeScriptBackend {
         },
       };
     }
+  }
+
+  async #withWebRead<T>(operation: (owner: WebReadRequests) => T): Promise<Awaited<T>> {
+    if (!this.#webRead) {
+      const store = this.#store,
+        sessions = this.#sessions,
+        dataDir = this.#dataDir;
+      if (!store || !sessions || !dataDir)
+        throw new RpcFault(-32000, "TypeScript backend has not been initialized");
+      const { WebReadRequests } = await import("./web-read");
+      // Initialization or shutdown can run while the module loads. Never attach
+      // an owner to a store that has already been closed or replaced.
+      if (this.#store !== store)
+        throw new RpcFault(-32000, "Backend initialization changed while loading web services");
+      this.#webRead ??= new WebReadRequests(
+        store,
+        sessions,
+        dataDir,
+        () => this.#sessionIndex?.generation() ?? -1n,
+        { ...process.env, ...this.environment },
+      );
+    }
+    return await operation(this.#webRead);
   }
 
   #setChoice(params: Record<string, unknown>, key: string, values: string[]): unknown {

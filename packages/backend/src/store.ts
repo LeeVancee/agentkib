@@ -68,9 +68,18 @@ export class BackendStore {
   listWorkspaces(): unknown[] {
     this.#database.exec("BEGIN;");
     try {
+      const sources = new Map<string, Row[]>();
+      for (const source of this.#rows(
+        "SELECT workspace_id,agent,evidence,session_count,last_active_at,session_cwds FROM workspace_sources ORDER BY workspace_id,last_active_at DESC,agent,evidence",
+      )) {
+        const id = String(source.workspace_id);
+        const group = sources.get(id);
+        if (group) group.push(source);
+        else sources.set(id, [source]);
+      }
       const result = this.#rows(
         "SELECT id, canonical_path, name, repository_group_id, manifest_workspace_id, status, asset_count, warning_count, last_active_at, last_scanned_at FROM workspaces ORDER BY COALESCE(last_active_at, last_scanned_at) DESC, name ASC",
-      ).map((row) => this.#workspace(row));
+      ).map((row) => this.#workspace(row, sources.get(String(row.id)) ?? []));
       this.#database.exec("COMMIT;");
       return result;
     } catch (error) {
@@ -98,7 +107,7 @@ export class BackendStore {
     return this.#workspace(row);
   }
 
-  #workspace(row: Row) {
+  #workspace(row: Row, sources?: Row[]) {
     return {
       id: row.id,
       path: row.canonical_path,
@@ -110,9 +119,12 @@ export class BackendStore {
       warning_count: Math.max(0, Number(row.warning_count)),
       last_active_at: timestamp(row.last_active_at, true),
       last_scanned_at: timestamp(row.last_scanned_at, true),
-      sources: this.#rows(
-        "SELECT agent, evidence, session_count, last_active_at, session_cwds FROM workspace_sources WHERE workspace_id = ? ORDER BY last_active_at DESC",
-        String(row.id),
+      sources: (
+        sources ??
+        this.#rows(
+          "SELECT agent, evidence, session_count, last_active_at, session_cwds FROM workspace_sources WHERE workspace_id = ? ORDER BY last_active_at DESC",
+          String(row.id),
+        )
       ).map((source) => {
         const cwds: unknown = JSON.parse(String(source.session_cwds));
         if (!Array.isArray(cwds) || cwds.some((cwd) => typeof cwd !== "string"))

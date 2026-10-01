@@ -3,20 +3,24 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
-import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage.tsrx";
+import { mergeTranscriptPages, WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
 
 vi.mock("@/core/api", () => ({
   api: {
+    claudeRequest: vi.fn(),
     workspaceSessions: vi.fn(),
     workspaceSessionStatus: vi.fn(),
     refreshWorkspaceSessions: vi.fn(),
     sessionEvents: vi.fn(),
+    sessionSourceCapability: vi.fn(),
+    nativeImportOperations: vi.fn(),
   },
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -47,6 +51,8 @@ describe("WorkspaceSessionsPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
+    vi.mocked(api.nativeImportOperations).mockResolvedValue([]);
     useSessionViewStore.getState().resetFilters();
     vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession]);
     vi.mocked(api.workspaceSessionStatus).mockResolvedValue([]);
@@ -54,6 +60,37 @@ describe("WorkspaceSessionsPage", () => {
     vi.mocked(api.sessionEvents).mockResolvedValue({ events: [], warnings: [] });
   });
   afterEach(cleanup);
+
+  it("opens the Claude panel from the workspace without creating a model request", async () => {
+    vi.mocked(api.claudeRequest).mockImplementation(async (input) => {
+      if (input.operation === "options") return { available: true, workspaces: [workspace] };
+      if (input.operation === "catalog") return { sessions: [], workspaces: [workspace] };
+      throw new Error(`unexpected_claude_operation:${input.operation}`);
+    });
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={["claude-code"]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Claude Code" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "New Claude task" })).toBeEnabled(),
+    );
+    expect(api.claudeRequest).toHaveBeenCalledWith({ operation: "options" });
+    expect(api.claudeRequest).toHaveBeenCalledWith({ operation: "catalog" });
+    expect(
+      vi
+        .mocked(api.claudeRequest)
+        .mock.calls.every(
+          ([input]) => input.operation === "options" || input.operation === "catalog",
+        ),
+    ).toBe(true);
+  });
 
   it("shows cached sessions before a non-forced background refresh", async () => {
     const background = deferred<ConversationSessionSummary[]>();
@@ -80,7 +117,7 @@ describe("WorkspaceSessionsPage", () => {
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "keeps %s history read-only in the workspace session view",
+    "allows %s history when its concrete format is supported",
     async (agent) => {
       const source = {
         ...cachedSession,
@@ -115,11 +152,14 @@ describe("WorkspaceSessionsPage", () => {
       );
 
       expect(await screen.findByText(`${agent} history content`)).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Continue in another Agent" })).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Continue in another Agent" })).toBeEnabled(),
+      );
     },
   );
 
   it("uses the shared auxiliary toggle consistently with the visible workspace count", async () => {
+    const user = userEvent.setup();
     const auxiliary = {
       ...cachedSession,
       id: "auxiliary-session",
@@ -141,8 +181,8 @@ describe("WorkspaceSessionsPage", () => {
     );
     expect(await screen.findAllByText("Cached continuation")).not.toHaveLength(0);
     expect(screen.queryByText("Auxiliary continuation")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Session history" }));
-    fireEvent.click(
+    await user.click(screen.getByRole("button", { name: "Session history" }));
+    await user.click(
       await screen.findByRole("menuitemcheckbox", { name: "Show auxiliary sessions" }),
     );
     expect(useSessionViewStore.getState().showAuxiliary).toBe(true);
@@ -150,6 +190,7 @@ describe("WorkspaceSessionsPage", () => {
   });
 
   it.each([
+    ["antigravity", "Antigravity"],
     ["opencode", "OpenCode"],
     ["open-claw", "OpenClaw"],
     ["hermes", "Hermes"],
@@ -322,6 +363,37 @@ describe("WorkspaceSessionsPage", () => {
     expect(api.sessionEvents).toHaveBeenLastCalledWith(cachedSession.id);
   });
 
+  it("shows a newer list refresh error instead of an older transcript error", async () => {
+    vi.mocked(api.sessionEvents).mockRejectedValue(new Error("TRANSCRIPT_CURSOR_STALE"));
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        initialSessionId={cachedSession.id}
+        targetAgents={["claude-code"]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "This history page has expired or the file has changed. Retry to reload the latest records.",
+      ),
+    ).toBeTruthy();
+
+    vi.mocked(api.refreshWorkspaceSessions).mockRejectedValue(new Error("session scan failed"));
+    const refresh = screen.getByLabelText("Refresh sessions");
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(refresh);
+    expect(await screen.findByText(/session scan failed/)).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "This history page has expired or the file has changed. Retry to reload the latest records.",
+      ),
+    ).toBeNull();
+  });
+
   it("opens the session selected from the home page and consumes the route target", async () => {
     const selected = { ...cachedSession, id: "selected-session", title: "Selected from home" };
     vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession, selected]);
@@ -343,5 +415,29 @@ describe("WorkspaceSessionsPage", () => {
 
     await waitFor(() => expect(api.sessionEvents).toHaveBeenCalledWith(selected.id));
     expect(onInitialSessionConsumed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("mergeTranscriptPages", () => {
+  const event = (id: string) => ({
+    id,
+    kind: "agent-message" as const,
+    content: id,
+    attachment_count: 0,
+    truncated: false,
+  });
+
+  it("orders earlier pages first, de-duplicates events and keeps only the oldest scan budget", () => {
+    const latest = {
+      events: [event("b"), event("c")],
+      warnings: ["TRANSCRIPT_SCAN_BUDGET", "OTHER"],
+      next_cursor: "older",
+    };
+    const earlier = { events: [event("a"), event("b")], warnings: ["TRANSCRIPT_SCAN_BUDGET"] };
+    const merged = mergeTranscriptPages([latest, earlier] as never);
+    expect(merged.events.map(({ id }) => id)).toEqual(["a", "b", "c"]);
+    expect(merged.warnings).toEqual(["TRANSCRIPT_SCAN_BUDGET", "OTHER"]);
+    expect(merged.nextCursor).toBeUndefined();
+    expect(mergeTranscriptPages([latest] as never).nextCursor).toBe("older");
   });
 });

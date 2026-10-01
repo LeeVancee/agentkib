@@ -1,5 +1,4 @@
-/** @jsxImportSource octane */
-
+import { ClaudeSessionPanel } from "./ClaudeSessionPanel";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input.tsrx";
 import { Button } from "@/components/ui/button.tsrx";
@@ -32,15 +31,19 @@ import {
   Search,
   X,
 } from "@octanejs/lucide";
+import { useInfiniteQuery } from "@octanejs/tanstack-query";
 import { api } from "@/core/api";
 import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
-import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { AgentIcon } from "@/features/agents/AgentIcon";
+import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
+import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 
 import type {
   AgentKind,
   ChangeSet,
-  ConversationEvent,
+  ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
   PlannedSessionHandoff,
@@ -59,6 +62,34 @@ import { useSessionViewStore } from "@/features/sessions/session-view-store";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
 type AgentFilter = "all" | ConversationSessionSummary["agent"];
+
+const sessionTranscriptKey = (sessionId: string) => ["sessions", "transcript", sessionId] as const;
+
+/**
+ * 把按时间倒序加载的分页合并为正序记录：更早的页面在前，同一事件只保留一次。
+ * 预算提示只对最早加载的那一页有意义，继续向前加载后丢弃旧的提示。
+ */
+export function mergeTranscriptPages(pages: ConversationEventPage[]) {
+  const seen = new Set<string>();
+  const ordered = [...pages].reverse();
+  const events = ordered
+    .flatMap((page) => page.events)
+    .filter((event) => {
+      if (seen.has(event.id)) return false;
+      seen.add(event.id);
+      return true;
+    });
+  const warnings = [
+    ...new Set(
+      ordered.flatMap((page, index) =>
+        index === 0
+          ? page.warnings
+          : page.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
+      ),
+    ),
+  ];
+  return { events, warnings, nextCursor: pages.at(-1)?.next_cursor };
+}
 
 function matchesSessionFilter(session: ConversationSessionSummary, filter: SessionFilter) {
   if (filter === "current") return !session.archived && session.availability === "readable";
@@ -91,31 +122,28 @@ export function WorkspaceSessionsPage({
   targetAgents: AgentKind[];
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
+  const [showClaude, setShowClaude] = useState(false);
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
-  const [events, setEvents] = useState<ConversationEvent[]>([]);
-  const [nextCursor, setNextCursor] = useState<string>();
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [readRevision, setReadRevision] = useState(0);
+
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
   const [refreshing, setRefreshing] = useState(enabled);
   const [slowLoading, setSlowLoading] = useState(false);
-  const [reading, setReading] = useState(false);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [rawError, setError] = useState<unknown>("");
-  const [historyError, setHistoryError] = useState(false);
-  const [readRevision, setReadRevision] = useState(0);
-  const error = rawError === "" ? "" : localizeMessage(rawError);
+  // 会话列表的错误（带发生时间）；会话记录的错误来自下面的 transcript 查询。
+  const [listError, setListError] = useState<{ reason: unknown; at: number }>();
+  const setError = (reason: unknown) =>
+    setListError(reason === "" ? undefined : { reason, at: Date.now() });
+  const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
   const [resumedRequest, setResumedRequest] = useState<
     (SessionContinuationResume & { autoPrepare: boolean }) | undefined
   >();
-  const readSequence = useRef(0);
-  const earlierRequest = useRef<number | null>(null);
   const cacheSequence = useRef(0);
   const consumedInitialSession = useRef<string | undefined>(undefined);
   const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
@@ -126,66 +154,70 @@ export function WorkspaceSessionsPage({
     const sequence = ++cacheSequence.current;
     setRefreshing(true);
     setError("");
-    try {
-      const nextSessions = await api.refreshWorkspaceSessions(workspace.id, force);
-      if (sequence !== cacheSequence.current) return;
-      setSessions(nextSessions);
-      const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-      if (sequence !== cacheSequence.current) return;
-      setStatuses(nextStatuses);
-    } catch (reason) {
-      if (sequence === cacheSequence.current) {
-        setHistoryError(false);
-        setError(reason);
-      }
-    } finally {
-      if (sequence === cacheSequence.current) setRefreshing(false);
-    }
+    await withAsyncCleanup(
+      async () => {
+        try {
+          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, force);
+          if (sequence !== cacheSequence.current) return;
+          setSessions(nextSessions);
+          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+          if (sequence !== cacheSequence.current) return;
+          setStatuses(nextStatuses);
+        } catch (reason) {
+          if (sequence === cacheSequence.current) {
+            setError(reason);
+          }
+        }
+      },
+      () => {
+        if (sequence === cacheSequence.current) setRefreshing(false);
+      },
+    );
   };
 
   useEffect(() => {
     let disposed = false;
-    void (async () => {
-      await Promise.resolve();
-      if (!enabled) {
-        setSessions([]);
-        setStatuses([]);
-        return;
-      }
+    if (!enabled) {
       setSessions([]);
       setStatuses([]);
-      setSelectedId(undefined);
-      setRefreshing(true);
-      setSlowLoading(false);
-      setError("");
-      const sequence = ++cacheSequence.current;
-      try {
-        const [cachedSessions, cachedStatuses] = await Promise.all([
-          api.workspaceSessions(workspace.id).catch(() => []),
-          api.workspaceSessionStatus(workspace.id).catch(() => []),
-        ]);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setSessions(cachedSessions);
-        setStatuses(cachedStatuses);
-        const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setSessions(nextSessions);
-        const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-        if (disposed || sequence !== cacheSequence.current) return;
-        setStatuses(nextStatuses);
-      } catch (reason) {
-        if (!disposed && sequence === cacheSequence.current) {
-          setHistoryError(false);
-          setError(reason);
+      return;
+    }
+    setSessions([]);
+    setStatuses([]);
+    setSelectedId(undefined);
+    setRefreshing(true);
+    setSlowLoading(false);
+    setError("");
+    const sequence = ++cacheSequence.current;
+    void withAsyncCleanup(
+      async () => {
+        try {
+          const [cachedSessions, cachedStatuses] = await Promise.all([
+            api.workspaceSessions(workspace.id).catch(() => []),
+            api.workspaceSessionStatus(workspace.id).catch(() => []),
+          ]);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setSessions(cachedSessions);
+          setStatuses(cachedStatuses);
+          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setSessions(nextSessions);
+          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
+          if (disposed || sequence !== cacheSequence.current) return;
+          setStatuses(nextStatuses);
+        } catch (reason) {
+          if (!disposed && sequence === cacheSequence.current) {
+            setError(reason);
+          }
         }
-      } finally {
+      },
+      () => {
         if (!disposed && sequence === cacheSequence.current) setRefreshing(false);
-      }
-    })();
+      },
+    );
     return () => {
       disposed = true;
       cacheSequence.current += 1;
-      readSequence.current += 1;
     };
   }, [workspace.id, enabled]);
 
@@ -223,6 +255,10 @@ export function WorkspaceSessionsPage({
   );
 
   const selected = sessions.find((session) => session.id === selectedId);
+  const sourceCapability = useSessionSourceCapability(
+    enabled && selected?.availability === "readable" ? selected.id : undefined,
+    readRevision,
+  );
   const selectedSources = selected
     ? sessionSourceDetails(selected, sessions, tr, formatDateTime)
     : [];
@@ -254,90 +290,64 @@ export function WorkspaceSessionsPage({
     }
     const target = sessions.find(({ id }) => id === resumeContinuation.sessionId);
     if (!target) return;
-    if (!canContinueFromHistory(target.agent)) {
-      onResumeConsumed?.();
-      return;
-    }
-    void Promise.resolve().then(() => {
-      revealSession(target);
-      setFilter("all");
-      setSelectedId(resumeContinuation.sessionId);
-      setResumedRequest(resumeContinuation);
-      setShowDetail(true);
-      setShowHandoff(true);
-      onResumeConsumed?.();
-    });
+    revealSession(target);
+    setFilter("all");
+    setSelectedId(resumeContinuation.sessionId);
+    setResumedRequest(resumeContinuation);
+    setShowDetail(true);
+    setShowHandoff(true);
+    onResumeConsumed?.();
   }, [onResumeConsumed, resumeContinuation, revealSession, sessions]);
 
-  useEffect(() => {
-    const sequence = ++readSequence.current;
-    earlierRequest.current = null;
-    void (async () => {
-      await Promise.resolve();
-      setEvents([]);
-      setLoadingEarlier(false);
-      setNextCursor(undefined);
-      setWarnings([]);
-      setError("");
-      if (!selected || selected.availability !== "readable") {
-        setReading(false);
-        return;
-      }
-      setReading(true);
-      try {
-        const page = await api.sessionEvents(selected.id);
-        if (sequence !== readSequence.current) return;
-        setEvents(page.events);
-        setNextCursor(page.next_cursor);
-        setWarnings(page.warnings);
-      } catch (reason) {
-        if (sequence === readSequence.current) {
-          setHistoryError(true);
-          setError(reason);
-        }
-      } finally {
-        if (sequence === readSequence.current) setReading(false);
-      }
-    })();
-  }, [selected?.id, selected?.availability, readRevision]);
+  // 切换会话时清掉列表错误，与之前"换会话即清空错误"的行为一致。
+  const [errorSessionId, setErrorSessionId] = useState(selected?.id);
+  if (selected?.id !== errorSessionId) {
+    setErrorSessionId(selected?.id);
+    setListError(undefined);
+  }
+  const readableSessionId = selected?.availability === "readable" ? selected.id : undefined;
+  const transcriptKey = sessionTranscriptKey(readableSessionId ?? "");
+  // 第一页是最新的记录窗口，之后每一页都更早。staleTime 无限 + gcTime 0：
+  // 选中时读取一次、取消选中即丢弃，与之前"每次选中重新读取"的行为一致，
+  // 也避免后台按旧游标重取已失效的分页。
+  const transcriptQuery = useInfiniteQuery(
+    {
+      ...queryDefaults,
+      queryKey: transcriptKey,
+      queryFn: ({ pageParam }) =>
+        pageParam
+          ? api.sessionEvents(readableSessionId!, pageParam)
+          : api.sessionEvents(readableSessionId!),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (page) => page.next_cursor ?? undefined,
+      enabled: !!readableSessionId,
+      staleTime: Infinity,
+      gcTime: 0,
+    },
+    queryClient,
+  );
+  const transcriptPages = readableSessionId ? transcriptQuery.data?.pages : undefined;
+  const { events, warnings, nextCursor } = useMemo(
+    () => mergeTranscriptPages(transcriptPages ?? []),
+    [transcriptPages],
+  );
+  const reading = transcriptQuery.isLoading;
+  const loadingEarlier = transcriptQuery.isFetchingNextPage;
+  const transcriptError = readableSessionId ? transcriptQuery.error : null;
+  // 两种错误同时存在时显示较新的那个。
+  const historyError =
+    !!transcriptError && (!listError || transcriptQuery.errorUpdatedAt >= listError.at);
+  const rawError: unknown = historyError ? transcriptError : (listError?.reason ?? "");
+  const error = rawError === "" || rawError == null ? "" : localizeMessage(rawError);
+  // 旧游标失效时从最新窗口重新读取，丢弃已加载的更早页面。
+  const reloadTranscript = () => {
+    setReadRevision((value) => value + 1);
+    void queryClient.resetQueries({ queryKey: transcriptKey });
+  };
 
   const loadEarlier = async () => {
-    if (!selected || !nextCursor || reading || earlierRequest.current !== null) return;
-    const sequence = readSequence.current;
-    earlierRequest.current = sequence;
-    const selectedSessionId = selected.id;
-    const cursor = nextCursor;
-    setLoadingEarlier(true);
-    setError("");
-    try {
-      const page = await api.sessionEvents(selectedSessionId, cursor);
-      if (sequence !== readSequence.current) return;
-      setEvents((current) => {
-        const seen = new Set<string>();
-        return [...page.events, ...current].filter((event) => {
-          if (seen.has(event.id)) return false;
-          seen.add(event.id);
-          return true;
-        });
-      });
-      setNextCursor(page.next_cursor);
-      setWarnings((current) => [
-        ...new Set([
-          ...page.warnings,
-          ...current.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
-        ]),
-      ]);
-    } catch (reason) {
-      if (sequence === readSequence.current) {
-        setHistoryError(true);
-        setError(reason);
-      }
-    } finally {
-      if (sequence === readSequence.current) {
-        earlierRequest.current = null;
-        setLoadingEarlier(false);
-      }
-    }
+    if (!nextCursor || reading || loadingEarlier) return;
+    await transcriptQuery.fetchNextPage();
   };
 
   if (!enabled) {
@@ -395,6 +405,9 @@ export function WorkspaceSessionsPage({
                 </Badge>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
+                  Claude Code
+                </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
@@ -687,18 +700,21 @@ export function WorkspaceSessionsPage({
                     )}
                   </div>
                 </div>
-                {selected.availability === "readable" &&
-                  canContinueFromHistory(selected.agent) &&
-                  events.length > 0 && (
-                    <Button
-                      variant="outline"
-                      className="shrink-0"
-                      onClick={() => setShowHandoff(true)}
-                    >
-                      <FileOutput size={14} />
-                      {tr("handoff.create")}
-                    </Button>
-                  )}
+                {selected.availability === "readable" && events.length > 0 && (
+                  <Button
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={!canContinueFromHistory(sourceCapability)}
+                    title={
+                      sourceCapability?.reason ||
+                      (!sourceCapability ? tr("handoff.checkingSource") : undefined)
+                    }
+                    onClick={() => setShowHandoff(true)}
+                  >
+                    <FileOutput size={14} />
+                    {tr("handoff.create")}
+                  </Button>
+                )}
               </>
             ) : (
               <div className="flex items-center gap-3 text-muted-foreground">
@@ -712,13 +728,38 @@ export function WorkspaceSessionsPage({
             )}
           </header>
           <div className="min-h-0 overflow-auto bg-muted/15">
+            {enabled && (
+              <NativeImportRecoveryPanel
+                workspaceId={workspace.id}
+                readableSourceIds={sessions
+                  .filter((session) => session.availability === "readable")
+                  .map((session) => session.id)}
+                onReview={(operation) => {
+                  const source = sessions.find(
+                    (session) =>
+                      session.id === operation.source_session_id &&
+                      session.availability === "readable",
+                  );
+                  if (!source) return;
+                  revealSession(source);
+                  setFilter("all");
+                  setSelectedId(source.id);
+                  setResumedRequest({
+                    sessionId: source.id,
+                    targetAgent: operation.launch_request.target_agent,
+                    historyBudgetTokens: 120_000,
+                    format: "markdown",
+                    autoPrepare: false,
+                  });
+                  setShowDetail(true);
+                  setShowHandoff(true);
+                }}
+              />
+            )}
             {error && (
               <div className="mx-5 mt-5">
                 {historyError ? (
-                  <HistoryError
-                    error={rawError}
-                    onRetry={() => setReadRevision((value) => value + 1)}
-                  />
+                  <HistoryError error={rawError} onRetry={reloadTranscript} />
                 ) : (
                   <div
                     role="alert"
@@ -798,8 +839,17 @@ export function WorkspaceSessionsPage({
           </div>
         </Card>
       </div>
+      {showClaude && (
+        <ClaudeSessionPanel
+          key={workspace.id}
+          workspaceId={workspace.id}
+          initialSessionId={selected?.agent === "claude-code" ? selected.id : undefined}
+          onClose={() => setShowClaude(false)}
+        />
+      )}
       {showHandoff && selected && (
         <SessionHandoffDialog
+          key={`${workspace.id}:${selected.id}`}
           workspace={workspace}
           session={selected}
           targetAgents={targetAgents}

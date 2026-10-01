@@ -5,8 +5,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { changeLocale, formatDateTime, initializeI18n, tr } from "@/core/i18n";
-import type { GlobalSettingsProps } from "./GlobalSettings.tsrx";
-import { GlobalSettings } from "./GlobalSettings.tsrx";
+import { AppDialogProvider } from "@/components/AppDialogProvider";
+import type { GlobalSettingsProps } from "./GlobalSettings";
+import { GlobalSettings } from "./GlobalSettings";
 
 const noop = async () => undefined;
 const baseProps: GlobalSettingsProps = {
@@ -73,6 +74,32 @@ describe("GlobalSettings diagnostics health", () => {
         expect(
           screen.getByRole("heading", { name: tr("settings.section.diagnostics") }),
         ).toBeTruthy();
+      }
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
+  });
+
+  it("gives adjacent settings controls localized accessible names", async () => {
+    try {
+      for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
+        await act(() => changeLocale(locale));
+
+        const general = render(<GlobalSettings {...baseProps} section="general" />);
+        expect(screen.getByRole("switch", { name: tr("settings.localAutoRefresh") })).toBeTruthy();
+        expect(screen.getByRole("switch", { name: tr("settings.quotaAutoRefresh") })).toBeTruthy();
+        general.unmount();
+
+        const privacy = render(
+          <AppDialogProvider>
+            <GlobalSettings {...baseProps} section="privacy" />
+          </AppDialogProvider>,
+        );
+        expect(screen.getByRole("switch", { name: tr("conversations.indexSetting") })).toBeTruthy();
+        expect(
+          screen.getByRole("textbox", { name: tr("settings.gitAliasPlaceholder") }),
+        ).toBeTruthy();
+        privacy.unmount();
       }
     } finally {
       await act(() => changeLocale("en-US"));

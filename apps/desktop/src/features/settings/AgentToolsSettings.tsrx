@@ -62,7 +62,8 @@ import {
   SettingsNotice,
   SettingsPanel,
   settingsTargetId,
-} from "./components/SettingsLayout.tsrx";
+} from "./components/SettingsLayout";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type Translate = typeof tr;
 
@@ -71,23 +72,13 @@ const RELEASES_URL = `${PROJECT_URL}/releases`;
 const MANAGED_AGENTS = new Set<AgentKind>([
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",
   "hermes",
   "grok-build",
 ]);
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 const stateIcons: Record<AgentToolState, typeof Check> = {
   current: Check,
@@ -320,7 +311,10 @@ export function AgentToolsSettings({
                 {tr("settings.tools.localEnvironment")}
               </h2>
               {toolsQuery.data?.latest_checked_at && (
-                <span className="whitespace-nowrap text-xs text-muted-foreground" aria-live="polite">
+                <span
+                  className="whitespace-nowrap text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
                   {tr("settings.tools.lastChecked", {
                     time: formatDateTime(toolsQuery.data.latest_checked_at),
                   })}

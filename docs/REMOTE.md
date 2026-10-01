@@ -1,6 +1,8 @@
-# Local network connections / 局域网连接
+# Native desktop connections / 原生桌面连接
 
 ## 中文
+
+本文仅描述桌面「连接其他电脑」的原生局域网协议，与 [手机访问](REMOTE-CODEX-WEB.md) 及 [浏览器 LAN 直连](WEB-HOSTED-LAN.md) 分开配置和配对。
 
 AgentKib 可以连接另一台 AgentKib，也可以允许其他设备查看本机历史。本阶段只读：不发送消息、不审批或停止 Agent，不提供远程桌面、Shell、公网 Relay 或 Web 客户端。
 
@@ -24,6 +26,8 @@ AgentKib 可以连接另一台 AgentKib，也可以允许其他设备查看本�
 当前历史沿用已有 Codex / Claude Code 会话读取能力，不声称所有 Agent 都有可读取历史。网络只开放白名单配对和只读目录/分页接口，不转发任意桌面 RPC 或接受文件路径。目录与历史读取受体积、分页和并发上限约束。
 
 ## English
+
+This guide covers native desktop-to-desktop connections. [Phone access](REMOTE-CODEX-WEB.md) and [browser LAN access](WEB-HOSTED-LAN.md) use separate configuration and pairing.
 
 AgentKib can connect to another desktop and accept incoming devices independently. This stage shares read-only history: no message sending, Agent approvals/stopping, remote desktop, shell, public relay or web client.
 

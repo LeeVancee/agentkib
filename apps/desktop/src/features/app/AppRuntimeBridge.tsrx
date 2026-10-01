@@ -4,7 +4,7 @@ import { useI18n } from "@/core/useI18n";
 import { useCallback, useEffect, useRef, useState } from "octane";
 import { useQueryClient } from "@octanejs/tanstack-query";
 import { AlertTriangle, RefreshCw } from "@octanejs/lucide";
-import { Button } from "@/components/ui/button.tsrx";
+import { Button } from "@/components/ui/button";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import { cacheEffectiveLocale, changeLocale } from "@/core/i18n";
@@ -25,14 +25,22 @@ import { useQuotaQueryEvents } from "@/features/quota/quota-query.tsrx";
 import type { AppMenuCommandRequest, AppNavigationRequest, EffectiveTheme } from "@/core/types";
 import type { DesktopRuntimeStatus } from "../../../electron/api";
 
+function hasUnsavedWorkspaceDraft(workspace: ReturnType<typeof useWorkspaceStore.getState>) {
+  const manifestChanged = Boolean(
+    workspace.manifest &&
+    workspace.baselineManifest &&
+    JSON.stringify(workspace.manifest) !== workspace.baselineManifest,
+  );
+  return manifestChanged || Object.keys(workspace.workspaceDrafts).length > 0;
+}
+
 export function AppRuntimeBridge() {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const queryClient = useQueryClient();
   const appStore = useAppStore();
-  const workspaceStore = useWorkspaceStore();
+  const setMessage = useWorkspaceStore((state) => state.setMessage);
   const { setRuntime, setNavigationRequest, setMenuCommand } = appStore;
-  const { setMessage, applyingChanges } = workspaceStore;
   const quitPromptOpen = useRef(false);
   const previousRuntimeState = useRef<DesktopRuntimeStatus["state"] | undefined>(undefined);
   const [runtimeStatus, setRuntimeStatus] = useState<DesktopRuntimeStatus>();
@@ -165,38 +173,32 @@ export function AppRuntimeBridge() {
     return () => window.removeEventListener("focus", refreshRuntime);
   }, [clearRuntimeError, setRuntime]);
 
-  const hasUnsavedDraft = Boolean(
-    workspaceStore.manifest &&
-    workspaceStore.baselineManifest &&
-    JSON.stringify(workspaceStore.manifest) !== workspaceStore.baselineManifest,
-  );
-  const hasAnyUnsavedDraft =
-    hasUnsavedDraft || Object.keys(workspaceStore.workspaceDrafts).length > 0;
-  const quitState = useRef({ hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges });
-  useEffect(() => {
-    quitState.current = { hasUnsavedDraft: hasAnyUnsavedDraft, applyingChanges };
-  }, [applyingChanges, hasAnyUnsavedDraft]);
   useEffect(() => {
     const handleQuitRequest = async () => {
       if (quitPromptOpen.current) return;
       quitPromptOpen.current = true;
-      try {
-        if (quitState.current.applyingChanges) {
-          await dialogs.notify(tr("dialog.quit.changesApplying"));
-          return;
-        }
-        if (
-          quitState.current.hasUnsavedDraft &&
-          !(await dialogs.confirm({
-            description: tr("dialog.quit.discardDraft"),
-            tone: "destructive",
-          }))
-        )
-          return;
-        await api.quitApp();
-      } finally {
-        quitPromptOpen.current = false;
-      }
+      await withAsyncCleanup(
+        async () => {
+          // 只在退出时读取一次草稿状态：之前每次渲染都序列化整个 manifest 做比较。
+          const workspace = useWorkspaceStore.getState();
+          if (workspace.applyingChanges) {
+            await dialogs.notify(tr("dialog.quit.changesApplying"));
+            return;
+          }
+          if (
+            hasUnsavedWorkspaceDraft(workspace) &&
+            !(await dialogs.confirm({
+              description: tr("dialog.quit.discardDraft"),
+              tone: "destructive",
+            }))
+          )
+            return;
+          await api.quitApp();
+        },
+        () => {
+          quitPromptOpen.current = false;
+        },
+      );
     };
     return desktopApi().events.onQuitRequested(() => void handleQuitRequest());
   }, [dialogs, tr]);

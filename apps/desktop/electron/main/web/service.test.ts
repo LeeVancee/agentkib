@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
 import { WebAccessService } from "./service";
+import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 
 describe("WebAccessService loopback security boundary", () => {
   let dir: string;
@@ -20,6 +21,13 @@ describe("WebAccessService loopback security boundary", () => {
     sendEnabled: true,
     events: [],
   }));
+  const receiptQuery = vi.fn(
+    async (params: { requestId: string; deviceId: string }): Promise<unknown> => ({
+      found: false,
+      requestId: params.requestId,
+    }),
+  );
+  const onPairingRequested = vi.fn();
   async function http(
     path: string,
     options: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
@@ -70,15 +78,7 @@ describe("WebAccessService loopback security boundary", () => {
     return result;
   }
   async function pair(send = false, approve = false) {
-    const admin = await service.request({ operation: "generate-code" });
-    const paired = await http("/api/web/v1/pair", {
-      method: "POST",
-      body: { code: admin.code!.value, name: "Test browser" },
-    });
-    expect(paired.status).toBe(200);
-    const id = paired.json().pending.id;
-    await service.request({ operation: "approve", id, send, approve });
-    return id;
+    return approveLegacyBrowser(service, cookie, { send, approve });
   }
   function openStream(streamCookie = cookie, sessionId = "s") {
     const chunks: string[] = [];
@@ -98,6 +98,7 @@ describe("WebAccessService loopback security boundary", () => {
     return { chunks, close: () => req.destroy() };
   }
   beforeEach(async () => {
+    onPairingRequested.mockClear();
     runtime.mockReset();
     runtime.mockResolvedValue({
       accepted: true,
@@ -120,6 +121,8 @@ describe("WebAccessService loopback security boundary", () => {
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: runtime,
+      receiptRequest: receiptQuery,
+      onPairingRequested,
       verifiedExperimental: true,
     });
     await service.initialize();
@@ -138,6 +141,201 @@ describe("WebAccessService loopback security boundary", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("reads only an authorized Codex session context", async () => {
+    runtime.mockImplementation(async (params) => {
+      const operation = (params as { operation: string }).operation;
+      if (operation === "catalog")
+        return {
+          sessions: [
+            { id: "codex-session", workspace_id: "workspace", agent: "codex" },
+            { id: "other-agent", workspace_id: "workspace", agent: "claude-code" },
+          ],
+        };
+      if (operation === "context")
+        return { available: true, cwd: "/workspace", branchAtCreation: "main" };
+      return {};
+    });
+    expect((await http("/api/web/v1/managed/context?sessionId=codex-session")).status).toBe(401);
+    await bootstrap();
+    await pair();
+    expect((await http("/api/web/v1/managed/context?sessionId=codex-session")).status).toBe(403);
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: true,
+      allowedWorkspaceIds: ["workspace"],
+    });
+    const context = await http("/api/web/v1/managed/context?sessionId=codex-session");
+    expect(context.status).toBe(200);
+    expect(context.json()).toEqual({
+      available: true,
+      cwd: "/workspace",
+      branchAtCreation: "main",
+    });
+    expect(runtime).toHaveBeenLastCalledWith({ operation: "context", sessionId: "codex-session" });
+    expect((await http("/api/web/v1/managed/context?sessionId=other-agent")).status).toBe(403);
+    expect((await http("/api/web/v1/managed/context?sessionId=unknown")).status).toBe(403);
+  });
+
+  it("scopes durable receipt queries to the paired device and current permissions", async () => {
+    const id = "a169d42b-c32a-45e0-83b6-c2460c111bed";
+    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(401);
+    await bootstrap();
+    const device = await pair(true);
+    receiptQuery.mockResolvedValueOnce({ found: false, requestId: id });
+    const missing = await http(`/api/web/v1/requests/${id}?deviceId=someone-else`);
+    expect(missing.status).toBe(200);
+    expect(missing.json().found).toBe(false);
+    expect(receiptQuery).toHaveBeenLastCalledWith({ requestId: id, deviceId: device });
+    receiptQuery.mockResolvedValueOnce({
+      found: true,
+      requestId: id,
+      operation: "send",
+      workspaceId: "not-authorized",
+      status: "accepted",
+    });
+    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(403);
+    receiptQuery.mockResolvedValueOnce({
+      found: true,
+      requestId: id,
+      operation: "send",
+      workspaceId: "follower-workspace",
+      executionMode: "codex-follower",
+      status: "accepted",
+    });
+    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(200);
+    receiptQuery.mockResolvedValueOnce({
+      found: true,
+      requestId: id,
+      operation: "approve",
+      status: "accepted",
+    });
+    expect((await http(`/api/web/v1/requests/${id}`)).status).toBe(403);
+    expect((await http("/api/web/v1/requests/not-a-uuid")).status).toBe(400);
+  });
+  it("returns only the legacy non-dispatch proof after authenticating the browser", async () => {
+    const requestId = "a169d42b-c32a-45e0-83b6-c2460c111bed";
+    const proof = {
+      found: true,
+      requestId,
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(401);
+    await bootstrap();
+    const deviceId = await pair(true);
+    receiptQuery.mockResolvedValueOnce({
+      ...proof,
+      sessionId: "private-session",
+      workspaceId: "private-workspace",
+      operation: "create",
+      ack: { private: "runtime-only" },
+    });
+    const response = await http(`/api/web/v1/requests/${requestId}`);
+    expect(response.status).toBe(200);
+    expect(response.json()).toEqual(proof);
+    expect(receiptQuery).toHaveBeenLastCalledWith({ requestId, deviceId });
+  });
+  it("clears only the inactive fence correlated with a legacy non-dispatch proof", async () => {
+    await bootstrap();
+    await pair(true);
+    const requestId = crypto.randomUUID();
+    const body = { sessionId: "s", text: "x", requestId, bootId, expectedRevision: 4 };
+    runtime.mockImplementation(async (params) => {
+      if ((params as { operation: string }).operation === "send") throw new Error("receipt lost");
+      return { runtimeBootId: "r", revision: 4, sendEnabled: true };
+    });
+    expect((await http("/api/web/v1/send", { method: "POST", body })).json()).toMatchObject({
+      controlOutcome: "unknown",
+    });
+    const proof = {
+      found: true,
+      status: "not-dispatched",
+      recovery: "legacy-prepared",
+      completionObserved: false,
+    };
+    const otherId = crypto.randomUUID();
+    receiptQuery.mockResolvedValueOnce({ ...proof, requestId: otherId });
+    expect((await http(`/api/web/v1/requests/${otherId}`)).status).toBe(200);
+    expect(
+      (
+        await http("/api/web/v1/send", {
+          method: "POST",
+          body: { ...body, requestId: crypto.randomUUID() },
+        })
+      ).json(),
+    ).toMatchObject({ error: "outcome_unknown" });
+    receiptQuery.mockResolvedValueOnce({ ...proof, requestId });
+    expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(200);
+    // Receipt recovery itself must not issue the original control a second time.
+    expect(
+      runtime.mock.calls.filter(
+        ([params]) => (params as { operation: string }).operation === "send",
+      ),
+    ).toHaveLength(1);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "r",
+      revision: 4,
+      sendEnabled: true,
+    });
+    expect(
+      (
+        await http("/api/web/v1/send", {
+          method: "POST",
+          body: { ...body, requestId: crypto.randomUUID() },
+        })
+      ).status,
+    ).toBe(200);
+  });
+  it.each(["unknown", "accepted", "wrong-request", "wrong-marker", "completed"])(
+    "rejects a legacy recovery proof with %s",
+    async (invalid) => {
+      const requestId = "a169d42b-c32a-45e0-83b6-c2460c111bed";
+      await bootstrap();
+      await pair(true);
+      receiptQuery.mockResolvedValueOnce({
+        found: true,
+        requestId: invalid === "wrong-request" ? crypto.randomUUID() : requestId,
+        status: ["unknown", "accepted"].includes(invalid) ? invalid : "not-dispatched",
+        recovery: invalid === "wrong-marker" ? "other" : "legacy-prepared",
+        completionObserved: invalid === "completed",
+      });
+      expect((await http(`/api/web/v1/requests/${requestId}`)).status).toBe(503);
+    },
+  );
+  it.each([false, true])(
+    "rechecks revocation after a receipt lookup finishes (legacy=%s)",
+    async (legacy) => {
+      await bootstrap();
+      const device = await pair(true);
+      let release!: (result: unknown) => void;
+      receiptQuery.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const pending = http("/api/web/v1/requests/a169d42b-c32a-45e0-83b6-c2460c111bed");
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await service.request({ operation: "revoke", id: device });
+      release(
+        legacy
+          ? {
+              found: true,
+              requestId: "a169d42b-c32a-45e0-83b6-c2460c111bed",
+              status: "not-dispatched",
+              recovery: "legacy-prepared",
+              completionObserved: false,
+            }
+          : { found: false },
+      );
+      expect((await pending).status).toBe(401);
+    },
+  );
   it("requires pairing, same origin and CSRF; exposes no arbitrary runtime methods", async () => {
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
     const access = await bootstrap();
@@ -212,7 +410,7 @@ describe("WebAccessService loopback security boundary", () => {
     expect(revoked.body).not.toContain("/projects/test");
     expect(runtime).toHaveBeenCalledTimes(2);
   });
-  it("requires desktop confirmation, persists only hashed credentials, and revokes access", async () => {
+  it("authorizes a same-origin code immediately, persists only hashes, and revokes access", async () => {
     await bootstrap();
     const status = await service.request({ operation: "generate-code" });
     expect(status.code!.value).toMatch(/^\d{8}$/);
@@ -220,10 +418,16 @@ describe("WebAccessService loopback security boundary", () => {
       method: "POST",
       body: { code: status.code!.value, name: "Phone" },
     });
-    expect((await http("/api/web/v1/access")).json().status).toBe("pending");
-    expect((await http("/api/web/v1/catalog")).status).toBe(401);
-    const id = result.json().pending.id;
-    await service.request({ operation: "approve", id, send: false, approve: false });
+    expect(onPairingRequested).not.toHaveBeenCalled();
+    expect(result.json()).toMatchObject({
+      status: "approved",
+      device: { accessMode: "full", send: true, approve: true, files: true, manage: true },
+    });
+    expect((await http("/api/web/v1/access")).json()).toMatchObject({
+      status: "approved",
+      pairingMode: "code",
+    });
+    const id = result.json().device.id;
     const saved = await readFile(join(dir, "web-access.json"), "utf8");
     expect(saved).not.toContain(cookie.split("=")[1]);
     expect(saved).not.toContain(csrf);
@@ -240,6 +444,7 @@ describe("WebAccessService loopback security boundary", () => {
         (await http("/api/web/v1/pair", { method: "POST", body: { code: "wrong", name: "Phone" } }))
           .status,
       ).toBe(403);
+    expect(onPairingRequested).not.toHaveBeenCalled();
     expect(
       (
         await http("/api/web/v1/pair", {
@@ -250,14 +455,45 @@ describe("WebAccessService loopback security boundary", () => {
     ).toBe(429);
     cookie = "";
     await bootstrap();
-    await service.request({ operation: "generate-code" });
-    const next = await service.request({ operation: "status" });
-    const result = await http("/api/web/v1/pair", {
-      method: "POST",
-      body: { code: next.code!.value, name: "Phone" },
-    });
-    await service.request({ operation: "reject", id: result.json().pending.id });
+    const id = seedLegacyPending(service, cookie);
+    await service.request({ operation: "reject", id });
     expect((await http("/api/web/v1/access")).json().status).toBe("ended");
+  });
+  it("keeps paired devices within their own budget when anonymous traffic is exhausted", async () => {
+    await bootstrap();
+    await pair();
+    const pairedCookie = cookie;
+    // 先让已配对设备占到自己的额度 key，表满后已有 key 仍应可用。
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+    const rates = (service as unknown as { rates: Map<string, { count: number; until: number }> })
+      .rates;
+    // 模拟未认证流量打满共享额度，并把限流表撑到上限。
+    rates.set("anonymous", { count: 600, until: Date.now() + 60_000 });
+    for (let i = rates.size; i < 4096; i++)
+      rates.set(`filler:${i}`, { count: 1, until: Date.now() + 60_000 });
+
+    cookie = "";
+    expect((await http("/api/web/v1/access")).status).toBe(429);
+    cookie = pairedCookie;
+    expect((await http("/api/web/v1/access")).status).toBe(200);
+    expect((await http("/api/web/v1/catalog")).status).toBe(200);
+  });
+  it("does not let one browser's wrong guesses invalidate the code for another browser", async () => {
+    await bootstrap();
+    const status = await service.request({ operation: "generate-code" });
+    for (let i = 0; i < 5; i++)
+      expect(
+        (await http("/api/web/v1/pair", { method: "POST", body: { code: "wrong", name: "Probe" } }))
+          .status,
+      ).toBe(403);
+    cookie = "";
+    await bootstrap();
+    const paired = await http("/api/web/v1/pair", {
+      method: "POST",
+      body: { code: status.code!.value, name: "Phone" },
+    });
+    expect(paired.status).toBe(200);
+    expect(paired.json().status).toBe("approved");
   });
   it("isolates send/approve permissions and prevents duplicate or stale control requests", async () => {
     await bootstrap();
@@ -297,6 +533,43 @@ describe("WebAccessService loopback security boundary", () => {
     expect(
       (await http("/api/web/v1/send", { method: "POST", body: { ...body, requestId: "new" } }))
         .status,
+    ).toBe(409);
+  });
+  it("stops only the exact active turn and forwards it with send permission", async () => {
+    await bootstrap();
+    await pair(true, false);
+    runtime.mockImplementation(async (params) => {
+      const request = params as { operation: string };
+      if (request.operation === "live")
+        return {
+          runtimeBootId: "runtime-one",
+          revision: 9,
+          status: "running",
+          turnId: "turn-9",
+          sendEnabled: false,
+          stopEnabled: true,
+          approvals: [],
+        };
+      return { accepted: true, runtimeBootId: "runtime-one" };
+    });
+    const body = {
+      sessionId: "session",
+      requestId: "stop-one",
+      bootId,
+      expectedRevision: 9,
+      turnId: "turn-9",
+    };
+    expect((await http("/api/web/v1/stop", { method: "POST", body })).status).toBe(200);
+    expect(runtime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: "stop", turnId: "turn-9" }),
+    );
+    expect(
+      (
+        await http("/api/web/v1/stop", {
+          method: "POST",
+          body: { ...body, requestId: "stop-stale", turnId: "old-turn" },
+        })
+      ).status,
     ).toBe(409);
   });
   it.each([
@@ -860,6 +1133,15 @@ describe("WebAccessService loopback security boundary", () => {
     await symlink("/etc/hosts", join(dir, "outside"));
     expect((await http("/outside")).status).toBe(403);
   });
+  it("rejects directories and oversized assets before reading them into memory", async () => {
+    await mkdir(join(dir, "assets"));
+    expect((await http("/assets")).status).toBe(404);
+    const large = join(dir, "large.js");
+    await writeFile(large, "");
+    await truncate(large, 16 * 1024 * 1024 + 1);
+    // 稀疏文件：大小超限但不占用磁盘，服务端应只看元数据就拒绝。
+    expect((await http("/large.js")).status).toBe(413);
+  });
   it("uses configured external HTTPS origin, never trusts forwarded headers", async () => {
     await service.request({
       operation: "configure",
@@ -1274,7 +1556,7 @@ describe("WebAccessService loopback security boundary", () => {
           requestId: 860,
           turnId: "turn",
           supported: true,
-          availableDecisions: ["accept", "cancel"],
+          availableDecisions: ["approve-once", "cancel"],
         },
       ],
     });
@@ -1293,13 +1575,56 @@ describe("WebAccessService loopback security boundary", () => {
       (
         await http("/api/web/v1/approve", {
           method: "POST",
-          body: { ...approval, requestId: "accept", decision: "accept" },
+          body: { ...approval, requestId: "accept", decision: "approve-once" },
         })
       ).status,
     ).toBe(200);
     expect(runtime).toHaveBeenLastCalledWith(
-      expect.objectContaining({ operation: "approve", approvalId: 860, decision: "accept" }),
+      expect.objectContaining({
+        operation: "approve",
+        approvalId: 860,
+        decision: "approve-once",
+      }),
     );
+  });
+  it("forwards a supported negative ACP approval ID without changing its sign", async () => {
+    await bootstrap();
+    await pair(true, true);
+    runtime.mockResolvedValue({
+      accepted: true,
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      sendEnabled: false,
+      approvals: [
+        {
+          requestId: -860,
+          turnId: "turn",
+          supported: true,
+          availableDecisions: ["native-yes"],
+        },
+      ],
+    });
+    const response = await http("/api/web/v1/approve", {
+      method: "POST",
+      body: {
+        sessionId: "s",
+        requestId: "negative-approval",
+        bootId,
+        expectedRevision: 4,
+        turnId: "turn",
+        approvalId: -860,
+        decision: "native-yes",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "approve", approvalId: -860 }),
+    );
+    expect(
+      runtime.mock.calls.filter(
+        ([params]) => (params as { operation?: string }).operation === "approve",
+      ),
+    ).toHaveLength(1);
   });
   it("rechecks revoked grants between live read and mutation dispatch", async () => {
     await bootstrap();

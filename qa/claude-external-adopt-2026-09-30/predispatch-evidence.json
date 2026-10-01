@@ -1,0 +1,17 @@
+{
+  "launchCount": 1,
+  "durableCommandCount": 1,
+  "commands": [
+    {
+      "requestId": "91f30f08-7d8b-492e-a8b7-f6f1cef281b7",
+      "phase": "resolved",
+      "evidence": {
+        "executionMode": "claude-managed",
+        "operation": "adopt",
+        "runtimeBootId": "a77a644c-c616-4c6a-b9f8-475808f3a8e9",
+        "workspaceId": "07464385-10ce-44d8-abd6-3a0853462ef7"
+      }
+    }
+  ],
+  "note": "Web 400 was pre-dispatch; initial HTTP body and request ID were not recorded. There is no durable send receipt; only adopt was recorded."
+}

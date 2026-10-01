@@ -37,6 +37,7 @@ import type {
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
 export const api = {
+  claudeRequest: (request: Record<string, unknown>) => desktopApi().claude.request(request),
   remoteRequest: <T extends RemoteRequest>(request: T) => desktopApi().remote.request(request),
   scan: (project: string) => desktopApi().workspace.scan(project),
   manifest: async (project: string) => {
@@ -47,8 +48,11 @@ export const api = {
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>
     desktopApi().changes.plan(project, manifest, includeHome),
-  apply: (changeSet: ChangeSet, approveHome: boolean) =>
-    desktopApi().changes.apply(changeSet, approveHome),
+  apply: (
+    changeSet: ChangeSet,
+    approveHome: boolean,
+    launchRequest?: SessionHandoffLaunchRequest,
+  ) => desktopApi().changes.apply(changeSet, approveHome, launchRequest),
   context: (project: string, cwd: string, agent: AgentKind) =>
     desktopApi().workspace.resolveContext(project, cwd, agent),
   pickDirectory: async (title?: string) => {
@@ -172,6 +176,10 @@ export const api = {
     desktopApi().workspace.refreshSessions(workspaceId, force),
   sessionEvents: (sessionId: string, cursor?: string, limit = DEFAULT_SESSION_PAGE_SIZE) =>
     desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
+  sessionSourceCapability: (sessionId: string) =>
+    desktopApi().workspace.sourceCapability(sessionId),
+  nativeImportOperations: (workspaceId: string) =>
+    desktopApi().workspace.nativeImports(workspaceId),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
   planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
@@ -190,6 +198,7 @@ export const api = {
     acceptLosses: boolean,
     historyBudgetTokens: number,
     archiveId: string | undefined,
+    targetFingerprint?: string,
   ) =>
     desktopApi().workspace.planHandoff(
       sessionId,
@@ -203,6 +212,7 @@ export const api = {
       acceptLosses,
       historyBudgetTokens,
       archiveId,
+      targetFingerprint,
     ),
   continueSessionHandoff: (
     changeSet: ChangeSet,

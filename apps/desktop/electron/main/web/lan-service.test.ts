@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -175,6 +176,22 @@ describe("hosted LAN transport", () => {
         )
       ).status,
     ).toBe(403);
+  });
+  it("preflights receipt lookups but not other dynamic or prototype paths", async () => {
+    const preflight = (path: string, method = "GET") =>
+      http(
+        path,
+        {
+          "Access-Control-Request-Method": method,
+          "Access-Control-Request-Headers": "authorization",
+        },
+        "OPTIONS",
+      );
+    expect((await preflight("/requests/a169d42b-c32a-45e0-83b6-c2460c111bed")).status).toBe(204);
+    expect((await preflight("/requests/a/b")).status).toBe(403);
+    expect((await preflight("/requests/x", "POST")).status).toBe(403);
+    expect((await preflight("/constructor")).status).toBe(403);
+    expect((await preflight("/codex/rename", "POST")).status).toBe(403);
   });
   it("issues bearer only at bootstrap, never cookies, and requires desktop approval and CSRF", async () => {
     const response = await bootstrap();
@@ -426,11 +443,7 @@ describe("hosted LAN transport", () => {
         localCookie = access.headers.get("set-cookie")!.split(";")[0];
         localCsrf = access.data.csrfToken;
         localBoot = access.data.bootId;
-        const localCode = (await local.request({ operation: "generate-code" })).code!.value;
-        const localPair = await localHttp("/pair", { code: localCode, name: "local fixture" });
-        await local.request({
-          operation: "approve",
-          id: localPair.data.pending.id,
+        const localDevice = await approveLegacyBrowser(local, localCookie, {
           send: true,
           approve: true,
         });
@@ -479,7 +492,7 @@ describe("hosted LAN transport", () => {
         expect(competing.status).toBe(409);
         expect(competing.data.error).toBe("operation_busy");
         expect(owner).toHaveBeenCalledTimes(1);
-        if (revoke) await local.request({ operation: "revoke", id: localPair.data.pending.id });
+        if (revoke) await local.request({ operation: "revoke", id: localDevice });
         releasePreflight();
         const firstResult = await pending;
         expect(firstResult.status).toBe(revoke ? 401 : 502);

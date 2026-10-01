@@ -17,6 +17,7 @@ import { SessionHandoffDialog } from "./SessionHandoffDialog.tsrx";
 vi.mock("@/core/api", () => ({
   api: {
     prepareSessionHandoff: vi.fn(),
+    sessionSourceCapability: vi.fn(),
     planSessionMcpConnection: vi.fn(),
     planSessionHandoff: vi.fn(),
     sanitizeSessionHandoff: vi.fn(),
@@ -87,6 +88,7 @@ const draft: SessionHandoffDraft = {
 describe("SessionHandoffDialog", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
+    vi.mocked(api.sessionSourceCapability).mockReset().mockResolvedValue({ status: "supported" });
     vi.mocked(api.prepareSessionHandoff).mockReset();
     vi.mocked(api.planSessionMcpConnection).mockReset();
   });
@@ -105,6 +107,9 @@ describe("SessionHandoffDialog", () => {
       />,
     );
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
     await waitFor(() =>
       expect(api.prepareSessionHandoff).toHaveBeenCalledWith(
@@ -149,6 +154,9 @@ describe("SessionHandoffDialog", () => {
       />,
     );
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
     fireEvent.click(await screen.findByRole("button", { name: "Connect Claude Code MCP" }));
 
@@ -178,14 +186,21 @@ describe("SessionHandoffDialog", () => {
       />,
     );
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
 
     expect(await screen.findByRole("button", { name: "Connect Codex MCP" })).toBeTruthy();
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "blocks handoff preparation for %s history sources",
-    (agent) => {
+    "blocks %s only when its concrete source format is unsupported",
+    async (agent) => {
+      vi.mocked(api.sessionSourceCapability).mockResolvedValue({
+        status: "unsupported",
+        reason: "Unverified source format",
+      });
       render(
         <SessionHandoffDialog
           workspace={workspace}
@@ -197,8 +212,8 @@ describe("SessionHandoffDialog", () => {
         />,
       );
 
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "This history source is read-only. Open it in the original Agent to continue or export it.",
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent("Unverified source format"),
       );
       expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeDisabled();
       expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
@@ -238,6 +253,9 @@ describe("SessionHandoffDialog", () => {
         />,
       );
 
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+      );
       fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
 
       expect(
@@ -274,6 +292,9 @@ describe("SessionHandoffDialog", () => {
       />,
     );
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
 
     expect(await screen.findByText(/For privacy, 12 internal reasoning records/)).toBeTruthy();
@@ -312,6 +333,9 @@ describe("SessionHandoffDialog", () => {
       />,
     );
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
 
     expect(await screen.findByText(/Full history <1k Token/)).toBeTruthy();
@@ -321,5 +345,74 @@ describe("SessionHandoffDialog", () => {
     expect(
       (screen.getByRole("button", { name: "Review import changes" }) as HTMLButtonElement).disabled,
     ).toBe(false);
+  });
+  it("keeps target conversion losses behind acknowledgement and passes the frozen target fingerprint", async () => {
+    const planned = {
+      change_set: {
+        id: "changes",
+        project_root: "/tmp/project",
+        created_at: "2026-09-27",
+        requires_home_approval: false,
+        changes: [],
+      },
+      launch_request: {
+        mode: "native-import" as const,
+        workspace_id: "workspace",
+        target_agent: "opencode" as const,
+        operation_id: "operation",
+        plan_hash: "hash",
+      },
+    };
+    vi.mocked(api.planSessionHandoff).mockReset().mockResolvedValue(planned);
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({
+      status: "ready",
+      draft: {
+        ...draft,
+        target_fingerprint: "frozen-target",
+        window_strategy: "full",
+        mcp_available: false,
+        archive_id: undefined,
+        losses: [
+          { code: "target-tool-summary", count: 2 },
+          { code: "target-attachment-omitted", count: 1 },
+        ],
+      },
+    });
+    const onPlanned = vi.fn();
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["opencode"]}
+        onClose={vi.fn()}
+        onPlanned={onPlanned}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+    const review = await screen.findByRole("button", { name: "Review import changes" });
+    expect(review).toBeDisabled();
+    expect(screen.getByText(/retain 2 tool record/)).toBeVisible();
+    expect(screen.getByText(/cannot retain 1 attachment/)).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(review);
+    await waitFor(() => expect(onPlanned).toHaveBeenCalledWith(planned));
+    expect(api.planSessionHandoff).toHaveBeenCalledWith(
+      "session",
+      "workspace",
+      draft.filename,
+      draft.format,
+      undefined,
+      "opencode",
+      draft.mode,
+      draft.source_fingerprint,
+      true,
+      draft.history_budget_tokens,
+      undefined,
+      "frozen-target",
+    );
   });
 });

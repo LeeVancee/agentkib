@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { expect, it } from "vitest";
 import { claudeAcceptanceTarget } from "./claude-acceptance-target";
 
-const nativeId = "3121ec99-e4cb-465b-8056-0d653212b113";
+const nativeId = "00000000-0000-4000-8000-000000000001";
 const salt = "a".repeat(64);
 const id = createHmac("sha256", salt).update(`conversation:claude-code:${nativeId}`).digest("hex");
 it("selects the requested native identity among multiple sessions", () => {

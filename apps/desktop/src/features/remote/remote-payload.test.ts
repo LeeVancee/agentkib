@@ -75,7 +75,15 @@ describe("remote payload validation", () => {
       ).not.toThrow();
   });
   it("accepts a mixed catalog of all supported history providers", () => {
-    const agents = ["codex", "claude-code", "opencode", "open-claw", "hermes", "grok-build"];
+    const agents = [
+      "codex",
+      "claude-code",
+      "antigravity",
+      "opencode",
+      "open-claw",
+      "hermes",
+      "grok-build",
+    ];
     const result = parseRemoteCatalog({
       workspaces: [workspace],
       sessions: agents.map((agent) => ({ ...session, id: agent, agent })),
@@ -120,7 +128,7 @@ describe("remote payload validation", () => {
     expect(result.sessions[0].spawned_by_session_id).toBeUndefined();
     expect(result.sessions[0].forked_from_session_id).toBeUndefined();
   });
-  it("normalizes nullable Rust fields and strips remote-provided provenance", () => {
+  it("normalizes legacy nullable fields and strips remote-provided provenance", () => {
     const result = parseRemoteCatalog({
       workspaces: [{ ...workspace, remote: { host_id: "forged" } }],
       sessions: [{ ...session, title: null }],

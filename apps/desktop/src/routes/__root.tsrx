@@ -4,7 +4,9 @@ import { useI18n } from "@/core/useI18n";
 import { createRootRoute, Outlet, useNavigate, useSearch } from "@octanejs/tanstack-router";
 import { CircleAlert } from "@octanejs/lucide";
 import { z } from "zod";
-import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar.tsrx";
+import { SidebarPanelProvider } from "@/features/app/SidebarPanel";
+import { useAppDialogs } from "@/components/AppDialogProvider";
+import { AppSidebar, type AgentFilter, type SidebarEntry } from "@/components/AppSidebar";
 import { RemoteCatalogBridge } from "@/features/remote/remote-catalog-store";
 import type { SettingsSection } from "@/features/settings/SettingsSidebar.tsrx";
 import {
@@ -17,11 +19,12 @@ import type { AgentKind, RefreshJobStatus } from "../core/types";
 import { AppRuntimeBridge } from "../features/app/AppRuntimeBridge.tsrx";
 import { AppShell } from "../features/app/AppShell.tsrx";
 import {
-  workspaceSearchForPage,
   type AppSearch,
   type GlobalPage,
   type ParsedRoute,
+  type Page,
 } from "../features/app/app-route";
+import { workspaceSearchForPage } from "@/features/app/app-route";
 import { cn } from "@/lib/utils";
 import { useAppNavigation } from "../features/app/useAppNavigation.tsrx";
 import { ShortcutHelpDialog } from "../features/app/ShortcutHelpDialog.tsrx";
@@ -34,8 +37,7 @@ import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { AppToolbar } from "@/features/app/AppToolbar.tsrx";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog.tsrx";
 import type { WorkspaceSummary } from "@/core/types";
-import { useAppDialogs } from "@/components/AppDialogProvider.tsrx";
-import { SessionHubProvider } from "@/features/sessions/SessionHubContext.tsrx";
+import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar.tsrx";
 
@@ -47,6 +49,9 @@ function RootLayout() {
     refreshJobs,
     navigation,
     workspaces,
+    workspacesPending,
+    workspacesError,
+    retryWorkspaces,
     openWorkspace,
     navigateGlobal,
     openSettings,
@@ -66,7 +71,15 @@ function RootLayout() {
     onRefreshCurrent: refreshCurrentView,
     onAddWorkspace: addWorkspace,
     onAddScanRoot: addScanRoot,
-    onToggleSidebar: () => setSidebarCollapsed((value: any) => !value),
+    onToggleSidebar: () => {
+      if (route.kind === "settings") return;
+      if (
+        route.kind !== "global" ||
+        ["workspaces", "agents", "sessions", "catalog"].includes(route.page)
+      ) {
+        setSidebarCollapsed((value) => !value);
+      }
+    },
     onGoBack: appHistory.goBack,
     onGoForward: appHistory.goForward,
     onOpenSearch: () => setSearchOpen(true),
@@ -84,14 +97,16 @@ function RootLayout() {
         active={globalPage}
         entries={navigation}
         workspaces={workspaces}
+        workspacesPending={workspacesPending}
+        workspacesError={workspacesError}
+        onRetryWorkspaces={() => void retryWorkspaces()}
         message={message}
         refreshJobs={refreshJobs}
         onNavigate={navigateGlobal}
-        onOpenWorkspace={(workspace) => void openWorkspace(workspace)}
+        onOpenWorkspace={(workspace, page) => void openWorkspace(workspace, page)}
         onSettings={openSettings}
         onRefresh={() => void refreshCurrentView()}
         onOpenSearch={() => setSearchOpen(true)}
-        onOpenHelp={() => setShortcutHelpOpen(true)}
         canGoBack={appHistory.canGoBack}
         canGoForward={appHistory.canGoForward}
         onBack={appHistory.goBack}
@@ -121,6 +136,9 @@ function AppShellRouter({
   active,
   entries,
   workspaces,
+  workspacesPending,
+  workspacesError,
+  onRetryWorkspaces,
   message,
   refreshJobs,
   onNavigate,
@@ -128,7 +146,6 @@ function AppShellRouter({
   onSettings,
   onRefresh,
   onOpenSearch,
-  onOpenHelp,
   canGoBack,
   canGoForward,
   onBack,
@@ -139,14 +156,16 @@ function AppShellRouter({
   active: GlobalPage;
   entries: SidebarEntry<GlobalPage>[];
   workspaces: WorkspaceSummary[];
+  workspacesPending: boolean;
+  workspacesError?: string;
+  onRetryWorkspaces: () => void;
   message: string;
   refreshJobs: RefreshJobStatus[];
   onNavigate: (page: GlobalPage) => void;
-  onOpenWorkspace: (workspace: WorkspaceSummary) => void;
+  onOpenWorkspace: (workspace: WorkspaceSummary, page?: Page) => void;
   onSettings: () => void;
   onRefresh: () => void;
   onOpenSearch: () => void;
-  onOpenHelp: () => void;
   canGoBack: boolean;
   canGoForward: boolean;
   onBack: () => void;
@@ -157,6 +176,7 @@ function AppShellRouter({
   const dialogs = useAppDialogs();
   const search = useSearch({ strict: false }) as AppSearch;
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const favoriteWorkspaceIds = useAppStore((state) => state.favoriteWorkspaceIds);
   const workspaceState = useWorkspaceStore();
   const settingsSection = search.settingsSection ?? "general";
   const isSettings = route.kind === "settings";
@@ -182,69 +202,70 @@ function AppShellRouter({
     });
   };
 
-  const navigateWorkspace = (page: import("@/features/app/app-route").Page) => {
-    if (!isWorkspace) return;
+  const navigateWorkspace = (page: Page) => {
+    if (route.kind !== "workspace") return;
     if (useWorkspaceStore.getState().applyingChanges) {
       void dialogs.notify(tr("dialog.quit.changesApplying"));
       return;
     }
-    const path =
-      page === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${page}`;
     void navigate({
-      to: path as never,
+      to: (page === "overview"
+        ? "/workspace/$workspaceId"
+        : `/workspace/$workspaceId/${page}`) as never,
       params: { workspaceId: route.workspaceId } as never,
       search: (current) => workspaceSearchForPage(current as AppSearch, page) as never,
     });
   };
-
-  const sidebar = isSettings ? (
-    <SettingsSidebar
-      searchOpen={searchOpen}
-      onOpenSearch={onOpenSearch}
-      active={settingsSection}
-      activeTarget={search.settingsTarget}
-      collapsed={sidebarCollapsed}
-      onSelect={setSettingsSection}
-      onBack={() => void navigate({ to: "/" })}
-    />
-  ) : (
+  const hasSidebarPanel =
+    isSettings || isWorkspace || ["workspaces", "sessions", "agents", "catalog"].includes(active);
+  const sidebar = (
     <AppSidebar
       searchOpen={searchOpen}
-      onOpenSearch={onOpenSearch}
-      active={isWorkspace ? "workspaces" : active}
-      collapsed={sidebarCollapsed}
+      onRefresh={onRefresh}
+      active={isSettings ? "settings" : isWorkspace ? "workspaces" : active}
+      collapsed={!isSettings && sidebarCollapsed}
       entries={entries}
+      favoriteWorkspaceIds={favoriteWorkspaceIds}
+      workspaces={[...workspaces].sort((left, right) => {
+        const leftFavorite = favoriteWorkspaceIds.indexOf(left.id);
+        const rightFavorite = favoriteWorkspaceIds.indexOf(right.id);
+        if (leftFavorite >= 0 || rightFavorite >= 0) {
+          if (leftFavorite < 0) return 1;
+          if (rightFavorite < 0) return -1;
+          return leftFavorite - rightFavorite;
+        }
+        return left.name.localeCompare(right.name);
+      })}
+      workspacesPending={workspacesPending}
+      workspacesError={workspacesError}
+      onRetryWorkspaces={onRetryWorkspaces}
+      activeWorkspaceId={route.kind === "workspace" ? route.workspaceId : undefined}
+      workspacePage={route.kind === "workspace" ? route.page : undefined}
+      changeCount={
+        workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0)
+      }
+      onWorkspaceNavigate={navigateWorkspace}
+      onOpenWorkspace={onOpenWorkspace}
       onNavigate={onNavigate}
       onSettings={onSettings}
       onRemoteSettings={() =>
         void navigate({ to: "/settings", search: { settingsSection: "remote" } })
       }
       context={
-        isWorkspace
-          ? {
-              kind: "workspace",
-              workspace:
-                workspaceState.selectedWorkspace ??
-                workspaces.find((workspace) => workspace.id === route.workspaceId),
-              page: route.page,
-              changeCount:
-                workspaceState.changeSet?.changes.length ??
-                (workspaceState.handoffLaunchRequest ? 1 : 0),
-              onWorkspaceNavigate: navigateWorkspace,
-            }
-          : isSessions
-            ? { kind: "sessions" }
-            : active === "agents"
-              ? { kind: "agents", filter: agentFilter, onFilterChange: setAgentFilter }
-              : {
-                  kind: "global",
-                  recentWorkspaces: [...workspaces]
-                    .sort((left, right) =>
-                      (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
-                    )
-                    .slice(0, 2),
-                  onOpenWorkspace,
-                }
+        isSessions
+          ? { kind: "sessions" }
+          : active === "agents" && !isSettings
+            ? { kind: "agents", filter: agentFilter, onFilterChange: setAgentFilter }
+            : { kind: "global" }
+      }
+      secondary={
+        isSettings ? (
+          <SettingsSidebar
+            active={settingsSection}
+            activeTarget={search.settingsTarget}
+            onSelect={setSettingsSection}
+          />
+        ) : undefined
       }
     />
   );
@@ -258,13 +279,14 @@ function AppShellRouter({
   const shell = (
     <AppShell
       sidebar={sidebar}
+      hasSidebarPanel={hasSidebarPanel}
       sidebarMode={isSettings ? "settings" : "primary"}
       headerless={isSettings}
       toolbar={
         isSettings ? undefined : isSessions ? (
           <SessionWindowToolbar />
         ) : (
-          <AppToolbar breadcrumb={breadcrumb} onRefresh={onRefresh} onOpenHelp={onOpenHelp} />
+          <AppToolbar breadcrumb={breadcrumb} />
         )
       }
       mainClassName={
@@ -278,6 +300,7 @@ function AppShellRouter({
       canGoForward={canGoForward}
       onBack={onBack}
       onForward={onForward}
+      onOpenSearch={onOpenSearch}
     >
       {message && (
         <div
@@ -312,7 +335,11 @@ function AppShellRouter({
   );
   // Router location and the retained Outlet can update in different commits.
   // Keep context mounted while old session content exits; pause indexing elsewhere.
-  return <SessionHubProvider active={isSessions}>{shell}</SessionHubProvider>;
+  return (
+    <SessionHubProvider active={isSessions}>
+      <SidebarPanelProvider>{shell}</SidebarPanelProvider>
+    </SessionHubProvider>
+  );
 }
 
 const quotaWindowSchema = z.object({
@@ -345,6 +372,7 @@ const searchSchema = z.object({
     .enum([
       "general",
       "appearance",
+      "shortcuts",
       "discovery",
       "tools",
       "remote",

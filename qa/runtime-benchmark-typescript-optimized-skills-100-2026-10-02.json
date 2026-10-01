@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "label": "typescript-optimized-skills-100",
+  "createdAt": "2026-10-01T18:29:14.855Z",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "release": "27.0.0",
+    "cpu": "Apple M3",
+    "logicalCpuCount": 8,
+    "totalMemoryBytes": 17179869184
+  },
+  "build": {
+    "backend": "typescript",
+    "runtimeArtifact": "backend.cjs",
+    "electronEntry": "dist-electron/main.cjs"
+  },
+  "configuration": {
+    "cleanRuns": 0,
+    "reuseRuns": 0,
+    "workloadRuns": 30,
+    "skillCount": 100,
+    "idleMs": 10000
+  },
+  "startup": {
+    "clean": [],
+    "reused": []
+  },
+  "workloads": {
+    "fixture": {
+      "workspaceFiles": 1001,
+      "transcriptLines": 5000,
+      "sqliteWorkspaceCount": 101,
+      "skillCount": 100
+    },
+    "idle": {
+      "sampleCount": 10,
+      "cpuPercentMean": 0.05632042894764007,
+      "samples": [
+        {
+          "memory": {
+            "rss": 97386496,
+            "heapTotal": 22691840,
+            "heapUsed": 15359432,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.02568209957659511
+        },
+        {
+          "memory": {
+            "rss": 97386496,
+            "heapTotal": 22691840,
+            "heapUsed": 15361232,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.024486044986699318
+        },
+        {
+          "memory": {
+            "rss": 97386496,
+            "heapTotal": 22691840,
+            "heapUsed": 15363184,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.021873256313196577
+        },
+        {
+          "memory": {
+            "rss": 97386496,
+            "heapTotal": 22691840,
+            "heapUsed": 15463456,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.04017517507634235
+        },
+        {
+          "memory": {
+            "rss": 97386496,
+            "heapTotal": 22691840,
+            "heapUsed": 15385832,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.11691489449329343
+        },
+        {
+          "memory": {
+            "rss": 97435648,
+            "heapTotal": 22691840,
+            "heapUsed": 15418176,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.12470665706718524
+        },
+        {
+          "memory": {
+            "rss": 97452032,
+            "heapTotal": 22691840,
+            "heapUsed": 15428048,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.07652649630030355
+        },
+        {
+          "memory": {
+            "rss": 97452032,
+            "heapTotal": 22691840,
+            "heapUsed": 15429944,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.024561450802964735
+        },
+        {
+          "memory": {
+            "rss": 97452032,
+            "heapTotal": 22691840,
+            "heapUsed": 15433488,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.02408612538016379
+        },
+        {
+          "memory": {
+            "rss": 97452032,
+            "heapTotal": 22691840,
+            "heapUsed": 15445160,
+            "external": 5352373,
+            "arrayBuffers": 147513
+          },
+          "cpuPercent": 0.08419208947965656
+        }
+      ]
+    },
+    "runtimeRssKb": 192416,
+    "workspaceScan": {
+      "iterations": 30,
+      "p50Ms": 19.21,
+      "p95Ms": 26.01,
+      "minMs": 17.88,
+      "maxMs": 26.13
+    },
+    "sessionIndex": {
+      "iterations": 30,
+      "p50Ms": 3.79,
+      "p95Ms": 4.22,
+      "minMs": 3.38,
+      "maxMs": 7.28
+    },
+    "largeSessionParse": {
+      "iterations": 30,
+      "p50Ms": 0.97,
+      "p95Ms": 1.2,
+      "minMs": 0.84,
+      "maxMs": 2.77
+    },
+    "sqliteWorkspaceList": {
+      "iterations": 30,
+      "p50Ms": 1.33,
+      "p95Ms": 2.2,
+      "minMs": 1.22,
+      "maxMs": 2.21
+    },
+    "sqliteActivityList": {
+      "iterations": 30,
+      "p50Ms": 0.04,
+      "p95Ms": 0.06,
+      "minMs": 0.03,
+      "maxMs": 0.13
+    },
+    "rawMilliseconds": {
+      "workspaceScan": [
+        20.72,
+        19.53,
+        26.13,
+        19.5,
+        18.92,
+        18.73,
+        19.28,
+        25.26,
+        19.42,
+        19.13,
+        17.96,
+        18.57,
+        18.11,
+        17.88,
+        18.73,
+        19.21,
+        18.49,
+        18.47,
+        18.51,
+        17.99,
+        18.87,
+        19.2,
+        25.25,
+        24.56,
+        26.01,
+        21.03,
+        23.74,
+        21.46,
+        19.81,
+        20.26
+      ],
+      "sessionIndex": [
+        7.28,
+        4.12,
+        4.16,
+        3.86,
+        3.84,
+        4.04,
+        4.01,
+        4.05,
+        3.91,
+        3.88,
+        3.77,
+        3.79,
+        3.68,
+        3.7,
+        3.63,
+        3.55,
+        3.5,
+        3.46,
+        4.22,
+        4.11,
+        3.95,
+        3.51,
+        3.97,
+        3.93,
+        3.55,
+        3.38,
+        3.55,
+        3.62,
+        3.64,
+        3.53
+      ],
+      "largeSessionParse": [
+        2.77,
+        1.16,
+        0.98,
+        0.99,
+        1.08,
+        1.07,
+        1.04,
+        1.04,
+        1.03,
+        0.93,
+        0.88,
+        0.92,
+        0.97,
+        0.93,
+        1.04,
+        0.9,
+        0.93,
+        1.02,
+        1.2,
+        0.87,
+        0.84,
+        0.89,
+        1.03,
+        0.97,
+        1,
+        1.03,
+        0.86,
+        0.84,
+        0.91,
+        0.85
+      ],
+      "sqliteWorkspaceList": [
+        1.46,
+        1.35,
+        1.38,
+        1.34,
+        1.37,
+        1.32,
+        1.41,
+        1.31,
+        1.47,
+        2.21,
+        1.37,
+        1.27,
+        1.54,
+        1.39,
+        1.33,
+        2.2,
+        1.25,
+        1.22,
+        1.24,
+        1.4,
+        1.42,
+        1.26,
+        1.25,
+        1.24,
+        1.24,
+        1.24,
+        1.31,
+        1.34,
+        1.29,
+        1.25
+      ],
+      "sqliteActivityList": [
+        0.13,
+        0.04,
+        0.04,
+        0.04,
+        0.04,
+        0.04,
+        0.04,
+        0.04,
+        0.06,
+        0.05,
+        0.05,
+        0.04,
+        0.03,
+        0.03,
+        0.06,
+        0.04,
+        0.03,
+        0.04,
+        0.03,
+        0.03,
+        0.03,
+        0.03,
+        0.03,
+        0.03,
+        0.04,
+        0.03,
+        0.03,
+        0.03,
+        0.03,
+        0.03
+      ]
+    }
+  }
+}

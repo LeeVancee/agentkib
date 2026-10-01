@@ -40,7 +40,15 @@ const catalog = z.object({
       z.object({
         id,
         workspace_id: id,
-        agent: z.enum(["codex", "claude-code", "opencode", "open-claw", "hermes", "grok-build"]),
+        agent: z.enum([
+          "codex",
+          "claude-code",
+          "antigravity",
+          "opencode",
+          "open-claw",
+          "hermes",
+          "grok-build",
+        ]),
         title: optionalText,
         created_at: optionalTimestamp,
         updated_at: optionalTimestamp,

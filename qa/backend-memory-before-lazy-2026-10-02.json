@@ -1,0 +1,184 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-01T18:43:29.272Z",
+  "label": "before-lazy",
+  "runtime": "electron-utility-process",
+  "electron": "44.0.0",
+  "phases": {
+    "loaded": {
+      "rssP50MiB": 92.53125,
+      "samples": [
+        {
+          "phase": "loaded",
+          "rss": 97026048,
+          "heapTotal": 14761984,
+          "heapUsed": 11168224,
+          "external": 3950907,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "loaded",
+          "rss": 97026048,
+          "heapTotal": 14761984,
+          "heapUsed": 11170212,
+          "external": 3950947,
+          "arrayBuffers": 0
+        }
+      ]
+    },
+    "initialized-idle": {
+      "rssP50MiB": 96.84375,
+      "samples": [
+        {
+          "phase": "initialized-idle",
+          "rss": 101400576,
+          "heapTotal": 15482880,
+          "heapUsed": 12083264,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101531648,
+          "heapTotal": 15482880,
+          "heapUsed": 12092500,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101531648,
+          "heapTotal": 15482880,
+          "heapUsed": 12093452,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101531648,
+          "heapTotal": 15482880,
+          "heapUsed": 12102256,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101548032,
+          "heapTotal": 15482880,
+          "heapUsed": 12109240,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101548032,
+          "heapTotal": 15482880,
+          "heapUsed": 12115824,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101548032,
+          "heapTotal": 15482880,
+          "heapUsed": 12116512,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 101548032,
+          "heapTotal": 15482880,
+          "heapUsed": 12116960,
+          "external": 3984632,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "initialized-idle",
+          "rss": 102006784,
+          "heapTotal": 15482880,
+          "heapUsed": 12201612,
+          "external": 3984632,
+          "arrayBuffers": 0
+        }
+      ]
+    },
+    "after-mcp-idle": {
+      "rssP50MiB": 99.671875,
+      "samples": [
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104431616,
+          "heapTotal": 17580032,
+          "heapUsed": 13756384,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104431616,
+          "heapTotal": 17580032,
+          "heapUsed": 13762696,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104431616,
+          "heapTotal": 17580032,
+          "heapUsed": 13763120,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104513536,
+          "heapTotal": 17580032,
+          "heapUsed": 13777816,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104529920,
+          "heapTotal": 17580032,
+          "heapUsed": 13781180,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104529920,
+          "heapTotal": 17580032,
+          "heapUsed": 13781604,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104546304,
+          "heapTotal": 17580032,
+          "heapUsed": 13788168,
+          "external": 3987366,
+          "arrayBuffers": 0
+        },
+        {
+          "phase": "after-mcp-idle",
+          "rss": 104546304,
+          "heapTotal": 17580032,
+          "heapUsed": 13788592,
+          "external": 3987366,
+          "arrayBuffers": 0
+        }
+      ]
+    }
+  },
+  "firstMcpMs": 43.87908299999981,
+  "builtinToolCount": 8,
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M3"
+  },
+  "backendBundleSha256": "3183660db266291b74246a64d652ab1433eda6c3622dd6455af7b57819eac2d6"
+}

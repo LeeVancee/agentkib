@@ -1,0 +1,1 @@
+{"type": "assistant", "session_id": "fd4d6cf4-ab92-449e-b376-590bbde304d5", "message": {"content": [{"type": "tool_use", "id": "call_00_h3Lti6Q85LBD7bmdoehQ1263", "name": "Bash", "input": {"command": "sleep 30", "description": "Sleep for 30 seconds"}}]}}

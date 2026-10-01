@@ -7,6 +7,7 @@ These local SVG assets are sourced from LobeHub Lobe Icons
 - hermesagent.svg -> hermes.svg
 - grok.svg -> grok-build.svg
 - cursor.svg -> cursor.svg
+- antigravity-color.svg -> antigravity.svg
 
 Source: https://github.com/lobehub/lobe-icons
 

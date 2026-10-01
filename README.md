@@ -41,17 +41,19 @@ Browse reviewed OpenAI Skills or inspect a public GitHub repository before addin
 
 ### Continue across agents
 
-Browse supported Codex and Claude Code session history and prepare a reviewed handoff. AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts.
+Browse Codex, Claude Code, Antigravity ACP, OpenCode, supported Cursor CLI stores, OpenClaw schema-23 SQLite and legacy JSONL, Hermes, and Grok Build session history. Reviewed handoff availability is checked against the selected native history, including format and completeness checks. OpenCode 1.18.32, Hermes 0.21.5, and OpenClaw 2026.9.6 have experimental native-import adapters with durable recovery records; offline import/readback is verified, with OpenCode and Hermes also checked in their native terminal UIs after restart. New-target real model continuation remains unverified. One OpenClaw-to-Claude synthetic history has produced a correct real reply; full per-direction acceptance is still pending. See the [direction and version matrix](docs/SESSION-INTEROPERABILITY.md). AgentKib preserves useful timeline context, redacts common sensitive values, and requires confirmation before writing or importing handoff artifacts. Antigravity's current native-import and Desktop/CLI interoperability limits are documented in [Antigravity integration](docs/ANTIGRAVITY.md).
 
 ### Keep local tools current
 
-Inspect Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build installations. AgentKib reports each installation's version, source, executable path, PATH default, and conflicts. Verified package-manager or official-updater actions can run with pinned arguments; ambiguous, privileged, or remote-script flows fall back to official commands or documentation.
+Inspect Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build installations. AgentKib reports each installation's version, source, executable path, PATH default, and conflicts. Verified package-manager actions can run with a pinned target; channels that cannot pin an exact version, along with ambiguous, privileged, or remote-script flows, fall back to a command or official documentation.
 
 [![AgentKib Tools and updates showing versions, installation sources, and diagnostics](docs/assets/agentkib-tools-updates.png)](docs/assets/agentkib-tools-updates.png)
 
 ## Built-in Web (development preview)
 
-This monorepo includes a separately built Web client bundled with Electron. Enable it in **Settings → Remote connections → Web access**; configure your own HTTPS proxy or tunnel for remote use. No AgentKib account or coordination server is required. The desktop application must remain running. Experimental sending and approvals stay disabled until live acceptance is completed. See the [self-hosting guide (Chinese)](docs/WEB-SELF-HOSTING.md) and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
+This monorepo includes a separately built Web client bundled with Electron. In **Settings → Remote connections**, use the phone-access setup action and complete invitation registration and device pairing. The default registration API is `https://api.agentkib.com`; `https://remote.agentkib.com` remains the hosted Web entry and trusted LAN origin. Local/LAN Web access is a separate, optional route that does not require the hosted service. Native connections to another desktop have their own pairing flow; see [native LAN connections](docs/REMOTE.md). The desktop application must remain running. Read access is separate from control permissions. Verified macOS Claude Code installations (`2.1.263` / `2.1.285`) have a shared desktop/Web managed-session implementation for new sessions, confirmed same-UUID continuation, images/files, approvals, and durable receipt recovery. Native and device acceptance is tracked separately in the [current Claude QA](qa/claude-managed-2026-09-30.md); Web control requires host and per-browser permissions; Codex owner control remains acceptance-gated. See the [local Web setup guide (Chinese)](docs/WEB-SELF-HOSTING.md), [Claude continuation boundary](docs/CLAUDE-WEB.md), and [QA status](qa/WEB-V1.md). This preview is not a claim that the current published release includes Web access.
+
+The invitation-test implementation adds Codex app-server task creation and explicit same-ID handoff, separately granted project files/artifacts and read-only Git diffs, isolated interactive HTML bundles, and streamed media previews. AgentKib Remote is an invitation-test hosted-access implementation; its server implementation and deployment configuration are not included in this repository. Public launch and pricing are not announced here. Previously configured `https://remote.agentkib.com` broker identities require explicit migration and new registration; credentials are not copied to the new API origin. The desktop connector keeps browser business TLS termination on the desktop. This repository contains the desktop connector, Web client and local agent/artifact services. See the [Codex and artifact setup](docs/REMOTE-CODEX-WEB.md) and [hosted remote service guide](docs/REMOTE-RELAY.md). The implementation remains in invitation testing; public connectivity and physical iOS/Android acceptance are still pending.
 
 ## Download
 
@@ -72,9 +74,10 @@ Only use files from the official release and verify the matching `.sha256` check
 
 ## Support at a glance
 
-- **Discovery and context:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, Grok Build, and read-only DeepSeek Harness diagnostics.
-- **Session browsing and handoff:** Codex and Claude Code.
-- **Tool management:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. DeepSeek Harness is intentionally excluded.
+- **Discovery and context:** Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, Grok Build, and read-only DeepSeek Harness diagnostics.
+- **Session browsing:** Codex, Claude Code, Antigravity ACP, OpenCode, supported Cursor CLI stores, OpenClaw schema-23 SQLite and legacy JSONL, Hermes, and Grok Build. Reading never modifies the original history.
+- **Reviewed handoff:** all eight sources above, subject to per-session parsing. Native import, context-file handoff, and Web control are separate capabilities; see the [compatibility matrix](docs/SESSION-INTEROPERABILITY.md) for restrictions and acceptance status.
+- **Tool management:** Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. Antigravity is detected and linked to official update guidance, but has no automatic package action. DeepSeek Harness is intentionally excluded.
 - **Interface:** English, Simplified Chinese, Traditional Chinese, and Japanese; light, dark, and system themes.
 - **Platforms:** macOS 13.3+, Windows 11, Ubuntu 22.04, and Fedora. ARM64 Windows and Linux packages remain Preview.
 

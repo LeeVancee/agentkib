@@ -1,0 +1,135 @@
+{
+  "firstRun": {
+    "passed": 1033,
+    "failed": 15,
+    "failures": [
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "registers IPC and starts the Runtime without blocking window creation"
+      },
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "exits benchmark mode when Runtime startup exhausts retries"
+      },
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "bounds the benchmark client's shutdown request"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "routes Claude release with both revision and Runtime identity without touching Codex"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "forwards a repeated text request to Runtime fingerprint replay after live revision advances"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "returns the original attachment receipt after completion and attachment deletion"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "keeps unknown owner attachment replay conflicts pinned without another dispatch"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "assigns the owner in the host and does not forward caller paths or device IDs"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "reports pre-dispatch validation definitively but leaves transport errors uncertain"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "passes an existing request to the authoritative fingerprint check despite a newer revision"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "binds release to the displayed revision and current Runtime identity"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "keeps attachments pinned across restart until a matching completed receipt"
+      },
+      {
+        "file": "apps/desktop/src/features/app/useAppNavigation.test.tsx",
+        "name": "goes to the workspace list when Workspaces is chosen from inside a workspace"
+      },
+      {
+        "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+        "name": "retranslates filter accessible names"
+      },
+      {
+        "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+        "name": "keeps purpose names stable while the selected range changes"
+      }
+    ]
+  },
+  "isolatedNavigationRerun": {
+    "passed": 15,
+    "failed": 0
+  },
+  "finalRun": {
+    "passed": 1034,
+    "failed": 14,
+    "failures": [
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "registers IPC and starts the Runtime without blocking window creation"
+      },
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "exits benchmark mode when Runtime startup exhausts retries"
+      },
+      {
+        "file": "apps/desktop/src/test/startup-flow.test.ts",
+        "name": "bounds the benchmark client's shutdown request"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "routes Claude release with both revision and Runtime identity without touching Codex"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "forwards a repeated text request to Runtime fingerprint replay after live revision advances"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "returns the original attachment receipt after completion and attachment deletion"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/claude-host.test.ts",
+        "name": "keeps unknown owner attachment replay conflicts pinned without another dispatch"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "assigns the owner in the host and does not forward caller paths or device IDs"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "reports pre-dispatch validation definitively but leaves transport errors uncertain"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "passes an existing request to the authoritative fingerprint check despite a newer revision"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "binds release to the displayed revision and current Runtime identity"
+      },
+      {
+        "file": "apps/desktop/electron/main/web/local-claude.test.ts",
+        "name": "keeps attachments pinned across restart until a matching completed receipt"
+      },
+      {
+        "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+        "name": "retranslates filter accessible names"
+      },
+      {
+        "file": "apps/desktop/src/features/insights/InsightsPage.i18n.test.tsx",
+        "name": "keeps purpose names stable while the selected range changes"
+      }
+    ],
+    "sameAsPreviouslyReproducedBaseline": true
+  }
+}

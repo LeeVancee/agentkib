@@ -35,18 +35,8 @@ import {
 import { useLinkedState, useMemo, useState } from "octane";
 import type { AgentKind, WorkspaceSummary } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
-import { AssetDetails } from "./AssetDetails.tsrx";
-
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
+import { AssetDetails } from "./AssetDetails";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const ASSETS_PER_PAGE = 6;
 

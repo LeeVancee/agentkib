@@ -1,17 +1,16 @@
 /** @jsxImportSource octane */
 
-import { useI18n } from "@/core/useI18n";
-import { Button } from "@/components/ui/button.tsrx";
-import { WorkspaceDoctorSkeleton } from "./WorkspaceSkeleton.tsrx";
-import { Badge } from "@/components/ui/badge.tsrx";
-import { Card } from "@/components/ui/card.tsrx";
-import { useEffect, useState } from "octane";
-import { Check, CircleAlert, Minus, RefreshCw, ShieldCheck, Wrench } from "@octanejs/lucide";
-
-import type { ContextDoctorSummary, DoctorAssetStatus, WorkspaceSummary } from "@/core/types";
-import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
-import { cn } from "@/lib/utils";
-import { useHomeDoctorReport } from "@/features/home/home-query.tsrx";
+import type {
+  AgentKind,
+  ContextDoctorReport,
+  ContextDoctorSummary,
+  DoctorAssetStatus,
+  WorkspaceSummary,
+} from "@/core/types";
+import { AgentIcon } from "@/features/agents/AgentIcon";
+import { cn, withAsyncCleanup } from "@/lib/utils";
+import { useHomeDoctorReport } from "@/features/home/home-query";
+import { AGENT_LABELS } from "@/core/agents";
 
 export function WorkspaceDoctorPage({
   workspace,
@@ -281,20 +280,8 @@ function DoctorCell({ value }: { value: DoctorAssetStatus }) {
 }
 
 function agentLabel(agent: string) {
-  return (
-    (
-      {
-        codex: "Codex",
-        "claude-code": "Claude Code",
-        cursor: "Cursor",
-        opencode: "OpenCode",
-        "open-claw": "OpenClaw",
-        hermes: "Hermes",
-        "grok-build": "Grok Build",
-        "deepseek-harness": "DeepSeek Harness",
-      } as Record<string, string>
-    )[agent] ?? agent
-  );
+  // 诊断结果可能带有未登记的 agent 标识，此时原样显示。
+  return Object.hasOwn(AGENT_LABELS, agent) ? AGENT_LABELS[agent as AgentKind] : agent;
 }
 
 function shortHash(value: string) {

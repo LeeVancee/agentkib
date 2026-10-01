@@ -1,11 +1,10 @@
-/** @jsxImportSource octane */
-
-import { useLayoutEffect } from "octane";
+import { StrictMode, useLayoutEffect } from "octane";
 import { createRoot } from "octane";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { RouterProvider } from "@octanejs/tanstack-router";
-import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
-import { QuotaPopover } from "@/features/quota/QuotaPopover.tsrx";
+import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { QuotaPopover } from "@/features/quota/QuotaPopover";
+import { WebPairingPrompt } from "@/features/remote/WebPairingPrompt";
 import { cachedEffectiveLocale, initializeI18n } from "./core/i18n";
 import { applyPlatformAttribute } from "./core/platform";
 import { desktopApi } from "./core/desktop";
@@ -51,10 +50,15 @@ async function bootstrap() {
   const app =
     surface === "quota-popover" ? <QuotaPopover /> : <RouterProvider router={createAppRouter()} />;
   createRoot(document.getElementById("root")!).render(
-    <QueryClientProvider client={queryClient}>
-      {surface !== "quota-popover" && <BenchmarkCommitMarker />}
-      <AppDialogProvider>{app}</AppDialogProvider>
-    </QueryClientProvider>,
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        {surface !== "quota-popover" && <BenchmarkCommitMarker />}
+        <AppDialogProvider>
+          {app}
+          {surface !== "quota-popover" && <WebPairingPrompt />}
+        </AppDialogProvider>
+      </QueryClientProvider>
+    </StrictMode>,
   );
 }
 

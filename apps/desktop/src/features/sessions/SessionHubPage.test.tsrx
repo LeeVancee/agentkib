@@ -3,7 +3,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@octanejs/testing-library";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -22,8 +23,14 @@ import { readRemoteHistory } from "@/features/remote/remote-catalog-store";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@octanejs/tanstack-router", () => ({ useNavigate: () => navigate }));
-vi.mock("@/core/api", () => ({ api: { sessionEvents: vi.fn(), setSessionIndexEnabled: vi.fn() } }));
-vi.mock("./SessionHubContext.tsrx", () => ({ useSessionHub: vi.fn() }));
+vi.mock("@/core/api", () => ({
+  api: {
+    sessionEvents: vi.fn(),
+    setSessionIndexEnabled: vi.fn(),
+    sessionSourceCapability: vi.fn(),
+  },
+}));
+vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
 vi.mock("@/features/remote/remote-catalog-store", () => ({ readRemoteHistory: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
@@ -114,6 +121,7 @@ describe("SessionHubPage", () => {
         warnings: [],
       });
     vi.mocked(api.setSessionIndexEnabled).mockReset();
+    vi.mocked(api.sessionSourceCapability).mockReset().mockResolvedValue({ status: "supported" });
   });
   afterEach(cleanup);
 
@@ -172,19 +180,22 @@ describe("SessionHubPage", () => {
     expect(screen.getByText(/Saved history, not live agent status/)).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^(send|approve|stop)/i })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Continue in workspace" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue in workspace" }));
     expect(navigate).toHaveBeenCalledWith({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
       search: { sessionId: readable.id },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Back to overview" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("menuitem", { name: "Back to overview" }));
     expect(hub.select).toHaveBeenLastCalledWith();
   });
 
   it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "does not offer continuation for %s historical sources",
-    (agent) => {
+    "uses runtime capability for %s historical sources",
+    async (agent) => {
       hub = {
         ...hub,
         selected: { ...readable, id: `${agent}-history`, agent },
@@ -193,8 +204,22 @@ describe("SessionHubPage", () => {
       render(<SessionWindowToolbar />);
 
       expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+      expect(await screen.findByRole("button", { name: "Continue in workspace" })).toBeEnabled();
+      expect(api.sessionSourceCapability).toHaveBeenCalledWith(`${agent}-history`);
     },
   );
+
+  it("does not offer continuation when the original format is unsupported", async () => {
+    vi.mocked(api.sessionSourceCapability).mockResolvedValue({
+      status: "unsupported",
+      reason: "Unknown format",
+    });
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+    render(<SessionWindowToolbar />);
+    await act(async () => {});
+    expect(api.sessionSourceCapability).toHaveBeenCalledWith(readable.id);
+    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+  });
 
   it("explains metadata-only records without reading history or offering continuation", () => {
     hub = { ...hub, selected: metadata, selectedWorkspace: workspace };

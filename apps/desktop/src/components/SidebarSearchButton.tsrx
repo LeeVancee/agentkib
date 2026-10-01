@@ -26,7 +26,10 @@ export function SidebarSearchButton({
       size="content"
       type="button"
       data-global-search-trigger
-      className={cn("sidebar-search-button", className)}
+      className={cn(
+        "sidebar-search-button grid size-8 shrink-0 place-items-center rounded-[0.5rem] text-muted-foreground [-webkit-app-region:no-drag] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+        className,
+      )}
       aria-label={tr("search.open")}
       aria-keyshortcuts={ariaShortcut(shortcut, currentAppPlatform())}
       title={`${tr("search.open")} (${formatShortcut(shortcut)})`}

@@ -104,6 +104,7 @@ function workspaceStatusLabel(status: WorkspaceSummary["status"]) {
 }
 
 type Page = "overview" | "sessions" | "git" | "assets" | "context" | "doctor" | "changes";
+
 function WorkspaceLayout() {
   const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
@@ -292,6 +293,7 @@ function WorkspaceLayout() {
           reviewDisabled={busy || !hasUnsavedDraft}
         />
       </section>
+
       <section className={cn("min-w-0", currentPage === "git" && "min-h-[calc(100vh-118px)]")}>
         {busy || (currentPage !== "doctor" && (!scan || !manifest)) ? (
           <WorkspacePageSkeleton page={currentPage} />

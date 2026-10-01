@@ -1,10 +1,10 @@
-/** @jsxImportSource octane */
-
+import { cn } from "@/lib/utils";
 import { useState, type CSSProperties } from "octane";
 import { useTranslation } from "@octanejs/i18next";
 import { Check, CircleAlert, Monitor, Moon, Sun } from "@octanejs/lucide";
 
 import { api } from "@/core/api";
+import { Button } from "@/components/ui/button";
 import {
   ACCENT_THEME_IDS,
   accentThemePreference,
@@ -15,7 +15,6 @@ import {
 } from "@/core/theme";
 import type { AccentThemeId, EffectiveTheme, RuntimeInfo, ThemePreference } from "@/core/types";
 import { localizeMessage } from "@/core/i18n";
-import { Button } from "@/components/ui/button.tsrx";
 import { withAsyncCleanup } from "@/lib/utils";
 
 import {
@@ -84,26 +83,90 @@ const themeIcons: Record<ThemePreference, typeof Sun> = {
   system: Monitor,
 };
 
+const previewStyles = {
+  themeChoiceCard:
+    "theme-choice-card grid w-full items-stretch justify-stretch overflow-hidden appearance-none cursor-pointer border border-border rounded-[0.9rem] bg-card text-card-foreground text-left transition-[border-color,box-shadow,transform,translate] duration-180 ease-[ease] hover:border-[color-mix(in_oklch,var(--primary)_48%,var(--border))] hover:shadow-[0_0.5rem_1.25rem_color-mix(in_srgb,var(--foreground)_7%,transparent)] hover:-translate-y-px active:translate-y-px focus-visible:border-ring focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_25%,transparent)] focus-visible:outline-none aria-pressed:border-primary aria-pressed:shadow-[0_0_0_2px_color-mix(in_srgb,var(--primary)_18%,transparent)] disabled:cursor-wait disabled:opacity-[0.68] disabled:translate-none motion-reduce:transition-none",
+  themeChoiceCardFooter:
+    "theme-choice-card-footer flex min-h-13 items-center justify-between gap-3 py-3 px-3.5 text-foreground text-sm font-semibold [&>svg]:shrink-0 [&>svg]:text-primary",
+  themeModePreview:
+    "theme-mode-preview relative grid min-h-33 gap-[0.45rem] overflow-hidden pt-[1.35rem] px-[0.65rem] pb-[0.65rem] grid-cols-[29%_minmax(0,1fr)] bg-[var(--preview-canvas)]",
+  themeAccentPreview:
+    "theme-accent-preview relative grid min-h-33 gap-[0.45rem] overflow-hidden pt-[1.35rem] px-[0.65rem] pb-[0.65rem] grid-cols-[27%_minmax(0,1fr)] bg-[var(--preview-canvas)]",
+  themeModePreviewSidebar:
+    "theme-mode-preview-sidebar grid content-start gap-[0.45rem] min-w-0 rounded-[0.45rem] p-[0.55rem] bg-[var(--preview-sidebar)]",
+  themeModePreviewContent:
+    "theme-mode-preview-content grid content-start gap-[0.45rem] min-w-0 rounded-[0.45rem] p-[0.55rem] bg-[color-mix(in_srgb,var(--preview-canvas)_88%,var(--preview-sidebar))]",
+  themeAccentPreviewSidebar:
+    "theme-accent-preview-sidebar grid content-start gap-[0.42rem] min-w-0 rounded-[0.45rem] p-[0.55rem] bg-[color-mix(in_srgb,var(--preview-sidebar)_86%,var(--preview-accent)_14%)]",
+  themeAccentPreviewContent:
+    "theme-accent-preview-content grid content-start gap-[0.42rem] min-w-0 rounded-[0.45rem] p-[0.55rem] bg-[color-mix(in_srgb,var(--preview-canvas)_92%,var(--preview-sidebar))]",
+  themePreviewDot: "theme-preview-dot block size-4 rounded-[0.32rem] bg-[var(--preview-accent)]",
+  themePreviewLogo:
+    "theme-preview-logo block size-[1.15rem] mb-1 rounded-[0.38rem] bg-[var(--preview-accent)] shadow-[0_0_0_0.2rem_color-mix(in_srgb,var(--preview-accent)_16%,transparent)]",
+  themePreviewLine:
+    "theme-preview-line block w-full h-[0.35rem] rounded-full bg-[var(--preview-line)]",
+  themePreviewLineShort: "theme-preview-line-short w-[62%]",
+  themePreviewLineMedium: "theme-preview-line-medium w-[78%]",
+  themePreviewLineTitle: "theme-preview-line-title w-[44%] h-[0.42rem] bg-[var(--preview-strong)]",
+  themePreviewToolbar: "theme-preview-toolbar flex items-center justify-between gap-[0.4rem]",
+  themePreviewCardRow: "theme-preview-card-row flex items-center justify-between gap-[0.4rem] mt-1",
+  themePreviewAction:
+    "theme-preview-action block w-[1.4rem] h-[0.55rem] rounded-full bg-[var(--preview-accent)]",
+  themePreviewChart:
+    "theme-preview-chart flex h-7 items-end gap-[0.24rem] mt-[0.22rem] py-[0.3rem] px-[0.4rem] rounded-[0.35rem] bg-[color-mix(in_srgb,var(--preview-accent-soft)_48%,var(--preview-canvas))]",
+  themePreviewChartBar:
+    "theme-preview-chart-bar block flex-1 h-[42%] rounded-t-[0.15rem] rounded-b-[0.08rem] bg-[color-mix(in_srgb,var(--preview-accent)_52%,var(--preview-canvas))]",
+  themePreviewChartBarShort: "theme-preview-chart-bar-short h-[27%]",
+  themePreviewChartBarMedium: "theme-preview-chart-bar-medium h-[60%]",
+  themePreviewChartBarTall: "theme-preview-chart-bar-tall h-[82%] bg-[var(--preview-accent)]",
+  themePreviewCard:
+    "theme-preview-card block w-[48%] h-8 border border-[color-mix(in_srgb,var(--preview-muted)_38%,transparent)] rounded-[0.35rem] bg-[color-mix(in_srgb,var(--preview-sidebar)_56%,var(--preview-canvas))]",
+  themePreviewCardAccent:
+    "theme-preview-card-accent border-[color-mix(in_srgb,var(--preview-accent)_40%,transparent)] bg-[var(--preview-accent-soft)]",
+} as const;
+
 function ThemeModePreview({ mode }: { mode: ThemePreference }) {
   return (
-    <div className="theme-mode-preview" data-preview-mode={mode} aria-hidden="true">
+    <div className={previewStyles.themeModePreview} data-preview-mode={mode} aria-hidden="true">
       <span className="theme-preview-chrome" />
-      <div className="theme-mode-preview-sidebar">
-        <span className="theme-preview-dot" />
-        <span className="theme-preview-line theme-preview-line-short" />
-        <span className="theme-preview-line" />
-        <span className="theme-preview-line theme-preview-line-short" />
+      <div className={previewStyles.themeModePreviewSidebar}>
+        <span className={previewStyles.themePreviewDot} />
+        <span className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineShort)} />
+        <span className={previewStyles.themePreviewLine} />
+        <span className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineShort)} />
       </div>
-      <div className="theme-mode-preview-content">
-        <span className="theme-preview-line theme-preview-line-title" />
-        <span className="theme-preview-line" />
-        <span className="theme-preview-line theme-preview-line-medium" />
-        <div className="theme-preview-chart">
-          <span className="theme-preview-chart-bar" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-medium" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-tall" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-short" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-medium" />
+      <div className={previewStyles.themeModePreviewContent}>
+        <span className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineTitle)} />
+        <span className={previewStyles.themePreviewLine} />
+        <span
+          className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineMedium)}
+        />
+        <div className={previewStyles.themePreviewChart}>
+          <span className={previewStyles.themePreviewChartBar} />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarMedium,
+            )}
+          />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarTall,
+            )}
+          />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarShort,
+            )}
+          />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarMedium,
+            )}
+          />
         </div>
       </div>
     </div>
@@ -124,31 +187,64 @@ function AccentThemePreview({ theme, mode }: { theme: AccentThemeId; mode: Effec
   } as CSSProperties;
 
   return (
-    <div className="theme-accent-preview" data-preview-mode={mode} style={style} aria-hidden="true">
+    <div
+      className={previewStyles.themeAccentPreview}
+      data-preview-mode={mode}
+      style={style}
+      aria-hidden="true"
+    >
       <span className="theme-preview-chrome" />
-      <div className="theme-accent-preview-sidebar">
-        <span className="theme-preview-logo" />
-        <span className="theme-preview-line theme-preview-line-short" />
-        <span className="theme-preview-line" />
-        <span className="theme-preview-line theme-preview-line-medium" />
+      <div className={previewStyles.themeAccentPreviewSidebar}>
+        <span className={previewStyles.themePreviewLogo} />
+        <span className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineShort)} />
+        <span className={previewStyles.themePreviewLine} />
+        <span
+          className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineMedium)}
+        />
       </div>
-      <div className="theme-accent-preview-content">
-        <div className="theme-preview-toolbar">
-          <span className="theme-preview-line theme-preview-line-title" />
-          <span className="theme-preview-action" />
+      <div className={previewStyles.themeAccentPreviewContent}>
+        <div className={previewStyles.themePreviewToolbar}>
+          <span
+            className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineTitle)}
+          />
+          <span className={previewStyles.themePreviewAction} />
         </div>
-        <span className="theme-preview-line" />
-        <span className="theme-preview-line theme-preview-line-medium" />
-        <div className="theme-preview-chart">
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-short" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-tall" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-medium" />
-          <span className="theme-preview-chart-bar" />
-          <span className="theme-preview-chart-bar theme-preview-chart-bar-tall" />
+        <span className={previewStyles.themePreviewLine} />
+        <span
+          className={cn(previewStyles.themePreviewLine, previewStyles.themePreviewLineMedium)}
+        />
+        <div className={previewStyles.themePreviewChart}>
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarShort,
+            )}
+          />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarTall,
+            )}
+          />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarMedium,
+            )}
+          />
+          <span className={previewStyles.themePreviewChartBar} />
+          <span
+            className={cn(
+              previewStyles.themePreviewChartBar,
+              previewStyles.themePreviewChartBarTall,
+            )}
+          />
         </div>
-        <div className="theme-preview-card-row">
-          <span className="theme-preview-card" />
-          <span className="theme-preview-card theme-preview-card-accent" />
+        <div className={previewStyles.themePreviewCardRow}>
+          <span className={previewStyles.themePreviewCard} />
+          <span
+            className={cn(previewStyles.themePreviewCard, previewStyles.themePreviewCardAccent)}
+          />
         </div>
       </div>
     </div>
@@ -216,13 +312,13 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                 type="button"
                 variant="bare"
                 size="content"
-                className="theme-choice-card"
+                className={previewStyles.themeChoiceCard}
                 aria-pressed={selected}
                 disabled={busy || !runtime}
                 onClick={() => void updateTheme(mode)}
               >
                 <ThemeModePreview mode={mode} />
-                <span className="theme-choice-card-footer">
+                <span className={previewStyles.themeChoiceCardFooter}>
                   <span className="inline-flex min-w-0 items-center gap-2">
                     <Icon size={16} aria-hidden="true" />
                     <span className="truncate">{tr(`settings.theme.${mode}`)}</span>
@@ -245,13 +341,13 @@ export function AppearanceSettings({ runtime, onChanged }: AppearanceSettingsPro
                 type="button"
                 variant="bare"
                 size="content"
-                className="theme-choice-card"
+                className={previewStyles.themeChoiceCard}
                 aria-pressed={selected}
                 disabled={busy || !runtime}
                 onClick={() => void updateAccent(theme)}
               >
                 <AccentThemePreview theme={theme} mode={effectiveTheme} />
-                <span className="theme-choice-card-footer">
+                <span className={previewStyles.themeChoiceCardFooter}>
                   <span className="truncate">{tr(`settings.accentTheme.${theme}`)}</span>
                   {selected && <Check size={16} aria-hidden="true" />}
                 </span>

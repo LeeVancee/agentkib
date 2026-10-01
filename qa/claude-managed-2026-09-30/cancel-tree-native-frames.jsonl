@@ -1,0 +1,2 @@
+{"type": "assistant", "session_id": "7015deee-c47a-4b2b-adda-47cccaa5e87c", "message": {"content": [{"type": "tool_use", "id": "call_00_HTxVQyPO9SsrChOHHMqV5866", "name": "Bash", "input": {"command": "sleep 30", "description": "Sleep for 30 seconds"}}]}}
+{"type": "system", "subtype": "task_started", "task_id": "bu7tks2rk", "tool_use_id": "call_00_HTxVQyPO9SsrChOHHMqV5866", "description": "Sleep for 30 seconds", "is_backgrounded": false, "task_type": "local_bash", "uuid": "e52ba467-33ee-4ca6-8b4f-9a11e854968f", "session_id": "7015deee-c47a-4b2b-adda-47cccaa5e87c"}

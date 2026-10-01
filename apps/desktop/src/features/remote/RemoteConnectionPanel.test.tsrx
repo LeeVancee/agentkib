@@ -1,14 +1,15 @@
 /** @jsxImportSource octane */
 
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLocale, initializeI18n, tr } from "@/core/i18n";
 import type { RemoteStatus } from "@/core/remote-types";
 import { RemoteConnectionPanel, RemoteConnectionSettings } from "./RemoteConnectionPanel.tsrx";
 import { useRemoteStore } from "./remote-store";
-import { QuickConnect } from "./QuickConnect.tsrx";
+import { remoteEntryCopy } from "./remote-entry-copy";
+import { QuickConnect } from "./QuickConnect";
 
 const status: RemoteStatus = {
   local: { id: "local", name: "Desk", enabled: false, address: null },
@@ -21,10 +22,22 @@ const status: RemoteStatus = {
   pairing_expires_at: null,
 };
 const run = vi.fn();
+const webSnapshot = vi.hoisted(() => ({
+  enabled: false,
+  running: false,
+}));
+vi.mock("./web-status", () => ({
+  subscribeWebStatus: (_target: unknown, listener: { status(value: unknown): void }) => {
+    listener.status({ config: { enabled: webSnapshot.enabled }, running: webSnapshot.running });
+    return () => {};
+  },
+}));
 vi.mock("./WebAccessSettings", () => ({ WebAccessSettings: () => null }));
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => {
   run.mockReset().mockResolvedValue(null);
+  webSnapshot.enabled = false;
+  webSnapshot.running = false;
   useRemoteStore.setState({
     snapshot: status,
     loading: false,
@@ -221,7 +234,9 @@ describe("remote connections UI", () => {
     try {
       for (const locale of ["zh-CN", "zh-TW", "ja-JP", "en-US"] as const) {
         await act(() => changeLocale(locale));
-        expect(screen.getByRole("heading", { name: tr("remote.quick.title") })).toBeTruthy();
+        expect(
+          screen.getByRole("heading", { name: remoteEntryCopy[locale].nativeTitle }),
+        ).toBeTruthy();
         expect(screen.getByRole("textbox", { name: tr("remote.address") })).toBe(address);
         expect((address as HTMLInputElement).value).toBe("192.168.1.20:42987");
       }
@@ -382,4 +397,32 @@ describe("remote connections UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     expect(run).toHaveBeenCalledWith({ operation: "revoke", id: "device" });
   });
+});
+
+it("keeps an enabled LAN listener visible while its settings are collapsed", async () => {
+  webSnapshot.enabled = true;
+  webSnapshot.running = true;
+  render(<RemoteConnectionSettings />);
+  expect(await screen.findByText("LAN HTTP access is running")).toBeTruthy();
+  expect(screen.getAllByText("LAN direct connection is not encrypted")).toHaveLength(1);
+  expect(screen.getByText(/capture the access token/)).toBeTruthy();
+  const summary = screen.getByRole("button", { name: "LAN access (advanced)" });
+  expect(summary.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Manage LAN access" }));
+  expect(summary.getAttribute("aria-expanded")).toBe("true");
+  expect(document.activeElement).toBe(summary);
+  const user = userEvent.setup();
+  await user.keyboard("{Enter}");
+  expect(summary.getAttribute("aria-expanded")).toBe("false");
+  await user.keyboard(" ");
+  expect(summary.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("region", { name: "Connect to another computer" })).toBeTruthy();
+});
+
+it("shows an enabled but unavailable LAN service without reporting it as running", async () => {
+  webSnapshot.enabled = true;
+  render(<RemoteConnectionSettings />);
+  expect(await screen.findByText("LAN access is enabled but unavailable")).toBeTruthy();
+  expect(screen.queryByText("LAN HTTP access is running")).toBeNull();
+  expect(screen.queryByText("LAN direct connection is not encrypted")).toBeNull();
 });

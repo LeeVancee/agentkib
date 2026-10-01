@@ -4,12 +4,20 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
+import type { ReactElement } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { AppDialogProvider } from "@/components/AppDialogProvider.tsrx";
-import { changeLocale, initializeI18n, localizeMessage } from "@/core/i18n";
+import { AppDialogProvider } from "@/components/AppDialogProvider";
+import { changeLocale, initializeI18n, localizeMessage, tr } from "@/core/i18n";
 import type { SkillCandidate, SkillOperationPreview } from "@/core/types";
 import { SkillHubPage } from "./SkillHubPage.tsrx";
+
+// 每个用例一个新的 QueryClient，避免技能库缓存在用例之间泄漏。
+function renderWithClient(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 const mocks = vi.hoisted(() => ({
   installedSkills: vi.fn(),
@@ -75,7 +83,7 @@ describe("SkillHubPage", () => {
     ]);
     mocks.removedSkills.mockResolvedValue([]);
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
@@ -85,6 +93,35 @@ describe("SkillHubPage", () => {
     expect(screen.getByText("Local unmanaged")).toBeTruthy();
     expect(screen.getByRole("tab", { name: /Workspace usage/ })).toBeTruthy();
     expect(screen.getByText(/not enabled for any Agent automatically/)).toBeTruthy();
+  });
+
+  it("exposes localized accessible names for discover inputs", async () => {
+    mocks.installedSkills.mockResolvedValue([]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
+    const user = userEvent.setup();
+
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+
+    try {
+      for (const locale of ["en-US", "zh-CN", "zh-TW", "ja-JP"] as const) {
+        await act(() => changeLocale(locale));
+        expect(screen.getByRole("textbox", { name: tr("skills.addFromGithub") })).toBeTruthy();
+        expect(screen.getByRole("textbox", { name: tr("skills.search") })).toBeTruthy();
+      }
+    } finally {
+      await act(() => changeLocale("en-US"));
+    }
   });
 
   it("reviews an immutable curated package before adding it", async () => {
@@ -108,7 +145,7 @@ describe("SkillHubPage", () => {
     });
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
@@ -161,7 +198,7 @@ describe("SkillHubPage", () => {
     mocks.prepareSkillInstall.mockResolvedValue({ ...preview, operation: "update" });
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
@@ -188,7 +225,7 @@ describe("SkillHubPage", () => {
       .mockRejectedValueOnce(new Error("inspection failed"));
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
@@ -228,7 +265,7 @@ describe("SkillHubPage", () => {
     mocks.discoverSkills.mockImplementation(() => new Promise(() => {}));
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
       </AppDialogProvider>,
@@ -285,7 +322,7 @@ describe("SkillHubPage", () => {
     mocks.uninstallSkill.mockResolvedValue(latestRemoval);
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage
           workspaceAssets={[]}
@@ -332,7 +369,7 @@ describe("SkillHubPage", () => {
     });
     const user = userEvent.setup();
 
-    render(
+    renderWithClient(
       <AppDialogProvider>
         <SkillHubPage
           workspaceAssets={[]}

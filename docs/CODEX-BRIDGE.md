@@ -1,3 +1,5 @@
+> Historical reference for the removed Rust bridge. Its `cargo` commands require an archived checkout and are not part of the current TypeScript application.
+
 # Codex 原会话实验桥接
 
 ## 状态与边界
@@ -95,15 +97,15 @@ git diff --check
 
 ### 三端实时复测（19:50–19:54）
 
-目标始终为用户指定的“处理测试对话”，UUID `01a07b7a-68a8-7113-832f-36d1ddd5594f`。沿用上述安装版本，没有改变权限设置，也没有修改业务代码。
+目标始终为用户指定的“处理测试对话”，UUID `REDACTED_NATIVE_THREAD_ID`。沿用上述安装版本，没有改变权限设置，也没有修改业务代码。
 
 | 场景 | 观察与结论 |
 | --- | --- |
-| 探针发送 LIVE-005 | 官方记录在原会话新增一个轮次 `01a07bb4-b9b6-76f0-ad9a-bea25df4d10e`，约 4.2 秒完成，准确回复标记；VS Code 无需重启即显示消息和回复。未调用工具 |
-| 官方桌面入口发起 STOP-006 | 原会话轮次 `01a07bb5-3dea-7d81-a587-8da73b8f2aac` 在 `/tmp` 执行一次 `/bin/sleep 30`；VS Code 显示运行中及停止按钮，探针收到活动轮次与增量状态 |
+| 探针发送 LIVE-005 | 官方记录在原会话新增一个轮次 `REDACTED_TURN_ID_01`，约 4.2 秒完成，准确回复标记；VS Code 无需重启即显示消息和回复。未调用工具 |
+| 官方桌面入口发起 STOP-006 | 原会话轮次 `REDACTED_TURN_ID_02` 在 `/tmp` 执行一次 `/bin/sleep 30`；VS Code 显示运行中及停止按钮，探针收到活动轮次与增量状态 |
 | 执行中重复发送与停止 | DUP-006 被探针以 not idle 拒绝，未新增该消息或轮次。定向停止 STOP-006 后，VS Code 显示后台终端已停止；官方记录为 `interrupted`，持续 18.622 秒，没有自然结束回复。探针在回执后进入 outcome-unknown，显式 sync 后恢复 idle |
 | 真实审批尝试 APPROVAL-007 | 仅在专用临时空目录 touch 一个零字节文件；当前实际权限直接允许执行，回复“已完成，无需审批”，探针 pendingApprovals 始终为 0。因此真实审批决定、跨端抢先审批及失效行为仍未验收；未改变权限或模拟审批 |
-| VS Code 发送 VSCODE-008 | 从插件输入并发送纯文本；原会话轮次 `01a07bb7-a6a2-75d2-a17e-e678b569d4d5` 约 3.1 秒完成，准确回复标记。探针收到 revision 219–237 的运行到空闲变化，官方记录只有该用户消息和最终回复，无工具调用 |
+| VS Code 发送 VSCODE-008 | 从插件输入并发送纯文本；原会话轮次 `REDACTED_TURN_ID_03` 约 3.1 秒完成，准确回复标记。探针收到 revision 219–237 的运行到空闲变化，官方记录只有该用户消息和最终回复，无工具调用 |
 | 探针断开与重连 | quit 控制探针后，以不带 allow-control 的只读探针重新连接，重新取得同一会话 revision 237、idle、无待审批的快照；随后正常退出。未退出或重启官方客户端 |
 
 本次本地检查：桥接 crate 的 29 项测试通过，Clippy（all-targets、warnings as errors）、全工作区格式检查通过。此处仅验证本机实验探针，不等于 AgentKib 正式界面获得控制能力。跨客户端同时发送、owner 退出与真实审批仍待单独验收；用户此前重启 VS Code 后能看到历史，也不能单独证明缓存是根因。
@@ -112,8 +114,8 @@ git diff --check
 
 **结论：暂不通过正式控制能力验收。** 之前“停止通过”仅依据轮次状态和 UI，现收窄为“轮次中断通过”；不保证执行中的命令被终止。以下仍使用同一合成会话，无生产代码、权限或官方客户端生命周期改动。
 
-- RECONNECT-009（轮次 `01a07c4b-1856-7062-920b-0fb2cb361641`）：执行中正常退出探针，再连接取得原轮次 running、revision 268；旧 STOP-006 轮次的停止被拒绝，正确停止后同步为 idle。官方轮次为 interrupted、26.470 秒，但命令后续记录 completed、退出码 0、29.865 秒。该实验是 follower 主动断开重连，不代表 owner 退出或异常网络断开已通过。
-- PROCESS-011（轮次 `01a07c4d-177a-7183-9bfc-3187355a7775`）：停止前通过进程表确认 PID 28226 为 `/bin/sleep 30`；停止并同步到 idle 后同一 PID 仍存在，后续再次观察累计运行 22 秒。最终自然消失，官方命令记录 completed、退出码 0、29.862 秒，而轮次为 interrupted、19.143 秒。确认“轮次中断不等于子进程终止”，尚未定位到适配器、owner 或工具执行器中的具体原因；不能靠 UI 的已停止标签判断命令停止成功。
+- RECONNECT-009（轮次 `REDACTED_TURN_ID_04`）：执行中正常退出探针，再连接取得原轮次 running、revision 268；旧 STOP-006 轮次的停止被拒绝，正确停止后同步为 idle。官方轮次为 interrupted、26.470 秒，但命令后续记录 completed、退出码 0、29.865 秒。该实验是 follower 主动断开重连，不代表 owner 退出或异常网络断开已通过。
+- PROCESS-011（轮次 `REDACTED_TURN_ID_05`）：停止前通过进程表确认 PID 28226 为 `/bin/sleep 30`；停止并同步到 idle 后同一 PID 仍存在，后续再次观察累计运行 22 秒。最终自然消失，官方命令记录 completed、退出码 0、29.862 秒，而轮次为 interrupted、19.143 秒。确认“轮次中断不等于子进程终止”，尚未定位到适配器、owner 或工具执行器中的具体原因；不能靠 UI 的已停止标签判断命令停止成功。
 - 无 pending 的合成审批 ID 被真实探针拒绝（`approval no longer pending; nothing sent`）；这是负向保护验证，不是实际审批验证。
 - 省略版本元数据且未启用控制的真实连接仍可读取快照，但发送、停止、审批均被 `experimental controls are disabled` 拒绝，官方未新增该负向测试消息。
 - 重新运行 `cargo test -p agentkib-codex-bridge`：29 项通过。受控测试通过未覆盖上述真实子进程存活差异。探针均已正常退出，测试 sleep 已自然结束。
@@ -130,24 +132,24 @@ git diff --check
 
 ### 修正后真实回归与原生对照（22:50–22:52）
 
-- RECEIPT-012（`01a07c59-78ab-7801-9e96-f401fc86e80b`）：修正后的探针接受匹配轮次的真实回执，明确输出“Tool subprocess termination is NOT guaranteed”，同步到 revision 334 idle。官方轮次 interrupted、12.903 秒；停止前后均观察到 PID 39816 的 `/bin/sleep 30`，后续 29 秒时仍存在，命令最终 completed、退出码 0、29.860 秒。回执修正通过真实兼容验证，完整进程终止仍不通过。
-- NATIVE-013（`01a07c5a-1119-7483-a517-f3e2624595c9`）：直接在 VS Code 原生输入框发送同样的 sleep 测试，并点击当前轮次的原生停止按钮；适配器只观察，没有发送停止。UI 显示停止且官方轮次 interrupted、19.271 秒，但 PID 40552 仍存在（累计运行 20 秒），最终命令 completed、退出码 0、29.855 秒。确认相同行为也发生于原生 VS Code 入口，不是仅由桥接入口触发；尚不能进一步判定 owner 与工具执行器中的具体故障点。
-- RACE-014：并行从探针发送 A、官方桌面 send_message_to_thread 入口发送 B；原会话轮次 `01a07c5a-cc71-7411-9ceb-ec77072b9d8c` 内 A、B 各出现一次回复，没有额外工具调用，最终 completed、8.587 秒，探针 revision 410 idle。但 B 实际作为 delegation functionCallOutput 注入同一轮次，并非第二个 start-turn；因此不将此结果视为跨客户端 start-turn 竞争保证。
+- RECEIPT-012（`REDACTED_TURN_ID_06`）：修正后的探针接受匹配轮次的真实回执，明确输出“Tool subprocess termination is NOT guaranteed”，同步到 revision 334 idle。官方轮次 interrupted、12.903 秒；停止前后均观察到 PID 39816 的 `/bin/sleep 30`，后续 29 秒时仍存在，命令最终 completed、退出码 0、29.860 秒。回执修正通过真实兼容验证，完整进程终止仍不通过。
+- NATIVE-013（`REDACTED_TURN_ID_07`）：直接在 VS Code 原生输入框发送同样的 sleep 测试，并点击当前轮次的原生停止按钮；适配器只观察，没有发送停止。UI 显示停止且官方轮次 interrupted、19.271 秒，但 PID 40552 仍存在（累计运行 20 秒），最终命令 completed、退出码 0、29.855 秒。确认相同行为也发生于原生 VS Code 入口，不是仅由桥接入口触发；尚不能进一步判定 owner 与工具执行器中的具体故障点。
+- RACE-014：并行从探针发送 A、官方桌面 send_message_to_thread 入口发送 B；原会话轮次 `REDACTED_TURN_ID_08` 内 A、B 各出现一次回复，没有额外工具调用，最终 completed、8.587 秒，探针 revision 410 idle。但 B 实际作为 delegation functionCallOutput 注入同一轮次，并非第二个 start-turn；因此不将此结果视为跨客户端 start-turn 竞争保证。
 - 本轮未修改生产代码、权限或官方应用；两次测试 sleep 均已自然退出，探针已正常退出。沿用上一轮已通过的 31 项单元/受控测试与 Clippy、格式检查，不宣称这些检查能代替进程级验收。
 
 截至该次回归，验收门槛仍未全部满足，真实审批和可安全退出的 owner 环境仍待准备。后续已按用户授权在原测试会话局部切换受限权限并验证审批，见下文；无需另建会话。owner 生命周期仍不在有其他任务运行的日常工作端通过退出应用测试。当前实验只可按“有限轮次控制，不承诺命令终止”理解，不能作为完整停止能力交付。
 
 ### 原会话真实命令审批验收（22:57–23:00）
 
-继续使用“处理测试对话”，不新建会话。APPROVAL-015（`01a07c5f-8d52-77e0-b3e5-5af7ff24368e`）要求仅通过正常工具审批机制申请 `/usr/bin/true`，实际没有调用工具。只读核对该轮次 turn_context 确认为 `approval_policy: never`、`sandbox_policy.type: danger-full-access`，不能用 VS Code 菜单显示的“请求批准”代替生效配置。
+继续使用“处理测试对话”，不新建会话。APPROVAL-015（`REDACTED_TURN_ID_09`）要求仅通过正常工具审批机制申请 `/usr/bin/true`，实际没有调用工具。只读核对该轮次 turn_context 确认为 `approval_policy: never`、`sandbox_policy.type: danger-full-access`，不能用 VS Code 菜单显示的“请求批准”代替生效配置。
 
 经用户明确同意继续使用该会话并局部设置权限后，在 VS Code 当前会话菜单重新选择“请求批准”。下一轮 turn_context 确认变为 `on-request`、`workspace-write`、network_access false；确实出现真实审批，而非伪造请求。没有编辑全局配置文件、改变其他会话、修改官方程序或绕过工具限制。测试结束保留此会话的受限模式，没有重新启用完全访问。
 
 | 场景 | 真实结果 |
 | --- | --- |
-| APPROVAL-016 / `01a07c60-5773-7bb2-aa5f-e11c6de64ffe` | requestId 856，命令 `/bin/zsh -c /usr/bin/true`，cwd `/tmp`；VS Code 出现允许一次/拒绝，探针 pending=1。探针发送 accept 后 pending 消失，官方记录命令仅执行一次、退出码 0，轮次 completed |
-| APPROVAL-017 / `01a07c61-0023-7403-8932-28794db9399f` | requestId 857；探针 decline 被 `decision not offered by owner` 拒绝，未发送不受支持决定。随后 VS Code 原生拒绝，官方记录报告命令未执行且无 commandExecution 项。探针再提交同一请求 accept，被 `approval no longer pending; nothing sent` 拒绝 |
-| APPROVAL-018 / `01a07c62-0a62-7873-8127-04969f77b515` | requestId 858；探针 cancel 后 pending 消失，官方轮次 interrupted，无 commandExecution 项。同步后再提交旧 accept 被拒绝；最终 revision 584 idle，探针正常退出 |
+| APPROVAL-016 / `REDACTED_TURN_ID_10` | requestId 856，命令 `/bin/zsh -c /usr/bin/true`，cwd `/tmp`；VS Code 出现允许一次/拒绝，探针 pending=1。探针发送 accept 后 pending 消失，官方记录命令仅执行一次、退出码 0，轮次 completed |
+| APPROVAL-017 / `REDACTED_TURN_ID_11` | requestId 857；探针 decline 被 `decision not offered by owner` 拒绝，未发送不受支持决定。随后 VS Code 原生拒绝，官方记录报告命令未执行且无 commandExecution 项。探针再提交同一请求 accept，被 `approval no longer pending; nothing sent` 拒绝 |
+| APPROVAL-018 / `REDACTED_TURN_ID_12` | requestId 858；探针 cancel 后 pending 消失，官方轮次 interrupted，无 commandExecution 项。同步后再提交旧 accept 被拒绝；最终 revision 584 idle，探针正常退出 |
 
 这些结果证明该安装版本下的单次命令允许、原生拒绝、探针取消，以及处理完成后的旧决定失效。**decline 与 cancel 不能擅自互换**：当前真实 owner 未提供 decline，cancel 的可观察结果是中断轮次。文件变更审批、不同类型额外权限、另一端恰在 refresh 与提交之间处理的窄竞态，以及 owner 实际退出仍未验收。完整进程停止的不通过结论保持不变。本轮无代码改动，`git diff --check` 通过。
 
@@ -155,9 +157,9 @@ git diff --check
 
 继续使用同一“处理测试对话”，保留 `on-request + workspace-write`，不修改官方客户端或其他会话权限。
 
-- SANDBOX-019（`01a07c64-5d5d-7070-9700-e2fe96416486`）：受限模式下仅执行 `/bin/sleep 30`。定向停止并同步为空闲后，原 PID 51773 仍存在；官方轮次 interrupted、18.041 秒，命令最终 completed、退出码 0、29.869 秒，随后进程自然退出。因此完整进程终止仍不通过，不能归因于完全访问模式。
-- FILE-020（`01a07c65-319c-7120-a440-0ab819b84434`）：真实 `item/fileChange/requestApproval`，requestId 860。审批前确认专用缓存目录的 `approval-020.txt` 不存在；探针 accept 后，官方 fileChange completed，独立读取确认内容只有 `AK-BRIDGE-FILE-020`。最终回复对结果存疑，但文件与结构化记录共同确认成功，未仅凭回复判定。验收后已删除该一次性测试文件。
-- FILE-021（`01a07c66-11c3-7961-b852-ea5aa2318e91`）：真实文件审批 requestId 861，目标同一专用目录的 `approval-021.txt`；已确认审批前文件不存在。owner 未提供 availableDecisions，按探针提示转原生界面处理拒绝时，Mac 锁定，无法操作。因此仍待审批，**文件拒绝及该请求的过期决定验证未通过验收**；未批准、未以 cancel 冒充拒绝。保留空目录 `/Users/kouzen/Library/Caches/agentkib-file-qa.v4dwey` 供解锁后继续测试。
+- SANDBOX-019（`REDACTED_TURN_ID_13`）：受限模式下仅执行 `/bin/sleep 30`。定向停止并同步为空闲后，原 PID 51773 仍存在；官方轮次 interrupted、18.041 秒，命令最终 completed、退出码 0、29.869 秒，随后进程自然退出。因此完整进程终止仍不通过，不能归因于完全访问模式。
+- FILE-020（`REDACTED_TURN_ID_14`）：真实 `item/fileChange/requestApproval`，requestId 860。审批前确认专用缓存目录的 `approval-020.txt` 不存在；探针 accept 后，官方 fileChange completed，独立读取确认内容只有 `AK-BRIDGE-FILE-020`。最终回复对结果存疑，但文件与结构化记录共同确认成功，未仅凭回复判定。验收后已删除该一次性测试文件。
+- FILE-021（`REDACTED_TURN_ID_15`）：真实文件审批 requestId 861，目标同一专用目录的 `approval-021.txt`；已确认审批前文件不存在。owner 未提供 availableDecisions，按探针提示转原生界面处理拒绝时，Mac 锁定，无法操作。因此仍待审批，**文件拒绝及该请求的过期决定验证未通过验收**；未批准、未以 cancel 冒充拒绝。保留空目录 `/Users/REDACTED_USER/Library/Caches/agentkib-file-qa.REDACTED` 供解锁后继续测试。
 
 探针审批输出新增 owner 的 availableDecisions、networkApprovalContext、additionalPermissions、grantRoot，修正原先无条件建议 decline 的提示；资料或决定不明确时回原客户端处理，并明确 cancel 不等于 decline。新增受控 socket 回归覆盖“不支持的 decline 零 mutation、cancel 精确参数”和“内部刷新后审批已失效时 accept 零 mutation”。这些受控测试不代表真实 refresh 与提交之间窄竞态、双端 start-turn 竞争或 owner 退出已验收。
 
@@ -171,7 +173,7 @@ git diff --check
 
 ### 双进程并发与停止边界复核（2026-09-07）
 
-RACE-022 使用两个独立探针进程，均先取得原会话 revision 744 idle，再并行发送只要求文字回复的 A/B 标记；两者实际经过 `thread-follower-start-turn`，没有使用消息注入工具。两端均获 owner 回执。官方记录轮次 `01a07c72-6453-7f92-b399-42744a941ded` completed、8.470 秒，内含 A 用户消息/最终回复、B 用户消息/最终回复，各一次，无工具调用。这证明本次双进程提交未丢失、未重复；owner 将两次输入合在同一轮次，不能宣称一个 start 请求必然对应一个独立轮次或具备跨客户端 CAS，也不能替代官方 UI 同时提交测试。
+RACE-022 使用两个独立探针进程，均先取得原会话 revision 744 idle，再并行发送只要求文字回复的 A/B 标记；两者实际经过 `thread-follower-start-turn`，没有使用消息注入工具。两端均获 owner 回执。官方记录轮次 `REDACTED_TURN_ID_16` completed、8.470 秒，内含 A 用户消息/最终回复、B 用户消息/最终回复，各一次，无工具调用。这证明本次双进程提交未丢失、未重复；owner 将两次输入合在同一轮次，不能宣称一个 start 请求必然对应一个独立轮次或具备跨客户端 CAS，也不能替代官方 UI 同时提交测试。
 
 通过 OpenAI Docs 核对[公开 App Server 文档](https://learn.chatgpt.com/docs/app-server)：`turn/interrupt` 的成功结果是轮次 interrupted；后台终端另有实验性 clean/list/terminate 接口。公开 App Server 方法不等于当前安装版桌面 follower IPC 已暴露相同方法。独立只读审查再次确认仓库的版本 4 interrupt 已绑定 expectedTurnId，方法白名单没有终端清理接口，未找到现有接口内可安全根治子进程残留的代码缺陷。因此不盲目添加未经验证的方法、不直接杀 PID、不删除轮次保护；完整停止依旧受上游执行器或安全清理接口阻塞。
 

@@ -1,8 +1,23 @@
 node_modules/
 dist/
-target/
 work/
 outputs/
+__pycache__/
+*.py[cod]
+# Local inspection artifacts can contain real workspaces, sessions or vendor code.
+/output/
+/.playwright-cli/
+/.idea/
+/designs/
+/apps/desktop/main-*.js
+/apps/desktop/src-*.js
+# Publish only reviewed synthetic QA images. Keep real captures locally.
+/qa/**/*.png
+/qa/**/*.jpg
+/qa/**/*.jpeg
+/qa/**/*.webp
+!/qa/codex-native-plan-goal-ui-2026-09-27/*.png
+!/qa/web-layout-audit-2026-09-27/after/*.png
 .DS_Store
 *.log
 *.tsbuildinfo

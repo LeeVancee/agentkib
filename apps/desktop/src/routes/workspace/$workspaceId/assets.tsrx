@@ -21,17 +21,8 @@ import { Textarea } from "@/components/ui/textarea.tsrx";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsrx";
 import { FileCode2, Search, ShieldCheck, X } from "@octanejs/lucide";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "../../../core/types";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 function shortPath(path: string) {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;

@@ -39,6 +39,7 @@ vi.mock("@/core/api", () => ({
 const agents: AgentKind[] = [
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",

@@ -50,9 +50,9 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - The default directory shows interactive conversations and user-created forks. Recognized auxiliary/subagent records are retained but hidden until **Show auxiliary sessions** is enabled; unknown sources remain visible. The source-visibility preference is shared by session browsing and search for the current app run.
 - Forks keep their own identity and title, with a small fork indicator and source information. Spawned-parent and fork-source relationships are independent; identical titles are never merged. Successful source refreshes reconcile archived/deleted records, while unavailable or unsupported sources retain the last cached snapshot.
 - History opens with the latest 50 records (messages and tool summaries), displayed chronologically. Load earlier records on demand.
-- Codex and Claude Code JSONL histories are read from the tail with bounded scanning and memory, rather than loading the entire transcript before pagination. Page byte limits may return fewer than 50 records; an empty scan window can still offer earlier records.
+- Codex and Claude Code JSONL histories are read from the tail with bounded scanning and memory, rather than loading the entire transcript before pagination. Antigravity ACP histories are replayed through the official ACP server with bounded pages and update budgets. OpenCode is read through its bounded export command; OpenClaw, Hermes, and Grok Build use their verified local history sources. Page byte limits may return fewer than 50 records; an empty scan window can still offer earlier records.
 - Damaged or oversized log records produce a warning. Very distant message/tool associations or ambiguous legacy metadata may be shown conservatively with a warning instead of requiring a full-file scan.
-- History pagination is read-only. Full-context continuation and export retain their separate safety limits.
+- History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor is limited to verified CLI stores, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Their offline native storage checks have passed; OpenCode/Hermes terminal history and restart checks also pass. New-target real replies remain unverified; one OpenClaw-to-Claude production-rendered history has a correct real reply, with full per-direction acceptance still pending. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
 
 ### Skill Hub
 
@@ -64,27 +64,36 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 
 ### Tools and updates
 
-- Managed tools: Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. DeepSeek Harness is not exposed because it has no supported stable tool-management channel.
+- Managed tools: Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. Antigravity CLI is detected and links to official installation documentation; its remote-script installer is not executed automatically. DeepSeek Harness is not exposed because it has no supported stable tool-management channel.
 - Each installation reports its executable and resolved paths, version, runnable state, installation source, runtime environment, matching manager, and whether it is the PATH default.
 - Version comparison follows the detected installation channel instead of treating a GitHub or npm release as universal.
-- Automatic actions are bound to the detected installation and a pinned target version. Supported actions use verified npm, pnpm, bun, Homebrew, Volta, or an official updater without invoking a shell or requesting elevation.
+- Automatic actions are bound to the detected installation and a pinned target version. Supported executable actions use verified npm, pnpm, bun, or Volta arguments without invoking a shell or requesting elevation. Homebrew and official updater channels that cannot pin an exact target fall back to a command for the user to review and run.
 - Multiple physical installations, unverified sources, unavailable managers, privileged operations, remote scripts, and unsupported channels block automatic execution and fall back to an official command or documentation.
 - An operation succeeds only after the target installation is re-detected, runnable, and verified at the expected version.
 
 ### Agent support
 
-| Agent | Discovery and inventory | Context diagnostics and sync | Session browsing and handoff | Tool management |
-| --- | --- | --- | --- | --- |
-| Codex | Yes | Yes | Yes | Yes |
-| Claude Code | Yes | Yes | Yes | Yes |
-| Cursor | Yes | Yes | — | Yes |
-| OpenCode | Yes | Yes | — | Yes |
-| OpenClaw | Yes | Yes | — | Yes |
-| Hermes | Yes | Yes | — | Yes |
-| Grok Build | Yes | Yes | — | Yes |
-| DeepSeek Harness | Beta, read-only | Diagnostics only | — | — |
+| Agent | Discovery and inventory | Context diagnostics and sync | Session history | Handoff source | Tool management |
+| --- | --- | --- | --- | --- | --- |
+| Codex | Yes | Yes | Yes | Yes | Yes |
+| Claude Code | Yes | Yes | Yes | Yes | Yes |
+| Antigravity | Yes | Yes | ACP sessions | ACP source only | Detect/docs |
+| Cursor | Yes | Yes | Verified CLI stores | CLI, per-session check | Yes |
+| OpenCode | Yes | Yes | Yes | Yes | Yes |
+| OpenClaw | Yes | Yes | Read-only | Per-session check | Yes |
+| Hermes | Yes | Yes | Read-only | Per-session check | Yes |
+| Grok Build | Yes | Yes | Read-only | Per-session check | Yes |
+| DeepSeek Harness | Beta, read-only | Diagnostics only | — | — | — |
 
-AgentKib distinguishes an installed app or CLI from local data left behind after uninstalling it. Agent Home writes require separate approval. DeepSeek Harness remains a read-only Beta target and is never written to, configured for MCP, or included in tool management.
+AgentKib distinguishes an installed app or CLI from local data left behind after uninstalling it. Agent Home writes require separate approval. Antigravity ACP sessions are not claimed to be the complete Desktop/IDE or CLI history store, and current stable interfaces cannot import foreign history into an Antigravity-native session. DeepSeek Harness remains a read-only Beta target and is never written to, configured for MCP, or included in tool management.
+
+### Web access and continuation
+
+- Pairing grants read access first. Sending and approvals are separate per-browser permissions and also require the host control switch.
+- Claude Code desktop/Web control shares one execution service on verified macOS `2.1.263` / `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Text/images/files, approvals/questions, cancellation and durable receipts are implemented. LAN uploads remain disabled; Windows/Linux control and real-device acceptance are not implied. See [Claude usage](CLAUDE-WEB.md) and [current QA](../qa/claude-managed-2026-09-30.md).
+- Codex Web control follows an already-open official owner session and remains gated to explicit acceptance builds. Unknown versions, unsupported platforms, missing owners, and unverified interaction shapes remain read-only.
+- Antigravity Web control manages only sessions returned by the official ACP server. It negotiates ACP v1 capabilities, checks the indexed session and workspace again, and requires exact revision, turn, request, and offered permission option matches.
+- A request receipt does not mean a turn or approval completed. Disconnects and uncertain outcomes are never retried automatically.
 
 ### Platform status
 
@@ -144,9 +153,9 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 默认目录显示用户对话和用户创建的分叉。明确的辅助/子代理记录保留在索引中，开启“显示辅助会话”后才显示；无法识别的来源仍保留显示。来源可见性在本次应用运行期间由会话浏览与搜索共享。
 - 分叉保留独立身份和原标题，通过小型分叉标识及来源信息区分；子代理父关系与历史分叉关系独立，不按同名合并。成功刷新会同步归档、删除状态；来源不可用或结构不支持时保留上次缓存快照。
 - 默认加载最新 50 条记录（消息和工具摘要），按时间正序展示；更早记录按需加载。
-- Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
+- Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。Antigravity ACP 历史通过官方 ACP server 有界回放。OpenCode 通过有界导出命令读取；OpenClaw、Hermes 和 Grok Build 使用各自经过校验的本机历史来源。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
 - 损坏或超大的日志记录会显示提示；距离过远的消息/工具关联，以及无法明确判断的旧格式元数据，会保守展示并提示，而非要求扫描完整文件。
-- 历史分页只读，不修改原记录；完整上下文续接和导出仍保留独立的安全限制。
+- 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 限已验证 CLI 格式，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。离线原生存储检查已通过，OpenCode/Hermes 终端历史与重启检查也已通过；新目标真实回复仍未验收。新版 OpenClaw 到 Claude 的生产转换载荷已有一轮正确真实回复，全部方向的完整交接验收尚未完成，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
 
 ### Skill Hub
 
@@ -158,27 +167,36 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 
 ### 工具与更新
 
-- 管理 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build。DeepSeek Harness 没有受支持的稳定工具管理渠道，因此不在此处展示。
+- 管理 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build。Antigravity CLI 支持检测并提供官方安装文档，但不会自动执行远程脚本安装器。DeepSeek Harness 没有受支持的稳定工具管理渠道，因此不在此处展示。
 - 每处安装展示可执行路径与解析后路径、版本、可运行状态、安装来源、运行环境、对应管理器和 PATH 默认项。
 - 版本比较遵循检测到的安装渠道，不会把 GitHub 或 npm 的版本通用于所有安装。
-- 自动操作绑定实际安装与固定目标版本，通过已验证的 npm、pnpm、bun、Homebrew、Volta 或官方更新器执行，不经过 Shell，也不请求提权。
+- 自动操作绑定实际安装与固定目标版本，通过经过验证的 npm、pnpm、bun 或 Volta 参数执行，不经过 Shell，也不请求提权。Homebrew 或官方更新器无法固定精确目标版本时，只提供供用户审查并自行运行的命令。
 - 多个物理安装、来源不明、管理器不可用、需要提权、远程脚本或不支持的渠道会阻止自动执行，改为提供官方命令或文档。
 - 命令退出后只有重新检测到目标安装可运行且达到预期版本，才会报告成功。
 
 ### Agent 支持
 
-| Agent | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 | 工具管理 |
-| --- | --- | --- | --- | --- |
-| Codex | 支持 | 支持 | 支持 | 支持 |
-| Claude Code | 支持 | 支持 | 支持 | 支持 |
-| Cursor | 支持 | 支持 | — | 支持 |
-| OpenCode | 支持 | 支持 | — | 支持 |
-| OpenClaw | 支持 | 支持 | — | 支持 |
-| Hermes | 支持 | 支持 | — | 支持 |
-| Grok Build | 支持 | 支持 | — | 支持 |
-| DeepSeek Harness | Beta，只读 | 仅诊断 | — | — |
+| Agent | 发现与盘点 | 上下文诊断与同步 | 会话历史 | 交接来源 | 工具管理 |
+| --- | --- | --- | --- | --- | --- |
+| Codex | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Claude Code | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Antigravity | 支持 | 支持 | ACP 会话 | 仅作来源 | 检测/文档 |
+| Cursor | 支持 | 支持 | 已验证 CLI 存储 | CLI，逐会话核验 | 支持 |
+| OpenCode | 支持 | 支持 | 支持 | 支持 | 支持 |
+| OpenClaw | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Hermes | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Grok Build | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| DeepSeek Harness | Beta，只读 | 仅诊断 | — | — | — |
 
-AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉及 Agent Home 的写入会单独请求授权。DeepSeek Harness 仍是只读 Beta 目标，不会被写入、配置 MCP 或纳入工具管理。
+AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉及 Agent Home 的写入会单独请求授权。Antigravity ACP 会话不代表完整的 Desktop/IDE 或 CLI 历史；当前稳定接口也不能把外部历史导入 Antigravity 原生会话。DeepSeek Harness 仍是只读 Beta 目标，不会被写入、配置 MCP 或纳入工具管理。
+
+### Web 访问与续接
+
+- 配对首先授予读取权限；发送和审批是单独的浏览器权限，同时还需要打开主机控制开关。
+- Claude Code 桌面/Web 在已验证 macOS `2.1.263` / `2.1.285` 上共用执行服务：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。已实现文本/图片/文件、审批/问题、取消与持久回执；LAN 仍禁上传，Windows/Linux 控制及真实设备验收不据此宣称通过。详见 [Claude 使用说明](CLAUDE-WEB.md) 与[本轮 QA](../qa/claude-managed-2026-09-30.md)。
+- Codex Web 控制跟随官方客户端中已打开的 owner 会话，并继续只在明确的验收构建中开放。版本未知、平台不支持、没有 owner 或交互结构未经验证时保持只读。
+- Antigravity Web 控制只管理官方 ACP server 返回的会话。运行时协商 ACP v1 能力，重新核验索引会话和工作区，并要求 revision、turn、request 与服务端提供的权限选项全部精确匹配。
+- 请求回执不代表轮次或审批已经完成。断线或结果不明确时不会自动重试。
 
 ### 平台状态
 

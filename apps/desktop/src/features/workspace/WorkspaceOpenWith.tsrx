@@ -9,13 +9,17 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu.tsrx";
-import { useCallback, useEffect, useRef, useState } from "octane";
+} from "@/components/ui/dropdown-menu";
+import { useEffect, useState } from "octane";
 import { ChevronDown, Code2, FolderOpen, SquareTerminal } from "@octanejs/lucide";
 import { api } from "@/core/api";
 import { localizeMessage } from "@/core/i18n";
 import type { WorkspaceOpener, WorkspaceSummary } from "@/core/types";
+import { useOptionalQueryClient } from "@/features/home/home-query";
 import { withAsyncCleanup } from "@/lib/utils";
+import { useWorkspaceOpeners, workspaceKeys } from "./workspace-query";
+
+const noOpeners: WorkspaceOpener[] = [];
 
 export function WorkspaceOpenWith({
   workspace,
@@ -25,26 +29,13 @@ export function WorkspaceOpenWith({
   onError: (message: string) => void;
 }) {
   const { tr } = useI18n();
-  const [openers, setOpeners] = useState<WorkspaceOpener[]>([]);
+  const queryClient = useOptionalQueryClient();
+  // 按工作区缓存；切换工作区时不会短暂显示上一个工作区的打开方式。
+  const { data: openers = noOpeners, error } = useWorkspaceOpeners(workspace.id);
   const [opening, setOpening] = useState(false);
-  const requestSequence = useRef(0);
-
-  const load = useCallback(async () => {
-    const sequence = ++requestSequence.current;
-    try {
-      const nextOpeners = await api.workspaceOpeners(workspace.id);
-      if (sequence === requestSequence.current) setOpeners(nextOpeners);
-    } catch (reason) {
-      if (sequence === requestSequence.current) onError(localizeMessage(reason));
-    }
-  }, [onError, workspace.id]);
-
   useEffect(() => {
-    void load();
-    return () => {
-      requestSequence.current += 1;
-    };
-  }, [load]);
+    if (error) onError(localizeMessage(error));
+  }, [error, onError]);
   const preferred = openers.find((opener) => opener.preferred) ?? openers[0];
 
   const openWorkspace = async (openerId?: string) => {
@@ -55,7 +46,9 @@ export function WorkspaceOpenWith({
       async () => {
         try {
           await api.openWorkspaceWithApp(workspace.id, openerId);
-          if (openerId) await load();
+          // 选择其他应用会改变默认项，需要重新读取。
+          if (openerId)
+            await queryClient.invalidateQueries({ queryKey: workspaceKeys.openers(workspace.id) });
         } catch (reason) {
           onError(localizeMessage(reason));
         }

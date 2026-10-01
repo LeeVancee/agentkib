@@ -29,6 +29,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 import { withAsyncCleanup } from "@/lib/utils";
 
@@ -62,7 +63,8 @@ export function SessionHandoffDialog({
       ),
     [session.agent, targetAgents],
   );
-  const sourceCanContinue = canContinueFromHistory(session.agent);
+  const sourceCapability = useSessionSourceCapability(session.id);
+  const sourceCanContinue = canContinueFromHistory(sourceCapability);
   const defaultTarget =
     availableTargets.find(([agent]) => agent !== session.agent)?.[0] ??
     availableTargets[0]?.[0] ??
@@ -82,6 +84,7 @@ export function SessionHandoffDialog({
   const [rawError, setError] = useState<unknown>("");
   const error = rawError === "" ? "" : localizeMessage(rawError);
   const activeRef = useRef(true);
+  const busyRef = useRef(false);
   const requestGenerationRef = useRef(0);
   const identityRef = useRef({ workspaceId: workspace.id, sessionId: session.id });
   const autoPreparedRef = useRef(false);
@@ -133,7 +136,9 @@ export function SessionHandoffDialog({
   };
 
   const prepare = async () => {
-    if (!sourceCanContinue) return;
+    if (!sourceCanContinue || busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     await Promise.resolve();
     setBusy(true);
@@ -149,7 +154,10 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
@@ -161,7 +169,9 @@ export function SessionHandoffDialog({
   }, [initialRequest?.autoPrepare, sourceCanContinue]);
 
   const plan = async () => {
-    if (!draft) return;
+    if (!draft || !sourceCanContinue) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -180,6 +190,7 @@ export function SessionHandoffDialog({
             acceptLosses,
             draft.history_budget_tokens,
             draft.archive_id,
+            draft.target_fingerprint,
           );
           if (isCurrent(identity)) onPlanned(planned);
         } catch (reason) {
@@ -187,13 +198,18 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
 
   const planMcpConnection = async () => {
     if (mcpSetupStatus !== "supported") return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -218,12 +234,17 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
 
   const copy = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -243,7 +264,10 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
@@ -416,7 +440,10 @@ export function SessionHandoffDialog({
             )}
             {nativeCapabilityReason && (
               <p className="m-0 text-xs text-muted-foreground">
-                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
+                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`) ===
+                `handoff.capabilityReason.${nativeCapabilityReason}`
+                  ? nativeCapabilityReason
+                  : tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
               </p>
             )}
             {reasoningExcluded && (
@@ -553,7 +580,9 @@ export function SessionHandoffDialog({
               role="alert"
               className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
             >
-              {tr("handoff.sourceReadOnly")}
+              {sourceCapability
+                ? sourceCapability.reason || tr("handoff.sourceReadOnly")
+                : tr("handoff.checkingSource")}
             </div>
           </div>
         )}
@@ -570,6 +599,7 @@ export function SessionHandoffDialog({
               <Button
                 disabled={
                   busy ||
+                  !sourceCanContinue ||
                   !acceptLosses ||
                   (draft.window_strategy === "windowed" && !draft.mcp_available)
                 }

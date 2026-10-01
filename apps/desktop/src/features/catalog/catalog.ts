@@ -31,6 +31,7 @@ export interface WorkspaceAssetGroup {
 const agentOrder: AgentKind[] = [
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",

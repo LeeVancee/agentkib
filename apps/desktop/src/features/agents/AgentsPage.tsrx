@@ -8,16 +8,15 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select.tsrx";
-import { Button } from "@/components/ui/button.tsrx";
-import { Badge } from "@/components/ui/badge.tsrx";
-import { Card, CardContent, CardHeader } from "@/components/ui/card.tsrx";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.tsrx";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsrx";
-import { useEffect, useLinkedState, useState } from "octane";
+} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useLinkedState, useState } from "octane";
 import {
   Check,
-  ChevronRight,
   CircleAlert,
   FileCode2,
   FolderGit2,
@@ -39,13 +38,15 @@ import type {
 import { AgentIcon } from "@/features/agents/AgentIcon.tsrx";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { agentSupport } from "@/features/agents/agent-capabilities";
-import type { AgentFilter } from "@/components/AppSidebar.tsrx";
-
-type AgentDetailSection = "overview" | "assets" | "workspaces" | "usage";
+import { SidebarPanel } from "@/features/app/SidebarPanel";
+import { useAgentViewStore, type AgentDetailSection } from "./agent-view-store";
+import type { AgentFilter } from "@/components/AppSidebar";
+import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const agentKinds: AgentKind[] = [
   "codex",
   "claude-code",
+  "antigravity",
   "cursor",
   "opencode",
   "open-claw",
@@ -53,16 +54,6 @@ const agentKinds: AgentKind[] = [
   "grok-build",
   "deepseek-harness",
 ];
-const agentLabels: Record<AgentKind, string> = {
-  codex: "Codex",
-  "claude-code": "Claude Code",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  "open-claw": "OpenClaw",
-  hermes: "Hermes",
-  "grok-build": "Grok Build",
-  "deepseek-harness": "DeepSeek Harness",
-};
 
 export function AgentsPage({
   installations,
@@ -86,8 +77,11 @@ export function AgentsPage({
   onSelectedAgentChange: (agent: AgentKind) => void;
 }) {
   const { tr, formatRelativeTime } = useI18n();
-  const [agentQuery, setAgentQuery] = useState("");
-  const [agentSort, setAgentSort] = useState<"name" | "status">("status");
+  const saveSection = useAgentViewStore((state) => state.setSection);
+  const agentQuery = useAgentViewStore((state) => state.query);
+  const setAgentQuery = useAgentViewStore((state) => state.setQuery);
+  const agentSort = useAgentViewStore((state) => state.sort);
+  const setAgentSort = useAgentViewStore((state) => state.setSort);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetKind, setAssetKind] = useState("all");
 
@@ -157,54 +151,44 @@ export function AgentsPage({
     (total, gateway) => total + gateway.workspaces.length,
     0,
   );
-  useEffect(() => {
-    if (
-      selectedAgent &&
-      visibleAgentKinds.length > 0 &&
-      !visibleAgentKinds.includes(selectedAgent) &&
-      selected !== selectedAgent
-    ) {
-      onSelectedAgentChange(selected);
-    }
-  }, [onSelectedAgentChange, selected, selectedAgent, visibleAgentKinds]);
-
   return (
     <div className="grid gap-3 pb-8">
-      <section className="flex flex-wrap items-center justify-end gap-2 border-b border-border pb-4">
-        <div className="flex items-center gap-2">
-          <label className="flex h-9 min-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3">
-            <Search size={14} className="text-muted-foreground" />
-            <Input
-              className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
-              value={agentQuery}
-              onChange={(event) => setAgentQuery((event.target as HTMLInputElement).value)}
-              placeholder={tr("common.search")}
-            />
-          </label>
-          <Select
-            value={agentSort}
-            onValueChange={(value: any) => {
-              if (value !== null) setAgentSort(String(value) as typeof agentSort);
-            }}
-          >
-            <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
-              <SelectValue>
-                {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="status">{tr("agents.status")}</SelectItem>
-              <SelectItem value="name">{tr("agents.name")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </section>
-      <div className="relative grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
+      <SidebarPanel>
+        <section className="agent-sidebar-tools mb-3">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+            <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
+              <Search size={14} className="text-muted-foreground" />
+              <Input
+                className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
+                value={agentQuery}
+                onChange={(event) => setAgentQuery(event.target.value)}
+                placeholder={tr("common.search")}
+              />
+            </label>
+            <Select
+              value={agentSort}
+              onValueChange={(value) => {
+                if (value !== null) setAgentSort(String(value) as typeof agentSort);
+              }}
+            >
+              <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
+                <SelectValue>
+                  {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="status">{tr("agents.status")}</SelectItem>
+                <SelectItem value="name">{tr("agents.name")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+
         <div className="grid gap-4">
-          <Card className="overflow-hidden rounded-2xl border-border shadow-sm">
-            <CardContent className="grid gap-2 p-3">
-              {visibleAgentKinds.map((agent: AgentKind) => {
-                const item = installations.find((value: any) => value.agent === agent);
+          <div className="agent-sidebar-list [&_small]:leading-normal">
+            <div className="grid gap-1">
+              {visibleAgentKinds.map((agent) => {
+                const item = installations.find((value) => value.agent === agent);
                 const remoteCount = remoteGateways
                   .filter((gateway) => gateway.kind === agent)
                   .reduce((total, gateway) => total + gateway.workspaces.length, 0);
@@ -218,41 +202,39 @@ export function AgentsPage({
                     variant="bare"
                     size="content"
                     key={agent}
+                    data-sidebar-navigate
                     aria-pressed={isSelected}
                     className={cn(
-                      "grid min-h-[76px] w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                      "grid min-h-[64px] w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border px-2 py-2 text-left transition-colors",
                       isSelected
                         ? "border-foreground/25 bg-muted/40 text-foreground shadow-sm"
                         : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/30 hover:text-foreground",
                     )}
                     onClick={() => {
                       setSelected(agent);
-                      setSection("overview");
+                      saveSection(agent, "overview");
                       onSelectedAgentChange(agent);
                     }}
                   >
                     <AgentIcon agent={agent} />
                     <span className="min-w-0">
-                      <strong className="flex items-center gap-2 truncate text-sm text-foreground">
+                      <strong className="flex items-center gap-1 truncate text-sm text-foreground">
                         {agentLabels[agent]}
                         {agent === "deepseek-harness" && (
                           <Badge variant="outline">{tr("common.beta")}</Badge>
                         )}
                       </strong>
                       <small className="mt-1 block text-xs text-muted-foreground">
-                        {count} {tr("common.workspaces")}
+                        {tr(
+                          item?.installed
+                            ? "common.installed"
+                            : item?.configured
+                              ? "agents.localDataFound"
+                              : "common.notInstalled",
+                        )}{" "}
+                        · {count} {tr("common.workspaces")}
                       </small>
                     </span>
-                    <Badge variant={item?.installed ? "secondary" : "outline"}>
-                      {tr(
-                        item?.installed
-                          ? "common.installed"
-                          : item?.configured
-                            ? "agents.localDataFound"
-                            : "common.notInstalled",
-                      )}
-                    </Badge>
-                    <ChevronRight size={16} className="text-muted-foreground" />
                   </Button>
                 );
               })}
@@ -261,10 +243,11 @@ export function AgentsPage({
                   {tr("agents.noAgents")}
                 </p>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
-
+      </SidebarPanel>
+      <div className="min-w-0">
         <Card className="min-h-[420px] overflow-hidden rounded-2xl border-border shadow-sm">
           <CardHeader className="flex min-h-[78px] flex-row items-center gap-3 border-b border-border px-5 py-4">
             <AgentIcon agent={selected} />
@@ -350,7 +333,7 @@ export function AgentsPage({
                     {tr("agents.capabilitiesDescription")}
                   </span>
                 </div>
-                <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2">
                   {[
                     ["workspace_discovery", tr("agents.capability.workspaceDiscovery")],
                     ["session_list", tr("agents.capability.sessionList")],
@@ -362,13 +345,13 @@ export function AgentsPage({
                     const enabled = value === true;
                     return (
                       <div
-                        className="flex min-h-[58px] items-center justify-between gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm"
+                        className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm"
                         key={key}
                       >
-                        <span className="text-muted-foreground">{label}</span>
+                        <span className="min-w-0 text-muted-foreground">{label}</span>
                         <span
                           className={cn(
-                            "inline-flex items-center gap-1 text-xs font-medium",
+                            "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium",
                             !known
                               ? "text-muted-foreground"
                               : enabled
@@ -388,9 +371,11 @@ export function AgentsPage({
                       </div>
                     );
                   })}
-                  <div className="flex min-h-[58px] items-center justify-between gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm">
-                    <span className="text-muted-foreground">{tr("agents.capability.control")}</span>
-                    <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                  <div className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm">
+                    <span className="min-w-0 text-muted-foreground">
+                      {tr("agents.capability.control")}
+                    </span>
+                    <span className="inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
                       <LockKeyhole size={14} />
                       {tr(
                         support

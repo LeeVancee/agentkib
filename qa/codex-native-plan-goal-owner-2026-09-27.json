@@ -1,0 +1,20 @@
+{
+  "date": "2026-09-27",
+  "surface": "real Desktop owner/follower IPC",
+  "desktopVersion": "26.924.22138",
+  "nativeThreadId": "redacted",
+  "redactedFields": ["nativeThreadId"],
+  "scope": "User-designated safe test chat; settings only; no turn started",
+  "initial": { "status": "idle", "model": "gpt-6-astra", "effort": "high", "mode": "default", "pendingApprovals": 0 },
+  "checks": [
+    { "operation": "mode plan", "nativeModeConfirmed": "plan", "revision": 4, "appliedReceipt": true, "freshOwnerReadback": true },
+    { "operation": "mode default", "nativeModeConfirmed": "default", "revision": 6, "appliedReceipt": true, "freshOwnerReadback": true }
+  ],
+  "originalModeRestored": true,
+  "probeExited": true,
+  "nativeGoalAvailable": false,
+  "mobileUIVerified": false,
+  "nativeUIVisualVerified": false,
+  "realDualClientRaceVerified": false,
+  "preFixFinding": "Nested collaborationMode model lacked matching top-level model/effort; rejected locally before dispatch. Runtime mapping fixed and real owner probe rerun successfully."
+}

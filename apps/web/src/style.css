@@ -1,0 +1,228 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@source "../../../packages/session-ui/src";
+@source "../../../packages/agent-identity/src";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--background);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--muted);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #242427;
+  --card: #ffffff;
+  --primary: #242427;
+  --primary-foreground: #ffffff;
+  --muted: #f1f1f3;
+  --muted-foreground: #71717a;
+  --accent: #eef2ff;
+  --accent-foreground: #4059b5;
+  --destructive: #c03943;
+  --border: #e6e6e9;
+  --ring: #8496d5;
+  --sidebar: #fafafa;
+}
+.dark {
+  color-scheme: dark;
+  --background: #171719;
+  --foreground: #f1f1f3;
+  --card: #1d1d20;
+  --primary: #f1f1f3;
+  --primary-foreground: #202023;
+  --muted: #27272c;
+  --muted-foreground: #a1a1ab;
+  --accent: #262e44;
+  --accent-foreground: #b0c1ff;
+  --destructive: #ff919b;
+  --border: #323238;
+  --ring: #8496d5;
+  --sidebar: #1c1c1f;
+}
+:root[data-accent="violet"] {
+  --accent: #f3eefe;
+  --accent-foreground: #7954b0;
+  --ring: #aa8cd6;
+}
+:root[data-accent="green"] {
+  --accent: #eaf4ef;
+  --accent-foreground: #2f7658;
+  --ring: #72ac90;
+}
+:root.dark[data-accent="violet"] {
+  --accent: #33293f;
+  --accent-foreground: #d0b3f8;
+}
+:root.dark[data-accent="green"] {
+  --accent: #22392e;
+  --accent-foreground: #9dd9b8;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply m-0 bg-background font-sans text-foreground antialiased;
+  }
+  button:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  a:focus-visible,
+  summary:focus-visible,
+  input[type="checkbox"]:focus-visible,
+  input[type="radio"]:focus-visible {
+    @apply rounded outline-2 outline-offset-2 outline-ring;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--accent-foreground);
+  }
+}
+
+@layer components {
+  .info {
+    @apply flex items-start gap-3 rounded-xl border bg-muted/40 p-4 text-xs leading-6 text-muted-foreground;
+  }
+  .info > svg {
+    @apply mt-1 shrink-0;
+  }
+  .dialog-body {
+    @apply text-sm leading-7;
+  }
+  .dialog-body pre {
+    @apply max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .dialog-body dt {
+    @apply text-xs text-muted-foreground;
+  }
+  .dialog-body dd {
+    @apply mb-3 break-all;
+  }
+  .dialog-body h3 {
+    @apply font-semibold;
+  }
+}
+
+/* Shared transcript markup is owned by @agentkib/session-ui. */
+@layer components {
+  .transcript {
+    @apply mx-auto max-w-3xl;
+  }
+  .turn {
+    @apply mb-8 flow-root;
+  }
+  .turn > time,
+  .incomplete {
+    @apply mb-3 block text-right text-[10px] text-muted-foreground;
+  }
+  .message {
+    @apply my-4 text-sm leading-8 break-words;
+    overflow-wrap: anywhere;
+  }
+  .message p {
+    @apply mb-3;
+  }
+  .message p:last-child {
+    @apply mb-0;
+  }
+  .message h1 {
+    @apply mb-5 text-2xl font-semibold;
+  }
+  .message h2 {
+    @apply mb-4 text-xl font-semibold;
+  }
+  .message h3 {
+    @apply mb-3 text-lg font-semibold;
+  }
+  .message ul {
+    @apply my-3 list-disc space-y-1 pl-6;
+  }
+  .message ol {
+    @apply my-3 list-decimal space-y-1 pl-6;
+  }
+  .message blockquote {
+    @apply my-4 border-l-2 pl-4 text-muted-foreground;
+  }
+  .user-message {
+    @apply mb-7 ml-auto w-fit max-w-[90%] rounded-2xl bg-muted px-5 py-3 md:max-w-[85%];
+  }
+  .message pre {
+    @apply my-4 max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .message code {
+    @apply rounded bg-muted px-1 py-0.5 text-[0.9em];
+  }
+  .message pre code {
+    @apply bg-transparent p-0;
+  }
+  .message table {
+    @apply my-4 block max-w-full overflow-auto border-collapse;
+  }
+  .message th,
+  .message td {
+    @apply border px-3 py-2 text-left;
+  }
+  .message a {
+    @apply text-accent-foreground underline underline-offset-4;
+  }
+  .process {
+    @apply my-5;
+  }
+  .process > button {
+    @apply inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
+  }
+  .process > button span {
+    @apply text-muted-foreground;
+  }
+  .process-body {
+    @apply mt-2 border-l pl-4;
+  }
+  .tool {
+    @apply inline-flex max-w-full items-center justify-start gap-2 rounded-md px-2 py-2 text-left text-xs break-all hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
+  }
+  .tool span {
+    @apply text-muted-foreground;
+  }
+  .tool-summary {
+    @apply my-1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

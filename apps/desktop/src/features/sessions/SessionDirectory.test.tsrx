@@ -3,7 +3,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@octanejs/testing-library";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -11,7 +11,7 @@ import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types"
 import { SessionDirectory } from "./SessionDirectory.tsrx";
 import { useSessionHub } from "./SessionHubContext.tsrx";
 import { filterSessions } from "./session-catalog";
-import { useSessionViewStore } from "./session-view-store";
+import { normalizeDirectoryOrder, useSessionViewStore } from "./session-view-store";
 
 vi.mock("./SessionHubContext.tsrx", () => ({ useSessionHub: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -53,16 +53,45 @@ function workspaceHeading(workspace: WorkspaceSummary) {
   });
 }
 
+function dragEntry(source: Element, target: Element, after = false) {
+  const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn() };
+  Object.defineProperty(target, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      top: after ? 0 : 100,
+      height: after ? 0 : 100,
+      bottom: after ? 0 : 200,
+      left: 0,
+      right: 20,
+      width: 20,
+      x: 0,
+      y: 0,
+    }),
+  });
+  fireEvent.dragStart(source, { dataTransfer });
+  fireEvent.dragOver(target, { dataTransfer, clientY: after ? 19 : 1 });
+  fireEvent.drop(target, { dataTransfer });
+}
+
+function orderedWorkspacePaths(container: HTMLElement) {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(".session-workspace-heading strong"),
+  ).map((heading) => heading.closest("button")?.getAttribute("title")?.split("\n")[1]);
+}
+
 describe("SessionDirectory", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.removeItem("agentkib.session-directory-order");
     useSessionViewStore.setState({
       agent: "all",
       host: "all",
       filter: "current",
       showAuxiliary: false,
       collapsed: {},
+      workspaceOrder: [],
+      sessionOrder: {},
       scrollTop: 0,
     });
     hub = {
@@ -256,5 +285,240 @@ describe("SessionDirectory", () => {
     rerender(<SessionDirectory />);
     expect(screen.queryByRole("button", { name: /Refresh history|Scanning/ })).toBeNull();
     expect(hub.refresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps host groups contiguous when an unrecorded workspace appears", () => {
+    const orderedWorkspaces = [
+      { id: "local-a", name: "Local A", path: "/local/a" },
+      {
+        id: "remote-x",
+        name: "Remote X",
+        path: "/remote/x",
+        remote: {
+          host_id: "host-x",
+          host_name: "Remote host",
+          online: true,
+          original_id: "x",
+          last_synced_at: "",
+        },
+      },
+      { id: "local-b", name: "Local B", path: "/local/b" },
+    ] as WorkspaceSummary[];
+    const sessions = orderedWorkspaces.map((workspace) => ({
+      ...first,
+      id: `session-${workspace.id}`,
+      workspace_id: workspace.id,
+      title: workspace.name,
+    }));
+    useSessionViewStore.setState({ workspaceOrder: ["local-a", "remote-x"] });
+    hub = {
+      ...hub,
+      remoteHosts: [
+        {
+          id: "host-x",
+          name: "Remote host",
+          address: "http://remote.test",
+          status: "online",
+          last_seen: null,
+          error: null,
+        },
+      ],
+      workspaces: orderedWorkspaces,
+      sessions,
+      selected: sessions[0],
+      selectedWorkspace: orderedWorkspaces[0],
+    };
+
+    const { container } = render(<SessionDirectory />);
+
+    expect(orderedWorkspacePaths(container)).toEqual(["/local/a", "/local/b", "/remote/x"]);
+    expect(
+      Array.from(container.querySelectorAll(".session-host-heading strong")).map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["This device", "Remote host"]);
+  });
+
+  it("keeps hidden workspace order entries when reordering a filtered view", () => {
+    const thirdWorkspace = {
+      id: "workspace-c",
+      name: "API kit",
+      path: "/projects/api",
+    } as WorkspaceSummary;
+    const thirdSession = {
+      ...first,
+      id: "third",
+      workspace_id: thirdWorkspace.id,
+      title: "API work",
+    };
+    useSessionViewStore.setState({
+      agent: "codex",
+      workspaceOrder: ["workspace-a", "workspace-b", thirdWorkspace.id],
+    });
+    hub = {
+      ...hub,
+      workspaces: [...workspaces, thirdWorkspace],
+      sessions: [...hub.sessions, thirdSession],
+    };
+    const { container } = render(<SessionDirectory />);
+    dragEntry(workspaceHeading(thirdWorkspace), workspaceHeading(workspaces[0]));
+
+    expect(useSessionViewStore.getState().workspaceOrder).toEqual([
+      thirdWorkspace.id,
+      "workspace-a",
+      "workspace-b",
+    ]);
+    act(() => useSessionViewStore.getState().setAgent("all"));
+    expect(orderedWorkspacePaths(container)).toEqual([
+      "/projects/api",
+      workspaces[0].path,
+      workspaces[1].path,
+    ]);
+  });
+
+  it("preserves an ordered workspace while its sessions have not loaded yet", () => {
+    const pendingWorkspace = {
+      id: "workspace-pending",
+      name: "Pending workspace",
+      path: "/projects/pending",
+    } as WorkspaceSummary;
+    const loadedWorkspace = {
+      id: "workspace-loaded",
+      name: "Loaded workspace",
+      path: "/projects/loaded",
+    } as WorkspaceSummary;
+    const thirdWorkspace = {
+      id: "workspace-third",
+      name: "Third workspace",
+      path: "/projects/third",
+    } as WorkspaceSummary;
+    const loadedSession = {
+      ...first,
+      id: "loaded-session",
+      workspace_id: loadedWorkspace.id,
+    };
+    const thirdSession = {
+      ...first,
+      id: "third-session",
+      workspace_id: thirdWorkspace.id,
+    };
+    useSessionViewStore.setState({
+      workspaceOrder: [pendingWorkspace.id, loadedWorkspace.id, thirdWorkspace.id],
+    });
+    hub = {
+      ...hub,
+      workspaces: [pendingWorkspace, loadedWorkspace, thirdWorkspace],
+      sessions: [loadedSession, thirdSession],
+      selected: loadedSession,
+      selectedWorkspace: loadedWorkspace,
+    };
+
+    const { container, rerender } = render(<SessionDirectory />);
+    dragEntry(workspaceHeading(thirdWorkspace), workspaceHeading(loadedWorkspace));
+
+    expect(useSessionViewStore.getState().workspaceOrder).toEqual([
+      pendingWorkspace.id,
+      thirdWorkspace.id,
+      loadedWorkspace.id,
+    ]);
+
+    hub = {
+      ...hub,
+      sessions: [
+        { ...first, id: "pending-session", workspace_id: pendingWorkspace.id },
+        ...hub.sessions,
+      ],
+    };
+    rerender(<SessionDirectory />);
+    expect(orderedWorkspacePaths(container)).toEqual([
+      pendingWorkspace.path,
+      thirdWorkspace.path,
+      loadedWorkspace.path,
+    ]);
+  });
+
+  it("does not reorder workspaces across remote hosts", () => {
+    const remoteWorkspace = {
+      id: "remote-workspace",
+      name: "Remote workspace",
+      path: "/remote/workspace",
+      remote: {
+        host_id: "host-x",
+        host_name: "Remote host",
+        online: true,
+        original_id: "remote-workspace",
+        last_synced_at: "",
+      },
+    } as WorkspaceSummary;
+    const remoteSession = { ...first, id: "remote-session", workspace_id: remoteWorkspace.id };
+    hub = {
+      ...hub,
+      remoteHosts: [
+        {
+          id: "host-x",
+          name: "Remote host",
+          address: "http://remote.test",
+          status: "online",
+          last_seen: null,
+          error: null,
+        },
+      ],
+      workspaces: [...workspaces, remoteWorkspace],
+      sessions: [...hub.sessions, remoteSession],
+    };
+    useSessionViewStore.setState({ workspaceOrder: ["workspace-a", "workspace-b"] });
+    const { container } = render(<SessionDirectory />);
+    const beforeOrder = [...useSessionViewStore.getState().workspaceOrder];
+    dragEntry(workspaceHeading(workspaces[0]), workspaceHeading(remoteWorkspace), true);
+
+    expect(useSessionViewStore.getState().workspaceOrder).toEqual(beforeOrder);
+    expect(orderedWorkspacePaths(container)).toEqual([
+      workspaces[0].path,
+      workspaces[1].path,
+      "/remote/workspace",
+    ]);
+  });
+
+  it("keeps newly discovered sessions ahead of manually ordered sessions", () => {
+    const recent = { ...first, id: "recent", title: "New session" };
+    hub = { ...hub, sessions: [recent, first, second, archived, metadata] };
+    useSessionViewStore.setState({ sessionOrder: { "workspace-a": [first.id] } });
+    render(<SessionDirectory />);
+
+    const entries = screen.getAllByRole("button", { name: /New session|Check sidebar selection/ });
+    expect(entries.map((entry) => entry.textContent?.trim())).toEqual([
+      expect.stringContaining("New session"),
+      expect.stringContaining("Check sidebar selection"),
+    ]);
+  });
+
+  it("normalizes saved workspace and session IDs before persisting a drag order", () => {
+    expect(
+      normalizeDirectoryOrder(
+        ["deleted", "workspace-a", "workspace-a"],
+        ["workspace-a", "workspace-b"],
+      ),
+    ).toEqual(["workspace-a", "workspace-b"]);
+    useSessionViewStore.setState({
+      filter: "all",
+      workspaceOrder: ["deleted", "workspace-a", "workspace-a"],
+      sessionOrder: { "workspace-a": ["deleted", first.id, first.id] },
+    });
+    const { getByRole } = render(<SessionDirectory />);
+    dragEntry(workspaceHeading(workspaces[1]), workspaceHeading(workspaces[0]), true);
+    dragEntry(
+      getByRole("button", { name: /Previous icon review/ }),
+      getByRole("button", { name: /Check sidebar selection/ }),
+    );
+
+    expect(useSessionViewStore.getState().workspaceOrder).toEqual(["workspace-b", "workspace-a"]);
+    expect(useSessionViewStore.getState().sessionOrder["workspace-a"]).toEqual([
+      "archived",
+      "first",
+    ]);
+    expect(JSON.parse(localStorage.getItem("agentkib.session-directory-order") ?? "{}")).toEqual({
+      workspaceOrder: ["workspace-b", "workspace-a"],
+      sessionOrder: { "workspace-a": ["archived", "first"] },
+    });
   });
 });

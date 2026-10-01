@@ -88,9 +88,12 @@ export class AntigravitySessions {
     return finishDocument(
       {
         ...source,
-        title: parsed.title ?? source.title ?? session.title,
+        title: parsed.title !== undefined ? parsed.title : (source.title ?? session.title),
         created_at: source.created_at ?? session.created_at,
-        updated_at: parsed.updated_at ?? source.updated_at ?? session.updated_at,
+        updated_at:
+          parsed.updated_at !== undefined
+            ? parsed.updated_at
+            : (source.updated_at ?? session.updated_at),
       },
       parsed.turns,
       parsed.losses,
@@ -126,7 +129,7 @@ export class AntigravitySessions {
     deadline = performance.now() + 30_000,
   ): Promise<{ sessions: NativeSession[]; incomplete: boolean }> {
     const executable = this.optionalExecutable();
-    if (executable === null) return { sessions: [], incomplete: false };
+    if (executable === null) return { sessions: [], incomplete: true };
     const collected = await this.#collect(executable, workspace, deadline);
     return {
       incomplete: collected.incomplete,

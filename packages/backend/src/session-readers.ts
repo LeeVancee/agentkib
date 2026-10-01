@@ -1,3 +1,4 @@
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { z } from "zod";
 import { CodexSessions } from "./codex-sessions";
 import { ClaudeSessions } from "./claude-sessions";
@@ -6,14 +7,22 @@ import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { OpenCodeSessions } from "./opencode-sessions";
 import { AntigravitySessions } from "./antigravity-sessions";
+import { CursorSessions } from "./cursor-sessions";
+import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";
 import { readHermesEvents } from "./hermes-events";
+import { readGrokDocument, readHermesDocument } from "./native-chat-documents";
 import { SessionStore, type NativeSession } from "./session-store";
 import { Commands } from "./commands";
 import { parameters, optionalString, unsigned } from "./rpc";
 import type { ConversationEventPage } from "./session-events";
 import type { SessionDocument } from "./session-model";
-import { readClaudeDocument, readCodexDocument } from "./session-document-providers";
+import {
+  readClaudeDocument,
+  readCodexDocument,
+  readEventDocument,
+} from "./session-document-providers";
+import { canonicalize, pathIdentity } from "./paths";
 
 export const SESSION_AGENTS = [
   "codex",
@@ -23,6 +32,7 @@ export const SESSION_AGENTS = [
   "hermes",
   "grok-build",
   "antigravity",
+  "cursor",
 ] as const;
 export type SessionAgent = (typeof SESSION_AGENTS)[number];
 export interface NativeListing {
@@ -39,6 +49,7 @@ export class SessionReaders {
   #hermes: HermesSessions;
   #opencode: OpenCodeSessions;
   #antigravity: AntigravitySessions;
+  #cursor: CursorSessions;
   #paging = new SessionPaging();
   constructor(
     readonly store: SessionStore,
@@ -52,6 +63,7 @@ export class SessionReaders {
     this.#hermes = new HermesSessions(env);
     this.#opencode = new OpenCodeSessions(commands, env);
     this.#antigravity = new AntigravitySessions(env);
+    this.#cursor = new CursorSessions(env);
   }
   close(): void {
     this.#antigravity.close();
@@ -59,6 +71,57 @@ export class SessionReaders {
   }
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);
+  }
+  verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
+      throw new Error("unverified-session-identity");
+    const sessionId = nativeRef.toLowerCase();
+    const expectedWorkspace = canonicalize(workspace);
+    const source = this.#claude
+      .list(null)
+      .sessions.find((candidate) => candidate.session.native_ref.toLowerCase() === sessionId);
+    if (
+      !source ||
+      source.session.sidechain ||
+      pathIdentity(canonicalize(source.cwd)) !== pathIdentity(expectedWorkspace)
+    )
+      throw new Error("session-workspace-mismatch");
+    const transcript = source.transcript;
+    const verifyHeader = () => {
+      const pathInfo = lstatSync(transcript);
+      if (!pathInfo.isFile() || pathInfo.isSymbolicLink())
+        throw new Error("Claude transcript symlink unsupported");
+      const fd = openSync(transcript, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        if (!fstatSync(fd).isFile()) throw new Error("unverified-session-identity");
+        const buffer = Buffer.alloc(256 * 1024);
+        const size = readSync(fd, buffer, 0, buffer.length, 0);
+        for (const line of buffer.subarray(0, size).toString("utf8").split("\n")) {
+          let row: unknown;
+          try {
+            row = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+          const value = row as Record<string, unknown>;
+          if (typeof value.sessionId !== "string") continue;
+          if (value.sessionId.toLowerCase() !== sessionId)
+            throw new Error("session-identity-mismatch");
+          if (value.isSidechain === true) throw new Error("auxiliary-session-not-controllable");
+          if (typeof value.cwd === "string") {
+            if (pathIdentity(canonicalize(value.cwd)) !== pathIdentity(expectedWorkspace))
+              throw new Error("session-workspace-mismatch");
+            return;
+          }
+        }
+      } finally {
+        closeSync(fd);
+      }
+      throw new Error("unverified-session-identity");
+    };
+    verifyHeader();
+    return transcript;
   }
   codexHome(): string {
     return this.#codex.home();
@@ -69,6 +132,8 @@ export class SessionReaders {
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
       case "antigravity":
         return this.#antigravity.list(workspace);
+      case "cursor":
+        return this.#cursor.list(workspace);
       default: {
         const provider =
           agent === "codex"
@@ -155,8 +220,12 @@ export class SessionReaders {
       }
       case "grok-build":
         return this.#paging.read(this.#grok.resolve(ref).transcript, offset, count, agent);
-      case "open-claw":
-        return this.#paging.read(this.#openclaw.resolve(ref).transcript, offset, count, agent);
+      case "open-claw": {
+        const source = this.#openclaw.resolve(ref);
+        return source.sqlite
+          ? readOpenClawSqliteEvents(source.sqlite, offset, count)
+          : this.#paging.read(source.transcript, offset, count, agent);
+      }
       case "hermes": {
         const { source } = this.#hermes.resolve(ref);
         return source.type === "sqlite"
@@ -167,6 +236,8 @@ export class SessionReaders {
         return this.#opencode.readEvents(workspace, ref, offset, count);
       case "antigravity":
         return this.#antigravity.readEvents(ref, offset, count);
+      case "cursor":
+        return this.#cursor.events(ref, offset, count);
       default:
         throw new Error("Conversation provider is unavailable");
     }
@@ -207,10 +278,51 @@ export class SessionReaders {
       });
     if (native.agent === "antigravity")
       return this.#antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent });
-    if (native.agent === "open-claw") throw new Error("OpenClaw session documents are unsupported");
-    if (native.agent === "hermes") throw new Error("Hermes session documents are unsupported");
-    if (native.agent === "grok-build")
-      throw new Error("Grok Build session documents are unsupported");
+    if (native.agent === "cursor")
+      return this.#cursor.document(native, summary.workspace_id, workspace);
+    if (native.agent === "open-claw") {
+      const source = this.#openclaw.resolve(native.native_ref);
+      if (source.sqlite) return readOpenClawSqliteDocument(source.sqlite, summary.workspace_id);
+      return readEventDocument(
+        {
+          agent: native.agent,
+          workspace_id: summary.workspace_id,
+          title: summary.title,
+          created_at: summary.created_at,
+          updated_at: summary.updated_at,
+          git_branch: summary.git_branch,
+        },
+        (cursor, limit) => this.#readEvents(native, workspace, cursor, limit),
+      );
+    }
+    if (native.agent === "hermes") {
+      const { source } = this.#hermes.resolve(native.native_ref);
+      return readHermesDocument(
+        {
+          agent: native.agent,
+          workspace_id: summary.workspace_id,
+          title: summary.title,
+          created_at: summary.created_at,
+          updated_at: summary.updated_at,
+          git_branch: summary.git_branch,
+        },
+        source,
+      );
+    }
+    if (native.agent === "grok-build") {
+      const source = this.#grok.resolve(native.native_ref);
+      return readGrokDocument(
+        {
+          agent: native.agent,
+          workspace_id: summary.workspace_id,
+          title: summary.title,
+          created_at: summary.created_at,
+          updated_at: summary.updated_at,
+          git_branch: summary.git_branch,
+        },
+        source.transcript,
+      );
+    }
     throw new Error("Conversation provider is unavailable");
   }
 }

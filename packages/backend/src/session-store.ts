@@ -6,10 +6,14 @@ import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 import { agentSchema, parameters, type AGENTS } from "./rpc";
 import { Sql, positive, type Row } from "./sql";
 import { canonicalize, isDirectory, pathIdentity } from "./paths";
-import { exists } from "./files";
+import { exists, withinLexical } from "./files";
 import { timestamp } from "./timestamps";
 import { compareUtf8, storedTime, utcNow } from "./workspaces";
 type Agent = (typeof AGENTS)[number];
+export interface SessionOwner {
+  id: string;
+  aliases: string[];
+}
 const columns =
   "id,workspace_id,agent,title,created_at,updated_at,message_count,git_branch,archived,sidechain,availability,origin,spawned_by_session_id,forked_from_session_id";
 const supported = [
@@ -20,6 +24,7 @@ const supported = [
   "hermes",
   "grok-build",
   "antigravity",
+  "cursor",
 ];
 export interface NativeSession {
   native_ref: string;
@@ -154,15 +159,17 @@ export class SessionStore {
       .update(`conversation:${agent === "open-claw" ? "openclaw" : agent}:${nativeRef}`)
       .digest("hex");
   }
-  owner(workspace: string): { id: string; aliases: string[] } {
+  owner(workspace: string): SessionOwner {
     const root = sessionWorkspaceRoot(this.workspacePath(workspace));
     if (!root) return { id: workspace, aliases: [] };
+    const rootIdentity = pathIdentity(root);
     const candidates = this.sql
       .rows("SELECT canonical_path,id FROM workspaces ORDER BY length(canonical_path) DESC")
       .map((row) => ({ path: String(row.canonical_path), id: String(row.id) }))
       .filter((value) => {
+        if (!withinLexical(pathIdentity(value.path), rootIdentity)) return false;
         const candidate = sessionWorkspaceRoot(value.path);
-        return candidate !== null && pathIdentity(candidate) === pathIdentity(root);
+        return candidate !== null && pathIdentity(candidate) === rootIdentity;
       });
     candidates.sort((a, b) => {
       const rootA = pathIdentity(a.path) === pathIdentity(root),
@@ -177,7 +184,13 @@ export class SessionStore {
     });
     return { id: candidates[0]?.id ?? workspace, aliases: candidates.map((value) => value.id) };
   }
-  sync(workspace: string, agent: Agent, sessions: NativeSession[], complete = true): void {
+  sync(
+    workspace: string,
+    agent: Agent,
+    sessions: NativeSession[],
+    complete = true,
+    normalizedOwner?: SessionOwner,
+  ): void {
     if (!supported.includes(agent))
       throw new Error("Conversation indexing is not supported for this Agent");
     if (!this.sql.one("SELECT id FROM workspaces WHERE id=?", workspace))
@@ -199,7 +212,7 @@ export class SessionStore {
     const indexed = storedTime(utcNow());
     this.sql.transaction(() => {
       const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
-        ? this.owner(workspace)
+        ? (normalizedOwner ?? this.owner(workspace))
         : { id: workspace, aliases: [] };
       for (const alias of owner.aliases.filter((id) => id !== owner.id)) {
         this.sql.run(

@@ -4,11 +4,12 @@
   "scripts": {
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
+    "dev:typescript": "pnpm --filter @agentkib/desktop dev:typescript",
     "dev:web": "pnpm --filter @agentkib/web dev",
+    "agentkib": "node apps/desktop/scripts/agentkib.mjs",
     "build:web": "pnpm --filter @agentkib/web build",
     "build:web:hosted": "pnpm --filter @agentkib/web build:hosted",
     "test:web": "pnpm --filter @agentkib/web test",
-    "dev:electron": "pnpm --filter @agentkib/desktop dev:electron",
     "build": "pnpm --filter @agentkib/desktop build",
     "dist:electron": "pnpm --filter @agentkib/desktop dist:electron",
     "benchmark:runtime": "pnpm --filter @agentkib/desktop benchmark:runtime",

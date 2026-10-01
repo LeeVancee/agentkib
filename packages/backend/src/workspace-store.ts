@@ -91,7 +91,7 @@ export class WorkspaceStore {
 
   refreshWorkspace(plan: WorkspacePlan, inspection: WorkspaceInspection): string {
     const error = this.#transaction(() => {
-      // A failure records attention and commits the partial scan, matching Rust's existing behavior.
+      // A failure records attention while preserving the last usable partial scan.
       return this.#applyInspection(plan.id, inspection);
     });
     if (error) throw new Error(error);

@@ -12,19 +12,10 @@ const sourceDesktopDirectory = path.resolve(scriptDirectory, "..");
 const repositoryRoot = path.resolve(sourceDesktopDirectory, "../..");
 const options = parseArguments(process.argv.slice(2));
 const desktopDirectory = path.resolve(options.desktop ?? sourceDesktopDirectory);
-const label = options.label ?? "rust-optimized";
-const backend = options.backend ?? "rust";
-if (backend !== "rust" && backend !== "typescript") {
-  throw new Error(`Unsupported benchmark backend: ${backend}`);
-}
-const runtimePath = path.resolve(
-  repositoryRoot,
-  options.runtime ??
-    path.join("target", "release", process.platform === "win32" ? "agentkib-runtime.exe" : "agentkib-runtime"),
-);
-const typescriptWorkerPath = path.resolve(
+const label = options.label ?? "typescript";
+const typescriptBackendPath = path.resolve(
   desktopDirectory,
-  options.worker ?? path.join("dist-electron", "backend-worker.cjs"),
+  options.backendEntry ?? path.join("dist-electron", "backend.cjs"),
 );
 const electronPath = path.resolve(
   desktopDirectory,
@@ -36,6 +27,14 @@ const outputPath = path.resolve(
   repositoryRoot,
   options.output ?? path.join("qa", `runtime-benchmark-${label}.json`),
 );
+const runtimeProtocolSource = await readFile(
+  path.join(repositoryRoot, "packages/runtime-protocol/src/index.ts"),
+  "utf8",
+);
+const protocolVersion = Number(
+  runtimeProtocolSource.match(/export const PROTOCOL_VERSION = (\d+) as const/)?.[1],
+);
+if (!Number.isInteger(protocolVersion)) throw new Error("Unable to read runtime protocol version");
 const cleanRuns = integerOption(options["clean-runs"], 5);
 const reuseRuns = integerOption(options["reuse-runs"], 10);
 
@@ -45,9 +44,9 @@ async function main() {
   await Promise.all([
     assertExists(electronPath),
     assertExists(electronEntry),
-    assertExists(backend === "rust" ? runtimePath : typescriptWorkerPath),
+    assertExists(typescriptBackendPath),
   ]);
-  scratch = await mkdtemp(path.join(os.tmpdir(), "agentkib-runtime-benchmark-"));
+  scratch = await mkdtemp(path.join(os.tmpdir(), "agentkib-typescript-benchmark-"));
   try {
     const startup = {
       clean: await runStartupGroup("clean", cleanRuns),
@@ -67,9 +66,8 @@ async function main() {
         totalMemoryBytes: os.totalmem(),
       },
       build: {
-        backend,
-        runtimeArtifact:
-          backend === "rust" ? path.basename(runtimePath) : path.basename(typescriptWorkerPath),
+        backend: "typescript",
+        runtimeArtifact: path.basename(typescriptBackendPath),
         electronEntry: path.relative(desktopDirectory, electronEntry),
       },
       configuration: { cleanRuns, reuseRuns },
@@ -91,7 +89,9 @@ async function main() {
 async function runStartupGroup(profileKind, count) {
   if (count === 0) return [];
   const sharedProfile =
-    profileKind === "reused" ? await createProfile(path.join(scratch, "startup-reused")) : undefined;
+    profileKind === "reused"
+      ? await createProfile(path.join(scratch, "startup-reused"))
+      : undefined;
   const results = [];
   for (let index = 0; index < count; index += 1) {
     const profile =
@@ -105,20 +105,10 @@ async function runStartupGroup(profileKind, count) {
       cwd: desktopDirectory,
       env: {
         ...process.env,
-        // This harness compares Rust with the historical TS spike. Keep the
-        // new application's hybrid default from changing the Rust baseline.
-        AGENTKIB_BACKEND_MODE: "rust",
         AGENTKIB_BENCHMARK_DATA_DIR: profile.data,
         AGENTKIB_BENCHMARK_USER_DATA: profile.electron,
         AGENTKIB_STARTUP_BENCHMARK_FILE: timelinePath,
         AGENTKIB_BENCHMARK_EXIT_AFTER_READY: "1",
-        AGENTKIB_RUNTIME_PATH: runtimePath,
-        ...(backend === "typescript"
-          ? {
-              AGENTKIB_TS_BACKEND: "1",
-              AGENTKIB_DATABASE_PATH: path.join(profile.data, "agentkib.db"),
-            }
-          : {}),
         CODEX_HOME: profile.codex,
         CLAUDE_CONFIG_DIR: profile.claude,
       },
@@ -144,37 +134,19 @@ async function runRuntimeWorkloads() {
     CODEX_HOME: profile.codex,
     CLAUDE_CONFIG_DIR: profile.claude,
   };
-  const client =
-    backend === "typescript"
-      ? new RuntimeClient(
-          process.execPath,
-          {
-            ...runtimeEnvironment,
-            AGENTKIB_TS_WORKER_OPTIONS: JSON.stringify({
-              database_path: path.join(profile.data, "agentkib.db"),
-              system_locale: "en-US",
-              mcp_config_path: path.join(profile.data, "mcp.json"),
-              gateway_config_path: path.join(profile.data, "gateways.json"),
-              mcp_registry_path: path.join(profile.data, "mcp-registry.json"),
-            }),
-          },
-          [
-            path.join(scriptDirectory, "benchmark-typescript-worker.mjs"),
-            typescriptWorkerPath,
-          ],
-        )
-      : new RuntimeClient(runtimePath, runtimeEnvironment);
+  const client = new RuntimeClient(process.execPath, runtimeEnvironment, [typescriptBackendPath]);
   await client.start();
   try {
     await client.request("agentkib.handshake", {
-      protocolVersion: 1,
+      protocolVersion,
       client: { name: "agentkib-benchmark", version: "1" },
     });
+    await client.request("backend.initialize", { dataDir: profile.data });
     await client.request("runtime.info", {});
 
-    const added = await client.request("workspace.add", { path: fixture.workspace });
+    const added = await addWorkspace(client, fixture.workspace);
     for (const workspace of fixture.sqliteWorkspaces) {
-      await client.request("workspace.add", { path: workspace });
+      await addWorkspace(client, workspace);
     }
 
     const scanMs = await measureRequests(10, () =>
@@ -220,12 +192,33 @@ async function runRuntimeWorkloads() {
   }
 }
 
+async function addWorkspace(client, workspacePath) {
+  const context = await client.request("backend.nativeContext", {});
+  const plan = await client.request("backend.planWorkspace", {
+    operation: "add",
+    path: workspacePath,
+    context,
+  });
+  const inspections = await client.request("backend.inspectWorkspaces", {
+    workspaces: [{ id: plan.id, path: plan.path }],
+  });
+  if (!plan || !inspections[0]?.inspection)
+    throw new Error("TypeScript benchmark could not prepare workspace inspection");
+  return client.request("workspace.add", {
+    path: workspacePath,
+    _plan: plan,
+    _inspection: inspections[0].inspection,
+  });
+}
+
 async function createProfile(root) {
   const data = path.join(root, "runtime-data");
   const electron = path.join(root, "electron-data");
   const codex = path.join(root, "codex-home");
   const claude = path.join(root, "claude-home");
-  await Promise.all([data, electron, codex, claude].map((directory) => mkdir(directory, { recursive: true })));
+  await Promise.all(
+    [data, electron, codex, claude].map((directory) => mkdir(directory, { recursive: true })),
+  );
   const preferencesPath = path.join(data, "preferences.json");
   try {
     await access(preferencesPath);
@@ -244,7 +237,11 @@ async function createWorkloadFixture(profile) {
   const workspace = await realpath(requestedWorkspace);
   let workspaceFiles = 0;
   for (let directoryIndex = 0; directoryIndex < 40; directoryIndex += 1) {
-    const directory = path.join(workspace, "src", `module-${String(directoryIndex).padStart(2, "0")}`);
+    const directory = path.join(
+      workspace,
+      "src",
+      `module-${String(directoryIndex).padStart(2, "0")}`,
+    );
     await mkdir(directory, { recursive: true });
     for (let fileIndex = 0; fileIndex < 10; fileIndex += 1) {
       await writeFile(
@@ -295,7 +292,11 @@ async function createWorkloadFixture(profile) {
 
   const sqliteWorkspaces = [];
   for (let index = 0; index < 100; index += 1) {
-    const directory = path.join(profile.root, "sqlite-workspaces", `workspace-${String(index).padStart(3, "0")}`);
+    const directory = path.join(
+      profile.root,
+      "sqlite-workspaces",
+      `workspace-${String(index).padStart(3, "0")}`,
+    );
     await mkdir(directory, { recursive: true });
     sqliteWorkspaces.push(directory);
   }
@@ -323,11 +324,16 @@ class RuntimeClient {
       const pending = this.pending.get(response.id);
       if (!pending) return;
       this.pending.delete(response.id);
-      if (response.error) pending.reject(new Error(response.error.message));
-      else pending.resolve(response.result);
+      if (response.error) {
+        const detail = response.error.data?.detail;
+        const reason = detail ? `${response.error.message}: ${detail}` : response.error.message;
+        pending.reject(new Error(`${pending.method}: ${reason}`));
+      } else pending.resolve(response.result);
     });
     this.child.once("exit", (code, signal) => {
-      const error = new Error(`Runtime exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`);
+      const error = new Error(
+        `Runtime exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`,
+      );
       for (const pending of this.pending.values()) pending.reject(error);
       this.pending.clear();
     });
@@ -340,7 +346,7 @@ class RuntimeClient {
   request(method, params) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { method, resolve, reject });
       this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   }
@@ -356,10 +362,7 @@ class RuntimeClient {
       }
       await exited;
     })();
-    await Promise.race([
-      gracefulShutdown,
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    await Promise.race([gracefulShutdown, new Promise((resolve) => setTimeout(resolve, 2_000))]);
     if (this.child.exitCode === null) {
       this.child.kill();
       await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 500))]);
@@ -416,9 +419,7 @@ async function processTreeRssKb(rootPid) {
       }
     }
   }
-  return rows
-    .filter(([pid]) => descendants.has(pid))
-    .reduce((total, [, , rss]) => total + rss, 0);
+  return rows.filter(([pid]) => descendants.has(pid)).reduce((total, [, , rss]) => total + rss, 0);
 }
 
 function waitForExit(child, timeoutMs, labelValue) {
@@ -434,7 +435,12 @@ function waitForExit(child, timeoutMs, labelValue) {
     child.once("exit", (code, signal) => {
       clearTimeout(timeout);
       if (code === 0) resolve();
-      else reject(new Error(`${labelValue} exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`));
+      else
+        reject(
+          new Error(
+            `${labelValue} exited with code ${code ?? "null"}${signal ? ` (${signal})` : ""}`,
+          ),
+        );
     });
   });
 }
@@ -446,18 +452,31 @@ function freePort() {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : undefined;
-      server.close((error) => (error || !port ? reject(error ?? new Error("No free port")) : resolve(port)));
+      server.close((error) =>
+        error || !port ? reject(error ?? new Error("No free port")) : resolve(port),
+      );
     });
   });
 }
 
 function parseArguments(argumentsList) {
   const parsed = {};
+  const allowed = new Set([
+    "label",
+    "desktop",
+    "backendEntry",
+    "electron",
+    "entry",
+    "output",
+    "clean-runs",
+    "reuse-runs",
+  ]);
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === "--") continue;
     if (!argument.startsWith("--")) throw new Error(`Unexpected argument: ${argument}`);
     const key = argument.slice(2);
+    if (!allowed.has(key)) throw new Error(`Unsupported benchmark option: --${key}`);
     const value = argumentsList[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for --${key}`);
     parsed[key] = value;
@@ -469,7 +488,8 @@ function parseArguments(argumentsList) {
 function integerOption(value, fallback) {
   if (value === undefined) return fallback;
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`Invalid non-negative integer: ${value}`);
+  if (!Number.isInteger(parsed) || parsed < 0)
+    throw new Error(`Invalid non-negative integer: ${value}`);
   return parsed;
 }
 

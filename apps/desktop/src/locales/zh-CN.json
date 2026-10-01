@@ -1632,7 +1632,7 @@
   "handoff.recovery.reload": "重新加载待恢复导入",
   "handoff.loss.target-tool-summary": "目标将以文本摘要保留 {{count}} 条工具记录。",
   "handoff.loss.target-attachment-omitted": "目标无法保留 {{count}} 个附件，导入时会省略。",
-"insights.tokens": "Token",
+  "insights.tokens": "Token",
   "insights.days_one": "{{value}} 天",
   "insights.days_other": "{{value}} 天",
   "insights.sessions_one": "{{value}} 个会话",

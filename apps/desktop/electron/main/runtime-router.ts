@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
 import {
   BACKEND_INITIALIZE,
-  BACKEND_PREFERENCES,
   TYPESCRIPT_READ_METHODS,
   TYPESCRIPT_PREFERENCE_METHODS,
   PREFERENCE_WRITE_METHODS,
   TYPESCRIPT_WORKSPACE_METHODS,
+  TYPESCRIPT_WORKSPACE_OPENER_METHODS,
   TYPESCRIPT_GIT_METHODS,
   TYPESCRIPT_CATALOG_METHODS,
   BACKEND_PLAN_WORKSPACE,
@@ -24,7 +24,8 @@ import {
   TYPESCRIPT_AGENT_TOOL_METHODS,
   TYPESCRIPT_MCP_METHODS,
   TYPESCRIPT_REMOTE_GATEWAY_METHODS,
-  NATIVE_REMOTE_SESSION_INDEX_CHANGED,
+  TYPESCRIPT_STORAGE_METHODS,
+  TYPESCRIPT_QUOTA_METHODS,
   type NativeContext,
   type WorkspacePlan,
   type InspectedWorkspace,
@@ -39,26 +40,28 @@ import {
   type RuntimeHostStatus,
 } from "./runtime-host";
 
-/** Own each method explicitly. Failed TS operations are never replayed through Rust. */
+/** Own each method explicitly; failures are returned to the caller without replay. */
 export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   #state: RuntimeHostState = "stopping";
   #readiness = readyCycle();
   #generation = 0;
   #initializing?: symbol;
   #handshake?: RuntimeHandshakeResult;
-  #rustHandshake?: RuntimeHandshakeResult;
+  #typescriptHandshake?: RuntimeHandshakeResult;
   #error?: Error;
   #preferenceWrites: Promise<void> = Promise.resolve();
   #workspaceWrites: Promise<void> = Promise.resolve();
 
-  constructor(
-    readonly rust: RuntimeHost,
-    readonly typescript: RuntimeHost,
-  ) {
+  readonly typescript: RuntimeHost;
+  readonly dataDir?: string;
+
+  constructor(typescript: RuntimeHost, dataDir?: string) {
     super();
-    for (const host of [rust, typescript]) {
+    this.typescript = typescript;
+    this.dataDir = dataDir;
+    for (const host of [this.typescript]) {
       host.on("ready", (handshake: RuntimeHandshakeResult) => {
-        if (host === rust) this.#rustHandshake = handshake;
+        this.#typescriptHandshake = handshake;
         this.#initialize();
       });
       host.on("state", (status: RuntimeHostStatus) => {
@@ -72,7 +75,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
           this.#initializing = undefined;
           if (this.#state === "ready") this.#readiness = readyCycle();
           this.#handshake = undefined;
-          if (host === rust) this.#rustHandshake = undefined;
+          this.#typescriptHandshake = undefined;
           if (this.#state !== "failed") this.#setState("restarting");
         }
         this.emit("exit", event);
@@ -86,7 +89,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
   get status(): RuntimeHostStatus {
     return {
       state: this.#state,
-      restartCount: this.rust.status.restartCount + this.typescript.status.restartCount,
+      restartCount: this.typescript.status.restartCount,
       ...(this.#error ? { error: this.#error.message } : {}),
     };
   }
@@ -98,12 +101,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     this.#generation += 1;
     const generation = this.#generation;
     this.#setState("starting");
-    for (const host of [this.rust, this.typescript]) {
-      void host.start().catch((error: unknown) => {
-        if (generation === this.#generation && this.#state !== "stopping")
-          this.#fail(asError(error));
-      });
-    }
+    void this.typescript.start().catch((error: unknown) => {
+      if (generation === this.#generation && this.#state !== "stopping") this.#fail(asError(error));
+    });
     return this.#readiness.promise;
   }
 
@@ -115,15 +115,13 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     this.#generation += 1;
     const generation = this.#generation;
     this.#setState("starting");
-    for (const host of [this.rust, this.typescript]) {
-      void host
-        .retry()
-        .then(() => this.#initialize())
-        .catch((error: unknown) => {
-          if (generation === this.#generation && this.#state !== "stopping")
-            this.#fail(asError(error));
-        });
-    }
+    void this.typescript
+      .retry()
+      .then(() => this.#initialize())
+      .catch((error: unknown) => {
+        if (generation === this.#generation && this.#state !== "stopping")
+          this.#fail(asError(error));
+      });
     return this.#readiness.promise;
   }
 
@@ -132,7 +130,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       await this.#waitUntilReady();
       return this.#dispatch<TResult>(method, params);
     };
-    // Snapshot reads must not observe a remaining Rust writer's truncated file.
+    // Snapshot reads must not observe a concurrent writer's partial update.
     if (
       PREFERENCE_WRITE_METHODS.has(method) ||
       method === RUNTIME_METHODS.runtimeInfo ||
@@ -162,7 +160,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     this.#generation += 1;
     this.#setState("stopping");
     this.#readiness.reject(new RuntimeUnavailableError(new Error("AgentKib runtime is stopping")));
-    const results = await Promise.allSettled([this.rust.stop(), this.typescript.stop()]);
+    const results = await Promise.allSettled([this.typescript.stop()]);
     const failed = results.filter((result) => result.status === "rejected");
     if (failed.length)
       throw new AggregateError(
@@ -186,6 +184,9 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       return this.typescript.request<TResult>(method, params);
     if (method === RUNTIME_METHODS.controlReceipt)
       return this.typescript.request<TResult>(method, params);
+    if (method === RUNTIME_METHODS.claudeManaged) {
+      return this.typescript.request<TResult>(method, params);
+    }
     if (
       method === RUNTIME_METHODS.codexManaged &&
       typeof params === "object" &&
@@ -223,16 +224,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "fork",
       ].includes(String(params.operation))
     ) {
-      const result = await this.typescript.request<unknown>(method, params);
-      if (
-        typeof result === "object" &&
-        result !== null &&
-        !Array.isArray(result) &&
-        "__runtimeBackend" in result &&
-        result.__runtimeBackend === "rust"
-      )
-        return this.rust.request<TResult>(method, params);
-      return result as TResult;
+      return this.typescript.request<TResult>(method, params);
     }
     if (
       method === RUNTIME_METHODS.webRequest &&
@@ -267,25 +259,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         "fork",
       ].includes(String(params.operation))
     ) {
-      const result = await this.typescript.request<unknown>(method, params);
-      if (
-        typeof result === "object" &&
-        result !== null &&
-        !Array.isArray(result) &&
-        "__runtimeBackend" in result &&
-        result.__runtimeBackend === "rust"
-      )
-        return this.rust.request<TResult>(method, params);
-      if (
-        typeof result === "object" &&
-        result !== null &&
-        !Array.isArray(result) &&
-        "executionMode" in result &&
-        result.executionMode === "codex-follower" &&
-        ["capabilities", "settings-state"].includes(String(params.operation))
-      )
-        return this.rust.request<TResult>(method, params);
-      return result as TResult;
+      return this.typescript.request<TResult>(method, params);
     }
     if (
       method === RUNTIME_METHODS.webRequest &&
@@ -316,9 +290,7 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     if (method === RUNTIME_METHODS.setQuotaPreferences)
       return this.typescript.request<TResult>(method, params);
     if (TYPESCRIPT_SESSION_INDEX_METHODS.has(method)) {
-      const result = await this.typescript.request<TResult>(method, params);
-      await this.rust.request(NATIVE_REMOTE_SESSION_INDEX_CHANGED, {});
-      return result;
+      return this.typescript.request<TResult>(method, params);
     }
     if (
       TYPESCRIPT_READ_METHODS.has(method) ||
@@ -333,34 +305,18 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       TYPESCRIPT_SKILL_METHODS.has(method) ||
       TYPESCRIPT_AGENT_TOOL_METHODS.has(method) ||
       TYPESCRIPT_MCP_METHODS.has(method) ||
-      TYPESCRIPT_REMOTE_GATEWAY_METHODS.has(method)
+      TYPESCRIPT_REMOTE_GATEWAY_METHODS.has(method) ||
+      TYPESCRIPT_STORAGE_METHODS.has(method) ||
+      TYPESCRIPT_QUOTA_METHODS.has(method)
     )
       return this.typescript.request<TResult>(method, params);
-    if (TYPESCRIPT_PREFERENCE_METHODS.has(method)) {
-      const preferences = await this.typescript.request<Record<string, unknown>>(method, params);
-      const runtime = await this.rust.request<Record<string, unknown>>(
-        RUNTIME_METHODS.runtimeInfo,
-        {},
-      );
-      const mcpHub = await this.typescript.request<Record<string, unknown>>(
-        RUNTIME_METHODS.mcpHubStatus,
-        {},
-      );
-      return { ...runtime, ...preferences, mcp_hub: mcpHub } as TResult;
-    }
-    if (method === RUNTIME_METHODS.runtimeInfo) {
-      const runtime = await this.rust.request<Record<string, unknown>>(method, params);
-      const preferences = await this.typescript.request<Record<string, unknown>>(
-        BACKEND_PREFERENCES,
-        {},
-      );
-      const mcpHub = await this.typescript.request<Record<string, unknown>>(
-        RUNTIME_METHODS.mcpHubStatus,
-        {},
-      );
-      return { ...runtime, ...preferences, mcp_hub: mcpHub } as TResult;
-    }
-    return this.rust.request<TResult>(method, params);
+    if (TYPESCRIPT_WORKSPACE_OPENER_METHODS.has(method))
+      return this.typescript.request<TResult>(method, params);
+    if (TYPESCRIPT_PREFERENCE_METHODS.has(method) || method === RUNTIME_METHODS.runtimeInfo)
+      return this.typescript.request<TResult>(method, params);
+    throw new RuntimeUnavailableError(
+      new Error(`No backend owner is registered for runtime method ${method}`),
+    );
   }
 
   async #workspaceRequest<TResult>(method: string, params: unknown): Promise<TResult> {
@@ -454,7 +410,6 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
       this.#state === "failed" ||
       this.#state === "ready" ||
       this.#initializing ||
-      this.rust.status.state !== "ready" ||
       this.typescript.status.state !== "ready"
     )
       return;
@@ -462,13 +417,15 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
     const attempt = Symbol();
     this.#initializing = attempt;
     void (async () => {
-      // Rust owns migrations during coexistence, including the legacy data-directory move.
-      await this.rust.request(RUNTIME_METHODS.listWorkspaces, {});
-      const info = await this.rust.request<{ data_dir: string }>(RUNTIME_METHODS.runtimeInfo, {});
-      await this.typescript.request(BACKEND_INITIALIZE, { dataDir: info.data_dir });
+      const dataDir =
+        this.dataDir ??
+        (await this.typescript.request<{ data_dir: string }>(RUNTIME_METHODS.runtimeInfo, {}))
+          .data_dir;
+      if (!dataDir) throw new Error("TypeScript backend data directory is unavailable");
+      await this.typescript.request(BACKEND_INITIALIZE, { dataDir });
       if (generation !== this.#generation || this.#state === "stopping") return;
-      const handshake = this.#rustHandshake;
-      if (!handshake) throw new Error("Rust runtime handshake is unavailable");
+      const handshake = this.#typescriptHandshake;
+      if (!handshake) throw new Error("TypeScript backend handshake is unavailable");
       this.#handshake = {
         ...handshake,
         capabilities: [
@@ -487,7 +444,6 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         if (
           generation === this.#generation &&
           this.#state !== "stopping" &&
-          this.rust.status.state === "ready" &&
           this.typescript.status.state === "ready"
         )
           this.#fail(asError(error));

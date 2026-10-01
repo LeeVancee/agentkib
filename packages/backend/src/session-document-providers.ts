@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } fr
 import { sessionDocument, type SessionDocument } from "./session-model";
 import { sanitizeSessionText } from "./session-handoff";
 import { jsonTimestamp } from "./session-history";
-import { messageText } from "./session-events";
+import { messageText, type ConversationEventPage } from "./session-events";
 import type { SessionAgent } from "./session-readers";
 import { isReparseOrSymlink } from "./native-files";
 import { stringifyAcpJson } from "./acp-json";
@@ -18,6 +18,67 @@ export interface DocumentSource {
   created_at: string | null;
   updated_at: string | null;
   git_branch: string | null;
+}
+
+/** Build an importable text document from providers whose public event reader is authoritative. */
+export async function readEventDocument(
+  source: DocumentSource,
+  readPage: (cursor: string | null, limit: number) => Promise<ConversationEventPage>,
+): Promise<SessionDocument> {
+  const pages: SessionDocument["turns"][] = [];
+  const losses = new Map<LossCode, number>();
+  const warnings = new Set<string>();
+  let cursor: string | null = null;
+  for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
+    const page = await readPage(cursor, 100);
+    const turns: SessionDocument["turns"] = [];
+    for (const warning of page.warnings) warnings.add(warning);
+    for (const event of page.events) {
+      const blocks: SessionDocument["turns"][number]["blocks"] = [];
+      if (event.kind === "tool-summary") {
+        const callId = `event-tool-${event.id}`;
+        if (event.tool_status === "running") {
+          blocks.push({
+            type: "tool-call",
+            call_id: callId,
+            name: event.tool_name ?? "tool",
+            input: "",
+          });
+        } else {
+          blocks.push({
+            type: "tool-result",
+            call_id: callId,
+            output: event.content ?? "",
+            is_error: event.tool_status === "failed",
+          });
+        }
+      } else if (event.content !== null) {
+        blocks.push({ type: "text", text: event.content });
+      }
+      for (let index = 0; index < event.attachment_count; index++)
+        blocks.push({ type: "attachment", kind: "image", media_type: "application/octet-stream" });
+      if (blocks.length)
+        turns.push({
+          id: event.id,
+          role: event.kind === "user-message" ? "user" : "assistant",
+          timestamp: event.timestamp,
+          blocks,
+        });
+      if (event.truncated) loss(losses, "source-content-truncated");
+    }
+    pages.push(turns);
+    if (page.next_cursor === null) break;
+    if (pageNumber === 999) throw new Error("Conversation exceeds the native import page limit");
+    if (page.next_cursor === cursor) throw new Error("Conversation event cursor did not advance");
+    cursor = page.next_cursor;
+  }
+  for (const warning of warnings) {
+    if (warning === "TRANSCRIPT_DAMAGED_LINES") loss(losses, "damaged-record");
+    else if (warning === "TRANSCRIPT_OVERSIZED_LINES") loss(losses, "source-content-truncated");
+    else if (warning === "TRANSCRIPT_SCAN_BUDGET")
+      throw new Error("Conversation exceeds the native import scan limit");
+  }
+  return finishDocument(source, pages.reverse().flat(), losses);
 }
 
 function records(file: string): { rows: RecordLine[]; damaged: number; truncated: number } {

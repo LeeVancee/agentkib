@@ -427,14 +427,6 @@ export function WebAccessSettings({ target }: { target?: "lan" } = {}) {
   return (
     <SettingsSection title={c.title}>
       {!lan && <RemoteAccountSettings />}
-      {lan &&
-        status?.running && (
-          // 运行期间常驻：明文风险不是一次性确认就能消除的，用户需要随时知道自己暴露在什么网络上。
-          <SettingsNotice tone="warning" inset={false} className="text-sm">
-            <strong>{l.plaintextActiveTitle}</strong>
-            <p>{l.plaintextActive}</p>
-          </SettingsNotice>
-        )}
       <SettingsNotice>{codeAccess ? c.codeScope : c.scope}</SettingsNotice>
       {status?.acceptanceSessionId && (
         <SettingsNotice>

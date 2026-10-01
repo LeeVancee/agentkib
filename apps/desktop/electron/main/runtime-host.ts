@@ -219,7 +219,7 @@ export class DesktopRuntimeHost extends EventEmitter {
     this.#child = child;
 
     child.on("failure", (error: Error) => this.#handleProcessFailure(child, error));
-    child.on("diagnostic", (chunk: string) => process.stderr.write(`[agentkib-runtime] ${chunk}`));
+    child.on("diagnostic", (chunk: string) => process.stderr.write(`[agentkib-backend] ${chunk}`));
     child.on("message", (message: unknown) => {
       if (this.#child === child) this.#handleMessage(message);
     });

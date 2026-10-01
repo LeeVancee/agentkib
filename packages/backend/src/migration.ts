@@ -4,6 +4,8 @@ export const BACKEND_INITIALIZE = "backend.initialize";
 export const BACKEND_PREFERENCES = "backend.preferences";
 export const BACKEND_PLAN_WORKSPACE = "backend.planWorkspace";
 export const BACKEND_PLAN_DISCOVERY = "backend.planDiscovery";
+export const BACKEND_DEFAULT_MANIFEST = "backend.defaultManifest";
+export const BACKEND_PLAN_PROJECT_ASSETS = "backend.planProjectAssets";
 export const NATIVE_CONTEXT = "backend.nativeContext";
 export const NATIVE_DISCOVERY = "backend.nativeDiscovery";
 export const NATIVE_SCAN_ROOT_DISCOVERY = "backend.nativeScanRootDiscovery";
@@ -18,6 +20,18 @@ export const TYPESCRIPT_READ_METHODS = new Set<string>([
   RUNTIME_METHODS.listExcludedWorkspaces,
   RUNTIME_METHODS.discoveryReport,
   RUNTIME_METHODS.quotaPreferences,
+  RUNTIME_METHODS.quotaSnapshot,
+  RUNTIME_METHODS.quotaCollectorStatus,
+  RUNTIME_METHODS.storageOverview,
+  RUNTIME_METHODS.storageChildren,
+  RUNTIME_METHODS.resolveStoragePath,
+]);
+
+export const TYPESCRIPT_QUOTA_METHODS = new Set<string>([RUNTIME_METHODS.refreshQuota]);
+
+export const TYPESCRIPT_STORAGE_METHODS = new Set<string>([
+  RUNTIME_METHODS.refreshStorage,
+  RUNTIME_METHODS.cancelStorage,
 ]);
 export const TYPESCRIPT_PREFERENCE_METHODS = new Set<string>([
   RUNTIME_METHODS.setCloseBehavior,
@@ -41,6 +55,12 @@ export const TYPESCRIPT_WORKSPACE_METHODS = new Set<string>([
   RUNTIME_METHODS.addScanRoot,
   RUNTIME_METHODS.removeScanRoot,
   RUNTIME_METHODS.refreshDiscovery,
+  RUNTIME_METHODS.openWorkspaceWithApp,
+]);
+
+export const TYPESCRIPT_WORKSPACE_OPENER_METHODS = new Set<string>([
+  RUNTIME_METHODS.listWorkspaceOpeners,
+  RUNTIME_METHODS.openWorkspaceWithApp,
 ]);
 
 /** All current runtime entry points that can mutate preferences.json. */
@@ -112,6 +132,7 @@ export const TYPESCRIPT_SESSION_READ_METHODS = new Set<string>([
   RUNTIME_METHODS.workspaceSessionStatus,
   RUNTIME_METHODS.sessionEvents,
   RUNTIME_METHODS.sessionDocument,
+  RUNTIME_METHODS.sessionSourceCapability,
 ]);
 
 export const TYPESCRIPT_SESSION_INDEX_METHODS = new Set<string>([
@@ -121,6 +142,7 @@ export const TYPESCRIPT_SESSION_INDEX_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_SESSION_HANDOFF_METHODS = new Set<string>([
+  RUNTIME_METHODS.listNativeImports,
   RUNTIME_METHODS.prepareSessionHandoff,
   RUNTIME_METHODS.planSessionMcpConnection,
   RUNTIME_METHODS.sanitizeSessionHandoff,

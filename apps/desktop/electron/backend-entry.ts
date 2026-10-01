@@ -17,19 +17,24 @@ function dispatch(request: unknown, send: (response: unknown) => Promise<void>):
   if (closing) return;
   const stopping = shutdown(request);
   if (stopping) closing = true;
-  const task = backend
-    .handleAsync(request)
-    .then(async (response) => {
-      if (stopping) await Promise.allSettled([...pending].filter((value) => value !== task));
-      await send(response);
-      if (stopping) process.exit(0);
-    })
-    .finally(() => pending.delete(task))
-    .catch(() => {
+  const task = (async () => {
+    if (stopping) await Promise.allSettled([...pending]);
+    const response = await backend.handleAsync(request);
+    await send(response);
+    if (stopping && !response.error) process.exit(0);
+    if (stopping) closing = false;
+  })()
+    .catch(async () => {
       closing = true;
-      backend.close();
+      try {
+        await backend.closeAsync();
+      } catch {
+        process.exitCode = 1;
+        return;
+      }
       process.exit(1);
-    });
+    })
+    .finally(() => pending.delete(task));
   pending.add(task);
 }
 if (process.parentPort) {
@@ -54,9 +59,13 @@ if (process.parentPort) {
   });
   input.on("close", () => {
     closing = true;
-    void Promise.allSettled([...pending]).then(() => {
-      backend.close();
-      process.exit(0);
+    void Promise.allSettled([...pending]).then(async () => {
+      try {
+        await backend.closeAsync();
+        process.exit(0);
+      } catch {
+        process.exitCode = 1;
+      }
     });
   });
 }

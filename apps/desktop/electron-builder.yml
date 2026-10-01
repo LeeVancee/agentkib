@@ -26,8 +26,6 @@ extraResources:
     to: licenses/quota
   - from: ../web/dist
     to: web
-  - from: build/runtime
-    to: bin
   - from: build/frpc
     to: bin
   - from: build/quota

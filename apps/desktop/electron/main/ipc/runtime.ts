@@ -234,9 +234,12 @@ export function registerRuntimeIpc({
     forward(
       "agentkib:changes:apply",
       RUNTIME_METHODS.applyChanges,
-      (changeSet: unknown, approveHome: unknown) => ({
+      (changeSet: unknown, approveHome: unknown, launchRequest: unknown) => ({
         changeSet: requireObject(changeSet, "changeSet"),
         approveHome: requireBoolean(approveHome, "approveHome"),
+        ...(launchRequest === undefined
+          ? {}
+          : { launchRequest: requireObject(launchRequest, "launchRequest") }),
       }),
     );
     forward(

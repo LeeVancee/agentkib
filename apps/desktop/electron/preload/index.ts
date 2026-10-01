@@ -69,8 +69,8 @@ const desktopApi = Object.freeze({
   changes: Object.freeze({
     plan: (project: string, manifest: unknown, includeHome: boolean) =>
       ipcRenderer.invoke("agentkib:changes:plan", project, manifest, includeHome),
-    apply: (changeSet: unknown, approveHome: boolean) =>
-      ipcRenderer.invoke("agentkib:changes:apply", changeSet, approveHome),
+    apply: (changeSet: unknown, approveHome: boolean, launchRequest?: unknown) =>
+      ipcRenderer.invoke("agentkib:changes:apply", changeSet, approveHome, launchRequest),
   }),
   memories: Object.freeze({
     list: (project: string, status?: string) =>

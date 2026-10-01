@@ -1632,7 +1632,7 @@
   "handoff.recovery.reload": "Reload pending imports",
   "handoff.loss.target-tool-summary": "The target will retain {{count}} tool record(s) as text summaries.",
   "handoff.loss.target-attachment-omitted": "The target cannot retain {{count}} attachment(s); they will be omitted.",
-"insights.tokens": "Token",
+  "insights.tokens": "Token",
   "insights.days_one": "{{value}} day",
   "insights.days_other": "{{value}} days",
   "insights.sessions_one": "{{value}} session",

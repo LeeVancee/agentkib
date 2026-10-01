@@ -6,6 +6,11 @@ import { readText } from "./files";
 import { finiteJson } from "./config-merge";
 import { compareUtf8 } from "./workspaces";
 import { isReparseOrSymlink } from "./native-files";
+import {
+  listOpenClawSqlite,
+  safeOpenClawSqliteAuthority,
+  type OpenClawSqliteSession,
+} from "./openclaw-sqlite-sessions";
 import { sessionTitle } from "./codex-sessions";
 import {
   belongsToWorkspace,
@@ -18,6 +23,9 @@ import {
   stableNativeRef,
   type NativeHistorySource,
 } from "./session-history";
+export interface OpenClawSource extends NativeHistorySource {
+  sqlite?: OpenClawSqliteSession;
+}
 const text = (value: unknown) => (typeof value === "string" ? value : null);
 function messageText(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -40,7 +48,7 @@ export class OpenClawSessions {
   list(workspace: string | null) {
     const home = this.home(),
       agents = path.join(home, "agents"),
-      sources: NativeHistorySource[] = [],
+      sources: OpenClawSource[] = [],
       budget = { visited: 0, incomplete: false };
     function* entries(root: string) {
       if (!isDirectory(root)) return;
@@ -64,6 +72,24 @@ export class OpenClawSessions {
     for (const agent of entries(agents)) {
       const agentRoot = path.join(agents, agent.name);
       if (!agent.isDirectory() || isReparseOrSymlink(agentRoot, agent)) continue;
+      const database = path.join(agentRoot, "agent", "openclaw-agent.sqlite");
+      if (safeOpenClawSqliteAuthority(database)) {
+        try {
+          const listing = listOpenClawSqlite(database, home, agent.name, workspace);
+          budget.incomplete ||= listing.incomplete;
+          for (const sqlite of listing.sessions)
+            sources.push({
+              cwd: sqlite.cwd,
+              transcript: sqlite.file,
+              session: sqlite.session,
+              sqlite,
+            });
+        } catch {
+          budget.incomplete = true;
+        }
+        // SQLite is authoritative even when it cannot be read; do not surface stale JSONL checkpoints.
+        continue;
+      }
       const sessionRoot = path.join(agentRoot, "sessions"),
         names = new Map<string, string>(),
         nameFile = path.join(sessionRoot, "sessions.json");
@@ -159,7 +185,7 @@ export class OpenClawSessions {
     sessions.sort(historyOrder);
     return { sessions, incomplete: budget.incomplete };
   }
-  resolve(nativeRef: string): NativeHistorySource {
+  resolve(nativeRef: string): OpenClawSource {
     const source = this.list(null).sessions.find((value) => value.session.native_ref === nativeRef);
     if (!source) throw new Error("OpenClaw session is no longer available");
     return source;

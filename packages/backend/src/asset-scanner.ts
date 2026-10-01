@@ -138,11 +138,17 @@ export function scanWorkspace(project: string) {
   for (const agent of AGENTS) {
     for (const [candidate, kind, summary] of ASSET_CANDIDATES[agent]!) {
       const absolute = path.join(root, candidate);
-      if (isFile(absolute)) {
+      let metadata;
+      try {
+        metadata = statSync(absolute);
+      } catch {
+        continue;
+      }
+      if (metadata.isFile()) {
         assets.push(record(agent, kind, absolute, summary));
         const warning = validateNative(absolute);
         if (warning) validation.push({ agent, warning });
-      } else if (isDirectory(absolute)) {
+      } else if (metadata.isDirectory()) {
         for (const value of walk(absolute, 4)) {
           const name = path.basename(value);
           if (

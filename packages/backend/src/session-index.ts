@@ -51,6 +51,7 @@ export class SessionIndex {
     }
     const workspace = this.store.workspacePath(workspaceId);
     const current = () => !this.#closed && epoch === this.#epoch && this.enabled();
+    let normalizedOwner: ReturnType<SessionStore["owner"]> | undefined;
     for (const agent of SESSION_AGENTS) {
       let listing: NativeListing;
       try {
@@ -61,7 +62,10 @@ export class SessionIndex {
         continue;
       }
       if (!current()) return [];
-      this.store.sync(workspaceId, agent, listing.sessions, !listing.incomplete);
+      const owner = ["open-claw", "hermes", "grok-build"].includes(agent)
+        ? (normalizedOwner ??= this.store.owner(workspaceId))
+        : undefined;
+      this.store.sync(workspaceId, agent, listing.sessions, !listing.incomplete, owner);
       if (listing.incomplete)
         this.store.failure(
           workspaceId,

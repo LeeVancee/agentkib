@@ -127,6 +127,7 @@ export function WorkspaceSessionsPage({
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
+  const [readRevision, setReadRevision] = useState(0);
 
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -338,7 +339,10 @@ export function WorkspaceSessionsPage({
   const rawError: unknown = historyError ? transcriptError : (listError?.reason ?? "");
   const error = rawError === "" || rawError == null ? "" : localizeMessage(rawError);
   // 旧游标失效时从最新窗口重新读取，丢弃已加载的更早页面。
-  const reloadTranscript = () => void queryClient.resetQueries({ queryKey: transcriptKey });
+  const reloadTranscript = () => {
+    setReadRevision((value) => value + 1);
+    void queryClient.resetQueries({ queryKey: transcriptKey });
+  };
 
   const loadEarlier = async () => {
     if (!nextCursor || reading || loadingEarlier) return;

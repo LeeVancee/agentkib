@@ -1632,7 +1632,7 @@
   "handoff.recovery.reload": "復旧待ちのインポートを再読み込み",
   "handoff.loss.target-tool-summary": "対象は {{count}} 件のツール記録をテキスト要約として保持します。",
   "handoff.loss.target-attachment-omitted": "対象は {{count}} 件の添付ファイルを保持できないため、省略されます。",
-"insights.tokens": "トークン",
+  "insights.tokens": "トークン",
   "insights.days_one": "{{value}} 日",
   "insights.days_other": "{{value}} 日",
   "insights.sessions_one": "{{value}} セッション",

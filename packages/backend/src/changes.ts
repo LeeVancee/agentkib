@@ -19,6 +19,11 @@ export function applyRequest(
   store: BackendStore,
   dataDir: string,
   environment: NodeJS.ProcessEnv,
+  validateAdditionalApplicationData?: (
+    changeSet: import("./change-plan").ChangeSet,
+    applicationId: string,
+    dataDir: string,
+  ) => string[],
 ) {
   const { changeSet: plan, approveHome } = parameters(
       z.object({ changeSet, approveHome: z.boolean() }),
@@ -63,7 +68,12 @@ export function applyRequest(
         throw new Error("Application data changes require a registered workspace");
       applicationId = String(rows[0]!.manifest_workspace_id ?? rows[0]!.id);
     }
-    approvedApplication = validateApplicationArchive(plan, applicationId, dataDir);
+    try {
+      approvedApplication = validateApplicationArchive(plan, applicationId, dataDir);
+    } catch (archiveError) {
+      if (!validateAdditionalApplicationData) throw archiveError;
+      approvedApplication = validateAdditionalApplicationData(plan, applicationId, dataDir);
+    }
   }
   const roots = [
       path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions"),

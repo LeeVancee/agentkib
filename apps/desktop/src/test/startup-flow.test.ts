@@ -3,8 +3,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const desktopRoot = path.resolve(import.meta.dirname, "../..");
-const repositoryRoot = path.resolve(desktopRoot, "../..");
-
 describe("desktop startup flow", () => {
   it("renders from cached appearance without awaiting runtimeInfo", () => {
     const source = readFileSync(path.join(desktopRoot, "src/main.tsx"), "utf8");
@@ -87,18 +85,6 @@ describe("desktop startup flow", () => {
     );
     expect(source).toContain("app.setName(appDisplayName)");
     expect(source).toContain("AGENTKIB_APP_NAME: appDisplayName");
-  });
-
-  it("flushes the handshake response before initializing the MCP Hub", () => {
-    const source = readFileSync(
-      path.join(repositoryRoot, "crates/agentkib-runtime/src/main.rs"),
-      "utf8",
-    );
-    const response = source.indexOf("write_response(&mut stdout, response)?;");
-    const hub = source.indexOf("if handshake_succeeded", response);
-
-    expect(response).toBeGreaterThan(-1);
-    expect(hub).toBeGreaterThan(response);
   });
 
   it("bounds the benchmark client's shutdown request", () => {

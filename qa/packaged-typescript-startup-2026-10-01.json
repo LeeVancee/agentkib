@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-01T05:15:46.607Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "marks": [
+    {
+      "name": "electron-main-start",
+      "elapsedMs": 0.02
+    },
+    {
+      "name": "app-ready",
+      "elapsedMs": 32.74
+    },
+    {
+      "name": "runtime-spawn",
+      "elapsedMs": 49.81
+    },
+    {
+      "name": "window-created",
+      "elapsedMs": 105.12
+    },
+    {
+      "name": "window-shown",
+      "elapsedMs": 155.29
+    },
+    {
+      "name": "renderer-first-commit",
+      "elapsedMs": 159.18
+    },
+    {
+      "name": "runtime-handshake",
+      "elapsedMs": 168.14
+    },
+    {
+      "name": "runtime-info",
+      "elapsedMs": 168.8
+    },
+    {
+      "name": "home-data-ready",
+      "elapsedMs": 223.65
+    }
+  ],
+  "memory": {
+    "electronRssKb": 612704,
+    "runtimeRssKb": 103392,
+    "combinedRssKb": 716096
+  }
+}

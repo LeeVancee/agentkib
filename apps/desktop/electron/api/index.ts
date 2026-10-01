@@ -124,7 +124,11 @@ export interface DesktopApi {
   };
   changes: {
     plan(project: string, manifest: Manifest, includeHome: boolean): Promise<ChangeSet>;
-    apply(changeSet: ChangeSet, approveHome: boolean): Promise<unknown>;
+    apply(
+      changeSet: ChangeSet,
+      approveHome: boolean,
+      launchRequest?: SessionHandoffLaunchRequest,
+    ): Promise<unknown>;
   };
   memories: {
     list(project: string, status?: string): Promise<MemoryRecord[]>;

@@ -24,6 +24,7 @@ import type { QuotaSnapshot, RefreshJobStatus, SupportedLocale } from "../../src
 import { RUNTIME_METHODS, type RuntimeHandshakeResult } from "../generated/runtime-protocol";
 import { DesktopRuntimeHost, type RuntimeHostStatus, type RuntimeHost } from "./runtime-host";
 import { RuntimeRouter } from "./runtime-router";
+import { resolveApplicationDataDir } from "./application-data-dir";
 import { createUtilityTransport } from "./utility-runtime-transport";
 import { registerRuntimeIpc } from "./ipc/runtime";
 import { createIpcRegistrar } from "./ipc/registrar";
@@ -71,6 +72,7 @@ let screenLocked = false;
 let nativeShell: ElectronNativeShell | undefined;
 let refreshCoordinator: ElectronRefreshCoordinator | undefined;
 let runtimeHost: RuntimeHost | undefined;
+let accountService: DesktopAccountService | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
@@ -173,40 +175,26 @@ async function startApplication(): Promise<void> {
   startupBenchmark.mark("app-ready");
   await registerRendererProtocol();
 
-  const rustHost = new DesktopRuntimeHost({
-    executablePath: resolveRuntimeExecutable(),
+  const backendEnvironment = {
+    AGENTKIB_APP_FLAVOR: appFlavor,
+    AGENTKIB_APP_NAME: appDisplayName,
+    AGENTKIB_APP_VERSION: app.getVersion(),
+    AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
+    AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+    AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
+  };
+  const typescriptHost = new DesktopRuntimeHost({
+    executablePath: path.join(__dirname, "backend.cjs"),
     clientVersion: app.getVersion(),
-    environment: {
-      AGENTKIB_APP_FLAVOR: appFlavor,
-      AGENTKIB_APP_NAME: appDisplayName,
-      AGENTKIB_APP_VERSION: app.getVersion(),
-      AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
-      AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-      AGENTKIB_QUOTA_SIDECAR: resolveQuotaSidecar(),
-    },
+    createTransport: createUtilityTransport,
+    environment: backendEnvironment,
   });
-  const backendMode = process.env.AGENTKIB_BACKEND_MODE ?? "hybrid";
-  if (backendMode !== "rust" && backendMode !== "hybrid")
-    throw new Error(`Unsupported backend mode: ${backendMode}`);
-  runtimeHost =
-    backendMode === "rust"
-      ? rustHost
-      : new RuntimeRouter(
-          rustHost,
-          new DesktopRuntimeHost({
-            executablePath: path.join(__dirname, "backend.cjs"),
-            clientVersion: app.getVersion(),
-            createTransport: createUtilityTransport,
-            environment: {
-              AGENTKIB_APP_FLAVOR: appFlavor,
-              AGENTKIB_APP_NAME: appDisplayName,
-              AGENTKIB_APP_VERSION: app.getVersion(),
-              AGENTKIB_LOCALE: normalizeSystemLocale(app.getLocale()),
-              AGENTKIB_SYSTEM_THEME: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-            },
-          }),
-        );
-  runtimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
+  const selectedRuntimeHost: RuntimeHost = new RuntimeRouter(
+    typescriptHost,
+    await resolveApplicationDataDir(process.env, process.platform, isDevelopmentApp),
+  );
+  runtimeHost = selectedRuntimeHost;
+  selectedRuntimeHost.on("ready", (handshake: RuntimeHandshakeResult) => {
     runtimeHandshake = handshake;
     startupBenchmark.setRuntimePid(handshake.pid);
     startupBenchmark.mark("runtime-handshake");
@@ -215,19 +203,19 @@ async function startApplication(): Promise<void> {
       process.stderr.write(`AgentKib runtime services failed: ${String(error)}\n`);
     });
   });
-  runtimeHost.on("state", (status: RuntimeHostStatus) => {
+  selectedRuntimeHost.on("state", (status: RuntimeHostStatus) => {
     sendRendererEvent("agentkib:runtime:status", status);
   });
-  runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
+  selectedRuntimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
   });
-  runtimeHost.on("restart-error", (error: unknown) => {
+  selectedRuntimeHost.on("restart-error", (error: unknown) => {
     process.stderr.write(`AgentKib runtime restart failed: ${String(error)}\n`);
   });
-  runtimeHost.on("crash-loop", (error: Error) => {
+  selectedRuntimeHost.on("crash-loop", (error: Error) => {
     process.stderr.write(`AgentKib runtime entered a crash loop: ${error.message}\n`);
   });
 
@@ -241,6 +229,8 @@ async function startApplication(): Promise<void> {
         {},
       ),
     managedRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.codexManaged, params),
+    claudeManagedRequest: (params) =>
+      requestWhenRuntimeReady(RUNTIME_METHODS.claudeManaged, params),
     runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
@@ -359,7 +349,7 @@ async function startApplication(): Promise<void> {
   });
 
   startupBenchmark.mark("runtime-spawn");
-  void runtimeHost.start().catch((error: unknown) => {
+  void selectedRuntimeHost.start().catch((error: unknown) => {
     if (!startupBenchmark.enabled) return;
     process.stderr.write(`AgentKib benchmark runtime startup failed: ${String(error)}\n`);
     app.exit(1);
@@ -1143,13 +1133,6 @@ async function registerRendererProtocol(): Promise<void> {
       },
     });
   });
-}
-
-function resolveRuntimeExecutable(): string {
-  if (process.env.AGENTKIB_RUNTIME_PATH) return process.env.AGENTKIB_RUNTIME_PATH;
-  const executable = process.platform === "win32" ? "agentkib-runtime.exe" : "agentkib-runtime";
-  if (app.isPackaged) return path.join(process.resourcesPath, "bin", executable);
-  return path.resolve(process.cwd(), "../../target/debug", executable);
 }
 
 function resolveQuotaSidecar(): string {

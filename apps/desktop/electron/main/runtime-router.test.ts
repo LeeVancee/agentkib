@@ -6,9 +6,9 @@ import {
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
   NATIVE_CONTEXT,
+  NATIVE_CONFIGURED_DISCOVERY,
+  NATIVE_SCAN_ROOT_DISCOVERY,
   BACKEND_INSPECT,
-  NATIVE_DISCOVERY,
-  NATIVE_REMOTE_SESSION_INDEX_CHANGED,
 } from "@agentkib/backend/migration";
 import {
   PROTOCOL_VERSION,
@@ -72,11 +72,10 @@ function gate() {
 
 describe("RuntimeRouter migration ownership and recovery", () => {
   it("waits for shared database initialization before serving migrated requests", async () => {
-    const rust = new Host();
     const ts = new Host();
     const initialized = gate();
     ts.handler = (method) => (method === BACKEND_INITIALIZE ? initialized.promise : ["typescript"]);
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts, "/fixture");
     const starting = router.start();
     const reading = router.request(RUNTIME_METHODS.listWorkspaces, {});
     await vi.waitFor(() => expect(ts.calls).toContain(BACKEND_INITIALIZE));
@@ -84,24 +83,23 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     initialized.resolve();
     await starting;
     expect(await reading).toEqual(["typescript"]);
-    expect(rust.calls.filter((method) => method === RUNTIME_METHODS.listWorkspaces)).toHaveLength(
-      1,
-    );
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.handshake);
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.listWorkspaces)).toHaveLength(1);
+    expect(ts.calls).not.toContain(RUNTIME_METHODS.handshake);
     await router.stop();
   });
 
-  it("serializes preference writers across both processes and continues after an error", async () => {
-    const rust = new Host();
+  it("serializes preference writers and continues after an error", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     const writing = gate();
-    rust.handler = (method) => {
+    ts.handler = (method) => {
       if (method === RUNTIME_METHODS.updateMcpNetwork)
         return writing.promise.then(() => {
           throw new Error("fixture write failed");
         });
+      if (method === RUNTIME_METHODS.setLocale || method === BACKEND_PREFERENCES)
+        return { locale_preference: "zh-TW" };
       return { data_dir: "/fixture", session_index_enabled: true };
     };
     const first = expect(
@@ -109,25 +107,21 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     ).rejects.toThrow("fixture write failed");
     const second = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-TW" });
     const snapshot = router.request(RUNTIME_METHODS.runtimeInfo, {});
-    await vi.waitFor(() => expect(rust.calls).toContain(RUNTIME_METHODS.updateMcpNetwork));
+    await vi.waitFor(() => expect(ts.calls).toContain(RUNTIME_METHODS.updateMcpNetwork));
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(ts.calls).not.toContain(RUNTIME_METHODS.setLocale);
     expect(ts.calls).not.toContain(BACKEND_PREFERENCES);
     writing.resolve();
     await first;
-    expect(await second).toMatchObject({ locale_preference: "zh-TW", session_index_enabled: true });
-    expect(await snapshot).toMatchObject({
-      locale_preference: "zh-TW",
-      session_index_enabled: true,
-    });
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.setLocale);
+    expect(await second).toMatchObject({ locale_preference: "zh-TW" });
+    expect(await snapshot).toMatchObject({ data_dir: "/fixture", session_index_enabled: true });
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.setLocale)).toHaveLength(1);
     await router.stop();
   });
 
-  it("does not replay failed TypeScript operations through Rust", async () => {
-    const rust = new Host();
+  it("returns failed TypeScript operations without replay", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     ts.handler = () => {
       throw new Error("typescript failure");
@@ -149,24 +143,18 @@ describe("RuntimeRouter migration ownership and recovery", () => {
       RUNTIME_METHODS.proposeMemory,
     ]) {
       await expect(router.request(method, {})).rejects.toThrow("typescript failure");
-      expect(rust.calls).not.toContain(method);
+      expect(ts.calls.filter((called) => called === method)).toHaveLength(1);
     }
     await router.stop();
   });
 
-  it("owns workspace mutations in TS and serializes scans with exclusions", async () => {
-    const rust = new Host();
+  it("owns workspace mutations in TypeScript and serializes scans with exclusions", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     const scanning = gate();
     const plan = { id: "workspace", path: "/fixture/project", sources: [] };
     const inspection = { summary: null, assets: [], error: null };
-    rust.handler = (method) => {
-      if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
-
-      throw new Error(`Unexpected Rust operation: ${method}`);
-    };
     ts.handler = (method, params) => {
       if (method === BACKEND_INSPECT)
         return scanning.promise.then(() => [{ id: "workspace", inspection }]);
@@ -187,15 +175,16 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     scanning.resolve();
     expect(await adding).toEqual({ id: "workspace" });
     expect(await excluding).toBeNull();
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.addWorkspace);
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.excludeWorkspace);
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.addWorkspace)).toHaveLength(1);
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.excludeWorkspace)).toHaveLength(
+      1,
+    );
     await router.stop();
   });
 
-  it("keeps discovery persistence in TS and fences an operation across a process crash", async () => {
-    const rust = new Host();
+  it("keeps discovery persistence in TypeScript and fences a crash-interrupted operation", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     const snapshot = {
       candidates: [],
@@ -207,21 +196,25 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     const plan = { workspaces: [], managed_homes: [] };
     const scanning = gate();
     let interrupted = false;
-    rust.handler = (method, params) => {
-      if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
-      if (method === NATIVE_DISCOVERY) {
-        expect(params).toEqual({ roots: [{ path: "/enabled", max_depth: 3 }] });
-        return snapshot;
-      }
-
-      return { data_dir: "/fixture" };
-    };
     ts.handler = (method, params) => {
       if (method === RUNTIME_METHODS.listScanRoots)
         return [
           { path: "/enabled", enabled: true, max_depth: 3 },
           { path: "/disabled", enabled: false, max_depth: 8 },
         ];
+      if (method === NATIVE_SCAN_ROOT_DISCOVERY) {
+        expect(params).toEqual({ roots: [{ path: "/enabled", max_depth: 3 }] });
+        return { candidates: [], errors: [], source_diagnostics: [] };
+      }
+      if (method === NATIVE_CONFIGURED_DISCOVERY)
+        return {
+          candidates: [],
+          errors: [],
+          source_diagnostics: [],
+          home_assets: [],
+          installations: [],
+        };
+      if (method === NATIVE_CONTEXT) return { agent_homes: [], agentkib_home: null };
       if (method === BACKEND_INSPECT) return interrupted ? scanning.promise.then(() => []) : [];
       if (method === BACKEND_PLAN_DISCOVERY) return plan;
       if (method === RUNTIME_METHODS.refreshDiscovery) {
@@ -233,7 +226,9 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     expect(await router.request(RUNTIME_METHODS.refreshDiscovery, {})).toEqual({
       kind: "discovery",
     });
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.refreshDiscovery);
+    expect(ts.calls.filter((method) => method === RUNTIME_METHODS.refreshDiscovery)).toHaveLength(
+      1,
+    );
     interrupted = true;
     const pending = expect(
       router.request(RUNTIME_METHODS.refreshDiscovery, {}),
@@ -250,54 +245,49 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     await router.stop();
   });
 
-  it("writes the session-index preference in TS and revokes remaining remote snapshots", async () => {
-    const rust = new Host();
+  it("writes and refreshes the session index through the TypeScript host", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     ts.handler = () => ({ session_index_enabled: false });
     const result = await router.request(RUNTIME_METHODS.setSessionIndexEnabled, { enabled: false });
     expect(result).toMatchObject({ session_index_enabled: false });
-    expect(rust.calls).toContain(NATIVE_REMOTE_SESSION_INDEX_CHANGED);
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.setSessionIndexEnabled);
+    expect(ts.calls).toContain(RUNTIME_METHODS.setSessionIndexEnabled);
     ts.calls.length = 0;
     await router.request(RUNTIME_METHODS.refreshWorkspaceSessions, { workspaceId: "workspace" });
     expect(ts.calls).toContain(RUNTIME_METHODS.refreshWorkspaceSessions);
-    expect(rust.calls).not.toContain(RUNTIME_METHODS.refreshWorkspaceSessions);
+    expect(
+      ts.calls.filter((method) => method === RUNTIME_METHODS.refreshWorkspaceSessions),
+    ).toHaveLength(1);
     await router.request(RUNTIME_METHODS.clearSessionIndex, { workspaceId: "workspace" });
-    expect(rust.calls).toContain(NATIVE_REMOTE_SESSION_INDEX_CHANGED);
     expect(ts.calls).toContain(RUNTIME_METHODS.clearSessionIndex);
     await router.stop();
   });
 
-  it("reinitializes a recovered process without restarting its healthy peer", async () => {
-    const rust = new Host();
+  it("reinitializes the TypeScript backend after process recovery", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     ts.crash();
     const waiting = router.request(RUNTIME_METHODS.runtimeInfo, {});
     expect(router.status.state).toBe("restarting");
     ts.ready();
     expect(await waiting).toMatchObject({
-      locale_preference: "zh-TW",
+      data_dir: "/fixture",
       session_index_enabled: true,
     });
     expect(ts.calls.filter((method) => method === BACKEND_INITIALIZE)).toHaveLength(2);
-    expect(rust.start).toHaveBeenCalledTimes(1);
-    expect(rust.retry).not.toHaveBeenCalled();
+    expect(ts.retry).not.toHaveBeenCalled();
     await router.stop();
   });
 
-  it("keeps terminal failures until manual retry even if the peer restarts", async () => {
-    const rust = new Host();
+  it("keeps terminal failures until manual retry even if the host emits ready", async () => {
     const ts = new Host();
-    const router = new RuntimeRouter(rust, ts);
+    const router = new RuntimeRouter(ts);
     await router.start();
     ts.status = { state: "failed", restartCount: 3, error: "crash loop" };
     ts.emit("state", ts.status);
-    rust.crash();
-    rust.ready();
+    ts.ready();
     await expect(router.request(RUNTIME_METHODS.runtimeInfo, {})).rejects.toBeInstanceOf(
       RuntimeUnavailableError,
     );
@@ -308,11 +298,10 @@ describe("RuntimeRouter migration ownership and recovery", () => {
   });
 
   it("cancels queued requests and cannot become ready after shutdown", async () => {
-    const rust = new Host();
     const ts = new Host();
     const initialized = gate();
-    ts.handler = () => initialized.promise;
-    const router = new RuntimeRouter(rust, ts);
+    ts.handler = (method) => (method === BACKEND_INITIALIZE ? initialized.promise : undefined);
+    const router = new RuntimeRouter(ts, "/fixture");
     const starting = expect(router.start()).rejects.toBeInstanceOf(RuntimeUnavailableError);
     const waiting = expect(
       router.request(RUNTIME_METHODS.listWorkspaces, {}),
@@ -322,7 +311,6 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     initialized.resolve();
     await Promise.all([starting, waiting]);
     expect(router.status.state).toBe("stopping");
-    expect(rust.stop).toHaveBeenCalledTimes(1);
     expect(ts.stop).toHaveBeenCalledTimes(1);
   });
 });

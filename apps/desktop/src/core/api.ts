@@ -46,8 +46,11 @@ export const api = {
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>
     desktopApi().changes.plan(project, manifest, includeHome),
-  apply: (changeSet: ChangeSet, approveHome: boolean) =>
-    desktopApi().changes.apply(changeSet, approveHome),
+  apply: (
+    changeSet: ChangeSet,
+    approveHome: boolean,
+    launchRequest?: SessionHandoffLaunchRequest,
+  ) => desktopApi().changes.apply(changeSet, approveHome, launchRequest),
   context: (project: string, cwd: string, agent: AgentKind) =>
     desktopApi().workspace.resolveContext(project, cwd, agent),
   pickDirectory: async (title?: string) => {

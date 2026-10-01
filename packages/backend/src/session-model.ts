@@ -42,6 +42,8 @@ export const sessionLoss = z.object({
     "external-attachment",
     "reasoning-excluded",
     "source-content-truncated",
+    "target-tool-summary",
+    "target-attachment-omitted",
   ]),
   count: unsigned,
 });

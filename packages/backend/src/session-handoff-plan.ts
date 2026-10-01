@@ -19,6 +19,7 @@ import type { BackendStore } from "./store";
 import { Commands } from "./commands";
 import { continuationMcpAvailable, nativeImportCapability } from "./session-continuation";
 import { isReparseOrSymlink } from "./native-files";
+import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
 
 const requestSchema = z.object({
   sessionId: z.string(),
@@ -29,6 +30,7 @@ const requestSchema = z.object({
   targetAgent: z.string(),
   mode: z.enum(["native-session", "handoff-file"]),
   sourceFingerprint: z.string(),
+  targetFingerprint: z.string().optional(),
   acceptLosses: z.boolean(),
   historyBudgetTokens: z.number().int().positive(),
   archiveId: z.string().nullable().optional(),
@@ -87,6 +89,18 @@ function codexText(role: string, text: string, timestamp: string) {
   };
 }
 
+function codexCompletedText(role: string, text: string, timestamp: string) {
+  const assistant = role === "assistant";
+  return {
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: assistant ? "agent_message" : "user_message",
+      message: text,
+    },
+  };
+}
+
 function renderNative(
   document: SessionDocument,
   target: "codex" | "claude-code",
@@ -96,7 +110,7 @@ function renderNative(
   notice: string,
 ): string {
   if (target === "codex") {
-    const records: unknown[] = [
+    const records: Record<string, unknown>[] = [
       {
         timestamp: generated,
         type: "session_meta",
@@ -106,11 +120,11 @@ function renderNative(
           timestamp: generated,
           cwd: project,
           originator: "agentkib",
-          cli_version: "0.146.1",
-          source: "exec",
-          thread_source: "exec",
+          cli_version: "0.159.2",
+          source: "cli",
+          thread_source: "user",
           model_provider: "openai",
-          history_mode: "save-all",
+          history_mode: "legacy",
         },
       },
       codexText("user", notice, generated),
@@ -118,8 +132,12 @@ function renderNative(
     for (const turn of document.turns)
       for (const block of turn.blocks) {
         const timestamp = turn.timestamp ?? generated;
-        if (block.type === "text") records.push(codexText(turn.role, block.text, timestamp));
-        else if (block.type === "tool-call")
+        if (block.type === "text") {
+          records.push(
+            codexCompletedText(turn.role, block.text, timestamp),
+            codexText(turn.role, block.text, timestamp),
+          );
+        } else if (block.type === "tool-call")
           records.push({
             timestamp,
             type: "response_item",
@@ -272,6 +290,33 @@ export async function planSessionHandoff(
   const changes: ChangeSet["changes"] = [];
   let launchRequest: Record<string, unknown>;
   if (request.mode === "native-session") {
+    if (
+      request.targetAgent === "opencode" ||
+      request.targetAgent === "open-claw" ||
+      request.targetAgent === "hermes"
+    ) {
+      if (window.strategy !== "full")
+        throw new Error("Windowed history retrieval is not verified for this importer");
+      const snapshot = await inspectNativeImportTarget(
+        request.targetAgent,
+        document,
+        project,
+        commands,
+        environment,
+      );
+      if (!request.targetFingerprint || snapshot.fingerprint !== request.targetFingerprint)
+        throw new Error("Target import settings changed after preview");
+      return planNativeImport(
+        dataDir,
+        project,
+        continuationWorkspaceId,
+        request.sessionId,
+        request.sourceFingerprint,
+        request.targetAgent,
+        document,
+        snapshot,
+      );
+    }
     if (request.targetAgent !== "codex" && request.targetAgent !== "claude-code")
       throw new Error("Target Agent does not support native sessions");
     const capability = await nativeImportCapability(request.targetAgent, commands, environment);
@@ -281,7 +326,7 @@ export async function planSessionHandoff(
     const home = userHome(environment);
     let target: string;
     if (request.targetAgent === "codex") {
-      const filenameStamp = `${generated.slice(0, 10)}T${generated.slice(11, 19).replaceAll(":", "-")}-${generated.slice(20, 23)}Z`;
+      const filenameStamp = generated.slice(0, 19).replaceAll(":", "-");
       target = path.join(
         environment.CODEX_HOME ?? path.join(home, ".codex"),
         "sessions",

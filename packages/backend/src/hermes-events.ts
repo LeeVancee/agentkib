@@ -143,7 +143,7 @@ export function readHermesEvents(
         throw new Error("TRANSCRIPT_CURSOR_STALE");
     }
     const statement = db.prepare(
-      `SELECT rowid,${blob(role)} AS role,${blob(bounded(content, MAX_MESSAGE_BYTES + 1))} AS content,${blob(timestamp)} AS timestamp,${blob(status)} AS status,${blob(tool)} AS tool FROM messages WHERE CAST(${quote(session)} AS TEXT)=? AND rowid<=? AND rowid<? ORDER BY rowid DESC LIMIT 501`,
+      `SELECT rowid AS rowid,${blob(role)} AS role,${blob(bounded(content, MAX_MESSAGE_BYTES + 1))} AS content,${blob(timestamp)} AS timestamp,${blob(status)} AS status,${blob(tool)} AS tool FROM messages WHERE CAST(${quote(session)} AS TEXT)=? AND rowid<=? AND rowid<? ORDER BY rowid DESC LIMIT 501`,
     );
     statement.setReadBigInts(true);
     const rows = statement.iterate(sessionId, high, before),

@@ -1,5 +1,10 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
+import { listNativeImports } from "./session-native-imports";
+import {
+  continueNativeImport,
+  validateNativeImportApplicationData,
+} from "./session-native-import-owner";
 import { handoffFormat, sanitizeHandoffExport } from "./session-handoff";
 import { prepareSessionHandoff } from "./session-continuation";
 import { planSessionHandoff } from "./session-handoff-plan";
@@ -21,8 +26,12 @@ import { webDiff } from "./web-diff";
 import { WebReadRequests } from "./web-read";
 import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
+import { WorkspaceStorageOwner } from "./storage";
+import { QuotaOwner } from "./quota";
+import { ClaudeManagedReadOwner } from "./claude-managed-read";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
+import { WorkspaceApplications } from "./workspace-applications";
 import { nativeContext } from "./native-context";
 import { discoverScanRoots } from "./discovery-scan-roots";
 import { discoverConfiguredWorkspaces } from "./native-discovery-configured";
@@ -34,7 +43,7 @@ import { applyRequest } from "./changes";
 import { TYPESCRIPT_SESSION_READ_METHODS } from "./migration";
 import { TYPESCRIPT_INSIGHT_METHODS, TYPESCRIPT_MCP_METHODS } from "./migration";
 import { scanWorkspace, inspectWorkspace } from "./asset-scanner";
-import { prepareManifest } from "./default-manifest";
+import { defaultManifest, prepareManifest } from "./default-manifest";
 import { parameters } from "./rpc";
 import { z } from "zod";
 import { BACKEND_INSPECT } from "./migration";
@@ -76,6 +85,8 @@ import {
   NATIVE_CONFIGURED_DISCOVERY,
   BACKEND_PLAN_WORKSPACE,
   BACKEND_PLAN_DISCOVERY,
+  BACKEND_DEFAULT_MANIFEST,
+  BACKEND_PLAN_PROJECT_ASSETS,
 } from "./migration";
 
 export class TypeScriptBackend {
@@ -97,10 +108,20 @@ export class TypeScriptBackend {
   #mcpOAuth?: McpOAuth;
   #remoteGateways?: RemoteGateways;
   #remoteAgent?: RemoteAgent;
+  #storage?: WorkspaceStorageOwner;
+  #quota?: QuotaOwner;
+  #claudeManaged?: ClaudeManagedReadOwner;
+  #workspaceApplications?: WorkspaceApplications;
+  #closing?: Promise<void>;
 
   constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
 
   close(): void {
+    this.#storage?.cancel();
+    this.#storage = undefined;
+    this.#quota = undefined;
+    this.#claudeManaged?.close();
+    this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
     this.#insightRefresh = undefined;
@@ -126,6 +147,28 @@ export class TypeScriptBackend {
     this.#store?.close();
     this.#store = undefined;
     this.#dataDir = undefined;
+  }
+
+  closeAsync(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    const claudeManaged = this.#claudeManaged;
+    this.#claudeManaged = undefined;
+    const closing = (async () => {
+      try {
+        await claudeManaged?.shutdown();
+      } catch (error) {
+        if (!this.#claudeManaged) this.#claudeManaged = claudeManaged;
+        throw error;
+      }
+      this.close();
+    })();
+    this.#closing = closing;
+    void closing
+      .finally(() => {
+        if (this.#closing === closing) this.#closing = undefined;
+      })
+      .catch(() => undefined);
+    return closing;
   }
 
   handle(value: unknown): {
@@ -226,12 +269,13 @@ export class TypeScriptBackend {
           "obsidian",
           "mcp",
           "remote-gateways",
+          "workspace-storage",
+          "quota-collection",
         ],
       };
     }
     if (method === RUNTIME_METHODS.shutdown) {
-      this.close();
-      return null;
+      return this.closeAsync().then(() => null);
     }
     if (method === NATIVE_SCAN_ROOT_DISCOVERY)
       return discoverScanRoots(params.roots, this.environment);
@@ -246,6 +290,18 @@ export class TypeScriptBackend {
       this.#commands = new Commands();
       this.#store = store;
       this.#dataDir = dataDir;
+      this.#storage = new WorkspaceStorageOwner({
+        listWorkspaces: () => store.listWorkspaces(),
+        workspaceStorageOverview: () => store.workspaceStorageOverview(),
+        saveWorkspaceStorage: (value) => store.saveWorkspaceStorage(value),
+        recordWorkspaceStorageFailure: (id, at, key, detail) =>
+          store.recordWorkspaceStorageFailure(id, at, key, detail),
+        getWorkspace: (id) => store.getWorkspace(id),
+      });
+      this.#quota = new QuotaOwner(store, this.#commands, dataDir, {
+        ...process.env,
+        ...this.environment,
+      });
       this.#git = new Git(this.#commands, (id) => store.workspacePath(id), {
         ...process.env,
         ...this.environment,
@@ -296,10 +352,23 @@ export class TypeScriptBackend {
       );
       this.#remoteGateways = new RemoteGateways(dataDir);
       this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
+      this.#workspaceApplications = new WorkspaceApplications(
+        dataDir,
+        this.#commands,
+        { ...process.env, ...this.environment },
+        (id) => store.workspacePath(id),
+      );
       this.#sessions = new SessionReaders(store.sessions, this.#commands, {
         ...process.env,
         ...this.environment,
       });
+      this.#claudeManaged = new ClaudeManagedReadOwner(
+        store,
+        this.#sessions,
+        this.#commands,
+        dataDir,
+        { ...process.env, ...this.environment },
+      );
       this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
         const value = readPreferences(dataDir).session_index_enabled;
         return typeof value === "boolean" ? value : true;
@@ -318,7 +387,11 @@ export class TypeScriptBackend {
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
-    if (method === RUNTIME_METHODS.controlReceipt) return readControlReceipt(this.#dataDir, params);
+    if (method === RUNTIME_METHODS.controlReceipt) {
+      const receipt = readControlReceipt(this.#dataDir, params);
+      return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
+    }
+    if (method === RUNTIME_METHODS.claudeManaged) return this.#claudeManaged!.request(params);
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
       return this.#webRead!.managedOptions();
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
@@ -365,6 +438,15 @@ export class TypeScriptBackend {
     )
       return this.#webRead!.managedControl(params);
     if (method === RUNTIME_METHODS.refreshInsights) return this.#insightRefresh!.refresh();
+    if (method === RUNTIME_METHODS.listWorkspaceOpeners)
+      return this.#workspaceApplications!.list(string(params, "workspaceId"));
+    if (method === RUNTIME_METHODS.openWorkspaceWithApp) {
+      const request = parameters(
+        z.object({ workspaceId: z.string(), openerId: z.string().optional() }),
+        params,
+      );
+      return this.#workspaceApplications!.open(request.workspaceId, request.openerId);
+    }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
       if (params.operation === "live") return this.#webRead!.request(params);
@@ -404,7 +486,27 @@ export class TypeScriptBackend {
         params.operation === "goal" ||
         params.operation === "resources"
       )
-        return this.#webRead!.request(params);
+        if (params.operation !== "catalog") return this.#webRead!.request(params);
+      return this.#webRead!.request(params).then((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+        const catalog = value as Record<string, unknown>;
+        const records = this.#claudeManaged!.catalog();
+        const aliases = this.#claudeManaged!.indexedAliases();
+        const sessions = Array.isArray(catalog.sessions) ? catalog.sessions : [];
+        return {
+          ...catalog,
+          sessions: [
+            ...sessions.filter(
+              (session) =>
+                !!session &&
+                typeof session === "object" &&
+                !Array.isArray(session) &&
+                !("id" in session && aliases.has(String(session.id))),
+            ),
+            ...records,
+          ],
+        };
+      });
     }
     if (method.startsWith("skills.")) return this.#skills!.request(method, params);
     if (method === RUNTIME_METHODS.agentToolsStatus)
@@ -455,6 +557,20 @@ export class TypeScriptBackend {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
       return this.#sessions!.document(sessionId);
     }
+    if (method === RUNTIME_METHODS.sessionSourceCapability) {
+      const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
+      return this.#sessions!.document(sessionId).then(
+        () => ({ status: "supported" }),
+        (error: unknown) => ({
+          status: "unavailable",
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+    if (method === RUNTIME_METHODS.listNativeImports) {
+      const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
+      return listNativeImports(this.#dataDir!, this.#store!, workspaceId);
+    }
     if (method === RUNTIME_METHODS.prepareSessionHandoff)
       return prepareSessionHandoff(
         params,
@@ -479,10 +595,16 @@ export class TypeScriptBackend {
     if (method === RUNTIME_METHODS.continueSessionHandoff)
       return this.#continueSessionHandoff(params);
     if (method === RUNTIME_METHODS.launchSessionHandoff)
-      return prepareHandoffLaunch(params, this.#store, this.#commands, {
-        ...process.env,
-        ...this.environment,
-      }).then((prepared) =>
+      return prepareHandoffLaunch(
+        params,
+        this.#store,
+        this.#commands,
+        {
+          ...process.env,
+          ...this.environment,
+        },
+        this.#dataDir,
+      ).then((prepared) =>
         launchPreparedHandoff(prepared, this.#dataDir!, { ...process.env, ...this.environment }),
       );
     if (method === RUNTIME_METHODS.sanitizeSessionHandoff) {
@@ -504,11 +626,27 @@ export class TypeScriptBackend {
         return this.#sessionIndex!.refresh(params);
       case RUNTIME_METHODS.clearSessionIndex:
         return this.#sessionIndex!.clear(params);
-      case RUNTIME_METHODS.applyChanges:
-        return applyRequest(params, this.#store, this.#dataDir, {
-          ...process.env,
-          ...this.environment,
-        });
+      case RUNTIME_METHODS.applyChanges: {
+        const request = params as { launchRequest?: { mode?: unknown } };
+        const environment = { ...process.env, ...this.environment };
+        return applyRequest(
+          params,
+          this.#store,
+          this.#dataDir,
+          environment,
+          request.launchRequest?.mode === "native-import"
+            ? (plan, applicationId, dataDir) => {
+                const validated = validateNativeImportApplicationData(
+                  plan,
+                  request.launchRequest,
+                  applicationId,
+                  dataDir,
+                );
+                return [path.join(validated.directory, "plan.json")];
+              }
+            : undefined,
+        );
+      }
       case RUNTIME_METHODS.planChanges: {
         const { project, manifest, includeHome } = parameters(
           z.object({ project: z.string(), manifest: manifestSchema, includeHome: z.boolean() }),
@@ -543,6 +681,15 @@ export class TypeScriptBackend {
         return scanWorkspace(string(params, "project"));
       case RUNTIME_METHODS.prepareManifest:
         return prepareManifest(string(params, "project"));
+      case BACKEND_DEFAULT_MANIFEST:
+        return defaultManifest(string(params, "project"));
+      case BACKEND_PLAN_PROJECT_ASSETS: {
+        const { project, manifest } = parameters(
+          z.object({ project: z.string(), manifest: manifestSchema }),
+          params,
+        );
+        return planWorkspace(project, manifest, {});
+      }
       case BACKEND_PLAN_WORKSPACE: {
         if (params.operation !== "add" && params.operation !== "refresh")
           invalid("Invalid workspace operation");
@@ -596,6 +743,28 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.discoveryReport:
         return this.#store.workspaces.discoveryReport();
+      case RUNTIME_METHODS.storageOverview:
+        return this.#storage!.overview();
+      case RUNTIME_METHODS.storageChildren:
+        return this.#storage!.children(
+          string(params, "workspaceId"),
+          string(params, "relativePath"),
+        );
+      case RUNTIME_METHODS.resolveStoragePath:
+        return this.#storage!.resolve(
+          string(params, "workspaceId"),
+          string(params, "relativePath"),
+        );
+      case RUNTIME_METHODS.refreshStorage:
+        return this.#storage!.refresh();
+      case RUNTIME_METHODS.cancelStorage:
+        return this.#storage!.cancel();
+      case RUNTIME_METHODS.quotaSnapshot:
+        return this.#quota!.snapshot();
+      case RUNTIME_METHODS.quotaCollectorStatus:
+        return this.#quota!.status();
+      case RUNTIME_METHODS.refreshQuota:
+        return this.#quota!.refresh();
       case RUNTIME_METHODS.quotaPreferences:
         return (
           parseQuotaPreferences(readPreferences(this.#dataDir).quota_popover) ?? {
@@ -682,6 +851,25 @@ export class TypeScriptBackend {
       }
       case BACKEND_PREFERENCES:
         return this.#preferences();
+      case RUNTIME_METHODS.runtimeInfo: {
+        const preferences = this.#preferences();
+        const home = userHome({ ...process.env, ...this.environment });
+        const development = this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev";
+        return {
+          app_name: development ? "AgentKib Dev" : "AgentKib",
+          app_version: this.environment.AGENTKIB_APP_VERSION ?? "0.13.0",
+          app_channel: development ? "development" : "stable",
+          updates_enabled: !development,
+          data_dir: this.#dataDir,
+          database_path: path.join(this.#dataDir!, "agentkib.db"),
+          mcp_package_root: path.join(this.#dataDir!, "mcp", "packages"),
+          mcp_hub: this.#mcpHub!.status(),
+          openclaw_config: path.join(home, ".openclaw", "openclaw.json"),
+          hermes_config: path.join(home, ".hermes", "config.yaml"),
+          tray_available: false,
+          ...preferences,
+        };
+      }
       case RUNTIME_METHODS.setCloseBehavior: {
         const value = params.value ?? null;
         if (value !== null && value !== "minimize-to-tray" && value !== "quit")
@@ -904,11 +1092,55 @@ export class TypeScriptBackend {
   async #continueSessionHandoff(value: unknown): Promise<unknown> {
     const environment = { ...process.env, ...this.environment };
     const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
+    const launchRequest = request.launchRequest as { mode?: unknown };
+    if (launchRequest?.mode === "native-import") {
+      try {
+        await continueNativeImport(
+          value,
+          this.#sessions!,
+          this.#store!.sessions,
+          this.#store!,
+          this.#dataDir!,
+          environment,
+          this.#commands,
+        );
+      } catch (error) {
+        return {
+          status: "import-outcome-unknown",
+          error: {
+            key: "errors.handoff.importOutcomeUnknown",
+            params: {},
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      try {
+        const prepared = await prepareHandoffLaunch(
+          request.launchRequest,
+          this.#store!,
+          this.#commands,
+          environment,
+          this.#dataDir,
+        );
+        const receipt = await launchPreparedHandoff(prepared, this.#dataDir!, environment);
+        return { status: "launched", receipt };
+      } catch (error) {
+        return {
+          status: "applied-launch-failed",
+          error: {
+            key: "errors.handoff.launchAfterApplyFailed",
+            params: {},
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+    }
     const prepared = await prepareHandoffLaunch(
       request.launchRequest,
       this.#store!,
       this.#commands,
       environment,
+      this.#dataDir,
     );
     applySessionHandoff(value, this.#store!, this.#dataDir!, environment);
     try {

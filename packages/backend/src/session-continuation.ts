@@ -20,6 +20,11 @@ import { planSessionWindow, renderHandoff, sessionImportStats } from "./session-
 import type { SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import { Commands } from "./commands";
+import {
+  inspectNativeImportTarget,
+  type ImportTarget,
+  type ImportTargetSnapshot,
+} from "./session-native-import-owner";
 import type { BackendStore } from "./store";
 import { z } from "zod";
 
@@ -40,12 +45,17 @@ interface Capability {
   supported: boolean;
   beta: boolean;
   reason?: string;
+  target_fingerprint?: string;
 }
-function cliVersionMatches(output: string, expected: readonly [number, number]): boolean {
+function cliVersionMatches(output: string, expected: readonly number[]): boolean {
   for (const candidate of output.split(/[^0-9.]+/)) {
     const parts = candidate.split(".");
-    if (parts.length === 3 && parts.every((part) => /^\d+$/.test(part)))
-      return Number(parts[0]) === expected[0] && Number(parts[1]) === expected[1];
+    if (
+      parts.length === 3 &&
+      parts.every((part) => /^\d+$/.test(part)) &&
+      expected.every((version, index) => Number(parts[index]) === version)
+    )
+      return true;
   }
   return false;
 }
@@ -186,7 +196,7 @@ export async function nativeImportCapability(
   if (target !== "codex" && target !== "claude-code")
     return { supported: false, beta: false, reason: "target-not-supported" };
   const [command, expected] =
-    target === "codex" ? ["codex", [0, 146] as const] : ["claude", [2, 1] as const];
+    target === "codex" ? ["codex", [0, 159, 2] as const] : ["claude", [2, 1] as const];
   const executable = resolveCommand(command, env);
   if (!executable) return { supported: false, beta: true, reason: "cli-unavailable" };
   let versionMatches = false;
@@ -331,15 +341,46 @@ export async function prepareSessionHandoff(
     .parse(value);
   const source = sessionStore.get(request.session_id);
   if (!source) throw new Error("Conversation metadata is no longer available");
-  const document = await sessions.document(request.session_id);
+  let document = await sessions.document(request.session_id);
   const workspace = z
     .object({ id: z.string(), manifest_workspace_id: z.string().nullable() })
     .parse(store.getWorkspace(source.workspace_id));
   const continuationWorkspaceId = workspace.manifest_workspace_id ?? workspace.id;
   document.source.workspace_id = continuationWorkspaceId;
+  const sourceFingerprint = createFingerprint(document);
   const candidateArchiveId = randomUUID();
+  let nativeSnapshot: ImportTargetSnapshot | undefined;
+  let nativeCapability: Capability;
+  if (
+    request.target_agent === "opencode" ||
+    request.target_agent === "open-claw" ||
+    request.target_agent === "hermes"
+  ) {
+    try {
+      nativeSnapshot = await inspectNativeImportTarget(
+        request.target_agent as ImportTarget,
+        document,
+        store.workspacePath(source.workspace_id),
+        commands,
+        env,
+      );
+      document = nativeSnapshot.expected;
+      nativeCapability = {
+        supported: true,
+        beta: true,
+        target_fingerprint: nativeSnapshot.fingerprint,
+      };
+    } catch (error) {
+      nativeCapability = {
+        supported: false,
+        beta: true,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  } else {
+    nativeCapability = await nativeImportCapability(request.target_agent, commands, env);
+  }
   const window = planSessionWindow(document, request.history_budget_tokens, candidateArchiveId);
-  const nativeCapability = await nativeImportCapability(request.target_agent, commands, env);
   const mode = nativeCapability.supported ? "native-session" : "handoff-file";
   const archiveId = window.strategy === "windowed" ? candidateArchiveId : undefined;
   const mcpAvailable =
@@ -412,9 +453,12 @@ export async function prepareSessionHandoff(
         notice,
       ),
       redaction_count: document.redaction_count,
-      source_fingerprint: createFingerprint(document),
+      source_fingerprint: sourceFingerprint,
       mode,
       native_capability: nativeCapability,
+      ...(nativeCapability.target_fingerprint
+        ? { target_fingerprint: nativeCapability.target_fingerprint }
+        : {}),
       capabilities,
       stats: sessionImportStats(document),
       history_budget_tokens: request.history_budget_tokens,

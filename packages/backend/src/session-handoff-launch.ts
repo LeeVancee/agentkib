@@ -23,6 +23,8 @@ import { userHome } from "./mcp-config-read";
 import { validateSessionArchive } from "./session-archive";
 import type { BackendStore } from "./store";
 import { withinLexical } from "./files";
+import { markNativeImportLaunched, nativeImportLaunchInfo } from "./session-native-import-owner";
+import { openClawInteractive } from "./openclaw-native-import";
 
 const agentSchema = z.enum([
   "codex",
@@ -36,6 +38,14 @@ const agentSchema = z.enum([
   "deepseek-harness",
 ]);
 export const sessionHandoffLaunchRequest = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("native-import"),
+    operation_id: z.string(),
+    workspace_id: z.string(),
+    target_agent: z.enum(["opencode", "open-claw", "hermes"]),
+    plan_hash: z.string(),
+    capabilities: z.unknown().optional(),
+  }),
   z.object({
     mode: z.literal("native-session"),
     workspace_id: z.string(),
@@ -62,6 +72,7 @@ interface InteractiveCommand {
   executable: string;
   arguments: string[];
   cwd: string;
+  env?: NodeJS.ProcessEnv;
 }
 type Terminal =
   | { kind: "macos"; executable: string }
@@ -177,6 +188,7 @@ function validateHandoffFile(workspace: string, filename: string): string {
 }
 
 function validateArchive(request: LaunchRequest, dataDir: string): void {
+  if (request.mode === "native-import") return;
   if (Boolean(request.archive_id) !== Boolean(request.archive_hash))
     throw new Error("Session archive launch metadata is incomplete");
   if (!request.archive_id || !request.archive_hash) return;
@@ -240,12 +252,49 @@ export async function prepareHandoffLaunch(
   store: BackendStore,
   commands: Commands,
   environment: NodeJS.ProcessEnv,
+  dataDir?: string,
 ): Promise<PreparedHandoffLaunch> {
   const request = sessionHandoffLaunchRequest.parse(value);
-  if (request.target_agent !== "codex" && request.target_agent !== "claude-code")
-    throw new Error("target Agent does not support interactive continuation");
   const workspace = canonicalize(store.workspacePath(request.workspace_id));
   const terminal = await resolveTerminal(commands, environment);
+  if (request.mode === "native-import") {
+    if (!dataDir) throw new Error("Native import data directory is unavailable");
+    const imported = nativeImportLaunchInfo(dataDir, request);
+    if (
+      imported.plan.workspace !== workspace ||
+      imported.plan.target_agent !== request.target_agent
+    )
+      throw new Error("Native import workspace or target mismatch");
+    const command =
+      request.target_agent === "open-claw"
+        ? openClawInteractive(
+            {
+              openclaw: imported.plan.openclaw,
+              target_session_id: imported.targetSessionId,
+              executable: imported.plan.executable,
+              workspace,
+              environment: imported.plan.environment,
+            },
+            environment,
+          )
+        : {
+            executable: imported.plan.executable,
+            arguments:
+              request.target_agent === "hermes"
+                ? ["--profile", imported.plan.target_profile!, "--resume", imported.targetSessionId]
+                : [
+                    "--session",
+                    imported.targetSessionId,
+                    "--model",
+                    `${imported.plan.model!.provider_id}/${imported.plan.model!.model_id}`,
+                  ],
+            cwd: workspace,
+            env: { ...environment, ...imported.environment },
+          };
+    return { request, terminal, command, workspace };
+  }
+  if (request.target_agent !== "codex" && request.target_agent !== "claude-code")
+    throw new Error("target Agent does not support interactive continuation");
   const cli = resolveCommand(request.target_agent === "codex" ? "codex" : "claude", environment);
   if (!cli || !path.isAbsolute(cli))
     throw new Error(
@@ -284,7 +333,7 @@ export async function launchPreparedHandoff(
 ): Promise<{ target_agent: string; terminal: string }> {
   const { request, workspace, command, terminal } = prepared;
   if (request.mode === "handoff-file") validateHandoffFile(workspace, request.filename);
-  else {
+  else if (request.mode === "native-session") {
     const root = nativeRoot(request, env);
     validateNativePath(request.target_path, root);
     if (!path.basename(request.target_path).includes(request.target_session_id))
@@ -309,13 +358,25 @@ export async function launchPreparedHandoff(
       detached: process.platform !== "win32",
       stdio: "ignore",
       windowsHide: true,
-      env,
+      env: command.env ?? env,
     });
     await new Promise<void>((resolve, reject) => {
       child.once("error", reject);
       child.once("spawn", resolve);
     });
     child.unref();
+    if (request.mode === "native-import")
+      markNativeImportLaunched(
+        dataDir,
+        request,
+        terminal.kind === "macos"
+          ? "Terminal.app"
+          : terminal.kind === "windows"
+            ? "Windows Terminal"
+            : terminal.kind === "linux-xdg"
+              ? "xdg-terminal-exec"
+              : "x-terminal-emulator",
+      );
     return {
       target_agent: request.target_agent,
       terminal:

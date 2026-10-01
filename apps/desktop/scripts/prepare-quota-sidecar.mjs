@@ -55,23 +55,13 @@ const releases = {
   },
 };
 
-const windowsArmNsis = {
-  asset: "nsis-3.11.zip",
-  sha1: "ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d",
-  url: "https://sourceforge.net/projects/nsis/files/NSIS%203/3.11/nsis-3.11.zip/download",
-};
-
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = resolve(scriptDirectory, "..");
 const quotaResourcesDirectory = join(desktopDirectory, "resources/quota/resources");
 const quotaBinariesDirectory = join(desktopDirectory, "resources/quota/binaries");
 const target =
-  process.env.AGENTKIB_QUOTA_TARGET ?? process.env.CARGO_BUILD_TARGET ?? hostQuotaTarget();
+  process.env.AGENTKIB_QUOTA_TARGET ?? hostQuotaTarget();
 const release = releases[target];
-
-if (process.platform === "win32" && process.arch === "arm64") {
-  await prepareWindowsArmNsis();
-}
 
 if (!release) {
   if (target.endsWith("-windows-msvc")) {
@@ -125,8 +115,8 @@ try {
       await cp(join(extracted, "CodexBar_CodexBarCore.bundle"), resourceBundle, {
         recursive: true,
       });
-      // The tiny launcher is source-controlled so plain cargo builds do not
-      // depend on downloading the large collector archive first.
+      // The source-controlled shell launcher locates the packaged CLI and its
+      // adjacent Swift resource bundle.
       await access(binary);
       await chmod(binary, 0o755);
     } else {
@@ -201,72 +191,6 @@ async function hasExpectedHash(path, expected, algorithm = "sha256") {
     return digest === expected;
   } catch {
     return false;
-  }
-}
-
-async function prepareWindowsArmNsis() {
-  const localAppData = process.env.LOCALAPPDATA;
-  if (!localAppData) return;
-
-  const nsisCacheDirectory = resolve(localAppData, "AgentKibBuild/cache/nsis");
-  const nsisDirectory = join(nsisCacheDirectory, "NSIS");
-  const nativeCompiler = join(nsisDirectory, "Bin/makensis.exe");
-  const compilerLauncher = join(nsisDirectory, "makensis.exe");
-
-  try {
-    await access(nativeCompiler);
-  } catch {
-    await mkdir(nsisCacheDirectory, { recursive: true });
-    const archivePath = join(nsisCacheDirectory, windowsArmNsis.asset);
-    if (!(await hasExpectedHash(archivePath, windowsArmNsis.sha1, "sha1"))) {
-      await rm(archivePath, { force: true });
-      const temporary = `${archivePath}.download`;
-      await rm(temporary, { force: true });
-      await download(windowsArmNsis.url, temporary);
-      if (!(await hasExpectedHash(temporary, windowsArmNsis.sha1, "sha1"))) {
-        await rm(temporary, { force: true });
-        throw new Error("NSIS 3.11 checksum mismatch");
-      }
-      await rename(temporary, archivePath);
-    }
-
-    const extracted = await mkdtemp(join(tmpdir(), "agentkib-nsis-"));
-    try {
-      const unpack = spawnSync(
-        "powershell.exe",
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "Expand-Archive -LiteralPath $env:AGENTKIB_NSIS_ARCHIVE -DestinationPath $env:AGENTKIB_NSIS_DESTINATION -Force",
-        ],
-        {
-          env: {
-            ...process.env,
-            AGENTKIB_NSIS_ARCHIVE: archivePath,
-            AGENTKIB_NSIS_DESTINATION: extracted,
-          },
-          stdio: "inherit",
-        },
-      );
-      if (unpack.status !== 0) throw new Error("Failed to extract NSIS 3.11");
-      await rm(nsisDirectory, { recursive: true, force: true });
-      await cp(join(extracted, "nsis-3.11"), nsisDirectory, { recursive: true });
-    } finally {
-      await rm(extracted, { recursive: true, force: true });
-    }
-  }
-
-  // NSIS ships an x86 dispatcher at the root that cannot launch its child on
-  // Windows ARM64. Keep the real compiler in Bin (where it can resolve Stubs and
-  // Plugins), and replace only the dispatcher with a tiny host-native launcher.
-  const launcherSource = join(scriptDirectory, "windows-nsis-launcher.rs");
-  const buildLauncher = spawnSync("rustc", [launcherSource, "-O", "-o", compilerLauncher], {
-    stdio: "inherit",
-  });
-  if (buildLauncher.status !== 0) {
-    throw new Error("Failed to build the Windows ARM64 NSIS launcher");
   }
 }
 

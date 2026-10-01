@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -10,9 +10,12 @@ import { canonicalize, pathIdentity } from "./paths";
 import { within } from "./files";
 import { resolveCommand } from "./command-resolution";
 import { CodexAppServerReader, CodexAppServerSession } from "./codex-app-server";
+import { CodexFollowerBridge } from "./codex-follower-bridge";
+import type { CodexFollowerState } from "./codex-follower-state";
 import { ManagedCodexState } from "./managed-codex-state";
 import { ManagedCodexEventBridge } from "./managed-codex-state";
 import { acquireManagedSessionLease } from "./managed-session-lock";
+import { acquireCodexFollowerOperationLock } from "./codex-follower-operation-lock";
 import {
   claimManagedCommand,
   createManagedSnapshotWriter,
@@ -279,6 +282,14 @@ type ManagedRunner = {
   planVerified: boolean;
 };
 
+type CodexFollowerRecord = {
+  bridge: CodexFollowerBridge;
+  workspaceId: string;
+  workspace: string;
+  nativeId: string;
+  lastUsed: number;
+};
+
 type ManagedModelOption = {
   id: string;
   isDefault: boolean;
@@ -292,6 +303,8 @@ export class WebReadRequests {
   #codex: CodexAppServerReader;
   #bootId = randomUUID();
   #managedRunners = new Map<string, ManagedRunner>();
+  #codexFollowers = new Map<string, CodexFollowerRecord>();
+  #codexFollowerFlights = new Map<string, Promise<CodexFollowerRecord>>();
 
   constructor(
     readonly store: BackendStore,
@@ -305,6 +318,8 @@ export class WebReadRequests {
 
   close(): void {
     this.#codex.close();
+    for (const follower of this.#codexFollowers.values()) follower.bridge.close();
+    this.#codexFollowers.clear();
     for (const runner of this.#managedRunners.values()) {
       runner.state.fail("codex-disconnected");
       try {
@@ -318,7 +333,6 @@ export class WebReadRequests {
   }
 
   async managedOptions() {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const executable = resolveCommand("codex", this.environment);
     if (!executable)
       return { available: false, reason: "codex-cli-unavailable", models: [], policies: [] };
@@ -378,11 +392,10 @@ export class WebReadRequests {
   }
 
   async managedReconcile(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedReconcileSchema.parse(value);
     const records = readManagedRecords(this.dataDir, this.store);
     const record = records.find((item) => item.id === request.sessionId);
-    if (!record) return { __runtimeBackend: "rust" };
+    if (!record) return this.#reconcileCodexFollower(request);
 
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -391,23 +404,15 @@ export class WebReadRequests {
     let runner = this.#managedRunners.get(request.sessionId);
     if (runner && !runner.session.connected) {
       this.#managedRunners.delete(request.sessionId);
-      await runner.bridge.close();
-      runner.release();
+      try {
+        await runner.bridge.close();
+      } finally {
+        runner.release();
+      }
       runner = undefined;
     }
     let release: (() => void) | undefined;
-    if (!runner) {
-      try {
-        release = acquireManagedSessionLease(this.dataDir, request.sessionId);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          ["session-managed-by-another-runtime", "platform-unsupported"].includes(error.message)
-        )
-          return { __runtimeBackend: "rust" };
-        throw error;
-      }
-    }
+    if (!runner) release = acquireManagedSessionLease(this.dataDir, request.sessionId);
 
     const current = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
@@ -519,24 +524,59 @@ export class WebReadRequests {
     }
   }
 
-  async managedLifecycle(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
+  async managedLifecycle(value: unknown, fingerprintOverride?: string) {
     const request = managedLifecycleSchema.parse(value);
-    const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
+    const fingerprint =
+      fingerprintOverride ?? createHash("sha256").update(stableJson(value)).digest("hex");
     const prior = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (prior) return prior;
     const records = readManagedRecords(this.dataDir, this.store);
     if (request.operation === "release") {
       const record = records.find((item) => item.id === request.sessionId);
-      const runner = this.#managedRunners.get(request.sessionId);
-      if (!record || !runner || !runner.session.connected) return { __runtimeBackend: "rust" };
+      if (!record) throw new Error("session-unavailable");
       if (record.released) throw new Error("session-released");
+      if (record.archived) throw new Error("session-archived");
+      let runner = this.#managedRunners.get(request.sessionId);
+      if (!runner?.session.connected) {
+        const recovery = (await this.managedReconcile({
+          operation: "reconcile",
+          requestId: randomUUID(),
+          deviceId: request.deviceId,
+          sessionId: request.sessionId,
+        })) as Record<string, unknown>;
+        if (!isObject(recovery) || recovery.reconciled !== true)
+          return {
+            sessionId: request.sessionId,
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            reason:
+              isObject(recovery) && typeof recovery.reason === "string"
+                ? recovery.reason
+                : "recovery-required",
+            requestId: request.requestId,
+            runtimeBootId: this.#bootId,
+          };
+        runner = this.#managedRunners.get(request.sessionId);
+      }
+      if (!runner?.session.connected)
+        return {
+          sessionId: request.sessionId,
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          reason: "recovery-required",
+          requestId: request.requestId,
+          runtimeBootId: this.#bootId,
+        };
       if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
         throw new Error("control-outcome-unconfirmed");
       const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
       if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
         throw new Error("session-workspace-mismatch");
       this.#assertManagedHome(record);
+      const live = await runner.bridge.snapshot(this.#bootId, true);
+      if (live.reason || live.status !== "idle") throw new Error("session-busy");
       const claimed = claimManagedCommand(
         this.dataDir,
         request.requestId,
@@ -653,17 +693,7 @@ export class WebReadRequests {
     }
 
     openManagedLedger(this.dataDir, true)?.close();
-    let release: (() => void) | undefined;
-    try {
-      release = acquireManagedSessionLease(this.dataDir, id);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        ["session-managed-by-another-runtime", "platform-unsupported"].includes(error.message)
-      )
-        return { __runtimeBackend: "rust" };
-      throw error;
-    }
+    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, id);
 
     const workspace = canonicalize(this.store.workspacePath(workspaceId));
     const home = canonicalize(this.sessions.codexHome());
@@ -780,16 +810,28 @@ export class WebReadRequests {
   }
 
   async managedResume(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedResumeSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
     if (previous) return previous;
-    const record = readManagedRecords(this.dataDir, this.store).find(
+    const record = readManagedRecords(this.dataDir, this.store, true).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record) return { __runtimeBackend: "rust" };
-    if (!record.released) return { __runtimeBackend: "rust" };
+    if (!record) {
+      if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
+        throw new Error("stale-or-disabled-control");
+      return this.managedLifecycle(
+        {
+          operation: "adopt",
+          requestId: request.requestId,
+          deviceId: request.deviceId,
+          sessionId: request.sessionId,
+          handoffConfirmed: request.handoffConfirmed,
+        },
+        fingerprint,
+      );
+    }
+    if (!record.released) throw new Error("session-not-released");
     if (record.archived) throw new Error("session-archived");
     if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
       throw new Error("stale-or-disabled-control");
@@ -800,17 +842,10 @@ export class WebReadRequests {
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(record);
     if (!record.native_id) throw new Error("native-session-unconfirmed");
-    let release: (() => void) | undefined;
-    try {
-      release = acquireManagedSessionLease(this.dataDir, request.sessionId);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        ["session-managed-by-another-runtime", "platform-unsupported"].includes(error.message)
-      )
-        return { __runtimeBackend: "rust" };
-      throw error;
-    }
+    let release: (() => void) | undefined = acquireManagedSessionLease(
+      this.dataDir,
+      request.sessionId,
+    );
     const latest = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
@@ -902,26 +937,77 @@ export class WebReadRequests {
   }
 
   async managedQueueList(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedQueueSchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    const runner = this.#managedRunners.get(request.sessionId);
-    if (!record || !runner || !runner.session.connected) return { __runtimeBackend: "rust" };
+    if (!record) throw new Error("session-unavailable");
     if (record.released) throw new Error("session-released");
     if (record.archived) throw new Error("session-archived");
     const workspace = canonicalize(this.store.workspacePath(record.workspace_id));
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     this.#assertManagedHome(record);
-    if (!record.native_id || record.native_id !== runner.state.nativeId)
-      throw new Error("native-session-unconfirmed");
-    return readManagedQueue(runner.session, record.native_id, request.limit ?? 100);
+    if (!record.native_id) throw new Error("native-session-unconfirmed");
+    let runner = this.#managedRunners.get(request.sessionId);
+    if (runner && !runner.session.connected) {
+      this.#managedRunners.delete(request.sessionId);
+      try {
+        await runner.bridge.close();
+      } finally {
+        runner.release();
+      }
+      runner = undefined;
+    }
+    if (runner?.session.connected) {
+      if (record.native_id !== runner.state.nativeId) throw new Error("native-session-unconfirmed");
+      return readManagedQueue(runner.session, record.native_id, request.limit ?? 100);
+    }
+
+    let release: (() => void) | undefined;
+    let session: CodexAppServerSession | undefined;
+    try {
+      release = acquireManagedSessionLease(this.dataDir, request.sessionId);
+      const latest = readManagedRecords(this.dataDir, this.store).find(
+        (item) => item.id === request.sessionId,
+      );
+      if (
+        !latest ||
+        latest.released ||
+        latest.archived ||
+        latest.native_id !== record.native_id ||
+        latest.workspace_id !== record.workspace_id
+      )
+        throw new Error("session-unavailable");
+      if (pathIdentity(workspace) !== pathIdentity(canonicalize(latest.workspace)))
+        throw new Error("session-workspace-mismatch");
+      const executable = resolveCommand("codex", this.environment);
+      if (!executable) throw new Error("codex-cli-unavailable");
+      const home = this.#assertManagedHome(latest);
+      session = await CodexAppServerSession.start(executable, workspace, home, {
+        ...process.env,
+        ...this.environment,
+      });
+      const response = await session.request("thread/read", {
+        threadId: latest.native_id,
+        includeTurns: false,
+      });
+      const thread = isObject(response) ? response.thread : null;
+      if (!isObject(thread) || thread.id !== latest.native_id)
+        throw new Error("thread-identity-mismatch");
+      if (typeof thread.cwd !== "string" || !within(canonicalize(thread.cwd), workspace))
+        throw new Error("codex-context-outside-workspace");
+      return await readManagedQueue(session, latest.native_id, request.limit ?? 100);
+    } finally {
+      try {
+        await session?.close();
+      } finally {
+        release?.();
+      }
+    }
   }
 
   async managedUnarchive(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedUnarchiveSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -929,7 +1015,7 @@ export class WebReadRequests {
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record) return { __runtimeBackend: "rust" };
+    if (!record) throw new Error("session-unavailable");
     if (!record.archived) throw new Error("session-not-archived");
     if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
       throw new Error("stale-or-disabled-control");
@@ -940,17 +1026,10 @@ export class WebReadRequests {
     if (pathIdentity(workspace) !== pathIdentity(canonicalize(record.workspace)))
       throw new Error("session-workspace-mismatch");
     const home = this.#assertManagedHome(record);
-    let release: (() => void) | undefined;
-    try {
-      release = acquireManagedSessionLease(this.dataDir, request.sessionId);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        ["session-managed-by-another-runtime", "platform-unsupported"].includes(error.message)
-      )
-        return { __runtimeBackend: "rust" };
-      throw error;
-    }
+    let release: (() => void) | undefined = acquireManagedSessionLease(
+      this.dataDir,
+      request.sessionId,
+    );
     const claimed = claimManagedCommand(
       this.dataDir,
       request.requestId,
@@ -1045,19 +1124,20 @@ export class WebReadRequests {
   }
 
   async managedSettingsState(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedSettingsStateSchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    if (!record)
-      return {
-        available: false,
-        executionMode: "codex-follower",
-        reason: "follower-operation-unverified",
-      };
+    if (!record) {
+      try {
+        const follower = await this.#codexFollower(request.sessionId);
+        const state = await follower.bridge.observeLive();
+        return state.settingsState(follower.bridge.supportsThreadSettings);
+      } catch (error) {
+        return followerUnavailable(error);
+      }
+    }
     const ownerSnapshot = await this.#managedLive(request.sessionId);
-    if (isObject(ownerSnapshot) && ownerSnapshot.__runtimeBackend === "rust") return ownerSnapshot;
     const settings = new ManagedCodexState(record, record.snapshot?.revision ?? 0).snapshot(
       this.#bootId,
       false,
@@ -1122,13 +1202,14 @@ export class WebReadRequests {
   }
 
   async managedQuery(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedQuerySchema.parse(value);
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
     if (request.operation === "capabilities") {
-      if (!record || (record.released && record.adopted))
+      if (!record)
+        return this.#followerCapabilities(request.sessionId, request.experimentalEnabled === true);
+      if (record.released && record.adopted)
         return {
           sessionId: request.sessionId,
           executionMode: "codex-follower",
@@ -1171,8 +1252,7 @@ export class WebReadRequests {
             ]),
           ),
         };
-      const live = await this.#managedLive(request.sessionId);
-      if (isObject(live) && live.__runtimeBackend === "rust") return live;
+      const live = await this.#managedLive(request.sessionId, request.experimentalEnabled === true);
       if (!isObject(live)) throw new Error("session-state-unavailable");
       const controls = request.experimentalEnabled === true;
       const healthy = live.reason === null && controls;
@@ -1205,7 +1285,13 @@ export class WebReadRequests {
       set(
         "resume",
         Boolean(
-          controls && verified && !unknown && hasNative && !record.archived && !runnerConnected,
+          controls &&
+          verified &&
+          !unknown &&
+          hasNative &&
+          record.released &&
+          !record.archived &&
+          !runnerConnected,
         ),
         unknown
           ? "control-outcome-unconfirmed"
@@ -1407,7 +1493,6 @@ export class WebReadRequests {
   }
 
   async managedControl(value: unknown) {
-    if (process.platform !== "darwin") return { __runtimeBackend: "rust" };
     const request = managedControlSchema.parse(value);
     const fingerprint = createHash("sha256").update(stableJson(value)).digest("hex");
     const previous = replayManagedCommand(this.dataDir, request.requestId, fingerprint);
@@ -1416,12 +1501,37 @@ export class WebReadRequests {
     const record = readManagedRecords(this.dataDir, this.store).find(
       (item) => item.id === request.sessionId,
     );
-    const runner = this.#managedRunners.get(request.sessionId);
-    if (!record || !runner || !runner.session.connected) return { __runtimeBackend: "rust" };
-    if (record.released) throw new Error("session-released");
-    if (record.archived) throw new Error("session-archived");
-    if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
+    if (!record && ["send", "stop", "approve", "answer", "settings"].includes(request.operation))
+      return this.#codexFollowerControl(request, fingerprint);
+    if (record?.released) throw new Error("session-released");
+    if (record?.archived) throw new Error("session-archived");
+    if (record && (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId))
       throw new Error("stale-or-disabled-control");
+    let runner = this.#managedRunners.get(request.sessionId);
+    if (record && !runner?.session.connected) {
+      const recovery = (await this.managedReconcile({
+        operation: "reconcile",
+        requestId: randomUUID(),
+        deviceId: request.deviceId ?? "agentkib-local-owner",
+        sessionId: request.sessionId,
+      })) as Record<string, unknown>;
+      if (!isObject(recovery) || recovery.reconciled !== true)
+        return {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          reason:
+            isObject(recovery) && typeof recovery.reason === "string"
+              ? recovery.reason
+              : "recovery-required",
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          runtimeBootId: this.#bootId,
+        };
+      runner = this.#managedRunners.get(request.sessionId);
+    }
+    if (!record) throw new Error("session-unavailable");
+    if (!runner || !runner.session.connected) throw new Error("session-runner-unavailable");
     if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
       throw new Error("control-outcome-unconfirmed");
 
@@ -1823,8 +1933,11 @@ export class WebReadRequests {
         runner.state.commitManagedMutation({ archived: true }, "archived");
         runner.persist(runner.state);
         this.#managedRunners.delete(request.sessionId);
-        await runner.bridge.close();
-        runner.release();
+        try {
+          await runner.bridge.close();
+        } finally {
+          runner.release();
+        }
       }
       if (["goal-set", "goal-pause", "goal-resume"].includes(request.operation)) {
         if (!isObject(response) || !isObject(response.goal))
@@ -1891,6 +2004,306 @@ export class WebReadRequests {
     }
   }
 
+  async #reconcileCodexFollower(
+    request: z.infer<typeof managedReconcileSchema>,
+  ): Promise<Record<string, unknown>> {
+    const summary = this.store.sessions.get(request.sessionId);
+    if (!summary || summary.agent !== "codex") throw new Error("session-unavailable");
+    const unknown = readUnknownManagedCommands(this.dataDir, request.sessionId);
+    if (unknown.length === 0)
+      return { sessionId: request.sessionId, reconciled: true, unresolvedCount: 0 };
+
+    const resolved = await this.sessions.resolve(request.sessionId);
+    const nativeId = resolved.native.native_ref;
+    if (!this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()))
+      throw new Error("unverified-session-identity");
+    const workspace = canonicalize(resolved.workspace);
+    if (
+      pathIdentity(canonicalize(this.store.workspacePath(summary.workspace_id))) !==
+      pathIdentity(workspace)
+    )
+      throw new Error("session-workspace-mismatch");
+
+    const needsHistory = unknown.some(({ evidence }) =>
+      ["send", "stop"].includes(String(evidence?.operation)),
+    );
+    let thread: Record<string, unknown> | null = null;
+    if (needsHistory) {
+      const executable = resolveCommand("codex", this.environment);
+      if (!executable) throw new Error("codex-cli-unavailable");
+      const response = await this.#codex.request(
+        executable,
+        workspace,
+        canonicalize(this.sessions.codexHome()),
+        "thread/read",
+        { threadId: nativeId, includeTurns: true },
+      );
+      const candidate = isObject(response) ? response.thread : null;
+      if (!isObject(candidate) || candidate.id !== nativeId)
+        throw new Error("thread-identity-mismatch");
+      if (typeof candidate.cwd !== "string" || !within(canonicalize(candidate.cwd), workspace))
+        throw new Error("codex-context-outside-workspace");
+      thread = candidate;
+    }
+
+    const follower = await this.#codexFollower(request.sessionId);
+    const state = await follower.bridge.refresh();
+    let unresolvedCount = 0;
+    for (const command of unknown) {
+      const evidence = command.evidence;
+      let reconciled = false;
+      if (
+        evidence?.executionMode === "codex-follower" &&
+        ["send", "stop"].includes(String(evidence.operation)) &&
+        thread
+      ) {
+        reconciled = managedCommandReconciles(command.requestId, evidence, thread);
+      } else if (
+        evidence?.executionMode === "codex-follower" &&
+        ["approve", "answer"].includes(String(evidence.operation)) &&
+        evidence.nativeRequestId != null &&
+        typeof evidence.turnId === "string"
+      ) {
+        reconciled = !state.hasPendingRequest(evidence.nativeRequestId, evidence.turnId);
+      } else if (
+        evidence?.executionMode === "codex-follower" &&
+        evidence.operation === "settings" &&
+        isObject(evidence.expectedNativeSettings)
+      ) {
+        reconciled = managedFollowerSettingsMatch(
+          evidence.expectedNativeSettings,
+          state.snapshot(),
+        );
+      }
+      if (!reconciled) {
+        unresolvedCount += 1;
+        continue;
+      }
+      finishManagedCommand(this.dataDir, command.requestId, {
+        accepted: true,
+        completed: false,
+        reconciled: true,
+        requestId: command.requestId,
+        runtimeBootId: this.#bootId,
+        sessionId: request.sessionId,
+      });
+    }
+    return {
+      sessionId: request.sessionId,
+      reconciled: unresolvedCount === 0,
+      reason: unresolvedCount === 0 ? null : "control-outcome-unconfirmed",
+      unresolvedCount,
+      nativeStatus: thread?.status ?? state.status,
+      context: await this.#context(request.sessionId),
+      executionUnchanged: true,
+    };
+  }
+
+  async #codexFollowerControl(
+    request: z.infer<typeof managedControlSchema>,
+    fingerprint: string,
+  ): Promise<Record<string, unknown>> {
+    let dispatched = false;
+    try {
+      if (!request.experimentalEnabled || request.runtimeBootId !== this.#bootId)
+        throw new Error("stale-or-disabled-control");
+      if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
+        throw new Error("control-outcome-unconfirmed");
+      const follower = await this.#codexFollower(request.sessionId);
+      const state = await follower.bridge.observeLive();
+      if (state.revision !== request.expectedRevision) throw new Error("stale-or-disabled-control");
+      const live = state.live(true);
+      const turnId = request.turnId;
+      let method: string;
+      let params: Record<string, unknown>;
+      let responseId: string | number | null = null;
+      let expectedNativeSettings: Record<string, unknown> | undefined;
+
+      if (request.operation === "send") {
+        if (live.sendEnabled !== true) throw new Error("session-busy");
+        const input = followerInput(request.input, request.text, request.resourceRefs);
+        method = "thread-follower-start-turn";
+        params = {
+          conversationId: state.conversationId,
+          turnStart: {
+            request: {
+              threadId: state.conversationId,
+              clientUserMessageId: request.requestId,
+              input,
+            },
+          },
+        };
+      } else if (request.operation === "stop") {
+        if (!turnId || state.activeTurn() !== turnId || live.stopEnabled !== true)
+          throw new Error("stale-turn");
+        method = "thread-follower-interrupt-turn";
+        params = {
+          conversationId: state.conversationId,
+          mode: "user-stop",
+          expectedTurnId: turnId,
+        };
+      } else if (request.operation === "approve") {
+        if (!turnId || state.activeTurn() !== turnId) throw new Error("missing-approval");
+        const approvalId = request.approvalId;
+        if (approvalId === undefined) throw new Error("missing-approval");
+        const approval = state
+          .approvals(true)
+          .find(
+            (item) =>
+              managedRequestKey(item.requestId) === managedRequestKey(approvalId) &&
+              item.turnId === turnId,
+          );
+        if (!approval || approval.supported !== true) throw new Error("unsupported-approval");
+        const decision = request.nativeDecision ?? request.decision;
+        if (decision === undefined) throw new Error("missing-decision");
+        const options = Array.isArray(approval.decisionOptions) ? approval.decisionOptions : [];
+        if (
+          !options.some(
+            (option) => isObject(option) && stableJson(option.decision) === stableJson(decision),
+          )
+        )
+          throw new Error("unsupported-decision");
+        responseId = approvalId;
+        method =
+          approval.method === "item/commandExecution/requestApproval"
+            ? "thread-follower-command-approval-decision"
+            : approval.method === "item/fileChange/requestApproval"
+              ? "thread-follower-file-approval-decision"
+              : "";
+        if (!method) throw new Error("unsupported-approval");
+        params = { conversationId: state.conversationId, requestId: approvalId, decision };
+      } else if (request.operation === "answer") {
+        if (!turnId || state.activeTurn() !== turnId) throw new Error("missing-question");
+        const questionId = request.questionId;
+        if (questionId === undefined) throw new Error("missing-question");
+        const question = state
+          .questions(true)
+          .find(
+            (item) =>
+              managedRequestKey(item.requestId) === managedRequestKey(questionId) &&
+              item.turnId === turnId,
+          );
+        if (!question || question.supported !== true || !Array.isArray(question.questions))
+          throw new Error("unsupported-question");
+        if (!request.answers) throw new Error("missing-answers");
+        responseId = questionId;
+        method = "thread-follower-submit-user-input";
+        params = {
+          conversationId: state.conversationId,
+          requestId: questionId,
+          response: followerAnswerPayload(question.questions, request.answers),
+        };
+      } else {
+        if (!follower.bridge.supportsThreadSettings)
+          throw new Error("follower-operation-unverified");
+        if (live.status !== "idle") throw new Error("session-busy");
+        if (request.model || request.effort || request.serviceTier || request.resetDefaults)
+          throw new Error("follower-setting-read-only");
+        const native = state.snapshot();
+        if (!native) throw new Error("state-unavailable");
+        const threadSettings = followerThreadSettings(
+          native,
+          follower.workspace,
+          request.mode,
+          request.policyId,
+        );
+        expectedNativeSettings = threadSettings;
+        method = "thread-follower-update-thread-settings";
+        params = {
+          conversationId: state.conversationId,
+          threadSettings,
+          activeTurnId: null,
+          condition: {
+            ifModelEquals: native.latestModel,
+            ifEffortEquals: native.latestReasoningEffort ?? null,
+          },
+        };
+      }
+
+      const claimed = claimManagedCommand(
+        this.dataDir,
+        request.requestId,
+        request.sessionId,
+        fingerprint,
+        request.deviceId ?? null,
+        {
+          operation: request.operation,
+          turnId: turnId ?? null,
+          nativeRequestId: responseId,
+          expectedNativeSettings: expectedNativeSettings ?? null,
+          runtimeBootId: request.runtimeBootId,
+          expectedRevision: request.expectedRevision,
+          executionMode: "codex-follower",
+        },
+      );
+      if (claimed) return claimed;
+
+      const release = acquireCodexFollowerOperationLock(
+        follower.bridge.connection.endpoint,
+        state.conversationId,
+      );
+      try {
+        dispatched = false;
+        const result = await follower.bridge.mutate(
+          method,
+          params,
+          request.expectedRevision,
+          () => {
+            dispatchManagedCommand(this.dataDir, request.requestId);
+            dispatched = true;
+          },
+        );
+        if (request.operation === "settings" && (!isObject(result) || result.applied !== true))
+          throw new Error("owner rejected stale settings");
+        if (request.operation === "stop") {
+          if (!isObject(result) || result.ok !== true || result.interruptedTurnId !== turnId)
+            throw new Error("unconfirmed-turn");
+        }
+        const accepted = {
+          accepted: true,
+          completed: !["send", "stop"].includes(request.operation),
+          ...(request.operation === "settings" ? { appliesTo: "next-turn" } : {}),
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          runtimeBootId: this.#bootId,
+        };
+        finishManagedCommand(this.dataDir, request.requestId, accepted);
+        return accepted;
+      } finally {
+        release();
+      }
+    } catch (error) {
+      const unknown = managedSessionHasUnknownCommands(this.dataDir, request.sessionId);
+      const result = unknown
+        ? {
+            accepted: false,
+            completed: false,
+            controlOutcome: "unknown",
+            reason: "control-outcome-unconfirmed",
+            sessionId: request.sessionId,
+            requestId: request.requestId,
+            runtimeBootId: this.#bootId,
+          }
+        : {
+            accepted: false,
+            completed: false,
+            controlOutcome: "not-dispatched",
+            error: error instanceof Error ? error.message : "control-preflight-rejected",
+            sessionId: request.sessionId,
+            requestId: request.requestId,
+            runtimeBootId: this.#bootId,
+          };
+      if (!unknown && dispatched === false) {
+        try {
+          finishManagedCommand(this.dataDir, request.requestId, result);
+        } catch {
+          // A preflight may fail before the durable command was claimed.
+        }
+      }
+      return result;
+    }
+  }
+
   async #managedFork(
     request: z.infer<typeof managedControlSchema>,
     source: ManagedRecord,
@@ -1915,17 +2328,7 @@ export class WebReadRequests {
     if (typeof last.id !== "string") throw new Error("no-completed-turn");
     const childId = createHash("sha256").update(`managed-fork:${request.requestId}`).digest("hex");
     openManagedLedger(this.dataDir, true)?.close();
-    let release: (() => void) | undefined;
-    try {
-      release = acquireManagedSessionLease(this.dataDir, childId);
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        ["session-managed-by-another-runtime", "platform-unsupported"].includes(error.message)
-      )
-        return { __runtimeBackend: "rust" };
-      throw error;
-    }
+    let release: (() => void) | undefined = acquireManagedSessionLease(this.dataDir, childId);
     const claimed = claimManagedCommand(
       this.dataDir,
       request.requestId,
@@ -2252,15 +2655,19 @@ export class WebReadRequests {
         planVerified: false,
       };
     } catch (error) {
-      await bridge.close();
-      release?.();
+      try {
+        await bridge.close();
+      } finally {
+        release?.();
+      }
       throw error;
     }
   }
 
   async request(value: unknown) {
     const request = requestSchema.parse(value);
-    if (request.operation === "live") return this.#managedLive(request.sessionId);
+    if (request.operation === "live")
+      return this.#managedLive(request.sessionId, request.experimentalEnabled === true);
     if (request.operation === "context") return this.#context(request.sessionId);
     if (request.operation === "usage") {
       const record = readManagedRecords(this.dataDir, this.store).find(
@@ -2409,11 +2816,11 @@ export class WebReadRequests {
     return result;
   }
 
-  async #managedLive(sessionId: string) {
+  async #managedLive(sessionId: string, experimentalEnabled = false) {
     const managed = readManagedRecords(this.dataDir, this.store).find(
       (record) => record.id === sessionId,
     );
-    if (!managed || process.platform !== "darwin") return { __runtimeBackend: "rust" };
+    if (!managed) return this.#codexFollowerLive(sessionId, experimentalEnabled);
     const liveWorkspace = canonicalize(this.store.workspacePath(managed.workspace_id));
     if (pathIdentity(liveWorkspace) !== pathIdentity(canonicalize(managed.workspace)))
       throw new Error("session-workspace-mismatch");
@@ -2428,20 +2835,14 @@ export class WebReadRequests {
     }
     if (resident) {
       this.#managedRunners.delete(sessionId);
-      await resident.bridge.close();
-      resident.release();
+      try {
+        await resident.bridge.close();
+      } finally {
+        resident.release();
+      }
     }
 
-    let release: (() => void) | undefined;
-    try {
-      release = acquireManagedSessionLease(this.dataDir, sessionId);
-    } catch (error) {
-      if (error instanceof Error && error.message === "session-managed-by-another-runtime")
-        return { __runtimeBackend: "rust" };
-      if (error instanceof Error && error.message === "platform-unsupported")
-        return { __runtimeBackend: "rust" };
-      throw error;
-    }
+    const release = acquireManagedSessionLease(this.dataDir, sessionId);
 
     try {
       const workspace = canonicalize(this.store.workspacePath(managed.workspace_id));
@@ -2487,6 +2888,234 @@ export class WebReadRequests {
     } finally {
       release();
     }
+  }
+
+  async #codexFollower(sessionId: string): Promise<CodexFollowerRecord> {
+    if (process.platform !== "darwin") throw new Error("platform-unsupported");
+    const resolved = await this.sessions.resolve(sessionId);
+    if (resolved.summary.agent !== "codex") throw new Error("session-not-codex");
+    const nativeId = resolved.native.native_ref;
+    if (!this.sessions.verifiedCodexControlIds([nativeId]).has(nativeId.toLowerCase()))
+      throw new Error("unverified-session-identity");
+    const workspace = canonicalize(resolved.workspace);
+    const workspaceId = resolved.summary.workspace_id;
+    if (
+      pathIdentity(canonicalize(this.store.workspacePath(workspaceId))) !== pathIdentity(workspace)
+    )
+      throw new Error("session-workspace-mismatch");
+
+    const cached = this.#codexFollowers.get(sessionId);
+    if (
+      cached?.bridge.connected &&
+      cached.nativeId === nativeId &&
+      cached.workspaceId === workspaceId &&
+      pathIdentity(cached.workspace) === pathIdentity(workspace)
+    ) {
+      cached.lastUsed = Date.now();
+      return cached;
+    }
+    if (cached) {
+      this.#codexFollowers.delete(sessionId);
+      cached.bridge.close();
+    }
+
+    const pending = this.#codexFollowerFlights.get(sessionId);
+    if (pending) return pending;
+    const flight = this.#connectCodexFollower(sessionId, workspaceId, workspace, nativeId);
+    this.#codexFollowerFlights.set(sessionId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.#codexFollowerFlights.get(sessionId) === flight)
+        this.#codexFollowerFlights.delete(sessionId);
+    }
+  }
+
+  async #connectCodexFollower(
+    sessionId: string,
+    workspaceId: string,
+    workspace: string,
+    nativeId: string,
+  ): Promise<CodexFollowerRecord> {
+    if (this.#codexFollowers.size >= 8) {
+      const candidates = [...this.#codexFollowers.entries()]
+        .filter(
+          ([id, value]) =>
+            id !== sessionId &&
+            value.bridge.selectedState?.status === "idle" &&
+            value.bridge.selectedState.approvals(false).length === 0,
+        )
+        .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
+      const [retireId, retire] = candidates[0] ?? [];
+      if (!retireId || !retire) throw new Error("live-session-busy");
+      this.#codexFollowers.delete(retireId);
+      retire.bridge.close();
+    }
+    const home = canonicalize(this.sessions.codexHome());
+    const endpoint = path.join(home, "ipc", "ipc.sock");
+    const bridge = await CodexFollowerBridge.connect(endpoint, nativeId);
+    try {
+      const latest = await this.sessions.resolve(sessionId);
+      if (
+        latest.summary.agent !== "codex" ||
+        latest.summary.workspace_id !== workspaceId ||
+        latest.native.native_ref !== nativeId ||
+        pathIdentity(canonicalize(latest.workspace)) !== pathIdentity(workspace) ||
+        pathIdentity(canonicalize(this.store.workspacePath(workspaceId))) !==
+          pathIdentity(workspace)
+      )
+        throw new Error("session-unavailable");
+      const record = { bridge, workspaceId, workspace, nativeId, lastUsed: Date.now() };
+      this.#codexFollowers.set(sessionId, record);
+      return record;
+    } catch (error) {
+      bridge.close();
+      throw error;
+    }
+  }
+
+  async #codexFollowerLive(
+    sessionId: string,
+    experimentalEnabled: boolean,
+  ): Promise<Record<string, unknown>> {
+    try {
+      const follower = await this.#codexFollower(sessionId);
+      const state = await follower.bridge.observeLive();
+      follower.lastUsed = Date.now();
+      return {
+        ...state.live(experimentalEnabled),
+        sessionId,
+        runtimeBootId: this.#bootId,
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "session-not-codex",
+          "session-workspace-mismatch",
+          "session-unavailable",
+          "unverified-session-identity",
+        ].includes(error.message)
+      )
+        throw error;
+      return {
+        sessionId,
+        runtimeBootId: this.#bootId,
+        executionMode: "codex-follower",
+        status: "unsupported",
+        revision: null,
+        turnId: null,
+        sendEnabled: false,
+        stopEnabled: false,
+        approvals: [],
+        questions: [],
+        reason: followerReason(error),
+      };
+    }
+  }
+
+  async #followerCapabilities(
+    sessionId: string,
+    experimentalEnabled: boolean,
+  ): Promise<Record<string, unknown>> {
+    const operations = [
+      "send",
+      "stop",
+      "approve",
+      "answer",
+      "inspect",
+      "resume",
+      "steer",
+      "queue-list",
+      "queue-add",
+      "queue-update",
+      "queue-delete",
+      "queue-reorder",
+      "queue-start",
+      "rename",
+      "archive",
+      "unarchive",
+      "fork",
+      "settings",
+      "settings-state",
+      "usage",
+      "goal",
+      "goal-set",
+      "goal-pause",
+      "goal-resume",
+      "goal-clear",
+      "resources",
+      "attachments",
+      "worktree-create",
+      "branch-switch",
+    ];
+    let follower: CodexFollowerRecord;
+    let state: CodexFollowerState;
+    try {
+      follower = await this.#codexFollower(sessionId);
+      state = await follower.bridge.observeLive();
+    } catch (error) {
+      const reason = followerReason(error);
+      return {
+        sessionId,
+        executionMode: "codex-follower",
+        status: "unsupported",
+        reason,
+        features: Object.fromEntries(
+          operations.map((operation) => [operation, { available: false, reason }]),
+        ),
+      };
+    }
+    const live = state.live(experimentalEnabled);
+    const verified = resolveCommand("codex", this.environment) !== null;
+    const idle = live.status === "idle";
+    const set = (operation: string, available: boolean, reason = "follower-operation-unverified") =>
+      [operation, available ? { available: true } : { available: false, reason }] as const;
+    const controlReason = !verified
+      ? "unsupported-codex-cli-version"
+      : !experimentalEnabled
+        ? "control-disabled"
+        : typeof live.reason === "string"
+          ? live.reason
+          : live.status === "outcome-unknown"
+            ? "control-outcome-unconfirmed"
+            : "session-busy";
+    const features = Object.fromEntries([
+      set("send", live.sendEnabled === true, controlReason),
+      set("stop", live.stopEnabled === true, controlReason),
+      set(
+        "approve",
+        experimentalEnabled && state.approvals(true).some((item) => item.supported === true),
+        controlReason,
+      ),
+      set(
+        "answer",
+        experimentalEnabled && state.questions(true).some((item) => item.supported === true),
+        controlReason,
+      ),
+      set("inspect", verified, "unsupported-codex-cli-version"),
+      set("resume", experimentalEnabled && verified, controlReason),
+      ...operations
+        .filter(
+          (operation) =>
+            !["send", "stop", "approve", "answer", "inspect", "resume", "settings"].includes(
+              operation,
+            ),
+        )
+        .map((operation) => set(operation, false)),
+      set(
+        "settings",
+        follower.bridge.supportsThreadSettings && idle,
+        follower.bridge.supportsThreadSettings ? "session-busy" : "follower-operation-unverified",
+      ),
+    ]);
+    return {
+      sessionId,
+      executionMode: "codex-follower",
+      status: live.status,
+      reason: live.reason,
+      features,
+    };
   }
 
   #recoverySnapshot(record: ManagedRecord, reason: string) {
@@ -2990,6 +3619,128 @@ function managedTurnSettings(record: ManagedRecord, workspace: string): Record<s
   return params;
 }
 
+function followerInput(
+  input: unknown[] | undefined,
+  text: string | undefined,
+  resourceRefs: Array<{ kind: string; id?: string; relativePath?: string }> | undefined,
+): Record<string, unknown>[] {
+  if (input && text !== undefined) throw new Error("ambiguous-input");
+  if (resourceRefs?.length) throw new Error("follower-resource-input-unsupported");
+  const rows = input ? [...input] : text !== undefined ? [{ type: "text", text }] : [];
+  if (rows.length === 0 || rows.length > 11) throw new Error("invalid-input-size");
+  let textBytes = 0;
+  const projected: Record<string, unknown>[] = [];
+  for (const value of rows) {
+    if (!isObject(value)) throw new Error("invalid-input-item");
+    if (value.type === "text") {
+      if (
+        Object.keys(value).some((key) => !["type", "text", "text_elements"].includes(key)) ||
+        typeof value.text !== "string" ||
+        !value.text.trim() ||
+        Buffer.byteLength(value.text, "utf8") > 16_384 ||
+        (value.text_elements !== undefined &&
+          (!Array.isArray(value.text_elements) || value.text_elements.length !== 0))
+      )
+        throw new Error("invalid-text-input");
+      textBytes += Buffer.byteLength(value.text, "utf8");
+      projected.push({ type: "text", text: value.text, text_elements: [] });
+      continue;
+    }
+    if (value.type !== "localImage" && value.type !== "mention")
+      throw new Error("unsupported-input-kind");
+    if (
+      Object.keys(value).some((key) => !["type", "path", "name"].includes(key)) ||
+      typeof value.path !== "string" ||
+      value.path.length > 4096 ||
+      !path.isAbsolute(value.path) ||
+      value.path.split(path.sep).includes("..")
+    )
+      throw new Error("invalid-file-input");
+    const resolved = realpathSync(value.path);
+    const file = statSync(resolved);
+    if (resolved !== value.path || !file.isFile()) throw new Error("invalid-input-path");
+    if (value.type === "mention") {
+      if (
+        typeof value.name !== "string" ||
+        !value.name ||
+        Buffer.byteLength(value.name, "utf8") > 255
+      )
+        throw new Error("invalid-input-name");
+      projected.push({ type: "mention", path: resolved, name: value.name });
+    } else {
+      projected.push({ type: "localImage", path: resolved });
+    }
+  }
+  if (textBytes > 16_384) throw new Error("text-too-large");
+  if (Buffer.byteLength(JSON.stringify(projected), "utf8") > 64 * 1024)
+    throw new Error("invalid-input-size");
+  return projected;
+}
+
+function followerThreadSettings(
+  snapshot: Record<string, unknown>,
+  workspace: string,
+  requestedMode: string | undefined,
+  requestedPolicy: string | undefined,
+): Record<string, unknown> {
+  const settings: Record<string, unknown> = {};
+  if (requestedMode !== undefined) {
+    if (requestedMode !== "default" && requestedMode !== "plan")
+      throw new Error("invalid-collaboration-mode");
+    const saved = isObject(snapshot.latestThreadSettings) ? snapshot.latestThreadSettings : {};
+    const model = typeof saved.model === "string" ? saved.model : snapshot.latestModel;
+    if (typeof model !== "string" || !model || model.length > 256)
+      throw new Error("invalid-collaboration-mode");
+    const effort = Object.hasOwn(saved, "effort")
+      ? saved.effort
+      : (snapshot.latestReasoningEffort ?? null);
+    if (
+      effort !== null &&
+      !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(
+        String(effort),
+      )
+    )
+      throw new Error("invalid-collaboration-mode");
+    settings.model = model;
+    settings.effort = effort;
+    settings.collaborationMode = {
+      mode: requestedMode,
+      settings: { model, reasoning_effort: effort, developer_instructions: null },
+    };
+  }
+  if (requestedPolicy !== undefined) {
+    const profiles: Record<string, Record<string, unknown>> = {
+      "workspace-write-on-request": {
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
+      },
+      "full-access-on-request": {
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      },
+      "workspace-write-auto-review": {
+        approvalPolicy: "on-request",
+        approvalsReviewer: "agent",
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false },
+      },
+    };
+    const profile = profiles[requestedPolicy];
+    if (!profile) throw new Error("unsupported-policy");
+    if (isObject(profile.sandboxPolicy) && profile.sandboxPolicy.type === "workspaceWrite") {
+      if (
+        typeof snapshot.cwd !== "string" ||
+        pathIdentity(canonicalize(snapshot.cwd)) !== pathIdentity(canonicalize(workspace))
+      )
+        throw new Error("owner-workspace-unavailable");
+    }
+    Object.assign(settings, profile);
+  }
+  if (Object.keys(settings).length === 0) throw new Error("empty-thread-settings");
+  return settings;
+}
+
 function managedRequestKey(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
@@ -3023,6 +3774,44 @@ function managedAnswerPayload(
     if (value.allowCustom !== true && !options.some((option) => option.label === choices[0]))
       throw new Error("answer-not-offered");
     normalized[value.id] = { answers: choices };
+  }
+  return { answers: normalized };
+}
+
+function followerAnswerPayload(
+  questions: unknown[],
+  answers: Record<string, string[]>,
+): Record<string, unknown> {
+  if (
+    questions.length === 0 ||
+    questions.length > 32 ||
+    Object.keys(answers).length !== questions.length ||
+    Buffer.byteLength(JSON.stringify(answers), "utf8") > 65_536
+  )
+    throw new Error("answer-keys-mismatch");
+  const normalized: Record<string, unknown> = {};
+  const ids = new Set<string>();
+  for (const question of questions) {
+    if (!isObject(question) || typeof question.id !== "string" || ids.has(question.id))
+      throw new Error("invalid-question-id");
+    ids.add(question.id);
+    const choices = answers[question.id];
+    if (
+      !Array.isArray(choices) ||
+      choices.length !== 1 ||
+      typeof choices[0] !== "string" ||
+      !choices[0].trim() ||
+      choices[0].includes("\0") ||
+      Buffer.byteLength(choices[0], "utf8") > 8192
+    )
+      throw new Error("invalid-answer");
+    if (
+      question.allowCustom !== true &&
+      (!Array.isArray(question.options) ||
+        !question.options.some((option) => isObject(option) && option.label === choices[0]))
+    )
+      throw new Error("answer-not-offered");
+    normalized[question.id] = { answers: choices };
   }
   return { answers: normalized };
 }
@@ -3133,6 +3922,28 @@ function managedSettingsEvidenceMatches(
   return same;
 }
 
+function managedFollowerSettingsMatch(
+  expected: Record<string, unknown>,
+  snapshot: Record<string, unknown> | null,
+): boolean {
+  if (!snapshot) return false;
+  const current = isObject(snapshot.latestThreadSettings) ? snapshot.latestThreadSettings : {};
+  const aliases: Record<string, unknown> = {
+    model: Object.hasOwn(current, "model") ? current.model : (snapshot.latestModel ?? null),
+    effort: Object.hasOwn(current, "effort")
+      ? current.effort
+      : (snapshot.latestReasoningEffort ?? null),
+    serviceTier: current.serviceTier ?? null,
+    collaborationMode: current.collaborationMode ?? null,
+    approvalPolicy: current.approvalPolicy ?? null,
+    approvalsReviewer: current.approvalsReviewer ?? null,
+    sandboxPolicy: current.sandboxPolicy ?? null,
+  };
+  return Object.entries(expected).every(
+    ([key, value]) => Object.hasOwn(aliases, key) && stableJson(aliases[key]) === stableJson(value),
+  );
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (isObject(value))
@@ -3167,7 +3978,28 @@ function indexEnabled(dataDir: string): boolean {
   return enabled === undefined || enabled === true;
 }
 
-function readManagedRecords(dataDir: string, store: BackendStore): ManagedRecord[] {
+function followerReason(error: unknown): string {
+  if (!(error instanceof Error)) return "open-in-original-client";
+  if (error.message === "platform-unsupported") return "platform-unsupported";
+  if (error.message.includes("unverified Codex Desktop")) return "unverified-installation";
+  if (error.message === "live-session-busy") return "live-session-busy";
+  if (error.message === "no Codex session owner found") return "open-in-original-client";
+  return "open-in-original-client";
+}
+
+function followerUnavailable(error: unknown): Record<string, unknown> {
+  return {
+    available: false,
+    executionMode: "codex-follower",
+    reason: followerReason(error),
+  };
+}
+
+function readManagedRecords(
+  dataDir: string,
+  store: BackendStore,
+  includeReleasedAdopted = false,
+): ManagedRecord[] {
   const file = path.join(dataDir, "codex-managed", "executions.sqlite");
   if (!existsSync(file)) return [];
   if (!statSync(file).isFile()) throw new Error("Invalid managed Codex session database");
@@ -3190,7 +4022,7 @@ function readManagedRecords(dataDir: string, store: BackendStore): ManagedRecord
       } catch {
         throw new Error("Invalid managed Codex session record");
       }
-      if (record.released && record.adopted) continue;
+      if (!includeReleasedAdopted && record.released && record.adopted) continue;
       try {
         if (
           pathIdentity(canonicalize(store.workspacePath(record.workspace_id))) !==

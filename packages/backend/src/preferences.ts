@@ -20,7 +20,7 @@ export function readPreferences(dataDir: string): Record<string, unknown> {
   }
 }
 
-/** Caller serializes this with every remaining Rust writer of preferences.json. */
+/** Callers serialize updates to preferences.json through the TypeScript owner. */
 export function writePreference(dataDir: string, key: string, value: unknown): void {
   writePreferences(dataDir, { [key]: value });
 }

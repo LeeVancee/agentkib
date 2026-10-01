@@ -332,7 +332,6 @@ export function InsightsPage({
                 <SelectTrigger className={filterClass} aria-label={tr("insights.filterRange")}>
                   <SelectValue>{rangeLabels[range]}</SelectValue>
                 </SelectTrigger>
-                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="52w">{rangeLabels["52w"]}</SelectItem>
                   <SelectItem value="year">{rangeLabels.year}</SelectItem>

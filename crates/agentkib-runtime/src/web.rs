@@ -538,7 +538,8 @@ impl Service {
                 std::time::Instant::now(),
                 request.operation != "live",
                 || {
-                    let adapter = provider(session.agent).context("provider-unavailable")?;
+                    let adapter =
+                        provider(session.agent, &workspace).context("provider-unavailable")?;
                     let native = adapter
                         .list_sessions(&workspace)?
                         .into_iter()
@@ -741,7 +742,7 @@ impl Service {
                 if session.agent != AgentKind::Codex {
                     return self.unsupported(&request, "provider-unsupported");
                 }
-                let native = provider(session.agent)
+                let native = provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .list_sessions(&workspace)?
                     .into_iter()
@@ -751,7 +752,7 @@ impl Service {
                             .is_ok_and(|found| found == id)
                     })
                     .context("session-unavailable")?;
-                let uuid = match provider(session.agent)
+                let uuid = match provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .verified_control_id(&native.native_ref)
                 {

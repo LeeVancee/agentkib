@@ -37,6 +37,7 @@ export function CursorBridgePanel({
     value: string;
     expires: number;
     before: string[];
+    bindingId?: string;
   }>();
   const [seconds, setSeconds] = useState(0);
   const [bundleVersion, setBundleVersion] = useState("");
@@ -127,6 +128,7 @@ export function CursorBridgePanel({
         value: next.challenge,
         expires: Date.now() + Math.min(next.expires_in_seconds, 120) * 1000,
         before: status?.bindings.filter((b) => b.connected).map((b) => b.id) ?? [],
+        bindingId: selectedId,
       });
     });
   const reveal = () =>
@@ -254,6 +256,10 @@ export function CursorBridgePanel({
                     workspaceId: workspace.id,
                     bindingId: selected.id,
                   });
+                  if (!active.current) return;
+                  setChallenge((current) =>
+                    current?.bindingId === selected.id ? undefined : current,
+                  );
                   await refresh();
                 })
               }

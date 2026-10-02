@@ -430,6 +430,304 @@ mod mac {
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
+    fn handshake_survives_delayed_writes(fragments: usize) {
+        let f = Fixture::new();
+        let p = Profile::new(&f);
+        let mut runtime = f.runtime();
+        let response = runtime.ok("cursor.bridge", f.bridge_request("connect"));
+        let endpoint: Value =
+            serde_json::from_str(response["challenge"].as_str().unwrap()).unwrap();
+        let mut hello = p.hello(&f);
+        hello["ticket"] = endpoint["ticket"].clone();
+        let connect = |endpoint: &Value, hello: &Value, runtime: &mut Runtime| {
+            let mut stream = UnixStream::connect(endpoint["socket"].as_str().unwrap()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut frame = serde_json::to_vec(hello).unwrap();
+            frame.push(b'\n');
+            for (index, fragment) in frame.chunks(frame.len().div_ceil(fragments)).enumerate() {
+                // Exercise either a delayed first byte or immediately sent
+                // partial data followed by delayed fragments.
+                if fragments == 1 || index > 0 {
+                    responsive(runtime);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                stream.write_all(fragment).expect("delayed hello write");
+            }
+            let mut reader = BufReader::new(stream);
+            let reply = Peer::read(&mut reader);
+            assert_eq!(reply["protocol"], 1);
+            (reader, reply)
+        };
+        let (reader, paired) = connect(&endpoint, &hello, &mut runtime);
+        let binding = paired["binding_id"].clone();
+        assert!(paired["credential"].is_string());
+        assert_eq!(
+            runtime.ok("cursor.bridge", f.bridge_request("status"))["bindings"][0]["connected"],
+            true
+        );
+        drop(reader);
+
+        // Automatic credential reconnection uses the same delayed framing and
+        // must retain the identity, without creating another registration.
+        let mut hello = p.hello(&f);
+        hello["credential"] = paired["credential"].clone();
+        let (mut reader, recovered) = connect(&endpoint, &hello, &mut runtime);
+        assert_eq!(recovered["binding_id"], binding);
+        assert_ne!(recovered["lease"], paired["lease"]);
+        assert!(recovered["credential"].is_null());
+        let status = runtime.ok("cursor.bridge", f.bridge_request("status"));
+        assert_eq!(status["bindings"].as_array().unwrap().len(), 1);
+        assert_eq!(status["bindings"][0]["id"], binding);
+        assert_eq!(status["bindings"][0]["connected"], true);
+        assert_eq!(p.count(), 0);
+        runtime.stop();
+        assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn delayed_hello_can_pair_and_reconnect() {
+        handshake_survives_delayed_writes(1);
+    }
+
+    #[test]
+    fn fragmented_hello_can_pair_and_reconnect() {
+        handshake_survives_delayed_writes(3);
+    }
+
+    #[test]
+    fn silent_and_unfinished_hello_time_out_without_registering() {
+        let f = Fixture::new();
+        let p = Profile::new(&f);
+        let mut runtime = f.runtime();
+        let response = runtime.ok("cursor.bridge", f.bridge_request("connect"));
+        let endpoint: Value =
+            serde_json::from_str(response["challenge"].as_str().unwrap()).unwrap();
+        for partial in [false, true] {
+            let mut stream = UnixStream::connect(endpoint["socket"].as_str().unwrap()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            if partial {
+                stream.write_all(b"{\"protocol\":").unwrap();
+            }
+            responsive(&mut runtime);
+            let start = Instant::now();
+            let mut reader = BufReader::new(stream);
+            assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+            assert!(start.elapsed() >= Duration::from_secs(2));
+            assert_eq!(
+                runtime.ok("cursor.bridge", f.bridge_request("status"))["bindings"],
+                json!([])
+            );
+        }
+        // Failed framing does not consume a valid challenge or stop accepting.
+        let mut hello = p.hello(&f);
+        hello["ticket"] = endpoint["ticket"].clone();
+        let mut reader = Peer::connect(&endpoint, &hello);
+        assert!(Peer::read(&mut reader)["credential"].is_string());
+        runtime.stop();
+    }
+
+    fn stale_registration_is_isolated(resource: &str) {
+        let a = Fixture::new();
+        let mut b = Fixture::new();
+        b.workspace_id = Store::open(&a.root.path().join("data/agentkib.db"))
+            .unwrap()
+            .add_workspace(&b.workspace)
+            .unwrap()
+            .id;
+        let profile_a = Profile::new(&a);
+        let profile_b = Profile::new(&b);
+        let mut runtime = a.runtime();
+        let mut peer_a = Peer::pair(&a, &profile_a, &mut runtime, None);
+        let binding_a = peer_a.hello["binding_id"].clone();
+        let plan = plan(&a, &mut runtime, &peer_a);
+        let request_id = runtime.send("sessions.continueHandoff", continuation(&plan));
+        let request = peer_a.next("import");
+        let native_a = uuid::Uuid::new_v4().to_string();
+        profile_a.store(&a, &request, &native_a, true);
+        peer_a.reply(&request);
+        peer_a.open(&native_a);
+        assert_eq!(
+            runtime.receive(request_id, Duration::from_secs(10))["result"]["status"],
+            "launched"
+        );
+        let original = runtime.ok(
+            "workspace.refreshSessions",
+            json!({"workspaceId":a.workspace_id,"force":true}),
+        );
+        let session_a = original
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["agent"] == "cursor")
+            .unwrap()["id"]
+            .clone();
+
+        match resource {
+            "workspace" => fs::rename(&a.workspace, a.root.path().join("moved-project")).unwrap(),
+            "installation" => fs::write(
+                profile_a.app.join("package.json"),
+                r#"{"name":"Cursor","version":"99.0.0"}"#,
+            )
+            .unwrap(),
+            "database" => fs::rename(&profile_a.db, profile_a.db.with_extension("moved")).unwrap(),
+            _ => unreachable!(),
+        }
+        let status_a = runtime.ok("cursor.bridge", a.bridge_request("status"));
+        assert_eq!(status_a["bindings"].as_array().unwrap().len(), 1);
+        assert_eq!(status_a["bindings"][0]["id"], binding_a);
+        assert_eq!(status_a["bindings"][0]["connected"], false);
+        assert_eq!(
+            runtime.ok("cursor.bridge", b.bridge_request("status"))["bindings"],
+            json!([])
+        );
+
+        // Pairing a first window must not read or validate A's external resources.
+        let peer_b = Peer::pair(&b, &profile_b, &mut runtime, None);
+        let binding_b = peer_b.hello["binding_id"].clone();
+        assert_eq!(
+            runtime.ok("cursor.bridge", b.bridge_request("status"))["bindings"][0]["connected"],
+            true
+        );
+        // Seed only the synthetic extension's B profile, then read it through RPC.
+        let document = agentkib_conversations::SessionDocument {
+            schema_version: 1,
+            source: agentkib_conversations::SessionDocumentSource {
+                agent: AgentKind::ClaudeCode,
+                workspace_id: b.workspace_id.clone(),
+                title: Some("B history".into()),
+                created_at: None,
+                updated_at: None,
+                git_branch: None,
+            },
+            turns: vec![agentkib_conversations::SessionTurn {
+                id: "b-message".into(),
+                role: agentkib_conversations::SessionRole::User,
+                timestamp: None,
+                blocks: vec![agentkib_conversations::SessionBlock::Text {
+                    text: "B remains readable.".into(),
+                }],
+            }],
+            losses: vec![],
+            redaction_count: 0,
+        };
+        let payload = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+            &document,
+            &uuid::Uuid::new_v4().to_string(),
+            &b.workspace,
+        )
+        .unwrap();
+        profile_b.store(
+            &b,
+            &json!({"args":{"payload":payload.payload}}),
+            &uuid::Uuid::new_v4().to_string(),
+            true,
+        );
+        let indexed_b = runtime.ok(
+            "workspace.refreshSessions",
+            json!({"workspaceId":b.workspace_id,"force":true}),
+        );
+        let session_b = indexed_b
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["agent"] == "cursor")
+            .unwrap()["id"]
+            .clone();
+        let events = runtime.ok("session.events", json!({"sessionId":session_b,"limit":100}));
+        assert_eq!(events["events"][1]["content"], "B remains readable.");
+        let statuses_b = runtime.ok(
+            "workspace.sessionStatus",
+            json!({"workspaceId":b.workspace_id}),
+        );
+        assert_eq!(
+            statuses_b
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|status| status["agent"] == "cursor")
+                .unwrap()["freshness"],
+            "fresh"
+        );
+
+        // A's invalid source is partial, not a complete empty scan: keep its
+        // cached identity and continue rejecting reads and native execution.
+        let indexed_a = runtime.ok(
+            "workspace.refreshSessions",
+            json!({"workspaceId":a.workspace_id,"force":true}),
+        );
+        assert!(
+            indexed_a
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|session| session["id"] == session_a)
+        );
+        assert!(
+            runtime
+                .rpc("session.events", json!({"sessionId":session_a,"limit":100}))
+                .get("error")
+                .is_some()
+        );
+        assert!(runtime.rpc("sessions.prepareHandoff", json!({"request":{
+            "session_id":a.source_id,"target_agent":"cursor","target_surface":"cursor-ide",
+            "binding_id":binding_a,"format":"markdown","history_budget_tokens":64000
+        }})).get("error").is_some());
+        let registry_path = a.root.path().join("data/cursor-bridge/profiles-v1.json");
+        let before: Value = serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        // Workspace ownership is still enforced even when the resource is gone.
+        assert!(runtime.rpc("cursor.bridge", json!({"action":"disconnect","workspaceId":b.workspace_id,"bindingId":binding_a})).get("error").is_some());
+        assert_eq!(
+            runtime.ok(
+                "cursor.bridge",
+                json!({"action":"disconnect","workspaceId":a.workspace_id,"bindingId":binding_a})
+            )["disconnected"],
+            true
+        );
+        let after: Value = serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        let registrations = after["registrations"].as_array().unwrap();
+        let revoked = registrations
+            .iter()
+            .find(|r| r["context"]["binding_id"] == binding_a)
+            .unwrap();
+        assert_eq!(revoked["credential_hash"], "");
+        assert_eq!(revoked["context"], before["registrations"][0]["context"]);
+        assert_eq!(
+            registrations
+                .iter()
+                .find(|r| r["context"]["binding_id"] == binding_b)
+                .unwrap(),
+            &before["registrations"][1]
+        );
+        assert_eq!(peer_a.reader.read_line(&mut String::new()).unwrap(), 0);
+        assert_eq!(
+            runtime.ok("cursor.bridge", b.bridge_request("status"))["bindings"][0]["connected"],
+            true
+        );
+        runtime.stop();
+    }
+
+    #[test]
+    fn moved_workspace_does_not_block_other_profiles_or_credential_revocation() {
+        stale_registration_is_isolated("workspace");
+    }
+
+    #[test]
+    fn changed_installation_is_isolated_without_allowing_history_reads() {
+        stale_registration_is_isolated("installation");
+    }
+
+    #[test]
+    fn missing_profile_database_is_isolated_and_can_be_revoked() {
+        stale_registration_is_isolated("database");
+    }
+
     #[test]
     fn public_import_exact_readback_idempotence_and_cursor_as_source() {
         let f = Fixture::new();
@@ -588,6 +886,36 @@ mod mac {
             .clone();
         let before = runtime.ok("session.events", json!({"sessionId":session,"limit":100}));
         assert_eq!(before["events"].as_array().unwrap().len(), 3);
+        // Neither of the still-fresh tickets may undo a subsequent revocation.
+        let mut pending = (0..2)
+            .map(|_| {
+                let response = runtime.ok(
+                    "cursor.bridge",
+                    json!({
+                        "action":"connect","workspaceId":f.workspace_id,"bindingId":binding,
+                    }),
+                );
+                assert_eq!(response["expires_in_seconds"], 120);
+                serde_json::from_str::<Value>(response["challenge"].as_str().unwrap()).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut other = Fixture::new();
+        other.workspace_id = Store::open(&f.root.path().join("data/agentkib.db"))
+            .unwrap()
+            .add_workspace(&other.workspace)
+            .unwrap()
+            .id;
+        let other_profile = Profile::new(&other);
+        let other_peer = Peer::pair(&other, &other_profile, &mut runtime, None);
+        let other_binding = &other_peer.hello["binding_id"];
+        let other_response = runtime.ok(
+            "cursor.bridge",
+            json!({
+                "action":"connect","workspaceId":other.workspace_id,"bindingId":other_binding,
+            }),
+        );
+        let other_challenge: Value =
+            serde_json::from_str(other_response["challenge"].as_str().unwrap()).unwrap();
         let result = runtime.ok(
             "cursor.bridge",
             json!({
@@ -601,6 +929,59 @@ mod mac {
         assert_eq!(status["bindings"].as_array().unwrap().len(), 1);
         assert_eq!(status["bindings"][0]["id"], binding);
         assert_eq!(status["bindings"][0]["connected"], false);
+        // Revoking an already offline binding also invalidates all its tickets.
+        let offline_response = runtime.ok(
+            "cursor.bridge",
+            json!({
+                "action":"connect","workspaceId":f.workspace_id,"bindingId":binding,
+            }),
+        );
+        pending.push(
+            serde_json::from_str::<Value>(offline_response["challenge"].as_str().unwrap()).unwrap(),
+        );
+        runtime.ok(
+            "cursor.bridge",
+            json!({
+                "action":"disconnect","workspaceId":f.workspace_id,"bindingId":binding,
+            }),
+        );
+        for challenge in pending {
+            let mut hello = p.hello(&f);
+            hello["ticket"] = challenge["ticket"].clone();
+            let mut revoked = Peer::connect(&challenge, &hello);
+            let received = revoked.read_line(&mut line).unwrap();
+            assert_eq!(received, 0, "A pre-revocation ticket was accepted");
+            assert!(line.is_empty());
+            assert_eq!(
+                runtime.ok("cursor.bridge", f.bridge_request("status"))["bindings"][0]["connected"],
+                false
+            );
+            let registry: Value = serde_json::from_slice(
+                &fs::read(f.root.path().join("data/cursor-bridge/profiles-v1.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                registry["registrations"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["context"]["binding_id"] == binding)
+                    .unwrap()["credential_hash"],
+                ""
+            );
+        }
+        // A different workspace's pending reconnect must remain usable.
+        let mut hello = other_profile.hello(&other);
+        hello["ticket"] = other_challenge["ticket"].clone();
+        let mut other_reconnected = Peer::connect(&other_challenge, &hello);
+        assert_eq!(
+            Peer::read(&mut other_reconnected)["binding_id"],
+            *other_binding
+        );
+        assert_eq!(
+            runtime.ok("cursor.bridge", other.bridge_request("status"))["bindings"][0]["connected"],
+            true
+        );
         let endpoint: Value = serde_json::from_slice(
             &fs::read(f.root.path().join("data/cursor-bridge/endpoint-v1.json")).unwrap(),
         )

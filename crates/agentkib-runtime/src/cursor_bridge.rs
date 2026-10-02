@@ -36,17 +36,21 @@ pub(super) struct Request {
 }
 
 pub(super) fn request(request: Request) -> anyhow::Result<Value> {
-    let workspace = agentkib_core::canonical_project(
-        &Store::open_default()?.workspace_path(&request.workspace_id)?,
-    )?;
+    // Listing or revoking a saved identity must still work after its directory
+    // disappears. Only operations that connect to resources require it to exist.
+    let workspace = Store::open_default()?.workspace_path(&request.workspace_id)?;
     match request.action.as_str() {
         "status" => Ok(
             json!({"supported":cfg!(target_os="macos"), "version": VERSION,
             "bindings": registrations()?.into_iter().filter(|r|r.context.profile.workspace==workspace)
                 .map(|r|json!({"id":r.context.binding_id,"profile":r.context.profile.id,
-                    "version":r.context.profile.version,"connected":connected(&r.context.binding_id)})).collect::<Vec<_>>()}),
+                    "version":r.context.profile.version,"connected":validate_context(&r.context).is_ok()
+                        && connected(&r.context.binding_id)})).collect::<Vec<_>>()}),
         ),
-        "connect" => begin(workspace, request.binding_id),
+        "connect" => begin(
+            agentkib_core::canonical_project(&workspace)?,
+            request.binding_id,
+        ),
         "disconnect" => disconnect(
             request.binding_id.context("Select a Cursor IDE binding")?,
             &workspace,
@@ -134,9 +138,9 @@ fn registrations() -> anyhow::Result<Vec<Registration>> {
     );
     let registrations: Vec<Registration> = serde_json::from_value(value["registrations"].clone())?;
     anyhow::ensure!(registrations.len() <= 64, "Too many Cursor profiles");
-    for r in &registrations {
-        validate_context(&r.context)?;
-    }
+    // External resources can become unavailable independently. Validate them
+    // after selecting the connection, so one stale record cannot block others
+    // or prevent its own credential from being revoked.
     Ok(registrations)
 }
 
@@ -158,12 +162,18 @@ fn unique_profiles(profiles: impl IntoIterator<Item = CursorIdeProfile>) -> Vec<
     unique
 }
 
-pub(super) fn profiles() -> anyhow::Result<Vec<CursorIdeProfile>> {
+pub(super) fn profiles(workspace: &Path) -> anyhow::Result<Vec<CursorIdeProfile>> {
+    let registrations = registrations()?
+        .into_iter()
+        .filter(|r| !r.credential_hash.is_empty() && r.context.profile.workspace == workspace)
+        .collect::<Vec<_>>();
+    for registration in &registrations {
+        // Preserve the unavailable-source result for this workspace, so a
+        // failed resource check cannot turn a partial scan into an empty one.
+        validate_context(&registration.context)?;
+    }
     Ok(unique_profiles(
-        registrations()?
-            .into_iter()
-            .filter(|r| !r.credential_hash.is_empty())
-            .map(|r| r.context.profile),
+        registrations.into_iter().map(|r| r.context.profile),
     ))
 }
 
@@ -228,6 +238,7 @@ pub(super) fn validate_context(context: &Context) -> anyhow::Result<()> {
         agentkib_core::canonical_project(&context.profile.workspace)? == context.profile.workspace,
         "Cursor workspace identity changed"
     );
+    context.profile.validate()?;
     Ok(())
 }
 
@@ -375,6 +386,9 @@ mod local {
     }
 
     fn accept(server: &Arc<Server>, stream: UnixStream) -> anyhow::Result<()> {
+        // macOS accepted sockets inherit the listener's nonblocking flag.
+        // Restore blocking I/O so delayed or partial frames honor the timeout.
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         stream.set_write_timeout(Some(Duration::from_secs(3)))?;
         let mut reader = BufReader::new(stream);
@@ -539,12 +553,11 @@ mod local {
 
     pub(crate) fn begin(workspace: PathBuf, binding_id: Option<String>) -> anyhow::Result<Value> {
         if let Some(id) = &binding_id {
-            anyhow::ensure!(
-                registrations()?.iter().any(
-                    |r| r.context.binding_id == *id && r.context.profile.workspace == workspace
-                ),
-                "Cursor reconnect binding is unavailable"
-            );
+            let registration = registrations()?
+                .into_iter()
+                .find(|r| r.context.binding_id == *id && r.context.profile.workspace == workspace)
+                .context("Cursor reconnect binding is unavailable")?;
+            validate_context(&registration.context)?;
         }
         let server = server()?;
         anyhow::ensure!(
@@ -662,9 +675,15 @@ mod local {
         save_registrations(&registrations)?;
         if let Some(server) = SERVER.get()
             && let Ok(mut state) = server.state.lock()
-            && let Some(window) = state.windows.remove(&id)
         {
-            let _ = window.cancellation.shutdown(std::net::Shutdown::Both);
+            // Revocation also invalidates every unused reconnect ticket, even
+            // when the window has already gone offline.
+            state
+                .pairing
+                .retain(|pairing| pairing.binding_id.as_deref() != Some(id.as_str()));
+            if let Some(window) = state.windows.remove(&id) {
+                let _ = window.cancellation.shutdown(std::net::Shutdown::Both);
+            }
         }
         Ok(json!({"disconnected":true}))
     }

@@ -1203,22 +1203,56 @@ pub fn verify_cursor_ide_import(
         );
     } else {
         // Additional private system/context prompts are identified only by
-        // references, not hydrated. Retained originals and the one observed
-        // assistant encoding must still preserve all historical order/counts.
+        // references, not hydrated. The reviewed model history must remain a
+        // contiguous prefix after any private leading context, rather than an
+        // arbitrary subsequence that could hide a replaced or inserted prompt.
         let required = prompt_references(&reviewed.root)?;
         let current = prompt_references(&graph.root)?;
         let variants = variants
             .as_ref()
             .context("Missing recovery prompt contract")?;
-        let retained = current
+        let prefix_start = current
             .iter()
-            .filter_map(|reference| variants.get(reference))
-            .map(|(original, _)| original.clone())
-            .collect::<Vec<_>>();
+            .position(|reference| variants.contains_key(reference))
+            .context("Cursor IDE recovered model history is missing")?;
+        let prefix_end = prefix_start + required.len();
+        let retained = current
+            .get(prefix_start..prefix_end)
+            .context("Cursor IDE recovered model history is incomplete")?;
         ensure!(
-            retained == required,
+            retained.iter().zip(&required).all(|(reference, required)| {
+                variants
+                    .get(reference)
+                    .is_some_and(|(original, _)| original == required)
+            }),
             "Cursor IDE recovered model history differs from preview"
         );
+        // A later native turn can legitimately use the same content-addressed
+        // prompt blob. Each such tail reference must be explained, in order,
+        // by a distinct appended UI turn of the same role and exact text.
+        // Merely appending extra model references still cannot repair history.
+        let mut appended_references = actual[expected.turns.len()..]
+            .iter()
+            .map(|turn| {
+                let [SessionBlock::Text { text }] = turn.blocks.as_slice() else {
+                    bail!("Unsupported Cursor IDE appended prompt projection");
+                };
+                let bytes = serde_json::to_vec(&serde_json::json!({
+                    "role": if turn.role == SessionRole::User { "user" } else { "assistant" },
+                    "content": [{"type": "text", "text": text}]
+                }))?;
+                Ok(Sha256::digest(bytes).to_vec())
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter();
+        for reference in &current[prefix_end..] {
+            if let Some((original, _)) = variants.get(reference) {
+                ensure!(
+                    appended_references.any(|appended| appended == *original),
+                    "Cursor IDE recovered model history has an unexplained repeated prompt"
+                );
+            }
+        }
         for reference in &current {
             if let Some((_, bytes)) = variants.get(reference) {
                 ensure!(
@@ -2021,6 +2055,247 @@ mod tests {
                 Some(NATIVE),
                 &[],
                 false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_allows_new_turns_to_reuse_historical_prompt_blobs() {
+        for appended in [
+            vec![(SessionRole::User, "question")],
+            vec![(SessionRole::Assistant, "answer 中文")],
+            vec![
+                (SessionRole::User, "new question"),
+                (SessionRole::Assistant, "new answer"),
+                (SessionRole::User, "question"),
+                (SessionRole::Assistant, "answer 中文"),
+            ],
+            vec![
+                (SessionRole::User, "question"),
+                (SessionRole::User, "question"),
+                (SessionRole::Assistant, "answer 中文"),
+                (SessionRole::Assistant, "answer 中文"),
+            ],
+        ] {
+            for alternate_assistant in [false, true] {
+                let (_temp, profile) = fixture();
+                let original_messages = [
+                    (SessionRole::User, "question"),
+                    (SessionRole::User, "question"),
+                    (SessionRole::Assistant, "answer 中文"),
+                    (SessionRole::Assistant, "answer 中文"),
+                ];
+                let import = prepare_cursor_ide_import(
+                    &document(&original_messages),
+                    OPERATION,
+                    &profile.workspace,
+                )
+                .unwrap();
+                store(&profile, NATIVE, &import.payload, &import.marker);
+                let messages = [original_messages.as_slice(), appended.as_slice()].concat();
+                let continued =
+                    prepare_cursor_ide_import(&document(&messages), OPERATION, &profile.workspace)
+                        .unwrap();
+                let (mut graph, _) = Graph::from_export(&continued.payload).unwrap();
+                if alternate_assistant {
+                    let (reviewed, _) = Graph::from_export(&import.payload).unwrap();
+                    let variants =
+                        recovery_prompt_variants(&reviewed, &import.expected.turns).unwrap();
+                    let mut replacements = BTreeMap::new();
+                    for (alternate, (original, bytes)) in variants {
+                        if alternate != original {
+                            replacements.insert(original, alternate.clone());
+                            graph.blobs.insert(hex::encode(alternate), bytes);
+                        }
+                    }
+                    graph.root = replace_prompt_references(&graph.root, &replacements);
+                }
+                // Private system/context records must remain unhydrated both
+                // before the imported prefix and after later native turns.
+                graph.root = [field(1, &[0xfe; 32]), graph.root, field(1, &[0xff; 32])].concat();
+                store(&profile, NATIVE, &export_graph(&graph), &import.marker);
+                let before = fs::read(&profile.db_path).unwrap();
+                assert_eq!(
+                    verify_cursor_ide_import(
+                        &profile,
+                        &import.payload,
+                        &import.expected,
+                        &import.marker,
+                        Some(NATIVE),
+                        &[],
+                        false,
+                    )
+                    .unwrap(),
+                    NATIVE,
+                    "appended {appended:?}, alternate assistant {alternate_assistant}"
+                );
+                assert_eq!(fs::read(&profile.db_path).unwrap(), before);
+                assert!(
+                    verify_cursor_ide_import(
+                        &profile,
+                        &import.payload,
+                        &import.expected,
+                        &import.marker,
+                        Some(NATIVE),
+                        &[],
+                        true,
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_tail_prompts_cannot_hide_changed_prefix_or_exceed_new_ui_turns() {
+        let original = [
+            (SessionRole::User, "question"),
+            (SessionRole::Assistant, "answer 中文"),
+        ];
+        let appended = [
+            (SessionRole::User, "question"),
+            (SessionRole::Assistant, "answer 中文"),
+            (SessionRole::User, "question"),
+            (SessionRole::Assistant, "answer 中文"),
+        ];
+        for mutation in 0..10 {
+            let (_temp, profile) = fixture();
+            let import =
+                prepare_cursor_ide_import(&document(&original), OPERATION, &profile.workspace)
+                    .unwrap();
+            store(&profile, NATIVE, &import.payload, &import.marker);
+            let continued = prepare_cursor_ide_import(
+                &document(&[original.as_slice(), appended.as_slice()].concat()),
+                OPERATION,
+                &profile.workspace,
+            )
+            .unwrap();
+            let (reviewed, _) = Graph::from_export(&import.payload).unwrap();
+            let (mut current, _) = Graph::from_export(&continued.payload).unwrap();
+            let mut prompts = prompt_references(&current.root).unwrap();
+            let variants = recovery_prompt_variants(&reviewed, &import.expected.turns).unwrap();
+            let (alternate, (original_assistant, alternate_bytes)) = variants
+                .iter()
+                .find(|(reference, (original, _))| *reference != original)
+                .unwrap();
+            current
+                .blobs
+                .insert(hex::encode(alternate), alternate_bytes.clone());
+            // Both retained and later assistant turns use the one permitted
+            // native encoding; validation must still distinguish their counts.
+            for reference in &mut prompts {
+                if reference == original_assistant {
+                    *reference = alternate.clone();
+                }
+            }
+            match mutation {
+                0 => prompts.insert(1, prompts[0].clone()),
+                1 => prompts.insert(1, vec![0xff; 32]),
+                2 => prompts[1] = vec![0xff; 32],
+                3 => {
+                    prompts.remove(1);
+                }
+                4 => prompts.swap(0, 1),
+                5 => prompts.swap(2, 3),
+                6 => prompts.push(alternate.clone()),
+                7 => {
+                    // The UI has four appended turns but the model must not
+                    // reuse its user prompt five times to inflate the count.
+                    prompts.extend(vec![prompts[0].clone(); 3]);
+                }
+                8 | 9 => {}
+                _ => unreachable!(),
+            }
+            current.root = prompts
+                .iter()
+                .flat_map(|reference| field(1, reference))
+                .chain(
+                    fields(&current.root)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|f| f.number != 1)
+                        .flat_map(|f| field(f.number, f.bytes().unwrap())),
+                )
+                .collect();
+            store(&profile, NATIVE, &export_graph(&current), &import.marker);
+            if matches!(mutation, 8 | 9) {
+                let db = Connection::open(&profile.db_path).unwrap();
+                let key = format!("agentKv:blob:{}", hex::encode(original_assistant));
+                if mutation == 8 {
+                    db.execute("DELETE FROM cursorDiskKV WHERE key=?1", [key])
+                        .unwrap();
+                } else {
+                    db.execute(
+                        "UPDATE cursorDiskKV SET value=?1 WHERE key=?2",
+                        params![b"changed".to_vec(), key],
+                    )
+                    .unwrap();
+                }
+            }
+            assert!(
+                verify_cursor_ide_import(
+                    &profile,
+                    &import.payload,
+                    &import.expected,
+                    &import.marker,
+                    Some(NATIVE),
+                    &[],
+                    false,
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_prompt_must_match_the_role_of_a_distinct_new_ui_turn() {
+        let (_temp, profile) = fixture();
+        let import = prepare_cursor_ide_import(
+            &document(&[
+                (SessionRole::User, "identical text"),
+                (SessionRole::Assistant, "identical text"),
+            ]),
+            OPERATION,
+            &profile.workspace,
+        )
+        .unwrap();
+        store(&profile, NATIVE, &import.payload, &import.marker);
+        let continued = prepare_cursor_ide_import(
+            &document(&[
+                (SessionRole::User, "identical text"),
+                (SessionRole::Assistant, "identical text"),
+                (SessionRole::User, "identical text"),
+            ]),
+            OPERATION,
+            &profile.workspace,
+        )
+        .unwrap();
+        let (mut graph, _) = Graph::from_export(&continued.payload).unwrap();
+        let prompts = prompt_references(&graph.root).unwrap();
+        let mut changed = vec![prompts[0].clone(), prompts[1].clone(), prompts[1].clone()];
+        graph.root = changed
+            .drain(..)
+            .flat_map(|reference| field(1, &reference))
+            .chain(
+                fields(&graph.root)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|f| f.number != 1)
+                    .flat_map(|f| field(f.number, f.bytes().unwrap())),
+            )
+            .collect();
+        store(&profile, NATIVE, &export_graph(&graph), &import.marker);
+        assert!(
+            verify_cursor_ide_import(
+                &profile,
+                &import.payload,
+                &import.expected,
+                &import.marker,
+                Some(NATIVE),
+                &[],
+                false,
             )
             .is_err()
         );

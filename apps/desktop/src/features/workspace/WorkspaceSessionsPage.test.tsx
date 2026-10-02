@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n } from "@/core/i18n";
-import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
+import type {
+  ConversationSessionSummary,
+  CursorBridgeStatus,
+  WorkspaceSummary,
+} from "@/core/types";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { WorkspaceSessionsPage } from "./WorkspaceSessionsPage";
 
@@ -19,6 +23,9 @@ vi.mock("@/core/api", () => ({
     sessionEvents: vi.fn(),
     sessionSourceCapability: vi.fn(),
     nativeImportOperations: vi.fn(),
+    cursorBridge: vi.fn(),
+    cursorBridgeBundle: vi.fn(),
+    revealCursorBridgeBundle: vi.fn(),
   },
 }));
 vi.mock("@/features/agents/AgentIcon", () => ({
@@ -56,8 +63,234 @@ describe("WorkspaceSessionsPage", () => {
     vi.mocked(api.workspaceSessionStatus).mockResolvedValue([]);
     vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([cachedSession]);
     vi.mocked(api.sessionEvents).mockResolvedValue({ events: [], warnings: [] });
+    vi.mocked(api.cursorBridge).mockResolvedValue({
+      supported: true,
+      version: "3.22.12",
+      bindings: [],
+    });
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("connects the first Cursor profile in an empty workspace and scans its history only once", async () => {
+    const ideSession = {
+      ...cachedSession,
+      id: "cursor-ide-session",
+      agent: "cursor",
+      title: "First Cursor IDE history",
+    } satisfies ConversationSessionSummary;
+    let status: CursorBridgeStatus = { supported: true, version: "3.22.12", bindings: [] };
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (_, force) =>
+      force ? [ideSession] : [],
+    );
+    vi.mocked(api.cursorBridge).mockImplementation(async (request) =>
+      request.action === "connect"
+        ? { challenge: "synthetic-first-connection", expires_in_seconds: 120 }
+        : status,
+    );
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
+    const dialog = await screen.findByRole("dialog", { name: "Cursor IDE · normal window" });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeEnabled(),
+    );
+    expect(api.nativeImportOperations).toHaveBeenCalledWith(workspace.id);
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect a Cursor window" }));
+    });
+    expect(api.cursorBridge).toHaveBeenCalledWith({
+      action: "connect",
+      workspaceId: workspace.id,
+    });
+    expect(
+      within(dialog).getByRole("textbox", { name: "One-time local connection code" }),
+    ).toHaveValue("synthetic-first-connection");
+    status = {
+      ...status,
+      bindings: [
+        { id: "first-binding", profile: "explicit-profile", version: "3.22.12", connected: true },
+      ],
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(2);
+    expect(api.refreshWorkspaceSessions).toHaveBeenLastCalledWith(workspace.id, true);
+    expect(api.sessionEvents).toHaveBeenCalledWith(ideSession.id);
+    expect(
+      within(dialog).queryByRole("textbox", { name: "One-time local connection code" }),
+    ).toBeNull();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Refresh connections" }));
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(await screen.findByRole("heading", { name: ideSession.title! })).toBeVisible();
+  });
+
+  it("does not scan again just by opening an already connected Cursor profile", async () => {
+    vi.mocked(api.cursorBridge).mockResolvedValue({
+      supported: true,
+      version: "3.22.12",
+      bindings: [
+        {
+          id: "existing-binding",
+          profile: "explicit-profile",
+          version: "3.22.12",
+          connected: true,
+        },
+      ],
+    });
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
+    await waitFor(() => expect(api.cursorBridge).toHaveBeenCalledTimes(1));
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(1);
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledWith(workspace.id, false);
+  });
+
+  it("keeps the first connection gated by the Runtime's actual platform capability", async () => {
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.cursorBridge).mockResolvedValue({
+      supported: false,
+      version: "3.22.12",
+      bindings: [],
+    });
+    render(
+      <WorkspaceSessionsPage
+        workspace={workspace}
+        enabled
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
+    const dialog = await screen.findByRole("dialog", { name: "Cursor IDE · normal window" });
+    expect(
+      await within(dialog).findByText(
+        "Cursor IDE native import currently supports macOS with Cursor 3.22.12.",
+      ),
+    ).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeDisabled();
+    expect(
+      vi.mocked(api.cursorBridge).mock.calls.every(([request]) => request.action === "status"),
+    ).toBe(true);
+  });
+
+  it("does not offer a local Cursor bridge for an empty remote workspace", async () => {
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([]);
+    render(
+      <WorkspaceSessionsPage
+        workspace={{ ...workspace, remote: {} as NonNullable<WorkspaceSummary["remote"]> }}
+        enabled
+        targetAgents={[]}
+        onRuntimeChanged={vi.fn()}
+        onHandoffPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await screen.findByLabelText("Refresh sessions");
+    expect(screen.queryByRole("button", { name: "Connect a Cursor window" })).toBeNull();
+    expect(api.cursorBridge).not.toHaveBeenCalled();
+  });
+
+  it("clears the connection dialog and ignores a late pairing status after switching workspaces", async () => {
+    const lateStatus = deferred<CursorBridgeStatus>();
+    const remote = {
+      ...workspace,
+      id: "remote-workspace",
+      remote: {} as NonNullable<WorkspaceSummary["remote"]>,
+    };
+    let statusRequests = 0;
+    vi.mocked(api.workspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([]);
+    vi.mocked(api.cursorBridge).mockImplementation(async (request) => {
+      if (request.action === "connect") {
+        return { challenge: "synthetic-first-connection", expires_in_seconds: 120 };
+      }
+      return ++statusRequests === 1
+        ? { supported: true, version: "3.22.12", bindings: [] }
+        : lateStatus.promise;
+    });
+    const props = {
+      enabled: true,
+      targetAgents: [],
+      onRuntimeChanged: vi.fn(),
+      onHandoffPlanned: vi.fn(),
+      onMcpConnectionPlanned: vi.fn(),
+    };
+    const view = render(<WorkspaceSessionsPage workspace={workspace} {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Cursor window" }));
+    const dialog = await screen.findByRole("dialog", { name: "Cursor IDE · normal window" });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "Connect a Cursor window" })).toBeEnabled(),
+    );
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Connect a Cursor window" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(statusRequests).toBe(2);
+    await act(async () => {
+      view.rerender(<WorkspaceSessionsPage workspace={remote} {...props} />);
+    });
+    await act(async () => {
+      lateStatus.resolve({
+        supported: true,
+        version: "3.22.12",
+        bindings: [
+          { id: "late-binding", profile: "explicit-profile", version: "3.22.12", connected: true },
+        ],
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "One-time local connection code" })).toBeNull();
+    expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(2);
+    expect(api.refreshWorkspaceSessions).toHaveBeenLastCalledWith(remote.id, false);
+    expect(vi.mocked(api.refreshWorkspaceSessions).mock.calls.every(([, force]) => !force)).toBe(
+      true,
+    );
+    expect(
+      vi
+        .mocked(api.cursorBridge)
+        .mock.calls.every(([request]) => request.workspaceId === workspace.id),
+    ).toBe(true);
+    await act(async () => {
+      view.rerender(<WorkspaceSessionsPage workspace={workspace} {...props} />);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(statusRequests).toBe(2);
+  });
 
   it("opens the Claude panel from the workspace without creating a model request", async () => {
     vi.mocked(api.claudeRequest).mockImplementation(async (input) => {

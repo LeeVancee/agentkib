@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ConversationEventRow } from "@/features/sessions/ConversationEventRow";
 import { HistoryError, HistoryWarning } from "@/features/sessions/HistoryFeedback";
 import {
@@ -36,6 +37,7 @@ import { DEFAULT_SESSION_PAGE_SIZE } from "@/core/session-history";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
+import { CursorBridgePanel } from "./CursorBridgePanel";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { withAsyncCleanup } from "@/lib/utils";
 
@@ -45,6 +47,7 @@ import type {
   ConversationEvent,
   ConversationIndexStatus,
   ConversationSessionSummary,
+  CursorBridgeStatus,
   PlannedSessionHandoff,
   WorkspaceSummary,
 } from "@/core/types";
@@ -94,6 +97,12 @@ export function WorkspaceSessionsPage({
 }) {
   const { formatDateTime, formatRelativeTime, localizeMessage, tr } = useI18n();
   const [showClaude, setShowClaude] = useState(false);
+  const [cursorBridgeWorkspaceId, setCursorBridgeWorkspaceId] = useState<string>();
+  const [cursorBindingId, setCursorBindingId] = useState("");
+  const cursorConnections = useRef<{ workspaceId: string; connected: Set<string> } | undefined>(
+    undefined,
+  );
+  const showCursorBridge = cursorBridgeWorkspaceId === workspace.id && !workspace.remote;
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
   const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -151,8 +160,28 @@ export function WorkspaceSessionsPage({
     );
   };
 
+  const onCursorStatusChange = (status: CursorBridgeStatus | undefined) => {
+    if (!status || workspace.remote) return;
+    const connected = new Set(
+      status.bindings.filter((binding) => binding.connected).map((b) => b.id),
+    );
+    const previous = cursorConnections.current;
+    cursorConnections.current = { workspaceId: workspace.id, connected };
+    // Status polling must not repeatedly scan history. A newly connected profile may
+    // be the workspace's first readable source, so invalidate the cached scan once.
+    if (
+      previous?.workspaceId === workspace.id &&
+      [...connected].some((id) => !previous.connected.has(id))
+    ) {
+      void refresh(true);
+    }
+  };
+
   useEffect(() => {
     let disposed = false;
+    setCursorBridgeWorkspaceId(undefined);
+    setCursorBindingId("");
+    cursorConnections.current = undefined;
     if (!enabled) {
       setSessions([]);
       setStatuses([]);
@@ -372,7 +401,7 @@ export function WorkspaceSessionsPage({
     );
   }
 
-  if (refreshing && !sessions.length && !error) {
+  if (refreshing && !sessions.length && !error && !showCursorBridge) {
     return (
       <div className="grid min-h-[calc(100vh-220px)] place-content-center justify-items-center gap-3 p-6 text-center">
         <RefreshCw className="animate-spin text-muted-foreground" size={22} />
@@ -505,6 +534,19 @@ export function WorkspaceSessionsPage({
                 </Button>
               </div>
             </div>
+            {!workspace.remote && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 w-full"
+                onClick={() => {
+                  setCursorBindingId("");
+                  setCursorBridgeWorkspaceId(workspace.id);
+                }}
+              >
+                {tr("handoff.cursor.connect")}
+              </Button>
+            )}
             {searchOpen && (
               <label className="mt-3 flex h-9 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-3 text-muted-foreground transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
                 <Search size={15} />
@@ -852,6 +894,26 @@ export function WorkspaceSessionsPage({
           </div>
         </Card>
       </div>
+      {showCursorBridge && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setCursorBridgeWorkspaceId(undefined);
+          }}
+        >
+          <DialogContent className="max-h-[calc(100vh-2rem)] overflow-auto sm:max-w-2xl">
+            <DialogTitle>{tr("handoff.cursor.surface.ide")}</DialogTitle>
+            <CursorBridgePanel
+              key={workspace.id}
+              workspace={workspace}
+              bindingId={cursorBindingId}
+              disabled={false}
+              onBindingChange={setCursorBindingId}
+              onStatusChange={onCursorStatusChange}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
       {showClaude && (
         <ClaudeSessionPanel
           key={workspace.id}

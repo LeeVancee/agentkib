@@ -110,8 +110,9 @@ use serde_json::{Value, json};
 
 fn provider(
     agent: AgentKind,
+    workspace: &Path,
 ) -> Option<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
-    match cursor_bridge::profiles() {
+    match cursor_bridge::profiles(workspace) {
         Ok(profiles) => agentkib_conversations::provider_with_cursor_ide_profiles(agent, &profiles),
         Err(_) if agent == AgentKind::Cursor => Some(Box::new(
             agentkib_conversations::CursorProvider::with_unavailable_ide(),
@@ -119,8 +120,10 @@ fn provider(
         Err(_) => agentkib_conversations::provider(agent),
     }
 }
-fn providers() -> Vec<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
-    match cursor_bridge::profiles() {
+fn providers(
+    workspace: &Path,
+) -> Vec<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
+    match cursor_bridge::profiles(workspace) {
         Ok(profiles) => agentkib_conversations::providers_with_cursor_ide_profiles(&profiles),
         Err(_) => agentkib_conversations::providers()
             .into_iter()
@@ -620,8 +623,8 @@ impl agentkib_remote::Source for RemoteSessionSource {
             .ok_or_else(|| anyhow::anyhow!("session-unavailable"))?;
         // Lookup through the registry, never accept a remote-supplied path or native transcript reference.
         let workspace = store.workspace_path(&session.workspace_id)?;
-        let source =
-            provider(session.agent).ok_or_else(|| anyhow::anyhow!("provider-unavailable"))?;
+        let source = provider(session.agent, &workspace)
+            .ok_or_else(|| anyhow::anyhow!("provider-unavailable"))?;
         let native = source
             .list_sessions(&workspace)?
             .into_iter()
@@ -1305,9 +1308,10 @@ fn refresh_workspace_sessions(
     }
     let refresh_epoch = session_index_epoch();
     let store = Store::open_default()?;
+    let workspace = store.workspace_path(&request.workspace_id)?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
-        if statuses.len() == providers().len()
+        if statuses.len() == providers(&workspace).len()
             && statuses.iter().all(|status| {
                 status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
             })
@@ -1315,8 +1319,7 @@ fn refresh_workspace_sessions(
             return store.list_conversation_sessions(&request.workspace_id);
         }
     }
-    let workspace = store.workspace_path(&request.workspace_id)?;
-    for source in providers() {
+    for source in providers(&workspace) {
         let agent = source.agent();
         match source.list_sessions_detailed(&workspace) {
             Ok(listing) => {
@@ -1492,7 +1495,7 @@ fn session_events(
         .get_conversation_session(&request.session_id)?
         .ok_or_else(|| anyhow::anyhow!("Conversation metadata is no longer available"))?;
     let workspace = store.workspace_path(&session.workspace_id)?;
-    let source = provider(session.agent)
+    let source = provider(session.agent, &workspace)
         .ok_or_else(|| anyhow::anyhow!("Conversation provider is unavailable"))?;
     let native = source
         .list_sessions(&workspace)?
@@ -1664,7 +1667,7 @@ fn load_session_document_with_surface(
         .get_conversation_session(session_id)?
         .ok_or_else(|| anyhow::anyhow!("Conversation metadata is no longer available"))?;
     let workspace = store.workspace_path(&session.workspace_id)?;
-    let source = provider(session.agent)
+    let source = provider(session.agent, &workspace)
         .ok_or_else(|| anyhow::anyhow!("Conversation provider is unavailable"))?;
     let native = source
         .list_sessions(&workspace)?
@@ -6211,9 +6214,14 @@ mod tests {
     #[test]
     fn declared_history_support_matches_registered_providers_without_expanding_control() {
         use agentkib_core::{AgentControlSupport, AgentSupportCapabilities};
+        let workspace = tempfile::tempdir().unwrap();
         for agent in AgentKind::ALL {
             let support = AgentSupportCapabilities::for_agent(agent);
-            assert_eq!(support.session_list, provider(agent).is_some(), "{agent:?}");
+            assert_eq!(
+                support.session_list,
+                provider(agent, workspace.path()).is_some(),
+                "{agent:?}"
+            );
             assert_eq!(support.history_read, support.session_list);
             if matches!(
                 agent,
@@ -6222,7 +6230,7 @@ mod tests {
                 assert!(support.continuation);
                 assert_eq!(support.control, AgentControlSupport::None);
                 assert!(
-                    provider(agent)
+                    provider(agent, workspace.path())
                         .unwrap()
                         .verified_control_id("untrusted")
                         .unwrap()

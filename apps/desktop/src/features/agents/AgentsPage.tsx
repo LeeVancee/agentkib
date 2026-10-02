@@ -9,13 +9,12 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardHeader } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useState } from "react";
 import {
   Check,
-  ChevronRight,
   CircleAlert,
   FileCode2,
   FolderGit2,
@@ -37,9 +36,9 @@ import type {
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { agentSupport } from "@/features/agents/agent-capabilities";
+import { SidebarPanel } from "@/features/app/SidebarPanel";
+import { useAgentViewStore, type AgentDetailSection } from "./agent-view-store";
 import type { AgentFilter } from "@/components/AppSidebar";
-
-type AgentDetailSection = "overview" | "assets" | "workspaces" | "usage";
 
 const agentKinds: AgentKind[] = [
   "codex",
@@ -87,9 +86,13 @@ export function AgentsPage({
 }) {
   const { tr, formatRelativeTime } = useI18n();
   const [selected, setSelected] = useState<AgentKind>(selectedAgent ?? "codex");
-  const [section, setSection] = useState<AgentDetailSection>("overview");
-  const [agentQuery, setAgentQuery] = useState("");
-  const [agentSort, setAgentSort] = useState<"name" | "status">("status");
+  const section = useAgentViewStore((state) => state.sections[selected] ?? "overview");
+  const saveSection = useAgentViewStore((state) => state.setSection);
+  const setSection = (section: AgentDetailSection) => saveSection(selected, section);
+  const agentQuery = useAgentViewStore((state) => state.query);
+  const setAgentQuery = useAgentViewStore((state) => state.setQuery);
+  const agentSort = useAgentViewStore((state) => state.sort);
+  const setAgentSort = useAgentViewStore((state) => state.setSort);
   const [assetQuery, setAssetQuery] = useState("");
   const [assetKind, setAssetKind] = useState("all");
   const installation = installations.find((item) => item.agent === selected);
@@ -139,54 +142,55 @@ export function AgentsPage({
   useEffect(() => {
     if (selectedAgent && selectedAgent !== selected) {
       setSelected(selectedAgent);
-      setSection("overview");
+      saveSection(selectedAgent, "overview");
     }
-  }, [selected, selectedAgent]);
+  }, [selected, selectedAgent, saveSection]);
 
   useEffect(() => {
     if (visibleAgentKinds.length > 0 && !visibleAgentKinds.includes(selected)) {
       const next = visibleAgentKinds[0];
       setSelected(next);
-      setSection("overview");
+      saveSection(next, "overview");
       onSelectedAgentChange(next);
     }
-  }, [onSelectedAgentChange, selected, visibleAgentKinds]);
+  }, [onSelectedAgentChange, selected, visibleAgentKinds, saveSection]);
 
   return (
     <div className="grid gap-3 pb-8">
-      <section className="flex flex-wrap items-center justify-end gap-2 border-b border-border pb-4">
-        <div className="flex items-center gap-2">
-          <label className="flex h-9 min-w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-3">
-            <Search size={14} className="text-muted-foreground" />
-            <Input
-              className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
-              value={agentQuery}
-              onChange={(event) => setAgentQuery(event.target.value)}
-              placeholder={tr("common.search")}
-            />
-          </label>
-          <Select
-            value={agentSort}
-            onValueChange={(value) => {
-              if (value !== null) setAgentSort(String(value) as typeof agentSort);
-            }}
-          >
-            <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
-              <SelectValue>
-                {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="status">{tr("agents.status")}</SelectItem>
-              <SelectItem value="name">{tr("agents.name")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </section>
-      <div className="relative grid items-start gap-5 min-[1024px]:grid-cols-[360px_minmax(0,1fr)]">
+      <SidebarPanel>
+        <section className="agent-sidebar-tools mb-3">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+            <label className="flex h-9 min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-3">
+              <Search size={14} className="text-muted-foreground" />
+              <Input
+                className="h-8 border-0 px-0 shadow-none focus-visible:ring-0"
+                value={agentQuery}
+                onChange={(event) => setAgentQuery(event.target.value)}
+                placeholder={tr("common.search")}
+              />
+            </label>
+            <Select
+              value={agentSort}
+              onValueChange={(value) => {
+                if (value !== null) setAgentSort(String(value) as typeof agentSort);
+              }}
+            >
+              <SelectTrigger className="h-9" aria-label={tr("agents.status")}>
+                <SelectValue>
+                  {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="status">{tr("agents.status")}</SelectItem>
+                <SelectItem value="name">{tr("agents.name")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+
         <div className="grid gap-4">
-          <Card className="overflow-hidden rounded-2xl border-border shadow-sm">
-            <CardContent className="grid gap-2 p-3">
+          <div className="agent-sidebar-list [&_small]:leading-normal">
+            <div className="grid gap-1">
               {visibleAgentKinds.map((agent) => {
                 const item = installations.find((value) => value.agent === agent);
                 const remoteCount = remoteGateways
@@ -202,41 +206,39 @@ export function AgentsPage({
                     variant="bare"
                     size="content"
                     key={agent}
+                    data-sidebar-navigate
                     aria-pressed={isSelected}
                     className={cn(
-                      "grid min-h-[76px] w-full grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                      "grid min-h-[64px] w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-lg border px-2 py-2 text-left transition-colors",
                       isSelected
                         ? "border-foreground/25 bg-muted/40 text-foreground shadow-sm"
                         : "border-transparent text-muted-foreground hover:border-border hover:bg-muted/30 hover:text-foreground",
                     )}
                     onClick={() => {
                       setSelected(agent);
-                      setSection("overview");
+                      saveSection(agent, "overview");
                       onSelectedAgentChange(agent);
                     }}
                   >
                     <AgentIcon agent={agent} />
                     <span className="min-w-0">
-                      <strong className="flex items-center gap-2 truncate text-sm text-foreground">
+                      <strong className="flex items-center gap-1 truncate text-sm text-foreground">
                         {agentLabels[agent]}
                         {agent === "deepseek-harness" && (
                           <Badge variant="outline">{tr("common.beta")}</Badge>
                         )}
                       </strong>
                       <small className="mt-1 block text-xs text-muted-foreground">
-                        {count} {tr("common.workspaces")}
+                        {tr(
+                          item?.installed
+                            ? "common.installed"
+                            : item?.configured
+                              ? "agents.localDataFound"
+                              : "common.notInstalled",
+                        )}{" "}
+                        · {count} {tr("common.workspaces")}
                       </small>
                     </span>
-                    <Badge variant={item?.installed ? "secondary" : "outline"}>
-                      {tr(
-                        item?.installed
-                          ? "common.installed"
-                          : item?.configured
-                            ? "agents.localDataFound"
-                            : "common.notInstalled",
-                      )}
-                    </Badge>
-                    <ChevronRight size={16} className="text-muted-foreground" />
                   </Button>
                 );
               })}
@@ -245,10 +247,11 @@ export function AgentsPage({
                   {tr("agents.noAgents")}
                 </p>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </div>
-
+      </SidebarPanel>
+      <div className="min-w-0">
         <Card className="min-h-[420px] overflow-hidden rounded-2xl border-border shadow-sm">
           <CardHeader className="flex min-h-[78px] flex-row items-center gap-3 border-b border-border px-5 py-4">
             <AgentIcon agent={selected} />

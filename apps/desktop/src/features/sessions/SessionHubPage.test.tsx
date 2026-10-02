@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import { initializeI18n, tr } from "@/core/i18n";
@@ -183,7 +184,10 @@ describe("SessionHubPage", () => {
       params: { workspaceId: workspace.id },
       search: { sessionId: readable.id },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Back to overview" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: tr("common.moreActions") }));
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("menuitem", { name: "Back to overview" }));
     expect(hub.select).toHaveBeenLastCalledWith();
   });
 

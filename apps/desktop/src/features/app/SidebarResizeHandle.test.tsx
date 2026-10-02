@@ -92,7 +92,7 @@ describe("shared sidebar resize handle", () => {
     act(() => useAppStore.getState().setSidebarCollapsed(false));
     expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "400");
     act(() => resizeWindow(1024));
-    expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "384");
+    expect(screen.getByRole("separator")).toHaveAttribute("aria-valuenow", "332");
     act(() => resizeWindow(900));
     expect(screen.queryByRole("separator")).toBeNull();
     act(() => resizeWindow(1440));

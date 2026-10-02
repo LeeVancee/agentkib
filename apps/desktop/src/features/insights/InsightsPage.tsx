@@ -138,6 +138,10 @@ export function InsightsPage({
     attributed_commits: tr("insights.attributedCommits"),
     sessions: tr("common.sessions"),
   };
+  const rangeLabels: Record<"52w" | "year", string> = {
+    "52w": tr("insights.range52w"),
+    year: tr("insights.rangeYear"),
+  };
   const max = Math.max(1, ...points.map((point) => point[metric]));
   const padding = points.length ? (new Date(`${points[0].date}T00:00:00`).getDay() + 6) % 7 : 0;
   const heatmapYear = points.length ? Number(points[0].date.slice(0, 4)) : new Date().getFullYear();
@@ -204,7 +208,7 @@ export function InsightsPage({
                   if (value !== null) setAgent(String(value) as typeof agent);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("workspace.allAgents")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.agentFilter")}>
                   <SelectValue>
                     {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
                   </SelectValue>
@@ -226,7 +230,7 @@ export function InsightsPage({
                   if (value !== null) setWorkspaceId(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("workspace.all")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.workspaceFilter")}>
                   <SelectValue>
                     {workspaceId === "all"
                       ? tr("workspace.all")
@@ -251,7 +255,7 @@ export function InsightsPage({
                   if (value !== null) setRepository(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.allRepositories")}>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.repositoryFilter")}>
                   <SelectValue>
                     {repository === "all"
                       ? tr("insights.allRepositories")
@@ -276,14 +280,12 @@ export function InsightsPage({
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.range52w")}>
-                  <SelectValue>
-                    {range === "52w" ? tr("insights.range52w") : tr("insights.rangeYear")}
-                  </SelectValue>
+                <SelectTrigger className={filterClass} aria-label={tr("insights.range")}>
+                  <SelectValue>{rangeLabels[range]}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="52w">{tr("insights.range52w")}</SelectItem>
-                  <SelectItem value="year">{tr("insights.rangeYear")}</SelectItem>
+                  <SelectItem value="52w">{rangeLabels["52w"]}</SelectItem>
+                  <SelectItem value="year">{rangeLabels.year}</SelectItem>
                 </SelectContent>
               </Select>
             )}

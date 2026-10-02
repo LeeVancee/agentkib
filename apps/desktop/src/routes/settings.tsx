@@ -32,7 +32,10 @@ function SettingsRoute() {
   const layoutVariant: SettingsPageVariant =
     section === "tools"
       ? "workspace"
-      : section === "general" || section === "appearance" || section === "privacy"
+      : section === "general" ||
+          section === "appearance" ||
+          section === "shortcuts" ||
+          section === "privacy"
         ? "form"
         : "management";
   const runtime = useAppStore((state) => state.runtime);

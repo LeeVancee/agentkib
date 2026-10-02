@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { api } from "@/core/api";
@@ -11,7 +11,13 @@ import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
 import { withAsyncCleanup } from "@/lib/utils";
 import { createGlobalNavigation } from "./global-navigation";
-import { parseRoute, type AppSearch, type GlobalPage, type Page } from "./app-route";
+import {
+  parseRoute,
+  type AppSearch,
+  type GlobalPage,
+  type Page,
+  type ParsedRoute,
+} from "./app-route";
 import type { AppHistoryEntry } from "./useAppHistory";
 import {
   homeKeys,
@@ -36,7 +42,11 @@ export function useAppNavigation() {
   const globalPage = routeGlobalPage;
   const appMode = route.kind === "settings" ? "settings" : "main";
   const queryClient = useOptionalQueryClient();
-  const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
+  const {
+    data: workspaces = [],
+    isPending: workspacesPending,
+    error: workspaceLoadError,
+  } = useHomeWorkspaces();
   const { data: globalMemories = [] } = useHomeMemories();
   const { data: refreshJobs = [] } = useHomeRefreshJobs();
   const settingsSection = search.settingsSection ?? "general";
@@ -64,13 +74,25 @@ export function useAppNavigation() {
     setHandoffLaunchRequest,
     baselineManifest,
     setBaselineManifest,
-    workspaceDrafts,
     setWorkspaceDrafts,
     message,
     setMessage,
     setBusy,
   } = workspaceStore;
   const workspaceOpenRequest = useRef(0);
+  const navigationLocations = useRef(
+    new Map<GlobalPage | "settings", { route: ParsedRoute; search: AppSearch }>(),
+  );
+  useLayoutEffect(() => {
+    const currentRoute = parseRoute(location.pathname);
+    const key =
+      currentRoute.kind === "workspace"
+        ? "workspaces"
+        : currentRoute.kind === "settings"
+          ? "settings"
+          : currentRoute.page;
+    navigationLocations.current.set(key, { route: currentRoute, search: { ...search } });
+  }, [location.href, location.pathname, search]);
 
   const updateSearch = useCallback(
     (patch: Partial<AppSearch>) => {
@@ -82,10 +104,14 @@ export function useAppNavigation() {
     [location.pathname, navigate],
   );
   const navigateWorkspacePageFor = useCallback(
-    (workspaceId: string, nextPage: Page) => {
+    (workspaceId: string, nextPage: Page, routeSearch?: AppSearch) => {
       const path =
         nextPage === "overview" ? "/workspace/$workspaceId" : `/workspace/$workspaceId/${nextPage}`;
-      void navigate({ to: path as never, params: { workspaceId } as never });
+      void navigate({
+        to: path as never,
+        params: { workspaceId } as never,
+        search: (routeSearch ?? {}) as never,
+      });
     },
     [navigate],
   );
@@ -131,6 +157,9 @@ export function useAppNavigation() {
 
   const loadGlobal = async () => {
     await queryClient.invalidateQueries({ queryKey: homeKeys.all });
+  };
+  const retryWorkspaces = async () => {
+    await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });
   };
 
   const refreshDiscovery = async () => {
@@ -216,22 +245,26 @@ export function useAppNavigation() {
   };
 
   const openWorkspace = useCallback(
-    async (workspace: WorkspaceSummary, initialPage: Page = "overview") => {
-      if (!(await ensureWorkspaceChangeAllowed())) return;
-      if (
-        route.kind === "workspace" &&
-        workspaceRouteId === workspace.id &&
-        selectedWorkspace?.id === workspace.id &&
-        project === workspace.path
-      ) {
-        if (workspaceRoutePage !== initialPage) navigateWorkspacePageFor(workspace.id, initialPage);
-        return;
+    async (
+      workspace: WorkspaceSummary,
+      initialPage: Page = "overview",
+      routeSearch?: AppSearch,
+    ) => {
+      if (!(await ensureWorkspaceChangeAllowed())) return false;
+      if (selectedWorkspace?.id === workspace.id && project === workspace.path) {
+        if (
+          route.kind !== "workspace" ||
+          workspaceRouteId !== workspace.id ||
+          workspaceRoutePage !== initialPage ||
+          routeSearch
+        )
+          navigateWorkspacePageFor(workspace.id, initialPage, routeSearch);
+        return true;
       }
       const requestId = ++workspaceOpenRequest.current;
       persistWorkspaceDraft();
       setMessage("");
-      if (requestId !== workspaceOpenRequest.current) return;
-      setGitSubview(undefined);
+      if (requestId !== workspaceOpenRequest.current) return false;
       setChangeSet(undefined);
       setChangeSetOrigin("standard");
       setHandoffLaunchRequest(undefined);
@@ -240,7 +273,8 @@ export function useAppNavigation() {
       setManifest(undefined);
       setBaselineManifest("");
       setSelectedWorkspace(workspace);
-      navigateWorkspacePageFor(workspace.id, initialPage);
+      navigateWorkspacePageFor(workspace.id, initialPage, routeSearch);
+      return true;
     },
     [
       ensureWorkspaceChangeAllowed,
@@ -250,17 +284,14 @@ export function useAppNavigation() {
       route.kind,
       selectedWorkspace?.id,
       setBaselineManifest,
-      setBusy,
       setChangeSet,
       setChangeSetOrigin,
-      setGitSubview,
       setHandoffLaunchRequest,
       setManifest,
       setMessage,
       setProject,
       setScan,
       setSelectedWorkspace,
-      workspaceDrafts,
       workspaceRouteId,
       workspaceRoutePage,
     ],
@@ -295,27 +326,59 @@ export function useAppNavigation() {
 
   const navigateGlobalWithSearch = (nextPage: GlobalPage, patch: Partial<AppSearch> = {}) => {
     const path = nextPage === "home" ? "/" : `/${nextPage}`;
-    void navigate({ to: path as never, search: (current) => ({ ...current, ...patch }) as never });
+    void navigate({
+      to: path as never,
+      search: { ...navigationLocations.current.get(nextPage)?.search, ...patch } as never,
+    });
   };
   const navigateGlobal = (
     nextPage: GlobalPage,
     preserveQuotaSelection = false,
     searchPatch: Partial<AppSearch> = {},
   ) => {
+    const saved = navigationLocations.current.get(nextPage);
+    // 从别处点"工作区"时回到上次打开的工作区；已经在工作区里再点一次则回到列表，
+    // 否则列表页永远到不了。
+    if (
+      nextPage === "workspaces" &&
+      route.kind !== "workspace" &&
+      saved?.route.kind === "workspace" &&
+      Object.keys(searchPatch).length === 0
+    ) {
+      const workspaceId = saved.route.workspaceId;
+      const workspace = workspaces.find((item) => item.id === workspaceId);
+      if (workspace) {
+        // Execution continuations belong to their original workflow, not navigation memory.
+        const {
+          handoffSession: _session,
+          handoffTarget: _target,
+          handoffBudget: _budget,
+          handoffFormat: _format,
+          handoffResume: _resume,
+          ...restoredSearch
+        } = saved.search;
+        void openWorkspace(
+          workspace,
+          saved.route.page === "changes" && !useWorkspaceStore.getState().changeSet
+            ? "overview"
+            : saved.route.page,
+          restoredSearch,
+        );
+        return;
+      }
+    }
     const next = () =>
       navigateGlobalWithSearch(
         nextPage,
-        preserveQuotaSelection
-          ? { quotaProvider, quotaWindow, ...searchPatch }
-          : { quotaProvider: undefined, quotaWindow: undefined, ...searchPatch },
+        preserveQuotaSelection ? { quotaProvider, quotaWindow, ...searchPatch } : searchPatch,
       );
-    if (selectedWorkspace) void leaveWorkspace(next);
+    if (selectedWorkspace) void leaveWorkspace(next, false);
     else {
       workspaceOpenRequest.current += 1;
       next();
     }
   };
-  const openSettings = (section: SettingsSection = "general") => {
+  const openSettings = (section?: SettingsSection) => {
     if (useWorkspaceStore.getState().applyingChanges) {
       void dialogs.notify(tr("dialog.quit.changesApplying"));
       return;
@@ -323,7 +386,15 @@ export function useAppNavigation() {
     void navigate({
       to: "/settings",
       search: (current) =>
-        ({ ...current, settingsSection: section, settingsTarget: undefined }) as never,
+        ({
+          ...current,
+          ...navigationLocations.current.get("settings")?.search,
+          settingsSection:
+            section ??
+            navigationLocations.current.get("settings")?.search.settingsSection ??
+            "general",
+          settingsTarget: undefined,
+        }) as never,
     });
   };
 
@@ -432,6 +503,9 @@ export function useAppNavigation() {
       globalMemories.filter((item) => item.status === "pending").length,
     ),
     workspaces,
+    workspacesPending,
+    workspacesError: workspaceLoadError ? localizeMessage(workspaceLoadError) : undefined,
+    retryWorkspaces,
     openWorkspace,
     navigateGlobal,
     openSettings,

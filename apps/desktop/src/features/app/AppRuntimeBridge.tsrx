@@ -16,6 +16,7 @@ import {
   cacheEffectiveTheme,
 } from "@/core/theme";
 import { useAppDialogs } from "@/components/AppDialogProvider.tsrx";
+import { withAsyncCleanup } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { synchronizeSidebarWidth, useSidebarWidthStore } from "./sidebar-width-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";

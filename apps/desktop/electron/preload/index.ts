@@ -155,6 +155,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:insights:set-git-identity-enabled", id, enabled),
   }),
   workspace: Object.freeze({
+    cursorBridge: (request: import("../../src/core/types").CursorBridgeRequest) =>
+      ipcRenderer.invoke("agentkib:workspace:cursor-bridge", request),
+    bridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:bridge-bundle"),
+    revealBridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:reveal-bridge-bundle"),
     scan: (project: string) => ipcRenderer.invoke("agentkib:workspace:scan", project),
     prepareManifest: (project: string) =>
       ipcRenderer.invoke("agentkib:workspace:prepare-manifest", project),
@@ -202,6 +206,8 @@ const desktopApi = Object.freeze({
       historyBudgetTokens: number,
       archiveId: string | undefined,
       targetFingerprint?: string,
+      targetSurface?: "cursor-ide",
+      bindingId?: string,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
@@ -217,6 +223,8 @@ const desktopApi = Object.freeze({
         historyBudgetTokens,
         archiveId,
         targetFingerprint,
+        targetSurface,
+        bindingId,
       ),
     continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
       ipcRenderer.invoke(

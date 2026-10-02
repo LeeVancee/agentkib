@@ -104,16 +104,18 @@ fn documents() -> Vec<SessionDocument> {
         antigravity,
         cursor::matrix_document(),
         openclaw::matrix_document(),
+        cursor_ide::matrix_frozen_document(),
     ]
 }
 
 #[test]
-fn native_sources_compose_with_all_five_enabled_target_formats() {
+fn native_sources_compose_with_all_six_enabled_target_formats() {
     // 使用平台绝对路径，Windows 不把 `/synthetic/...` 视为绝对路径。
     let workspace = std::env::temp_dir().join("matrix-workspace");
     let workspace = workspace.as_path();
     let docs = documents();
-    assert_eq!(docs.len(), 8);
+    // Cursor CLI and normal IDE are distinct native sources despite sharing AgentKind.
+    assert_eq!(docs.len(), 9);
     let mut directions = 0;
     for doc in docs {
         let source_text = text(&doc);
@@ -250,8 +252,19 @@ fn native_sources_compose_with_all_five_enabled_target_formats() {
             }
             directions += 1;
         }
+        let prepared = cursor_ide::matrix_import_readback(&doc);
+        assert_eq!(text(&prepared.expected)[1..], source_text);
+        assert_eq!(prepared.expected.redaction_count, doc.redaction_count);
+        for loss in &doc.losses {
+            assert!(prepared.expected.losses.contains(loss));
+        }
+        let projected = serde_json::to_string(&prepared.expected).unwrap();
+        assert!(!projected.contains("matrix-secret"));
+        assert!(!projected.contains("ABANDONED-BRANCH"));
+        assert!(!projected.contains("PRIVATE-REASONING"));
+        directions += 1;
     }
-    assert_eq!(directions, 40);
+    assert_eq!(directions, 54);
 }
 
 #[test]
@@ -313,6 +326,46 @@ fn native_tool_and_attachment_projection_reports_both_source_and_target_losses()
         assert!(!result.payload.contains("YWJj"));
         assert!(result.payload.contains("Historical tool call: read"));
         assert!(result.payload.contains("Image checked."));
+    }
+    // The real Grok parser above retains the call/result relationship; the IDE
+    // projection must summarize each side once and keep the surrounding prose.
+    let ide = cursor_ide::matrix_import_readback(&doc);
+    for (code, count) in [
+        (SessionLossCode::ReasoningExcluded, 1),
+        (SessionLossCode::TargetToolSummary, 2),
+        (SessionLossCode::TargetAttachmentOmitted, 1),
+    ] {
+        assert_eq!(
+            ide.expected
+                .losses
+                .iter()
+                .find(|loss| loss.code == code)
+                .map(|loss| loss.count),
+            Some(count)
+        );
+    }
+    assert_eq!(ide.expected.redaction_count, doc.redaction_count);
+    assert_eq!(
+        text(&ide.expected)[1..],
+        [
+            (
+                SessionRole::User,
+                "Read the image.\n\n[Historical attachment omitted]".into()
+            ),
+            (
+                SessionRole::Assistant,
+                "Inspecting.\n\n[Historical tool call: read; arguments omitted]".into()
+            ),
+            (
+                SessionRole::Assistant,
+                "[Historical tool result; output omitted]".into()
+            ),
+            (SessionRole::Assistant, "Image checked.".into()),
+        ]
+    );
+    let projected = serde_json::to_string(&ide.expected).unwrap();
+    for excluded in ["SECRET-ARG", "SECRET-RESULT", "PRIVATE-REASONING", "YWJj"] {
+        assert!(!projected.contains(excluded));
     }
 }
 

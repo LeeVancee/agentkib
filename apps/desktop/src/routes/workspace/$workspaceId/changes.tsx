@@ -435,6 +435,8 @@ function WorkspaceChangesRoute() {
           handoffTarget: search.handoffTarget,
           handoffBudget: search.handoffBudget,
           handoffFormat: search.handoffFormat,
+          handoffSurface: search.handoffSurface,
+          handoffBinding: search.handoffBinding,
           handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
         }),
       });
@@ -443,6 +445,8 @@ function WorkspaceChangesRoute() {
       navigate,
       search.handoffBudget,
       search.handoffFormat,
+      search.handoffSurface,
+      search.handoffBinding,
       search.handoffSession,
       search.handoffTarget,
       workspaceId,

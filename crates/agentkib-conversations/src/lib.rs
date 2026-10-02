@@ -17,6 +17,7 @@ mod antigravity;
 mod archive;
 mod continuation;
 mod cursor;
+pub mod cursor_ide;
 mod grokbuild;
 mod hermes;
 mod history;
@@ -28,6 +29,7 @@ pub use antigravity::AntigravityProvider;
 pub use archive::*;
 pub use continuation::*;
 pub use cursor::CursorProvider;
+pub use cursor_ide::{CursorIdeIdentity, CursorIdeImportPayload, CursorIdeProfile};
 pub use grokbuild::GrokBuildProvider;
 pub use hermes::HermesProvider;
 pub use openclaw::OpenClawProvider;
@@ -1023,11 +1025,19 @@ pub trait ConversationProvider {
 }
 
 pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
+    providers_with_cursor_ide_profiles(&[])
+}
+
+/// IDE history is opt-in: callers supply only profiles explicitly registered by
+/// the local bridge. Default providers retain the existing CLI-only behavior.
+pub fn providers_with_cursor_ide_profiles(
+    profiles: &[CursorIdeProfile],
+) -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
     vec![
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(OpenCodeProvider::default()),
-        Box::new(CursorProvider::default()),
+        Box::new(CursorProvider::with_ide_profiles(profiles.to_vec())),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
@@ -1036,11 +1046,20 @@ pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
 }
 
 pub fn provider(agent: AgentKind) -> Option<Box<dyn ConversationProvider + Send + Sync>> {
+    provider_with_cursor_ide_profiles(agent, &[])
+}
+
+pub fn provider_with_cursor_ide_profiles(
+    agent: AgentKind,
+    profiles: &[CursorIdeProfile],
+) -> Option<Box<dyn ConversationProvider + Send + Sync>> {
     match agent {
         AgentKind::Codex => Some(Box::new(CodexProvider::default())),
         AgentKind::ClaudeCode => Some(Box::new(ClaudeProvider::default())),
         AgentKind::OpenCode => Some(Box::new(OpenCodeProvider::default())),
-        AgentKind::Cursor => Some(Box::new(CursorProvider::default())),
+        AgentKind::Cursor => Some(Box::new(CursorProvider::with_ide_profiles(
+            profiles.to_vec(),
+        ))),
         AgentKind::OpenClaw => Some(Box::new(OpenClawProvider::default())),
         AgentKind::Hermes => Some(Box::new(HermesProvider::default())),
         AgentKind::GrokBuild => Some(Box::new(GrokBuildProvider::default())),

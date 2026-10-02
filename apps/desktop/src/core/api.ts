@@ -9,6 +9,7 @@ import type {
   AppUpdateProgress,
   ChangeSet,
   CloseBehavior,
+  CursorBridgeRequest,
   ContextDoctorSummary,
   GitDiffRequest,
   GitHistoryQuery,
@@ -175,6 +176,9 @@ export const api = {
     desktopApi().workspace.sourceCapability(sessionId),
   nativeImportOperations: (workspaceId: string) =>
     desktopApi().workspace.nativeImports(workspaceId),
+  cursorBridge: (request: CursorBridgeRequest) => desktopApi().workspace.cursorBridge(request),
+  cursorBridgeBundle: () => desktopApi().workspace.bridgeBundle(),
+  revealCursorBridgeBundle: () => desktopApi().workspace.revealBridgeBundle(),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
   planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
@@ -194,6 +198,8 @@ export const api = {
     historyBudgetTokens: number,
     archiveId: string | undefined,
     targetFingerprint?: string,
+    targetSurface?: "cursor-ide",
+    bindingId?: string,
   ) =>
     desktopApi().workspace.planHandoff(
       sessionId,
@@ -208,6 +214,8 @@ export const api = {
       historyBudgetTokens,
       archiveId,
       targetFingerprint,
+      targetSurface,
+      bindingId,
     ),
   continueSessionHandoff: (
     changeSet: ChangeSet,

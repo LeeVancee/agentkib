@@ -610,6 +610,7 @@ try { const options={agentId:c.agent_id,env:process.env};transaction(d=>append(d
             target_profile: None,
             environment: capture_environment().unwrap(),
             openclaw: Some(context.clone()),
+            cursor: None,
             target_session_id: id.clone(),
             document,
             expected: prepared.expected,

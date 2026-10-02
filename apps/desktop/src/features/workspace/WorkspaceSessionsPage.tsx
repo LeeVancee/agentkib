@@ -668,6 +668,11 @@ export function WorkspaceSessionsPage({
                         {tr("conversations.auxiliary")}
                       </span>
                     )}
+                    {sourceCapability?.source_surface && (
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {tr(`handoff.cursor.source.${sourceCapability.source_surface}`)}
+                      </span>
+                    )}
                     {selectedSources.map((source) =>
                       source.session ? (
                         <Button
@@ -732,6 +737,7 @@ export function WorkspaceSessionsPage({
             {enabled && (
               <NativeImportRecoveryPanel
                 workspaceId={workspace.id}
+                workspace={workspace}
                 readableSourceIds={sessions
                   .filter((session) => session.availability === "readable")
                   .map((session) => session.id)}
@@ -751,6 +757,9 @@ export function WorkspaceSessionsPage({
                     historyBudgetTokens: 120_000,
                     format: "markdown",
                     autoPrepare: false,
+                    ...(operation.binding_id && operation.launch_request.target_agent === "cursor"
+                      ? { targetSurface: "cursor-ide" as const, bindingId: operation.binding_id }
+                      : {}),
                   });
                   setShowDetail(true);
                   setShowHandoff(true);
@@ -879,4 +888,6 @@ export interface SessionContinuationResume {
   targetAgent: AgentKind;
   historyBudgetTokens: number;
   format: import("@/core/types").HandoffFormat;
+  targetSurface?: "cursor-ide";
+  bindingId?: string;
 }

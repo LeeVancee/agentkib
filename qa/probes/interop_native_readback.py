@@ -23,15 +23,42 @@ def exact(actual, expected):
     assert actual == expected, "Native roles, order, or complete text differ from reviewed projection"
 
 
-def verify(case):
+def verify_native_source(result, env):
+    """Compare the actual source object even when its shared store gains targets."""
+    if native_source := result.get("nativeSource"):
+        if result["sourceAgent"] == "opencode":
+            from opencode_source_fixture import export_source
+            actual_source = export_source(native_source["executable"], native_source["sessionId"],
+                                         native_source["workspace"], env)
+        else:
+            assert result["sourceAgent"] == "open-claw"
+            actual_source = json.loads(subprocess.run(["/opt/homebrew/bin/node", native_source["script"],
+                "read", native_source["spec"]], env=env, check=True, capture_output=True, timeout=30).stdout)
+        exact(actual_source, json.loads(Path(native_source["snapshot"]).read_text()))
+
+
+def verify(case, *, evidence_dir=None):
     case = Path(case).resolve()
+    # Further acceptance must preserve the original import's evidence files.
+    evidence_dir = case if evidence_dir is None else Path(evidence_dir).resolve()
     result = json.loads((case / "result.json").read_text())
     validate_receipts(result)
     assert hashlib.sha256(Path(result["source"]).read_bytes()).hexdigest() == result["sourceSha256"]
+    for entry in result.get("sourceMetadata", []):
+        assert hashlib.sha256(Path(entry["path"]).read_bytes()).hexdigest() == entry["sha256"]
     plan_file, = (case / "data/continuations").rglob("plan.json")
     assert hashlib.sha256(plan_file.read_bytes()).hexdigest() == result["operations"][0]["launch_request"]["plan_hash"]
     plan = json.loads(plan_file.read_text())
+    assert plan["document"]["source"]["agent"] == result.get("sourceAgent", "claude-code")
+    turns = plan["document"]["turns"]
+    assert all(block["type"] == "text" for turn in turns for block in turn["blocks"])
+    exact([[turn["role"], "\n".join(block["text"] for block in turn["blocks"])] for turn in turns], [
+        ["user", f'Remember marker {result["marker"]}; project decision: {result["decision"]}.'],
+        ["assistant", f'Confirmed {result["marker"]} and {result["decision"]}.'],
+    ])
     env = json.loads((case / "environment.json").read_text())
+    verify_native_source(result, env)
+    native_source = result.get("nativeSource")
     sid = result["operations"][0]["target_session_id"]
     expected = [[t["role"], "\n".join(b["text"] for b in t["blocks"] if b["type"] == "text")]
                 for t in plan["expected"]["turns"]]
@@ -46,7 +73,11 @@ def verify(case):
         assert all(p["type"] == "text" for m in native["messages"] for p in m["parts"])
         exact(actual, expected)
         sessions = run("session", "list", "--format", "json")
-        assert len(sessions) == 1 and sessions[0]["id"] == sid
+        expected_ids = {sid}
+        if native_source and result["sourceAgent"] == "opencode":
+            assert native_source["sessionId"] != sid
+            expected_ids.add(native_source["sessionId"])
+        assert len(sessions) == len(expected_ids) and {s["id"] for s in sessions} == expected_ids
         total = len(sessions)
     elif result["target"] == "hermes":
         with sqlite3.connect("file:" + str(case / "hermes/state.db") + "?mode=ro", uri=True) as db:
@@ -73,13 +104,13 @@ console.log(JSON.stringify(out.value));
         native = json.loads(output.stdout)
         exact(native["events"], json.loads(plan["payload"]))
         # The official fixture creates five distinct baseline sessions before import.
-        assert native["count"] == 6 and native["matches"] == 1, native
+        assert native["count"] == 6 + (result.get("sourceAgent") == "open-claw") and native["matches"] == 1, native
         total = native["count"]
-    (case / "independent-native-readback.json").write_text(json.dumps(native, indent=2))
+    (evidence_dir / "independent-native-readback.json").write_text(json.dumps(native, indent=2))
     verified = {"receiptsAndStableIdentity": True, "exactProjectionMatched": True,
                 "sourceUnchanged": True, "nativeTotalSessions": total, "importedSessionCount": 1,
                 "modelRequestSent": False}
-    (case / "independent-verification.json").write_text(json.dumps(verified, indent=2))
+    (evidence_dir / "independent-verification.json").write_text(json.dumps(verified, indent=2))
     return verified
 
 

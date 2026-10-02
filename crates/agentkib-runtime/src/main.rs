@@ -16,6 +16,7 @@ mod claude_managed;
 mod claude_runner;
 mod codex_managed;
 mod continuation_worker;
+mod cursor_bridge;
 mod native_import;
 mod obsidian;
 mod relay_csr;
@@ -26,7 +27,7 @@ use agentkib_conversations::{
     ContinuationCapabilities, ContinuationCapability, ContinuationCapabilityStatus, HandoffFormat,
     NativeImportCapability, SessionContinuationMode, SessionDocument, SessionHandoffDraftV2,
     SessionHandoffPreparationV2, SessionHandoffRequest, SessionWindowStrategy, archive_directory,
-    build_session_archive, fingerprint, plan_session_window, provider, providers,
+    build_session_archive, fingerprint, plan_session_window,
     render_claude_native_session_with_notice, render_codex_native_session_with_notice,
     render_handoff_with_notice, sanitize_handoff_export, stats, validate_history_budget,
     validate_native_jsonl, validate_native_roundtrip, validate_session_archive,
@@ -107,6 +108,34 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+fn provider(
+    agent: AgentKind,
+) -> Option<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
+    match cursor_bridge::profiles() {
+        Ok(profiles) => agentkib_conversations::provider_with_cursor_ide_profiles(agent, &profiles),
+        Err(_) if agent == AgentKind::Cursor => Some(Box::new(
+            agentkib_conversations::CursorProvider::with_unavailable_ide(),
+        )),
+        Err(_) => agentkib_conversations::provider(agent),
+    }
+}
+fn providers() -> Vec<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
+    match cursor_bridge::profiles() {
+        Ok(profiles) => agentkib_conversations::providers_with_cursor_ide_profiles(&profiles),
+        Err(_) => agentkib_conversations::providers()
+            .into_iter()
+            .map(|p| {
+                if p.agent() == AgentKind::Cursor {
+                    Box::new(agentkib_conversations::CursorProvider::with_unavailable_ide())
+                        as Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>
+                } else {
+                    p
+                }
+            })
+            .collect(),
+    }
+}
+
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
 static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
 static SESSION_INDEX_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -147,13 +176,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         move |response| {
             let _ = continuation_events.send(RuntimeEvent::ContinuationFinished { response });
         },
-        |request, _, _| handle_request(request).0,
+        |request, deadline, _| native_import::with_deadline(deadline, || handle_request(request).0),
     );
 
     while let Ok(event) = events_rx.recv() {
         match event {
             RuntimeEvent::Input(Err(error)) => {
                 native_import::STOPPING.store(true, Ordering::SeqCst);
+                cursor_bridge::shutdown();
                 continuation_worker.shutdown();
                 shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                 return Err(error.into());
@@ -266,6 +296,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     agent_tool_workers.cancel_and_join();
                     native_import::STOPPING.store(true, Ordering::SeqCst);
+                    cursor_bridge::shutdown();
                     continuation_worker.shutdown();
                     shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                     if let Some(hub) = MCP_HUB.get() {
@@ -281,6 +312,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     initialize_mcp_hub()?;
                     initialize_skill_hub()?;
                     remote_worker.initialize();
+                    cursor_bridge::initialize();
                 }
             }
             RuntimeEvent::EndOfInput => {
@@ -289,6 +321,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 agent_tool_workers.cancel_and_join();
                 native_import::STOPPING.store(true, Ordering::SeqCst);
+                cursor_bridge::shutdown();
                 continuation_worker.shutdown();
                 shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                 if let Some(hub) = MCP_HUB.get() {
@@ -818,7 +851,8 @@ fn write_pending_skill_responses(
 fn is_continuation_method(method: &str) -> bool {
     matches!(
         method,
-        agentkib_protocol::SESSION_SOURCE_CAPABILITY_METHOD
+        agentkib_protocol::CURSOR_BRIDGE_METHOD
+            | agentkib_protocol::SESSION_SOURCE_CAPABILITY_METHOD
             | agentkib_protocol::LIST_NATIVE_IMPORTS_METHOD
             | PREPARE_SESSION_HANDOFF_METHOD
             | PLAN_SESSION_HANDOFF_METHOD
@@ -930,6 +964,9 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         }
         agentkib_protocol::LIST_NATIVE_IMPORTS_METHOD => {
             command_response(request, native_import::list)
+        }
+        agentkib_protocol::CURSOR_BRIDGE_METHOD => {
+            command_response(request, cursor_bridge::request)
         }
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
         SANITIZE_SESSION_HANDOFF_METHOD => command_response(request, sanitize_session_handoff),
@@ -1478,7 +1515,51 @@ fn session_events(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HandoffRequestEnvelope {
-    request: SessionHandoffRequest,
+    request: SurfaceHandoffRequest,
+}
+
+#[derive(Deserialize)]
+struct SurfaceHandoffRequest {
+    #[serde(flatten)]
+    base: SessionHandoffRequest,
+    target_surface: Option<String>,
+    binding_id: Option<String>,
+}
+impl std::ops::Deref for SurfaceHandoffRequest {
+    type Target = SessionHandoffRequest;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+fn cursor_target_context(
+    target: AgentKind,
+    surface: Option<&str>,
+    binding: Option<&str>,
+    workspace: &Path,
+) -> anyhow::Result<Option<cursor_bridge::Context>> {
+    match surface {
+        None => {
+            anyhow::ensure!(
+                binding.is_none(),
+                "Binding requires an explicit target surface"
+            );
+            Ok(None)
+        }
+        Some("cursor-ide") if target == AgentKind::Cursor => Ok(Some(cursor_bridge::context(
+            binding.context("Select a connected Cursor IDE window")?,
+            workspace,
+        )?)),
+        _ => anyhow::bail!("Unsupported target product surface"),
+    }
+}
+fn cursor_native_capability(context: &cursor_bridge::Context) -> NativeImportCapability {
+    let checked = cursor_bridge::validate_context(context);
+    NativeImportCapability {
+        supported: checked.is_ok(),
+        beta: true,
+        reason: checked.err().map(|e| e.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1568,6 +1649,16 @@ fn load_session_document(
     agentkib_conversations::ConversationSessionSummary,
     SessionDocument,
 )> {
+    load_session_document_with_surface(session_id).map(|(session, document, _)| (session, document))
+}
+
+fn load_session_document_with_surface(
+    session_id: &str,
+) -> anyhow::Result<(
+    agentkib_conversations::ConversationSessionSummary,
+    SessionDocument,
+    Option<&'static str>,
+)> {
     let store = Store::open_default()?;
     let session = store
         .get_conversation_session(session_id)?
@@ -1586,7 +1677,14 @@ fn load_session_document(
         .ok_or_else(|| anyhow::anyhow!("Conversation transcript is no longer available"))?;
     let document =
         source.read_session_document(&session, &native.native_ref, dirs::home_dir().as_deref())?;
-    Ok((session, document))
+    let surface = (session.agent == AgentKind::Cursor).then(|| {
+        if native.native_ref.starts_with("cursor-ide-") {
+            "cursor-ide"
+        } else {
+            "cursor-cli"
+        }
+    });
+    Ok((session, document, surface))
 }
 
 fn ensure_session_workspace(
@@ -1619,16 +1717,25 @@ struct SourceCapabilityRequest {
     session_id: String,
 }
 
-fn source_continuation_capability(
-    request: SourceCapabilityRequest,
-) -> anyhow::Result<ContinuationCapability> {
-    Ok(match load_session_document(&request.session_id) {
-        Ok(_) => continuation_capability(ContinuationCapabilityStatus::Supported, None),
-        Err(error) => continuation_capability(
-            ContinuationCapabilityStatus::Unavailable,
-            Some(&error.to_string()),
+fn source_continuation_capability(request: SourceCapabilityRequest) -> anyhow::Result<Value> {
+    let (capability, surface) = match load_session_document_with_surface(&request.session_id) {
+        Ok((_, _, surface)) => (
+            continuation_capability(ContinuationCapabilityStatus::Supported, None),
+            surface,
         ),
-    })
+        Err(error) => (
+            continuation_capability(
+                ContinuationCapabilityStatus::Unavailable,
+                Some(&error.to_string()),
+            ),
+            None,
+        ),
+    };
+    let mut result = serde_json::to_value(capability)?;
+    if let Some(surface) = surface {
+        result["source_surface"] = json!(surface);
+    }
+    Ok(result)
 }
 
 fn prepare_session_handoff(
@@ -1645,9 +1752,28 @@ fn prepare_session_handoff(
     validate_history_budget(envelope.request.history_budget_tokens)?;
     let source_fingerprint = fingerprint(&document)?;
     let generated_at = Utc::now();
-    let native_capability = native_import_capability(envelope.request.target_agent);
+    let project = store.workspace_path(&source.workspace_id)?;
+    let cursor = cursor_target_context(
+        envelope.request.target_agent,
+        envelope.request.target_surface.as_deref(),
+        envelope.request.binding_id.as_deref(),
+        &agentkib_core::canonical_project(&project)?,
+    )?;
+    let native_capability = cursor
+        .as_ref()
+        .map(cursor_native_capability)
+        .unwrap_or_else(|| native_import_capability(envelope.request.target_agent));
     let mut target_fingerprint = None;
-    if native_capability.supported && native_import::is_target(envelope.request.target_agent) {
+    if let Some(context) = &cursor {
+        target_fingerprint = Some(native_import::cursor_fingerprint(context)?);
+        document = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+            &document,
+            &uuid::Uuid::nil().to_string(),
+            &project,
+        )?
+        .expected;
+    } else if native_capability.supported && native_import::is_target(envelope.request.target_agent)
+    {
         let project = store.workspace_path(&source.workspace_id)?;
         target_fingerprint = Some(native_import::target_fingerprint(
             envelope.request.target_agent,
@@ -1748,6 +1874,8 @@ fn sanitize_session_handoff(request: SanitizeHandoffRequest) -> anyhow::Result<S
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanSessionHandoffRequest {
+    target_surface: Option<String>,
+    binding_id: Option<String>,
     session_id: String,
     workspace_id: String,
     filename: String,
@@ -1811,7 +1939,25 @@ fn plan_session_handoff(
         "Conversation changed after the continuation preview was prepared"
     );
     let import_document = document.clone();
-    if native_import::is_target(request.target_agent)
+    let cursor = cursor_target_context(
+        request.target_agent,
+        request.target_surface.as_deref(),
+        request.binding_id.as_deref(),
+        &agentkib_core::canonical_project(&project)?,
+    )?;
+    if let Some(context) = &cursor {
+        anyhow::ensure!(
+            request.target_fingerprint.as_deref()
+                == Some(native_import::cursor_fingerprint(context)?.as_str()),
+            "Cursor binding changed after preview"
+        );
+        document = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+            &document,
+            &uuid::Uuid::nil().to_string(),
+            &project,
+        )?
+        .expected;
+    } else if native_import::is_target(request.target_agent)
         && request.mode == SessionContinuationMode::NativeSession
     {
         anyhow::ensure!(
@@ -1844,7 +1990,10 @@ fn plan_session_handoff(
     )?;
     let archive_id =
         (window.strategy == SessionWindowStrategy::Windowed).then_some(planning_archive_id);
-    let native_capability = native_import_capability(request.target_agent);
+    let native_capability = cursor
+        .as_ref()
+        .map(cursor_native_capability)
+        .unwrap_or_else(|| native_import_capability(request.target_agent));
     let mcp_available = continuation_mcp_status(window.strategy, || {
         continuation_mcp_available(&continuation_workspace_id, request.target_agent)
     })?;
@@ -1891,6 +2040,21 @@ fn plan_session_handoff(
             native_capability.supported,
             "Native session import is no longer available"
         );
+        if let Some(context) = cursor {
+            anyhow::ensure!(
+                window.strategy == SessionWindowStrategy::Full,
+                "Windowed history retrieval is not verified for Cursor IDE"
+            );
+            return native_import::plan_cursor(
+                &project,
+                &continuation_workspace_id,
+                &request.session_id,
+                &request.source_fingerprint,
+                &import_document,
+                capabilities,
+                context,
+            );
+        }
         if native_import::is_target(request.target_agent) {
             anyhow::ensure!(
                 window.strategy == SessionWindowStrategy::Full,
@@ -2434,8 +2598,14 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             reason: Some("cli-unavailable".into()),
         };
     };
-    let version_matches =
-        cli_version_matches(&executable, expected_version, NATIVE_VERSION_PROBE_TIMEOUT);
+    let version_matches = if target == AgentKind::Codex {
+        cli_version_matches_with(&executable, NATIVE_VERSION_PROBE_TIMEOUT, |output| {
+            parse_cli_major_minor(output) == Some(expected_version)
+                || agentkib_conversations::codex_native_exact_version_supported(output)
+        })
+    } else {
+        cli_version_matches(&executable, expected_version, NATIVE_VERSION_PROBE_TIMEOUT)
+    };
     let schema_matches = latest_native_session(target).as_ref().map(|path| {
         read_first_jsonl_value(path).is_some_and(|value| matches_native_schema(&value, target))
     });
@@ -2574,6 +2744,16 @@ const NATIVE_VERSION_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250)
 const MAX_NATIVE_VERSION_OUTPUT_BYTES: u64 = 64 * 1024;
 
 fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout: Duration) -> bool {
+    cli_version_matches_with(executable, timeout, |output| {
+        parse_cli_major_minor(output) == Some(expected_version)
+    })
+}
+
+fn cli_version_matches_with(
+    executable: &Path,
+    timeout: Duration,
+    matches: impl FnOnce(&str) -> bool,
+) -> bool {
     let mut command = Command::new(executable);
     command
         .arg("--version")
@@ -2630,8 +2810,7 @@ fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout:
         && output.len() as u64 <= MAX_NATIVE_VERSION_OUTPUT_BYTES
         && String::from_utf8(output)
             .ok()
-            .and_then(|version| parse_cli_major_minor(&version))
-            == Some(expected_version)
+            .is_some_and(|version| matches(&version))
 }
 
 fn parse_cli_major_minor(output: &str) -> Option<(u64, u64)> {

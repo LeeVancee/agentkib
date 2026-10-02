@@ -1019,6 +1019,95 @@ mod installed_cli_tests {
     #[test]
     #[ignore = "requires AGENTKIB_TEST_OPENCODE pointing to the isolated pinned CLI; no model calls"]
     fn official_opencode_import_export_roundtrip() {
+        opencode_roundtrip(document());
+    }
+
+    fn rich_document() -> SessionDocument {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grok.jsonl");
+        let rows = [
+            json!({"type":"user","content":[{"type":"text","text":"Remember 中文\nAPI_KEY=fixture-secret"},{"type":"image","url":"data:image/png;base64,YWJj"}]}),
+            json!({"type":"reasoning","content":"PRIVATE-REASONING"}),
+            json!({"type":"assistant","content":"Inspecting.","tool_calls":[{"id":"call-1","name":"read","arguments":"{\"path\":\"SECRET-ARG\"}"}]}),
+            json!({"type":"tool_result","tool_call_id":"call-1","content":"SECRET-RESULT"}),
+            json!({"type":"assistant","content":"Decision: preserve the complete history."}),
+        ];
+        fs::write(&path, rows.map(|row| row.to_string()).join("\n")).unwrap();
+        let doc = crate::grokbuild::matrix_parse(&path).unwrap();
+        assert!(doc.redaction_count > 0);
+        assert!(
+            !serde_json::to_string(&doc)
+                .unwrap()
+                .contains("fixture-secret")
+        );
+        assert!(
+            matches!(&doc.turns[1].blocks[1], SessionBlock::ToolCall { call_id, .. } if call_id == "call-1")
+        );
+        assert!(
+            matches!(&doc.turns[2].blocks[0], SessionBlock::ToolResult { call_id, .. } if call_id == "call-1")
+        );
+        doc
+    }
+
+    fn assert_rich_projection(prepared: &NativeImportPayload) {
+        for (code, count) in [
+            (SessionLossCode::ReasoningExcluded, 1),
+            (SessionLossCode::TargetToolSummary, 2),
+            (SessionLossCode::TargetAttachmentOmitted, 1),
+        ] {
+            assert_eq!(
+                prepared
+                    .expected
+                    .losses
+                    .iter()
+                    .find(|loss| loss.code == code)
+                    .map(|loss| loss.count),
+                Some(count)
+            );
+        }
+        for omitted in [
+            "fixture-secret",
+            "SECRET-ARG",
+            "SECRET-RESULT",
+            "PRIVATE-REASONING",
+            "YWJj",
+        ] {
+            assert!(
+                !prepared.payload.contains(omitted),
+                "unexpected content: {omitted}"
+            );
+        }
+        let texts: Vec<_> = prepared
+            .expected
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.blocks)
+            .map(|block| {
+                let SessionBlock::Text { text } = block else {
+                    panic!("executable or attachment block survived projection")
+                };
+                text.as_str()
+            })
+            .collect();
+        let full = texts.join("\n");
+        for required in [
+            "Remember 中文\nAPI_KEY= [REDACTED]",
+            "[Historical attachment omitted]",
+            "[Historical tool call: read; arguments omitted]",
+            "[Historical tool result; output omitted]",
+            "Decision: preserve the complete history.",
+        ] {
+            assert!(full.contains(required), "missing projection: {required}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires isolated pinned OpenCode; native tool/attachment projection, no model calls"]
+    fn official_opencode_rich_import_export_roundtrip() {
+        opencode_roundtrip(rich_document());
+    }
+
+    fn opencode_roundtrip(document: SessionDocument) {
         let executable =
             std::env::var("AGENTKIB_TEST_OPENCODE").expect("isolated CLI path required");
         let dir = tempfile::tempdir().unwrap();
@@ -1027,7 +1116,7 @@ mod installed_cli_tests {
         let id = format!("ses_{}", Uuid::new_v4().simple());
         let prepared = prepare_native_import(
             AgentKind::OpenCode,
-            &document(),
+            &document,
             &id,
             &workspace,
             Some(&NativeTargetModel {
@@ -1036,6 +1125,9 @@ mod installed_cli_tests {
             }),
         )
         .unwrap();
+        if document.source.agent == AgentKind::GrokBuild {
+            assert_rich_projection(&prepared);
+        }
         let file = dir.path().join("import.json");
         fs::write(&file, &prepared.payload).unwrap();
         let run = |args: &[&str]| {
@@ -1077,6 +1169,16 @@ mod installed_cli_tests {
                 &id,
             )
             .unwrap();
+            let native: Value = serde_json::from_slice(&exported.stdout).unwrap();
+            for message in native["messages"].as_array().unwrap() {
+                assert!(
+                    message["parts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|part| part["type"] == "text")
+                );
+            }
         }
         assert_eq!(fs::read_to_string(file).unwrap(), prepared.payload);
     }
@@ -1084,13 +1186,32 @@ mod installed_cli_tests {
     #[test]
     #[ignore = "requires AGENTKIB_TEST_HERMES_SOURCE pinned official source and Python; no model calls"]
     fn official_hermes_import_db_roundtrip() {
+        hermes_roundtrip(document());
+    }
+
+    #[test]
+    #[ignore = "requires isolated pinned Hermes; native tool/attachment projection, no model calls"]
+    fn official_hermes_rich_import_db_roundtrip() {
+        hermes_roundtrip(rich_document());
+    }
+
+    fn hermes_roundtrip(document: SessionDocument) {
         let root = std::env::var("AGENTKIB_TEST_HERMES_SOURCE").expect("isolated source required");
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("project");
         fs::create_dir(&workspace).unwrap();
         let id = Uuid::new_v4().to_string();
         let prepared =
-            prepare_native_import(AgentKind::Hermes, &document(), &id, &workspace, None).unwrap();
+            prepare_native_import(AgentKind::Hermes, &document, &id, &workspace, None).unwrap();
+        if document.source.agent == AgentKind::GrokBuild {
+            assert_rich_projection(&prepared);
+        }
+        fs::create_dir(dir.path().join("hermes-home")).unwrap();
+        fs::write(
+            dir.path().join("hermes-home/config.yaml"),
+            "updates:\n  check: false\n",
+        )
+        .unwrap();
         let file = dir.path().join("claude-import.jsonl");
         fs::write(&file, &prepared.payload).unwrap();
         let script = r#"
@@ -1115,6 +1236,8 @@ messages=db.get_messages(sid)
 import sqlite3
 conn=sqlite3.connect(database)
 origin=conn.execute('SELECT origin_json FROM sessions WHERE id=?',(sid,)).fetchone()[0]
+assert conn.execute('SELECT count(*) FROM sessions').fetchone()[0] == 1
+assert conn.execute('SELECT count(*) FROM messages WHERE session_id=? AND (tool_calls IS NOT NULL OR tool_call_id IS NOT NULL OR tool_name IS NOT NULL)', (sid,)).fetchone()[0] == 0
 print(json.dumps({'id':sid,'messages':messages,'origin':json.loads(origin),'cli_version':version.stdout.splitlines()[0],'cli_receipt':result.stdout}))
 db.close()
 "#;

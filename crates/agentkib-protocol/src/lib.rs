@@ -27,6 +27,7 @@ pub const WORKSPACE_SESSION_STATUS_METHOD: &str = "workspace.sessionStatus";
 pub const REFRESH_WORKSPACE_SESSIONS_METHOD: &str = "workspace.refreshSessions";
 pub const LIST_WORKSPACE_OPENERS_METHOD: &str = "workspace.openers";
 pub const OPEN_WORKSPACE_WITH_APP_METHOD: &str = "workspace.openWith";
+pub const CURSOR_BRIDGE_METHOD: &str = "cursor.bridge";
 pub const SESSION_EVENTS_METHOD: &str = "session.events";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
@@ -289,6 +290,7 @@ export const RUNTIME_METHODS = {{
   proposeMemory: "{PROPOSE_MEMORY_METHOD}",
   reviewMemory: "{REVIEW_MEMORY_METHOD}",
   sessionSourceCapability: "{SESSION_SOURCE_CAPABILITY_METHOD}",
+  cursorBridge: "{CURSOR_BRIDGE_METHOD}",
   listNativeImports: "{LIST_NATIVE_IMPORTS_METHOD}",
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",

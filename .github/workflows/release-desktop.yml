@@ -321,6 +321,7 @@ jobs:
 
           cd apps/desktop
           pnpm protocol:generate
+          pnpm cursor:stage
           pnpm runtime:build
           pnpm quota:prepare
           pnpm runtime:stage
@@ -552,6 +553,7 @@ jobs:
           set -euo pipefail
           cd apps/desktop
           pnpm protocol:generate
+          pnpm cursor:stage
           pnpm runtime:build
           pnpm quota:prepare
           pnpm runtime:stage

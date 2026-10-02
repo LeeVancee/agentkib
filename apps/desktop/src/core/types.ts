@@ -1100,6 +1100,7 @@ export type ContinuationCapabilityStatus =
 export interface ContinuationCapability {
   status: ContinuationCapabilityStatus;
   reason?: string | null;
+  source_surface?: "cursor-ide" | "cursor-cli";
 }
 export interface ContinuationCapabilities {
   source_agent: AgentKind;
@@ -1133,6 +1134,31 @@ export interface SessionHandoffRequest {
   target_agent: AgentKind;
   format: HandoffFormat;
   history_budget_tokens: number;
+  target_surface?: "cursor-ide";
+  binding_id?: string;
+}
+export type CursorBridgeRequest =
+  | { action: "status"; workspaceId: string }
+  | { action: "connect"; workspaceId: string; bindingId?: string }
+  | { action: "disconnect"; workspaceId: string; bindingId: string };
+export interface CursorBridgeStatus {
+  supported: boolean;
+  version: string;
+  bindings: Array<{ id: string; profile: string; version: string; connected: boolean }>;
+}
+export interface CursorBridgeChallenge {
+  challenge: string;
+  expires_in_seconds: number;
+}
+export type CursorBridgeResponse =
+  | CursorBridgeStatus
+  | CursorBridgeChallenge
+  | { disconnected: boolean };
+export interface CursorBridgeBundle {
+  id: "agentkib.cursor-bridge";
+  version: "0.1.0";
+  sha256: string;
+  path: string;
 }
 export interface SessionHandoffDraft {
   filename: string;
@@ -1183,6 +1209,7 @@ export type SessionHandoffLaunchRequest =
     };
 export interface NativeImportOperation {
   source_session_id: string;
+  binding_id?: string | null;
   launch_request: Extract<SessionHandoffLaunchRequest, { mode: "native-import" }>;
   target_session_id?: string;
   status: "prepared" | "outcome-unknown" | "verified" | "launched";

@@ -69,16 +69,22 @@ impl Worker {
                         | "resources"
                 )
             );
-        let claimed = self
-            .pending
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                if (read && n < 32) || n == 0 {
-                    Some(n + 1)
-                } else {
-                    None
-                }
-            });
-        if claimed.is_err() {
+        let mut pending = self.pending.load(Ordering::SeqCst);
+        let claimed = loop {
+            if !((read && pending < 32) || pending == 0) {
+                break false;
+            }
+            match self.pending.compare_exchange_weak(
+                pending,
+                pending + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break true,
+                Err(current) => pending = current,
+            }
+        };
+        if !claimed {
             return Some(RpcResponse::error(id, -32000, "web-busy", None));
         }
         if self
@@ -538,7 +544,8 @@ impl Service {
                 std::time::Instant::now(),
                 request.operation != "live",
                 || {
-                    let adapter = provider(session.agent).context("provider-unavailable")?;
+                    let adapter =
+                        provider(session.agent, &workspace).context("provider-unavailable")?;
                     let native = adapter
                         .list_sessions(&workspace)?
                         .into_iter()
@@ -741,7 +748,7 @@ impl Service {
                 if session.agent != AgentKind::Codex {
                     return self.unsupported(&request, "provider-unsupported");
                 }
-                let native = provider(session.agent)
+                let native = provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .list_sessions(&workspace)?
                     .into_iter()
@@ -751,7 +758,7 @@ impl Service {
                             .is_ok_and(|found| found == id)
                     })
                     .context("session-unavailable")?;
-                let uuid = match provider(session.agent)
+                let uuid = match provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .verified_control_id(&native.native_ref)
                 {
@@ -2256,6 +2263,65 @@ sleep 5
         }
         assert_eq!(worker.pending.load(Ordering::SeqCst), 32);
     }
+
+    #[test]
+    fn worker_admits_only_available_slots_under_concurrent_submissions() {
+        for (operation, capacity) in [("events", 32), ("send", 1)] {
+            let (sender, receiver) = mpsc::sync_channel(32);
+            let worker = Worker {
+                sender: Some(sender),
+                pending: Arc::new(AtomicU64::new(0)),
+                handle: None,
+            };
+            let barrier = std::sync::Barrier::new(64);
+            let accepted = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..64)
+                    .map(|id| {
+                        let worker = &worker;
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":id,"method":"web.request","params":{"operation":operation}})).unwrap();
+                            barrier.wait();
+                            match worker.submit(request) {
+                                None => 1,
+                                Some(response) => {
+                                    assert_eq!(response.error.unwrap().message, "web-busy");
+                                    0
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .sum::<u64>()
+            });
+            assert_eq!(accepted, capacity);
+            assert_eq!(worker.pending.load(Ordering::SeqCst), capacity);
+            assert_eq!(receiver.try_iter().count() as u64, capacity);
+        }
+    }
+
+    #[test]
+    fn worker_releases_claimed_slot_when_delivery_fails() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = Worker {
+            sender: Some(sender),
+            pending: Arc::new(AtomicU64::new(0)),
+            handle: None,
+        };
+        drop(receiver);
+        for operation in ["events", "send"] {
+            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"web.request","params":{"operation":operation}})).unwrap();
+            assert_eq!(
+                worker.submit(request).unwrap().error.unwrap().message,
+                "web-unavailable"
+            );
+            assert_eq!(worker.pending.load(Ordering::SeqCst), 0);
+        }
+    }
+
     #[test]
     fn rejects_arbitrary_fields_and_stale_replays() {
         assert!(

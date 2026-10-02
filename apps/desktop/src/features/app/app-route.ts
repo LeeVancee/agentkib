@@ -27,6 +27,8 @@ export type AppSearch = {
   handoffTarget?: AgentKind;
   handoffBudget?: 64_000 | 120_000 | 180_000;
   handoffFormat?: "markdown" | "json";
+  handoffSurface?: "cursor-ide";
+  handoffBinding?: string;
   handoffResume?: "return" | "recheck";
   agent?: AgentKind;
   agentFilter?: AgentFilter;
@@ -46,6 +48,8 @@ export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearc
     !next.handoffTarget &&
     !next.handoffBudget &&
     !next.handoffFormat &&
+    !next.handoffSurface &&
+    !next.handoffBinding &&
     !next.handoffResume
   ) {
     return current;
@@ -55,6 +59,8 @@ export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearc
     handoffTarget: _handoffTarget,
     handoffBudget: _handoffBudget,
     handoffFormat: _handoffFormat,
+    handoffSurface: _handoffSurface,
+    handoffBinding: _handoffBinding,
     handoffResume: _handoffResume,
     ...rest
   } = next;

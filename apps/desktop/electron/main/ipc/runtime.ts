@@ -1,6 +1,8 @@
-import { ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import path from "node:path";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import type { DesktopRuntimeHost } from "../runtime-host";
+import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
 import {
   optionalPositiveInteger,
   optionalString,
@@ -34,6 +36,42 @@ export function registerRuntimeIpc({
   withRuntimeCapabilities: withElectronRuntimeCapabilities,
 }: RuntimeIpcOptions): void {
   function registerWorkspaceIpc(): void {
+    const bridgeBundle = () =>
+      verifiedCursorBridgeBundle(
+        app.isPackaged
+          ? path.join(process.resourcesPath, "cursor-bridge")
+          : path.join(app.getAppPath(), "build", "cursor-bridge"),
+      );
+    ipcMain.handle("agentkib:cursor:bridge-bundle", (event) => {
+      assertTrustedRenderer(event);
+      return bridgeBundle();
+    });
+    ipcMain.handle("agentkib:cursor:reveal-bridge-bundle", async (event) => {
+      assertTrustedRenderer(event);
+      const bundle = await bridgeBundle();
+      shell.showItemInFolder(bundle.path);
+    });
+    ipcMain.handle("agentkib:workspace:cursor-bridge", (event, request: unknown) => {
+      assertTrustedRenderer(event);
+      const input = requireObject(request, "Cursor bridge request");
+      const action = requireString(input.action, "action");
+      if (
+        !["status", "connect", "disconnect"].includes(action) ||
+        Object.keys(input).some((key) => !["action", "workspaceId", "bindingId"].includes(key))
+      ) {
+        throw new TypeError("Unsupported Cursor bridge request");
+      }
+      if (action === "status" && input.bindingId !== undefined)
+        throw new TypeError("Unexpected Cursor binding identity");
+      return runtime().request(RUNTIME_METHODS.cursorBridge, {
+        action,
+        workspaceId: requireString(input.workspaceId, "workspaceId"),
+        bindingId:
+          action === "disconnect"
+            ? requireString(input.bindingId, "bindingId")
+            : optionalString(input.bindingId, "bindingId"),
+      });
+    });
     ipcMain.handle("agentkib:workspace:scan", (event, project: unknown) => {
       assertTrustedRenderer(event);
       return runtime().request(RUNTIME_METHODS.scanWorkspace, {
@@ -200,8 +238,13 @@ export function registerRuntimeIpc({
         historyBudgetTokens: unknown,
         archiveId: unknown,
         targetFingerprint: unknown,
+        targetSurface: unknown,
+        bindingId: unknown,
       ) => {
         assertTrustedRenderer(event);
+        const surface = optionalString(targetSurface, "targetSurface");
+        if (surface !== undefined && surface !== "cursor-ide")
+          throw new TypeError("Unsupported target surface");
         return runtimeRequest(event, RUNTIME_METHODS.planSessionHandoff, {
           sessionId: requireString(sessionId, "sessionId"),
           workspaceId: requireString(workspaceId, "workspaceId"),
@@ -216,6 +259,8 @@ export function registerRuntimeIpc({
           historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
           archiveId: optionalString(archiveId, "archiveId"),
           targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
+          targetSurface: surface,
+          bindingId: optionalString(bindingId, "bindingId"),
         });
       },
     );

@@ -9,6 +9,24 @@ use agentkib_conversations::native_targets::{
 use agentkib_core::{ChangeScope, ChangeSet, FileChange, RiskLevel};
 use std::fs::OpenOptions;
 
+thread_local! { static DEADLINE: std::cell::Cell<Option<Instant>> = const {std::cell::Cell::new(None)}; }
+pub(super) fn with_deadline<T>(deadline: Instant, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<Instant>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DEADLINE.set(self.0);
+        }
+    }
+    let _reset = Reset(DEADLINE.replace(Some(deadline)));
+    f()
+}
+pub(super) fn remaining() -> Duration {
+    DEADLINE
+        .get()
+        .map(|d| d.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::from_secs(180))
+}
+
 pub(super) static STOPPING: AtomicBool = AtomicBool::new(false);
 const MAX_OUTPUT: u64 = 256 * 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,6 +49,8 @@ pub(super) struct Plan {
     pub environment: Vec<(String, Option<String>)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openclaw: Option<openclaw::Context>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<cursor_bridge::Context>,
     pub target_session_id: String,
     pub document: SessionDocument,
     pub expected: SessionDocument,
@@ -60,7 +80,7 @@ struct Receipt {
 pub(super) fn is_target(agent: AgentKind) -> bool {
     matches!(
         agent,
-        AgentKind::OpenCode | AgentKind::Hermes | AgentKind::OpenClaw
+        AgentKind::OpenCode | AgentKind::Hermes | AgentKind::OpenClaw | AgentKind::Cursor
     )
 }
 
@@ -68,6 +88,10 @@ pub(super) fn installation(agent: AgentKind) -> anyhow::Result<(PathBuf, String)
     anyhow::ensure!(
         is_target(agent),
         "Native importer has not been verified for this target"
+    );
+    anyhow::ensure!(
+        agent != AgentKind::Cursor,
+        "Cursor IDE requires an explicitly connected window"
     );
     if agent == AgentKind::OpenClaw {
         return openclaw::installation();
@@ -173,6 +197,7 @@ pub(super) fn list(request: ListRequest) -> anyhow::Result<Value> {
                 plan_hash: agentkib_core::hash_content(&content), capabilities: None,
             }),
             "source_session_id": plan.source_session_id,
+            "binding_id": plan.cursor.as_ref().map(|context| &context.binding_id),
             "target_session_id": receipt.as_ref().map(|r| &r.target_session_id),
             "status": status,
         }));
@@ -417,6 +442,7 @@ fn ensure_native_path(path: &Path) -> anyhow::Result<()> {
 fn receipt_identity_valid(plan: &Plan, id: &str) -> bool {
     match plan.target_agent {
         AgentKind::OpenCode | AgentKind::OpenClaw => id == plan.target_session_id,
+        AgentKind::Cursor => uuid::Uuid::parse_str(id).is_ok(),
         AgentKind::Hermes => {
             let bytes = id.as_bytes();
             bytes.len() == 22
@@ -490,6 +516,7 @@ pub(super) fn plan(
         source_session_id: source_session_id.into(),
         source_fingerprint: source_fingerprint.into(),
         target_agent,
+        cursor: None,
         openclaw: if target_agent == AgentKind::OpenClaw {
             Some(openclaw::context(&executable, &workspace)?)
         } else {
@@ -546,6 +573,10 @@ fn validate_plan(plan: &Plan, workspace_id: &str) -> anyhow::Result<()> {
         fingerprint(&plan.document)? == plan.source_fingerprint,
         "Import document differs from its approved source fingerprint"
     );
+    if plan.target_agent == AgentKind::Cursor {
+        return validate_cursor_plan(plan);
+    }
+    anyhow::ensure!(plan.cursor.is_none(), "Unexpected Cursor context");
     validate_environment(&plan.environment)?;
     anyhow::ensure!(
         is_target(plan.target_agent),
@@ -879,6 +910,9 @@ pub(super) fn execute(
     reopen: bool,
 ) -> anyhow::Result<HandoffContinuationResult> {
     let (directory, plan) = read_plan(request)?;
+    if plan.target_agent == AgentKind::Cursor {
+        return execute_cursor(request, &directory, &plan, approve_home, reopen);
+    }
     let workspace = Store::open_default()?.workspace_path(&request.workspace_id)?;
     anyhow::ensure!(
         agentkib_core::canonical_project(&workspace)? == plan.workspace,
@@ -1213,6 +1247,7 @@ mod tests {
                 .map(|key| ((*key).into(), None))
                 .collect(),
             openclaw: None,
+            cursor: None,
             target_session_id: operation,
             document,
             expected: prepared.expected,
@@ -1387,5 +1422,280 @@ mod tests {
         fs::rename(&database, &other).unwrap();
         std::os::unix::fs::symlink(other, &database).unwrap();
         assert!(verify_hermes(&plan, &directory, None, true).is_err());
+    }
+}
+
+pub(super) fn cursor_fingerprint(context: &cursor_bridge::Context) -> anyhow::Result<String> {
+    cursor_bridge::validate_context(context)?;
+    Ok(agentkib_core::hash_content(&serde_json::to_vec(context)?))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn plan_cursor(
+    workspace: &Path,
+    workspace_id: &str,
+    source_session_id: &str,
+    source_fingerprint: &str,
+    document: &SessionDocument,
+    capabilities: ContinuationCapabilities,
+    context: cursor_bridge::Context,
+) -> anyhow::Result<PlannedSessionHandoff> {
+    let workspace = agentkib_core::canonical_project(workspace)?;
+    anyhow::ensure!(
+        context.profile.workspace == workspace,
+        "Cursor profile workspace mismatch"
+    );
+    cursor_bridge::validate_context(&context)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let prepared = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+        document,
+        &operation_id,
+        &workspace,
+    )?;
+    let plan = Plan {
+        schema_version: 1,
+        operation_id: operation_id.clone(),
+        workspace_id: workspace_id.into(),
+        workspace: workspace.clone(),
+        source_session_id: source_session_id.into(),
+        source_fingerprint: source_fingerprint.into(),
+        target_agent: AgentKind::Cursor,
+        executable: context.app_root.clone(),
+        version: cursor_bridge::VERSION.into(),
+        model: None,
+        target_home: None,
+        target_profile: None,
+        environment: vec![],
+        openclaw: None,
+        cursor: Some(context),
+        target_session_id: operation_id.clone(),
+        document: document.clone(),
+        expected: prepared.expected,
+        payload: prepared.payload,
+    };
+    let content = serde_json::to_string_pretty(&plan)?;
+    let path = directory(workspace_id, &operation_id)?.join("plan.json");
+    safe_path(&path)?;
+    anyhow::ensure!(!path.exists(), "Cursor import operation already exists");
+    Ok(PlannedSessionHandoff {
+        change_set: ChangeSet {
+            id: operation_id.clone(),
+            project_root: workspace,
+            created_at: Utc::now(),
+            requires_home_approval: true,
+            changes: vec![FileChange {
+                target: path,
+                scope: ChangeScope::ApplicationData,
+                original_hash: None,
+                before: String::new(),
+                after: content.clone(),
+                risk: RiskLevel::High,
+                validator: "json".into(),
+            }],
+        },
+        launch_request: SessionHandoffLaunchRequest::NativeImport(ImportRequest {
+            operation_id,
+            workspace_id: workspace_id.into(),
+            target_agent: AgentKind::Cursor,
+            plan_hash: agentkib_core::hash_content(content.as_bytes()),
+            capabilities: Some(capabilities),
+        }),
+    })
+}
+
+fn validate_cursor_plan(plan: &Plan) -> anyhow::Result<()> {
+    let context = plan
+        .cursor
+        .as_ref()
+        .context("Cursor import context missing")?;
+    cursor_bridge::validate_context(context)?;
+    anyhow::ensure!(
+        context.profile.workspace == plan.workspace
+            && plan.version == cursor_bridge::VERSION
+            && plan.executable == context.app_root
+            && plan.target_session_id == plan.operation_id
+            && plan.model.is_none()
+            && plan.target_home.is_none()
+            && plan.target_profile.is_none()
+            && plan.environment.is_empty()
+            && plan.openclaw.is_none()
+            && plan.document.source.workspace_id == plan.workspace_id,
+        "Cursor import identity or settings mismatch"
+    );
+    let prepared = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+        &plan.document,
+        &plan.operation_id,
+        &plan.workspace,
+    )?;
+    anyhow::ensure!(
+        agentkib_conversations::cursor_ide::reviewed_cursor_ide_import_payload_matches(
+            &prepared.payload,
+            &plan.payload,
+        )? && prepared.expected == plan.expected,
+        "Cursor import payload differs from its approved document"
+    );
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorAttempt {
+    schema_version: u32,
+    plan_hash: String,
+    before_native_ids: Vec<String>,
+}
+
+fn execute_cursor(
+    request: &ImportRequest,
+    directory: &Path,
+    plan: &Plan,
+    approve_home: bool,
+    reopen: bool,
+) -> anyhow::Result<HandoffContinuationResult> {
+    use agentkib_conversations::cursor_ide::{
+        list_cursor_ide_identities, verify_cursor_ide_import,
+    };
+    let frozen = plan
+        .cursor
+        .as_ref()
+        .context("Cursor import context unavailable")?;
+    let workspace = agentkib_core::canonical_project(
+        &Store::open_default()?.workspace_path(&request.workspace_id)?,
+    )?;
+    anyhow::ensure!(
+        workspace == plan.workspace,
+        "Cursor import workspace changed"
+    );
+    let context = cursor_bridge::context(&frozen.binding_id, &workspace)?;
+    anyhow::ensure!(&context == frozen, "Cursor binding changed after preview");
+    let attempted = directory.join("attempted.json");
+    let receipt_path = directory.join("receipt.json");
+    let mut receipt = if receipt_path.exists() {
+        let value: Receipt = serde_json::from_slice(&read_bounded(&receipt_path)?)?;
+        anyhow::ensure!(
+            value.schema_version == 1
+                && value.plan_hash == request.plan_hash
+                && receipt_identity_valid(plan, &value.target_session_id),
+            "Cursor receipt mismatch"
+        );
+        value
+    } else {
+        Receipt {
+            schema_version: 1,
+            plan_hash: request.plan_hash.clone(),
+            target_session_id: String::new(),
+            verified: false,
+            launched: false,
+            terminal: None,
+        }
+    };
+    let attempt = if attempted.exists() {
+        let value: CursorAttempt = serde_json::from_slice(&read_bounded(&attempted)?)?;
+        anyhow::ensure!(
+            value.schema_version == 1 && value.plan_hash == request.plan_hash,
+            "Cursor attempt fingerprint mismatch"
+        );
+        value
+    } else {
+        anyhow::ensure!(
+            !reopen && approve_home,
+            "Cursor import requires a reviewed plan and explicit approval"
+        );
+        let (source, mut document) = load_session_document(&plan.source_session_id)?;
+        let store = Store::open_default()?;
+        let source_workspace = continuation_workspace_id(&store, &source.workspace_id)?;
+        use_continuation_workspace_id(&mut document, &source_workspace);
+        anyhow::ensure!(
+            source_workspace == plan.workspace_id
+                && fingerprint(&document)? == plan.source_fingerprint,
+            "Source changed after Cursor preview"
+        );
+        anyhow::ensure!(
+            !STOPPING.load(Ordering::SeqCst) && !remaining().is_zero(),
+            "Cursor import executor is stopping or timed out"
+        );
+        let value = CursorAttempt {
+            schema_version: 1,
+            plan_hash: request.plan_hash.clone(),
+            before_native_ids: list_cursor_ide_identities(&context.profile)?
+                .into_iter()
+                .map(|i| i.native_id)
+                .collect(),
+        };
+        create_file(&attempted, &serde_json::to_vec(&value)?)?;
+        // Durable marker precedes dispatch. Failure here can only be reconciled, never resent.
+        let dispatched = cursor_bridge::call(
+            &context,
+            "import",
+            json!({"operation_id":plan.operation_id,"plan_hash":request.plan_hash,"payload":plan.payload,"payload_hash":agentkib_core::hash_content(plan.payload.as_bytes())}),
+        );
+        if dispatched.is_err() {
+            return Ok(cursor_unknown(
+                "Cursor importer disconnected; reconnect this window and reconcile the existing operation",
+            ));
+        }
+        value
+    };
+    let marker = format!("AgentKib {}", plan.operation_id);
+    loop {
+        let known =
+            (!receipt.target_session_id.is_empty()).then_some(receipt.target_session_id.as_str());
+        match verify_cursor_ide_import(
+            &context.profile,
+            &plan.payload,
+            &plan.expected,
+            &marker,
+            known,
+            &attempt.before_native_ids,
+            !receipt.verified,
+        ) {
+            Ok(id) => {
+                receipt.target_session_id = id;
+                receipt.verified = true;
+                save_receipt(directory, &receipt)?;
+                break;
+            }
+            Err(error) => {
+                if STOPPING.load(Ordering::SeqCst) || remaining().is_zero() {
+                    return Ok(cursor_unknown(&error.to_string()));
+                }
+                if attempted.exists() && reopen {
+                    return Ok(cursor_unknown(&error.to_string()));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    if receipt.launched && !reopen {
+        return Ok(HandoffContinuationResult::Launched {
+            receipt: HandoffLaunchReceipt {
+                target_agent: AgentKind::Cursor,
+                terminal: "Cursor IDE".into(),
+            },
+        });
+    }
+    if let Err(error) = cursor_bridge::call(
+        &context,
+        "open",
+        json!({"native_id":receipt.target_session_id}),
+    ) {
+        return Ok(HandoffContinuationResult::AppliedLaunchFailed {
+            error: json!({"detail":error.to_string()}),
+        });
+    }
+    receipt.launched = true;
+    receipt.terminal = Some("Cursor IDE".into());
+    save_receipt(directory, &receipt)?;
+    Ok(HandoffContinuationResult::Launched {
+        receipt: HandoffLaunchReceipt {
+            target_agent: AgentKind::Cursor,
+            terminal: "Cursor IDE".into(),
+        },
+    })
+}
+
+fn cursor_unknown(detail: &str) -> HandoffContinuationResult {
+    HandoffContinuationResult::ImportOutcomeUnknown {
+        error: json!({"detail":detail}),
     }
 }

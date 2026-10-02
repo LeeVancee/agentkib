@@ -7,7 +7,13 @@ import { initializeI18n } from "@/core/i18n";
 import type { NativeImportOperation } from "@/core/types";
 import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
 vi.mock("@/core/api", () => ({
-  api: { nativeImportOperations: vi.fn(), launchSessionHandoff: vi.fn() },
+  api: {
+    nativeImportOperations: vi.fn(),
+    launchSessionHandoff: vi.fn(),
+    cursorBridge: vi.fn(),
+    cursorBridgeBundle: vi.fn(),
+    revealCursorBridgeBundle: vi.fn(),
+  },
 }));
 beforeAll(() => initializeI18n("en-US"));
 beforeEach(() => vi.resetAllMocks());
@@ -86,5 +92,57 @@ it("explains why a prepared import cannot be reviewed when its source is missing
     "title",
     "The original session is unavailable. Refresh the index or restore the source before reviewing again.",
   );
+  expect(api.launchSessionHandoff).not.toHaveBeenCalled();
+});
+
+it("offers a fixed Cursor binding reconnect even when the original source is missing", async () => {
+  const cursor = {
+    ...operation,
+    binding_id: "frozen-binding",
+    launch_request: { ...operation.launch_request, target_agent: "cursor" as const },
+  };
+  vi.mocked(api.nativeImportOperations).mockResolvedValue([cursor]);
+  vi.mocked(api.cursorBridge).mockImplementation(async (request) =>
+    request.action === "connect"
+      ? { challenge: "synthetic-reconnect-code", expires_in_seconds: 120 }
+      : {
+          supported: true,
+          version: "3.22.12",
+          bindings: [
+            {
+              id: "frozen-binding",
+              profile: "explicit-profile",
+              version: "3.22.12",
+              connected: false,
+            },
+          ],
+        },
+  );
+  render(
+    <NativeImportRecoveryPanel
+      workspaceId="workspace"
+      workspace={
+        {
+          id: "workspace",
+          path: "/synthetic/workspace",
+          name: "synthetic",
+        } as import("@/core/types").WorkspaceSummary
+      }
+    />,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Reconnect selected window" }));
+  await waitFor(() =>
+    expect(screen.getAllByRole("button", { name: "Reconnect selected window" })).toHaveLength(2),
+  );
+  fireEvent.click(screen.getAllByRole("button", { name: "Reconnect selected window" })[1]);
+  await waitFor(() =>
+    expect(api.cursorBridge).toHaveBeenCalledWith({
+      action: "connect",
+      workspaceId: "workspace",
+      bindingId: "frozen-binding",
+    }),
+  );
+  expect(screen.queryByRole("button", { name: "Connect a Cursor window" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Disconnect selected window" })).toBeNull();
   expect(api.launchSessionHandoff).not.toHaveBeenCalled();
 });

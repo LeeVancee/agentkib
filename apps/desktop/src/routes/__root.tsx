@@ -400,6 +400,8 @@ const searchSchema = z.object({
     .optional()
     .catch(undefined),
   handoffFormat: z.enum(["markdown", "json"]).optional().catch(undefined),
+  handoffSurface: z.literal("cursor-ide").optional().catch(undefined),
+  handoffBinding: z.string().max(128).optional().catch(undefined),
   handoffResume: z.enum(["return", "recheck"]).optional().catch(undefined),
 });
 

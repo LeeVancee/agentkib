@@ -131,21 +131,83 @@ esac
     }
 
     fn plan(&self, runtime: &mut Runtime) -> Value {
+        let draft = self.prepare(runtime);
+        runtime.send(2, "sessions.planHandoff", self.plan_request(&draft, true));
+        let response = runtime.receive(2);
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"].clone()
+    }
+
+    fn prepare(&self, runtime: &mut Runtime) -> Value {
         runtime.send(1,"sessions.prepareHandoff",json!({"request":{
             "session_id":self.session_id,"target_agent":"opencode","format":"markdown","history_budget_tokens":64000
         }}));
         let response = runtime.receive(1);
         assert!(response.get("error").is_none(), "{response}");
         let draft = &response["result"]["draft"];
-        runtime.send(2,"sessions.planHandoff",json!({
+        // Capability detection can return a successful file-handoff preview.
+        // Retain its reason instead of masking it with a later fingerprint error.
+        assert_eq!(draft["mode"], "native-session", "{draft}");
+        assert_eq!(draft["native_capability"]["supported"], true, "{draft}");
+        assert!(
+            draft["target_fingerprint"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "{draft}"
+        );
+        draft.clone()
+    }
+
+    fn plan_request(&self, draft: &Value, accept_losses: bool) -> Value {
+        json!({
             "sessionId":self.session_id,"workspaceId":self.workspace_id,
             "filename":draft["filename"],"format":"markdown","targetAgent":"opencode",
             "mode":"native-session","sourceFingerprint":draft["source_fingerprint"],
-            "targetFingerprint":draft["target_fingerprint"],"acceptLosses":true,"historyBudgetTokens":64000
-        }));
-        let response = runtime.receive(2);
+            "targetFingerprint":draft["target_fingerprint"],"acceptLosses":accept_losses,
+            "historyBudgetTokens":draft["history_budget_tokens"],"archiveId":draft["archive_id"]
+        })
+    }
+
+    fn assert_no_import(&self, runtime: &mut Runtime) {
+        runtime.send(
+            90,
+            "sessions.nativeImports",
+            json!({"workspaceId":self.workspace_id}),
+        );
+        let response = runtime.receive(90);
+        assert_eq!(response["result"], json!([]), "{response}");
+        assert!(!self.root.path().join("bin/started").exists());
+        assert!(!self.root.path().join("bin/imports").exists());
+    }
+
+    fn initialize_hub(&self, runtime: &mut Runtime) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        fs::write(
+            self.root.path().join("data/preferences.json"),
+            json!({"mcp_network":{"port":port,"lan_enabled":false,"lan_risk_accepted":false}})
+                .to_string(),
+        )
+        .unwrap();
+        runtime.send(
+            91,
+            "agentkib.handshake",
+            json!({
+                "protocolVersion":agentkib_protocol::PROTOCOL_VERSION,
+                "client":{"name":"native-import-fixture","version":"0"}
+            }),
+        );
+        let response = runtime.receive(91);
         assert!(response.get("error").is_none(), "{response}");
-        response["result"].clone()
+        // The handshake response precedes Hub startup; the next request waits for it.
+        runtime.send(92, "runtime.info", json!({}));
+        let response = runtime.receive(92);
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["mcp_hub"]["running"], true);
+        assert_eq!(response["result"]["mcp_hub"]["port"], port);
     }
 
     fn wait_import(&self) {
@@ -189,6 +251,180 @@ impl Drop for Runtime {
 
 fn continuation(plan: &Value, approve: bool) -> Value {
     json!({"changeSet":plan["change_set"],"launchRequest":plan["launch_request"],"approveHome":approve})
+}
+
+#[test]
+fn unacknowledged_target_losses_are_rejected_before_planning_an_import() {
+    let fixture = Fixture::new();
+    let mut rows: Vec<Value> = fs::read_to_string(&fixture.transcript)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    rows[0]["message"]["content"] = json!([
+        {"type":"text","text":"Marker kiwi-8492. Read the attached image."},
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}
+    ]);
+    rows[1]["message"]["content"].as_array_mut().unwrap().push(
+        json!({"type":"tool_use","id":"call-1","name":"read_file","input":{"path":"fixture.txt"}}),
+    );
+    let source = rows
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&fixture.transcript, &source).unwrap();
+    let mut runtime = fixture.runtime();
+    let draft = fixture.prepare(&mut runtime);
+    assert_eq!(draft["mode"], "native-session");
+    assert_eq!(draft["window_strategy"], "full");
+    assert_eq!(
+        draft["losses"],
+        json!([
+            {"code":"target-tool-summary","count":1},
+            {"code":"target-attachment-omitted","count":1}
+        ])
+    );
+    runtime.send(
+        2,
+        "sessions.planHandoff",
+        fixture.plan_request(&draft, false),
+    );
+    let response = runtime.receive(2);
+    assert_eq!(
+        response["error"]["data"]["detail"], "Continuation losses must be acknowledged",
+        "{response}"
+    );
+    assert!(response.get("result").is_none());
+    fixture.assert_no_import(&mut runtime);
+
+    // The same reviewed source becomes plannable only after explicit acknowledgement.
+    runtime.send(
+        3,
+        "sessions.planHandoff",
+        fixture.plan_request(&draft, true),
+    );
+    let response = runtime.receive(3);
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(response["result"]["change_set"]["changes"].is_array());
+    fixture.assert_no_import(&mut runtime);
+    assert_eq!(fs::read_to_string(&fixture.transcript).unwrap(), source);
+}
+
+#[test]
+fn windowed_history_is_rejected_for_a_native_command_importer() {
+    let fixture = Fixture::new();
+    let templates: Vec<Value> = fs::read_to_string(&fixture.transcript)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let mut rows = Vec::new();
+    let mut parent = Value::Null;
+    // Each block fits the per-block limit; the complete conversation exceeds 64k.
+    for index in 0..18 {
+        let mut row = templates[index % 2].clone();
+        row["uuid"] = json!(uuid::Uuid::new_v4());
+        row["parentUuid"] = parent;
+        row["message"]["content"] = json!([{
+            "type":"text","text":format!("Exchange {index}: {}", "history ".repeat(1500))
+        }]);
+        parent = row["uuid"].clone();
+        rows.push(row.to_string());
+    }
+    let source = rows.join("\n");
+    fs::write(&fixture.transcript, &source).unwrap();
+    let mut runtime = fixture.runtime();
+    fixture.initialize_hub(&mut runtime);
+    let draft = fixture.prepare(&mut runtime);
+    assert_eq!(draft["mode"], "native-session");
+    assert_eq!(draft["window_strategy"], "windowed");
+    assert!(draft["archive_id"].is_string());
+    assert!(
+        draft["window_stats"]["estimated_total_tokens"]
+            .as_u64()
+            .unwrap()
+            > 64000
+    );
+    assert!(
+        draft["window_stats"]["deferred_turn_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(draft["losses"], json!([]));
+    assert_eq!(
+        draft["capabilities"]["windowed_context"]["status"],
+        "unsupported"
+    );
+    runtime.send(
+        2,
+        "sessions.planHandoff",
+        fixture.plan_request(&draft, true),
+    );
+    let response = runtime.receive(2);
+    assert_eq!(
+        response["error"]["data"]["detail"],
+        "AgentKib MCP must be connected before a windowed continuation can be applied",
+        "{response}"
+    );
+    assert!(response.get("result").is_none());
+    fixture.assert_no_import(&mut runtime);
+    assert_eq!(fs::read_to_string(&fixture.transcript).unwrap(), source);
+}
+
+#[test]
+fn explicit_new_plans_have_independent_operation_and_target_identities() {
+    let fixture = Fixture::new();
+    let source = fs::read(&fixture.transcript).unwrap();
+    let mut runtime = fixture.runtime();
+    let draft = fixture.prepare(&mut runtime);
+    let request = fixture.plan_request(&draft, true);
+    let mut plans = Vec::new();
+    for id in [2, 3] {
+        runtime.send(id, "sessions.planHandoff", request.clone());
+        let response = runtime.receive(id);
+        assert!(response.get("error").is_none(), "{response}");
+        plans.push(response["result"].clone());
+    }
+    let contents: Vec<Value> = plans
+        .iter()
+        .map(|plan| {
+            let content: Value =
+                serde_json::from_str(plan["change_set"]["changes"][0]["after"].as_str().unwrap())
+                    .unwrap();
+            let operation_id = content["operation_id"].as_str().unwrap();
+            let operation = uuid::Uuid::parse_str(operation_id).unwrap();
+            assert_eq!(plan["change_set"]["id"], operation_id);
+            assert_eq!(plan["launch_request"]["operation_id"], operation_id);
+            assert_eq!(
+                content["target_session_id"],
+                format!("ses_{}", operation.simple())
+            );
+            assert_eq!(content["source_session_id"], fixture.session_id);
+            assert_eq!(content["source_fingerprint"], draft["source_fingerprint"]);
+            assert!(
+                !PathBuf::from(plan["change_set"]["changes"][0]["target"].as_str().unwrap())
+                    .exists()
+            );
+            content
+        })
+        .collect();
+    for field in ["operation_id", "target_session_id"] {
+        assert_ne!(contents[0][field], contents[1][field]);
+    }
+    assert_ne!(
+        plans[0]["change_set"]["changes"][0]["target"],
+        plans[1]["change_set"]["changes"][0]["target"]
+    );
+    assert_ne!(
+        plans[0]["launch_request"]["plan_hash"],
+        plans[1]["launch_request"]["plan_hash"]
+    );
+    assert_eq!(contents[0]["document"], contents[1]["document"]);
+    assert_eq!(contents[0]["expected"], contents[1]["expected"]);
+    fixture.assert_no_import(&mut runtime);
+    assert_eq!(fs::read(&fixture.transcript).unwrap(), source);
 }
 
 #[test]

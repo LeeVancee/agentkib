@@ -1,5 +1,6 @@
 //! Read-only Cursor CLI store adapter. Wire fields were checked against the
-//! official 2026.09.26-dd393fe package; this is not an IDE/Agents Window reader.
+//! official 2026.09.26-dd393fe package. Registered IDE sessions are dispatched to
+//! the separate fixed-version codec; this store decoder does not read IDE data.
 //! The generated `agent-transcripts` files are deliberately not used: they merge
 //! thinking into text and omit tool results and source identities.
 
@@ -27,15 +28,17 @@ use crate::{
     SessionRole, SessionTurn,
 };
 
-const MAX_BLOB: usize = 4 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const MAX_FIELDS: usize = 100_000;
+pub(super) const MAX_BLOB: usize = 4 * 1024 * 1024;
+pub(super) const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_FIELDS: usize = 100_000;
 const MAX_STORES: usize = 2_000;
 const MAX_ENTRIES: usize = 20_000;
 
 #[derive(Default)]
 pub struct CursorProvider {
     config_dir: Option<PathBuf>,
+    ide_profiles: Vec<crate::CursorIdeProfile>,
+    ide_registration_unavailable: bool,
 }
 
 struct Store {
@@ -55,6 +58,21 @@ struct LocatedStore {
 }
 
 impl CursorProvider {
+    pub fn with_ide_profiles(ide_profiles: Vec<crate::CursorIdeProfile>) -> Self {
+        Self {
+            config_dir: None,
+            ide_profiles,
+            ide_registration_unavailable: false,
+        }
+    }
+
+    pub fn with_unavailable_ide() -> Self {
+        Self {
+            ide_registration_unavailable: true,
+            ..Self::default()
+        }
+    }
+
     fn config_dir(&self) -> Option<PathBuf> {
         self.config_dir.clone().or_else(|| {
             env::var_os("CURSOR_CONFIG_DIR")
@@ -177,6 +195,9 @@ impl CursorProvider {
         &self,
         native_ref: &str,
     ) -> Result<(Vec<SessionTurn>, BTreeMap<SessionLossCode, usize>, String)> {
+        if native_ref.starts_with("cursor-ide-v1-") {
+            return crate::cursor_ide::read_registered(&self.ide_profiles, native_ref);
+        }
         let located = self.resolve(native_ref)?;
         let mut store = Store::open(&located.path)?;
         let (turns, losses) = store.turns()?;
@@ -195,7 +216,7 @@ impl ConversationProvider for CursorProvider {
 
     fn list_sessions_detailed(&self, workspace: &Path) -> Result<NativeSessionListing> {
         let (stores, incomplete) = self.collect(Some(workspace))?;
-        Ok(NativeSessionListing {
+        let mut listing = NativeSessionListing {
             sessions: stores
                 .into_iter()
                 .map(|store| NativeSessionSummary {
@@ -214,8 +235,18 @@ impl ConversationProvider for CursorProvider {
                     availability: SessionAvailability::Readable,
                 })
                 .collect(),
-            incomplete,
-        })
+            incomplete: incomplete || self.ide_registration_unavailable,
+        };
+        let ide = crate::cursor_ide::list_registered(&self.ide_profiles, workspace);
+        listing.sessions.extend(ide.sessions);
+        listing.incomplete |= ide.incomplete;
+        listing.sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.native_ref.cmp(&right.native_ref))
+        });
+        Ok(listing)
     }
 
     fn read_events(
@@ -582,17 +613,17 @@ fn push_text(
 }
 
 #[derive(Clone, Copy)]
-struct Field<'a> {
-    number: u64,
-    wire: u8,
+pub(super) struct Field<'a> {
+    pub(super) number: u64,
+    pub(super) wire: u8,
     data: &'a [u8],
 }
 impl Field<'_> {
-    fn bytes(&self) -> Result<&[u8]> {
+    pub(super) fn bytes(&self) -> Result<&[u8]> {
         ensure!(self.wire == 2, "Unexpected Cursor protobuf field wire type");
         Ok(self.data)
     }
-    fn varint(&self) -> Result<u64> {
+    pub(super) fn varint(&self) -> Result<u64> {
         ensure!(
             self.wire == 0,
             "Unexpected Cursor protobuf integer wire type"
@@ -617,7 +648,7 @@ fn read_varint(input: &mut &[u8]) -> Result<u64> {
     }
     bail!("Overflowed Cursor protobuf integer")
 }
-fn fields(mut input: &[u8]) -> Result<Vec<Field<'_>>> {
+pub(super) fn fields(mut input: &[u8]) -> Result<Vec<Field<'_>>> {
     let mut fields = Vec::new();
     while !input.is_empty() {
         ensure!(
@@ -658,21 +689,21 @@ fn fields(mut input: &[u8]) -> Result<Vec<Field<'_>>> {
     }
     Ok(fields)
 }
-fn optional_bytes<'a>(fields: &'a [Field<'a>], number: u64) -> Result<Option<&'a [u8]>> {
+pub(super) fn optional_bytes<'a>(fields: &'a [Field<'a>], number: u64) -> Result<Option<&'a [u8]>> {
     let mut matches = fields.iter().filter(|field| field.number == number);
     let value = matches.next().map(Field::bytes).transpose()?;
     ensure!(matches.next().is_none(), "Duplicate Cursor singular field");
     Ok(value)
 }
-fn required_bytes<'a>(fields: &'a [Field<'a>], number: u64) -> Result<&'a [u8]> {
+pub(super) fn required_bytes<'a>(fields: &'a [Field<'a>], number: u64) -> Result<&'a [u8]> {
     optional_bytes(fields, number)?.context("Required Cursor protobuf field is absent")
 }
-fn string(fields: &[Field<'_>], number: u64) -> Result<Option<String>> {
+pub(super) fn string(fields: &[Field<'_>], number: u64) -> Result<Option<String>> {
     optional_bytes(fields, number)?
         .map(|bytes| String::from_utf8(bytes.to_vec()).context("Cursor text is not valid UTF-8"))
         .transpose()
 }
-fn timestamp(fields: &[Field<'_>], number: u64) -> Result<Option<DateTime<Utc>>> {
+pub(super) fn timestamp(fields: &[Field<'_>], number: u64) -> Result<Option<DateTime<Utc>>> {
     fields
         .iter()
         .find(|field| field.number == number)
@@ -688,6 +719,8 @@ pub(super) fn matrix_document() -> SessionDocument {
     let (temp, _path, workspace) = tests::fixture();
     let provider = CursorProvider {
         config_dir: Some(temp.path().into()),
+        ide_profiles: Vec::new(),
+        ide_registration_unavailable: false,
     };
     let sessions = provider.list_sessions(&workspace).unwrap();
     provider
@@ -825,6 +858,8 @@ mod tests {
         let before = fs::read(&path).unwrap();
         let provider = CursorProvider {
             config_dir: Some(temp.path().into()),
+            ide_profiles: Vec::new(),
+            ide_registration_unavailable: false,
         };
         let sessions = provider.list_sessions(&workspace).unwrap();
         assert_eq!(sessions.len(), 1);
@@ -842,10 +877,25 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_ide_registration_keeps_cli_and_marks_listing_incomplete() {
+        let (temp, _path, workspace) = fixture();
+        let mut provider = CursorProvider::with_unavailable_ide();
+        provider.config_dir = Some(temp.path().into());
+        let listing = provider.list_sessions_detailed(&workspace).unwrap();
+        assert!(listing.incomplete);
+        assert_eq!(listing.sessions.len(), 1);
+        assert!(listing.sessions[0].native_ref.starts_with("cursor-cli-v1-"));
+        assert!(provider.read(&listing.sessions[0].native_ref).is_ok());
+        assert!(provider.read("cursor-ide-v1-unknown").is_err());
+    }
+
+    #[test]
     fn cursor_is_pinned_to_root_and_loads_older_pages_in_source_order() {
         let (temp, path, workspace) = fixture();
         let provider = CursorProvider {
             config_dir: Some(temp.path().into()),
+            ide_profiles: Vec::new(),
+            ide_registration_unavailable: false,
         };
         let native_ref = provider.list_sessions(&workspace).unwrap()[0]
             .native_ref
@@ -890,6 +940,8 @@ mod tests {
         });
         let provider = CursorProvider {
             config_dir: Some(temp.path().into()),
+            ide_profiles: Vec::new(),
+            ide_registration_unavailable: false,
         };
         let listing = provider.list_sessions_detailed(&workspace).unwrap();
         assert!(listing.sessions.is_empty());
@@ -935,6 +987,8 @@ mod tests {
         fs::create_dir(&other).unwrap();
         let provider = CursorProvider {
             config_dir: Some(temp.path().into()),
+            ide_profiles: Vec::new(),
+            ide_registration_unavailable: false,
         };
         assert!(provider.list_sessions(&other).unwrap().is_empty());
         assert!(provider.read_events("../../private", None, 10).is_err());
@@ -963,6 +1017,8 @@ mod tests {
         std::os::unix::fs::symlink(moved, path).unwrap();
         let provider = CursorProvider {
             config_dir: Some(temp.path().into()),
+            ide_profiles: Vec::new(),
+            ide_registration_unavailable: false,
         };
         assert!(provider.list_sessions(&workspace).unwrap().is_empty());
     }

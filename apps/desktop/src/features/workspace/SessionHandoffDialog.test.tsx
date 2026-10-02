@@ -19,6 +19,9 @@ vi.mock("@/core/api", () => ({
     planSessionMcpConnection: vi.fn(),
     planSessionHandoff: vi.fn(),
     sanitizeSessionHandoff: vi.fn(),
+    cursorBridge: vi.fn(),
+    cursorBridgeBundle: vi.fn(),
+    revealCursorBridgeBundle: vi.fn(),
   },
 }));
 
@@ -89,8 +92,140 @@ describe("SessionHandoffDialog", () => {
     vi.mocked(api.sessionSourceCapability).mockReset().mockResolvedValue({ status: "supported" });
     vi.mocked(api.prepareSessionHandoff).mockReset();
     vi.mocked(api.planSessionMcpConnection).mockReset();
+    vi.mocked(api.cursorBridge)
+      .mockReset()
+      .mockResolvedValue({
+        supported: true,
+        version: "3.22.12",
+        bindings: [
+          {
+            id: "selected-binding",
+            profile: "explicit-profile",
+            version: "3.22.12",
+            connected: true,
+          },
+        ],
+      });
   });
   afterEach(cleanup);
+
+  it("requires an explicitly selected IDE window even when one is connected", async () => {
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["cursor"]}
+        initialRequest={{
+          sessionId: session.id,
+          targetAgent: "cursor",
+          historyBudgetTokens: 120000,
+          format: "markdown",
+          targetSurface: "cursor-ide",
+          autoPrepare: false,
+        }}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Connect a Cursor window" })).toBeEnabled(),
+    );
+    await waitFor(() =>
+      expect(api.cursorBridge).toHaveBeenCalledWith({
+        action: "status",
+        workspaceId: workspace.id,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeDisabled();
+    expect(api.prepareSessionHandoff).not.toHaveBeenCalled();
+  });
+
+  it("passes IDE surface and binding through both preview and approved planning", async () => {
+    const nextDraft = {
+      ...draft,
+      window_strategy: "full" as const,
+      archive_id: undefined,
+      mcp_available: false,
+      target_fingerprint: "cursor-frozen",
+    };
+    vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft: nextDraft });
+    vi.mocked(api.planSessionHandoff).mockResolvedValue({
+      change_set: {} as import("@/core/types").ChangeSet,
+      launch_request: {
+        mode: "native-import",
+        workspace_id: workspace.id,
+        target_agent: "cursor",
+        operation_id: "op",
+        plan_hash: "hash",
+      },
+    });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={session}
+        targetAgents={["cursor"]}
+        initialRequest={{
+          sessionId: session.id,
+          targetAgent: "cursor",
+          historyBudgetTokens: 120000,
+          format: "markdown",
+          targetSurface: "cursor-ide",
+          bindingId: "selected-binding",
+          autoPrepare: false,
+        }}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Inspect transferable content" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Inspect transferable content" }));
+    await waitFor(() =>
+      expect(api.prepareSessionHandoff).toHaveBeenCalledWith(
+        expect.objectContaining({ target_surface: "cursor-ide", binding_id: "selected-binding" }),
+      ),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Review import changes" }));
+    await waitFor(() =>
+      expect(api.planSessionHandoff).toHaveBeenCalledWith(
+        "session",
+        "workspace",
+        draft.filename,
+        draft.format,
+        undefined,
+        "cursor",
+        draft.mode,
+        draft.source_fingerprint,
+        true,
+        120000,
+        undefined,
+        "cursor-frozen",
+        "cursor-ide",
+        "selected-binding",
+      ),
+    );
+  });
+
+  it("shows the observed Cursor source surface without inferring it from agent kind", async () => {
+    vi.mocked(api.sessionSourceCapability).mockResolvedValue({
+      status: "supported",
+      source_surface: "cursor-ide",
+    });
+    render(
+      <SessionHandoffDialog
+        workspace={workspace}
+        session={{ ...session, agent: "cursor" }}
+        targetAgents={["claude-code"]}
+        onClose={vi.fn()}
+        onPlanned={vi.fn()}
+        onMcpConnectionPlanned={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Source: Cursor IDE · normal window")).toBeVisible();
+  });
 
   it("uses the safe default budget and blocks a windowed import without MCP", async () => {
     vi.mocked(api.prepareSessionHandoff).mockResolvedValue({ status: "ready", draft });

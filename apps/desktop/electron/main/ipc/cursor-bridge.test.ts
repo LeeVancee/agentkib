@@ -44,7 +44,7 @@ describe("local Cursor bridge IPC", () => {
       bindingId: "binding",
     });
     expect(trusted).toHaveBeenCalledWith(event);
-    expect(request).toHaveBeenCalledWith("cursor.bridge", {
+    expect(request).toHaveBeenCalledWith("workspace.cursorBridge", {
       action: "connect",
       workspaceId: "workspace",
       bindingId: "binding",

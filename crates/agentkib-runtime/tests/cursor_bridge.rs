@@ -18,6 +18,7 @@ struct Fixture {
     workspace: PathBuf,
     workspace_id: String,
     source_id: String,
+    #[cfg(target_os = "macos")]
     source: PathBuf,
 }
 
@@ -79,12 +80,14 @@ impl Fixture {
             workspace,
             workspace_id,
             source_id: sessions[0].id.clone(),
+            #[cfg(target_os = "macos")]
             source,
         }
     }
 
     fn runtime(&self) -> Runtime {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_agentkib-runtime"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_agentkib-runtime"));
+        command
             .env_clear()
             .env("AGENTKIB_BENCHMARK_DATA_DIR", self.root.path().join("data"))
             .env("CLAUDE_CONFIG_DIR", self.root.path().join("claude"))
@@ -96,9 +99,15 @@ impl Fixture {
             .current_dir(&self.workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::inherit());
+        // Windows system libraries still need SystemRoot in an otherwise
+        // isolated environment. Keep user configuration and PATH excluded.
+        #[cfg(windows)]
+        command.env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").expect("Windows SystemRoot"),
+        );
+        let mut child = command.spawn().unwrap();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().unwrap();
         let (tx, responses) = mpsc::channel();

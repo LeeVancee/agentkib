@@ -429,7 +429,7 @@ export function WorkspaceSessionsPage({
                   {filtered.length}
                 </Badge>
               </div>
-              <div className="ml-auto flex shrink-0 items-center gap-0.5">
+              <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-0.5">
                 <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
                   Claude Code
                 </Button>

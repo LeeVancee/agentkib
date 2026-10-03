@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { spawn } from "node:child_process";
+import spawn from "cross-spawn";
 import path from "node:path";
-import { resolveCommand } from "./command-resolution";
+import { resolveCommand, resolveCommands } from "./command-resolution";
+import { pathIdentity } from "./paths";
+import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 
 type Channel =
   | "official-installer"
@@ -199,7 +201,7 @@ export class AgentTools {
         throw new Error("This action cannot be executed inside AgentKib");
       const current = tool.installations.find((item) => item.id === action.installation_id);
       const managerName = action.channel === "homebrew" ? "brew" : action.channel;
-      const manager = resolveCommand(managerName);
+      const manager = resolveCommand(current?.manager_path ?? managerName);
       if (!manager)
         throw new Error("Agent tool package manager is no longer available; detect again");
       const args = this.#managerArgs(
@@ -237,27 +239,53 @@ export class AgentTools {
   }
 
   async #inspect(spec: Spec, cache: Record<string, { version: string; checked_at: string }>) {
-    const candidates = [spec.command, ...(spec.agent === "cursor" ? ["agent"] : [])]
-      .map((command) => resolveCommand(command))
-      .filter((value): value is string => Boolean(value));
-    const unique = [...new Set(candidates)];
+    const home = process.env.HOME ?? process.env.USERPROFILE;
+    const additional: string[] = [];
+    if (home) {
+      additional.push(path.join(home, ".opencode/bin"), path.join(home, ".grok/bin"));
+      const versions = path.join(process.env.NVM_DIR ?? path.join(home, ".nvm"), "versions/node");
+      const entries = await fs.readdir(versions, { withFileTypes: true }).catch(() => []);
+      additional.push(
+        ...entries
+          .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+          .map((entry) => path.join(versions, entry.name, "bin"))
+          .sort(),
+      );
+    }
+    const names = [spec.command, ...(spec.agent === "cursor" ? ["agent"] : [])];
+    const defaults = new Set(
+      names.flatMap((command) => {
+        const candidate = resolveCommand(command);
+        return candidate ? [pathIdentity(candidate)] : [];
+      }),
+    );
+    const seen = new Set<string>();
+    const unique = names
+      .flatMap((command) => resolveCommands(command, process.env, additional))
+      .filter((executable) => {
+        const identity = pathIdentity(executable);
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      });
     const installations: Installation[] = [];
-    for (const [index, executable] of unique.entries()) {
+    for (const executable of unique) {
       const version = await this.#probe(executable);
-      const channel = this.#inferChannel(executable);
+      const resolved = await fs.realpath(executable).catch(() => executable);
+      const channel = this.#inferChannel(executable, resolved);
       const managerChannel = this.#managerChannel(executable, channel);
       const id = `${spec.agent}-${createHash("sha256").update(executable).digest("hex").slice(0, 12)}`;
       installations.push({
         id,
         path: this.#redactPath(executable),
-        resolved_path: this.#redactPath(await fs.realpath(executable).catch(() => executable)),
+        resolved_path: this.#redactPath(resolved),
         ...(version ? { version } : {}),
         runnable: Boolean(version),
         ...(version ? {} : { error: "version-unavailable" }),
         channel,
         environment: this.#environment(executable),
         ...(managerChannel ? { manager_path: resolveCommand(managerChannel) ?? undefined } : {}),
-        is_path_default: index === 0,
+        is_path_default: defaults.has(pathIdentity(executable)),
       });
     }
     const primary =
@@ -534,16 +562,25 @@ export class AgentTools {
       inferred === "homebrew" ||
       inferred === "volta"
     )
-      return resolveCommand(inferred === "homebrew" ? "brew" : inferred) ?? undefined;
+      return (
+        resolveCommand(
+          path.join(path.dirname(executable), inferred === "homebrew" ? "brew" : inferred),
+        ) ??
+        resolveCommand(inferred === "homebrew" ? "brew" : inferred) ??
+        undefined
+      );
     return undefined;
   }
-  #inferChannel(executable: string): Channel {
-    const value = executable.replaceAll("\\", "/").toLowerCase();
-    if (value.includes("/homebrew/")) return "homebrew";
+  #inferChannel(executable: string, resolved: string): Channel {
+    const value = `${executable}|${resolved}`.replaceAll("\\", "/").toLowerCase();
+    if (value.includes("/caskroom/") || value.includes("/cellar/")) return "homebrew";
     if (value.includes("/.bun/") || value.includes("/bun/")) return "bun";
     if (value.includes("/pnpm/")) return "pnpm";
     if (value.includes("/volta/")) return "volta";
-    if (value.includes("/node_modules/")) return "npm";
+    if (value.includes("/.config/yarn/global/")) return "yarn";
+    if (value.includes("/node_modules/") || value.includes("/.nvm/") || value.includes("/fnm/"))
+      return "npm";
+    if (value.includes("/nix/store/")) return "nix";
     if (value.includes("/mise/")) return "unknown";
     if (
       ["codex", "claude-code", "hermes", "grok-build", "opencode", "open-claw"].includes(
@@ -657,26 +694,68 @@ export class AgentTools {
         const child = spawn(program, args, {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
+          detached: process.platform !== "win32",
+        });
+        let tree: NativeProcessTree | undefined;
+        const terminate = () => {
+          if (tree) {
+            tree.terminate();
+            return;
+          }
+          if (process.platform !== "win32" && child.pid) {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL");
+            }
+          } else child.kill("SIGKILL");
+        };
+        child.once("spawn", () => {
+          if (process.platform === "win32" && child.pid) {
+            try {
+              tree = windowsProcessTree(child.pid);
+            } catch (error) {
+              terminate();
+              finish();
+              reject(error);
+            }
+          }
         });
         let output = Buffer.alloc(0);
         let timedOut = false;
+        let finished = false;
+        let drainTimer: ReturnType<typeof setTimeout> | undefined;
+        const finish = () => {
+          if (finished) return false;
+          finished = true;
+          clearTimeout(timer);
+          clearTimeout(drainTimer);
+          tree?.close();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          return true;
+        };
         const timer = setTimeout(() => {
           timedOut = true;
-          child.kill();
+          terminate();
+          // Detached descendants must not keep a version probe waiting on inherited pipes.
+          drainTimer = setTimeout(() => {
+            if (finish())
+              resolve({ code: child.exitCode, output: output.toString("utf8"), timedOut });
+          }, 500);
         }, timeout);
         const read = (chunk: Buffer) => {
           if (output.length < maxOutput)
             output = Buffer.concat([output, chunk.subarray(0, maxOutput - output.length)]);
         };
-        child.stdout.on("data", read);
-        child.stderr.on("data", read);
+        child.stdout!.on("data", read);
+        child.stderr!.on("data", read);
+        child.once("exit", terminate);
         child.once("error", (error) => {
-          clearTimeout(timer);
-          reject(error);
+          if (finish()) reject(error);
         });
         child.once("close", (code) => {
-          clearTimeout(timer);
-          resolve({ code, output: output.toString("utf8"), timedOut });
+          if (finish()) resolve({ code, output: output.toString("utf8"), timedOut });
         });
       },
     );

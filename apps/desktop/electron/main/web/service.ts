@@ -238,6 +238,8 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/codex/goals": { lan: true },
     "/codex/context-options": { lan: true },
     "/managed/options": { lan: true },
+    "/managed/capabilities": { lan: true },
+    "/managed/inspect": { lan: true },
     "/managed/context": { lan: true },
     "/files/workspaces": { lan: true },
     "/files/list": { lan: true },

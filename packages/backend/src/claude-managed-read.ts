@@ -296,8 +296,8 @@ export class ClaudeManagedReadOwner {
         try {
           this.#ensureNoExternalOwner(record.nativeId);
           if (!record.fresh) {
-            const target = await this.#resolveNative(record.nativeId);
-            if (record.fingerprint !== this.#targetFingerprint(record.nativeId, target.workspace))
+            const target = await this.#resolveNative(record.id);
+            if (target.nativeId !== record.nativeId || record.fingerprint !== target.fingerprint)
               throw new Error("Claude-history-changed-requires-handoff");
           }
         } catch (error) {
@@ -1530,9 +1530,7 @@ export class ClaudeManagedReadOwner {
       native.sidechain
     )
       throw new Error("unverified-session-identity");
-    const digest = createHash("sha256")
-      .update(JSON.stringify([native.native_ref, workspace, document]))
-      .digest("hex");
+    const digest = this.#targetFingerprint(native.native_ref, workspace);
     return { workspaceId, workspace, nativeId: native.native_ref, fingerprint: digest };
   }
 }

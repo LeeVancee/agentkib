@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { compareUtf8 } from "./workspaces";
 
 const MAX_TREE_ENTRIES = 20_000;
 const MAX_CANDIDATES = 200;
@@ -988,7 +989,7 @@ export class Skills {
       }
     };
     await walk(root);
-    entries.sort((a, b) => a.relative.localeCompare(b.relative));
+    entries.sort((a, b) => compareUtf8(a.relative, b.relative));
     const hash = createHash("sha256");
     let modifiedAt: string | null = null;
     for (const entry of entries) {

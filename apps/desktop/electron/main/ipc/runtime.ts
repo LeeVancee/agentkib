@@ -57,10 +57,11 @@ export function registerRuntimeIpc({
         return {
           action,
           workspaceId: requireString(input.workspaceId, "workspaceId"),
-          bindingId:
-            action === "disconnect"
-              ? requireString(input.bindingId, "bindingId")
-              : optionalString(input.bindingId, "bindingId"),
+          ...(action === "disconnect"
+            ? { bindingId: requireString(input.bindingId, "bindingId") }
+            : input.bindingId !== undefined
+              ? { bindingId: optionalString(input.bindingId, "bindingId") }
+              : {}),
         };
       },
     );

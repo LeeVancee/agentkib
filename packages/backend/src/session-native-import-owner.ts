@@ -697,6 +697,9 @@ async function executeNativeImport(
     receipt.target_session_id = id;
     receipt.verified = true;
     atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
+  } else {
+    const id = await verifyNativeImport(plan, directory, commands, env, false);
+    if (id !== receipt.target_session_id) throw new Error("Native import target identity changed");
   }
   return { target_session_id: receipt.target_session_id, receipt };
 }
@@ -1042,16 +1045,18 @@ export async function reconcileNativeImport(
   return { targetSessionId: result.target_session_id, verified: result.receipt.verified };
 }
 
-export function nativeImportLaunchInfo(
+export async function nativeImportLaunchInfo(
   dataDir: string,
   value: unknown,
-): {
+  commands: Commands,
+  env: NodeJS.ProcessEnv,
+): Promise<{
   request: NativeImportRequest;
   plan: NativeImportPlan;
   targetSessionId: string;
   environment: NodeJS.ProcessEnv;
   alreadyLaunched: boolean;
-} {
+}> {
   const loaded = loadNativeImportPlan(dataDir, value);
   const receiptPath = path.join(loaded.directory, "receipt.json");
   const receipt = JSON.parse(
@@ -1068,6 +1073,9 @@ export function nativeImportLaunchInfo(
     !validTargetId
   )
     throw new Error("Native import receipt is not verified");
+  const verifiedId = await verifyNativeImport(loaded.plan, loaded.directory, commands, env, false);
+  if (verifiedId !== receipt.target_session_id)
+    throw new Error("Native import target identity changed");
   return {
     request: loaded.request,
     plan: loaded.plan,

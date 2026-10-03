@@ -133,14 +133,36 @@ export async function continueCursorNativeImport(
   )
     throw new Error("Cursor import plan does not match the reviewed operation");
   const plan = JSON.parse(content.toString("utf8")) as Plan;
-  const sourceSummary = sessionStore.get(plan.source_session_id);
-  if (!sourceSummary) throw new Error("Cursor import source is unavailable");
-  const workspaceRecord = store.getWorkspace(sourceSummary.workspace_id) as {
+  const persisted = existsSync(planFile);
+  if (persisted) {
+    const metadata = lstatSync(planFile);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || !readFileSync(planFile).equals(content))
+      throw new Error("Persisted Cursor import plan changed");
+  }
+  const sourceSummary = persisted ? null : sessionStore.get(plan.source_session_id);
+  if (!persisted && !sourceSummary) throw new Error("Cursor import source is unavailable");
+  const workspaceRecord = (
+    persisted
+      ? (
+          store.listWorkspaces() as Array<{
+            id: string;
+            path: string;
+            manifest_workspace_id?: string | null;
+          }>
+        ).find(
+          (item) =>
+            (item.manifest_workspace_id ?? item.id) === request.workspace_id &&
+            canonicalProject(item.path) === plan.workspace,
+        )
+      : store.getWorkspace(sourceSummary!.workspace_id)
+  ) as {
     id: string;
+    path: string;
     manifest_workspace_id?: string | null;
   };
+  if (!workspaceRecord) throw new Error("Cursor import workspace is unavailable");
   const effectiveWorkspace = workspaceRecord.manifest_workspace_id ?? workspaceRecord.id;
-  const workspace = canonicalProject(store.workspacePath(sourceSummary.workspace_id));
+  const workspace = canonicalProject(store.workspacePath(workspaceRecord.id));
   if (
     plan.schema_version !== 1 ||
     plan.operation_id !== request.operation_id ||
@@ -150,17 +172,19 @@ export async function continueCursorNativeImport(
     plan.workspace !== workspace ||
     plan.source_session_id === "" ||
     plan.target_session_id !== plan.operation_id ||
-    effectiveWorkspace !== request.workspace_id
+    effectiveWorkspace !== request.workspace_id ||
+    plan.document.source.workspace_id !== effectiveWorkspace
   )
     throw new Error("Cursor import plan identity mismatch");
   bridge.validateContext(plan.context);
-  const current = await sessions.document(plan.source_session_id);
-  current.source.workspace_id = effectiveWorkspace;
-  if (
-    fingerprintSessionDocument(current) !== plan.source_fingerprint ||
-    fingerprintSessionDocument(plan.document) !== plan.source_fingerprint
-  )
-    throw new Error("Source changed after Cursor import preview");
+  if (fingerprintSessionDocument(plan.document) !== plan.source_fingerprint)
+    throw new Error("Persisted Cursor source snapshot changed");
+  if (!persisted) {
+    const current = await sessions.document(plan.source_session_id);
+    current.source.workspace_id = effectiveWorkspace;
+    if (fingerprintSessionDocument(current) !== plan.source_fingerprint)
+      throw new Error("Source changed after Cursor import preview");
+  }
   const currentBinding = bridge.context(request.binding_id, workspace);
   if (JSON.stringify(currentBinding) !== JSON.stringify(plan.context))
     throw new Error("Cursor binding changed after preview");
@@ -172,7 +196,7 @@ export async function continueCursorNativeImport(
   )
     throw new Error("Cursor import payload differs from the reviewed source");
 
-  if (!existsSync(planFile)) {
+  if (!persisted) {
     applyRequest(
       { changeSet, approveHome: true },
       store,
@@ -192,10 +216,6 @@ export async function continueCursorNativeImport(
         return [planFile];
       },
     );
-  } else {
-    const metadata = lstatSync(planFile);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || !readFileSync(planFile).equals(content))
-      throw new Error("Persisted Cursor import plan changed");
   }
 
   const receiptFile = path.join(directory, "receipt.json");
@@ -298,13 +318,21 @@ export async function continueCursorNativeImport(
     .sessions.find((session) => session.native_ref === receipt.target_session_id);
   if (!actual) throw new Error("Verified Cursor import is no longer readable");
   const imported = provider.document(actual, effectiveWorkspace, workspace);
-  provider.verifyPromptProjection(actual.native_ref, workspace, promptProjection(plan.expected));
+  provider.verifyPromptProjection(
+    actual.native_ref,
+    workspace,
+    promptProjection(plan.expected),
+    !receipt.verified,
+  );
   if (
+    (!receipt.verified && imported.turns.length !== plan.expected.turns.length) ||
     JSON.stringify(
-      imported.turns.map((turn) => [
-        turn.role,
-        turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-      ]),
+      imported.turns
+        .slice(0, plan.expected.turns.length)
+        .map((turn) => [
+          turn.role,
+          turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
+        ]),
     ) !==
       JSON.stringify(
         plan.expected.turns.map((turn) => [
@@ -312,9 +340,10 @@ export async function continueCursorNativeImport(
           turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
         ]),
       ) ||
-    (actual.title !== plan.marker && actual.title !== `(1) ${plan.marker}`)
+    (!receipt.verified && actual.title !== plan.marker && actual.title !== `(1) ${plan.marker}`)
   )
     throw new Error("Cursor imported history no longer matches its reviewed preview");
+  receipt.verified = true;
   const nativeId = new CursorIdeSessions(bridge).nativeId(receipt.target_session_id, workspace);
   await bridge.call(plan.context, "open", { native_id: nativeId }).catch((error: unknown) => {
     throw new Error(

@@ -15,8 +15,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonicalize, pathIdentity } from "./paths";
 import { Sql } from "./sql";
 import { Commands } from "./commands";
-import { windowsProcessTree } from "./native-process";
-import { MacOwnedProcessTree } from "./mac-owned-process-tree";
+import { resolveCommand } from "./command-resolution";
 import {
   type McpServer,
   effectiveMcp,
@@ -95,7 +94,6 @@ export class McpManager {
   #closed = false;
   #reaper: NodeJS.Timeout;
   #failures = new Map<string, { serverId: string; count: number; since: number }>();
-  #processTrees = new WeakMap<Transport, { terminate(): Promise<void> | void; close?(): void }>();
   #runtimeStatus = new Map<
     string,
     {
@@ -769,25 +767,18 @@ export class McpManager {
   }
 
   async #closeClient(active: { client: Client; transport: Transport }): Promise<void> {
-    const child = (
-      active.transport as Transport & { _process?: import("node:child_process").ChildProcess }
-    )._process;
     const closing = active.client.close();
-    const forceTimer = setTimeout(() => {
-      if (child?.exitCode !== null || child?.killed) return;
-      const tree = this.#processTrees.get(active.transport);
-      try {
-        if (tree) void Promise.resolve(tree.terminate()).catch(() => child.kill("SIGKILL"));
-        else child.kill("SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-    }, 500);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, 1_500))]);
+      await Promise.race([
+        closing,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1_500);
+        }),
+      ]);
     } finally {
-      clearTimeout(forceTimer);
-      this.#processTrees.get(active.transport)?.close?.();
+      clearTimeout(timer);
+      await active.transport.close();
     }
   }
 
@@ -828,15 +819,15 @@ export class McpManager {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     let transport: Transport;
     if (server.transport === "stdio") {
-      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
-      const linuxCommand = process.platform === "linux";
-      transport = new StdioClientTransport({
-        command: linuxCommand ? "setsid" : server.command,
-        args: linuxCommand ? ["--", server.command, ...server.args] : server.args,
+      const { McpStdioTransport } = await import("./mcp-stdio-transport");
+      const environment = { ...process.env, ...this.environment, ...server.env };
+      const executable = resolveCommand(server.command, environment);
+      if (!executable) throw new Error(`MCP executable is unavailable: ${server.command}`);
+      transport = new McpStdioTransport({
+        command: executable,
+        args: server.args,
         cwd: server.cwd ?? undefined,
-        env: safeEnvironment({ ...process.env, ...this.environment, ...server.env }),
-        stderr: "ignore",
-        maxBufferSize: 10 * 1024 * 1024,
+        env: safeEnvironment(environment),
       });
     } else {
       const { StreamableHTTPClientTransport } =
@@ -867,28 +858,6 @@ export class McpManager {
       checkCurrent();
       await client.connect(transport, { timeout: 15_000 });
       checkCurrent();
-      const child = (
-        transport as Transport & { _process?: import("node:child_process").ChildProcess }
-      )._process;
-      if (child?.pid) {
-        if (process.platform === "win32") {
-          const tree = windowsProcessTree(child.pid);
-          this.#processTrees.set(transport, tree);
-        } else if (process.platform === "darwin") {
-          const tree = MacOwnedProcessTree.attach(child);
-          this.#processTrees.set(transport, { terminate: () => tree.terminate(child) });
-        } else if (process.platform === "linux") {
-          this.#processTrees.set(transport, {
-            terminate: () => {
-              try {
-                process.kill(-child.pid!, "SIGKILL");
-              } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-              }
-            },
-          });
-        }
-      }
       const result = await client.listTools({}, { timeout: 15_000 });
       checkCurrent();
       const tools = result.tools

@@ -498,6 +498,11 @@ export class RemoteAgent {
     };
   }
   async #pollPair(peerId: string, pendingId: string, expires: number) {
+    const generation = this.#generation;
+    const current = () =>
+      !this.#stopped &&
+      generation === this.#generation &&
+      this.#config.connections[peerId]?.status === "pending";
     while (!this.#stopped && this.#now() < expires) {
       const connection = this.#config.connections[peerId];
       if (!connection || connection.status === "disconnected") return;
@@ -506,6 +511,7 @@ export class RemoteAgent {
           op: "pair-status",
           id: pendingId,
         });
+        if (!current()) return;
         if (
           record(response.result) &&
           ["approved", "rejected"].includes(String(response.result.status))
@@ -521,6 +527,7 @@ export class RemoteAgent {
           return;
         }
       } catch (error) {
+        if (!current()) return;
         if (error instanceof Error && error.message.includes("IDENTITY_CHANGED")) {
           const next = structuredClone(this.#config);
           if (next.connections[peerId]) {
@@ -541,6 +548,7 @@ export class RemoteAgent {
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
+    if (!current()) return;
     const next = structuredClone(this.#config);
     if (next.connections[peerId]?.status === "pending") {
       next.connections[peerId]!.status = "expired";
@@ -549,21 +557,29 @@ export class RemoteAgent {
     }
   }
   #startHeartbeat(peerId: string) {
-    if (this.#heartbeat.has(peerId)) return;
+    if (this.#stopped || this.#heartbeat.has(peerId)) return;
     const timer = setInterval(() => {
-      void this.#heartbeatPeer(peerId);
+      void this.#heartbeatPeer(peerId, timer);
     }, 10_000);
     timer.unref();
     this.#heartbeat.set(peerId, timer);
-    void this.#heartbeatPeer(peerId);
+    void this.#heartbeatPeer(peerId, timer);
   }
-  async #heartbeatPeer(peerId: string) {
+  async #heartbeatPeer(peerId: string, timer: ReturnType<typeof setInterval>) {
     const connection = this.#config.connections[peerId];
-    if (!connection || connection.status === "disconnected") return;
+    const generation = this.#generation;
+    const current = () =>
+      !this.#stopped &&
+      generation === this.#generation &&
+      this.#heartbeat.get(peerId) === timer &&
+      this.#config.connections[peerId]?.status !== "disconnected";
+    if (!connection || !current()) return;
     try {
       await exchangeRemotePeer(this.#identity, connection.address, peerId, { op: "heartbeat" });
+      if (!current()) return;
       this.#updateConnection(peerId, "online", null);
     } catch (error) {
+      if (!current()) return;
       this.#updateConnection(
         peerId,
         "offline",
@@ -587,15 +603,15 @@ export class RemoteAgent {
     const next = structuredClone(this.#config);
     if (operation === "remove") {
       delete next.connections[id];
-      const timer = this.#heartbeat.get(id);
-      if (timer) clearInterval(timer);
-      this.#heartbeat.delete(id);
     } else if (next.connections[id]) {
       next.connections[id]!.status = "disconnected";
       next.connections[id]!.error = null;
     }
     this.#persist(next);
     this.#config = next;
+    const timer = this.#heartbeat.get(id);
+    if (timer) clearInterval(timer);
+    this.#heartbeat.delete(id);
     this.#generation++;
     return this.#status();
   }
@@ -622,6 +638,7 @@ export class RemoteAgent {
     try {
       result = await exchangeRemotePeer(this.#identity, connection.address, id, body);
     } catch (error) {
+      if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
       const code = error instanceof Error ? error.message : "REMOTE_OFFLINE";
       const status = code.includes("REMOTE_REVOKED")
         ? "revoked"
@@ -635,7 +652,7 @@ export class RemoteAgent {
       this.#updateConnection(id, status, status);
       throw error;
     }
-    if (generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
+    if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
     this.#updateConnection(id, "online", null);
     this.#startHeartbeat(id);
     return value.operation === "connect" ? this.#status() : result.result;
@@ -748,7 +765,7 @@ export class RemoteAgent {
         .filter((workspace) => registered.has(workspace.id))
         .map((workspace) => ({
           id: workspace.id,
-          path: workspace.canonical_path,
+          path: workspace.path,
           name: workspace.name,
           status: workspace.status,
           asset_count: workspace.asset_count,

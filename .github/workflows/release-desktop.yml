@@ -276,6 +276,7 @@ jobs:
           pnpm protocol:generate
           pnpm cursor:stage
           pnpm quota:prepare
+          pnpm quota:stage
           pnpm relay:stage
           pnpm --filter @agentkib/web build
           pnpm build:web
@@ -496,6 +497,7 @@ jobs:
           pnpm protocol:generate
           pnpm cursor:stage
           pnpm quota:prepare
+          pnpm quota:stage
           pnpm relay:stage
           pnpm --filter @agentkib/web build
           pnpm build:web

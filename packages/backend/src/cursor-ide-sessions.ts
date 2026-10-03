@@ -579,13 +579,14 @@ export class CursorIdeSessions {
     nativeRef: string,
     workspace: string,
     expected: Array<{ role: "user" | "assistant"; text: string }>,
+    exact = true,
   ): void {
     const { db, header } = this.#locate(nativeRef, workspace);
     try {
       const prompts = db.read(header).prompts;
-      if (prompts.length !== expected.length)
+      if (exact ? prompts.length !== expected.length : prompts.length < expected.length)
         throw new Error("Cursor imported prompt count differs from the approved preview");
-      for (const [index, prompt] of prompts.entries()) {
+      for (const [index, prompt] of prompts.slice(0, expected.length).entries()) {
         let value: unknown;
         try {
           value = JSON.parse(decoder.decode(prompt));

@@ -260,7 +260,7 @@ export async function prepareHandoffLaunch(
   const terminal = await resolveTerminal(commands, environment);
   if (request.mode === "native-import") {
     if (!dataDir) throw new Error("Native import data directory is unavailable");
-    const imported = nativeImportLaunchInfo(dataDir, request);
+    const imported = await nativeImportLaunchInfo(dataDir, request, commands, environment);
     if (
       imported.plan.workspace !== workspace ||
       imported.plan.target_agent !== request.target_agent

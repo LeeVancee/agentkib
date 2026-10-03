@@ -56,6 +56,7 @@ export const TYPESCRIPT_WORKSPACE_METHODS = new Set<string>([
   RUNTIME_METHODS.removeScanRoot,
   RUNTIME_METHODS.refreshDiscovery,
   RUNTIME_METHODS.openWorkspaceWithApp,
+  RUNTIME_METHODS.cursorBridge,
 ]);
 
 export const TYPESCRIPT_WORKSPACE_OPENER_METHODS = new Set<string>([

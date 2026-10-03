@@ -8,6 +8,7 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
+    "verify:windows:mcp-cleanup": "pnpm protocol:generate && pnpm backend:build && node scripts/run-windows-mcp-cleanup.mjs",
     "dev": "pnpm dev:typescript",
     "dev:typescript": "pnpm protocol:generate && pnpm cursor:stage && pnpm quota:prepare && pnpm quota:stage && pnpm electron:build && concurrently -k -n renderer,electron \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:1420 && cross-env AGENTKIB_DEV=1 VITE_DEV_SERVER_URL=http://127.0.0.1:1420 electron dist-electron/main.cjs\"",
     "build": "pnpm build:electron",

@@ -2,6 +2,7 @@
   "name": "agentkib",
   "private": true,
   "scripts": {
+    "verify:windows:mcp-cleanup": "pnpm --filter @agentkib/desktop verify:windows:mcp-cleanup",
     "diagnose:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/diagnose-windows.ps1",
     "dev": "pnpm --filter @agentkib/desktop dev",
     "dev:typescript": "pnpm --filter @agentkib/desktop dev:typescript",

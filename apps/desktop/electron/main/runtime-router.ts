@@ -369,11 +369,17 @@ export class RuntimeRouter extends EventEmitter implements RuntimeHost {
         this.typescript.request<
           Pick<
             DiscoverySnapshot,
-            "candidates" | "errors" | "source_diagnostics" | "home_assets" | "installations"
+            | "candidates"
+            | "errors"
+            | "source_diagnostics"
+            | "home_assets"
+            | "installations"
+            | "non_workspace_paths"
           >
         >(NATIVE_CONFIGURED_DISCOVERY, {}),
       ]);
       const snapshot: DiscoverySnapshot = {
+        non_workspace_paths: configured.non_workspace_paths,
         candidates: [...scanRoots.candidates, ...configured.candidates],
         installations: configured.installations,
         home_assets: configured.home_assets,

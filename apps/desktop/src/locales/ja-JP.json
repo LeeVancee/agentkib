@@ -135,6 +135,8 @@
   "sessions.remote": "リモート接続",
   "sessions.remoteUnavailable": "近日対応予定",
   "sessions.local": "このデバイス",
+  "sessions.projectless": "プロジェクトなし",
+  "sessions.unclassified": "未分類",
   "sessions.localHistory": "ローカル履歴",
   "sessions.directory": "セッション一覧",
   "sessions.search": "セッション・ワークスペースを検索",

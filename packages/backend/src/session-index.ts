@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { SessionStore } from "./session-store";
 import { SESSION_AGENTS, type NativeListing, type SessionReaders } from "./session-readers";
 import { parameters } from "./rpc";
@@ -57,18 +58,20 @@ export class SessionIndex {
   }
   async #scan(workspaceId: string, force: boolean, epoch: bigint) {
     if (this.#closed || epoch !== this.#epoch || !this.enabled()) return [];
+    const collection = sessionCollection(workspaceId);
+    const agents = collection ? (["codex"] as const) : SESSION_AGENTS;
     if (!force) {
       const statuses = this.store.status(workspaceId);
       if (
-        statuses.length === SESSION_AGENTS.length &&
+        statuses.length === agents.length &&
         statuses.every((status) => status.freshness === "fresh")
       )
         return this.store.list(workspaceId);
     }
-    const workspace = this.store.workspacePath(workspaceId);
+    const workspace = collection ? workspaceId : this.store.workspacePath(workspaceId);
     const current = () => !this.#closed && epoch === this.#epoch && this.enabled();
     let normalizedOwner: ReturnType<SessionStore["owner"]> | undefined;
-    for (const agent of SESSION_AGENTS) {
+    for (const agent of agents) {
       let listing: NativeListing;
       try {
         listing = await this.readers.list(agent, workspace);

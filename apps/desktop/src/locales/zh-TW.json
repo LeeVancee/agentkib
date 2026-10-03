@@ -135,6 +135,8 @@
   "sessions.remote": "遠端連線",
   "sessions.remoteUnavailable": "尚未開放",
   "sessions.local": "本機",
+  "sessions.projectless": "未綁定專案",
+  "sessions.unclassified": "未分類",
   "sessions.localHistory": "本機記錄",
   "sessions.directory": "會話目錄",
   "sessions.search": "搜尋會話或工作區",

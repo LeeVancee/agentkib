@@ -8,6 +8,8 @@ import {
   readdirSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type { SessionCollection } from "@agentkib/runtime-protocol";
+import { CodexSessionOwnership } from "./codex-session-ownership";
 import { homedir } from "node:os";
 import path from "node:path";
 import { Sql } from "./sql";
@@ -170,6 +172,7 @@ function header(value: string): ReturnType<typeof metadata> | null {
   }
 }
 export interface NativeSessionSource {
+  collection?: SessionCollection | null;
   session: NativeSession;
   transcript: string;
   cwd: string;
@@ -240,6 +243,7 @@ export class CodexSessions {
       current = this.databases(home),
       databases = current.length ? current : this.databases(path.join(home, "sqlite")),
       sessions = new Map<string, NativeSessionSource>();
+    const ownership = new CodexSessionOwnership(home, this.environment);
     let incomplete = false;
     for (const file of databases) {
       const db = new DatabaseSync(file, { readOnly: true });
@@ -277,12 +281,14 @@ export class CodexSessions {
           first(["thread_source"]),
           first(["agent_path"]),
           first(["agent_nickname"]),
+          first(["project_id"]),
         ];
         for (const row of sql.rows(
           `SELECT ${expressions.map((expression, index) => `${expression} AS k${index}`).join(",")} FROM threads`,
         )) {
           const cwd = String(row.k2);
-          if (workspace !== null && !within(cwd, workspace)) continue;
+          const collection = ownership.collection(String(row.k0), cwd, row.k14);
+          if (workspace !== null && (collection !== null || !within(cwd, workspace))) continue;
           let transcript = String(row.k1);
           if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
           const parsed = sourceValue(row.k8),
@@ -323,6 +329,7 @@ export class CodexSessions {
                 : null),
             native_ref = String(row.k0);
           sessions.set(native_ref, {
+            collection,
             cwd,
             transcript,
             session: {

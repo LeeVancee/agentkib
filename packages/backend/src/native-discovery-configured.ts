@@ -10,6 +10,7 @@ import { jsonTimestamp } from "./session-history";
 import { Sql } from "./sql";
 import { isDirectory, isProbeWorkspace, pathIdentity } from "./paths";
 import { GrokSessions } from "./grok-sessions";
+import { CodexSessionOwnership } from "./codex-session-ownership";
 import { OpenClawSessions } from "./openclaw-sessions";
 import { HermesSessions } from "./hermes-sessions";
 import { scanNativeHomeAssets } from "./native-home-assets";
@@ -22,6 +23,7 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
     : null;
 
 interface ProviderResult {
+  non_workspace_paths?: string[];
   candidates: DiscoveryCandidate[];
   errors: string[];
   status: string;
@@ -32,6 +34,7 @@ interface ProviderResult {
 /** Discovery adapters for providers whose workspace index is independent of conversation history. */
 export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
   const candidates: DiscoveryCandidate[] = [],
+    non_workspace_paths: string[] = [],
     errors: string[] = [],
     source_diagnostics: Record<string, unknown>[] = [];
   const roots: {
@@ -44,7 +47,7 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
       agent: "codex",
       source: "state-db",
       path: codexHome(environment),
-      read: (home: string) => readCodex(home),
+      read: (home: string) => readCodex(home, environment),
     },
     {
       agent: "claude-code",
@@ -102,6 +105,7 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
       const result = item.read(item.path),
         finished_at = utcNow();
       candidates.push(...result.candidates);
+      non_workspace_paths.push(...(result.non_workspace_paths ?? []));
       if (result.source_diagnostics) source_diagnostics.push(...result.source_diagnostics);
       else
         source_diagnostics.push({
@@ -140,6 +144,7 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
     }
   }
   return {
+    non_workspace_paths,
     candidates: normalizeDiscoveryCandidates(candidates, environment),
     errors,
     source_diagnostics,
@@ -884,7 +889,7 @@ function walkFiles(root: string, maxDepth: number, visit: (file: string) => void
   }
 }
 
-function readCodex(home: string): ProviderResult {
+function readCodex(home: string, environment: NodeJS.ProcessEnv): ProviderResult {
   let metadata;
   try {
     metadata = lstatSync(home);
@@ -895,51 +900,60 @@ function readCodex(home: string): ProviderResult {
   }
   if (isReparseOrSymlink(home, metadata) || !metadata.isDirectory())
     return { candidates: [], errors: [], status: "empty", reasons: [] };
-  const files = readdirSync(home)
-      .filter((name) => name.startsWith("state_") && name.endsWith(".sqlite"))
-      .sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
-      .map((name) => path.join(home, name)),
-    candidates: DiscoveryCandidate[] = [];
+  const ownership = new CodexSessionOwnership(home, environment);
+  const candidates: DiscoveryCandidate[] = [],
+    nonWorkspacePaths: string[] = [];
+  let incomplete = false;
+  const files = readdirSync(home).filter(
+    (name) => name.startsWith("state_") && name.endsWith(".sqlite"),
+  );
   for (const file of files) {
-    const database = new DatabaseSync(file, { readOnly: true });
+    const database = new DatabaseSync(path.join(home, file), { readOnly: true });
     try {
-      const sql = new Sql(database),
-        columns = new Set(sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)));
-      if (!columns.has("cwd")) continue;
-      const timestamps = ["recency_at", "updated_at", "created_at"].filter((name) =>
-          columns.has(name),
-        ),
-        timestampExpression =
-          timestamps.length === 0
-            ? "NULL"
-            : timestamps.length === 1
-              ? `MAX(${timestamps[0]})`
-              : `MAX(COALESCE(${timestamps.join(", ")}))`,
-        rows = sql.rows(
-          `SELECT cwd, ${timestampExpression} AS updated, COUNT(*) AS count FROM threads WHERE cwd IS NOT NULL AND cwd != '' GROUP BY cwd`,
-        );
-      for (const row of rows) {
+      const sql = new Sql(database);
+      const columns = new Set(
+        sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
+      );
+      if (!columns.has("cwd") || !columns.has("id")) {
+        incomplete = true;
+        continue;
+      }
+      const timestamps = [
+        "recency_at_ms",
+        "updated_at_ms",
+        "recency_at",
+        "updated_at",
+        "created_at_ms",
+        "created_at",
+      ].filter((name) => columns.has(name));
+      const timestampExpression =
+        timestamps.length > 1 ? `COALESCE(${timestamps.join(",")})` : (timestamps[0] ?? "NULL");
+      for (const row of sql.rows(
+        `SELECT id,cwd,${columns.has("project_id") ? "project_id" : "NULL"} AS project_id,${timestampExpression} AS updated FROM threads WHERE cwd IS NOT NULL AND cwd != ''`,
+      )) {
         if (typeof row.cwd !== "string") throw new Error("Codex workspace path is invalid");
-        candidates.push(
-          candidate(
-            row.cwd,
-            "codex",
-            "session-cwd",
-            integerTimestamp(row.updated),
-            false,
-            count(row.count),
-          ),
-        );
+        if (ownership.collection(String(row.id), row.cwd, row.project_id))
+          nonWorkspacePaths.push(row.cwd);
+        else
+          candidates.push(
+            candidate(row.cwd, "codex", "session-cwd", integerTimestamp(row.updated), false, 1),
+          );
       }
     } finally {
       database.close();
     }
   }
+  // A cwd shared by a real project and a projectless thread is still a workspace.
+  const projectPaths = new Set(candidates.map((candidate) => pathIdentity(candidate.path)));
+  const non_workspace_paths = incomplete
+    ? []
+    : [...new Set(nonWorkspacePaths)].filter((value) => !projectPaths.has(pathIdentity(value)));
   return {
     candidates,
+    non_workspace_paths,
     errors: [],
-    status: candidates.length ? "succeeded" : "empty",
-    reasons: [],
+    status: incomplete ? "partial" : candidates.length ? "succeeded" : "empty",
+    reasons: incomplete ? ["source-read-failed"] : [],
   };
 }
 

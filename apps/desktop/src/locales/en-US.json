@@ -135,6 +135,8 @@
   "sessions.remote": "Remote connections",
   "sessions.remoteUnavailable": "Not available yet",
   "sessions.local": "This device",
+  "sessions.projectless": "No project",
+  "sessions.unclassified": "Unclassified",
   "sessions.localHistory": "Local history",
   "sessions.directory": "Session directory",
   "sessions.search": "Search sessions or workspaces",

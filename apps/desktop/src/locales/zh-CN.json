@@ -135,6 +135,8 @@
   "sessions.remote": "远程连接",
   "sessions.remoteUnavailable": "尚未开放",
   "sessions.local": "本机",
+  "sessions.projectless": "未绑定项目",
+  "sessions.unclassified": "未分类",
   "sessions.localHistory": "本地记录",
   "sessions.directory": "会话目录",
   "sessions.search": "搜索会话或工作区",

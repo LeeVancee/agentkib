@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { RUNTIME_METHODS, sessionCollection } from "@agentkib/runtime-protocol";
 import { agentSchema, parameters, type AGENTS } from "./rpc";
 import { Sql, positive, type Row } from "./sql";
 import { canonicalize, isDirectory, pathIdentity } from "./paths";
@@ -102,20 +102,22 @@ export class SessionStore {
   list(id: string) {
     return this.sql
       .rows(
-        `SELECT ${columns} FROM conversation_sessions WHERE workspace_id=? ORDER BY COALESCE(updated_at,created_at) DESC,id DESC`,
+        `SELECT ${columns} FROM ${sessionTable(id)} WHERE workspace_id=? ORDER BY COALESCE(updated_at,created_at) DESC,id DESC`,
         id,
       )
       .map(sessionRow);
   }
   get(id: string) {
-    const row = this.sql.one(`SELECT ${columns} FROM conversation_sessions WHERE id=?`, id);
+    const row =
+      this.sql.one(`SELECT ${columns} FROM conversation_sessions WHERE id=?`, id) ??
+      this.sql.one(`SELECT ${columns} FROM conversation_collection_sessions WHERE id=?`, id);
     return row ? sessionRow(row) : null;
   }
   status(id: string) {
     const now = Date.now();
     return this.sql
       .rows(
-        "SELECT workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail FROM conversation_index_status WHERE workspace_id=? ORDER BY agent",
+        `SELECT workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail FROM ${statusTable(id)} WHERE workspace_id=? ORDER BY agent`,
         id,
       )
       .map((row) => {
@@ -139,7 +141,12 @@ export class SessionStore {
   }
   clear(workspace: string | null): void {
     this.sql.transaction(() => {
-      for (const table of ["conversation_sessions", "conversation_index_status"]) {
+      for (const table of [
+        "conversation_sessions",
+        "conversation_index_status",
+        "conversation_collection_sessions",
+        "conversation_collection_status",
+      ]) {
         if (workspace !== null)
           this.sql.run(`DELETE FROM ${table} WHERE workspace_id=?`, workspace);
         else this.sql.run(`DELETE FROM ${table}`);
@@ -193,8 +200,12 @@ export class SessionStore {
   ): void {
     if (!supported.includes(agent))
       throw new Error("Conversation indexing is not supported for this Agent");
-    if (!this.sql.one("SELECT id FROM workspaces WHERE id=?", workspace))
+    const collection = sessionCollection(workspace);
+    if (collection && agent !== "codex") throw new Error("Collection provider is unavailable");
+    if (!collection && !this.sql.one("SELECT id FROM workspaces WHERE id=?", workspace))
       throw new Error("Workspace does not exist");
+    const table = sessionTable(workspace),
+      status = statusTable(workspace);
     // Prepare opaque IDs and validate the entire batch before replacing any cache.
     const prepared = sessions.map((session) => {
       if (session.agent !== agent) throw new Error("Conversation batch contains a different Agent");
@@ -228,14 +239,16 @@ export class SessionStore {
         );
       }
       if (complete && owner.id === workspace)
+        this.sql.run(`DELETE FROM ${table} WHERE workspace_id=? AND agent=?`, workspace, agent);
+      for (const session of prepared) {
+        // Moving into/out of a collection retains the stable opaque ID and removes
+        // the old cached ownership, including records created by earlier releases.
         this.sql.run(
-          "DELETE FROM conversation_sessions WHERE workspace_id=? AND agent=?",
-          workspace,
-          agent,
+          `DELETE FROM ${collection ? "conversation_sessions" : "conversation_collection_sessions"} WHERE id=?`,
+          session.id,
         );
-      for (const session of prepared)
         this.sql.run(
-          `INSERT INTO conversation_sessions(${columns},last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,last_indexed_at=excluded.last_indexed_at`,
+          `INSERT INTO ${table}(${columns},last_indexed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace_id=excluded.workspace_id,agent=excluded.agent,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,message_count=excluded.message_count,git_branch=excluded.git_branch,archived=excluded.archived,sidechain=excluded.sidechain,availability=excluded.availability,origin=excluded.origin,spawned_by_session_id=excluded.spawned_by_session_id,forked_from_session_id=excluded.forked_from_session_id,last_indexed_at=excluded.last_indexed_at`,
           session.id,
           owner.id,
           agent,
@@ -252,6 +265,7 @@ export class SessionStore {
           session.forked_from_session_id,
           indexed,
         );
+      }
       if (owner.id !== workspace)
         this.sql.run(
           "UPDATE conversation_index_status SET session_count=(SELECT COUNT(*) FROM conversation_sessions WHERE workspace_id=? AND agent=?) WHERE workspace_id=? AND agent=?",
@@ -262,13 +276,13 @@ export class SessionStore {
         );
       const count = positive(
         this.sql.one(
-          "SELECT COUNT(*) AS count FROM conversation_sessions WHERE workspace_id=? AND agent=?",
+          `SELECT COUNT(*) AS count FROM ${table} WHERE workspace_id=? AND agent=?`,
           workspace,
           agent,
         )?.count,
       );
       this.sql.run(
-        "INSERT INTO conversation_index_status(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,?,?,?,NULL,NULL) ON CONFLICT(workspace_id,agent) DO UPDATE SET session_count=excluded.session_count,last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,error_key=NULL,error_detail=NULL",
+        `INSERT INTO ${status}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,?,?,?,NULL,NULL) ON CONFLICT(workspace_id,agent) DO UPDATE SET session_count=excluded.session_count,last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,error_key=NULL,error_detail=NULL`,
         workspace,
         agent,
         count,
@@ -279,7 +293,7 @@ export class SessionStore {
   }
   failure(workspace: string, agent: Agent, detail: string): void {
     this.sql.run(
-      "INSERT INTO conversation_index_status(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,0,?,NULL,?,?) ON CONFLICT(workspace_id,agent) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,error_key=excluded.error_key,error_detail=excluded.error_detail",
+      `INSERT INTO ${statusTable(workspace)}(workspace_id,agent,session_count,last_attempt_at,last_success_at,error_key,error_detail) VALUES (?,?,0,?,NULL,?,?) ON CONFLICT(workspace_id,agent) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,error_key=excluded.error_key,error_detail=excluded.error_detail`,
       workspace,
       agent,
       storedTime(utcNow()),
@@ -287,6 +301,12 @@ export class SessionStore {
       detail,
     );
   }
+}
+function sessionTable(id: string): string {
+  return sessionCollection(id) ? "conversation_collection_sessions" : "conversation_sessions";
+}
+function statusTable(id: string): string {
+  return sessionCollection(id) ? "conversation_collection_status" : "conversation_index_status";
 }
 function sessionRow(row: Row) {
   const origin = z.enum(["interactive", "auxiliary", "unknown"]).safeParse(row.origin);

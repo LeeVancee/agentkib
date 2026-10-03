@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { z } from "zod";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
 import { ClaudeSessions } from "./claude-sessions";
 import { GrokSessions } from "./grok-sessions";
@@ -132,6 +133,17 @@ export class SessionReaders {
     return this.#codex.home();
   }
   async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
+    const collection = sessionCollection(workspace);
+    if (collection) {
+      if (agent !== "codex") return { sessions: [], incomplete: false };
+      const listing = this.#codex.list(null);
+      return {
+        sessions: listing.sessions
+          .filter((source) => source.collection === collection)
+          .map((source) => source.session),
+        incomplete: listing.incomplete,
+      };
+    }
     switch (agent) {
       case "opencode":
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
@@ -174,6 +186,24 @@ export class SessionReaders {
     const agent = summary.agent;
     if (!(SESSION_AGENTS as readonly string[]).includes(agent))
       throw new Error("Conversation provider is unavailable");
+    const collection = sessionCollection(summary.workspace_id);
+    if (collection) {
+      if (agent !== "codex") throw new Error("Conversation provider is unavailable");
+      const source = this.#codex
+        .list(null)
+        .sessions.find(
+          (candidate) =>
+            candidate.collection === collection &&
+            this.store.id(agent, candidate.session.native_ref) === id,
+        );
+      if (!source) throw new Error("Conversation transcript is no longer available");
+      return {
+        summary,
+        native: source.session,
+        workspace: source.cwd,
+        transcript: source.transcript,
+      };
+    }
     const workspace = this.store.workspacePath(summary.workspace_id);
     if (agent === "codex" || agent === "claude-code") {
       // Resolve ownership and the transcript together for this request. Readers

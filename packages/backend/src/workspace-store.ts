@@ -207,8 +207,21 @@ export class WorkspaceStore {
         if (error) errors.push(`Workspace ${workspace.path} scan failed: ${error}`);
       }
       const homes = new Set(plan.managed_homes);
+      const nonWorkspaces = new Set((snapshot.non_workspace_paths ?? []).map(pathIdentity));
+      const planned = new Set(plan.workspaces.map((workspace) => pathIdentity(workspace.path)));
       const stale = this.#rows("SELECT id, canonical_path FROM workspaces").filter((row) => {
         const value = String(row.canonical_path);
+        if (nonWorkspaces.has(pathIdentity(value)) && !planned.has(pathIdentity(value))) {
+          const sources = this.#rows(
+            "SELECT agent,evidence FROM workspace_sources WHERE workspace_id=?",
+            String(row.id),
+          );
+          if (
+            sources.length > 0 &&
+            sources.every((source) => source.agent === "codex" && source.evidence === "session-cwd")
+          )
+            return true;
+        }
         return !isDirectory(value) || isProbeWorkspace(value) || homes.has(pathIdentity(value));
       });
       for (const row of stale) this.#run("DELETE FROM workspaces WHERE id = ?", String(row.id));

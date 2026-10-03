@@ -55,6 +55,7 @@ export interface WorkspacePlan {
 }
 
 export interface DiscoverySnapshot {
+  non_workspace_paths?: string[];
   candidates: DiscoveryCandidate[];
   installations: {
     agent: string;

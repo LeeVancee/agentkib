@@ -74,6 +74,7 @@ interface InteractiveCommand {
   arguments: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  environment?: Record<string, string | null>;
 }
 type Terminal =
   | { kind: "macos"; executable: string }
@@ -211,13 +212,25 @@ function batchQuote(value: string): string {
 }
 
 function launcherScript(command: InteractiveCommand, folder: string): string {
+  const environment = Object.entries(command.environment ?? {})
+    .map(([key, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+        throw new Error("interactive environment contains an invalid key");
+      if (process.platform === "win32") {
+        if (value !== null && /[\0\r\n"]/.test(value))
+          throw new Error("interactive environment contains an unsafe value");
+        return `set "${key}=${value === null ? "" : value.replaceAll("%", "%%")}"\r\n`;
+      }
+      return value === null ? `unset ${key}\n` : `export ${key}=${shellQuote(value)}\n`;
+    })
+    .join("");
   if (process.platform === "win32") {
     const needsCall = [".cmd", ".bat"].includes(path.extname(command.executable).toLowerCase());
     const invocation = `${needsCall ? "call " : ""}${[command.executable, ...command.arguments].map(batchQuote).join(" ")}`;
-    return `@echo off\r\ncd /d ${batchQuote(command.cwd)} || exit /b 1\r\n${invocation}\r\ndel "%~f0" >nul 2>&1\r\nrmdir ${batchQuote(folder)} >nul 2>&1\r\n`;
+    return `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${environment}cd /d ${batchQuote(command.cwd)} || exit /b 1\r\n${invocation}\r\ndel "%~f0" >nul 2>&1\r\nrmdir ${batchQuote(folder)} >nul 2>&1\r\n`;
   }
   const invocation = [command.executable, ...command.arguments].map(shellQuote).join(" ");
-  return `#!/bin/sh\nlauncher=$0\nrm -f -- "$launcher"\nrmdir -- ${shellQuote(folder)} 2>/dev/null || true\ncd -- ${shellQuote(command.cwd)} || exit 1\nexec ${invocation}\n`;
+  return `#!/bin/sh\nlauncher=$0\nrm -f -- "$launcher"\nrmdir -- ${shellQuote(folder)} 2>/dev/null || true\n${environment}cd -- ${shellQuote(command.cwd)} || exit 1\nexec ${invocation}\n`;
 }
 
 async function resolveTerminal(commands: Commands, env: NodeJS.ProcessEnv): Promise<Terminal> {
@@ -266,6 +279,11 @@ export async function prepareHandoffLaunch(
       imported.plan.target_agent !== request.target_agent
     )
       throw new Error("Native import workspace or target mismatch");
+    const restored = { ...environment };
+    for (const [key, value] of Object.entries(imported.environment)) {
+      if (value === null) delete restored[key];
+      else restored[key] = value;
+    }
     const command =
       request.target_agent === "open-claw"
         ? openClawInteractive(
@@ -290,9 +308,14 @@ export async function prepareHandoffLaunch(
                     `${imported.plan.model!.provider_id}/${imported.plan.model!.model_id}`,
                   ],
             cwd: workspace,
-            env: { ...environment, ...imported.environment },
+            env: restored,
           };
-    return { request, terminal, command, workspace };
+    return {
+      request,
+      terminal,
+      command: { ...command, environment: imported.environment },
+      workspace,
+    };
   }
   if (request.target_agent !== "codex" && request.target_agent !== "claude-code")
     throw new Error("target Agent does not support interactive continuation");

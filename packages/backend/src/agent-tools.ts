@@ -210,7 +210,14 @@ export class AgentTools {
         action.target_version,
         current?.version !== undefined,
       );
-      const outcome = await this.#run(manager, args);
+      const environment = { ...process.env };
+      const pathKey =
+        Object.keys(environment).find((key) => key.toLowerCase() === "path") ?? "PATH";
+      const managerDirectory = path.dirname(manager);
+      environment[pathKey] = [managerDirectory, environment[pathKey]]
+        .filter(Boolean)
+        .join(path.delimiter);
+      const outcome = await this.#run(manager, args, 5 * 60_000, 256 * 1024, environment);
       const updated = await this.snapshot(true);
       const after = updated.tools
         .find((item) => item.agent === agent)
@@ -272,8 +279,8 @@ export class AgentTools {
     for (const executable of unique) {
       const version = await this.#probe(executable);
       const resolved = await fs.realpath(executable).catch(() => executable);
-      const channel = this.#inferChannel(executable, resolved);
-      const managerChannel = this.#managerChannel(executable, channel);
+      const channel = this.#inferChannel(spec, executable, resolved);
+      const managerChannel = this.#managerChannel(executable, resolved, channel);
       const id = `${spec.agent}-${createHash("sha256").update(executable).digest("hex").slice(0, 12)}`;
       installations.push({
         id,
@@ -283,7 +290,7 @@ export class AgentTools {
         runnable: Boolean(version),
         ...(version ? {} : { error: "version-unavailable" }),
         channel,
-        environment: this.#environment(executable),
+        environment: this.#environment(resolved),
         ...(managerChannel ? { manager_path: resolveCommand(managerChannel) ?? undefined } : {}),
         is_path_default: defaults.has(pathIdentity(executable)),
       });
@@ -367,9 +374,7 @@ export class AgentTools {
       latest &&
       ["npm", "pnpm", "bun", "homebrew"].includes(primary.channel)
     ) {
-      const manager =
-        primary.manager_path ??
-        resolveCommand(primary.channel === "homebrew" ? "brew" : primary.channel);
+      const manager = primary.manager_path;
       if (manager) {
         const shell = process.platform === "win32" ? "powershell" : "posix";
         return [
@@ -411,7 +416,7 @@ export class AgentTools {
           mode: "copy-command",
           channel: primary.channel,
           shell: process.platform === "win32" ? "powershell" : "posix",
-          command: `${path.basename(primary.path)} update`,
+          command: `${path.basename(primary.path)} ${spec.agent === "opencode" ? "upgrade" : "update"}`,
           url: spec.official,
           target_version: latest,
           installation_id: primary.id,
@@ -496,6 +501,11 @@ export class AgentTools {
         ? `bun add -g --trust ${packageRef}`
         : `bun add -g ${packageRef}`;
     if (channel === "yarn" && spec.agent === "opencode") return `yarn global add ${packageRef}`;
+    if (channel === "homebrew")
+      return this.#command(
+        "brew",
+        this.#managerArgs(channel, spec.agent, target ?? "latest", false),
+      );
     return null;
   }
 
@@ -504,17 +514,11 @@ export class AgentTools {
     if (!pkg) throw new Error("Agent tool package is unsupported");
     const ref = `${pkg}@${target}`;
     if (channel === "homebrew")
-      return update
-        ? [
-            "upgrade",
-            "--cask",
-            agent === "codex" ? "codex" : agent === "claude-code" ? "claude-code" : "opencode",
-          ]
-        : [
-            "install",
-            "--cask",
-            agent === "codex" ? "codex" : agent === "claude-code" ? "claude-code" : "opencode",
-          ];
+      return [
+        update ? "upgrade" : "install",
+        ...(agent === "opencode" ? [] : ["--cask"]),
+        agent === "codex" ? "codex" : agent === "claude-code" ? "claude-code" : "opencode",
+      ];
     if (channel === "pnpm")
       return agent === "open-claw"
         ? [...(update ? ["update", "-g"] : ["add", "-g"]), "--allow-build=openclaw", ref]
@@ -553,9 +557,24 @@ export class AgentTools {
       : "manual";
     return `${agent}:${kind}:${channel}:${version ?? "unversioned"}:${installation ?? "new"}:${binding}`;
   }
-  #managerChannel(executable: string, inferred: Channel) {
+  #managerChannel(executable: string, resolved: string, inferred: Channel) {
+    if (inferred === "npm") {
+      // A shim can live outside its npm prefix. Bind updates to the package's
+      // physical installation, never to whichever npm happens to be on PATH.
+      const marker = `${path.sep}node_modules${path.sep}`;
+      const index = resolved.indexOf(marker);
+      if (index >= 0) {
+        const modulesParent = resolved.slice(0, index);
+        const prefix =
+          path.basename(modulesParent) === "lib" ? path.dirname(modulesParent) : modulesParent;
+        return (
+          resolveCommand(path.join(prefix, process.platform === "win32" ? "npm" : "bin/npm")) ??
+          undefined
+        );
+      }
+      return resolveCommand(path.join(path.dirname(resolved), "npm")) ?? undefined;
+    }
     if (
-      inferred === "npm" ||
       inferred === "pnpm" ||
       inferred === "bun" ||
       inferred === "yarn" ||
@@ -571,7 +590,7 @@ export class AgentTools {
       );
     return undefined;
   }
-  #inferChannel(executable: string, resolved: string): Channel {
+  #inferChannel(spec: Spec, executable: string, resolved: string): Channel {
     const value = `${executable}|${resolved}`.replaceAll("\\", "/").toLowerCase();
     if (value.includes("/caskroom/") || value.includes("/cellar/")) return "homebrew";
     if (value.includes("/.bun/") || value.includes("/bun/")) return "bun";
@@ -582,10 +601,16 @@ export class AgentTools {
       return "npm";
     if (value.includes("/nix/store/")) return "nix";
     if (value.includes("/mise/")) return "unknown";
+    if (spec.agent === "claude-code" && value.includes("/.local/share/claude/"))
+      return "official-installer";
     if (
       ["codex", "claude-code", "hermes", "grok-build", "opencode", "open-claw"].includes(
-        path.basename(executable).toLowerCase(),
-      )
+        spec.agent,
+      ) &&
+      path
+        .basename(executable)
+        .toLowerCase()
+        .replace(/\.(exe|cmd|bat)$/, "") === spec.command
     )
       return "official-installer";
     return "local";
@@ -668,6 +693,10 @@ export class AgentTools {
     return 0;
   }
   #command(program: string, args: string[]) {
+    if (process.platform === "win32") {
+      const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      return `& ${quote(program)} ${args.map(quote).join(" ")}`;
+    }
     return `${JSON.stringify(program)} ${args.map((arg) => (/^[A-Za-z0-9@%_+=:,./~-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ")}`;
   }
   #redactPath(value: string) {
@@ -688,10 +717,17 @@ export class AgentTools {
       .slice(0, 256 * 1024);
   }
 
-  #run(program: string, args: string[], timeout = 5 * 60_000, maxOutput = 256 * 1024) {
+  #run(
+    program: string,
+    args: string[],
+    timeout = 5 * 60_000,
+    maxOutput = 256 * 1024,
+    env: NodeJS.ProcessEnv = process.env,
+  ) {
     return new Promise<{ code: number | null; output: string; timedOut: boolean }>(
       (resolve, reject) => {
         const child = spawn(program, args, {
+          env,
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
           detached: process.platform !== "win32",

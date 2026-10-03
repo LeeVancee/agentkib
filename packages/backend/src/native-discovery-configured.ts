@@ -160,9 +160,7 @@ function agentInstallations(environment: NodeJS.ProcessEnv) {
         ? environment.XDG_CONFIG_HOME
         : process.platform === "win32"
           ? (environment.APPDATA ?? path.join(home, "AppData/Roaming"))
-          : process.platform === "darwin"
-            ? path.join(home, "Library/Application Support")
-            : path.join(home, ".config"),
+          : path.join(home, ".config"),
     cursorHome = path.join(home, ".cursor"),
     cursorData = cursorDataHome(environment),
     opencodeConfig = environment.OPENCODE_CONFIG_DIR ?? path.join(xdg, "opencode"),

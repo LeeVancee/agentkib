@@ -180,6 +180,7 @@ export class RemoteAgent {
   #listener: RemoteTlsListener | null = null;
   #closing?: Promise<void>;
   #generation = 0;
+  #pairAttempts = new Map<string, symbol>();
   #stopped = false;
   #heartbeat = new Map<string, ReturnType<typeof setInterval>>();
 
@@ -214,6 +215,7 @@ export class RemoteAgent {
     if (this.#stopped) return this.#closing ?? Promise.resolve();
     this.#stopped = true;
     this.#generation++;
+    this.#pairAttempts.clear();
     for (const timer of this.#heartbeat.values()) clearInterval(timer);
     this.#heartbeat.clear();
     this.#mdns?.browser.stop();
@@ -489,7 +491,14 @@ export class RemoteAgent {
     };
     this.#persist(next);
     this.#config = next;
-    void this.#pollPair(result.peerId, pendingId, expires).catch(() => undefined);
+    const attempt = Symbol();
+    this.#pairAttempts.set(result.peerId, attempt);
+    void this.#pollPair(result.peerId, pendingId, expires, attempt)
+      .finally(() => {
+        if (this.#pairAttempts.get(result.peerId) === attempt)
+          this.#pairAttempts.delete(result.peerId);
+      })
+      .catch(() => undefined);
     return {
       id: result.peerId,
       verification: result.verification,
@@ -497,13 +506,12 @@ export class RemoteAgent {
       expires_at: expires,
     };
   }
-  async #pollPair(peerId: string, pendingId: string, expires: number) {
-    const generation = this.#generation;
+  async #pollPair(peerId: string, pendingId: string, expires: number, attempt: symbol) {
     const current = () =>
       !this.#stopped &&
-      generation === this.#generation &&
+      this.#pairAttempts.get(peerId) === attempt &&
       this.#config.connections[peerId]?.status === "pending";
-    while (!this.#stopped && this.#now() < expires) {
+    while (current() && this.#now() < expires) {
       const connection = this.#config.connections[peerId];
       if (!connection || connection.status === "disconnected") return;
       try {
@@ -612,6 +620,7 @@ export class RemoteAgent {
     const timer = this.#heartbeat.get(id);
     if (timer) clearInterval(timer);
     this.#heartbeat.delete(id);
+    this.#pairAttempts.delete(id);
     this.#generation++;
     return this.#status();
   }

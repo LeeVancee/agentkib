@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
@@ -129,6 +130,22 @@ export class SessionReaders {
     verifyHeader();
     return transcript;
   }
+  claudeControlWorkspace(nativeRef: string, workspaceRoot: string): string {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
+      throw new Error("unverified-session-identity");
+    const root = canonicalize(workspaceRoot);
+    const source = this.#claude
+      .list(null)
+      .sessions.find(
+        (candidate) => candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase(),
+      );
+    if (!source || source.session.sidechain) throw new Error("unverified-session-identity");
+    const cwd = canonicalize(source.cwd);
+    const relative = path.relative(root, cwd);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      throw new Error("session-workspace-mismatch");
+    return cwd;
+  }
   codexHome(): string {
     return this.#codex.home();
   }
@@ -136,11 +153,9 @@ export class SessionReaders {
     const collection = sessionCollection(workspace);
     if (collection) {
       if (agent !== "codex") return { sessions: [], incomplete: false };
-      const listing = this.#codex.list(null);
+      const listing = this.#codex.list(null, { collection });
       return {
-        sessions: listing.sessions
-          .filter((source) => source.collection === collection)
-          .map((source) => source.session),
+        sessions: listing.sessions.map((source) => source.session),
         incomplete: listing.incomplete,
       };
     }
@@ -190,7 +205,10 @@ export class SessionReaders {
     if (collection) {
       if (agent !== "codex") throw new Error("Conversation provider is unavailable");
       const source = this.#codex
-        .list(null)
+        .list(null, {
+          collection,
+          matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
+        })
         .sessions.find(
           (candidate) =>
             candidate.collection === collection &&

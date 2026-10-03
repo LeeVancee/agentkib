@@ -228,7 +228,8 @@ export class Skills {
         const tree = selected.entries.find(
           (value) => value.type === "tree" && value.path === directory,
         );
-        if (!tree) throw new Error(`Could not resolve tree for Skill directory ${directory}`);
+        const treeSha = tree?.sha ?? (directory === "" ? selected.rootTree : undefined);
+        if (!treeSha) throw new Error(`Could not resolve tree for Skill directory ${directory}`);
         return {
           ...metadata,
           source: {
@@ -242,7 +243,7 @@ export class Skills {
             ref: selected.reference,
             path: directory,
             resolved_commit: selected.commit,
-            tree_sha: tree.sha,
+            tree_sha: treeSha,
           },
         } as Candidate;
       } catch (error) {
@@ -390,6 +391,8 @@ export class Skills {
       await fs.mkdir(path.dirname(backup), { recursive: true });
       const stagedBackup = `${backup}.staging-${randomUUID()}`;
       let hasBackup = false;
+      let targetMoved = false;
+      let packageInstalled = false;
       try {
         if (
           old &&
@@ -408,22 +411,16 @@ export class Skills {
             hasBackup = true;
           }
           await fs.rename(target, backup);
+          targetMoved = true;
         }
         await fs.rename(prepared.packagePath, target);
+        packageInstalled = true;
         lock.skills[prepared.name] = prepared.lock;
         if (old) lock.previous[prepared.name] = old;
         await this.#writeLock(lock);
-        if (hasBackup) await fs.rm(stagedBackup, { recursive: true, force: true });
       } catch (error) {
-        await fs.rm(target, { recursive: true, force: true });
-        if (
-          old &&
-          (await fs.stat(backup).then(
-            () => true,
-            () => false,
-          ))
-        )
-          await fs.rename(backup, target);
+        if (packageInstalled) await fs.rm(target, { recursive: true, force: true });
+        if (targetMoved && old) await fs.rename(backup, target);
         if (
           hasBackup &&
           (await fs.stat(stagedBackup).then(
@@ -434,6 +431,7 @@ export class Skills {
           await fs.rename(stagedBackup, backup);
         throw error;
       }
+      if (hasBackup) await fs.rm(stagedBackup, { recursive: true, force: true });
       return (await this.installed()).find((item) => item.name === prepared.name);
     } finally {
       await fs.rm(prepared.tempPath, { recursive: true, force: true });
@@ -463,11 +461,39 @@ export class Skills {
     if (!current || !previous) throw new Error("Rollback metadata is missing");
     const staging = `${target}.rollback-${randomUUID()}`;
     await fs.rename(target, staging);
-    await fs.rename(backup, target);
-    await fs.rename(staging, backup);
-    lock.skills[name] = previous;
-    lock.previous[name] = current;
-    await this.#writeLock(lock);
+    try {
+      await fs.rename(backup, target);
+      try {
+        await fs.rename(staging, backup);
+      } catch (error) {
+        await fs.rename(target, backup);
+        await fs.rename(staging, target);
+        throw error;
+      }
+      lock.skills[name] = previous;
+      lock.previous[name] = current;
+      try {
+        await this.#writeLock(lock);
+      } catch (error) {
+        await fs.rename(target, staging);
+        await fs.rename(backup, target);
+        await fs.rename(staging, backup);
+        throw error;
+      }
+    } catch (error) {
+      if (
+        (await fs.stat(staging).then(
+          () => true,
+          () => false,
+        )) &&
+        !(await fs.stat(target).then(
+          () => true,
+          () => false,
+        ))
+      )
+        await fs.rename(staging, target);
+      throw error;
+    }
     return (await this.installed()).find((item) => item.name === name);
   }
 

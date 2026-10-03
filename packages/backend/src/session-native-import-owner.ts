@@ -499,11 +499,11 @@ function createPrivateFile(directory: string, target: string, content: Buffer): 
 }
 
 function restoredEnvironment(env: NodeJS.ProcessEnv, plan: NativeImportPlan): NodeJS.ProcessEnv {
-  const restored = {
-    ...env,
-    ...Object.fromEntries(plan.environment.filter(([, value]) => value !== null)),
-  } as NodeJS.ProcessEnv;
-  delete restored.OPENCODE_CONFIG_CONTENT;
+  const restored = { ...env };
+  for (const [key, value] of plan.environment) {
+    if (value === null) delete restored[key];
+    else restored[key] = value;
+  }
   return restored;
 }
 
@@ -1054,7 +1054,7 @@ export async function nativeImportLaunchInfo(
   request: NativeImportRequest;
   plan: NativeImportPlan;
   targetSessionId: string;
-  environment: NodeJS.ProcessEnv;
+  environment: Record<string, string | null>;
   alreadyLaunched: boolean;
 }> {
   const loaded = loadNativeImportPlan(dataDir, value);
@@ -1080,11 +1080,10 @@ export async function nativeImportLaunchInfo(
     request: loaded.request,
     plan: loaded.plan,
     targetSessionId: receipt.target_session_id,
-    environment: Object.fromEntries(
-      [...loaded.plan.environment, ...(loaded.plan.openclaw?.environment ?? [])].filter(
-        ([, value]) => value !== null,
-      ),
-    ) as NodeJS.ProcessEnv,
+    environment: Object.fromEntries([
+      ...loaded.plan.environment,
+      ...(loaded.plan.openclaw?.environment ?? []),
+    ]),
     alreadyLaunched: receipt.launched,
   };
 }

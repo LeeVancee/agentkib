@@ -94,6 +94,7 @@ export function commandDirectories(env: NodeJS.ProcessEnv = process.env): string
 export function resolveCommand(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
 ): string | null {
   const extensions: string[] = [];
   if (process.platform === "win32") {
@@ -117,8 +118,8 @@ export function resolveCommand(
     path.isAbsolute(command) ||
     command.includes(path.sep) ||
     (process.platform === "win32" && command.includes("/"))
-      ? [path.resolve(command)]
-      : commandDirectories(env).map((directory) => path.resolve(directory, command));
+      ? [path.resolve(cwd, command)]
+      : commandDirectories(env).map((directory) => path.resolve(cwd, directory, command));
   for (const root of roots)
     for (const candidate of candidates(root)) {
       try {

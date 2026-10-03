@@ -1440,7 +1440,7 @@ export class ClaudeManagedReadOwner {
         live,
         workspaceId: record.workspaceId,
         sourceSessionId: record.nativeId,
-        handoffFingerprint: record.fingerprint,
+        handoffFingerprint: this.#emptyFingerprint(record),
         reconciled: false,
       };
     const target = await this.#resolveNative(id);
@@ -1505,6 +1505,23 @@ export class ClaudeManagedReadOwner {
   async #resolveNative(
     id: string,
   ): Promise<{ workspaceId: string; workspace: string; nativeId: string; fingerprint: string }> {
+    const managed = this.#load(id);
+    if (managed) {
+      this.#validate(managed);
+      if (managed.fresh)
+        return {
+          workspaceId: managed.workspaceId,
+          workspace: managed.workspace,
+          nativeId: managed.nativeId,
+          fingerprint: this.#emptyFingerprint(managed),
+        };
+      return {
+        workspaceId: managed.workspaceId,
+        workspace: managed.workspace,
+        nativeId: managed.nativeId,
+        fingerprint: this.#targetFingerprint(managed.nativeId, managed.workspace),
+      };
+    }
     const session = this.store.sessions.get(id);
     if (!session) throw new Error("session-unavailable");
     if (session.agent !== "claude-code" || session.sidechain)
@@ -1530,8 +1547,14 @@ export class ClaudeManagedReadOwner {
       native.sidechain
     )
       throw new Error("unverified-session-identity");
-    const digest = this.#targetFingerprint(native.native_ref, workspace);
-    return { workspaceId, workspace, nativeId: native.native_ref, fingerprint: digest };
+    const nativeWorkspace = this.sessions.claudeControlWorkspace(native.native_ref, workspace);
+    const digest = this.#targetFingerprint(native.native_ref, nativeWorkspace);
+    return {
+      workspaceId,
+      workspace: nativeWorkspace,
+      nativeId: native.native_ref,
+      fingerprint: digest,
+    };
   }
 }
 

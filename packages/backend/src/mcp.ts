@@ -821,7 +821,7 @@ export class McpManager {
     if (server.transport === "stdio") {
       const { McpStdioTransport } = await import("./mcp-stdio-transport");
       const environment = { ...process.env, ...this.environment, ...server.env };
-      const executable = resolveCommand(server.command, environment);
+      const executable = resolveCommand(server.command, environment, server.cwd ?? undefined);
       if (!executable) throw new Error(`MCP executable is unavailable: ${server.command}`);
       transport = new McpStdioTransport({
         command: executable,
@@ -858,9 +858,17 @@ export class McpManager {
       checkCurrent();
       await client.connect(transport, { timeout: 15_000 });
       checkCurrent();
-      const result = await client.listTools({}, { timeout: 15_000 });
-      checkCurrent();
-      const tools = result.tools
+      const allTools: Awaited<ReturnType<typeof client.listTools>>["tools"] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const result = await client.listTools(cursor ? { cursor } : {}, { timeout: 15_000 });
+        checkCurrent();
+        allTools.push(...result.tools);
+        cursor = result.nextCursor;
+        if (!cursor) break;
+        if (page === 99) throw new Error("MCP tool listing exceeded the pagination limit");
+      }
+      const tools = allTools
         .filter((tool) => server.allow_tools.length === 0 || server.allow_tools.includes(tool.name))
         .map((tool) => ({
           server_id: server.id,

@@ -238,7 +238,10 @@ export class CodexSessions {
     }
     return verified;
   }
-  list(workspace: string | null) {
+  list(
+    workspace: string | null,
+    selection: { collection?: SessionCollection; matches?: (nativeRef: string) => boolean } = {},
+  ) {
     const home = this.home(),
       current = this.databases(home),
       databases = current.length ? current : this.databases(path.join(home, "sqlite")),
@@ -289,6 +292,8 @@ export class CodexSessions {
           const cwd = String(row.k2);
           const collection = ownership.collection(String(row.k0), cwd, row.k14);
           if (workspace !== null && (collection !== null || !within(cwd, workspace))) continue;
+          if (selection.collection && collection !== selection.collection) continue;
+          if (selection.matches && !selection.matches(String(row.k0))) continue;
           let transcript = String(row.k1);
           if (!path.isAbsolute(transcript)) transcript = path.join(home, transcript);
           const parsed = sourceValue(row.k8),

@@ -174,13 +174,11 @@ export class CodexAppServerSession extends EventEmitter {
         return;
       }
       if (!isObject(value)) continue;
-      if (typeof value.id === "number") {
+      if (typeof value.id === "number" && typeof value.method !== "string") {
         const pending = this.#pending.get(value.id);
         if (pending) {
           pending(value as Response);
           this.#pending.delete(value.id);
-        } else if (typeof value.method === "string") {
-          this.emit("serverRequest", value);
         }
       } else if ("id" in value && typeof value.method === "string") {
         this.emit("serverRequest", value);

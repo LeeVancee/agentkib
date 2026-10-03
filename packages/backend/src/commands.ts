@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import spawn from "cross-spawn";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
+import { resolveCommand } from "./command-resolution";
 export interface CommandOutput {
   bytes: Buffer;
   error: string;
@@ -33,10 +34,13 @@ export class Commands {
   ): Promise<CommandOutput> {
     if (this.#closed) throw new Error("Backend command supervisor is closed");
     const limit = options.limit ?? 2 * 1024 * 1024;
+    const environment = options.env ?? process.env;
+    const executable =
+      resolveCommand(program, environment, options.cwd ?? process.cwd()) ?? program;
     return new Promise((resolve, reject) => {
-      const child = spawn(program, args, {
+      const child = spawn(executable, args, {
         cwd: options.cwd,
-        env: options.env ?? process.env,
+        env: environment,
         stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,

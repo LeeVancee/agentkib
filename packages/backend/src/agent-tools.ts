@@ -217,6 +217,8 @@ export class AgentTools {
         action.channel === "npm" && agent === "open-claw"
           ? await this.#npmAllowsScripts(manager)
           : true;
+      if (npmAllowScripts === null)
+        throw new Error("Agent tool package manager version is unavailable; detect again");
       const args = this.#managerArgs(
         action.channel,
         agent,
@@ -431,7 +433,7 @@ export class AgentTools {
     primary: Installation | undefined,
     latest: string | undefined,
     cache: Record<string, { version: string; checked_at: string }>,
-    npmAllowScripts: boolean,
+    npmAllowScripts: boolean | null,
   ): Action[] {
     if (state === "uninstalled") {
       const actions = CHANNELS[spec.agent]!.map((channel) =>
@@ -445,6 +447,8 @@ export class AgentTools {
       latest &&
       ["npm", "pnpm", "bun", "homebrew", "volta"].includes(primary.channel)
     ) {
+      if (primary.channel === "npm" && spec.agent === "open-claw" && npmAllowScripts === null)
+        return [this.#docAction(spec, "npm")];
       const manager = primary.manager_path;
       if (manager) {
         const shell = process.platform === "win32" ? "powershell" : "posix";
@@ -457,7 +461,7 @@ export class AgentTools {
             shell,
             command: this.#command(
               this.#expandPath(manager),
-              this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts),
+              this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts ?? true),
             ),
             url: spec.official,
             target_version: latest,
@@ -476,7 +480,7 @@ export class AgentTools {
           shell: process.platform === "win32" ? "powershell" : "posix",
           command: this.#command(
             managerName,
-            this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts),
+            this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts ?? true),
           ),
           url: spec.official,
           target_version: latest,
@@ -553,8 +557,9 @@ export class AgentTools {
     spec: Spec,
     channel: Channel,
     target?: string,
-    npmAllowScripts = true,
+    npmAllowScripts: boolean | null = true,
   ): Action | null {
+    if (channel === "npm" && spec.agent === "open-claw" && npmAllowScripts === null) return null;
     const managerName = channel === "homebrew" ? "brew" : channel;
     const manager = ["npm", "pnpm", "bun", "yarn", "homebrew", "volta"].includes(channel)
       ? resolveCommand(managerName)
@@ -564,7 +569,7 @@ export class AgentTools {
       channel,
       target,
       manager ?? undefined,
-      npmAllowScripts,
+      npmAllowScripts ?? true,
     );
     if (!command) return null;
     const shell = process.platform === "win32" ? "powershell" : "posix";
@@ -688,13 +693,20 @@ export class AgentTools {
     return update ? ["install", "-g", ref] : ["install", "-g", ref];
   }
 
-  async #npmAllowsScripts(manager: string): Promise<boolean> {
-    const result = await this.#run(manager, ["--version"], 5_000, 4096);
-    const match = result.code === 0 ? result.stdout.trim().match(/^(\d+)\.(\d+)\./) : null;
-    if (!match) return true;
-    const major = Number(match[1]);
-    const minor = Number(match[2]);
-    return major > 11 || (major === 11 && minor >= 16);
+  async #npmAllowsScripts(manager: string): Promise<boolean | null> {
+    try {
+      const result = await this.#run(manager, ["--version"], 5_000, 4096);
+      const match =
+        result.code === 0 && !result.timedOut
+          ? result.stdout.trim().match(/^(\d+)\.(\d+)\./)
+          : null;
+      if (!match) return null;
+      const major = Number(match[1]);
+      const minor = Number(match[2]);
+      return major > 11 || (major === 11 && minor >= 16);
+    } catch {
+      return null;
+    }
   }
 
   #docAction(spec: Spec, channel: Channel): Action {

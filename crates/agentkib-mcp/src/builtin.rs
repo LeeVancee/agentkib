@@ -310,6 +310,49 @@ mod tests {
     }
 
     #[test]
+    fn asset_get_rejects_private_ancestors_and_reads_custom_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join(".agents/skills/reviewer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Reviewer").unwrap();
+        let private_paths = [
+            "secrets/config.json",
+            "access-token/data.json",
+            "custom/Secrets/nested/config.json",
+            "custom/access-token/nested/data.json",
+            "custom/production.env/data.json",
+            "custom/archive-state.db/data.json",
+        ];
+        for relative in private_paths {
+            let file = skill.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "Synthetic private fixture").unwrap();
+        }
+        let custom = skill.join("custom/examples/guide.json");
+        fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        fs::write(&custom, "Safe custom resource").unwrap();
+        let scan = scan_workspace(dir.path()).unwrap();
+
+        for relative in private_paths {
+            let requested = skill.join(relative);
+            assert!(
+                !is_readable_asset_path(
+                    &scan.assets,
+                    &requested,
+                    &canonicalize(&requested).unwrap()
+                ),
+                "{relative}"
+            );
+        }
+        let requested = canonicalize(&custom).unwrap();
+        assert!(is_readable_asset_path(&scan.assets, &custom, &requested));
+        assert_eq!(
+            read_bounded_asset_text(&requested).unwrap(),
+            "Safe custom resource"
+        );
+    }
+
+    #[test]
     fn asset_get_rejects_oversized_skill_supporting_files_before_reading_them() {
         let dir = tempfile::tempdir().unwrap();
         let skill = dir.path().join(".agents/skills/reviewer");

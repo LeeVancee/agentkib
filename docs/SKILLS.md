@@ -1,0 +1,204 @@
+# Skill management
+
+Skill Hub separates the local library from the places where agents discover skills. Adding or updating a library package does not automatically deploy it or change an existing deployment.
+
+## Library and existing installations
+
+**My Skills** contains library packages. **Usage locations** also shows personal and project installations discovered outside AgentKib. **Discover** retains the OpenAI catalog and public GitHub import.
+
+An existing CC Switch installation or linked skill can be inspected and copied into the library. The original files, links and manager metadata remain untouched. An external installation is never adopted merely because its name or content matches a library package. Different sources may have the same display name; a collision at a native destination blocks deployment.
+
+An external link that points to an AgentKib deployment remains visible under its own entry path and Agent filters. Details show the related locations without transferring ownership of the link.
+
+For local Skills whose frontmatter contains a description but omits `name`, copy import uses the original directory name and preserves the original `SKILL.md` bytes. That name remains stable in library details, deployment and removal/restore, including when another package already uses the same display name. GitHub imports retain their existing metadata validation.
+
+Package details include the entrypoint and supporting files, including custom resource directories, licenses, binary files and executable permissions. Text previews are bounded; binary resources show metadata. Previews do not execute package code or automatically load remote resources. Unsafe paths, internal links and private resources are reported rather than silently omitted from an import.
+
+Complete copies also preserve empty directories used by package scripts. Empty-directory changes participate in content validation; existing packages without empty directories retain their previous content hashes.
+
+Directory entries end in `/` in the package tree and change preview. Additions and removals of empty directories are included even when no file content changes. A binary version does not hide the readable text of the other version; each side retains its own content or metadata display.
+
+Private resource checks cover every directory component as well as the filename. For example, `secrets/config.json` is excluded from both package previews and MCP asset reads.
+
+Local filenames must have an unambiguous package-relative representation. For example, a literal backslash in a Unix filename is rejected so the preview cannot refer to a different file from the copied package.
+
+## Deploy, update and withdraw
+
+Use **Deploy to…** to choose personal or project locations. The preview shows exact paths, file changes, shared visibility and conflicts. Personal writes require the existing separate Agent Home confirmation. Deployments use complete copies; they do not depend on a symlink back to the library.
+
+Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, Grok Build and Antigravity CLI have native target adapters. Environment overrides and profiles are resolved on the host. OpenClaw project targets must be configured native workspaces. Hermes project skills may require native project trust; AgentKib does not grant trust automatically. Antigravity IDE skills can be inspected and imported, but the writable Antigravity target is the CLI.
+
+For OpenClaw, an explicit workspace configuration takes precedence over `OPENCLAW_WORKSPACE_DIR`. Workspace configuration strings support native environment-variable substitution; unresolved variables block deployment rather than selecting a fallback directory.
+
+OpenClaw workspace variables can come from the process environment, the active state directory's `.env`, or the configuration's `env.vars`, in that order. These files are read without executing a shell. The `default` profile uses the normal `.openclaw` directory, including when the profile name uses different capitalization.
+
+OpenClaw project discovery reads the current `agents.entries` mapping and supports the legacy `agents.list` format. When both are present, `entries` takes precedence. OpenCode Skill permissions follow native key ordering and wildcard matching, with the last matching rule taking effect.
+
+Native restrictions also include OpenClaw's per-agent Skill allowlists and OpenCode's local configuration layers and explicit environment overrides. An empty OpenClaw allowlist disables all Skills for that agent. Hermes project visibility requires the actual nearest Git root; trusting an ancestor does not make a nested project's Skill directory discoverable.
+
+OpenCode's Claude compatibility sources respect `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` and `OPENCODE_DISABLE_CLAUDE_CODE`. Its personal Claude compatibility directory remains `~/.claude/skills` when `CLAUDE_CONFIG_DIR` changes; AgentKib inspects that default location separately and does not claim that OpenCode reads the overridden Claude directory. Other agents and independently readable native locations retain their own visibility.
+
+OpenCode compatibility inspection follows `.claude/skills` and `.agents/skills` from the selected project up to its nearest Git root. It includes hidden and nested Skill packages under those compatibility roots, with bounded traversal and link diagnostics. These additional observations retain their own entry paths and do not add writable targets or imply that every other agent can read them.
+
+OpenCode inspection also includes `skill` and `skills` under its configuration directories, including `~/.opencode` and `OPENCODE_CONFIG_DIR`, plus the effective `skills.paths`. Later configuration layers replace earlier `skills.paths`; relative entries use the selected project session directory. These additional sources are read-only. `OPENCODE_DISABLE_PROJECT_CONFIG` removes project configuration sources from OpenCode visibility while retaining independently readable Home and explicit sources. Unresolved configuration is marked unverified, and reaching a scan limit produces an explicit warning.
+
+OpenClaw excludes `~/.agents/skills` when using a non-default state directory or profile, unless that location is also an explicitly configured extra source or the state's own managed Skill directory. The target preview and observed usage locations use the same visibility rules.
+
+| Agent | Default personal location | Project location |
+| --- | --- | --- |
+| Codex | `~/.agents/skills` | `.agents/skills` |
+| Claude Code | `~/.claude/skills` | `.claude/skills` |
+| Cursor | `~/.cursor/skills` | `.cursor/skills` |
+| OpenCode | `~/.config/opencode/skills` | `.opencode/skills` |
+| OpenClaw | `~/.openclaw/skills` | `skills` in a configured native workspace |
+| Hermes | `skills` in the selected Hermes profile | `.hermes/skills` |
+| Grok Build | `~/.grok/skills` | `.grok/skills` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/skills` | `.agents/skills` |
+
+The dialog displays the resolved paths, including environment overrides. DeepSeek Harness remains read-only. These are deployment destinations; compatible and external discovery locations can be broader.
+
+If a registered project overlaps a personal Skill directory, its overlapping project target is read-only. Use the personal target so Agent Home confirmation and deployment ownership remain consistent.
+
+Several agents can discover the same physical directory. A shared location is one deployment, and the preview lists the agents that may discover it. **Withdraw deployment** removes only the unchanged AgentKib-owned copy at that location. It does not write native deny rules and cannot prevent discovery of another external copy.
+
+Update deployments explicitly after updating their library package. Each deployment retains one previous version for rollback. External changes, an unowned destination or a legacy manifest conflict block replacement or withdrawal. A library package with active deployments cannot be removed until those deployments are withdrawn.
+
+Updating a library package with local edits requires confirmation, including edits to its `SKILL.md` name or frontmatter. The update still uses the recorded source and stable library identity. File previews show both versions when a resource changes between a file and a directory.
+
+The interface distinguishes files deployed successfully, visibility inferred from native rules, native configuration restrictions, pending project trust and unverified native loading. AgentKib does not start an agent or claim that a running session has reloaded a skill.
+
+Deployment lists derive current readers from a fresh inventory, including aliases pointing to the deployed package. Changing a native visibility setting is reflected on refresh without rewriting the deployment receipt or its originally requested agents. An unreadable source is marked unverified; old reader lists are not reused as current evidence.
+
+## Recovery and compatibility
+
+Each physical target has an independent transaction and a result. Partial success is reported per target. Operations retain a durable journal, verify the reviewed hashes again before writing, and use backups outside native skill scan roots. Interrupted operations require recovery before the affected target can be changed again; retrying the same operation does not deploy twice.
+
+For a location marked as requiring recovery, use **Recover operation** in Usage locations (or retry recovery in its result dialog). Recovery checks the original operation and either confirms its committed result or restores the prior package. External edits are preserved and reported; personal recovery retains the Agent Home confirmation. If recovery restored the prior state, prepare a new deployment to try the intended change again.
+
+Before changing a project target, the manager saves a reservation in `.agentkib/skill-deployment-reservations.json`. The legacy manifest workflow respects this reservation even if the process stops before the final deployment receipt is written. Successful completion or recovery releases the reservation. Browsing does not create or migrate it.
+
+Recovery requires Agent Home confirmation only when an unfinished personal target remains. Skipped or completed personal targets do not block recovery of project targets, and reading a completed operation's result does not modify native files.
+
+The recovery dialog reloads unfinished targets after each attempt. Restoring the prior package also refreshes the derived asset catalog and records an audit event, even though the originally requested deployment remains unsuccessful.
+
+Replacing a deployed directory with a symbolic link is reported as a change at its original location. It does not merge deployment records or transfer ownership to the external link destination, and other unchanged deployments remain manageable.
+
+Project receipts live in `.agentkib/skill-deployments.json`; personal receipts live in AgentKib Home. Browsing does not migrate old records or take ownership of files. Existing `manifest.skills` continues to use its previous workflow. Its sources and outputs cannot overlap a Skill Hub deployment, including when applying a ChangeSet prepared before the deployment existed.
+
+When a personal Agent Home overlaps a project, ownership follows the physical location. The project retains a versioned `.agentkib/skill-library-roots.json` reference to the owning library so legacy writers can still find its personal receipts after AgentKib Home changes. Creating this association is part of deployment, not browsing.
+
+Project deployments also check personal ownership and pending reservations linked from other library roots. Switching AgentKib Home does not transfer ownership or permit a second receipt for the same location. Library removal checks the latest project records, including withdrawals made from another AgentKib Home; missing or unreadable records remain a reason to block removal.
+
+Personal deployments check ancestor project receipts and reservations even when the project is absent from the current workspace list. A legacy ChangeSet containing only Home or application-data writes also checks and locks the projects containing its actual targets, including deployments created after its preview. It does not require write access to an unrelated source project.
+
+New deployment records bind their package ID to the source library directory. A same-named package in another library cannot update that deployment. Older records without a verified source remain readable and support withdrawal and backup rollback, but cannot be updated or redeployed through an assumed source. Reading does not migrate them. The interface keeps deployments from other libraries separate from the current library's package usage.
+
+Legacy manifest discovery and writes also respect deployments in nested projects. A parent workspace cannot adopt or rewrite instruction files inside a child workspace's managed Skill, including through an older prepared ChangeSet.
+
+Personal targets record their associated library roots in the physical scope's `.agentkib/skill-personal-library-roots.json` before native writes. Other AgentKib Homes check those libraries' receipts and pending reservations as well. Reading does not create the index. Recovery of an operation that stopped before native activation does not claim a later copy merely because its content matches. A Git repository at the user Home does not turn personal receipts into workspace receipts.
+
+The legacy workflow also checks this index when a project is registered after a personal deployment. The index does not mark its scope as a workspace; an unavailable associated library blocks writes because its ownership cannot be verified. If a project's receipt path overlaps the personal library's receipt path, project deployment is blocked to keep their records separate.
+
+Each receipt file is limited to 4 MiB and 4,096 records, including withdrawn deployments. An operation that would exceed either limit fails safely and preserves the previous files and readable records.
+
+Removing and re-registering the same physical project preserves deployment management. Browsing resolves the current project identity without rewriting its receipt; a successful deployment operation records the new identity. Default manifest discovery skips managed Skill packages and their operation backups, including any `AGENTS.md` resources they contain.
+
+The manager is a local desktop feature. It does not add remote Web writes, cloud synchronization, automatic updates or native permission changes.
+
+---
+
+# Skill 管理
+
+Skill Hub 将资源库与 Agent 实际读取的使用位置分开管理。添加或更新资源库包，不会自动部署，也不会修改已有部署。
+
+## 查看与复制入库
+
+“我的 Skills”展示资源库，“使用位置”同时展示个人和项目中的已有安装，“发现”保留 OpenAI 精选与公开 GitHub 导入。
+
+CC Switch 等工具创建的目录或链接可以查看并复制入库。原始文件、链接和管理器元数据保持不变，不会按名称或内容自动接管。同名不同来源可在库内分别保存；原生目标目录重名时会阻止部署。
+
+指向 AgentKib 部署的外部链接仍以自己的入口路径展示，并可按对应 Agent 筛选。详情会列出相关使用位置，不转移链接的管理归属。
+
+本地 Skill 的 frontmatter 包含描述但省略 `name` 时，复制入库使用原目录名，并保留 `SKILL.md` 的原始字节。即使资源库已有同名包，该名称也会在详情、部署和移除恢复中保持稳定。GitHub 导入继续使用原有元数据校验。
+
+详情展示正文和完整包文件，包括自定义资源目录、许可证、二进制及可执行权限。文本预览有大小限制，二进制展示元数据；不会执行包代码或自动加载远程资源。导入发现不安全路径、包内链接或私密资源时会报告，不会静默遗漏。
+
+完整复制也保留脚本依赖的空目录，并将空目录变化纳入内容校验；不含空目录的已有包保持原有内容哈希。
+
+目录在文件树和变更预览中以 `/` 结尾。即使没有文件内容变化，空目录的新增、删除也会列出。某一版本是二进制时，不会遮住另一版本的可读文本；前后版本分别展示正文或元数据。
+
+私密资源检查覆盖文件名及每一级目录。例如 `secrets/config.json` 不会通过包预览或 MCP 资产读取接口暴露。
+
+本地文件名必须能无歧义地表示为包内相对路径。例如 Unix 文件名中的字面反斜杠会被拒绝，避免预览内容与实际复制的文件不一致。
+
+## 部署、更新与撤销
+
+通过“部署到…”选择个人或项目位置，审查目标路径、文件变化、共享影响和冲突。个人目录写入保留独立的 Agent Home 确认。首版使用完整复制，不依赖指向资源库的软链接。
+
+支持 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes、Grok Build 和 Antigravity CLI。后端解析环境覆盖与 profile；OpenClaw 项目目标须为原生配置的 workspace，Hermes 项目可能需要原生信任。AgentKib 不自动授权项目信任。Antigravity IDE 安装可查看、可复制入库，写入目标为 CLI。
+
+OpenClaw 的显式 workspace 配置优先于 `OPENCLAW_WORKSPACE_DIR`。配置字符串支持原生环境变量替换；无法解析变量时会阻止部署，不选择其他目录代替。
+
+OpenClaw workspace 变量按进程环境、有效 state directory 的 `.env`、配置 `env.vars` 的顺序取值，只读解析，不执行 shell。`default` profile 使用通常的 `.openclaw` 目录，名称大小写不影响该规则。
+
+OpenClaw 项目发现读取当前的 `agents.entries` 映射，也兼容旧 `agents.list` 格式；两者同时存在时以 `entries` 为准。OpenCode Skill 权限按原生键顺序和通配规则匹配，最后匹配的规则生效。
+
+原生限制检查也包含 OpenClaw 的各 Agent Skill 白名单，以及 OpenCode 的本地配置层和显式环境覆盖。OpenClaw 空白名单表示该 Agent 禁用全部 Skill。Hermes 项目可见性要求实际最近的 Git 根目录匹配；信任祖先仓库不会让子目录的 Skill 自动可发现。
+
+OpenCode 的 Claude 兼容来源遵循 `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 和 `OPENCODE_DISABLE_CLAUDE_CODE`。修改 `CLAUDE_CONFIG_DIR` 后，OpenCode 的个人兼容目录仍为 `~/.claude/skills`；AgentKib 单独查看该默认位置，不将自定义 Claude 目录误报为 OpenCode 可读。其他 Agent 及独立可读的原生位置仍按各自规则展示。
+
+OpenCode 兼容来源扫描包含从选定项目到最近 Git 根之间的 `.claude/skills` 和 `.agents/skills`，也包含这些兼容目录中的隐藏 Skill 和父包内嵌 Skill。遍历仍有边界限制及链接诊断。额外观察保留各自入口路径，不增加写入目标，也不将 OpenCode 的可读性套用到其他 Agent。
+
+OpenCode 查看范围还包括配置目录下的 `skill`、`skills`，其中包含 `~/.opencode`、`OPENCODE_CONFIG_DIR`，以及最终生效的 `skills.paths`。后层配置整体替换前层 `skills.paths`；相对条目以选定项目的会话目录为基准。这些额外来源保持只读。`OPENCODE_DISABLE_PROJECT_CONFIG` 会从 OpenCode 可见性中移除项目配置来源，但保留独立可读的 Home 和显式来源。配置无法解析时标记未验证；扫描达到上限时明确提示。
+
+OpenClaw 使用非默认 state directory 或 profile 时，不读取 `~/.agents/skills`；该位置被显式配置为额外来源、或同时是该 state 自有技能目录时除外。部署预览与使用位置采用一致的可见性规则。
+
+默认路径见上表，部署对话框展示环境覆盖后的实际路径。DeepSeek Harness 保持只读。表内是写入目标，Agent 的兼容目录与外部来源可能使发现范围更广。Hermes 的项目技能还须处于 Git 项目内，并遵循所选 profile 的 `skills.trusted_project_dirs` 和 `skills.project_discovery` 配置；详见 [Hermes 官方技能说明](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills/#project-local-skills)。
+
+如果登记的项目使项目技能目标与个人技能目录重合，重合的项目目标保持只读；请通过个人目标操作，以保留 Agent Home 确认和一致的部署归属。
+
+多个 Agent 可能读取同一个目录，该物理位置只算一条部署。“撤销部署”只移除该处未被修改的 AgentKib 副本，不写入原生禁用规则；如果仍有共享或外部副本，Agent 仍可能发现它。
+
+资源库更新后需显式更新部署。每条部署保留上一版本供回滚。外部改动、非受管同名目录或旧 manifest 冲突会阻止替换和撤销。有活动部署的资源库包须先撤销部署，才能移除。
+
+资源库包有本地修改时，更新须确认覆盖，包括对 `SKILL.md` 名称或 frontmatter 的修改。更新仍校验已记录的来源和稳定资源库身份。资源在文件与目录之间转换时，预览可查看两个版本的对应内容。
+
+“已部署”“按规则可发现”“被原生配置限制”“待项目信任”和“原生加载未验证”是不同状态。写入成功不代表运行中的 Agent 会话已经重新加载。
+
+部署列表根据新的扫描结果计算当前读取方，并包含指向部署包的别名。修改原生可见性配置后，刷新即可反映变化，不重写部署记录或最初请求的 Agent。来源不可读时标记未验证，不用历史读取方代替当前证据。
+
+## 恢复与兼容
+
+每个物理位置独立执行并返回结果，部分失败逐项展示。持久操作日志记录进度，写入前复核预览时的哈希；备份位于原生技能扫描目录之外。中断操作恢复前不会继续覆盖受影响目标，重复请求不会重复部署。
+
+位置显示待恢复时，可在“使用位置”选择“恢复操作”，或在结果对话框中重试恢复。系统会核对原操作，确认已提交结果或恢复之前的包；外部修改会保留并报告，个人位置仍需 Agent Home 确认。恢复到原状态后，如需继续原来的变更，请重新生成部署预览。
+
+修改项目目标前，系统先在 `.agentkib/skill-deployment-reservations.json` 保存占用记录。即使进程在最终部署记录写入前中断，旧 manifest 流程也会识别该占用；操作完成或恢复成功后释放。浏览不会创建或迁移占用记录。
+
+只有仍待恢复的个人目标需要 Agent Home 确认。已跳过或已完成的个人目标不会阻断项目目标恢复，读取已完成操作的结果不会修改原生文件。
+
+恢复对话框在每次尝试后重新读取待恢复目标。恢复到原有包状态后，也会刷新派生资产索引并记录审计；原来请求的部署仍按未成功报告。
+
+部署目录被替换为软链接时，系统按原位置报告变更，不合并部署记录，也不将外部链接目标认作受管安装；其他未被修改的部署仍可管理。
+
+项目记录保存在 `.agentkib/skill-deployments.json`，个人记录保存在 AgentKib Home。浏览不迁移旧数据。旧 `manifest.skills` 保留原流程，但其源和生成目标不能与新部署重叠；应用旧 ChangeSet 时也会重新检查。
+
+个人 Agent Home 与项目重叠时，按物理位置识别所有权。部署时在项目的版本化 `.agentkib/skill-library-roots.json` 中保留所属资源库引用，使切换 AgentKib Home 后的旧写入流程仍能找到个人部署记录；浏览不创建该关联。
+
+项目部署也会检查其他资源库关联的个人所有权和待完成占用。切换 AgentKib Home 不会转移所有权，也不允许为同一位置新增第二条归属记录。移除资源库包时读取最新项目记录，包括从其他 AgentKib Home 完成的撤销；记录缺失或无法读取时仍会阻止移除。
+
+个人部署也会检查祖先项目的部署和占用记录，即使当前工作区列表没有登记该项目。只包含 Home 或应用数据写入的旧 ChangeSet，同样检查并锁定实际目标所属的项目，包括预览之后新增的部署；不要求无关的来源项目可写。
+
+新部署记录将包 ID 与来源资源库目录绑定，其他资源库的同名包不能更新该部署。未确认来源的旧记录仍可读取、撤销和从备份回滚，但不能通过猜测来源更新或重新部署；浏览不迁移记录。界面也不会把其他资源库的部署计入当前同名包的使用位置。
+
+旧 manifest 的发现和写入同时保护嵌套项目的部署。父工作区不能接管或改写子工作区受管 Skill 内的指令文件，之前生成的 ChangeSet 在应用时也会重新检查。
+
+个人目标在写入原生文件前，将来源库关联保存到物理作用域的 `.agentkib/skill-personal-library-roots.json`。切换 AgentKib Home 后，也会检查这些资源库的部署和待完成占用；浏览不会创建索引。尚未激活的操作在恢复时，不会仅凭内容相同认领后来出现的副本。用户 Home 本身是 Git 仓库时，个人记录仍按个人归属读取。
+
+个人部署完成后才登记项目时，旧流程也会检查该索引。索引不会将其作用域标记为工作区；关联库失联时，因无法核实归属而阻止写入。如果项目部署记录路径与个人资源库记录路径重合，会阻止项目部署，避免混写两种记录。
+
+每份部署记录文件上限为 4 MiB、4,096 条记录，包含已撤销的部署。操作若将超过任一上限，会安全失败并保留原有文件及可读取的记录。
+
+移除并重新登记同一物理项目后，已有部署仍可管理。浏览只解析当前项目身份，不改写记录；部署操作成功后才记录新身份。默认 manifest 发现会跳过受管 Skill 包及其操作备份，包括其中的 `AGENTS.md` 资源。
+
+本功能仅在本地桌面运行，不增加 Web 远程写入、云同步、自动更新或原生权限修改。

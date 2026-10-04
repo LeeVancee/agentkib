@@ -84,6 +84,7 @@ dependencies = [
  "agentkib-platform",
  "anyhow",
  "chrono",
+ "dirs",
  "hex",
  "json5",
  "serde",
@@ -296,6 +297,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures-util",
+ "json5",
  "reqwest",
  "serde",
  "serde_json",
@@ -303,6 +305,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "toml",
  "uuid",
  "walkdir",
 ]

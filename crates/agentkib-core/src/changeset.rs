@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use agentkib_platform::fs::{
     ExpectedFile, atomic_replace_checked, move_file_no_replace, move_path,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -76,9 +76,55 @@ fn apply_changeset_with_hook<F>(
 where
     F: FnMut(ApplyEvent),
 {
+    let _skill_guard = crate::skill_write_lock()?;
     if changeset.requires_home_approval && !options.home_approval {
         bail!("This ChangeSet contains Agent Home files and requires separate authorization");
     }
+    crate::ensure_changeset_personal_skill_scope_indexes(changeset)?;
+    for change in &changeset.changes {
+        ensure_change_target_is_safe(changeset, change, options)?;
+    }
+    // Home/session-archive writes do not require write access to the project. Check the
+    // actual destination as well as its scope so relabeling a project write cannot bypass
+    // deployment ownership, including an outside alias that resolves into the project.
+    let writes_project = changeset.changes.iter().any(|change| {
+        matches!(change.scope, ChangeScope::Project)
+            || agentkib_platform::path::lexical_starts_with(&change.target, &changeset.project_root)
+            || agentkib_platform::path::canonicalize_allow_missing(&change.target).is_ok_and(
+                |target| agentkib_platform::path::starts_with(&target, &changeset.project_root),
+            )
+    });
+    let _skill_scope_guard = if writes_project {
+        let scopes = crate::changeset_skill_scope_roots(changeset)?;
+        let guard = crate::skill_scope_locks(&scopes)?;
+        ensure!(
+            crate::changeset_skill_scope_roots(changeset)?
+                .iter()
+                .all(|scope| scopes
+                    .iter()
+                    .any(|locked| agentkib_platform::path::equivalent(scope, locked))),
+            "Skill ownership scopes changed while acquiring locks; retry the ChangeSet"
+        );
+        crate::ensure_changeset_skill_ownership(changeset)?;
+        Some(guard)
+    } else {
+        let scopes = crate::changeset_target_skill_scope_roots(changeset)?;
+        if scopes.is_empty() {
+            None
+        } else {
+            let guard = crate::skill_scope_locks(&scopes)?;
+            ensure!(
+                crate::changeset_target_skill_scope_roots(changeset)?
+                    .iter()
+                    .all(|scope| scopes
+                        .iter()
+                        .any(|locked| agentkib_platform::path::equivalent(scope, locked))),
+                "Skill ownership scopes changed while acquiring locks; retry the ChangeSet"
+            );
+            crate::ensure_changeset_target_skill_ownership(changeset)?;
+            Some(guard)
+        }
+    };
     for change in &changeset.changes {
         ensure_change_target_is_safe(changeset, change, options)?;
         let current_hash = match fs::read(&change.target) {
@@ -715,6 +761,137 @@ mod tests {
     }
 
     #[test]
+    fn parent_changeset_holds_child_scope_lock_for_the_entire_write() {
+        let temp = tempdir().unwrap();
+        let parent = temp.path().canonicalize().unwrap();
+        let child = parent.join("packages/app");
+        let unrelated = parent.join("packages/unrelated");
+        fs::create_dir_all(child.join(".git")).unwrap();
+        fs::create_dir_all(unrelated.join(".git")).unwrap();
+        let target = child.join("AGENTS.md");
+        let set = change_set(
+            &parent,
+            vec![project_change(
+                target.clone(),
+                None,
+                "instructions",
+                "markdown",
+            )],
+        );
+        let mut checked = false;
+        apply_changeset_with_hook(
+            &set,
+            &parent.join("backups"),
+            &ApplyOptions::default(),
+            |event| {
+                if matches!(event, ApplyEvent::BeforeReplace { .. }) {
+                    for scope in [&parent, &child] {
+                        let file = fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(scope.join(".agentkib/skill-write.lock"))
+                            .unwrap();
+                        assert!(file.try_lock().is_err());
+                    }
+                    checked = true;
+                }
+            },
+        )
+        .unwrap();
+        assert!(checked);
+        assert_eq!(fs::read_to_string(target).unwrap(), "instructions");
+        assert!(!unrelated.join(".agentkib").exists());
+    }
+
+    #[test]
+    fn non_project_changes_do_not_require_project_writes_or_read_skill_records() {
+        for scope in [ChangeScope::AgentHome, ChangeScope::ApplicationData] {
+            for unrelated_records in [false, true] {
+                let temp = tempdir().unwrap();
+                let root = temp.path().canonicalize().unwrap();
+                let project = root.join("project");
+                fs::create_dir(&project).unwrap();
+                let record_path = crate::project_skill_record_path(&project);
+                if unrelated_records {
+                    fs::create_dir_all(record_path.parent().unwrap()).unwrap();
+                    fs::write(&record_path, "unrelated invalid receipt").unwrap();
+                }
+                let target = root.join("private/document.json");
+                let mut change = project_change(target.clone(), None, "{}", "json");
+                change.scope = scope;
+                let set = change_set(&project, vec![change]);
+                let options = ApplyOptions {
+                    approved_home_files: vec![target.clone()],
+                    approved_application_files: vec![target.clone()],
+                    home_approval: true,
+                    ..ApplyOptions::default()
+                };
+                #[cfg(unix)]
+                let permissions = {
+                    use std::os::unix::fs::PermissionsExt;
+                    let permissions = fs::metadata(&project).unwrap().permissions();
+                    fs::set_permissions(&project, fs::Permissions::from_mode(0o555)).unwrap();
+                    permissions
+                };
+                let result = apply_changeset(&set, &root.join("backups"), &options);
+                #[cfg(unix)]
+                fs::set_permissions(&project, permissions).unwrap();
+                let report = result.unwrap();
+                assert_eq!(report.applied, vec![target.clone()]);
+                assert_eq!(fs::read_to_string(target).unwrap(), "{}");
+                assert!(!project.join(".agentkib/skill-write.lock").exists());
+                if unrelated_records {
+                    assert_eq!(
+                        fs::read_to_string(record_path).unwrap(),
+                        "unrelated invalid receipt"
+                    );
+                } else {
+                    assert!(!project.join(".agentkib").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn non_project_changes_hold_the_actual_target_workspace_lock() {
+        for scope in [ChangeScope::AgentHome, ChangeScope::ApplicationData] {
+            let temp = tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let project = root.join("unrelated");
+            let target_project = root.join("target-project");
+            fs::create_dir(&project).unwrap();
+            fs::create_dir_all(target_project.join(".git")).unwrap();
+            let target = target_project.join("private/config.json");
+            let mut change = project_change(target.clone(), None, "{}", "json");
+            change.scope = scope;
+            let set = change_set(&project, vec![change]);
+            let options = ApplyOptions {
+                approved_home_files: vec![target.clone()],
+                approved_application_files: vec![target.clone()],
+                home_approval: true,
+                ..ApplyOptions::default()
+            };
+            let mut checked = false;
+            apply_changeset_with_hook(&set, &root.join("backups"), &options, |event| {
+                if matches!(event, ApplyEvent::BeforeReplace { .. }) {
+                    let lock = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(target_project.join(".agentkib/skill-write.lock"))
+                        .unwrap();
+                    assert!(lock.try_lock().is_err());
+                    assert!(!project.join(".agentkib").exists());
+                    checked = true;
+                }
+            })
+            .unwrap();
+            assert!(checked);
+            assert_eq!(fs::read_to_string(target).unwrap(), "{}");
+            assert!(!project.join(".agentkib").exists());
+        }
+    }
+
+    #[test]
     fn preserves_external_modification_when_replace_has_not_happened() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("AGENTS.md");
@@ -1188,7 +1365,9 @@ mod tests {
 
     #[test]
     fn application_data_requires_exact_file_authorization() {
-        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        // The target now locks ancestor workspaces, so keep the fixture outside the
+        // checkout and resolve system temp aliases before testing safe write paths.
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let project = dir.path().join("project");
         fs::create_dir(&project).unwrap();
         let target = dir.path().join("private/archive/document.json");

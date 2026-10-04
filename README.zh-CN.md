@@ -37,6 +37,8 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 浏览经过审查的 OpenAI Skills，或在添加到本地资源库前检查公开 GitHub 仓库。AgentKib 将受管包固定到不可变 Commit，预览文件和可执行资源，检测更新与本地漂移，并支持回滚和可恢复移除。资源库中的 Skill 不会自动启用到任何 Agent。
 
+已有安装可查看并复制入库，再经审查部署到个人或项目位置。部署独立更新、回滚和撤销，原安装不会被接管；共享目录影响与原生加载限制会分别说明。参见 [Skill 管理](docs/SKILLS.md)。
+
 [![AgentKib Skill Hub，展示精选 Skills 和可审查的来源信息](docs/assets/agentkib-skill-hub.png)](docs/assets/agentkib-skill-hub.png)
 
 ### 跨 Agent 继续工作

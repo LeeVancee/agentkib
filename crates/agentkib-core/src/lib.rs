@@ -8,6 +8,8 @@ mod model;
 mod path_policy;
 mod scanner;
 mod skill;
+mod skill_manager;
+mod skill_ownership;
 
 pub use changeset::{ApplyOptions, apply_changeset, hash_content};
 pub use context::{
@@ -18,7 +20,11 @@ pub use manifest::{load_manifest, manifest_path, validate_manifest};
 pub use model::*;
 pub use path_policy::{canonical_project, ensure_allowed_target};
 pub use scanner::scan_workspace;
-pub use skill::{SkillPackage, inspect_skill_entrypoint, is_readable_skill_file};
+pub use skill::{
+    SkillPackage, inspect_skill_entrypoint, is_private_skill_path, is_readable_skill_file,
+};
+pub use skill_manager::*;
+pub use skill_ownership::*;
 
 /// Encodes a value for use as exactly one URL path segment.
 ///

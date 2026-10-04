@@ -4,6 +4,12 @@ import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import type { DesktopRuntimeHost } from "../runtime-host";
 import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
 import {
+  skillDeploymentRequest,
+  skillDetailRequest,
+  skillIdentity,
+  skillRelativePath,
+} from "./skill-validation";
+import {
   optionalPositiveInteger,
   optionalString,
   requireBoolean,
@@ -427,6 +433,51 @@ export function registerRuntimeIpc({
         name: requireString(name, "name"),
         path: requireString(filePath, "path"),
       }),
+    );
+    ipcMain.handle("agentkib:skills:inventory", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.skillInventory, {}),
+    );
+    ipcMain.handle("agentkib:skills:targets", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.skillTargets, {}),
+    );
+    ipcMain.handle("agentkib:skills:get-detail", (event, request: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.skillDetail, skillDetailRequest(request)),
+    );
+    ipcMain.handle("agentkib:skills:read-detail-file", (event, request: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.readSkillDetailFile, skillDetailRequest(request, true)),
+    );
+    ipcMain.handle("agentkib:skills:prepare-import", (event, observationId: unknown) =>
+      runtimeRequest(event, RUNTIME_METHODS.prepareSkillImport, {
+        observation_id: skillIdentity(observationId, "observation_id"),
+      }),
+    );
+    ipcMain.handle(
+      "agentkib:skills:read-preview-file",
+      (event, token: unknown, filePath: unknown, targetId: unknown) =>
+        runtimeRequest(event, RUNTIME_METHODS.readSkillPreviewFile, {
+          token: skillIdentity(token, "token"),
+          path: skillRelativePath(filePath),
+          ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
+        }),
+    );
+    ipcMain.handle("agentkib:skills:list-deployments", (event) =>
+      runtimeRequest(event, RUNTIME_METHODS.listSkillDeployments, {}),
+    );
+    ipcMain.handle("agentkib:skills:prepare-deployment", (event, request: unknown) =>
+      runtimeRequest(
+        event,
+        RUNTIME_METHODS.prepareSkillDeployment,
+        skillDeploymentRequest(request),
+      ),
+    );
+    ipcMain.handle(
+      "agentkib:skills:apply-deployment",
+      (event, token: unknown, approveHome: unknown) =>
+        runtimeRequest(event, RUNTIME_METHODS.applySkillDeployment, {
+          token: skillIdentity(token, "token"),
+          confirmed: true,
+          approve_home: requireBoolean(approveHome, "approve_home"),
+        }),
     );
 
     ipcMain.handle("agentkib:mcp:hub-status", (event) =>

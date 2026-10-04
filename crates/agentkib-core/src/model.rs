@@ -739,6 +739,7 @@ pub struct SkillSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFileEntry {
+    /// Package-relative path; a trailing `/` denotes a display-only directory entry.
     pub path: String,
     pub size: u64,
     pub executable: bool,
@@ -750,7 +751,7 @@ pub struct SkillCandidate {
     pub description: String,
     pub license: Option<String>,
     pub compatibility: Option<String>,
-    pub source: SkillSource,
+    pub source: Option<SkillSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -786,6 +787,8 @@ pub struct InstalledSkill {
     pub path: PathBuf,
     pub size: u64,
     pub modified_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
     pub status: InstalledSkillStatus,
     pub source: Option<SkillSource>,
     pub installed_at: Option<DateTime<Utc>>,

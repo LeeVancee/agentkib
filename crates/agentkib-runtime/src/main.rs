@@ -20,6 +20,7 @@ mod cursor_bridge;
 mod native_import;
 mod obsidian;
 mod relay_csr;
+mod skill_manager;
 mod skill_worker;
 mod web;
 
@@ -896,21 +897,22 @@ fn skill_hub() -> anyhow::Result<&'static agentkib_skills::SkillHub> {
 }
 
 fn is_skill_method(method: &str) -> bool {
-    matches!(
-        method,
-        LIST_SKILL_CATALOG_METHOD
-            | DISCOVER_SKILLS_METHOD
-            | LIST_INSTALLED_SKILLS_METHOD
-            | PREPARE_SKILL_INSTALL_METHOD
-            | APPLY_SKILL_OPERATION_METHOD
-            | CHECK_SKILL_UPDATES_METHOD
-            | PREPARE_SKILL_UPDATE_METHOD
-            | ROLLBACK_SKILL_METHOD
-            | UNINSTALL_SKILL_METHOD
-            | LIST_REMOVED_SKILLS_METHOD
-            | RESTORE_SKILL_METHOD
-            | READ_SKILL_FILE_METHOD
-    )
+    skill_manager::is_method(method)
+        || matches!(
+            method,
+            LIST_SKILL_CATALOG_METHOD
+                | DISCOVER_SKILLS_METHOD
+                | LIST_INSTALLED_SKILLS_METHOD
+                | PREPARE_SKILL_INSTALL_METHOD
+                | APPLY_SKILL_OPERATION_METHOD
+                | CHECK_SKILL_UPDATES_METHOD
+                | PREPARE_SKILL_UPDATE_METHOD
+                | ROLLBACK_SKILL_METHOD
+                | UNINSTALL_SKILL_METHOD
+                | LIST_REMOVED_SKILLS_METHOD
+                | RESTORE_SKILL_METHOD
+                | READ_SKILL_FILE_METHOD
+        )
 }
 
 fn load_mcp_network_settings() -> McpNetworkSettings {
@@ -4642,6 +4644,7 @@ fn execute_skill_request(
         LIST_REMOVED_SKILLS_METHOD => command_response(request, list_removed_skills).0,
         RESTORE_SKILL_METHOD => command_response(request, restore_skill).0,
         READ_SKILL_FILE_METHOD => command_response(request, read_skill_file).0,
+        _ if skill_manager::is_method(&method) => skill_manager::execute(request),
         _ => RpcResponse::error(
             request.id,
             -32601,
@@ -4729,10 +4732,13 @@ struct ApplySkillOperationRequest {
 
 fn apply_skill_operation(
     request: ApplySkillOperationRequest,
-) -> anyhow::Result<agentkib_core::InstalledSkill> {
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.apply(&request.token, request.confirmed, request.allow_modified)?;
-    complete_skill_mutation("skill.apply", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.apply", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
 #[derive(Deserialize)]
@@ -4746,16 +4752,27 @@ struct ConfirmSkillRequest {
     confirmed: bool,
 }
 
-fn rollback_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+fn rollback_skill(
+    request: ConfirmSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.rollback(&request.name, request.confirmed)?;
-    complete_skill_mutation("skill.rollback", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.rollback", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
-fn uninstall_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::RemovedSkill> {
+fn uninstall_skill(
+    request: ConfirmSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::RemovedSkill>> {
+    skill_manager::ensure_library_removable(&request.name)?;
     let skill = skill_hub()?.uninstall(&request.name, request.confirmed)?;
-    complete_skill_mutation("skill.uninstall", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.uninstall", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
 fn list_removed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::RemovedSkill>> {
@@ -4768,19 +4785,39 @@ struct RestoreSkillRequest {
     confirmed: bool,
 }
 
-fn restore_skill(request: RestoreSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+fn restore_skill(
+    request: RestoreSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.restore(&request.id, request.confirmed)?;
-    complete_skill_mutation("skill.restore", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.restore", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
-fn complete_skill_mutation(action: &str, name: &str) {
+#[derive(Serialize)]
+struct SkillMutationOutcome<T> {
+    #[serde(flatten)]
+    value: T,
+    warnings: Vec<String>,
+}
+
+fn complete_skill_mutation(action: &str, name: &str) -> Vec<String> {
     // The filesystem mutation is already durable; follow-up bookkeeping must not turn it into a
     // reported failure that encourages the user to repeat the operation.
-    if let Ok(store) = Store::open_default() {
-        let _ = store.audit(None, action, name);
+    let mut warnings = Vec::new();
+    if let Err(error) = Store::open_default().and_then(|store| store.audit(None, action, name)) {
+        warnings.push(format!(
+            "Skill operation succeeded, but its audit could not be saved: {error}"
+        ));
     }
-    let _ = refresh_discovery(EmptyRequest {});
+    if let Err(error) = refresh_discovery(EmptyRequest {}) {
+        warnings.push(format!(
+            "Skill operation succeeded, but discovery could not be refreshed: {error}"
+        ));
+    }
+    warnings
 }
 
 #[derive(Deserialize)]
@@ -5730,6 +5767,9 @@ mod tests {
             assert!(is_skill_method(method), "{method} was not routed");
         }
         assert!(!is_skill_method(RUNTIME_INFO_METHOD));
+        for method in skill_manager::METHODS {
+            assert!(is_skill_method(method), "{method} was not routed");
+        }
     }
 
     #[test]

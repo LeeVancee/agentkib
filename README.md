@@ -37,6 +37,8 @@ See the Instructions, Skills, MCP connections, memory, and native configuration 
 
 Browse reviewed OpenAI Skills or inspect a public GitHub repository before adding a package to the local library. AgentKib pins managed packages to immutable commits, previews files and executable resources, detects updates and local drift, and supports rollback and recoverable removal. Library Skills are not enabled for an agent automatically.
 
+Inspect and copy existing installations into the library, then review deployments to personal or project locations. Each deployment can be updated, rolled back or withdrawn independently without taking over the original installation. Shared visibility and native loading restrictions are reported separately. See [Skill management](docs/SKILLS.md).
+
 [![AgentKib Skill Hub showing curated Skills and auditable source information](docs/assets/agentkib-skill-hub.png)](docs/assets/agentkib-skill-hub.png)
 
 ### Continue across agents

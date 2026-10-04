@@ -213,11 +213,16 @@ export class AgentTools {
       );
       if (!manager)
         throw new Error("Agent tool package manager is no longer available; detect again");
+      const npmAllowScripts =
+        action.channel === "npm" && agent === "open-claw"
+          ? await this.#npmAllowsScripts(manager)
+          : true;
       const args = this.#managerArgs(
         action.channel,
         agent,
         action.target_version,
         current?.version !== undefined,
+        npmAllowScripts,
       );
       const environment = { ...process.env };
       const pathKey =
@@ -369,6 +374,12 @@ export class AgentTools {
             : comparison === null
               ? "unknown"
               : "current";
+    const npmManager =
+      spec.agent === "open-claw" &&
+      (state === "uninstalled" || (state === "update-available" && channel === "npm"))
+        ? resolveCommand(this.#expandPath(primary?.manager_path ?? "npm"))
+        : null;
+    const npmAllowScripts = npmManager ? await this.#npmAllowsScripts(npmManager) : true;
     return {
       agent: spec.agent,
       installed: installations.length > 0,
@@ -382,7 +393,7 @@ export class AgentTools {
       warnings,
       official_url: spec.official,
       ...(spec.releases ? { release_url: spec.releases } : {}),
-      actions: this.#actions(spec, state, primary, latest, cache),
+      actions: this.#actions(spec, state, primary, latest, cache, npmAllowScripts),
     };
   }
 
@@ -420,10 +431,11 @@ export class AgentTools {
     primary: Installation | undefined,
     latest: string | undefined,
     cache: Record<string, { version: string; checked_at: string }>,
+    npmAllowScripts: boolean,
   ): Action[] {
     if (state === "uninstalled") {
       const actions = CHANNELS[spec.agent]!.map((channel) =>
-        this.#installAction(spec, channel, this.#versionFor(spec, channel, cache)),
+        this.#installAction(spec, channel, this.#versionFor(spec, channel, cache), npmAllowScripts),
       ).filter((item): item is Action => Boolean(item));
       return actions.length ? actions : [this.#docAction(spec, "unknown")];
     }
@@ -445,7 +457,7 @@ export class AgentTools {
             shell,
             command: this.#command(
               this.#expandPath(manager),
-              this.#managerArgs(primary.channel, spec.agent, latest, true),
+              this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts),
             ),
             url: spec.official,
             target_version: latest,
@@ -464,7 +476,7 @@ export class AgentTools {
           shell: process.platform === "win32" ? "powershell" : "posix",
           command: this.#command(
             managerName,
-            this.#managerArgs(primary.channel, spec.agent, latest, true),
+            this.#managerArgs(primary.channel, spec.agent, latest, true, npmAllowScripts),
           ),
           url: spec.official,
           target_version: latest,
@@ -537,12 +549,23 @@ export class AgentTools {
     return [this.#docAction(spec, primary?.channel ?? "unknown")];
   }
 
-  #installAction(spec: Spec, channel: Channel, target?: string): Action | null {
+  #installAction(
+    spec: Spec,
+    channel: Channel,
+    target?: string,
+    npmAllowScripts = true,
+  ): Action | null {
     const managerName = channel === "homebrew" ? "brew" : channel;
     const manager = ["npm", "pnpm", "bun", "yarn", "homebrew", "volta"].includes(channel)
       ? resolveCommand(managerName)
       : null;
-    const command = this.#installCommand(spec, channel, target, manager ?? undefined);
+    const command = this.#installCommand(
+      spec,
+      channel,
+      target,
+      manager ?? undefined,
+      npmAllowScripts,
+    );
     if (!command) return null;
     const shell = process.platform === "win32" ? "powershell" : "posix";
     const mode =
@@ -564,7 +587,13 @@ export class AgentTools {
     };
   }
 
-  #installCommand(spec: Spec, channel: Channel, target?: string, manager?: string): string | null {
+  #installCommand(
+    spec: Spec,
+    channel: Channel,
+    target?: string,
+    manager?: string,
+    npmAllowScripts = true,
+  ): string | null {
     const shell = process.platform === "win32";
     if (channel === "official-installer") {
       const commands: Record<string, string> = {
@@ -597,12 +626,15 @@ export class AgentTools {
     if (!pkg) return null;
     const packageRef = `${pkg}@${target ?? "latest"}`;
     const managerCmd = manager
-      ? this.#command(manager, this.#managerArgs(channel, spec.agent, target ?? "latest", false))
+      ? this.#command(
+          manager,
+          this.#managerArgs(channel, spec.agent, target ?? "latest", false, npmAllowScripts),
+        )
       : null;
     if (managerCmd) return managerCmd;
     if (channel === "npm")
       return spec.agent === "open-claw"
-        ? `npm install -g ${packageRef} --allow-scripts=openclaw`
+        ? `npm install -g ${packageRef}${npmAllowScripts ? " --allow-scripts=openclaw" : ""}`
         : `npm install -g ${packageRef}`;
     if (channel === "pnpm")
       return spec.agent === "open-claw"
@@ -621,7 +653,13 @@ export class AgentTools {
     return null;
   }
 
-  #managerArgs(channel: string, agent: string, target: string, update: boolean) {
+  #managerArgs(
+    channel: string,
+    agent: string,
+    target: string,
+    update: boolean,
+    npmAllowScripts = true,
+  ) {
     const pkg = PACKAGES[agent];
     if (!pkg) throw new Error("Agent tool package is unsupported");
     const ref = `${pkg}@${target}`;
@@ -645,7 +683,18 @@ export class AgentTools {
           ? ["update", "-g", ref]
           : ["add", "-g", ref];
     if (channel === "yarn") return ["global", "add", ref];
+    if (channel === "npm" && agent === "open-claw")
+      return ["install", "-g", ref, ...(npmAllowScripts ? ["--allow-scripts=openclaw"] : [])];
     return update ? ["install", "-g", ref] : ["install", "-g", ref];
+  }
+
+  async #npmAllowsScripts(manager: string): Promise<boolean> {
+    const result = await this.#run(manager, ["--version"], 5_000, 4096);
+    const match = result.code === 0 ? result.stdout.trim().match(/^(\d+)\.(\d+)\./) : null;
+    if (!match) return true;
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    return major > 11 || (major === 11 && minor >= 16);
   }
 
   #docAction(spec: Spec, channel: Channel): Action {
@@ -792,13 +841,13 @@ export class AgentTools {
       const rootTarget = await fs.realpath(root).catch(() => null);
       const packageTarget = await fs.realpath(packageDirectory).catch(() => null);
       if (!rootTarget || !packageTarget) return false;
-      const relativePackage = path.relative(rootTarget, packageTarget);
-      if (
-        relativePackage === ".." ||
-        relativePackage.startsWith(`..${path.sep}`) ||
-        path.isAbsolute(relativePackage)
-      )
-        return false;
+      const within = (base: string, candidate: string) => {
+        const relative = path.relative(base, candidate);
+        return (
+          relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+        );
+      };
+      if (!within(root, packageDirectory) && !within(rootTarget, packageDirectory)) return false;
       const target = pathIdentity(resolved);
       const owned = pathIdentity(packageTarget);
       if (target === owned || target.startsWith(`${owned}${path.sep}`)) return true;

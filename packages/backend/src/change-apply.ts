@@ -51,6 +51,7 @@ export interface ApplyOptions {
   protectedHome: string[];
   approvedApplication: string[];
   approveHome: boolean;
+  skillHomes?: string[];
 }
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 function noParent(file: string): void {
@@ -85,7 +86,76 @@ function directoryChain(target: string, label: string): void {
     if (path.dirname(current) === current) break;
   }
 }
+function checkSkillOwnership(target: string, options: ApplyOptions): void {
+  const protectedNames = new Set([
+    "skill-deployments.json",
+    "skill-deployment-reservations.json",
+    "skill-library-roots.json",
+    "skill-personal-library-roots.json",
+  ]);
+  if (protectedNames.has(path.basename(target)))
+    throw new Error("Skill deployment records cannot be changed by a text ChangeSet");
+  const receiptFiles = new Set<string>();
+  for (const home of options.skillHomes ?? []) {
+    receiptFiles.add(path.join(home, "skill-deployments.json"));
+    receiptFiles.add(path.join(home, "skill-deployment-reservations.json"));
+  }
+  for (let current = path.dirname(target); ; current = path.dirname(current)) {
+    receiptFiles.add(path.join(current, ".agentkib", "skill-deployments.json"));
+    receiptFiles.add(path.join(current, ".agentkib", "skill-deployment-reservations.json"));
+    for (const name of ["skill-library-roots.json", "skill-personal-library-roots.json"]) {
+      const indexFile = path.join(current, ".agentkib", name);
+      if (!existsSync(indexFile)) continue;
+      const metadata = lstatSync(indexFile);
+      if (
+        !metadata.isFile() ||
+        isReparseOrSymlink(indexFile, metadata) ||
+        metadata.size > 1024 * 1024
+      )
+        throw new Error(`Skill ownership index cannot be verified: ${indexFile}`);
+      const index = JSON.parse(readFileSync(indexFile, "utf8")) as {
+        schema_version?: number;
+        libraries?: unknown[];
+      };
+      if (
+        index.schema_version !== 1 ||
+        !Array.isArray(index.libraries) ||
+        index.libraries.length > 128 ||
+        index.libraries.some((library) => typeof library !== "string" || !path.isAbsolute(library))
+      )
+        throw new Error(`Skill ownership index cannot be verified: ${indexFile}`);
+      for (const library of index.libraries as string[]) {
+        if (!existsSync(library))
+          throw new Error(`Skill ownership library is unavailable: ${library}`);
+        receiptFiles.add(path.join(library, "skill-deployments.json"));
+        receiptFiles.add(path.join(library, "skill-deployment-reservations.json"));
+      }
+    }
+    if (path.dirname(current) === current) break;
+  }
+  const candidate = canonicalMissing(target);
+  for (const file of receiptFiles) {
+    if (!existsSync(file)) continue;
+    const metadata = lstatSync(file);
+    if (!metadata.isFile() || isReparseOrSymlink(file, metadata) || metadata.size > 4 * 1024 * 1024)
+      throw new Error(`Skill deployment ownership cannot be verified: ${file}`);
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+      schema_version?: number;
+      deployments?: Array<{ target?: string; status?: string }>;
+    };
+    if (parsed.schema_version !== 1 || !Array.isArray(parsed.deployments))
+      throw new Error(`Skill deployment ownership cannot be verified: ${file}`);
+    for (const record of parsed.deployments) {
+      if (typeof record.target !== "string" || !path.isAbsolute(record.target))
+        throw new Error(`Skill deployment ownership cannot be verified: ${file}`);
+      const owned = canonicalMissing(record.target);
+      if (withinLexical(candidate, owned) || withinLexical(owned, candidate))
+        throw new Error(`ChangeSet overlaps a managed Skill deployment: ${target}`);
+    }
+  }
+}
 function ensureSafe(plan: ChangeSet, change: FileChange, options: ApplyOptions): void {
+  checkSkillOwnership(change.target, options);
   const root = canonicalProject(plan.project_root),
     candidate = canonicalMissing(change.target),
     allowed = [...options.approvedHome, ...options.approvedApplication].some((file) => {

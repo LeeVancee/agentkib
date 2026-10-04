@@ -20,6 +20,8 @@ import type {
   McpRegistryEntry,
   McpServerConfig,
   SkillSource,
+  SkillDetailRequest,
+  PrepareSkillDeploymentRequest,
   MemoryStatus,
   MemoryType,
   OnboardingEvent,
@@ -133,6 +135,19 @@ export const api = {
   removedSkills: () => desktopApi().skills.removed(),
   restoreSkill: (id: string) => desktopApi().skills.restore(id),
   readSkillFile: (name: string, path: string) => desktopApi().skills.readFile(name, path),
+  skillInventory: () => desktopApi().skills.inventory(),
+  skillTargets: () => desktopApi().skills.targets(),
+  skillDetail: (request: SkillDetailRequest) => desktopApi().skills.getDetail(request),
+  readSkillDetailFile: (request: SkillDetailRequest & { path: string }) =>
+    desktopApi().skills.readDetailFile(request),
+  prepareSkillImport: (observationId: string) => desktopApi().skills.prepareImport(observationId),
+  readSkillPreviewFile: (token: string, path: string, targetId?: string) =>
+    desktopApi().skills.readPreviewFile(token, path, targetId),
+  skillDeployments: () => desktopApi().skills.listDeployments(),
+  prepareSkillDeployment: (request: PrepareSkillDeploymentRequest) =>
+    desktopApi().skills.prepareDeployment(request),
+  applySkillDeployment: (token: string, approveHome: boolean) =>
+    desktopApi().skills.applyDeployment(token, approveHome),
   nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     desktopApi().mcp.planMigration(project, candidateIds),

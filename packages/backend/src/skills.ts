@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { compareUtf8 } from "./workspaces";
+import { SkillManager } from "./skill-manager";
+import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 
 const MAX_TREE_ENTRIES = 20_000;
 const MAX_CANDIDATES = 200;
@@ -80,6 +82,8 @@ type LockEntry = {
   content_sha256: string;
   installed_at: string;
   updated_at: string;
+  local_source?: string | null;
+  local_resolved_path?: string | null;
 };
 type LockFile = {
   schema_version: number;
@@ -120,10 +124,16 @@ export class Skills {
   readonly cache: string;
   #previews = new Map<string, Prepared>();
   #busy = false;
+  readonly manager: SkillManager;
 
-  constructor(environment: NodeJS.ProcessEnv, dataDir: string) {
+  constructor(
+    environment: NodeJS.ProcessEnv,
+    dataDir: string,
+    listWorkspaces: () => unknown[] = () => [],
+  ) {
     this.root = skillRoot(environment);
     this.cache = path.join(dataDir, "skill-cache");
+    this.manager = new SkillManager(this.root, environment, listWorkspaces);
   }
 
   async request(method: string, params: Record<string, unknown>) {
@@ -152,6 +162,26 @@ export class Skills {
         return this.#lifecycle(() => this.restore(params));
       case "skills.readFile":
         return this.readFile(params);
+      case "skills.inventory":
+        return this.manager.inventory();
+      case "skills.targets":
+        return this.manager.targets();
+      case "skills.getDetail":
+        return this.manager.detail(params);
+      case "skills.readDetailFile":
+        return this.manager.readDetailFile(params);
+      case "skills.prepareImport":
+        return this.prepareImport(this.#string(params.observation_id, "observation_id"));
+      case "skills.readPreviewFile":
+        return params.target_id === undefined
+          ? this.readPreviewFile(params)
+          : this.manager.readPreviewFile(params);
+      case "skills.listDeployments":
+        return this.manager.listDeployments();
+      case "skills.prepareDeployment":
+        return this.manager.prepareDeployment(params);
+      case "skills.applyDeployment":
+        return this.#lifecycle(() => this.manager.applyDeployment(params));
       default:
         throw new Error(`Unknown Skill method: ${method}`);
     }
@@ -272,7 +302,10 @@ export class Skills {
       const record = lock.skills[name];
       let metadata: SkillMetadata | null = null;
       try {
-        metadata = this.#frontmatter(await fs.readFile(path.join(folder, "SKILL.md"), "utf8"));
+        metadata = this.#frontmatter(
+          await fs.readFile(path.join(folder, "SKILL.md"), "utf8"),
+          name,
+        );
       } catch {
         if (!record) continue;
       }
@@ -355,6 +388,81 @@ export class Skills {
 
   async prepareInstall(source: Source) {
     return this.#prepare(source, "install");
+  }
+  async prepareImport(observationId: string) {
+    const observation = (await this.manager.inventory()).observations.find(
+      (item) => item.id === observationId,
+    );
+    if (!observation?.resolved_path || observation.status !== "observed")
+      throw new Error("Skill observation no longer exists; refresh the inventory");
+    const source = observation.resolved_path;
+    const initial = await skillPackage(source);
+    if (initial.diagnostics.length) throw new Error(initial.diagnostics.join("; "));
+    const tempPath = await fs.mkdtemp(path.join(os.tmpdir(), "agentkib-skill-import-"));
+    const packagePath = path.join(tempPath, "package");
+    try {
+      await copySkillPackage(source, packagePath);
+      if ((await skillPackage(source)).hash !== initial.hash)
+        throw new Error("Observed Skill changed while preparing the import");
+      const metadata = this.#frontmatter(
+        await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
+        observation.name,
+      );
+      this.#validateSkillName(metadata.name);
+      const installed = await this.installed();
+      let name = metadata.name;
+      for (let suffix = 2; installed.some((skill) => skill.name === name); suffix++)
+        name = `${metadata.name}-${suffix}`;
+      const packageHash = await this.#packageHash(packagePath);
+      const files = (await skillPackage(packagePath)).files.map((file) => ({
+        path: file.path,
+        size: file.size,
+        executable: file.executable,
+      }));
+      const now = new Date().toISOString();
+      const token = randomUUID();
+      const preview = {
+        token,
+        operation: "install",
+        skill: { ...metadata, source: null },
+        files,
+        added: files.map((file) => file.path),
+        modified: [],
+        removed: [],
+        total_size: packageHash.size,
+        local_modified: false,
+        expires_at: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
+      };
+      this.#previews.set(token, {
+        preview,
+        name,
+        packagePath,
+        tempPath,
+        lock: {
+          source: null,
+          content_sha256: packageHash.hash,
+          installed_at: now,
+          updated_at: now,
+          local_source: observation.path,
+          local_resolved_path: source,
+        },
+        expectedHash: null,
+      });
+      return preview;
+    } catch (error) {
+      await fs.rm(tempPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async readPreviewFile(params: Record<string, unknown>) {
+    const token = this.#string(params.token, "token");
+    const relative = this.#string(params.path, "path");
+    const prepared = this.#previews.get(token);
+    if (!prepared || Date.parse(String(prepared.preview.expires_at)) <= Date.now())
+      throw new Error("Skill preview expired or does not exist");
+    const before = prepared.expectedHash ? path.join(this.root, "skills", prepared.name) : null;
+    return skillPreviewFile(before, prepared.packagePath, relative);
   }
   async prepareUpdate(name: string) {
     this.#validateId(name);
@@ -503,6 +611,15 @@ export class Skills {
       throw new Error("Skill uninstall requires explicit confirmation");
     const name = this.#string(params.name, "name");
     this.#validateId(name);
+    if (
+      (await this.manager.listDeployments()).some(
+        (deployment) =>
+          deployment.source_is_current_library &&
+          deployment.library_id === name &&
+          deployment.status !== "inactive",
+      )
+    )
+      throw new Error("Withdraw active Skill deployments before removing the library package");
     const target = path.join(this.root, "skills", name);
     const id = `skill-${randomUUID()}`;
     const root = path.join(this.root, "trash/skills", id);
@@ -958,14 +1075,14 @@ export class Skills {
     return JSON.parse(data.toString("utf8")) as unknown;
   }
 
-  #frontmatter(content: string): SkillMetadata {
+  #frontmatter(content: string, fallbackName?: string): SkillMetadata {
     if (Buffer.byteLength(content) > MAX_ENTRY_BYTES)
       throw new Error("SKILL.md exceeds the 1 MiB limit");
     const match = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) throw new Error("SKILL.md must start with YAML frontmatter");
     const value = parseYaml(match[1]!);
     if (!value || typeof value !== "object") throw new Error("Skill frontmatter must be a mapping");
-    const name = value.name;
+    const name = value.name ?? fallbackName;
     const description = value.description;
     if (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 64)
       throw new Error("Skill name is invalid");
@@ -991,8 +1108,12 @@ export class Skills {
     }> = [];
     let count = 0;
     let size = 0;
+    const emptyDirectories: string[] = [];
     const walk = async (directory: string) => {
-      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const children = await fs.readdir(directory, { withFileTypes: true });
+      if (directory !== root && children.length === 0)
+        emptyDirectories.push(path.relative(root, directory).replaceAll("\\", "/"));
+      for (const entry of children) {
         count++;
         if (count > MAX_PACKAGE_ENTRIES)
           throw new Error("Skill package contains more than 4096 entries");
@@ -1033,6 +1154,17 @@ export class Skills {
       const mtime = entry.info.mtime.toISOString();
       if (!modifiedAt || mtime > modifiedAt) modifiedAt = mtime;
     }
+    if (emptyDirectories.length) {
+      hash.update(Buffer.alloc(8, 0xff));
+      hash.update(Buffer.from("agentkib-empty-directories-v1\0"));
+      for (const directory of emptyDirectories.sort(compareUtf8)) {
+        const value = Buffer.from(directory);
+        const length = Buffer.alloc(8);
+        length.writeBigUInt64LE(BigInt(value.length));
+        hash.update(length);
+        hash.update(value);
+      }
+    }
     return { hash: hash.digest("hex"), size, modifiedAt };
   }
 
@@ -1046,21 +1178,10 @@ export class Skills {
         ))
       )
         return files;
-      const walk = async (directory: string) => {
-        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-          const file = path.join(directory, entry.name);
-          if (entry.isSymbolicLink()) throw new Error("Skill package contains an unsupported file");
-          if (entry.isDirectory()) await walk(file);
-          else if (entry.isFile())
-            files.set(
-              path.relative(root, file).replaceAll("\\", "/"),
-              createHash("sha256")
-                .update(await fs.readFile(file))
-                .digest("hex"),
-            );
-        }
-      };
-      await walk(root);
+      const packageInfo = await skillPackage(root);
+      if (packageInfo.diagnostics.length) throw new Error(packageInfo.diagnostics.join("; "));
+      for (const entry of packageInfo.files)
+        files.set(entry.path, `${entry.sha256}:${entry.executable}`);
       return files;
     };
     const [before, after] = await Promise.all([collect(existing), collect(incoming)]);

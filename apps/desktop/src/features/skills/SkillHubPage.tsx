@@ -1,11 +1,12 @@
 import { useI18n } from "@/core/useI18n";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOptionalQueryClient } from "@/features/home/home-query";
 import { skillKeys, useSkillLibrary, type SkillLibrary } from "./skills-query";
 import {
   ArchiveRestore,
   CircleAlert,
   Download,
+  Eye,
   Github,
   History,
   Library,
@@ -30,6 +31,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { api } from "@/core/api";
 import { tr } from "@/core/i18n";
 import { withAsyncCleanup } from "@/lib/utils";
@@ -39,11 +47,23 @@ import type {
   SkillCandidate,
   SkillCatalogSnapshot,
   SkillOperationPreview,
+  SkillInventory,
+  SkillDeployment,
+  SkillDetailRequest,
   WorkspaceSummary,
 } from "@/core/types";
-import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { cn } from "@/lib/utils";
+import { isSkillDirectory, SkillFileBrowser } from "./SkillFileBrowser";
+import {
+  readableSkillFile,
+  observationMatchesDeployment,
+  groupSkillObservations,
+  SkillDeploymentDialog,
+  SkillDetailDialog,
+  SkillUsageList,
+  type SkillDeploymentAction,
+} from "./SkillManagerPanels";
 
 type SkillHubSection = "library" | "workspace" | "discover";
 const noInstalledSkills: InstalledSkill[] = [];
@@ -71,7 +91,9 @@ function sourceLabel(candidate: SkillCandidate | InstalledSkill, translate = tr)
 
 function isSameSource(installed: InstalledSkill["source"], candidate: SkillCandidate["source"]) {
   return (
-    installed?.repository.toLowerCase() === candidate.repository.toLowerCase() &&
+    !!installed &&
+    !!candidate &&
+    installed.repository.toLowerCase() === candidate.repository.toLowerCase() &&
     installed.ref === candidate.ref &&
     installed.path === candidate.path
   );
@@ -100,7 +122,7 @@ function upsertRemovedSkill(items: RemovedSkill[], next: RemovedSkill) {
   return items.map((item, itemIndex) => (itemIndex === index ? next : item));
 }
 
-export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: SkillHubPageProps) {
+export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps) {
   const { localizeMessage, tr, formatDateTime } = useI18n();
   const dialogs = useAppDialogs();
   const [section, setSection] = useState<SkillHubSection>("library");
@@ -117,6 +139,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     updateLibrary((library) => ({ ...library, installed: next(library.installed) }));
   const setRemoved = (next: (items: RemovedSkill[]) => RemovedSkill[]) =>
     updateLibrary((library) => ({ ...library, removed: next(library.removed) }));
+  const libraryLoading = libraryQuery.isPending;
   const [catalog, setCatalog] = useState<SkillCatalogSnapshot>();
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   const [url, setUrl] = useState("");
@@ -124,6 +147,18 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const [preview, setPreview] = useState<SkillOperationPreview>();
   const [busy, setBusy] = useState<string>();
   const [errors, setErrors] = useState<unknown[]>([]);
+  const [inventory, setInventory] = useState<SkillInventory>({ observations: [], warnings: [] });
+  const [deployments, setDeployments] = useState<SkillDeployment[]>([]);
+  const [managerLoading, setManagerLoading] = useState(true);
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [librarySource, setLibrarySource] = useState("all");
+  const [libraryStatus, setLibraryStatus] = useState("all");
+  const [libraryUsage, setLibraryUsage] = useState("all");
+  const [detailRequest, setDetailRequest] = useState<SkillDetailRequest>();
+  const [deploymentAction, setDeploymentAction] = useState<SkillDeploymentAction>();
+  const [success, setSuccess] = useState(false);
+  const [addedLibraryId, setAddedLibraryId] = useState<string>();
+  const [operationWarnings, setOperationWarnings] = useState<string[]>([]);
   const visibleErrors = errors.length || !libraryQuery.error ? errors : [libraryQuery.error];
   const error = visibleErrors.map(localizeMessage).join(" · ");
 
@@ -148,9 +183,30 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     );
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    Promise.allSettled([api.skillInventory(), api.skillDeployments()]).then(
+      ([nextInventory, nextDeployments]) => {
+        if (cancelled) return;
+        if (nextInventory.status === "fulfilled") setInventory(nextInventory.value);
+        if (nextDeployments.status === "fulfilled") setDeployments(nextDeployments.value);
+        const failures = [nextInventory, nextDeployments].flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length) setErrors((current) => [...current, ...failures]);
+        setManagerLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const run = async (key: string, task: () => Promise<void>) => {
     setBusy(key);
     setErrors([]);
+    setSuccess(false);
+    setAddedLibraryId(undefined);
+    setOperationWarnings([]);
     await withAsyncCleanup(
       async () => {
         try {
@@ -164,7 +220,12 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   };
 
   const refreshAfterMutation = async () => {
-    const refreshResults = await Promise.allSettled([loadLibrary(), onReload()]);
+    const refreshResults = await Promise.allSettled([
+      loadLibrary(),
+      onReload(),
+      api.skillInventory().then(setInventory),
+      api.skillDeployments().then(setDeployments),
+    ]);
     const refreshErrors = refreshResults.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
@@ -172,11 +233,12 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
       refreshErrors.push(...(await loadCatalog(true, false)));
     }
     if (refreshErrors.length) setErrors(refreshErrors);
+    return refreshErrors;
   };
 
   const prepareInstall = (candidate: SkillCandidate) =>
     run(`prepare:${candidate.name}`, async () => {
-      setPreview(await api.prepareSkillInstall(candidate.source));
+      if (candidate.source) setPreview(await api.prepareSkillInstall(candidate.source));
     });
 
   const prepareUpdate = (skill: InstalledSkill) =>
@@ -196,8 +258,11 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
     }
     await run(`apply:${preview.skill.name}`, async () => {
       const skill = await api.applySkillOperation(preview.token, preview.local_modified);
+      setOperationWarnings(skill.warnings ?? []);
       setInstalled((items) => upsertSkill(items, skill));
       setPreview(undefined);
+      setSuccess(true);
+      setAddedLibraryId(skill.name);
       await refreshAfterMutation();
     });
   };
@@ -226,7 +291,9 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
       return;
     await run(`rollback:${skill.name}`, async () => {
       const rolledBack = await api.rollbackSkill(skill.name);
+      setOperationWarnings(rolledBack.warnings ?? []);
       setInstalled((items) => upsertSkill(items, rolledBack));
+      setSuccess(true);
       await refreshAfterMutation();
     });
   };
@@ -242,8 +309,10 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
       return;
     await run(`uninstall:${skill.name}`, async () => {
       const removedSkill = await api.uninstallSkill(skill.name);
+      setOperationWarnings(removedSkill.warnings ?? []);
       setInstalled((items) => items.filter((item) => item.name !== skill.name));
       setRemoved((items) => upsertRemovedSkill(items, removedSkill));
+      setSuccess(true);
       await refreshAfterMutation();
     });
   };
@@ -251,8 +320,10 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
   const restore = (skill: RemovedSkill) =>
     run(`restore:${skill.id}`, async () => {
       const restored = await api.restoreSkill(skill.id);
+      setOperationWarnings(restored.warnings ?? []);
       setRemoved((items) => items.filter((item) => item.id !== skill.id));
       setInstalled((items) => upsertSkill(items, restored));
+      setSuccess(true);
       await refreshAfterMutation();
     });
 
@@ -264,6 +335,33 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
         .includes(normalized),
     );
   }, [candidates, catalog, query, tr]);
+  const activeDeployments = deployments.filter((item) => item.status !== "inactive");
+  const filteredInstalled = installed.filter((skill) => {
+    const usage = activeDeployments.filter(
+      (item) => item.source_is_current_library === true && item.library_id === skill.name,
+    );
+    return (
+      `${skill.display_name} ${skill.description} ${sourceLabel(skill, tr)}`
+        .toLowerCase()
+        .includes(librarySearch.trim().toLowerCase()) &&
+      (librarySource === "all" || (skill.source?.kind ?? "local") === librarySource) &&
+      (libraryStatus === "all" || skill.status === libraryStatus) &&
+      (libraryUsage === "all" ||
+        (libraryUsage === "unused"
+          ? !usage.length
+          : usage.some((item) => item.scope === libraryUsage)))
+    );
+  });
+  const prepareImport = (observationId: string) => {
+    setDetailRequest(undefined);
+    return run(`import:${observationId}`, async () =>
+      setPreview(await api.prepareSkillImport(observationId)),
+    );
+  };
+  const openDeployment = (libraryId: string) => {
+    setDetailRequest(undefined);
+    setDeploymentAction({ operation: "deploy", libraryId });
+  };
 
   return (
     <div className="grid min-w-0 gap-4">
@@ -285,7 +383,17 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
             <TabsTrigger className="segmented-control-item h-9 gap-2" value="workspace">
               <Sparkles size={15} />
               {tr("skills.workspaceUsage")}
-              <Badge variant="secondary">{workspaceAssets.length}</Badge>
+              <Badge variant="secondary">
+                {activeDeployments.length +
+                  groupSkillObservations(
+                    inventory.observations.filter(
+                      (item) =>
+                        !activeDeployments.some((deployment) =>
+                          observationMatchesDeployment(item, deployment),
+                        ),
+                    ),
+                  ).length}
+              </Badge>
             </TabsTrigger>
             <TabsTrigger className="segmented-control-item h-9 gap-2" value="discover">
               <Search size={15} />
@@ -302,9 +410,74 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
           <span>{error}</span>
         </div>
       )}
+      {inventory.warnings.map((warning) => (
+        <p
+          key={warning}
+          className="rounded-xl border border-amber-500/30 p-3 text-sm text-amber-700"
+        >
+          {warning}
+        </p>
+      ))}
+      {success && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"
+        >
+          <span>
+            {tr("skills.manager.libraryChanged")}
+            {errors.length > 0 ? ` ${tr("skills.manager.refreshFailed")}` : ""}
+          </span>
+          {addedLibraryId && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={Boolean(busy)}
+              onClick={() => openDeployment(addedLibraryId)}
+            >
+              {tr("skills.manager.deploy")}
+            </Button>
+          )}
+        </div>
+      )}
+      {operationWarnings.map((warning) => (
+        <p
+          key={warning}
+          role="status"
+          className="rounded-xl border border-amber-500/30 p-3 text-sm text-amber-700"
+        >
+          {warning}
+        </p>
+      ))}
 
       {section === "workspace" && (
-        <AssetCatalogPage assets={workspaceAssets} workspaces={workspaces} onOpen={onOpen} />
+        <div className="grid gap-3">
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              disabled={Boolean(busy)}
+              onClick={() =>
+                void run("refresh-inventory", async () => {
+                  await refreshAfterMutation();
+                })
+              }
+            >
+              <RefreshCw size={14} />
+              {tr("skills.manager.refresh")}
+            </Button>
+          </div>
+          <SkillUsageList
+            inventory={inventory}
+            deployments={deployments}
+            installed={installed}
+            workspaces={workspaces}
+            loading={managerLoading}
+            busy={Boolean(busy)}
+            onDetail={setDetailRequest}
+            onImport={(id) => void prepareImport(id)}
+            onAction={setDeploymentAction}
+            onOpen={onOpen}
+          />
+        </div>
       )}
 
       {section === "library" && (
@@ -319,17 +492,94 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
               {tr("skills.checkUpdates")}
             </Button>
           </div>
+          <div className="flex flex-wrap gap-2">
+            <Input
+              className="min-w-40 flex-1"
+              aria-label={tr("skills.manager.searchLibrary")}
+              placeholder={tr("skills.manager.searchLibrary")}
+              value={librarySearch}
+              onChange={(event) => setLibrarySearch(event.target.value)}
+            />
+            <Select
+              value={librarySource}
+              onValueChange={(value) => value && setLibrarySource(value)}
+            >
+              <SelectTrigger className="w-36" aria-label={tr("catalog.source")}>
+                <SelectValue>
+                  {librarySource === "all"
+                    ? tr("skills.manager.allSources")
+                    : librarySource === "local"
+                      ? tr("skills.localSource")
+                      : librarySource === "openai-curated"
+                        ? tr("skills.openaiCurated")
+                        : "GitHub"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("skills.manager.allSources")}</SelectItem>
+                <SelectItem value="local">{tr("skills.localSource")}</SelectItem>
+                <SelectItem value="github">GitHub</SelectItem>
+                <SelectItem value="openai-curated">{tr("skills.openaiCurated")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={libraryStatus}
+              onValueChange={(value) => value && setLibraryStatus(value)}
+            >
+              <SelectTrigger className="w-36" aria-label={tr("skills.manager.statusFilter")}>
+                <SelectValue>
+                  {libraryStatus === "all"
+                    ? tr("skills.manager.allStatuses")
+                    : tr(`skills.status.${libraryStatus}`)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("skills.manager.allStatuses")}</SelectItem>
+                {(["current", "update-available", "modified", "unmanaged"] as const).map(
+                  (status) => (
+                    <SelectItem key={status} value={status}>
+                      {statusLabel(status, tr)}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectContent>
+            </Select>
+            <Select value={libraryUsage} onValueChange={(value) => value && setLibraryUsage(value)}>
+              <SelectTrigger className="w-40" aria-label={tr("skills.workspaceUsage")}>
+                <SelectValue>
+                  {libraryUsage === "all"
+                    ? tr("skills.manager.allLocations")
+                    : libraryUsage === "unused"
+                      ? tr("skills.manager.notDeployed")
+                      : libraryUsage === "personal"
+                        ? tr("skills.manager.personal")
+                        : tr("skills.manager.project")}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{tr("skills.manager.allLocations")}</SelectItem>
+                <SelectItem value="unused">{tr("skills.manager.notDeployed")}</SelectItem>
+                <SelectItem value="personal">{tr("skills.manager.personal")}</SelectItem>
+                <SelectItem value="workspace">{tr("skills.manager.project")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
-          {!installed.length ? (
+          {libraryLoading ? (
+            <EmptyState title={tr("common.loading")} />
+          ) : !installed.length ? (
             <EmptyState
               title={tr("skills.libraryEmpty")}
               description={tr("skills.libraryEmptyHint")}
             />
           ) : (
-            <div className="grid gap-3 lg:grid-cols-2">
-              {installed.map((skill) => (
-                <Card key={skill.name} className="rounded-2xl">
-                  <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
+            <div className="grid gap-2">
+              {filteredInstalled.map((skill) => (
+                <Card
+                  key={skill.name}
+                  className="grid gap-2 rounded-xl p-3 lg:grid-cols-[minmax(0,1fr)_auto]"
+                >
+                  <CardHeader className="flex-row items-start justify-between gap-3 p-0">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="truncate font-semibold">{skill.display_name}</h3>
@@ -342,7 +592,7 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                       </p>
                     </div>
                   </CardHeader>
-                  <CardContent className="grid gap-3 p-4 pt-1">
+                  <CardContent className="grid content-center gap-2 p-0">
                     <div className="grid gap-1 text-xs text-muted-foreground">
                       <span className="truncate">{sourceLabel(skill, tr)}</span>
                       <span>
@@ -351,6 +601,30 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setDetailRequest({ library_id: skill.name })}
+                      >
+                        <Eye size={14} />
+                        {tr("skills.manager.details")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={Boolean(busy)}
+                        onClick={() => openDeployment(skill.name)}
+                      >
+                        {tr("skills.manager.deploy")}
+                      </Button>
+                      <Badge variant="secondary">
+                        {tr("skills.manager.usageCount", {
+                          count: activeDeployments.filter(
+                            (item) =>
+                              item.source_is_current_library === true &&
+                              item.library_id === skill.name,
+                          ).length,
+                        })}
+                      </Badge>
                       {skill.source && (
                         <Button
                           size="sm"
@@ -387,6 +661,9 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                 </Card>
               ))}
             </div>
+          )}
+          {installed.length > 0 && !filteredInstalled.length && (
+            <EmptyState title={tr("skills.noResults")} />
           )}
 
           {removed.length > 0 && (
@@ -499,17 +776,13 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
               {availableEntries.map((candidate) => {
-                const matchingName = installed.filter(
-                  (skill) => skill.display_name === candidate.name,
-                );
-                const existing = matchingName.find((skill) =>
+                const existing = installed.find((skill) =>
                   isSameSource(skill.source, candidate.source),
                 );
                 const sameSource = Boolean(existing);
-                const nameConflict = !sameSource && matchingName.length > 0;
                 return (
                   <Card
-                    key={`${candidate.source.repository}:${candidate.source.path}`}
+                    key={`${candidate.source?.repository ?? "local"}:${candidate.source?.path ?? candidate.name}`}
                     className="rounded-2xl"
                   >
                     <CardHeader className="p-4 pb-2">
@@ -526,21 +799,19 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
                     <CardContent className="flex items-end justify-between gap-3 p-4 pt-2">
                       <div className="min-w-0 text-xs text-muted-foreground">
                         <p className="truncate">
-                          {candidate.source.path || candidate.source.repository}
+                          {candidate.source?.path ||
+                            candidate.source?.repository ||
+                            tr("skills.localSource")}
                         </p>
                         {candidate.license && <p>{candidate.license}</p>}
                       </div>
                       <Button
                         size="sm"
-                        disabled={nameConflict || Boolean(busy)}
+                        disabled={!candidate.source || Boolean(busy)}
                         onClick={() => void prepareInstall(candidate)}
                       >
                         <Download size={14} />
-                        {nameConflict
-                          ? tr("skills.nameConflict")
-                          : sameSource
-                            ? tr("skills.update")
-                            : tr("skills.addToLibrary")}
+                        {sameSource ? tr("skills.update") : tr("skills.addToLibrary")}
                       </Button>
                     </CardContent>
                   </Card>
@@ -557,6 +828,25 @@ export function SkillHubPage({ workspaceAssets, workspaces, onOpen, onReload }: 
         onClose={() => setPreview(undefined)}
         onApply={() => void applyPreview()}
       />
+      {detailRequest && (
+        <SkillDetailDialog
+          request={detailRequest}
+          inventory={inventory}
+          deployments={deployments}
+          onClose={() => setDetailRequest(undefined)}
+          onDeploy={openDeployment}
+          onImport={(id) => void prepareImport(id)}
+        />
+      )}
+      {deploymentAction && (
+        <SkillDeploymentDialog
+          key={`${deploymentAction.operation}:${deploymentAction.libraryId ?? deploymentAction.deployment?.id}`}
+          action={deploymentAction}
+          workspaces={workspaces}
+          onClose={() => setDeploymentAction(undefined)}
+          onChanged={refreshAfterMutation}
+        />
+      )}
     </div>
   );
 }
@@ -585,10 +875,21 @@ function SkillPreviewDialog({
   onApply: () => void;
 }) {
   const { tr, formatDateTime } = useI18n();
+  const previewToken = preview?.token;
+  const readFile = useCallback(
+    async (path: string) => {
+      if (!previewToken) throw new Error("Skill preview is unavailable");
+      return readableSkillFile(await api.readSkillPreviewFile(previewToken, path));
+    },
+    [previewToken],
+  );
   return (
-    <Dialog open={Boolean(preview)} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={Boolean(preview)} onOpenChange={(open) => !open && !busy && onClose()}>
       {preview && (
-        <DialogContent className="max-h-[85vh] w-[min(720px,calc(100vw-2rem))] max-w-none overflow-y-auto">
+        <DialogContent
+          showCloseButton={!busy}
+          className="max-h-[85vh] w-[min(920px,calc(100vw-2rem))] !max-w-none overflow-y-auto"
+        >
           <DialogHeader>
             <DialogTitle>
               {tr(
@@ -601,7 +902,16 @@ function SkillPreviewDialog({
           </DialogHeader>
           <div className="grid gap-4">
             <div className="grid gap-2 rounded-xl border bg-muted/30 p-3 text-sm sm:grid-cols-4">
-              <PreviewMetric label={tr("skills.files")} value={String(preview.files.length)} />
+              <PreviewMetric
+                label={tr("skills.files")}
+                value={String(preview.files.filter((file) => !isSkillDirectory(file.path)).length)}
+              />
+              {preview.files.some((file) => isSkillDirectory(file.path)) && (
+                <PreviewMetric
+                  label={tr("skills.manager.directories")}
+                  value={String(preview.files.filter((file) => isSkillDirectory(file.path)).length)}
+                />
+              )}
               <PreviewMetric
                 label={tr("skills.executableFiles")}
                 value={String(preview.files.filter((file) => file.executable).length)}
@@ -609,7 +919,9 @@ function SkillPreviewDialog({
               <PreviewMetric label={tr("assets.size")} value={formatBytes(preview.total_size)} />
               <PreviewMetric
                 label={tr("skills.sourceCommit")}
-                value={preview.skill.source.resolved_commit.slice(0, 12)}
+                value={
+                  preview.skill.source?.resolved_commit.slice(0, 12) ?? tr("skills.localSource")
+                }
               />
             </div>
             {(preview.skill.license || preview.skill.compatibility) && (
@@ -636,6 +948,16 @@ function SkillPreviewDialog({
               <FileChanges title={tr("skills.modifiedFiles")} files={preview.modified} />
               <FileChanges title={tr("skills.removedFiles")} files={preview.removed} />
             </div>
+            <SkillFileBrowser
+              key={preview.token}
+              files={[
+                ...preview.files,
+                ...preview.removed
+                  .filter((path) => !preview.files.some((file) => file.path === path))
+                  .map((path) => ({ path, size: 0, executable: false })),
+              ]}
+              readFile={readFile}
+            />
             <p className="text-xs text-muted-foreground">
               {tr("skills.noExecutionNotice", { time: formatDateTime(preview.expires_at) })}
             </p>

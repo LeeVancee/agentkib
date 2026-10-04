@@ -343,7 +343,9 @@ export class TypeScriptBackend {
           () => store.insights.achievements(),
         );
         this.#obsidian = new ObsidianIntegration(dataDir);
-        this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir);
+        this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir, () =>
+          store.listWorkspaces(),
+        );
         this.#agentTools = new AgentTools(dataDir);
         this.#mcp = new McpManager(
           store.sql,

@@ -6,6 +6,12 @@ import type { RuntimeHost } from "../runtime-host";
 import { createIpcRegistrar } from "./registrar";
 import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
 import {
+  skillDeploymentRequest,
+  skillDetailRequest,
+  skillIdentity,
+  skillRelativePath,
+} from "./skill-validation";
+import {
   optionalPositiveInteger,
   optionalString,
   requireAgentKind,
@@ -383,6 +389,47 @@ export function registerRuntimeIpc({
       (name: unknown, filePath: unknown) => ({
         name: requireString(name, "name"),
         path: requireString(filePath, "path"),
+      }),
+    );
+    forward("agentkib:skills:inventory", RUNTIME_METHODS.skillInventory);
+    forward("agentkib:skills:targets", RUNTIME_METHODS.skillTargets);
+    forward("agentkib:skills:get-detail", RUNTIME_METHODS.skillDetail, (request: unknown) =>
+      skillDetailRequest(request),
+    );
+    forward(
+      "agentkib:skills:read-detail-file",
+      RUNTIME_METHODS.readSkillDetailFile,
+      (request: unknown) => skillDetailRequest(request, true),
+    );
+    forward(
+      "agentkib:skills:prepare-import",
+      RUNTIME_METHODS.prepareSkillImport,
+      (observationId: unknown) => ({
+        observation_id: skillIdentity(observationId, "observation_id"),
+      }),
+    );
+    forward(
+      "agentkib:skills:read-preview-file",
+      RUNTIME_METHODS.readSkillPreviewFile,
+      (token: unknown, filePath: unknown, targetId: unknown) => ({
+        token: skillIdentity(token, "token"),
+        path: skillRelativePath(filePath),
+        ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
+      }),
+    );
+    forward("agentkib:skills:list-deployments", RUNTIME_METHODS.listSkillDeployments);
+    forward(
+      "agentkib:skills:prepare-deployment",
+      RUNTIME_METHODS.prepareSkillDeployment,
+      (request: unknown) => skillDeploymentRequest(request),
+    );
+    forward(
+      "agentkib:skills:apply-deployment",
+      RUNTIME_METHODS.applySkillDeployment,
+      (token: unknown, approveHome: unknown) => ({
+        token: skillIdentity(token, "token"),
+        confirmed: true,
+        approve_home: requireBoolean(approveHome, "approve_home"),
       }),
     );
 

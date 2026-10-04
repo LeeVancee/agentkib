@@ -107,7 +107,19 @@ export function applyRequest(
         protectedHome.push(root);
       }
     }
-  const options: ApplyOptions = { approvedHome, protectedHome, approvedApplication, approveHome };
+  const options: ApplyOptions = {
+    approvedHome,
+    protectedHome,
+    approvedApplication,
+    approveHome,
+    skillHomes: [
+      environment.AGENTKIB_HOME ??
+        path.join(
+          home,
+          environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? ".agentkib-dev" : ".agentkib",
+        ),
+    ],
+  };
   let success = false;
   try {
     const result = applyChanges(plan, path.join(dataDir, "backups"), options);

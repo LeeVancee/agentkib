@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppDialogProvider } from "@/components/AppDialogProvider";
 import { changeLocale, initializeI18n, localizeMessage, tr } from "@/core/i18n";
@@ -29,6 +29,15 @@ const mocks = vi.hoisted(() => ({
   rollbackSkill: vi.fn(),
   uninstallSkill: vi.fn(),
   restoreSkill: vi.fn(),
+  skillInventory: vi.fn(),
+  skillDeployments: vi.fn(),
+  skillTargets: vi.fn(),
+  skillDetail: vi.fn(),
+  readSkillDetailFile: vi.fn(),
+  prepareSkillImport: vi.fn(),
+  readSkillPreviewFile: vi.fn(),
+  prepareSkillDeployment: vi.fn(),
+  applySkillDeployment: vi.fn(),
 }));
 
 vi.mock("@/core/api", () => ({ api: mocks }));
@@ -62,6 +71,18 @@ const preview: SkillOperationPreview = {
 
 describe("SkillHubPage", () => {
   beforeAll(() => initializeI18n("en-US"));
+  beforeEach(() => {
+    mocks.skillInventory.mockResolvedValue({ observations: [], warnings: [] });
+    mocks.skillDeployments.mockResolvedValue([]);
+    mocks.skillTargets.mockResolvedValue([]);
+    mocks.readSkillPreviewFile.mockResolvedValue({
+      path: "SKILL.md",
+      before: null,
+      after: "Package instructions",
+      binary: false,
+      truncated: false,
+    });
+  });
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -89,8 +110,139 @@ describe("SkillHubPage", () => {
 
     expect(await screen.findByText("local-reviewer")).toBeTruthy();
     expect(screen.getByText("Local unmanaged")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: /Workspace usage/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Usage locations/ })).toBeTruthy();
     expect(screen.getByText(/not enabled for any Agent automatically/)).toBeTruthy();
+  });
+
+  it("combines source, package status and usage filters in My Skills", async () => {
+    const local = {
+      name: "local-reviewer",
+      display_name: "local-reviewer",
+      description: "Local review",
+      path: "/library/local-reviewer",
+      size: 20,
+      status: "unmanaged",
+      source: null,
+      can_rollback: false,
+    };
+    mocks.installedSkills.mockResolvedValue([
+      local,
+      {
+        ...local,
+        name: "remote-reviewer",
+        display_name: "remote-reviewer",
+        status: "current",
+        source: { ...candidate.source!, kind: "github" },
+      },
+    ]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillDeployments.mockResolvedValue([
+      {
+        id: "deployment",
+        library_id: "remote-reviewer",
+        source_is_current_library: true,
+        scope: "personal",
+        status: "active",
+        target: "/native/remote-reviewer",
+      },
+      {
+        id: "foreign-deployment",
+        library_id: "local-reviewer",
+        source_is_current_library: false,
+        scope: "personal",
+        status: "active",
+        target: "/native/foreign-reviewer",
+      },
+    ]);
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    await screen.findByText("remote-reviewer");
+    const user = userEvent.setup();
+    const chooseFilter = async (label: string, option: string) => {
+      const trigger = screen.getByRole("combobox", { name: label });
+      await user.click(trigger);
+      // Base UI defers pointer-triggered opening to an animation frame.
+      await user.click(await screen.findByRole("option", { name: option }));
+      await waitFor(() => {
+        expect(trigger.getAttribute("aria-expanded")).toBe("false");
+        expect(screen.queryByRole("listbox")).toBeNull();
+        expect(trigger.textContent).toContain(option);
+      });
+    };
+    await chooseFilter(tr("catalog.source"), tr("skills.localSource"));
+    expect(screen.queryByText("remote-reviewer")).toBeNull();
+    expect(screen.getByText("local-reviewer")).toBeTruthy();
+    await chooseFilter("Package status", tr("skills.status.current"));
+    expect(screen.queryByText("local-reviewer")).toBeNull();
+    await chooseFilter("Package status", "All statuses");
+    expect(screen.getByText("local-reviewer")).toBeTruthy();
+    await chooseFilter("Usage locations", "Personal");
+    expect(screen.queryByText("local-reviewer")).toBeNull();
+    await chooseFilter("Usage locations", "Not deployed");
+    expect(screen.getByText("local-reviewer")).toBeTruthy();
+  });
+
+  it("copies an external package through review and preserves successful import warnings", async () => {
+    mocks.installedSkills
+      .mockResolvedValueOnce([])
+      .mockRejectedValue(new Error("Library refresh failed"));
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillInventory.mockResolvedValue({
+      observations: [
+        {
+          id: "external-1",
+          name: "external-reviewer",
+          path: "/native/reviewer",
+          resolved_path: "/cc-switch/reviewer",
+          scope: "personal",
+          workspace_id: null,
+          agents: ["claude-code"],
+          kind: "symlink",
+          status: "observed",
+          owner: "cc-switch",
+          library_id: null,
+          diagnostics: [],
+        },
+      ],
+      warnings: ["A scan root was unavailable"],
+    });
+    mocks.prepareSkillImport.mockResolvedValue({
+      ...preview,
+      skill: { ...candidate, name: "external-reviewer", source: null },
+    });
+    mocks.applySkillOperation.mockResolvedValue({
+      name: "imported-reviewer",
+      display_name: "external-reviewer",
+      path: "/library/imported-reviewer",
+      description: "Copied package",
+      size: 128,
+      status: "unmanaged",
+      source: null,
+      can_rollback: false,
+      warnings: ["Registry refresh failed after import"],
+    });
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    expect(await screen.findByText("A scan root was unavailable")).toBeTruthy();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: /Usage locations/ }));
+    await user.click(await screen.findByRole("button", { name: "Copy to My Skills" }));
+    expect(await screen.findByText("Review Skill package")).toBeTruthy();
+    expect(mocks.prepareSkillImport).toHaveBeenCalledWith("external-1");
+    await user.click(screen.getByRole("button", { name: "Add to library" }));
+    expect(await screen.findByText("Registry refresh failed after import")).toBeTruthy();
+    expect(screen.getByText(/Skill library updated/)).toBeTruthy();
+    expect(mocks.applySkillOperation).toHaveBeenCalledWith("preview-token", false);
+    await user.click(await screen.findByRole("button", { name: "Deploy to…" }));
+    expect(await screen.findByRole("dialog", { name: "Deploy Skill" })).toBeTruthy();
+    expect(mocks.skillTargets).toHaveBeenCalledTimes(1);
+    expect(mocks.applySkillDeployment).not.toHaveBeenCalled();
   });
 
   it("exposes localized accessible names for discover inputs", async () => {
@@ -247,6 +399,61 @@ describe("SkillHubPage", () => {
     expect(screen.queryByRole("button", { name: "Add to library" })).toBeNull();
   });
 
+  it("keeps directories visible and reads removed files using the immutable preview token", async () => {
+    mocks.installedSkills.mockResolvedValue([
+      {
+        name: candidate.name,
+        display_name: candidate.name,
+        description: candidate.description,
+        path: "/library/reviewer",
+        status: "current",
+        source: candidate.source,
+        size: 128,
+        can_rollback: false,
+      },
+    ]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.prepareSkillUpdate.mockResolvedValue({
+      ...preview,
+      operation: "update",
+      files: [
+        ...preview.files,
+        { path: "output/", size: 0, executable: false },
+        { path: "output/nested/", size: 0, executable: false },
+      ],
+      added: ["output/", "output/nested/"],
+      removed: ["old.txt", "old/"],
+    });
+    mocks.readSkillPreviewFile.mockImplementation(async (_token, path) => ({
+      path,
+      before: path === "old.txt" ? "Removed instructions" : null,
+      after: path === "old.txt" ? null : "New instructions",
+      binary: false,
+      truncated: false,
+    }));
+    const user = userEvent.setup();
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Update" }));
+    const tree = within(await screen.findByRole("navigation", { name: "Package files" }));
+    expect(tree.getByTitle("output/nested/")).toBeTruthy();
+    expect(tree.getByTitle("old/")).toBeTruthy();
+    expect(within(screen.getByText("Directories").parentElement!).getByText("2")).toBeTruthy();
+    expect(within(screen.getByText("Files").parentElement!).getByText("1")).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "old.txt" }));
+    await waitFor(() =>
+      expect(mocks.readSkillPreviewFile).toHaveBeenCalledWith("preview-token", "old.txt"),
+    );
+    await user.click(screen.getByRole("tab", { name: "Changes" }));
+    expect(await screen.findByText("− Removed instructions")).toBeTruthy();
+    expect(mocks.readSkillPreviewFile.mock.calls.every(([, path]) => !path.endsWith("/"))).toBe(
+      true,
+    );
+  });
+
   it("does not start another URL inspection from Enter while one is pending", async () => {
     mocks.installedSkills.mockResolvedValue([]);
     mocks.removedSkills.mockResolvedValue([]);
@@ -368,7 +575,7 @@ describe("SkillHubPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "Discover" }));
     await waitFor(() => expect(mocks.skillCatalog).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("tab", { name: /Library/ }));
+    await user.click(screen.getByRole("tab", { name: /My Skills/ }));
     await user.click(await screen.findByRole("button", { name: "Roll back" }));
     await user.click(screen.getByRole("button", { name: "Confirm" }));
 

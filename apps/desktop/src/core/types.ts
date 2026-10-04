@@ -496,7 +496,7 @@ export interface SkillCandidate {
   description: string;
   license?: string;
   compatibility?: string;
-  source: SkillSource;
+  source: SkillSource | null;
 }
 export interface SkillCatalogEntry extends SkillCandidate {
   installed: boolean;
@@ -508,6 +508,8 @@ export interface SkillCatalogSnapshot {
 }
 export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
 export interface InstalledSkill {
+  content_sha256?: string;
+  warnings?: string[];
   name: string;
   display_name: string;
   description: string;
@@ -515,12 +517,13 @@ export interface InstalledSkill {
   size: number;
   modified_at?: string;
   status: InstalledSkillStatus;
-  source?: SkillSource;
+  source?: SkillSource | null;
   installed_at?: string;
   updated_at?: string;
   can_rollback: boolean;
 }
 export interface SkillFileEntry {
+  /** Package-relative path; a trailing `/` denotes a display-only directory entry. */
   path: string;
   size: number;
   executable: boolean;
@@ -538,6 +541,7 @@ export interface SkillOperationPreview {
   expires_at: string;
 }
 export interface RemovedSkill {
+  warnings?: string[];
   id: string;
   name: string;
   display_name: string;
@@ -547,6 +551,133 @@ export interface RemovedSkill {
 export interface SkillFilePreview {
   path: string;
   content: string;
+}
+export type SkillScope = "personal" | "workspace";
+export interface SkillTargetCapability {
+  id: string;
+  agent: AgentKind;
+  scope: SkillScope;
+  workspace_id: string | null;
+  profile: string | null;
+  root: string;
+  scope_root: string;
+  visible_to: AgentKind[];
+  writable: boolean;
+  reason: string | null;
+  conditions: string[];
+}
+export interface SkillObservation {
+  id: string;
+  name: string;
+  path: string;
+  resolved_path: string | null;
+  scope: SkillScope;
+  workspace_id: string | null;
+  agents: AgentKind[];
+  kind: string;
+  status: string;
+  owner: string;
+  library_id: string | null;
+  diagnostics: string[];
+}
+export interface SkillInventory {
+  observations: SkillObservation[];
+  warnings: string[];
+}
+export interface SkillPackageFile extends SkillFileEntry {
+  sha256: string;
+  binary: boolean;
+}
+export interface SkillDetailRequest {
+  library_id?: string;
+  observation_id?: string;
+}
+export interface SkillDetail {
+  library_id: string | null;
+  observation_id: string | null;
+  name: string;
+  description: string;
+  source: SkillSource | null;
+  local_source?: string | null;
+  local_resolved_path?: string | null;
+  files: SkillPackageFile[];
+  previous_files?: SkillPackageFile[];
+  total_size: number;
+  diagnostics: string[];
+}
+export interface SkillPreviewFile {
+  path: string;
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+  truncated: boolean;
+  before_size: number | null;
+  after_size: number | null;
+  before_sha256: string | null;
+  after_sha256: string | null;
+  before_executable: boolean | null;
+  after_executable: boolean | null;
+}
+export type SkillDeploymentOperation = "deploy" | "update" | "undeploy" | "rollback";
+export interface PrepareSkillDeploymentRequest {
+  operation: SkillDeploymentOperation;
+  library_id?: string;
+  deployment_id?: string;
+  target_ids?: string[];
+}
+export interface SkillDeployment {
+  id: string;
+  library_id: string;
+  library_root?: string | null;
+  source_is_current_library?: boolean;
+  package_name: string;
+  package_hash: string;
+  scope: SkillScope;
+  workspace_id: string | null;
+  scope_root: string;
+  target: string;
+  agents: AgentKind[];
+  visible_to: AgentKind[];
+  status: string;
+  diagnostics: string[];
+  previous_hash: string | null;
+  operation_id: string;
+  updated_at: string;
+}
+export interface SkillDeploymentTargetPreview {
+  target_id: string;
+  deployment_id: string | null;
+  path: string;
+  scope: SkillScope;
+  workspace_id: string | null;
+  agents: AgentKind[];
+  visible_to: AgentKind[];
+  added: string[];
+  modified: string[];
+  removed: string[];
+  conflicts: string[];
+  conditions: string[];
+}
+export interface SkillDeploymentPreview {
+  token: string;
+  operation: SkillDeploymentOperation;
+  library_id: string | null;
+  expires_at: string;
+  requires_home_approval: boolean;
+  targets: SkillDeploymentTargetPreview[];
+}
+export interface SkillDeploymentResult {
+  target_id: string;
+  deployment_id: string | null;
+  path: string;
+  success: boolean;
+  status: string;
+  error: string | null;
+}
+export interface SkillDeploymentReport {
+  operation_id: string;
+  results: SkillDeploymentResult[];
+  warnings: string[];
 }
 export interface DiscoveryReport {
   started_at: string;

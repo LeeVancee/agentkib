@@ -80,6 +80,15 @@ import type {
   SkillFilePreview,
   SkillOperationPreview,
   SkillSource,
+  SkillInventory,
+  SkillTargetCapability,
+  SkillDetailRequest,
+  SkillDetail,
+  SkillPreviewFile,
+  SkillDeployment,
+  PrepareSkillDeploymentRequest,
+  SkillDeploymentPreview,
+  SkillDeploymentReport,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
 } from "../../src/core/types";
@@ -153,6 +162,15 @@ export interface DesktopApi {
     removed(): Promise<RemovedSkill[]>;
     restore(id: string): Promise<InstalledSkill>;
     readFile(name: string, path: string): Promise<SkillFilePreview>;
+    inventory(): Promise<SkillInventory>;
+    targets(): Promise<SkillTargetCapability[]>;
+    getDetail(request: SkillDetailRequest): Promise<SkillDetail>;
+    readDetailFile(request: SkillDetailRequest & { path: string }): Promise<SkillPreviewFile>;
+    prepareImport(observationId: string): Promise<SkillOperationPreview>;
+    readPreviewFile(token: string, path: string, targetId?: string): Promise<SkillPreviewFile>;
+    listDeployments(): Promise<SkillDeployment[]>;
+    prepareDeployment(request: PrepareSkillDeploymentRequest): Promise<SkillDeploymentPreview>;
+    applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;
   };
   mcp: {
     hubStatus(): Promise<McpHubStatus>;

@@ -204,14 +204,10 @@ impl TargetEnvironment {
                 } else {
                     None
                 };
-                match flag {
-                    Some(flag) => {
-                        restriction = Some(format!(
-                            "OpenCode: {flag} disables this compatible Skill location"
-                        ));
-                    }
-                    None => return None,
-                }
+                let flag = flag?;
+                restriction = Some(format!(
+                    "OpenCode: {flag} disables this compatible Skill location"
+                ));
             }
         }
         if restriction.is_some() {

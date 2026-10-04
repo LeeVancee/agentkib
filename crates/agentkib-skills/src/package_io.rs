@@ -367,12 +367,12 @@ mod tests {
             assert!(files.iter().any(|file| file.path == relative));
             assert!(files.iter().any(|file| file.path == safe));
             assert!(diagnostics.iter().any(|message| message.contains(relative)));
-            assert!(
-                ensure_importable(root)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(relative)
-            );
+            let error = ensure_importable(root).unwrap_err().to_string();
+            let blocked_path = error
+                .strip_prefix("Skill package contains a private file: ")
+                .unwrap_or_else(|| panic!("Unexpected import error: {error}"));
+            // Filesystem diagnostics use native separators, unlike protocol paths.
+            assert_eq!(Path::new(blocked_path), Path::new(relative), "{error}");
             assert!(preview_file(None, Some(root), relative).is_err());
             assert_eq!(
                 preview_file(None, Some(root), safe)

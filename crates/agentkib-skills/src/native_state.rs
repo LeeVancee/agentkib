@@ -896,7 +896,10 @@ mod tests {
         let home = temp.path().join("home");
         let project = temp.path().join("project");
         fs::create_dir_all(project.join(".git")).unwrap();
-        let global = home.join(".config/opencode");
+        // The first case must use the same raw spelling as the native default.
+        // A joined ".config/opencode" retains mixed separators on Windows and
+        // is intentionally a distinct override key despite resolving identically.
+        let global = home.join(".config").join("opencode");
         write_config(
             &global.join("opencode.json"),
             r#"{"skills":{"paths":["global-source"]},"permission":{"skill":"allow"}}"#,
@@ -905,7 +908,7 @@ mod tests {
             &home.join(".opencode/opencode.json"),
             r#"{"skills":{"paths":["home-source"]},"permission":{"skill":"deny"}}"#,
         );
-        for (spelling, expected, action) in [
+        let spellings = [
             (
                 global.display().to_string(),
                 "home-source",
@@ -921,7 +924,15 @@ mod tests {
                 "global-source",
                 OpenCodeAction::Allow,
             ),
-        ] {
+        ];
+        let alternate_separators = cfg!(windows).then(|| {
+            (
+                global.display().to_string().replace('\\', "/"),
+                "global-source",
+                OpenCodeAction::Allow,
+            )
+        });
+        for (spelling, expected, action) in spellings.into_iter().chain(alternate_separators) {
             let environment = TargetEnvironment {
                 home: home.clone(),
                 values: BTreeMap::from([("OPENCODE_CONFIG_DIR".into(), spelling.clone())]),

@@ -842,11 +842,11 @@ mod tests {
                 .any(|item| item.path == leaf.join("beyond"))
         );
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("depth limit")
-                    && warning.contains(&leaf.display().to_string()))
+            result.warnings.iter().any(|warning| warning
+                .strip_prefix("Skill scan depth limit reached at ")
+                .is_some_and(|path| platform_path::equivalent(Path::new(path), &leaf))),
+            "{:?}",
+            result.warnings
         );
 
         // Use a small explicit budget to exercise the same production traversal
@@ -1054,11 +1054,11 @@ mod tests {
         write_fixture(&leaf.join("beyond"));
         let incomplete = inventory_with_environment(&[], &environment).unwrap();
         assert!(
-            incomplete
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("depth limit")
-                    && warning.contains(&leaf.display().to_string()))
+            incomplete.warnings.iter().any(|warning| warning
+                .strip_prefix("Skill scan depth limit reached at ")
+                .is_some_and(|path| platform_path::equivalent(Path::new(path), &leaf))),
+            "{:?}",
+            incomplete.warnings
         );
         assert!(
             !incomplete

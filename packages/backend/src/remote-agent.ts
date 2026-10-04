@@ -606,9 +606,9 @@ export class RemoteAgent {
     next.connections[id]!.status = status;
     next.connections[id]!.error = error;
     if (status === "online") next.connections[id]!.last_seen = this.#now();
+    this.#config = next;
     try {
       this.#persist(next);
-      this.#config = next;
     } catch {}
   }
   #disconnect(id: string, operation: "disconnect" | "remove") {

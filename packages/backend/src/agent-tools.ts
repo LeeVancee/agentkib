@@ -208,7 +208,9 @@ export class AgentTools {
         throw new Error("This action cannot be executed inside AgentKib");
       const current = tool.installations.find((item) => item.id === action.installation_id);
       const managerName = action.channel === "homebrew" ? "brew" : action.channel;
-      const manager = resolveCommand(this.#expandPath(current?.manager_path ?? managerName));
+      const manager = resolveCommand(
+        this.#expandPath(current?.manager_path ?? action.manager_path ?? managerName),
+      );
       if (!manager)
         throw new Error("Agent tool package manager is no longer available; detect again");
       const args = this.#managerArgs(
@@ -226,10 +228,24 @@ export class AgentTools {
         .join(path.delimiter);
       const outcome = await this.#run(manager, args, 5 * 60_000, 256 * 1024, environment);
       const updated = await this.snapshot(true);
-      const after = updated.tools
-        .find((item) => item.agent === agent)
-        ?.installations.find((item) => item.id === action.installation_id)?.version;
-      const ok = outcome.code === 0 && after === action.target_version;
+      const updatedInstallations =
+        updated.tools.find((item) => item.agent === agent)?.installations ?? [];
+      const verified =
+        action.kind === "install"
+          ? updatedInstallations
+              .filter(
+                (item) => item.channel === action.channel && item.runnable && item.is_path_default,
+              )
+              .find(
+                (item) =>
+                  item.version &&
+                  (this.#compare(item.version, action.target_version!, agent) ?? -1) >= 0,
+              )
+          : updatedInstallations.find((item) => item.id === action.installation_id);
+      const after = verified?.version;
+      const ok =
+        outcome.code === 0 &&
+        Boolean(after && (this.#compare(after, action.target_version, agent) ?? -1) >= 0);
       return {
         agent,
         action_id: action.id,
@@ -242,7 +258,7 @@ export class AgentTools {
               : "verification-failed",
         exit_code: outcome.code,
         output: this.#redact(outcome.output),
-        installation_id: action.installation_id,
+        installation_id: verified?.id ?? action.installation_id,
         before_version: current?.version,
         after_version: after,
         completed_at: new Date().toISOString(),
@@ -474,6 +490,26 @@ export class AgentTools {
       state === "update-available" &&
       primary &&
       latest &&
+      primary.channel === "nix" &&
+      spec.agent === "hermes"
+    )
+      return [
+        {
+          id: this.#actionId(spec.agent, "update", "nix", latest, primary.id),
+          kind: "update",
+          mode: "copy-command",
+          channel: "nix",
+          shell: "posix",
+          command: "nix profile upgrade hermes-agent",
+          url: spec.official,
+          target_version: latest,
+          installation_id: primary.id,
+        },
+      ];
+    if (
+      state === "update-available" &&
+      primary &&
+      latest &&
       primary.channel === "official-installer"
     )
       return [
@@ -490,7 +526,9 @@ export class AgentTools {
           mode: "copy-command",
           channel: primary.channel,
           shell: process.platform === "win32" ? "powershell" : "posix",
-          command: `${path.basename(primary.path)} ${spec.agent === "opencode" ? "upgrade" : "update"}`,
+          command: this.#command(this.#expandPath(primary.path), [
+            spec.agent === "opencode" ? "upgrade" : "update",
+          ]),
           url: spec.official,
           target_version: latest,
           installation_id: primary.id,
@@ -669,6 +707,16 @@ export class AgentTools {
     const value = `${executable}|${resolved}`.replaceAll("\\", "/").toLowerCase();
     const brewToken = spec.agent === "claude-code" ? "claude-code" : spec.agent;
     const brewKind = spec.agent === "opencode" ? "--formula" : "--cask";
+    const windowsNpmShim =
+      process.platform === "win32" &&
+      channel === "npm" &&
+      /\/appdata\/roaming\/npm\/[^/]+\.(?:cmd|bat)$/.test(
+        executable.replaceAll("\\", "/").toLowerCase(),
+      ) &&
+      path
+        .basename(executable)
+        .replace(/\.(?:cmd|bat)$/i, "")
+        .toLowerCase() === spec.command;
     const pathMatches =
       channel === "homebrew"
         ? value.includes(`/${brewKind === "--formula" ? "cellar" : "caskroom"}/${brewToken}/`)
@@ -677,7 +725,8 @@ export class AgentTools {
           : channel === "pnpm"
             ? value.includes("/pnpm/") || value.includes("/.pnpm/")
             : packageName !== undefined &&
-              (value.includes(`/node_modules/${packageName.toLowerCase()}/`) ||
+              (windowsNpmShim ||
+                value.includes(`/node_modules/${packageName.toLowerCase()}/`) ||
                 value.includes(`/${packageName.toLowerCase().replace("/", "+")}@`));
     if (!pathMatches) return false;
     const args =
@@ -740,18 +789,27 @@ export class AgentTools {
         typeof entry.path === "string" && path.isAbsolute(entry.path)
           ? entry.path
           : path.join(root, packageName);
-      const relativePackage = path.relative(root, packageDirectory);
+      const rootTarget = await fs.realpath(root).catch(() => null);
+      const packageTarget = await fs.realpath(packageDirectory).catch(() => null);
+      if (!rootTarget || !packageTarget) return false;
+      const relativePackage = path.relative(rootTarget, packageTarget);
       if (
         relativePackage === ".." ||
         relativePackage.startsWith(`..${path.sep}`) ||
         path.isAbsolute(relativePackage)
       )
         return false;
-      const packageTarget = await fs.realpath(packageDirectory).catch(() => null);
-      if (!packageTarget) return false;
       const target = pathIdentity(resolved);
       const owned = pathIdentity(packageTarget);
       if (target === owned || target.startsWith(`${owned}${path.sep}`)) return true;
+      if (windowsNpmShim) {
+        if (pathIdentity(path.dirname(executable)) !== pathIdentity(path.dirname(rootTarget)))
+          return false;
+        const metadata = await fs.stat(executable);
+        if (!metadata.isFile() || metadata.size > 64 * 1024) return false;
+        const shim = (await fs.readFile(executable, "utf8")).replaceAll("\\", "/").toLowerCase();
+        return shim.includes(`node_modules/${packageName.toLowerCase()}/`);
+      }
       if (channel !== "pnpm") return false;
       const globalMarker = `${path.sep}global${path.sep}`;
       const globalIndex = root.lastIndexOf(globalMarker);
@@ -774,6 +832,8 @@ export class AgentTools {
     if (value.includes("/volta/")) return "volta";
     if (value.includes("/.config/yarn/global/")) return "yarn";
     if (value.includes("/node_modules/") || value.includes("/.nvm/") || value.includes("/fnm/"))
+      return "npm";
+    if (process.platform === "win32" && /\/appdata\/roaming\/npm\/[^/]+\.(?:cmd|bat)\b/.test(value))
       return "npm";
     if (value.includes("/nix/store/")) return "nix";
     if (value.includes("/mise/")) return "unknown";
@@ -952,7 +1012,8 @@ export class AgentTools {
       const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
       return `& ${quote(program)} ${args.map(quote).join(" ")}`;
     }
-    return `${JSON.stringify(program)} ${args.map((arg) => (/^[A-Za-z0-9@%_+=:,./~-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ")}`;
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    return `${quote(program)} ${args.map((arg) => (/^[A-Za-z0-9@%_+=:,./~-]+$/.test(arg) ? arg : quote(arg))).join(" ")}`;
   }
   #redactPath(value: string) {
     const home = process.env.HOME ?? process.env.USERPROFILE;

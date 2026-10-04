@@ -13,7 +13,7 @@ This document describes AgentKib's current product surfaces and support boundari
 | Today | Prioritized local actions and recent workspace activity |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
-| Skill Hub | A local Skill library, reviewed OpenAI catalog, public GitHub import, updates, rollback, and recoverable removal |
+| Skill Hub | A local Skill library, existing-installation inspection and copy import, reviewed OpenAI/GitHub sources, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
 | Agents | Installation state, configuration homes, capabilities, and discovered assets |
 | Quota | Locally available quota windows, balances, and reset times |
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |
@@ -61,6 +61,10 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - Discovery supports the reviewed OpenAI catalog and public GitHub repository, tree, or `SKILL.md` URLs.
 - Installation previews an immutable commit, package metadata, file list, executable resources, compatibility, license, and content changes without running package code.
 - Managed Skills support update checks, local-drift warnings, one-version rollback, recoverable removal, and restore. Unmanaged local packages remain inspectable but cannot be updated online.
+- Skill management adds existing-installation inspection and copy import, bounded content previews, and reviewed personal/project deployments for all eight writable agents. Deployments have independent update, rollback and withdrawal; native visibility and shared-directory effects are reported separately from file installation. See [Skill management](SKILLS.md).
+- Ownership checks cover ancestor project records across library homes and delayed Home-only ChangeSets. OpenCode's Claude compatibility visibility respects its disable flags and keeps its default source independent of Claude Home overrides.
+- OpenCode inspection includes native configuration directories and effective `skills.paths`, with project-disable settings and independent sources evaluated together. Deployment lists refresh current native readers without rewriting ownership receipts.
+- Local copy import preserves Skills that use their directory name instead of an explicit `name`. OpenCode compatibility inspection includes hidden, nested and ancestor sources without adding write targets.
 
 ### Tools and updates
 
@@ -116,7 +120,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | 今日任务 | 排好优先级的本地行动项和近期工作区活动 |
 | 工作区 | 自动发现或手动添加的项目，以及覆盖情况和警告 |
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
-| Skill Hub | 本地 Skill 资源库、OpenAI 精选目录、公开 GitHub 导入、更新、回滚和可恢复移除 |
+| Skill Hub | 本地 Skill 资源库、已有安装查看与复制入库、OpenAI 精选及 GitHub 导入、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |
 | Agent | 安装状态、配置 Home、能力和已发现资产 |
 | 额度 | 本机可读取的额度窗口、余额和重置时间 |
 | 洞察 | 本地派生的 Token、会话、Git 活动、热力图和成就 |
@@ -164,6 +168,10 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 发现支持 OpenAI 精选目录，以及公开 GitHub 仓库、Tree 目录或 `SKILL.md` URL。
 - 安装前会预览固定到不可变 Commit 的包元数据、文件列表、可执行资源、兼容性、许可证和内容变化，不执行包内代码。
 - 受管 Skill 支持更新检查、本地漂移提醒、上一版本回滚、可恢复移除与恢复；本地未托管包可以检查，但不能在线更新。
+- Skill 管理支持查看并复制已有安装、限长内容预览，以及八种可写 Agent 的个人/项目部署。部署可独立更新、回滚和撤销；原生可见性和共享目录影响与文件落盘状态分别展示。参见 [Skill 管理说明](SKILLS.md)。
+- 所有权检查覆盖跨资源库的祖先项目记录，以及延迟应用的纯 Home ChangeSet。OpenCode 的 Claude 兼容可见性遵循禁用开关，其默认来源独立于 Claude Home 覆盖配置。
+- OpenCode 查看范围包含原生配置目录及生效的 `skills.paths`，综合项目禁用配置和独立来源判断可见性。部署列表刷新当前原生读取方，不重写所有权记录。
+- 本地复制入库支持以目录名代替显式 `name` 的 Skill。OpenCode 兼容来源扫描包含隐藏、嵌套和祖先目录，不增加写入目标。
 
 ### 工具与更新
 

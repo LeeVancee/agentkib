@@ -4178,7 +4178,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(registered.asset_count, 1);
-        assert_eq!(assets.len(), 6);
+        let expected_agents = BTreeSet::from([
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+            AgentKind::Antigravity,
+            AgentKind::DeepSeekHarness,
+        ]);
+        assert_eq!(assets.len(), expected_agents.len());
         assert!(assets.iter().all(|asset| asset.name == "logical-name"));
         let skill = platform_path::canonicalize(&skill).unwrap();
         assert!(assets.iter().all(|asset| asset.path == skill));
@@ -4192,9 +4202,8 @@ mod tests {
             assets
                 .iter()
                 .filter_map(|asset| asset.agent)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            6
+                .collect::<BTreeSet<_>>(),
+            expected_agents
         );
     }
 

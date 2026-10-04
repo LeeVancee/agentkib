@@ -6,9 +6,9 @@ use std::sync::Mutex;
 
 use agentkib_core::{
     CatalogAsset, CatalogScope, InstalledSkill, InstalledSkillStatus, RemovedSkill, SkillCandidate,
-    SkillCatalogEntry, SkillCatalogSnapshot, SkillFileEntry, SkillFilePreview, SkillOperationKind,
-    SkillOperationPreview, SkillSource, SkillSourceKind, inspect_skill_entrypoint,
-    is_readable_skill_file,
+    SkillCatalogEntry, SkillCatalogSnapshot, SkillDetail, SkillFileEntry, SkillFilePreview,
+    SkillInventory, SkillOperationKind, SkillOperationPreview, SkillPreviewFile, SkillSource,
+    SkillSourceKind, SkillWorkspace, inspect_skill_entrypoint,
 };
 use agentkib_platform::fs::{atomic_write, move_path};
 use agentkib_platform::path as platform_path;
@@ -21,6 +21,15 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
 use walkdir::WalkDir;
+
+mod deployment;
+mod inventory;
+mod native_state;
+mod package_io;
+mod targets;
+
+pub use deployment::DeploymentManager;
+pub use targets::skill_targets;
 
 const MAX_TREE_ENTRIES: usize = 20_000;
 const MAX_CANDIDATES: usize = 200;
@@ -44,6 +53,10 @@ const CURATED_URL: &str = "https://github.com/openai/skills/tree/main/skills/.cu
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SkillLockEntry {
     source: Option<SkillSource>,
+    #[serde(default)]
+    local_source: Option<PathBuf>,
+    #[serde(default)]
+    local_resolved_path: Option<PathBuf>,
     content_sha256: String,
     installed_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -80,6 +93,7 @@ struct PreparedOperation {
     target_name: String,
     temp: TempDir,
     package: PathBuf,
+    before: Option<PathBuf>,
     lock: SkillLockEntry,
     expected_existing_sha256: Option<String>,
 }
@@ -268,14 +282,14 @@ impl SkillHub {
                     description: metadata.description,
                     license: metadata.license,
                     compatibility: metadata.compatibility,
-                    source: SkillSource {
+                    source: Some(SkillSource {
                         kind: source_kind(owner, repository, &directory),
                         repository: format!("{owner}/{repository}"),
                         reference: reference.clone(),
                         path: directory.clone(),
                         resolved_commit: commit.clone(),
                         tree_sha,
-                    },
+                    }),
                 })
             }
             .await;
@@ -386,6 +400,8 @@ impl SkillHub {
         if prepared.preview.local_modified && !allow_modified {
             bail!("The installed Skill was modified locally; replacement requires confirmation");
         }
+        let _write_guard = agentkib_core::skill_write_lock()?;
+        let _scope_guard = agentkib_core::skill_scope_locks(std::slice::from_ref(&self.root))?;
         let _guard = self
             .lifecycle
             .lock()
@@ -418,6 +434,8 @@ impl SkillHub {
     pub fn rollback(&self, name: &str, confirmed: bool) -> Result<InstalledSkill> {
         ensure!(confirmed, "Skill rollback requires explicit confirmation");
         validate_library_id(name)?;
+        let _write_guard = agentkib_core::skill_write_lock()?;
+        let _scope_guard = agentkib_core::skill_scope_locks(std::slice::from_ref(&self.root))?;
         let _guard = self
             .lifecycle
             .lock()
@@ -457,11 +475,18 @@ impl SkillHub {
     pub fn uninstall(&self, name: &str, confirmed: bool) -> Result<RemovedSkill> {
         ensure!(confirmed, "Skill uninstall requires explicit confirmation");
         validate_library_id(name)?;
+        let _write_guard = agentkib_core::skill_write_lock()?;
+        let deployments = DeploymentManager::new(self.root.clone());
+        let _scope_guard = deployments.library_removal_locks(name)?;
         let _guard = self
             .lifecycle
             .lock()
             .map_err(|_| anyhow::anyhow!("Skill lifecycle lock is unavailable"))?;
         self.ensure_layout()?;
+        ensure!(
+            !deployments.has_active_deployments(name, &[])?,
+            "Withdraw active deployments before removing this library Skill"
+        );
         let target = self.skills_dir().join(name);
         ensure!(target.is_dir(), "Installed Skill does not exist");
         ensure!(
@@ -483,7 +508,7 @@ impl SkillHub {
         let record = TrashRecord {
             id: id.clone(),
             name: name.to_string(),
-            display_name: skill_display_name(&target, name),
+            display_name: skill_display_name(&target, name, lock.skills.get(name)),
             removed_at: Utc::now(),
             lock: lock.skills.remove(name),
             previous: lock.previous.remove(name),
@@ -579,6 +604,8 @@ impl SkillHub {
     pub fn restore(&self, id: &str, confirmed: bool) -> Result<InstalledSkill> {
         ensure!(confirmed, "Skill restore requires explicit confirmation");
         validate_trash_id(id)?;
+        let _write_guard = agentkib_core::skill_write_lock()?;
+        let _scope_guard = agentkib_core::skill_scope_locks(std::slice::from_ref(&self.root))?;
         let _guard = self
             .lifecycle
             .lock()
@@ -678,37 +705,237 @@ impl SkillHub {
         Ok(restored)
     }
 
+    pub fn inventory(&self, workspaces: &[SkillWorkspace]) -> Result<SkillInventory> {
+        inventory::inventory(workspaces)
+    }
+
+    fn detail_root(
+        &self,
+        library_id: Option<&str>,
+        observation_id: Option<&str>,
+        workspaces: &[SkillWorkspace],
+    ) -> Result<PathBuf> {
+        self.detail_location(library_id, observation_id, workspaces)
+            .map(|(root, _)| root)
+    }
+
+    fn detail_location(
+        &self,
+        library_id: Option<&str>,
+        observation_id: Option<&str>,
+        workspaces: &[SkillWorkspace],
+    ) -> Result<(PathBuf, PathBuf)> {
+        ensure!(
+            library_id.is_some() != observation_id.is_some(),
+            "Select exactly one library Skill or observed location"
+        );
+        if let Some(id) = library_id {
+            validate_library_id(id)?;
+            let path = self.skills_dir().join(id);
+            ensure!(
+                path.is_dir() && !platform_path::is_reparse_or_symlink(&path)?,
+                "Library Skill must be a regular directory"
+            );
+            return Ok((platform_path::canonicalize(&path)?, path));
+        }
+        let observation =
+            inventory::resolve_observation(observation_id.unwrap_or_default(), workspaces)?;
+        let root = observation
+            .resolved_path
+            .context("Observed Skill location cannot be resolved")?;
+        Ok((root, observation.path))
+    }
+
+    pub fn get_detail(
+        &self,
+        library_id: Option<&str>,
+        observation_id: Option<&str>,
+        workspaces: &[SkillWorkspace],
+    ) -> Result<SkillDetail> {
+        let (root, origin) = self.detail_location(library_id, observation_id, workspaces)?;
+        let (files, mut diagnostics) = package_io::package_files(&root)?;
+        let previous_root = self.detail_previous_root(library_id)?;
+        let previous_files = if let Some(previous_root) = &previous_root {
+            let (files, previous_diagnostics) = package_io::package_files(previous_root)?;
+            diagnostics.extend(
+                previous_diagnostics
+                    .into_iter()
+                    .map(|diagnostic| format!("Previous version: {diagnostic}")),
+            );
+            files
+        } else {
+            Vec::new()
+        };
+        let lock = if library_id.is_some() {
+            Some(load_lock(&self.root)?)
+        } else {
+            None
+        };
+        let record = library_id.and_then(|id| lock.as_ref()?.skills.get(id));
+        let fallback = origin
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("skill");
+        let metadata = package_skill_metadata(&root, fallback, record);
+        let (name, description) = match metadata {
+            Ok(metadata) => (metadata.name, metadata.description),
+            Err(error) => {
+                diagnostics.push(format!("Invalid Skill metadata: {error}"));
+                (
+                    root.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    String::new(),
+                )
+            }
+        };
+        let source = record.and_then(|record| record.source.clone());
+        let local_source = record.and_then(|record| record.local_source.clone());
+        let local_resolved_path = record.and_then(|record| record.local_resolved_path.clone());
+        Ok(SkillDetail {
+            library_id: library_id.map(str::to_string),
+            observation_id: observation_id.map(str::to_string),
+            name,
+            description,
+            source,
+            local_source,
+            local_resolved_path,
+            total_size: files.iter().map(|file| file.size).sum(),
+            files,
+            previous_files,
+            diagnostics,
+        })
+    }
+
+    fn detail_previous_root(&self, library_id: Option<&str>) -> Result<Option<PathBuf>> {
+        let Some(id) = library_id else {
+            return Ok(None);
+        };
+        validate_library_id(id)?;
+        if !load_lock(&self.root)?.previous.contains_key(id) {
+            return Ok(None);
+        }
+        let path = self.backups_dir().join(id);
+        if fs::symlink_metadata(&path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
+            return Ok(None);
+        }
+        ensure!(
+            path.is_dir() && !platform_path::is_reparse_or_symlink(&path)?,
+            "Previous Skill version must be a regular directory"
+        );
+        Ok(Some(platform_path::canonicalize(&path)?))
+    }
+
+    pub fn read_detail_file(
+        &self,
+        library_id: Option<&str>,
+        observation_id: Option<&str>,
+        path: &str,
+        workspaces: &[SkillWorkspace],
+    ) -> Result<SkillPreviewFile> {
+        let root = self.detail_root(library_id, observation_id, workspaces)?;
+        let before = self.detail_previous_root(library_id)?;
+        package_io::preview_file(before.as_deref(), Some(&root), path)
+    }
+
+    pub fn read_preview_file(&self, token: &str, path: &str) -> Result<SkillPreviewFile> {
+        let previews = self
+            .previews
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill preview lock is unavailable"))?;
+        let prepared = previews
+            .get(token)
+            .context("Skill preview no longer exists")?;
+        ensure!(
+            prepared.preview.expires_at > Utc::now(),
+            "Skill preview has expired"
+        );
+        package_io::preview_file(prepared.before.as_deref(), Some(&prepared.package), path)
+    }
+
+    pub fn prepare_import(
+        &self,
+        observation_id: &str,
+        workspaces: &[SkillWorkspace],
+    ) -> Result<SkillOperationPreview> {
+        let observation = inventory::resolve_observation(observation_id, workspaces)?;
+        let source = observation
+            .resolved_path
+            .context("Observed Skill location cannot be resolved")?;
+        self.prepare_local_package(&source, &observation.id, &observation.path)
+    }
+
+    fn prepare_local_package(
+        &self,
+        source: &Path,
+        identity: &str,
+        origin: &Path,
+    ) -> Result<SkillOperationPreview> {
+        package_io::ensure_importable(source)?;
+        let expected_source = package_hash(source)?.0;
+        let staging = self.root.join(".staging");
+        fs::create_dir_all(&staging)?;
+        let temp = tempfile::Builder::new()
+            .prefix("skill-import-")
+            .tempdir_in(staging)?;
+        let package = temp.path().join("package");
+        package_io::copy_package(source, &package)?;
+        package_io::ensure_importable(&package)?;
+        ensure!(
+            package_hash(&package)?.0 == expected_source
+                && package_hash(source)?.0 == expected_source,
+            "Observed Skill changed while preparing the import; refresh and retry"
+        );
+        // Native Skill names can default to the observed directory. Preserve that identity
+        // before the package moves through staging and a potentially suffixed library ID.
+        let fallback = origin
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Observed Skill directory name must be UTF-8")?;
+        let metadata = parse_local_skill_frontmatter(
+            &read_skill_entrypoint(&package.join("SKILL.md"))?,
+            fallback,
+        )?;
+        let candidate = SkillCandidate {
+            name: metadata.name,
+            description: metadata.description,
+            license: metadata.license,
+            compatibility: metadata.compatibility,
+            source: None,
+        };
+        let preview = self.prepare_package(
+            temp,
+            package,
+            candidate,
+            SkillOperationKind::Install,
+            None,
+            identity,
+        )?;
+        let mut previews = self
+            .previews
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Skill preview lock is unavailable"))?;
+        let prepared = previews
+            .get_mut(&preview.token)
+            .context("Skill import preview was evicted")?;
+        prepared.lock.local_source = Some(origin.to_path_buf());
+        prepared.lock.local_resolved_path = Some(source.to_path_buf());
+        Ok(preview)
+    }
+
     pub fn read_file(&self, name: &str, relative: &str) -> Result<SkillFilePreview> {
-        validate_library_id(name)?;
-        let relative = safe_relative_path(relative)?;
-        let root = platform_path::canonicalize(&self.skills_dir().join(name))?;
-        let requested = self.skills_dir().join(name).join(&relative);
+        let root = self.detail_root(Some(name), None, &[])?;
+        // This compatibility API reads the installed file only; rollback state must not
+        // make an otherwise readable current resource unavailable.
+        let preview = package_io::preview_file(None, Some(&root), relative)?;
         ensure!(
-            is_readable_skill_file(&root.join("SKILL.md"), &requested),
-            "Skill resource is private, unsafe, or outside the package"
+            !preview.binary && !preview.truncated,
+            "Skill resource is binary or exceeds the preview limit"
         );
-        let metadata = fs::symlink_metadata(&requested)?;
-        ensure!(
-            metadata.file_type().is_file(),
-            "Skill resource is not a regular file"
-        );
-        ensure!(
-            !platform_path::is_reparse_or_symlink(&requested)?,
-            "Symbolic Skill resources cannot be read"
-        );
-        ensure!(
-            metadata.len() <= MAX_PREVIEW_BYTES,
-            "Skill resource exceeds the preview limit"
-        );
-        let requested = platform_path::canonicalize(&requested)?;
-        ensure!(
-            platform_path::starts_with(&requested, &root),
-            "Skill resource is outside the package"
-        );
-        let content = fs::read_to_string(&requested).context("Skill resource is not UTF-8 text")?;
         Ok(SkillFilePreview {
-            path: relative.to_string_lossy().replace('\\', "/"),
-            content,
+            path: preview.path,
+            content: preview.after.context("Skill resource is not UTF-8 text")?,
         })
     }
 
@@ -807,12 +1034,6 @@ impl SkillHub {
         let entrypoint = package.join("SKILL.md");
         let entry_content = read_skill_entrypoint(&entrypoint)?;
         let metadata = parse_skill_frontmatter(&entry_content)?;
-        if let Some(installed_name) = installed_name {
-            ensure!(
-                metadata.name == installed_name,
-                "Skill update changed the package name"
-            );
-        }
         let tree_sha = directory_tree_sha(&resolved, &source.path)?;
         let resolved_source = SkillSource {
             kind: source_kind(&resolved.owner, &resolved.repository, &source.path),
@@ -827,30 +1048,51 @@ impl SkillHub {
             description: metadata.description,
             license: metadata.license,
             compatibility: metadata.compatibility,
-            source: resolved_source,
+            source: Some(resolved_source),
         };
+        let identity = source_identity(&source);
+        self.prepare_package(
+            temp,
+            package,
+            candidate,
+            operation,
+            installed_name,
+            &identity,
+        )
+    }
+
+    fn prepare_package(
+        &self,
+        temp: TempDir,
+        package: PathBuf,
+        candidate: SkillCandidate,
+        operation: SkillOperationKind,
+        installed_name: Option<&str>,
+        identity: &str,
+    ) -> Result<SkillOperationPreview> {
         validate_skill_name(&candidate.name)?;
-        if operation == SkillOperationKind::Install {
-            ensure!(
-                !self
-                    .installed()?
-                    .iter()
-                    .any(|skill| skill.display_name == candidate.name),
-                "A Skill with this name already exists"
-            );
-        }
-        let (content_sha256, _, _) = package_hash(&package)?;
-        let target_name = installed_name.unwrap_or(&candidate.name).to_string();
+        let (content_sha256, total_size, _) = package_hash(&package)?;
+        let target_name = installed_name.map(str::to_string).unwrap_or_else(|| {
+            if !self.skills_dir().join(&candidate.name).exists() {
+                candidate.name.clone()
+            } else {
+                sourced_library_id(&candidate.name, identity)
+            }
+        });
         let existing = self.skills_dir().join(&target_name);
         match operation {
-            SkillOperationKind::Install => {
-                ensure!(!existing.exists(), "A Skill with this name already exists")
-            }
+            SkillOperationKind::Install => ensure!(
+                fs::symlink_metadata(&existing)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+                "This Skill source already exists in the library"
+            ),
             SkillOperationKind::Update => {
-                ensure!(existing.is_dir(), "Installed Skill does not exist")
+                ensure!(
+                    existing.is_dir() && !platform_path::is_reparse_or_symlink(&existing)?,
+                    "Installed Skill must be a regular directory"
+                );
             }
         }
-        let (added, modified, removed) = file_delta(&existing, &package)?;
         let lock = load_lock(&self.root)?;
         let previous = lock.skills.get(&target_name);
         if operation == SkillOperationKind::Update {
@@ -858,21 +1100,53 @@ impl SkillHub {
                 .and_then(|entry| entry.source.as_ref())
                 .context("Unmanaged Skills cannot be updated")?;
             ensure!(
-                same_source(previous_source, &candidate.source),
+                candidate
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| same_source(previous_source, source)),
                 "Skill update source changed"
+            );
+            // The installed entrypoint is editable, including its frontmatter.
+            // Check the original package identity through the stable library ID
+            // so local metadata edits can still reach replacement confirmation.
+            ensure!(
+                target_name == candidate.name
+                    || target_name
+                        == sourced_library_id(&candidate.name, &source_identity(previous_source)),
+                "Skill update changed the package name"
             );
         }
         let expected_existing_sha256 = existing
             .is_dir()
             .then(|| package_hash(&existing).map(|value| value.0))
             .transpose()?;
+        let before = if let Some(expected) = &expected_existing_sha256 {
+            let snapshot = temp.path().join("before");
+            package_io::copy_package(&existing, &snapshot)?;
+            ensure!(
+                package_hash(&snapshot)?.0 == *expected && package_hash(&existing)?.0 == *expected,
+                "Installed Skill changed while preparing the preview"
+            );
+            Some(snapshot)
+        } else {
+            None
+        };
+        let (added, modified, removed) =
+            file_delta(before.as_deref().unwrap_or(&existing), &package)?;
+        let files = package_io::package_files(&package)?
+            .0
+            .into_iter()
+            .map(|file| SkillFileEntry {
+                path: file.path,
+                size: file.size,
+                executable: file.executable,
+            })
+            .collect();
         let local_modified = previous
             .zip(expected_existing_sha256.as_ref())
             .is_some_and(|(entry, actual)| actual != &entry.content_sha256);
-        let token = Uuid::new_v4().to_string();
-        let expires_at = Utc::now() + Duration::minutes(PREVIEW_TTL_MINUTES);
         let preview = SkillOperationPreview {
-            token: token.clone(),
+            token: Uuid::new_v4().to_string(),
             operation,
             skill: candidate,
             files,
@@ -881,11 +1155,13 @@ impl SkillHub {
             removed,
             total_size,
             local_modified,
-            expires_at,
+            expires_at: Utc::now() + Duration::minutes(PREVIEW_TTL_MINUTES),
         };
         let now = Utc::now();
         let lock_entry = SkillLockEntry {
-            source: Some(preview.skill.source.clone()),
+            source: preview.skill.source.clone(),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256,
             installed_at: previous.map_or(now, |entry| entry.installed_at),
             updated_at: now,
@@ -895,6 +1171,7 @@ impl SkillHub {
             target_name,
             temp,
             package,
+            before,
             lock: lock_entry,
             expected_existing_sha256,
         })?;
@@ -1246,10 +1523,14 @@ impl SkillHub {
         let installed = self
             .installed()?
             .into_iter()
-            .map(|skill| skill.display_name)
-            .collect::<std::collections::BTreeSet<_>>();
+            .filter_map(|skill| skill.source)
+            .collect::<Vec<_>>();
         for entry in &mut snapshot.entries {
-            entry.installed = installed.contains(&entry.candidate.name);
+            entry.installed = entry.candidate.source.as_ref().is_some_and(|source| {
+                installed
+                    .iter()
+                    .any(|installed| same_source(installed, source))
+            });
         }
         Ok(snapshot)
     }
@@ -1469,18 +1750,7 @@ where
 }
 
 pub fn default_home_dir() -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("AGENTKIB_HOME") {
-        let path = PathBuf::from(value);
-        ensure!(path.is_absolute(), "AGENTKIB_HOME must be an absolute path");
-        return Ok(path);
-    }
-    let home = dirs::home_dir().context("User home directory is unavailable")?;
-    let development = std::env::var("AGENTKIB_APP_FLAVOR").as_deref() == Ok("ai.agentkib.dev");
-    Ok(home.join(if development {
-        ".agentkib-dev"
-    } else {
-        ".agentkib"
-    }))
+    agentkib_core::skill_library_home()
 }
 
 pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
@@ -1488,6 +1758,7 @@ pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
     let Some(entries) = read_dir_if_exists(&directory)? else {
         return Ok(Vec::new());
     };
+    let lock = load_lock(root)?;
     let mut output = Vec::new();
     for entry in entries {
         let entry = entry?;
@@ -1501,13 +1772,17 @@ pub fn scan_library_assets(root: &Path) -> Result<Vec<CatalogAsset>> {
             "{:x}",
             Sha256::digest(platform_path::identity(&package.root).as_bytes())
         );
+        let name = entry.file_name();
+        let library_id = name.to_str().unwrap_or_default();
+        let display_name =
+            skill_display_name(&entry.path(), &package.name, lock.skills.get(library_id));
         output.push(CatalogAsset {
             id: format!("agentkib-home:skill:{stable_id}"),
             scope: CatalogScope::AgentkibHome,
             workspace_id: None,
             agent: None,
             kind: agentkib_core::AssetKind::Skill,
-            name: package.name,
+            name: display_name,
             path: package.root,
             summary: "AgentKib Skill library".into(),
             summary_key: Some("assets.summary.agentkibSkill".into()),
@@ -1697,23 +1972,34 @@ fn validate_repo_segment(value: &str) -> Result<()> {
 
 fn safe_repo_path(value: &str) -> Result<String> {
     let path = safe_relative_path(value)?;
-    Ok(path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .trim_matches('/')
-        .to_string())
+    package_relative_path(&path)
 }
 
 fn safe_relative_path(value: &str) -> Result<PathBuf> {
     let path = Path::new(value);
     ensure!(!path.is_absolute(), "Skill path must be relative");
+    package_relative_path(path)?;
+    Ok(path.to_path_buf())
+}
+
+fn package_relative_path(path: &Path) -> Result<String> {
+    let mut parts = Vec::new();
     for component in path.components() {
+        let Component::Normal(value) = component else {
+            bail!("Skill path contains an unsafe component");
+        };
+        let value = value
+            .to_str()
+            .context("Skill package contains a non-UTF-8 path")?;
+        // Only native separators may become protocol separators. A literal
+        // backslash in a Unix filename cannot round-trip through that protocol.
         ensure!(
-            matches!(component, Component::Normal(_)),
+            !value.contains(['\\', '\0']),
             "Skill path contains an unsafe component"
         );
+        parts.push(value);
     }
-    Ok(path.to_path_buf())
+    Ok(parts.join("/"))
 }
 
 fn candidate_directories(entries: &[TreeEntry], selected: &str) -> Result<Vec<String>> {
@@ -1812,10 +2098,7 @@ fn reserve_package_layout<'a>(
     let mut files = BTreeSet::new();
     let mut directories = BTreeMap::new();
     for relative in paths {
-        let original = relative
-            .to_str()
-            .context("GitHub package path must be UTF-8")?
-            .replace('\\', "/");
+        let original = package_relative_path(relative)?;
         let portable = original.to_lowercase();
         let original_parts = original.split('/').collect::<Vec<_>>();
         let parts = portable.split('/').collect::<Vec<_>>();
@@ -1916,6 +2199,24 @@ fn directory_tree_sha_from_entries(
 }
 
 fn parse_skill_frontmatter(content: &str) -> Result<SkillFrontmatter> {
+    let metadata = serde_yaml::from_str(skill_frontmatter_yaml(content)?)?;
+    validate_skill_frontmatter(metadata)
+}
+
+fn parse_local_skill_frontmatter(content: &str, fallback: &str) -> Result<SkillFrontmatter> {
+    let mut metadata: serde_yaml::Value = serde_yaml::from_str(skill_frontmatter_yaml(content)?)?;
+    let fields = metadata
+        .as_mapping_mut()
+        .context("Skill frontmatter must be a YAML mapping")?;
+    // Only an absent name uses the native directory default. An explicit null, invalid
+    // scalar, or unsafe name remains an error instead of silently changing package identity.
+    fields
+        .entry(serde_yaml::Value::String("name".into()))
+        .or_insert_with(|| serde_yaml::Value::String(fallback.into()));
+    validate_skill_frontmatter(serde_yaml::from_value(metadata)?)
+}
+
+fn skill_frontmatter_yaml(content: &str) -> Result<&str> {
     let content = content
         .strip_prefix("---\n")
         .or_else(|| content.strip_prefix("---\r\n"))
@@ -1930,7 +2231,10 @@ fn parse_skill_frontmatter(content: &str) -> Result<SkillFrontmatter> {
         offset += line.len();
     }
     let end = end.context("SKILL.md frontmatter is not closed")?;
-    let metadata: SkillFrontmatter = serde_yaml::from_str(&content[..end])?;
+    Ok(&content[..end])
+}
+
+fn validate_skill_frontmatter(metadata: SkillFrontmatter) -> Result<SkillFrontmatter> {
     validate_skill_name(&metadata.name)?;
     ensure!(
         !metadata.description.trim().is_empty(),
@@ -1950,6 +2254,29 @@ fn parse_skill_frontmatter(content: &str) -> Result<SkillFrontmatter> {
         ensure!(license.len() <= 256, "Skill license exceeds 256 characters");
     }
     Ok(metadata)
+}
+
+fn package_skill_metadata(
+    root: &Path,
+    fallback: &str,
+    record: Option<&SkillLockEntry>,
+) -> Result<SkillFrontmatter> {
+    let content = read_skill_entrypoint(&root.join("SKILL.md"))?;
+    if record.is_some_and(|record| record.source.is_some()) {
+        return parse_skill_frontmatter(&content);
+    }
+    let fallback = record
+        .and_then(|record| record.local_source.as_ref())
+        .and_then(|origin| origin.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(fallback);
+    parse_local_skill_frontmatter(&content, fallback)
+}
+
+fn library_skill_metadata(root: &Path, id: &str) -> Result<SkillFrontmatter> {
+    validate_library_id(id)?;
+    let lock = load_lock(root)?;
+    package_skill_metadata(&root.join("skills").join(id), id, lock.skills.get(id))
 }
 
 fn read_skill_entrypoint(path: &Path) -> Result<String> {
@@ -2038,6 +2365,22 @@ fn same_source(left: &SkillSource, right: &SkillSource) -> bool {
     left.repository.eq_ignore_ascii_case(&right.repository)
         && left.reference == right.reference
         && left.path == right.path
+}
+
+fn source_identity(source: &SkillSource) -> String {
+    format!(
+        "{}:{}:{}",
+        source.repository.to_ascii_lowercase(),
+        source.reference,
+        source.path
+    )
+}
+
+fn sourced_library_id(name: &str, identity: &str) -> String {
+    format!(
+        "{name}--{}",
+        &format!("{:x}", Sha256::digest(identity.as_bytes()))[..12]
+    )
 }
 
 fn installed_name_for_source(
@@ -2155,9 +2498,7 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
         if content.is_none() && record.is_none() {
             continue;
         }
-        let metadata = content
-            .as_deref()
-            .and_then(|content| parse_skill_frontmatter(content).ok());
+        let metadata = package_skill_metadata(&entry.path(), &name, record).ok();
         let display_name = metadata
             .as_ref()
             .map(|value| value.name.clone())
@@ -2188,6 +2529,7 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
             path: entry.path(),
             size,
             modified_at,
+            content_sha256: hash,
             status,
             source: record.and_then(|entry| entry.source.clone()),
             installed_at: record.map(|entry| entry.installed_at),
@@ -2200,19 +2542,15 @@ fn list_installed(root: &Path) -> Result<Vec<InstalledSkill>> {
     Ok(output)
 }
 
-fn skill_display_name(root: &Path, fallback: &str) -> String {
-    read_skill_entrypoint(&root.join("SKILL.md"))
+fn skill_display_name(root: &Path, fallback: &str, record: Option<&SkillLockEntry>) -> String {
+    package_skill_metadata(root, fallback, record)
         .ok()
-        .and_then(|content| parse_skill_frontmatter(&content).ok())
         .map(|metadata| metadata.name)
         .unwrap_or_else(|| fallback.to_string())
 }
 
 fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> InstalledSkill {
-    let content = read_skill_entrypoint(&target.join("SKILL.md")).ok();
-    let metadata = content
-        .as_deref()
-        .and_then(|content| parse_skill_frontmatter(content).ok());
+    let metadata = package_skill_metadata(target, &record.name, record.lock.as_ref()).ok();
     let package = package_hash(target).ok();
     let lock = record.lock.as_ref();
     let status = match lock {
@@ -2239,6 +2577,7 @@ fn restored_skill(record: &TrashRecord, target: &Path, backup: &Path) -> Install
         description: metadata.map(|value| value.description).unwrap_or_default(),
         path: target.to_path_buf(),
         size: package.as_ref().map_or(0, |(_, size, _)| *size),
+        content_sha256: package.as_ref().map(|(hash, _, _)| hash.clone()),
         modified_at: package.and_then(|(_, _, modified_at)| modified_at),
         status,
         source: lock.and_then(|entry| entry.source.clone()),
@@ -2255,8 +2594,7 @@ fn managed_skill_result(
     lock: &SkillLockEntry,
     can_rollback: bool,
 ) -> Result<InstalledSkill> {
-    let content = read_skill_entrypoint(&package_root.join("SKILL.md"))?;
-    let metadata = parse_skill_frontmatter(&content)?;
+    let metadata = package_skill_metadata(package_root, name, Some(lock))?;
     let package = package_hash(package_root)?;
     Ok(InstalledSkill {
         name: name.to_string(),
@@ -2270,6 +2608,7 @@ fn managed_skill_result(
         } else {
             InstalledSkillStatus::Modified
         },
+        content_sha256: Some(package.0),
         source: lock.source.clone(),
         installed_at: Some(lock.installed_at),
         updated_at: Some(lock.updated_at),
@@ -2289,6 +2628,7 @@ fn prepared_installed_skill(
         path: target.to_path_buf(),
         size: package.1,
         modified_at: package.2,
+        content_sha256: Some(package.0.clone()),
         status: InstalledSkillStatus::Current,
         source: prepared.lock.source.clone(),
         installed_at: Some(prepared.lock.installed_at),
@@ -2327,10 +2667,10 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
 }
 
 fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
-    let (files, total) = bounded_package_files(root)?;
+    let package = bounded_package_manifest(root)?;
     let mut hash = Sha256::new();
     let mut modified_at = None;
-    for (path, metadata) in files {
+    for (path, metadata) in package.files {
         let relative = utf8_package_relative(root, &path)?;
         hash.update((relative.len() as u64).to_le_bytes());
         hash.update(relative.as_bytes());
@@ -2343,11 +2683,32 @@ fn package_hash(root: &Path) -> Result<(String, u64, Option<DateTime<Utc>>)> {
                 Some(modified_at.map_or(modified, |current: DateTime<Utc>| current.max(modified)));
         }
     }
-    Ok((format!("{:x}", hash.finalize()), total, modified_at))
+    // Retain existing lock/receipt hashes for packages made entirely of files
+    // and their parents. Empty leaf directories carry additional package state;
+    // a reserved length separates it from the legacy file encoding.
+    if !package.empty_directories.is_empty() {
+        hash.update(u64::MAX.to_le_bytes());
+        hash.update(b"agentkib-empty-directories-v1\0");
+        for path in package.empty_directories {
+            let relative = utf8_package_relative(root, &path)?;
+            hash.update((relative.len() as u64).to_le_bytes());
+            hash.update(relative.as_bytes());
+        }
+    }
+    Ok((format!("{:x}", hash.finalize()), package.total, modified_at))
 }
 
-fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u64)> {
+struct PackageManifest {
+    files: Vec<(PathBuf, fs::Metadata)>,
+    directories: Vec<PathBuf>,
+    empty_directories: Vec<PathBuf>,
+    total: u64,
+}
+
+fn bounded_package_manifest(root: &Path) -> Result<PackageManifest> {
     let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut nonempty = BTreeSet::new();
     let mut total = 0_u64;
     let mut entries = 0_usize;
     for entry in WalkDir::new(root).follow_links(false) {
@@ -2357,11 +2718,24 @@ fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u
             entries <= MAX_SKILL_PACKAGE_ENTRIES,
             "Skill package contains more than 4096 entries"
         );
+        ensure!(
+            !platform_path::is_reparse_or_symlink(entry.path())?,
+            "Skill package contains an unsupported file"
+        );
+        if entry.depth() > 0 {
+            utf8_package_relative(root, entry.path())?;
+            if let Some(parent) = entry.path().parent() {
+                nonempty.insert(parent.to_path_buf());
+            }
+        }
         if entry.file_type().is_dir() {
+            if entry.depth() > 0 {
+                directories.push(entry.into_path());
+            }
             continue;
         }
         ensure!(
-            entry.file_type().is_file() && !platform_path::is_reparse_or_symlink(entry.path())?,
+            entry.file_type().is_file(),
             "Skill package contains an unsupported file"
         );
         let metadata = fs::metadata(entry.path())?;
@@ -2383,27 +2757,46 @@ fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u
         files.push((entry.into_path(), metadata));
     }
     files.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok((files, total))
+    directories.sort();
+    let empty_directories = directories
+        .iter()
+        .filter(|path| !nonempty.contains(*path))
+        .cloned()
+        .collect();
+    Ok(PackageManifest {
+        files,
+        directories,
+        empty_directories,
+        total,
+    })
+}
+
+fn bounded_package_files(root: &Path) -> Result<(Vec<(PathBuf, fs::Metadata)>, u64)> {
+    let package = bounded_package_manifest(root)?;
+    Ok((package.files, package.total))
 }
 
 fn hash_file_contents(path: &Path, hash: &mut Sha256) -> Result<()> {
     let mut file = fs::File::open(path)?;
     let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
+        total += read as u64;
+        ensure!(
+            total <= MAX_SKILL_FILE_BYTES,
+            "Skill file exceeds the 8 MiB limit while hashing"
+        );
         hash.update(&buffer[..read]);
     }
     Ok(())
 }
 
 fn utf8_package_relative(root: &Path, path: &Path) -> Result<String> {
-    path.strip_prefix(root)?
-        .to_str()
-        .map(|relative| relative.replace('\\', "/"))
-        .context("Skill package contains a non-UTF-8 path")
+    package_relative_path(path.strip_prefix(root)?)
 }
 
 fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
@@ -2411,7 +2804,16 @@ fn package_file_hashes(root: &Path) -> Result<BTreeMap<String, String>> {
         return Ok(BTreeMap::new());
     }
     let mut output = BTreeMap::new();
-    for (path, metadata) in bounded_package_files(root)?.0 {
+    let package = bounded_package_manifest(root)?;
+    for directory in package.directories {
+        // Directory paths are display-only entries. The suffix keeps file/directory
+        // transitions distinct and matches the package details' tree representation.
+        output.insert(
+            format!("{}/", utf8_package_relative(root, &directory)?),
+            String::new(),
+        );
+    }
+    for (path, metadata) in package.files {
         let relative = utf8_package_relative(root, &path)?;
         let mut hash = Sha256::new();
         hash.update([u8::from(is_executable(&metadata))]);
@@ -2490,7 +2892,7 @@ mod tests {
                     description: "Review changes".into(),
                     license: None,
                     compatibility: None,
-                    source: resolved_source.clone(),
+                    source: Some(resolved_source.clone()),
                 },
                 files: Vec::new(),
                 added: vec!["SKILL.md".into()],
@@ -2503,12 +2905,15 @@ mod tests {
             target_name: "reviewer".into(),
             lock: SkillLockEntry {
                 source: Some(resolved_source),
+                local_source: None,
+                local_resolved_path: None,
                 content_sha256: package_hash(&package).unwrap().0,
                 installed_at: Utc::now(),
                 updated_at: Utc::now(),
             },
             temp,
             package,
+            before: None,
             expected_existing_sha256,
         }
     }
@@ -2707,7 +3112,7 @@ mod tests {
             description: "Review changes".into(),
             license: None,
             compatibility: None,
-            source: source("commit", "tree"),
+            source: Some(source("commit", "tree")),
         };
 
         let candidates = valid_discovery_candidates(vec![
@@ -2753,6 +3158,8 @@ mod tests {
         write_skill(&conflicting_backup, "unrelated backup");
         let conflicting_entry = SkillLockEntry {
             source: Some(source("unrelated-commit", "unrelated-tree")),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256: "unrelated-hash".into(),
             installed_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2848,6 +3255,8 @@ mod tests {
                 "reviewer".into(),
                 SkillLockEntry {
                     source: Some(source.clone()),
+                    local_source: None,
+                    local_resolved_path: None,
                     content_sha256: "hash".into(),
                     installed_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -2875,6 +3284,8 @@ mod tests {
         write_skill(&backup, "stale backup");
         let stale_entry = SkillLockEntry {
             source: Some(source("stale-commit", "stale-tree")),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256: "stale-hash".into(),
             installed_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2957,12 +3368,16 @@ mod tests {
         let now = Utc::now();
         let current_entry = SkillLockEntry {
             source: Some(source("commit-current", "tree-current")),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256: package_hash(&current).unwrap().0,
             installed_at: now,
             updated_at: now,
         };
         let old_entry = SkillLockEntry {
             source: Some(source("commit-old", "tree-old")),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256: package_hash(&old_backup).unwrap().0,
             installed_at: now,
             updated_at: now,
@@ -2987,6 +3402,8 @@ mod tests {
         let incoming_source = source("commit-incoming", "tree-incoming");
         let incoming_lock = SkillLockEntry {
             source: Some(incoming_source.clone()),
+            local_source: None,
+            local_resolved_path: None,
             content_sha256: package_hash(&package).unwrap().0,
             installed_at: now,
             updated_at: now,
@@ -3000,7 +3417,7 @@ mod tests {
                     description: "Review changes".into(),
                     license: None,
                     compatibility: None,
-                    source: incoming_source,
+                    source: Some(incoming_source),
                 },
                 files: Vec::new(),
                 added: Vec::new(),
@@ -3013,6 +3430,7 @@ mod tests {
             target_name: "reviewer".into(),
             temp,
             package,
+            before: None,
             lock: incoming_lock,
             expected_existing_sha256: Some(package_hash(&current).unwrap().0),
         };
@@ -3081,6 +3499,119 @@ mod tests {
         );
         assert!(hub.read_file("reviewer", "access-token.txt").is_err());
         assert!(hub.read_file("reviewer", "../outside.md").is_err());
+    }
+
+    #[test]
+    fn file_preview_is_independent_of_the_previous_version() {
+        for previous in [
+            "binary",
+            "oversized-preview",
+            "oversized-file",
+            "missing-file",
+            "missing-package",
+            "invalid-package",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let skill = root.join("skills/reviewer");
+            let backup = root.join("backups/skills/reviewer");
+            write_skill(&skill, "current instructions");
+            write_skill(&backup, "previous instructions");
+            fs::write(skill.join("guide.txt"), "Current UTF-8 内容").unwrap();
+            fs::write(backup.join("guide.txt"), "Previous guide").unwrap();
+            let current_entry = SkillLockEntry {
+                source: None,
+                local_source: None,
+                local_resolved_path: None,
+                content_sha256: package_hash(&skill).unwrap().0,
+                installed_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            let previous_entry = SkillLockEntry {
+                content_sha256: package_hash(&backup).unwrap().0,
+                ..current_entry.clone()
+            };
+            save_lock(
+                root,
+                &SkillLockFile {
+                    schema_version: 1,
+                    skills: BTreeMap::from([("reviewer".into(), current_entry)]),
+                    previous: BTreeMap::from([("reviewer".into(), previous_entry)]),
+                },
+            )
+            .unwrap();
+            match previous {
+                "binary" => fs::write(backup.join("guide.txt"), [0_u8, 255]).unwrap(),
+                "oversized-preview" => {
+                    fs::write(
+                        backup.join("guide.txt"),
+                        vec![b'x'; MAX_PREVIEW_BYTES as usize + 1],
+                    )
+                    .unwrap();
+                }
+                "oversized-file" => {
+                    fs::File::create(backup.join("guide.txt"))
+                        .unwrap()
+                        .set_len(MAX_SKILL_FILE_BYTES + 1)
+                        .unwrap();
+                }
+                "missing-file" => fs::remove_file(backup.join("guide.txt")).unwrap(),
+                "missing-package" => fs::remove_dir_all(&backup).unwrap(),
+                "invalid-package" => {
+                    fs::remove_dir_all(&backup).unwrap();
+                    fs::write(&backup, "backup directory was replaced").unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+            let file = hub.read_file("reviewer", "guide.txt").unwrap();
+            assert_eq!(file.path, "guide.txt");
+            assert_eq!(file.content, "Current UTF-8 内容", "{previous}");
+
+            // The version-comparison API continues to diagnose the previous side.
+            let detail = hub.read_detail_file(Some("reviewer"), None, "guide.txt", &[]);
+            match previous {
+                "binary" => assert!(detail.unwrap().binary),
+                "oversized-preview" => assert!(detail.unwrap().truncated),
+                "oversized-file" | "invalid-package" => assert!(detail.is_err()),
+                _ => assert!(detail.unwrap().before.is_none()),
+            }
+        }
+    }
+
+    #[test]
+    fn file_preview_still_rejects_unreadable_current_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let skill = root.join("skills/reviewer");
+        write_skill(&skill, "body");
+        let hub = SkillHub::new(root.to_path_buf(), root.join("cache")).unwrap();
+        for bytes in [
+            vec![0_u8],
+            vec![255_u8],
+            vec![b'x'; MAX_PREVIEW_BYTES as usize + 1],
+        ] {
+            fs::write(skill.join("guide.txt"), bytes).unwrap();
+            assert!(hub.read_file("reviewer", "guide.txt").is_err());
+        }
+        fs::File::create(skill.join("guide.txt"))
+            .unwrap()
+            .set_len(MAX_SKILL_FILE_BYTES + 1)
+            .unwrap();
+        assert!(hub.read_file("reviewer", "guide.txt").is_err());
+        fs::write(
+            skill.join("guide.txt"),
+            vec![b'x'; MAX_PREVIEW_BYTES as usize],
+        )
+        .unwrap();
+        assert_eq!(
+            hub.read_file("reviewer", "guide.txt")
+                .unwrap()
+                .content
+                .len(),
+            MAX_PREVIEW_BYTES as usize
+        );
+        assert!(hub.read_file("reviewer", "missing.txt").is_err());
     }
 
     #[test]
@@ -3186,6 +3717,31 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn package_hashes_and_manifest_reject_ambiguous_external_renames() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        write_skill(root, "body");
+        fs::create_dir(root.join("a")).unwrap();
+        let nested = root.join("a/b.txt");
+        let literal = root.join(r"a\b.txt");
+        fs::write(&nested, "nested resource").unwrap();
+        let original_hash = package_hash(root).unwrap().0;
+        let original_files = package_file_hashes(root).unwrap();
+
+        fs::rename(&nested, &literal).unwrap();
+
+        assert!(package_hash(root).is_err());
+        assert!(package_file_hashes(root).is_err());
+        assert!(package_io::package_files(root).is_err());
+        assert!(package_io::preview_file(None, Some(root), r"a\b.txt").is_err());
+
+        fs::rename(&literal, &nested).unwrap();
+        assert_eq!(package_hash(root).unwrap().0, original_hash);
+        assert_eq!(package_file_hashes(root).unwrap(), original_files);
+    }
+
     #[test]
     fn package_hash_and_file_deltas_reject_unbounded_local_file_trees() {
         let directory = tempfile::tempdir().unwrap();
@@ -3263,6 +3819,8 @@ mod tests {
                         "managed-malformed".into(),
                         SkillLockEntry {
                             source: Some(source("commit", "tree")),
+                            local_source: None,
+                            local_resolved_path: None,
                             content_sha256: "prior-hash".into(),
                             installed_at: Utc::now(),
                             updated_at: Utc::now(),
@@ -3272,6 +3830,8 @@ mod tests {
                         "managed-missing-entrypoint".into(),
                         SkillLockEntry {
                             source: Some(source("commit", "tree")),
+                            local_source: None,
+                            local_resolved_path: None,
                             content_sha256: "prior-hash".into(),
                             installed_at: Utc::now(),
                             updated_at: Utc::now(),
@@ -3641,7 +4201,7 @@ mod tests {
                         description: "Review changes".into(),
                         license: None,
                         compatibility: None,
-                        source: source("commit", "tree"),
+                        source: Some(source("commit", "tree")),
                     },
                     installed: false,
                 }],
@@ -3673,5 +4233,568 @@ mod tests {
         assert!(cached.stale);
         assert_eq!(cached.cached_at, cached_at);
         assert_eq!(cached.entries[0].candidate.name, "reviewer");
+    }
+    #[test]
+    fn nameless_local_import_preserves_bytes_and_names_through_library_and_deployment_lifecycle() {
+        use agentkib_core::{
+            AgentKind, PrepareSkillDeploymentRequest, SkillDeploymentOperation, SkillScope,
+            SkillTargetCapability,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = platform_path::canonicalize(temp.path()).unwrap();
+        let hub = SkillHub::new(root.join("library"), root.join("cache")).unwrap();
+        let original = b"---\r\ndescription: Native directory default\r\nlicense: MIT\r\n---\r\nBody without a name\r\n";
+        let mut imported = Vec::new();
+        for identity in ["first", "second"] {
+            let source = root.join(identity).join("reviewer");
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("SKILL.md"), original).unwrap();
+            let preview = hub
+                .prepare_local_package(&source, identity, &source)
+                .unwrap();
+            assert_eq!(preview.skill.name, "reviewer");
+            assert_eq!(preview.skill.description, "Native directory default");
+            assert!(preview.skill.source.is_none());
+            assert_eq!(
+                hub.read_preview_file(&preview.token, "SKILL.md")
+                    .unwrap()
+                    .after
+                    .unwrap()
+                    .as_bytes(),
+                original
+            );
+            let installed = hub.apply(&preview.token, true, false).unwrap();
+            assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), original);
+            assert_eq!(fs::read(installed.path.join("SKILL.md")).unwrap(), original);
+            assert_eq!(installed.display_name, "reviewer");
+            imported.push(installed);
+            // Native source presence is not required to recover its stable directory default.
+            fs::remove_dir_all(source).unwrap();
+        }
+        assert_eq!(imported[0].name, "reviewer");
+        assert_eq!(imported[1].name, sourced_library_id("reviewer", "second"));
+        let listed = hub.installed().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|skill| skill.display_name == "reviewer"
+            && skill.description == "Native directory default"
+            && skill.status == InstalledSkillStatus::Current));
+        let assets = scan_library_assets(hub.root()).unwrap();
+        assert_eq!(assets.len(), 2);
+        assert!(assets.iter().all(|asset| asset.name == "reviewer"));
+        assert_ne!(assets[0].id, assets[1].id);
+        for installed in &imported {
+            let detail = hub.get_detail(Some(&installed.name), None, &[]).unwrap();
+            assert_eq!(detail.name, "reviewer");
+            assert_eq!(detail.description, "Native directory default");
+            assert!(detail.diagnostics.is_empty());
+            assert_eq!(
+                hub.read_file(&installed.name, "SKILL.md")
+                    .unwrap()
+                    .content
+                    .as_bytes(),
+                original
+            );
+        }
+
+        let project = root.join("project");
+        fs::create_dir(&project).unwrap();
+        let workspaces = vec![SkillWorkspace {
+            id: "project".into(),
+            name: "Project".into(),
+            path: project.clone(),
+        }];
+        let targets = vec![SkillTargetCapability {
+            id: "codex".into(),
+            agent: AgentKind::Codex,
+            scope: SkillScope::Workspace,
+            workspace_id: Some("project".into()),
+            profile: None,
+            root: project.join(".agents/skills"),
+            scope_root: project,
+            visible_to: vec![AgentKind::Codex],
+            writable: true,
+            reason: None,
+            conditions: vec![],
+        }];
+        let manager = DeploymentManager::new(hub.root().to_path_buf());
+        let deploy = |library_id: &str| {
+            manager
+                .prepare(
+                    PrepareSkillDeploymentRequest {
+                        operation: SkillDeploymentOperation::Deploy,
+                        library_id: Some(library_id.into()),
+                        deployment_id: None,
+                        target_ids: vec!["codex".into()],
+                    },
+                    &targets,
+                    &workspaces,
+                )
+                .unwrap()
+        };
+        // The suffixed library ID still deploys under the original native package name.
+        let preview = deploy(&imported[1].name);
+        assert!(preview.targets[0].conflicts.is_empty());
+        assert_eq!(preview.targets[0].path, targets[0].root.join("reviewer"));
+        let report = manager
+            .apply(&preview.token, true, false, &targets, &workspaces)
+            .unwrap();
+        assert!(report.results[0].success, "{:?}", report.results);
+        assert_eq!(
+            fs::read(targets[0].root.join("reviewer/SKILL.md")).unwrap(),
+            original
+        );
+        assert!(!deploy(&imported[0].name).targets[0].conflicts.is_empty());
+        assert!(hub.uninstall(&imported[1].name, true).is_err());
+        let withdraw = manager
+            .prepare(
+                PrepareSkillDeploymentRequest {
+                    operation: SkillDeploymentOperation::Undeploy,
+                    library_id: None,
+                    deployment_id: report.results[0].deployment_id.clone(),
+                    target_ids: vec![],
+                },
+                &targets,
+                &workspaces,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .apply(&withdraw.token, true, false, &targets, &workspaces)
+                .unwrap()
+                .results[0]
+                .success
+        );
+        for installed in imported {
+            let removed = hub.uninstall(&installed.name, true).unwrap();
+            assert_eq!(removed.display_name, "reviewer");
+            let restored = hub.restore(&removed.id, true).unwrap();
+            assert_eq!(restored.name, installed.name);
+            assert_eq!(restored.display_name, "reviewer");
+            assert_eq!(restored.description, "Native directory default");
+            assert_eq!(restored.status, InstalledSkillStatus::Current);
+            assert_eq!(fs::read(restored.path.join("SKILL.md")).unwrap(), original);
+            assert_eq!(
+                library_skill_metadata(hub.root(), &restored.name)
+                    .unwrap()
+                    .name,
+                "reviewer"
+            );
+        }
+    }
+
+    #[test]
+    fn local_name_defaults_do_not_relax_remote_or_invalid_frontmatter_validation() {
+        let valid = "---\ndescription: Native directory default\n---\nBody\n";
+        assert!(parse_skill_frontmatter(valid).is_err());
+        assert_eq!(
+            parse_local_skill_frontmatter(valid, "reviewer")
+                .unwrap()
+                .name,
+            "reviewer"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("reviewer");
+        fs::create_dir(&source).unwrap();
+        let hub = SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+        for content in [
+            "---\nname: Bad Name\ndescription: Invalid\n---\n",
+            "---\nname: null\ndescription: Invalid\n---\n",
+            "---\nname: ''\ndescription: Invalid\n---\n",
+            "---\nname: ../outside\ndescription: Invalid\n---\n",
+            "---\ndescription: [broken\n---\n",
+            "---\nname: reviewer\n---\n",
+        ] {
+            fs::write(source.join("SKILL.md"), content).unwrap();
+            assert!(
+                hub.prepare_local_package(&source, "invalid", &source)
+                    .is_err(),
+                "{content}"
+            );
+            assert!(hub.previews.lock().unwrap().is_empty());
+            assert_eq!(
+                fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                content
+            );
+            assert!(!hub.skills_dir().exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nameless_link_import_uses_the_entry_directory_and_previous_lock_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = platform_path::canonicalize(temp.path()).unwrap();
+        let source = root.join("real-package");
+        let origin = root.join("native-name");
+        fs::create_dir(&source).unwrap();
+        let content = "---\ndescription: Linked package\n---\nBody\n";
+        fs::write(source.join("SKILL.md"), content).unwrap();
+        std::os::unix::fs::symlink(&source, &origin).unwrap();
+        let hub = SkillHub::new(root.join("library"), root.join("cache")).unwrap();
+        let preview = hub
+            .prepare_local_package(&source, "linked", &origin)
+            .unwrap();
+        assert_eq!(preview.skill.name, "native-name");
+        let installed = hub.apply(&preview.token, true, false).unwrap();
+        assert_eq!(installed.display_name, "native-name");
+        assert_eq!(
+            fs::read_to_string(source.join("SKILL.md")).unwrap(),
+            content
+        );
+        assert_eq!(fs::read_link(&origin).unwrap(), source);
+        let lock = load_lock(hub.root()).unwrap();
+        let previous = lock.skills.get(&installed.name).unwrap();
+        let rollback = managed_skill_result(
+            "suffixed-library-id",
+            &installed.path,
+            &root.join("result"),
+            previous,
+            true,
+        )
+        .unwrap();
+        assert_eq!(rollback.display_name, "native-name");
+        assert_eq!(rollback.description, "Linked package");
+    }
+
+    #[test]
+    fn local_import_preserves_full_package_source_and_independent_same_name_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let hub = SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+        let source = temp.path().join("source");
+        write_skill(&source, "first");
+        fs::create_dir(source.join("custom")).unwrap();
+        fs::create_dir_all(source.join("output/empty")).unwrap();
+        fs::write(source.join("custom/data.bin"), [0, 255, 1]).unwrap();
+        fs::write(source.join("LICENSE"), "license").unwrap();
+        let origin = temp.path().join("observed-link");
+        let preview = hub
+            .prepare_local_package(&source, "source-one", &origin)
+            .unwrap();
+        assert!(preview.skill.source.is_none());
+        assert!(
+            preview
+                .files
+                .iter()
+                .any(|file| file.path == "custom/data.bin")
+        );
+        fs::write(source.join("SKILL.md"), "changed after preparation").unwrap();
+        let frozen = hub.read_preview_file(&preview.token, "SKILL.md").unwrap();
+        assert!(frozen.after.unwrap().ends_with("first"));
+        let installed = hub.apply(&preview.token, true, false).unwrap();
+        assert!(installed.source.is_none());
+        assert!(installed.path.join("output/empty").is_dir());
+        let detail = hub.get_detail(Some(&installed.name), None, &[]).unwrap();
+        assert_eq!(detail.local_source, Some(origin));
+        assert_eq!(detail.local_resolved_path, Some(source));
+        assert!(
+            detail
+                .files
+                .iter()
+                .any(|file| file.path == "custom/data.bin" && file.binary)
+        );
+        let other = temp.path().join("other");
+        write_skill(&other, "second");
+        let preview = hub
+            .prepare_local_package(&other, "source-two", &other)
+            .unwrap();
+        let second = hub.apply(&preview.token, true, false).unwrap();
+        assert_ne!(second.name, installed.name);
+        assert_eq!(second.display_name, installed.display_name);
+        assert_eq!(hub.installed().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn local_import_blocks_private_files_without_silently_filtering_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        write_skill(&source, "body");
+        fs::write(source.join("access-token.txt"), "private fixture").unwrap();
+        let hub = SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+        assert!(
+            hub.prepare_local_package(&source, "private-source", &source)
+                .is_err()
+        );
+        assert!(!hub.root().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_import_rejects_literal_backslashes_and_conflicting_paths_without_changing_source() {
+        for with_nested_file in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            write_skill(&source, "body");
+            let entrypoint = fs::read(source.join("SKILL.md")).unwrap();
+            fs::write(source.join(r"a\b.txt"), "literal backslash").unwrap();
+            if with_nested_file {
+                fs::create_dir(source.join("a")).unwrap();
+                fs::write(source.join("a/b.txt"), "nested resource").unwrap();
+            }
+            let hub =
+                SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+
+            let error = hub
+                .prepare_local_package(&source, "ambiguous-source", &source)
+                .unwrap_err();
+            assert!(error.to_string().contains("unsafe component"));
+            assert!(!hub.root().exists());
+            assert!(hub.previews.lock().unwrap().is_empty());
+            let copy = temp.path().join("copy");
+            assert!(package_io::copy_package(&source, &copy).is_err());
+            assert!(!copy.exists());
+            assert!(package_io::package_files(&source).is_err());
+            assert!(package_hash(&source).is_err());
+            assert!(package_file_hashes(&source).is_err());
+
+            assert_eq!(fs::read(source.join("SKILL.md")).unwrap(), entrypoint);
+            assert_eq!(
+                fs::read_to_string(source.join(r"a\b.txt")).unwrap(),
+                "literal backslash"
+            );
+            if with_nested_file {
+                assert_eq!(
+                    fs::read_to_string(source.join("a/b.txt")).unwrap(),
+                    "nested resource"
+                );
+            } else {
+                assert!(!source.join("a").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn locally_edited_metadata_can_be_updated_only_with_replacement_confirmation() {
+        for duplicate_name in [false, true] {
+            for local_content in [
+                "---\nname: locally-renamed\ndescription: Local description\n---\nlocal content",
+                "---\nname: [broken YAML\n---\nlocal content",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let hub =
+                    SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+                hub.ensure_layout().unwrap();
+                if duplicate_name {
+                    write_skill(&hub.skills_dir().join("reviewer"), "other source");
+                }
+                let incoming = source("commit-next", "tree-next");
+                let identity = source_identity(&incoming);
+                let prepare = |operation, installed_name: Option<&str>| {
+                    let staging = tempfile::tempdir().unwrap();
+                    let package = staging.path().join("package");
+                    write_skill(&package, "upstream content");
+                    hub.prepare_package(
+                        staging,
+                        package,
+                        SkillCandidate {
+                            name: "reviewer".into(),
+                            description: "Review changes".into(),
+                            license: None,
+                            compatibility: None,
+                            source: Some(incoming.clone()),
+                        },
+                        operation,
+                        installed_name,
+                        &identity,
+                    )
+                    .unwrap()
+                };
+                let initial = prepare(SkillOperationKind::Install, None);
+                let installed = hub.apply(&initial.token, true, false).unwrap();
+                let expected_id = if duplicate_name {
+                    sourced_library_id("reviewer", &identity)
+                } else {
+                    "reviewer".into()
+                };
+                assert_eq!(installed.name, expected_id);
+                fs::write(installed.path.join("SKILL.md"), local_content).unwrap();
+
+                let preview = prepare(SkillOperationKind::Update, Some(&installed.name));
+                assert!(preview.local_modified);
+                assert_eq!(
+                    hub.read_preview_file(&preview.token, "SKILL.md")
+                        .unwrap()
+                        .before
+                        .as_deref(),
+                    Some(local_content)
+                );
+                let error = hub.apply(&preview.token, true, false).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("replacement requires confirmation")
+                );
+                assert_eq!(
+                    fs::read_to_string(installed.path.join("SKILL.md")).unwrap(),
+                    local_content
+                );
+
+                let preview = prepare(SkillOperationKind::Update, Some(&installed.name));
+                let updated = hub.apply(&preview.token, true, true).unwrap();
+                assert_eq!(updated.name, installed.name);
+                assert!(
+                    fs::read_to_string(updated.path.join("SKILL.md"))
+                        .unwrap()
+                        .ends_with("upstream content")
+                );
+                assert_eq!(
+                    fs::read_to_string(hub.backups_dir().join(&installed.name).join("SKILL.md"))
+                        .unwrap(),
+                    local_content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stable_update_identity_still_rejects_changed_package_names_and_sources() {
+        for duplicate_name in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let hub =
+                SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+            hub.ensure_layout().unwrap();
+            let incoming = source("commit-next", "tree-next");
+            let identity = source_identity(&incoming);
+            let mut prepared = prepared_operation(
+                hub.root(),
+                SkillOperationKind::Install,
+                None,
+                Utc::now() + Duration::minutes(15),
+            );
+            if duplicate_name {
+                prepared.target_name = sourced_library_id("reviewer", &identity);
+            }
+            hub.store_prepared_preview(prepared).unwrap();
+            let installed = hub.apply("preview", true, false).unwrap();
+            fs::write(installed.path.join("SKILL.md"), "invalid frontmatter").unwrap();
+
+            for changed_source in [false, true] {
+                let staging = tempfile::tempdir().unwrap();
+                let package = staging.path().join("package");
+                write_skill(&package, "incoming");
+                let mut candidate = SkillCandidate {
+                    name: "reviewer".into(),
+                    description: "Review changes".into(),
+                    license: None,
+                    compatibility: None,
+                    source: Some(incoming.clone()),
+                };
+                if changed_source {
+                    candidate.source.as_mut().unwrap().path = "skills/other".into();
+                } else {
+                    candidate.name = "upstream-renamed".into();
+                }
+                let error = hub
+                    .prepare_package(
+                        staging,
+                        package,
+                        candidate,
+                        SkillOperationKind::Update,
+                        Some(&installed.name),
+                        &identity,
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains(if changed_source {
+                    "Skill update source changed"
+                } else {
+                    "Skill update changed the package name"
+                }));
+            }
+            assert_eq!(
+                fs::read_to_string(installed.path.join("SKILL.md")).unwrap(),
+                "invalid frontmatter"
+            );
+        }
+    }
+
+    #[test]
+    fn update_preview_freezes_before_and_after_and_library_detail_includes_removed_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let hub = SkillHub::new(temp.path().join("library"), temp.path().join("cache")).unwrap();
+        hub.ensure_layout().unwrap();
+        let prepared = prepared_operation(
+            hub.root(),
+            SkillOperationKind::Install,
+            None,
+            Utc::now() + Duration::minutes(15),
+        );
+        hub.store_prepared_preview(prepared).unwrap();
+        let installed = hub.apply("preview", true, false).unwrap();
+        fs::write(installed.path.join("removed.txt"), "old file").unwrap();
+        let staging = tempfile::Builder::new()
+            .tempdir_in(hub.root().join(".staging"))
+            .unwrap();
+        let package = staging.path().join("package");
+        write_skill(&package, "updated");
+        let incoming = source("commit-next", "tree-next");
+        let candidate = SkillCandidate {
+            name: "reviewer".into(),
+            description: "Review changes".into(),
+            license: None,
+            compatibility: None,
+            source: Some(incoming),
+        };
+        let preview = hub
+            .prepare_package(
+                staging,
+                package,
+                candidate,
+                SkillOperationKind::Update,
+                Some(&installed.name),
+                "same-source",
+            )
+            .unwrap();
+        assert!(preview.removed.contains(&"removed.txt".to_string()));
+        let removed = hub
+            .read_preview_file(&preview.token, "removed.txt")
+            .unwrap();
+        assert_eq!(removed.before.as_deref(), Some("old file"));
+        assert!(removed.after.is_none());
+        fs::write(installed.path.join("removed.txt"), "concurrent change").unwrap();
+        assert_eq!(
+            hub.read_preview_file(&preview.token, "removed.txt")
+                .unwrap()
+                .before
+                .as_deref(),
+            Some("old file")
+        );
+        assert!(hub.apply(&preview.token, true, true).is_err());
+        // Prepare again against the new version and retain its removed file for comparison.
+        let staging = tempfile::Builder::new()
+            .tempdir_in(hub.root().join(".staging"))
+            .unwrap();
+        let package = staging.path().join("package");
+        write_skill(&package, "updated");
+        let candidate = SkillCandidate {
+            name: "reviewer".into(),
+            description: "Review changes".into(),
+            license: None,
+            compatibility: None,
+            source: Some(source("commit-next", "tree-next")),
+        };
+        let preview = hub
+            .prepare_package(
+                staging,
+                package,
+                candidate,
+                SkillOperationKind::Update,
+                Some(&installed.name),
+                "same-source",
+            )
+            .unwrap();
+        hub.apply(&preview.token, true, true).unwrap();
+        let detail = hub.get_detail(Some(&installed.name), None, &[]).unwrap();
+        assert!(
+            detail
+                .previous_files
+                .iter()
+                .any(|file| file.path == "removed.txt")
+        );
+        assert!(!detail.files.iter().any(|file| file.path == "removed.txt"));
+        let removed = hub
+            .read_detail_file(Some(&installed.name), None, "removed.txt", &[])
+            .unwrap();
+        assert_eq!(removed.before.as_deref(), Some("concurrent change"));
+        assert!(removed.after.is_none());
     }
 }

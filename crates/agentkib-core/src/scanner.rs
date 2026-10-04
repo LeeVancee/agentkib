@@ -292,6 +292,8 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
             (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
         ],
         AgentKind::Hermes => vec![
+            (".hermes/skills", AssetKind::Skill, "Hermes project Skills"),
+            (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
             (
                 ".hermes.md",
                 AssetKind::Instruction,
@@ -330,6 +332,17 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 "Grok Build project rules",
             ),
             (".grok/skills", AssetKind::Skill, "Grok Build Skills"),
+            (".agents/skills", AssetKind::Skill, "Shared Agent Skill"),
+            (
+                ".claude/skills",
+                AssetKind::Skill,
+                "Claude-compatible Skills",
+            ),
+            (
+                ".cursor/skills",
+                AssetKind::Skill,
+                "Cursor-compatible Skills",
+            ),
             (".grok/agents", AssetKind::Agent, "Grok Build Agents"),
             (
                 ".grok/plugins",
@@ -380,6 +393,11 @@ fn candidates(agent: AgentKind) -> Vec<(&'static str, AssetKind, &'static str)> 
                 "Antigravity workspace plugins",
             ),
             (".agents/skills", AssetKind::Skill, "Antigravity Skills"),
+            (
+                ".agent/skills",
+                AssetKind::Skill,
+                "Antigravity legacy Skills",
+            ),
             (
                 ".agents/mcp_config.json",
                 AssetKind::Connection,
@@ -516,7 +534,26 @@ mod tests {
             .filter(|asset| asset.kind == AssetKind::Skill)
             .collect();
 
-        assert_eq!(skill_assets.len(), 6);
+        let expected_agents = [
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::OpenCode,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::GrokBuild,
+            AgentKind::Antigravity,
+            AgentKind::DeepSeekHarness,
+        ];
+        assert_eq!(skill_assets.len(), expected_agents.len());
+        for agent in expected_agents {
+            assert_eq!(
+                skill_assets
+                    .iter()
+                    .filter(|asset| asset.agent == agent)
+                    .count(),
+                1
+            );
+        }
         assert!(
             skill_assets
                 .iter()
@@ -531,14 +568,7 @@ mod tests {
             !asset.path.ends_with("references/guide.md")
                 && !asset.path.ends_with("scripts/review.md")
         }));
-        for agent in [
-            AgentKind::Codex,
-            AgentKind::Cursor,
-            AgentKind::OpenCode,
-            AgentKind::OpenClaw,
-            AgentKind::Antigravity,
-            AgentKind::DeepSeekHarness,
-        ] {
+        for agent in expected_agents {
             assert_eq!(
                 scan.agents
                     .iter()

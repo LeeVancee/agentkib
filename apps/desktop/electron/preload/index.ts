@@ -100,6 +100,20 @@ const desktopApi = Object.freeze({
     restore: (id: string) => ipcRenderer.invoke("agentkib:skills:restore", id),
     readFile: (name: string, path: string) =>
       ipcRenderer.invoke("agentkib:skills:read-file", name, path),
+    inventory: () => ipcRenderer.invoke("agentkib:skills:inventory"),
+    targets: () => ipcRenderer.invoke("agentkib:skills:targets"),
+    getDetail: (request: unknown) => ipcRenderer.invoke("agentkib:skills:get-detail", request),
+    readDetailFile: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:read-detail-file", request),
+    prepareImport: (observationId: string) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-import", observationId),
+    readPreviewFile: (token: string, path: string, targetId?: string) =>
+      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId),
+    listDeployments: () => ipcRenderer.invoke("agentkib:skills:list-deployments"),
+    prepareDeployment: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-deployment", request),
+    applyDeployment: (token: string, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:skills:apply-deployment", token, approveHome),
   }),
   mcp: Object.freeze({
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),

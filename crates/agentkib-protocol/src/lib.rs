@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const WEB_REQUEST_METHOD: &str = "web.request";
 pub const RELAY_CREATE_CSR_METHOD: &str = "relay.createCsr";
 pub const CONTROL_RECEIPT_METHOD: &str = "control.receipt";
@@ -47,6 +47,15 @@ pub const UNINSTALL_SKILL_METHOD: &str = "skills.uninstall";
 pub const LIST_REMOVED_SKILLS_METHOD: &str = "skills.listRemoved";
 pub const RESTORE_SKILL_METHOD: &str = "skills.restore";
 pub const READ_SKILL_FILE_METHOD: &str = "skills.readFile";
+pub const SKILL_INVENTORY_METHOD: &str = "skills.inventory";
+pub const SKILL_TARGETS_METHOD: &str = "skills.targets";
+pub const SKILL_DETAIL_METHOD: &str = "skills.getDetail";
+pub const READ_SKILL_DETAIL_FILE_METHOD: &str = "skills.readDetailFile";
+pub const PREPARE_SKILL_IMPORT_METHOD: &str = "skills.prepareImport";
+pub const READ_SKILL_PREVIEW_FILE_METHOD: &str = "skills.readPreviewFile";
+pub const LIST_SKILL_DEPLOYMENTS_METHOD: &str = "skills.listDeployments";
+pub const PREPARE_SKILL_DEPLOYMENT_METHOD: &str = "skills.prepareDeployment";
+pub const APPLY_SKILL_DEPLOYMENT_METHOD: &str = "skills.applyDeployment";
 pub const LIST_GLOBAL_MEMORIES_METHOD: &str = "memories.listGlobal";
 pub const LIST_ACTIVITY_METHOD: &str = "activity.list";
 pub const LIST_SCAN_ROOTS_METHOD: &str = "discovery.listScanRoots";
@@ -253,6 +262,15 @@ export const RUNTIME_METHODS = {{
   listRemovedSkills: "{LIST_REMOVED_SKILLS_METHOD}",
   restoreSkill: "{RESTORE_SKILL_METHOD}",
   readSkillFile: "{READ_SKILL_FILE_METHOD}",
+  skillInventory: "{SKILL_INVENTORY_METHOD}",
+  skillTargets: "{SKILL_TARGETS_METHOD}",
+  skillDetail: "{SKILL_DETAIL_METHOD}",
+  readSkillDetailFile: "{READ_SKILL_DETAIL_FILE_METHOD}",
+  prepareSkillImport: "{PREPARE_SKILL_IMPORT_METHOD}",
+  readSkillPreviewFile: "{READ_SKILL_PREVIEW_FILE_METHOD}",
+  listSkillDeployments: "{LIST_SKILL_DEPLOYMENTS_METHOD}",
+  prepareSkillDeployment: "{PREPARE_SKILL_DEPLOYMENT_METHOD}",
+  applySkillDeployment: "{APPLY_SKILL_DEPLOYMENT_METHOD}",
   listGlobalMemories: "{LIST_GLOBAL_MEMORIES_METHOD}",
   listActivity: "{LIST_ACTIVITY_METHOD}",
   listScanRoots: "{LIST_SCAN_ROOTS_METHOD}",

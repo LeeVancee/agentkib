@@ -197,49 +197,42 @@ fn allowed_skill_entry(entry: &DirEntry) -> bool {
     ) && agentkib_platform::path::is_safe_scan_entry(entry.path())
 }
 
-fn is_private_skill_path(path: &Path) -> bool {
-    let text = path.to_string_lossy().to_ascii_lowercase();
-    text.contains("credential")
-        || text.contains("telemetry")
-        || text.ends_with(".env")
-        || text.contains("session")
-        || text.ends_with("state.db")
-        || path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| {
-                let name = name.to_ascii_lowercase();
-                name.contains("token")
-                    || name.contains("secret")
-                    || name.ends_with(".pem")
-                    || name.ends_with(".key")
-            })
+/// Shared private-resource policy for package-relative paths in previews, imports and MCP reads.
+pub fn is_private_skill_path(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(value) => {
+            let name = value.to_string_lossy().to_ascii_lowercase();
+            name == ".git"
+                || name.ends_with(".env")
+                || name.starts_with(".env.")
+                || name == ".npmrc"
+                || name.contains("credential")
+                || name.contains("token")
+                || name.contains("secret")
+                || name.contains("session")
+                || name.contains("telemetry")
+                || name.ends_with(".pem")
+                || name.ends_with(".key")
+                || name.ends_with("state.db")
+        }
+        _ => true,
+    })
 }
 
 fn is_supported_skill_path(path: &Path) -> bool {
-    let mut components = path.components();
-    let Some(std::path::Component::Normal(first)) = components.next() else {
-        return false;
-    };
-    let Some(first) = first.to_str() else {
-        return false;
-    };
-    if first == "SKILL.md" {
-        return components.next().is_none();
-    }
-    if !matches!(first, "references" | "scripts" | "assets") {
-        return false;
-    }
-    path.components().all(|component| match component {
-        std::path::Component::Normal(value) => value.to_str().is_some_and(|value| {
-            !value.starts_with('.')
-                && !matches!(
-                    value,
-                    "node_modules" | "target" | "dist" | "build" | "__pycache__"
-                )
-        }),
-        _ => false,
-    })
+    // A Skill is a complete package. Templates, examples and custom resources
+    // are as valid as the conventional scripts/references/assets directories.
+    !path.as_os_str().is_empty()
+        && path.components().all(|component| match component {
+            std::path::Component::Normal(value) => value.to_str().is_some_and(|value| {
+                !value.starts_with('.')
+                    && !matches!(
+                        value,
+                        "node_modules" | "target" | "dist" | "build" | "__pycache__"
+                    )
+            }),
+            _ => false,
+        })
 }
 
 #[cfg(test)]
@@ -271,6 +264,67 @@ mod tests {
             .map(DateTime::<Utc>::from)
             .max();
         assert_eq!(package.modified_at, expected_modified);
+    }
+
+    #[test]
+    fn custom_resources_and_binary_files_contribute_to_package_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("examples")).unwrap();
+        fs::create_dir(root.join("agents")).unwrap();
+        fs::write(root.join("SKILL.md"), "# Skill").unwrap();
+        fs::write(root.join("examples/data.bin"), [0, 255, 13]).unwrap();
+        fs::write(root.join("agents/openai.yaml"), "name: fixture").unwrap();
+        fs::write(root.join("LICENSE"), "license").unwrap();
+        let package = inspect_skill_entrypoint(&root.join("SKILL.md")).unwrap();
+        assert_eq!(package.size, (7 + 3 + 13 + 7) as u64);
+        assert!(is_readable_skill_file(
+            &root.join("SKILL.md"),
+            &root.join("LICENSE")
+        ));
+        assert!(is_readable_skill_file(
+            &root.join("SKILL.md"),
+            &root.join("examples/data.bin")
+        ));
+    }
+
+    #[test]
+    fn private_ancestors_are_excluded_from_reads_and_package_metadata() {
+        // The policy applies only within the package, not to the containing directory's name.
+        let temp = tempfile::Builder::new()
+            .prefix("skill-token-fixture-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path();
+        let entrypoint = root.join("SKILL.md");
+        fs::write(&entrypoint, "# Skill").unwrap();
+        let custom = root.join("custom/examples/guide.json");
+        fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        fs::write(&custom, "Safe custom resource").unwrap();
+        for relative in [
+            "secrets/config.json",
+            "access-token/data.json",
+            "custom/Secrets/nested/config.json",
+            "custom/access-token/nested/data.json",
+            "custom/credentials/data.json",
+            "custom/telemetry/data.json",
+            "custom/sessions/data.json",
+            "custom/.env.local/data.json",
+            "custom/production.env/data.json",
+            "custom/archive-state.db/data.json",
+            "custom/private.pem/data.json",
+            "custom/private.key/data.json",
+        ] {
+            let file = root.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, "Synthetic private fixture").unwrap();
+            assert!(!is_readable_skill_file(&entrypoint, &file), "{relative}");
+        }
+        assert!(is_readable_skill_file(&entrypoint, &custom));
+        assert_eq!(
+            inspect_skill_entrypoint(&entrypoint).unwrap().size,
+            ("# Skill".len() + "Safe custom resource".len()) as u64
+        );
     }
 
     #[test]

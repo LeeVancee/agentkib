@@ -1163,7 +1163,10 @@ export class ClaudeManagedReadOwner {
     const expected = record.registeredWorkspace ?? record.workspace;
     if (pathIdentity(root) !== pathIdentity(canonicalize(expected)))
       throw new Error("session-workspace-mismatch");
-    if (pathIdentity(canonicalize(record.workspace)) !== pathIdentity(root))
+    const actual = pathIdentity(canonicalize(record.workspace));
+    const registered = pathIdentity(root);
+    const relative = path.relative(registered, actual);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
       throw new Error("session-workspace-mismatch");
     if (pathIdentity(this.#home()) !== pathIdentity(canonicalize(record.home)))
       throw new Error("claude-home-changed");

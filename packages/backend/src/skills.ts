@@ -340,10 +340,11 @@ export class Skills {
           const tree = selected.entries.find(
             (entry) => entry.type === "tree" && entry.path === skill.source!.path,
           );
+          const treeSha = skill.source.path === "" ? selected.rootTree : tree?.sha;
           return {
             ...skill,
             status:
-              tree?.sha && tree.sha !== skill.source.tree_sha ? "update-available" : skill.status,
+              treeSha && treeSha !== skill.source.tree_sha ? "update-available" : skill.status,
           };
         } catch {
           return skill;

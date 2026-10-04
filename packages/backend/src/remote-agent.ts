@@ -491,6 +491,9 @@ export class RemoteAgent {
     };
     this.#persist(next);
     this.#config = next;
+    const heartbeat = this.#heartbeat.get(result.peerId);
+    if (heartbeat) clearInterval(heartbeat);
+    this.#heartbeat.delete(result.peerId);
     const attempt = Symbol();
     this.#pairAttempts.set(result.peerId, attempt);
     void this.#pollPair(result.peerId, pendingId, expires, attempt)
@@ -580,7 +583,7 @@ export class RemoteAgent {
       !this.#stopped &&
       generation === this.#generation &&
       this.#heartbeat.get(peerId) === timer &&
-      this.#config.connections[peerId]?.status !== "disconnected";
+      ["online", "offline"].includes(this.#config.connections[peerId]?.status ?? "");
     if (!connection || !current()) return;
     try {
       await exchangeRemotePeer(this.#identity, connection.address, peerId, { op: "heartbeat" });

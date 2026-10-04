@@ -141,11 +141,18 @@ export class AgentTools {
   async snapshot(force: boolean) {
     const now = new Date();
     const cache = await this.#readCache();
-    const urls = [...new Set(SPECS.filter((spec) => spec.npm).map((spec) => `npm:${spec.npm}`))];
-    const github = [
-      ...new Set(SPECS.filter((spec) => spec.github).map((spec) => `github:${spec.github}`)),
+    const keys = [
+      ...new Set(
+        SPECS.flatMap((spec) => [
+          ...(spec.npm ? [`npm:${spec.npm}`] : []),
+          ...(spec.github ? [`github:${spec.github}`] : []),
+          ...(spec.agent === "cursor" ? ["cursor:installer"] : []),
+          ...(spec.agent === "codex" ? ["homebrew-cask:codex"] : []),
+          ...(spec.agent === "claude-code" ? ["homebrew-cask:claude-code"] : []),
+          ...(spec.agent === "opencode" ? ["homebrew-formula:opencode"] : []),
+        ]),
+      ),
     ];
-    const keys = [...urls, ...github];
     const stale = keys.filter(
       (key) =>
         force ||
@@ -201,7 +208,7 @@ export class AgentTools {
         throw new Error("This action cannot be executed inside AgentKib");
       const current = tool.installations.find((item) => item.id === action.installation_id);
       const managerName = action.channel === "homebrew" ? "brew" : action.channel;
-      const manager = resolveCommand(current?.manager_path ?? managerName);
+      const manager = resolveCommand(this.#expandPath(current?.manager_path ?? managerName));
       if (!manager)
         throw new Error("Agent tool package manager is no longer available; detect again");
       const args = this.#managerArgs(
@@ -277,10 +284,15 @@ export class AgentTools {
       });
     const installations: Installation[] = [];
     for (const executable of unique) {
-      const version = await this.#probe(executable);
+      const version = await this.#probe(executable).catch(() => undefined);
       const resolved = await fs.realpath(executable).catch(() => executable);
       const channel = this.#inferChannel(spec, executable, resolved);
       const managerChannel = this.#managerChannel(executable, resolved, channel);
+      const manager = managerChannel ? resolveCommand(managerChannel) : null;
+      const verifiedManager =
+        manager && (await this.#ownsPackage(spec, channel, executable, resolved, manager))
+          ? manager
+          : undefined;
       const id = `${spec.agent}-${createHash("sha256").update(executable).digest("hex").slice(0, 12)}`;
       installations.push({
         id,
@@ -291,7 +303,7 @@ export class AgentTools {
         ...(version ? {} : { error: "version-unavailable" }),
         channel,
         environment: this.#environment(resolved),
-        ...(managerChannel ? { manager_path: resolveCommand(managerChannel) ?? undefined } : {}),
+        ...(verifiedManager ? { manager_path: this.#redactPath(verifiedManager) } : {}),
         is_path_default: defaults.has(pathIdentity(executable)),
       });
     }
@@ -300,19 +312,20 @@ export class AgentTools {
       (installations.length === 1 ? installations[0] : undefined);
     const channel = primary?.channel ?? "unknown";
     const npmKey = spec.npm ? `npm:${spec.npm}` : undefined;
-    const githubKey = spec.github ? `github:${spec.github}` : undefined;
-    const latest = ["npm", "pnpm", "bun", "yarn", "volta"].includes(channel)
-      ? npmKey
-        ? cache[npmKey]?.version
-        : githubKey
-          ? cache[githubKey]?.version
-          : undefined
-      : githubKey
-        ? cache[githubKey]?.version
-        : npmKey
-          ? cache[npmKey]?.version
-          : undefined;
-    const upstream = githubKey ? cache[githubKey]?.version : latest;
+    const upstreamKey =
+      spec.agent === "cursor" ? "cursor:installer" : spec.github ? `github:${spec.github}` : npmKey;
+    const sourceKey =
+      channel === "homebrew"
+        ? spec.agent === "opencode"
+          ? "homebrew-formula:opencode"
+          : spec.agent === "codex" || spec.agent === "claude-code"
+            ? `homebrew-cask:${spec.agent}`
+            : upstreamKey
+        : ["npm", "pnpm", "bun", "yarn", "volta"].includes(channel)
+          ? (npmKey ?? upstreamKey)
+          : upstreamKey;
+    const latest = sourceKey ? cache[sourceKey]?.version : undefined;
+    const upstream = upstreamKey ? cache[upstreamKey]?.version : undefined;
     const warnings = [
       ...(installations.length > 1 ? ["multiple-executables"] : []),
       ...(installations.some((item) => !item.runnable) ? ["installation-not-runnable"] : []),
@@ -323,7 +336,7 @@ export class AgentTools {
         : []),
     ];
     const current = primary?.version;
-    const comparison = current && latest ? this.#compare(current, latest) : null;
+    const comparison = current && latest ? this.#compare(current, latest, spec.agent) : null;
     const conflict = installations.length > 1;
     const state = conflict
       ? "conflict"
@@ -385,7 +398,7 @@ export class AgentTools {
             channel: primary.channel,
             shell,
             command: this.#command(
-              manager,
+              this.#expandPath(manager),
               this.#managerArgs(primary.channel, spec.agent, latest, true),
             ),
             url: spec.official,
@@ -590,11 +603,73 @@ export class AgentTools {
       );
     return undefined;
   }
+  async #ownsPackage(
+    spec: Spec,
+    channel: Channel,
+    executable: string,
+    resolved: string,
+    manager: string,
+  ): Promise<boolean> {
+    const packageName = PACKAGES[spec.agent];
+    const value = `${executable}|${resolved}`.replaceAll("\\", "/").toLowerCase();
+    const brewToken = spec.agent === "claude-code" ? "claude-code" : spec.agent;
+    const brewKind = spec.agent === "opencode" ? "--formula" : "--cask";
+    const pathMatches =
+      channel === "homebrew"
+        ? value.includes(`/${brewKind === "--formula" ? "cellar" : "caskroom"}/${brewToken}/`)
+        : packageName !== undefined &&
+          (value.includes(`/node_modules/${packageName.toLowerCase()}/`) ||
+            value.includes(`/${packageName.toLowerCase().replace("/", "+")}@`));
+    if (!pathMatches) return false;
+    const args =
+      channel === "npm"
+        ? ["ls", "-g", "--depth=0", "--json"]
+        : channel === "pnpm"
+          ? ["list", "-g", "--depth=0", "--json"]
+          : channel === "bun"
+            ? ["pm", "-g", "ls"]
+            : channel === "homebrew"
+              ? ["list", brewKind, "--versions", brewToken]
+              : null;
+    if (!args) return false;
+    try {
+      const environment = { ...process.env };
+      const pathKey =
+        Object.keys(environment).find((key) => key.toLowerCase() === "path") ?? "PATH";
+      environment[pathKey] = [path.dirname(manager), environment[pathKey]]
+        .filter(Boolean)
+        .join(path.delimiter);
+      const result = await this.#run(manager, args, 5_000, 64 * 1024, environment);
+      if (result.code !== 0 || result.timedOut) return false;
+      if (channel === "homebrew")
+        return result.output.trim().split(/\s+/)[0]?.toLowerCase() === brewToken;
+      if (channel === "bun")
+        return result.output.split(/\s+/).some((word) => {
+          const entry = word.replace(/^[^\w@]+/, "");
+          return entry === packageName || entry.startsWith(`${packageName}@`);
+        });
+      const listing = JSON.parse(result.output) as unknown;
+      const contains = (entry: unknown): boolean => {
+        if (Array.isArray(entry)) return entry.some(contains);
+        if (!entry || typeof entry !== "object") return false;
+        const data = entry as Record<string, unknown>;
+        return ["dependencies", "devDependencies", "optionalDependencies"].some((key) => {
+          const packages = data[key];
+          return Boolean(
+            packages && typeof packages === "object" && Object.hasOwn(packages, packageName!),
+          );
+        });
+      };
+      return contains(listing);
+    } catch {
+      return false;
+    }
+  }
   #inferChannel(spec: Spec, executable: string, resolved: string): Channel {
     const value = `${executable}|${resolved}`.replaceAll("\\", "/").toLowerCase();
     if (value.includes("/caskroom/") || value.includes("/cellar/")) return "homebrew";
     if (value.includes("/.bun/") || value.includes("/bun/")) return "bun";
-    if (value.includes("/pnpm/")) return "pnpm";
+    if (value.includes("/pnpm/") || value.includes("/.pnpm/")) return "pnpm";
     if (value.includes("/volta/")) return "volta";
     if (value.includes("/.config/yarn/global/")) return "yarn";
     if (value.includes("/node_modules/") || value.includes("/.nvm/") || value.includes("/fnm/"))
@@ -602,6 +677,12 @@ export class AgentTools {
     if (value.includes("/nix/store/")) return "nix";
     if (value.includes("/mise/")) return "unknown";
     if (spec.agent === "claude-code" && value.includes("/.local/share/claude/"))
+      return "official-installer";
+    if (
+      spec.agent === "cursor" &&
+      (value.includes("/.local/share/cursor-agent/") ||
+        value.includes("/appdata/local/cursor-agent/"))
+    )
       return "official-installer";
     if (
       ["codex", "claude-code", "hermes", "grok-build", "opencode", "open-claw"].includes(
@@ -640,19 +721,50 @@ export class AgentTools {
     const url =
       kind === "npm"
         ? `https://registry.npmjs.org/${id.replace("/", "%2f")}/latest`
-        : `https://api.github.com/repos/${id}/releases/latest`;
+        : kind === "github"
+          ? `https://api.github.com/repos/${id}/releases/latest`
+          : kind === "cursor"
+            ? "https://cursor.com/install"
+            : kind === "homebrew-cask" || kind === "homebrew-formula"
+              ? `https://formulae.brew.sh/api/${kind === "homebrew-cask" ? "cask" : "formula"}/${id}.json`
+              : "";
+    if (!url) throw new Error("unknown release source");
     const response = await fetch(url, {
       signal: AbortSignal.timeout(12_000),
-      headers: { Accept: "application/json", "User-Agent": "AgentKib tool inspector" },
+      headers: {
+        Accept: kind === "cursor" ? "text/plain" : "application/json",
+        "User-Agent": "AgentKib tool inspector",
+      },
     });
     if (!response.ok) throw new Error(`release lookup failed (${response.status})`);
-    const data = (await response.json()) as { version?: unknown; tag_name?: unknown };
+    if (kind === "cursor") {
+      const script = await response.text();
+      for (const marker of ["cursor-agent/versions/", "downloads.cursor.com/lab/"]) {
+        const start = script.indexOf(marker);
+        if (start < 0) continue;
+        const version = script
+          .slice(start + marker.length)
+          .split(/[/'\"]/)[0]
+          ?.trim();
+        if (version && !version.includes("$")) return version;
+      }
+      throw new Error("Cursor installer did not expose a version identifier");
+    }
+    const data = (await response.json()) as {
+      version?: unknown;
+      tag_name?: unknown;
+      versions?: { stable?: unknown };
+    };
     const version =
       kind === "npm"
         ? data.version
-        : typeof data.tag_name === "string"
-          ? data.tag_name.replace(/^rust-v|^v/, "")
-          : undefined;
+        : kind === "github"
+          ? typeof data.tag_name === "string"
+            ? data.tag_name.replace(/^rust-v|^v/, "")
+            : undefined
+          : kind === "homebrew-formula"
+            ? data.versions?.stable
+            : data.version;
     if (typeof version !== "string") throw new Error("release version is unavailable");
     return version;
   }
@@ -673,7 +785,22 @@ export class AgentTools {
     await fs.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     await fs.rename(temp, this.#cachePath);
   }
-  #compare(current: string, latest: string): number | null {
+  #compare(current: string, latest: string, agent: string): number | null {
+    if (agent === "cursor") {
+      const build = (value: string) => {
+        const match = value.match(/(?:^|\s)(\d{4})\.(\d{1,2})\.(\d{1,2})-([0-9a-z]+)/i);
+        if (!match) return null;
+        const parts = match.slice(1, 4).map(Number);
+        return parts[1]! >= 1 && parts[1]! <= 12 && parts[2]! >= 1 && parts[2]! <= 31
+          ? parts
+          : null;
+      };
+      const left = build(current);
+      const right = build(latest);
+      if (!left || !right) return null;
+      for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i]! < right[i]! ? -1 : 1;
+      return current.trim() === latest.trim() ? 0 : -1;
+    }
     const parse = (value: string) =>
       value
         .replace(/^[^\d]*/, "")
@@ -704,6 +831,12 @@ export class AgentTools {
     return home && (value === home || value.startsWith(home + path.sep))
       ? `~${value.slice(home.length).replaceAll("\\", "/")}`
       : value.replaceAll("\\", "/");
+  }
+  #expandPath(value: string) {
+    const home = process.env.HOME ?? process.env.USERPROFILE;
+    return home && (value === "~" || value.startsWith("~/"))
+      ? path.join(home, value.slice(2))
+      : value;
   }
   #redact(value: string) {
     return value

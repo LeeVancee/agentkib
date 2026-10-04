@@ -591,11 +591,12 @@ export class RemoteAgent {
       this.#updateConnection(peerId, "online", null);
     } catch (error) {
       if (!current()) return;
-      this.#updateConnection(
-        peerId,
-        "offline",
-        error instanceof Error ? error.message : "REMOTE_OFFLINE",
-      );
+      const status = this.#errorStatus(error);
+      this.#updateConnection(peerId, status, status);
+      if (status !== "offline") {
+        clearInterval(timer);
+        this.#heartbeat.delete(peerId);
+      }
     }
   }
   #updateConnection(id: string, status: string, error: string | null) {
@@ -651,23 +652,31 @@ export class RemoteAgent {
       result = await exchangeRemotePeer(this.#identity, connection.address, id, body);
     } catch (error) {
       if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
-      const code = error instanceof Error ? error.message : "REMOTE_OFFLINE";
-      const status = code.includes("REMOTE_REVOKED")
-        ? "revoked"
-        : code.includes("REMOTE_SHARING_DISABLED")
-          ? "sharing-disabled"
-          : code.includes("REMOTE_INDEX_DISABLED")
-            ? "index-disabled"
-            : code.includes("IDENTITY_CHANGED")
-              ? "identity-changed"
-              : "offline";
+      const status = this.#errorStatus(error);
       this.#updateConnection(id, status, status);
+      if (status !== "offline") {
+        const timer = this.#heartbeat.get(id);
+        if (timer) clearInterval(timer);
+        this.#heartbeat.delete(id);
+      }
       throw error;
     }
     if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
     this.#updateConnection(id, "online", null);
     this.#startHeartbeat(id);
     return value.operation === "connect" ? this.#status() : result.result;
+  }
+  #errorStatus(error: unknown) {
+    const code = error instanceof Error ? error.message : "REMOTE_OFFLINE";
+    return code.includes("REMOTE_REVOKED")
+      ? "revoked"
+      : code.includes("REMOTE_SHARING_DISABLED")
+        ? "sharing-disabled"
+        : code.includes("REMOTE_INDEX_DISABLED")
+          ? "index-disabled"
+          : code.includes("IDENTITY_CHANGED")
+            ? "identity-changed"
+            : "offline";
   }
   async #serveRequest(
     peerId: string,

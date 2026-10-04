@@ -277,6 +277,12 @@ export class AgentTools {
     const unique = names
       .flatMap((command) => resolveCommands(command, process.env, additional))
       .filter((executable) => {
+        if (
+          spec.agent === "cursor" &&
+          path.basename(executable).replace(/\.(exe|cmd|bat)$/i, "") === "agent" &&
+          this.#inferChannel(spec, executable, pathIdentity(executable)) !== "official-installer"
+        )
+          return false;
         const identity = pathIdentity(executable);
         if (seen.has(identity)) return false;
         seen.add(identity);
@@ -284,11 +290,11 @@ export class AgentTools {
       });
     const installations: Installation[] = [];
     for (const executable of unique) {
-      const version = await this.#probe(executable).catch(() => undefined);
       const resolved = await fs.realpath(executable).catch(() => executable);
       const channel = this.#inferChannel(spec, executable, resolved);
       const managerChannel = this.#managerChannel(executable, resolved, channel);
       const manager = managerChannel ? resolveCommand(managerChannel) : null;
+      const version = await this.#probe(executable, manager ?? undefined).catch(() => undefined);
       const verifiedManager =
         manager && (await this.#ownsPackage(spec, channel, executable, resolved, manager))
           ? manager
@@ -311,20 +317,8 @@ export class AgentTools {
       installations.find((item) => item.is_path_default) ??
       (installations.length === 1 ? installations[0] : undefined);
     const channel = primary?.channel ?? "unknown";
-    const npmKey = spec.npm ? `npm:${spec.npm}` : undefined;
-    const upstreamKey =
-      spec.agent === "cursor" ? "cursor:installer" : spec.github ? `github:${spec.github}` : npmKey;
-    const sourceKey =
-      channel === "homebrew"
-        ? spec.agent === "opencode"
-          ? "homebrew-formula:opencode"
-          : spec.agent === "codex" || spec.agent === "claude-code"
-            ? `homebrew-cask:${spec.agent}`
-            : upstreamKey
-        : ["npm", "pnpm", "bun", "yarn", "volta"].includes(channel)
-          ? (npmKey ?? upstreamKey)
-          : upstreamKey;
-    const latest = sourceKey ? cache[sourceKey]?.version : undefined;
+    const upstreamKey = this.#upstreamKey(spec);
+    const latest = this.#versionFor(spec, channel, cache);
     const upstream = upstreamKey ? cache[upstreamKey]?.version : undefined;
     const warnings = [
       ...(installations.length > 1 ? ["multiple-executables"] : []),
@@ -343,9 +337,16 @@ export class AgentTools {
       : !installations.length
         ? "uninstalled"
         : !current ||
-            !["npm", "pnpm", "bun", "yarn", "homebrew", "official-installer", "nix"].includes(
-              channel,
-            )
+            ![
+              "npm",
+              "pnpm",
+              "bun",
+              "yarn",
+              "homebrew",
+              "official-installer",
+              "nix",
+              "volta",
+            ].includes(channel)
           ? "unknown"
           : comparison === -1
             ? "update-available"
@@ -365,8 +366,36 @@ export class AgentTools {
       warnings,
       official_url: spec.official,
       ...(spec.releases ? { release_url: spec.releases } : {}),
-      actions: this.#actions(spec, state, primary, latest),
+      actions: this.#actions(spec, state, primary, latest, cache),
     };
+  }
+
+  #upstreamKey(spec: Spec) {
+    return spec.agent === "cursor"
+      ? "cursor:installer"
+      : spec.github
+        ? `github:${spec.github}`
+        : spec.npm
+          ? `npm:${spec.npm}`
+          : undefined;
+  }
+
+  #versionFor(
+    spec: Spec,
+    channel: Channel,
+    cache: Record<string, { version: string; checked_at: string }>,
+  ) {
+    const key =
+      channel === "homebrew"
+        ? spec.agent === "opencode"
+          ? "homebrew-formula:opencode"
+          : spec.agent === "codex" || spec.agent === "claude-code"
+            ? `homebrew-cask:${spec.agent}`
+            : this.#upstreamKey(spec)
+        : ["npm", "pnpm", "bun", "yarn", "volta"].includes(channel) && spec.npm
+          ? `npm:${spec.npm}`
+          : this.#upstreamKey(spec);
+    return key ? cache[key]?.version : undefined;
   }
 
   #actions(
@@ -374,10 +403,11 @@ export class AgentTools {
     state: string,
     primary: Installation | undefined,
     latest: string | undefined,
+    cache: Record<string, { version: string; checked_at: string }>,
   ): Action[] {
     if (state === "uninstalled") {
       const actions = CHANNELS[spec.agent]!.map((channel) =>
-        this.#installAction(spec, channel, latest),
+        this.#installAction(spec, channel, this.#versionFor(spec, channel, cache)),
       ).filter((item): item is Action => Boolean(item));
       return actions.length ? actions : [this.#docAction(spec, "unknown")];
     }
@@ -385,7 +415,7 @@ export class AgentTools {
       state === "update-available" &&
       primary &&
       latest &&
-      ["npm", "pnpm", "bun", "homebrew"].includes(primary.channel)
+      ["npm", "pnpm", "bun", "homebrew", "volta"].includes(primary.channel)
     ) {
       const manager = primary.manager_path;
       if (manager) {
@@ -408,7 +438,38 @@ export class AgentTools {
           },
         ];
       }
+      const managerName = primary.channel === "homebrew" ? "brew" : primary.channel;
+      return [
+        {
+          id: this.#actionId(spec.agent, "update", primary.channel, latest, primary.id),
+          kind: "update",
+          mode: "copy-command",
+          channel: primary.channel,
+          shell: process.platform === "win32" ? "powershell" : "posix",
+          command: this.#command(
+            managerName,
+            this.#managerArgs(primary.channel, spec.agent, latest, true),
+          ),
+          url: spec.official,
+          target_version: latest,
+          installation_id: primary.id,
+        },
+      ];
     }
+    if (state === "update-available" && primary && latest && primary.channel === "yarn")
+      return [
+        {
+          id: this.#actionId(spec.agent, "update", "yarn", latest, primary.id),
+          kind: "update",
+          mode: "copy-command",
+          channel: "yarn",
+          shell: process.platform === "win32" ? "powershell" : "posix",
+          command: this.#command("yarn", this.#managerArgs("yarn", spec.agent, latest, true)),
+          url: spec.official,
+          target_version: latest,
+          installation_id: primary.id,
+        },
+      ];
     if (
       state === "update-available" &&
       primary &&
@@ -440,14 +501,14 @@ export class AgentTools {
 
   #installAction(spec: Spec, channel: Channel, target?: string): Action | null {
     const managerName = channel === "homebrew" ? "brew" : channel;
-    const manager = ["npm", "pnpm", "bun", "yarn", "homebrew"].includes(channel)
+    const manager = ["npm", "pnpm", "bun", "yarn", "homebrew", "volta"].includes(channel)
       ? resolveCommand(managerName)
       : null;
     const command = this.#installCommand(spec, channel, target, manager ?? undefined);
     if (!command) return null;
     const shell = process.platform === "win32" ? "powershell" : "posix";
     const mode =
-      ["npm", "pnpm", "bun"].includes(channel) && manager && target
+      ["npm", "pnpm", "bun", "volta"].includes(channel) && manager && target
         ? "execute"
         : channel === "desktop-app"
           ? "open-documentation"
@@ -532,6 +593,7 @@ export class AgentTools {
         ...(agent === "opencode" ? [] : ["--cask"]),
         agent === "codex" ? "codex" : agent === "claude-code" ? "claude-code" : "opencode",
       ];
+    if (channel === "volta") return ["install", ref];
     if (channel === "pnpm")
       return agent === "open-claw"
         ? [...(update ? ["update", "-g"] : ["add", "-g"]), "--allow-build=openclaw", ref]
@@ -571,36 +633,29 @@ export class AgentTools {
     return `${agent}:${kind}:${channel}:${version ?? "unversioned"}:${installation ?? "new"}:${binding}`;
   }
   #managerChannel(executable: string, resolved: string, inferred: Channel) {
-    if (inferred === "npm") {
-      // A shim can live outside its npm prefix. Bind updates to the package's
-      // physical installation, never to whichever npm happens to be on PATH.
-      const marker = `${path.sep}node_modules${path.sep}`;
-      const index = resolved.indexOf(marker);
-      if (index >= 0) {
-        const modulesParent = resolved.slice(0, index);
-        const prefix =
-          path.basename(modulesParent) === "lib" ? path.dirname(modulesParent) : modulesParent;
-        return (
-          resolveCommand(path.join(prefix, process.platform === "win32" ? "npm" : "bin/npm")) ??
-          undefined
-        );
-      }
-      return resolveCommand(path.join(path.dirname(resolved), "npm")) ?? undefined;
+    const name = inferred === "homebrew" ? "brew" : inferred;
+    if (!["npm", "pnpm", "bun", "yarn", "homebrew", "volta"].includes(inferred)) return undefined;
+    const directories = [path.dirname(executable), path.dirname(resolved)];
+    const marker = `${path.sep}node_modules${path.sep}`;
+    const index = resolved.indexOf(marker);
+    if (inferred === "npm" && index >= 0) {
+      const modulesParent = resolved.slice(0, index);
+      const prefix =
+        path.basename(modulesParent) === "lib" ? path.dirname(modulesParent) : modulesParent;
+      directories.unshift(process.platform === "win32" ? prefix : path.join(prefix, "bin"));
     }
-    if (
-      inferred === "pnpm" ||
-      inferred === "bun" ||
-      inferred === "yarn" ||
-      inferred === "homebrew" ||
-      inferred === "volta"
-    )
-      return (
-        resolveCommand(
-          path.join(path.dirname(executable), inferred === "homebrew" ? "brew" : inferred),
-        ) ??
-        resolveCommand(inferred === "homebrew" ? "brew" : inferred) ??
-        undefined
-      );
+    if (inferred === "homebrew") {
+      const target = resolved.replaceAll("\\", "/");
+      if (target.startsWith("/opt/homebrew/")) directories.unshift("/opt/homebrew/bin");
+      if (target.startsWith("/usr/local/")) directories.unshift("/usr/local/bin");
+    }
+    for (const directory of [...new Set(directories)]) {
+      const manager = resolveCommand(path.join(directory, name));
+      if (manager) return manager;
+    }
+    // A standard pnpm global shim can live in PNPM_HOME while pnpm itself is
+    // elsewhere. Its reported global root is checked against the shim below.
+    if (inferred === "pnpm") return resolveCommand("pnpm") ?? undefined;
     return undefined;
   }
   async #ownsPackage(
@@ -617,9 +672,13 @@ export class AgentTools {
     const pathMatches =
       channel === "homebrew"
         ? value.includes(`/${brewKind === "--formula" ? "cellar" : "caskroom"}/${brewToken}/`)
-        : packageName !== undefined &&
-          (value.includes(`/node_modules/${packageName.toLowerCase()}/`) ||
-            value.includes(`/${packageName.toLowerCase().replace("/", "+")}@`));
+        : channel === "volta"
+          ? value.includes("/volta/")
+          : channel === "pnpm"
+            ? value.includes("/pnpm/") || value.includes("/.pnpm/")
+            : packageName !== undefined &&
+              (value.includes(`/node_modules/${packageName.toLowerCase()}/`) ||
+                value.includes(`/${packageName.toLowerCase().replace("/", "+")}@`));
     if (!pathMatches) return false;
     const args =
       channel === "npm"
@@ -628,9 +687,11 @@ export class AgentTools {
           ? ["list", "-g", "--depth=0", "--json"]
           : channel === "bun"
             ? ["pm", "-g", "ls"]
-            : channel === "homebrew"
-              ? ["list", brewKind, "--versions", brewToken]
-              : null;
+            : channel === "volta"
+              ? ["list", "--format", "plain"]
+              : channel === "homebrew"
+                ? ["list", brewKind, "--versions", brewToken]
+                : null;
     if (!args) return false;
     try {
       const environment = { ...process.env };
@@ -642,25 +703,65 @@ export class AgentTools {
       const result = await this.#run(manager, args, 5_000, 64 * 1024, environment);
       if (result.code !== 0 || result.timedOut) return false;
       if (channel === "homebrew")
-        return result.output.trim().split(/\s+/)[0]?.toLowerCase() === brewToken;
-      if (channel === "bun")
-        return result.output.split(/\s+/).some((word) => {
+        return result.stdout.trim().split(/\s+/)[0]?.toLowerCase() === brewToken;
+      if (channel === "bun" || channel === "volta")
+        return result.stdout.split(/\s+/).some((word) => {
           const entry = word.replace(/^[^\w@]+/, "");
           return entry === packageName || entry.startsWith(`${packageName}@`);
         });
-      const listing = JSON.parse(result.output) as unknown;
-      const contains = (entry: unknown): boolean => {
-        if (Array.isArray(entry)) return entry.some(contains);
-        if (!entry || typeof entry !== "object") return false;
+      const jsonStart = result.stdout.search(/(?:^|\n)\s*(?:\[(?=\s*[{\]])|\{(?=\s*"))/);
+      if (jsonStart < 0) return false;
+      const listing = JSON.parse(result.stdout.slice(jsonStart).trim()) as unknown;
+      const packageEntry = (entry: unknown): Record<string, unknown> | null => {
+        if (Array.isArray(entry)) {
+          for (const item of entry) {
+            const found = packageEntry(item);
+            if (found) return found;
+          }
+          return null;
+        }
+        if (!entry || typeof entry !== "object") return null;
         const data = entry as Record<string, unknown>;
-        return ["dependencies", "devDependencies", "optionalDependencies"].some((key) => {
+        for (const key of ["dependencies", "devDependencies", "optionalDependencies"]) {
           const packages = data[key];
-          return Boolean(
-            packages && typeof packages === "object" && Object.hasOwn(packages, packageName!),
-          );
-        });
+          if (packages && typeof packages === "object" && Object.hasOwn(packages, packageName!)) {
+            const found = (packages as Record<string, unknown>)[packageName!];
+            return found && typeof found === "object" ? (found as Record<string, unknown>) : {};
+          }
+        }
+        return null;
       };
-      return contains(listing);
+      const entry = packageEntry(listing);
+      if (!entry) return false;
+      const rootResult = await this.#run(manager, ["root", "-g"], 5_000, 4096, environment);
+      const root = rootResult.stdout.trim().split(/\r?\n/).at(-1) ?? "";
+      if (rootResult.code !== 0 || !path.isAbsolute(root) || !packageName) return false;
+      const packageDirectory =
+        typeof entry.path === "string" && path.isAbsolute(entry.path)
+          ? entry.path
+          : path.join(root, packageName);
+      const relativePackage = path.relative(root, packageDirectory);
+      if (
+        relativePackage === ".." ||
+        relativePackage.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePackage)
+      )
+        return false;
+      const packageTarget = await fs.realpath(packageDirectory).catch(() => null);
+      if (!packageTarget) return false;
+      const target = pathIdentity(resolved);
+      const owned = pathIdentity(packageTarget);
+      if (target === owned || target.startsWith(`${owned}${path.sep}`)) return true;
+      if (channel !== "pnpm") return false;
+      const globalMarker = `${path.sep}global${path.sep}`;
+      const globalIndex = root.lastIndexOf(globalMarker);
+      if (globalIndex < 0) return false;
+      const pnpmHome = root.slice(0, globalIndex);
+      if (pathIdentity(path.dirname(executable)) !== pathIdentity(pnpmHome)) return false;
+      const metadata = await fs.stat(executable);
+      if (!metadata.isFile() || metadata.size > 64 * 1024) return false;
+      const shim = await fs.readFile(executable, "utf8");
+      return shim.includes(`node_modules/${packageName}/`);
     } catch {
       return false;
     }
@@ -710,8 +811,17 @@ export class AgentTools {
               ? "system"
               : "unknown";
   }
-  async #probe(executable: string): Promise<string | undefined> {
-    const result = await this.#run(executable, ["--version"], 2_000, 64 * 1024);
+  async #probe(executable: string, manager?: string): Promise<string | undefined> {
+    const environment = { ...process.env };
+    const pathKey = Object.keys(environment).find((key) => key.toLowerCase() === "path") ?? "PATH";
+    environment[pathKey] = [
+      path.dirname(executable),
+      manager && path.dirname(manager),
+      environment[pathKey],
+    ]
+      .filter(Boolean)
+      .join(path.delimiter);
+    const result = await this.#run(executable, ["--version"], 2_000, 64 * 1024, environment);
     if (result.code !== 0 || result.timedOut) return undefined;
     const version = result.output.match(/\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/)?.[0];
     return version;
@@ -801,22 +911,40 @@ export class AgentTools {
       for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i]! < right[i]! ? -1 : 1;
       return current.trim() === latest.trim() ? 0 : -1;
     }
-    const parse = (value: string) =>
-      value
-        .replace(/^[^\d]*/, "")
-        .split(/[.+-]/)
-        .slice(0, 3)
-        .map(Number);
+    const parse = (value: string) => {
+      const match = value.match(
+        /(?:^|[^\d])(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/,
+      );
+      return match
+        ? {
+            numbers: [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)],
+            prerelease: match[4]?.slice(1).split(".") ?? [],
+          }
+        : null;
+    };
     const left = parse(current);
     const right = parse(latest);
-    if (
-      !left.length ||
-      !right.length ||
-      [...left, ...right].some((value) => !Number.isFinite(value))
-    )
-      return null;
+    if (!left || !right) return null;
     for (let i = 0; i < 3; i++)
-      if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) < (right[i] ?? 0) ? -1 : 1;
+      if (left.numbers[i] !== right.numbers[i])
+        return left.numbers[i]! < right.numbers[i]! ? -1 : 1;
+    if (!left.prerelease.length || !right.prerelease.length)
+      return left.prerelease.length === right.prerelease.length
+        ? 0
+        : left.prerelease.length
+          ? -1
+          : 1;
+    for (let i = 0; i < Math.max(left.prerelease.length, right.prerelease.length); i++) {
+      const a = left.prerelease[i];
+      const b = right.prerelease[i];
+      if (a === undefined || b === undefined) return a === undefined ? -1 : 1;
+      if (a === b) continue;
+      const aNumeric = /^\d+$/.test(a);
+      const bNumeric = /^\d+$/.test(b);
+      if (aNumeric && bNumeric) return BigInt(a) < BigInt(b) ? -1 : 1;
+      if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+      return a < b ? -1 : 1;
+    }
     return 0;
   }
   #command(program: string, args: string[]) {
@@ -857,76 +985,90 @@ export class AgentTools {
     maxOutput = 256 * 1024,
     env: NodeJS.ProcessEnv = process.env,
   ) {
-    return new Promise<{ code: number | null; output: string; timedOut: boolean }>(
-      (resolve, reject) => {
-        const child = spawn(program, args, {
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-          detached: process.platform !== "win32",
-        });
-        let tree: NativeProcessTree | undefined;
-        const terminate = () => {
-          if (tree) {
-            tree.terminate();
-            return;
+    return new Promise<{
+      code: number | null;
+      output: string;
+      stdout: string;
+      stderr: string;
+      timedOut: boolean;
+    }>((resolve, reject) => {
+      const child = spawn(program, args, {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        detached: process.platform !== "win32",
+      });
+      let tree: NativeProcessTree | undefined;
+      const terminate = () => {
+        if (tree) {
+          tree.terminate();
+          return;
+        }
+        if (process.platform !== "win32" && child.pid) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL");
           }
-          if (process.platform !== "win32" && child.pid) {
-            try {
-              process.kill(-child.pid, "SIGKILL");
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill("SIGKILL");
-            }
-          } else child.kill("SIGKILL");
-        };
-        child.once("spawn", () => {
-          if (process.platform === "win32" && child.pid) {
-            try {
-              tree = windowsProcessTree(child.pid);
-            } catch (error) {
-              terminate();
-              finish();
-              reject(error);
-            }
+        } else child.kill("SIGKILL");
+      };
+      child.once("spawn", () => {
+        if (process.platform === "win32" && child.pid) {
+          try {
+            tree = windowsProcessTree(child.pid);
+          } catch (error) {
+            terminate();
+            finish();
+            reject(error);
           }
-        });
-        let output = Buffer.alloc(0);
-        let timedOut = false;
-        let finished = false;
-        let drainTimer: ReturnType<typeof setTimeout> | undefined;
-        const finish = () => {
-          if (finished) return false;
-          finished = true;
-          clearTimeout(timer);
-          clearTimeout(drainTimer);
-          tree?.close();
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          return true;
-        };
-        const timer = setTimeout(() => {
-          timedOut = true;
-          terminate();
-          // Detached descendants must not keep a version probe waiting on inherited pipes.
-          drainTimer = setTimeout(() => {
-            if (finish())
-              resolve({ code: child.exitCode, output: output.toString("utf8"), timedOut });
-          }, 500);
-        }, timeout);
-        const read = (chunk: Buffer) => {
-          if (output.length < maxOutput)
-            output = Buffer.concat([output, chunk.subarray(0, maxOutput - output.length)]);
-        };
-        child.stdout!.on("data", read);
-        child.stderr!.on("data", read);
-        child.once("exit", terminate);
-        child.once("error", (error) => {
-          if (finish()) reject(error);
-        });
-        child.once("close", (code) => {
-          if (finish()) resolve({ code, output: output.toString("utf8"), timedOut });
-        });
-      },
-    );
+        }
+      });
+      let stdout = Buffer.alloc(0);
+      let stderr = Buffer.alloc(0);
+      let timedOut = false;
+      let finished = false;
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (finished) return false;
+        finished = true;
+        clearTimeout(timer);
+        clearTimeout(drainTimer);
+        tree?.close();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        return true;
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        terminate();
+        // Detached descendants must not keep a version probe waiting on inherited pipes.
+        drainTimer = setTimeout(() => {
+          if (finish()) resolve(result(child.exitCode));
+        }, 500);
+      }, timeout);
+      const result = (code: number | null) => ({
+        code,
+        stdout: stdout.toString("utf8"),
+        stderr: stderr.toString("utf8"),
+        output: `${stdout.toString("utf8")}${stderr.toString("utf8")}`,
+        timedOut,
+      });
+      const read = (stream: "stdout" | "stderr", chunk: Buffer) => {
+        const current = stream === "stdout" ? stdout : stderr;
+        if (current.length >= maxOutput) return;
+        const next = Buffer.concat([current, chunk.subarray(0, maxOutput - current.length)]);
+        if (stream === "stdout") stdout = next;
+        else stderr = next;
+      };
+      child.stdout!.on("data", (chunk: Buffer) => read("stdout", chunk));
+      child.stderr!.on("data", (chunk: Buffer) => read("stderr", chunk));
+      child.once("exit", terminate);
+      child.once("error", (error) => {
+        if (finish()) reject(error);
+      });
+      child.once("close", (code) => {
+        if (finish()) resolve(result(code));
+      });
+    });
   }
 }

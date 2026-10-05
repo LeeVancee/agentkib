@@ -41,6 +41,12 @@ export class ClaudeRunnerState {
   questions: JsonObject[] = [];
   seenRequests = new Set<string>();
   streamText = "";
+  streamItemId = "";
+  streamItemText = "";
+  textBlockSerial = 0;
+  activeTextBlockIndex = -1;
+  textBlocks = new Map<number, { id: string; text: string }>();
+  finalizedTextBlocks: Array<{ temporaryId: string; id: string; text: string }> = [];
   reason: string | null = null;
   initialized = false;
   initId = "";
@@ -64,6 +70,12 @@ export class ClaudeRunnerState {
       questions: structuredClone(this.questions),
       seenRequests: new Set(this.seenRequests),
       streamText: this.streamText,
+      streamItemId: this.streamItemId,
+      streamItemText: this.streamItemText,
+      textBlockSerial: this.textBlockSerial,
+      activeTextBlockIndex: this.activeTextBlockIndex,
+      textBlocks: structuredClone(this.textBlocks),
+      finalizedTextBlocks: structuredClone(this.finalizedTextBlocks),
       reason: this.reason,
       initialized: this.initialized,
       initId: this.initId,
@@ -126,6 +138,12 @@ export class ClaudeRunnerState {
     if (this.status !== "idle") throw new Error("Claude session is busy or failed");
     this.turnId = turnId;
     this.streamText = "";
+    this.streamItemId = "";
+    this.streamItemText = "";
+    this.textBlockSerial = 0;
+    this.activeTextBlockIndex = -1;
+    this.textBlocks.clear();
+    this.finalizedTextBlocks = [];
     this.partial = false;
     this.reason = null;
     this.lastOutcome = null;
@@ -266,6 +284,7 @@ export class ClaudeRunnerState {
   frame(frame: unknown): JsonObject | null {
     if (!object(frame) || typeof frame.type !== "string")
       throw new Error("Claude frame missing type");
+    this.finalizedTextBlocks = [];
     if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
       throw new Error("Claude session ID changed unexpectedly");
     switch (frame.type) {
@@ -296,10 +315,26 @@ export class ClaudeRunnerState {
         break;
       case "stream_event": {
         const event = frame.event;
+        if (event?.type === "message_start") {
+          this.streamItemId = "";
+          this.streamItemText = "";
+          this.activeTextBlockIndex = -1;
+          this.textBlocks.clear();
+          this.partial = false;
+        }
+        if (event?.type === "content_block_start" && event.content_block?.type === "text") {
+          const index = Number.isSafeInteger(event.index) ? event.index : this.textBlockSerial;
+          this.#startTextBlock(index);
+          if (typeof event.content_block.text === "string") this.#append(event.content_block.text);
+          this.partial = true;
+        }
         if (event?.type === "content_block_start")
           this.#observeBash(event.content_block, frame.parent_tool_use_id);
         if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
           if (typeof event.delta.text !== "string") throw new Error("invalid Claude text delta");
+          const index = Number.isSafeInteger(event.index) ? event.index : this.activeTextBlockIndex;
+          if (!this.textBlocks.has(index)) this.#startTextBlock(index);
+          else this.activeTextBlockIndex = index;
           this.#append(event.delta.text);
           this.partial = true;
         }
@@ -307,14 +342,34 @@ export class ClaudeRunnerState {
       }
       case "assistant": {
         const blocks = frame.message?.content;
+        const nativeId =
+          (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
+          (typeof frame.message?.id === "string" &&
+            uuidPattern.test(frame.message.id) &&
+            frame.message.id) ||
+          "";
+        const hasText =
+          Array.isArray(blocks) && blocks.some((block: JsonObject) => block?.type === "text");
         if (Array.isArray(blocks))
           for (const block of blocks) this.#observeBash(block, frame.parent_tool_use_id);
-        if (!this.partial && Array.isArray(blocks))
-          for (const block of blocks)
-            if (block?.type === "text") {
-              if (typeof block.text !== "string") throw new Error("invalid Claude text");
-              this.#append(block.text);
-            }
+        if (hasText && nativeId && Array.isArray(blocks)) {
+          const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
+            if (block?.type !== "text") return [];
+            if (typeof block.text !== "string") throw new Error("invalid Claude text");
+            const streamed = this.textBlocks.get(index);
+            return [
+              {
+                temporaryId: streamed?.id ?? "",
+                id: index === 0 ? nativeId : `${nativeId}:text:${index}`,
+                text: block.text,
+              },
+            ];
+          });
+          this.finalizedTextBlocks = textBlocks;
+          this.streamItemId = textBlocks[0]?.id ?? nativeId;
+          this.streamItemText = textBlocks[0]?.text ?? "";
+          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
+        }
         this.partial = false;
         break;
       }
@@ -456,10 +511,21 @@ export class ClaudeRunnerState {
       throw new Error("Claude pending interaction exceeds Web delivery budget; process stopped");
   }
 
+  #startTextBlock(index: number): void {
+    this.textBlockSerial++;
+    this.activeTextBlockIndex = index;
+    this.streamItemId = `live:${this.turnId}:assistant:${this.textBlockSerial}`;
+    this.streamItemText = "";
+    this.textBlocks.set(index, { id: this.streamItemId, text: "" });
+  }
+
   #append(value: string): void {
     if (Buffer.byteLength(this.streamText) + Buffer.byteLength(value) > MAX_TEXT)
       throw new Error("Claude output exceeds 4 MiB");
     this.streamText += value;
+    this.streamItemText += value;
+    const block = this.textBlocks.get(this.activeTextBlockIndex);
+    if (block) block.text += value;
   }
 
   #observeBash(block: JsonObject, parent: unknown): void {
@@ -596,6 +662,7 @@ export class ClaudeManagedRunnerProcess {
   #fresh: boolean;
   #intentional = new WeakSet<ChildProcess>();
   #serializedTail: Promise<void> = Promise.resolve();
+  #toolItems = new Map<string, Record<string, unknown>>();
 
   constructor(
     readonly workspace: string,
@@ -605,6 +672,11 @@ export class ClaudeManagedRunnerProcess {
     readonly environment: NodeJS.ProcessEnv,
     readonly onSnapshot: (snapshot: ClaudeRunnerSnapshot) => void,
     foregroundBashContract = false,
+    readonly onConversationEvent?: (
+      type: "text-delta" | "item-upsert" | "item-alias",
+      payload: Record<string, unknown>,
+      live: ClaudeRunnerSnapshot,
+    ) => void,
   ) {
     if (process.platform !== "darwin" && process.platform !== "linux")
       throw new Error("managed Claude process groups require Unix");
@@ -878,7 +950,73 @@ export class ClaudeManagedRunnerProcess {
       .then(async () => {
         const frame = parseClaudeFrame(line);
         const wasInitialized = this.state.initialized;
+        const previousItemId = this.state.streamItemId;
+        const previousItemText = this.state.streamItemText;
         const response = this.state.frame(frame);
+        const live = this.state.snapshot();
+        const itemId = this.state.streamItemId;
+        const itemText = this.state.streamItemText;
+        for (const block of this.state.finalizedTextBlocks) {
+          if (block.temporaryId && block.temporaryId !== block.id)
+            this.onConversationEvent?.(
+              "item-alias",
+              { previousId: block.temporaryId, itemId: block.id },
+              live,
+            );
+          this.onConversationEvent?.(
+            "item-upsert",
+            {
+              id: block.id,
+              kind: "agent-message",
+              turn_id: this.state.turnId,
+              content: block.text,
+              attachment_count: 0,
+              truncated: false,
+              ephemeral: false,
+            },
+            live,
+          );
+        }
+        if (
+          itemId &&
+          itemId === previousItemId &&
+          itemText.startsWith(previousItemText) &&
+          itemText.length > previousItemText.length
+        ) {
+          this.onConversationEvent?.(
+            "text-delta",
+            {
+              itemId,
+              turnId: this.state.turnId,
+              text: itemText.slice(previousItemText.length),
+              offset: previousItemText.length,
+              ephemeral: itemId.startsWith("live:"),
+            },
+            live,
+          );
+        }
+        if (
+          frame.type === "assistant" &&
+          !this.state.finalizedTextBlocks.length &&
+          itemId &&
+          itemText
+        ) {
+          this.onConversationEvent?.(
+            "item-upsert",
+            {
+              id: itemId,
+              kind: "agent-message",
+              turn_id: this.state.turnId,
+              content: itemText,
+              attachment_count: 0,
+              truncated: false,
+              ephemeral: itemId.startsWith("live:"),
+            },
+            live,
+          );
+        }
+        for (const item of this.#conversationItems(frame))
+          this.onConversationEvent?.("item-upsert", item, live);
         this.#notify();
         if (!wasInitialized && this.state.initialized) {
           if (response) await this.#write(response);
@@ -898,6 +1036,69 @@ export class ClaudeManagedRunnerProcess {
         this.#queuedFrames--;
         if (this.#queuedFrames < 16) this.#child?.stdout?.resume();
       });
+  }
+
+  #conversationItems(frame: JsonObject): Record<string, unknown>[] {
+    const items: Record<string, unknown>[] = [];
+    const blocks = Array.isArray(frame.message?.content) ? frame.message.content : [];
+    if (frame.type === "user") {
+      const id =
+        (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
+        (typeof frame.message?.id === "string" &&
+          uuidPattern.test(frame.message.id) &&
+          frame.message.id) ||
+        "";
+      if (id && frame.isCompactSummary !== true) {
+        const content = frame.message?.content;
+        const text =
+          typeof content === "string"
+            ? content
+            : blocks
+                .filter((block: JsonObject) =>
+                  ["text", "input_text", "output_text"].includes(String(block?.type)),
+                )
+                .map((block: JsonObject) => (typeof block.text === "string" ? block.text : ""))
+                .filter(Boolean)
+                .join("\n");
+        const attachmentCount = blocks.filter((block: JsonObject) =>
+          ["image", "document"].includes(String(block?.type)),
+        ).length;
+        if (text || attachmentCount)
+          items.push({
+            id,
+            kind: "user-message",
+            content: text,
+            attachment_count: attachmentCount,
+            truncated: false,
+          });
+      }
+      for (const block of blocks) {
+        const toolId = typeof block?.tool_use_id === "string" ? block.tool_use_id : "";
+        const item = toolId ? this.#toolItems.get(toolId) : undefined;
+        if (block?.type === "tool_result" && item) {
+          item.tool_status = block.is_error === true ? "failed" : "completed";
+          items.push({ ...item });
+        }
+      }
+    } else if (frame.type === "assistant") {
+      for (const block of blocks) {
+        const id = typeof block?.id === "string" ? block.id : "";
+        if (block?.type !== "tool_use" || !id || id.length > 256) continue;
+        if (this.#toolItems.size >= 1024 && !this.#toolItems.has(id)) continue;
+        const item = {
+          id,
+          kind: "tool-summary",
+          turn_id: this.state.turnId,
+          tool_name: block.name,
+          tool_status: "running",
+          attachment_count: 0,
+          truncated: false,
+        };
+        this.#toolItems.set(id, item);
+        items.push(item);
+      }
+    }
+    return items;
   }
 
   async #write(frame: JsonObject): Promise<void> {

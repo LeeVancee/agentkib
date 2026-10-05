@@ -230,6 +230,37 @@ export class CodexFollowerState {
     };
   }
 
+  /** Bounded event projection used by the app's shared live session stream. */
+  streamSnapshot(): { live: JsonRecord; items: JsonRecord[] } {
+    const turns = this.#conversationTurns() ?? [];
+    const activeTurn = this.activeTurn();
+    const candidates = turns
+      .slice(-20)
+      .flatMap((turn) => {
+        if (typeof turn.turnId !== "string" || !Array.isArray(turn.items)) return [];
+        return turn.items.flatMap((item) => {
+          if (!isRecord(item) || typeof item.id !== "string") return [];
+          const projected = projectFollowerItem(item, turn.turnId as string);
+          return projected ? [projected] : [];
+        });
+      })
+      .slice(-100);
+    let streamText = "";
+    for (const item of candidates) {
+      if (item.kind === "agent-message" && item.turn_id === activeTurn)
+        streamText = `${streamText}${typeof item.content === "string" ? item.content : ""}`.slice(
+          0,
+          128 * 1024,
+        );
+    }
+    const live = this.live(true);
+    live.streamText = streamText;
+    return {
+      live,
+      items: candidates.map((item) => ({ ...item, ephemeral: true })),
+    };
+  }
+
   /** Ignore unrelated owner traffic; malformed selected-thread changes invalidate this stream. */
   notification(value: unknown): void {
     if (!this.#valid || !isRecord(value) || value.type !== "broadcast") return;
@@ -357,6 +388,56 @@ function conversationTurns(snapshot: JsonRecord): JsonRecord[] | null {
     }
   }
   return turns;
+}
+
+function projectFollowerItem(item: JsonRecord, turnId: string): JsonRecord | null {
+  let kind: "agent-message" | "user-message" | "tool-summary";
+  let content = "";
+  let toolName: string | null = null;
+  let toolStatus: string | null = null;
+  switch (item.type) {
+    case "agentMessage":
+    case "plan":
+      kind = "agent-message";
+      content = typeof item.text === "string" ? item.text : "";
+      break;
+    case "userMessage":
+      kind = "user-message";
+      content = Array.isArray(item.content)
+        ? item.content
+            .filter(isRecord)
+            .map((part) => (typeof part.text === "string" ? part.text : ""))
+            .join("\n")
+        : "";
+      break;
+    case "commandExecution":
+    case "fileChange":
+    case "mcpToolCall":
+    case "webSearch":
+      kind = "tool-summary";
+      toolName = item.type;
+      toolStatus = typeof item.status === "string" ? item.status : null;
+      break;
+    default:
+      return null;
+  }
+  const originalContent = content;
+  content = [...content].slice(0, 32_768).join("");
+  const truncated = content !== originalContent;
+  const parts = Array.isArray(item.content) ? item.content.filter(isRecord) : [];
+  return {
+    id: item.id,
+    kind,
+    turn_id: turnId,
+    timestamp: null,
+    content,
+    tool_name: toolName,
+    tool_status: toolStatus,
+    attachment_count: parts.filter((part) =>
+      ["image", "localImage", "input_image", "document", "input_file"].includes(String(part.type)),
+    ).length,
+    truncated,
+  };
 }
 
 /** Codex uses Immer-style array paths instead of JSON Pointer paths. */

@@ -17,11 +17,20 @@ export class CodexFollowerBridge {
   #resyncAfterMutation = false;
   #closed = false;
 
-  private constructor(readonly connection: CodexFollowerConnection) {}
+  private constructor(
+    readonly connection: CodexFollowerConnection,
+    private readonly onSnapshot?: (
+      snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>,
+    ) => void,
+  ) {}
 
-  static async connect(endpoint: string, conversationId: string): Promise<CodexFollowerBridge> {
+  static async connect(
+    endpoint: string,
+    conversationId: string,
+    onSnapshot?: (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => void,
+  ): Promise<CodexFollowerBridge> {
     const connection = await CodexFollowerConnection.connectInstalled(endpoint);
-    const bridge = new CodexFollowerBridge(connection);
+    const bridge = new CodexFollowerBridge(connection, onSnapshot);
     try {
       await bridge.select(conversationId);
       return bridge;
@@ -62,6 +71,7 @@ export class CodexFollowerBridge {
       this.#lastOwnerCheck = Date.now();
       this.#lastFullRefresh = this.#lastOwnerCheck;
       this.#resyncAfterMutation = false;
+      this.#publishSnapshot(state);
     } catch (error) {
       state.invalidate("unsupported");
       throw error;
@@ -91,7 +101,10 @@ export class CodexFollowerBridge {
           undefined,
           (message) => {
             if (isFollowingStatusRequest(message, state)) resubscribe = true;
-            else state.notification(message);
+            else {
+              state.notification(message);
+              this.#publishSnapshot(state);
+            }
           },
         );
         if (!isRecord(response) || response.handledByClientId !== state.ownerClientId)
@@ -113,6 +126,7 @@ export class CodexFollowerBridge {
           break;
         }
         state.notification(message);
+        this.#publishSnapshot(state);
       }
       if (state.revision === null) throw new Error("Codex follower state was invalidated");
       if (state.snapshotCount > before) this.#lastFullRefresh = Date.now();
@@ -135,7 +149,10 @@ export class CodexFollowerBridge {
         { hostId: "local", conversationId: state.conversationId },
         undefined,
         (message) => {
-          if (!isFollowingStatusRequest(message, state)) state.notification(message);
+          if (!isFollowingStatusRequest(message, state)) {
+            state.notification(message);
+            this.#publishSnapshot(state);
+          }
         },
       );
       if (!isRecord(response) || response.handledByClientId !== state.ownerClientId)
@@ -144,6 +161,7 @@ export class CodexFollowerBridge {
       this.#lastOwnerCheck = Date.now();
       this.#lastFullRefresh = this.#lastOwnerCheck;
       this.#resyncAfterMutation = false;
+      this.#publishSnapshot(state);
       return state;
     } catch (error) {
       state.invalidate("unsupported");
@@ -168,7 +186,10 @@ export class CodexFollowerBridge {
         state.ownerClientId,
         (message) => {
           if (isFollowingStatusRequest(message, state)) followingRequested = true;
-          else state.notification(message);
+          else {
+            state.notification(message);
+            this.#publishSnapshot(state);
+          }
         },
         () => {
           dispatched = true;
@@ -208,6 +229,11 @@ export class CodexFollowerBridge {
     return this.#state;
   }
 
+  #publishSnapshot(state: CodexFollowerState): void {
+    if (state.revision === null) return;
+    this.onSnapshot?.(state.streamSnapshot());
+  }
+
   async #followAndAwaitSnapshot(baseline: number): Promise<void> {
     const state = this.#requireState();
     await this.connection.broadcast(
@@ -226,6 +252,7 @@ export class CodexFollowerBridge {
       if (message === null) break;
       if (await this.#resubscribeIfRequested(message, state)) continue;
       state.notification(message);
+      this.#publishSnapshot(state);
       if (state.revision !== null && state.snapshotCount > baseline) return;
     }
     throw new Error("no compatible Codex owner snapshot received");

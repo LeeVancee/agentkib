@@ -413,6 +413,13 @@ export class TypeScriptBackend {
           this.#commands,
           dataDir,
           { ...process.env, ...this.environment },
+          undefined,
+          {
+            publish: (sessionId, type, payload, live) =>
+              this.#sessionStream?.publish(sessionId, type, payload, live),
+            alias: (sessionId, previousId, itemId, live) =>
+              this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
+          },
         );
         this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
           const value = readPreferences(dataDir).session_index_enabled;
@@ -432,6 +439,7 @@ export class TypeScriptBackend {
                     ? (catalog as Record<string, unknown>)
                     : {},
                 items: [],
+                completeItems: true,
               };
             }
             const [liveValue, pageValue] = await Promise.all([
@@ -461,7 +469,7 @@ export class TypeScriptBackend {
                     !!item && typeof item === "object" && !Array.isArray(item),
                 )
               : [];
-            return { live, items };
+            return { live, items, completeItems: page.next_cursor === null };
           },
           (event) => this.notify(SESSION_EVENT_NOTIFICATION, event),
         );

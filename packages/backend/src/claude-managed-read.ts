@@ -66,6 +66,18 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const LOCAL_DEVICE = "agentkib-local-owner";
 const supportsClaudeManagedRunner = () =>
   process.platform === "darwin" || process.platform === "linux";
+type ClaudeConversationPublisher = (
+  sessionId: string,
+  type: "state" | "text-delta" | "item-upsert" | "snapshot",
+  payload: Record<string, unknown>,
+  live: Record<string, unknown>,
+) => void;
+type ClaudeConversationAliaser = (
+  sessionId: string,
+  previousId: string,
+  itemId: string,
+  live: Record<string, unknown>,
+) => void;
 
 /** Manages Claude session ownership, CLI runners, and read-side state. */
 export class ClaudeManagedReadOwner {
@@ -75,6 +87,8 @@ export class ClaudeManagedReadOwner {
   #runnerReservationTail: Promise<void> = Promise.resolve();
   #ownerLocks = new Map<string, () => void>();
   #sessionQueues = new Map<string, Promise<void>>();
+  #publishConversationEvent?: ClaudeConversationPublisher;
+  #aliasConversationItem?: ClaudeConversationAliaser;
 
   constructor(
     readonly store: BackendStore,
@@ -83,7 +97,14 @@ export class ClaudeManagedReadOwner {
     readonly dataDir: string,
     readonly environment: NodeJS.ProcessEnv,
     readonly bootId = randomUUID(),
-  ) {}
+    publishers?: {
+      publish: ClaudeConversationPublisher;
+      alias: ClaudeConversationAliaser;
+    },
+  ) {
+    this.#publishConversationEvent = publishers?.publish;
+    this.#aliasConversationItem = publishers?.alias;
+  }
 
   close(): void {
     void this.shutdown().catch(() => undefined);
@@ -372,8 +393,23 @@ export class ClaudeManagedReadOwner {
             current.snapshot = snapshot as unknown as Record<string, unknown>;
             this.#save(current);
             if (completed) this.#recoverCompletions(current);
+            const streamLive = this.#streamLive(id, snapshot, current);
+            this.#publishConversationEvent?.(id, "state", streamLive, streamLive);
           },
           this.#version?.value === "2.1.285 (Claude Code)",
+          (type, payload, live) => {
+            if (type === "item-alias")
+              this.#aliasConversationItem?.(
+                id,
+                String(payload.previousId),
+                String(payload.itemId),
+                this.#streamLive(id, live),
+              );
+            else {
+              const streamLive = this.#streamLive(id, live);
+              this.#publishConversationEvent?.(id, type, payload, streamLive);
+            }
+          },
         );
         this.#runners.set(id, runner);
       }
@@ -1304,6 +1340,23 @@ export class ClaudeManagedReadOwner {
           }));
     }
     return live;
+  }
+
+  #streamLive(
+    id: string,
+    snapshot: ClaudeRunnerSnapshot,
+    record = this.#load(id),
+  ): Record<string, unknown> {
+    return {
+      ...snapshot,
+      sessionId: id,
+      sourceSessionId: record?.nativeId ?? null,
+      workspaceId: record?.workspaceId ?? null,
+      runtimeBootId: this.bootId,
+      executionMode: "claude-managed",
+      permissionMode: "cli-configured",
+      cliVersion: this.#version?.value ?? null,
+    };
   }
 
   async live(id: string, controls = false) {

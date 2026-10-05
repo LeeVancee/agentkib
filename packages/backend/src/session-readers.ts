@@ -79,6 +79,12 @@ export class SessionReaders {
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);
   }
+  antigravityControlExecutable(): string {
+    return this.#antigravity.controlExecutable();
+  }
+  antigravityReadHandoff(nativeRef: string) {
+    return this.#antigravity.readHandoff(nativeRef);
+  }
   verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
       throw new Error("unverified-session-identity");

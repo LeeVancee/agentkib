@@ -6,9 +6,9 @@
 
 ## 传输与恢复
 
-本机原生事件由 TypeScript backend 托管的会话流投影并发送到 Electron `ConversationHub`，再分别进入桌面窄 IPC 与 Remote SSE。Runtime 协议版本为 17，会话协议为 2。Codex managed 会话直接转发 app-server 的状态、文字增量与完成项；其他会话来源以 250ms 有界快照核对作为更新来源。初始化、用户刷新、明确的历史失效事件及断线恢复也会读取基线。目录订阅仅收到摘要失效通知，不为每个目录条目启动完整会话连接。
+本机原生事件由 TypeScript backend 托管的会话流投影并发送到 Electron `ConversationHub`，再分别进入桌面窄 IPC 与 Remote SSE。Runtime 协议版本为 17，会话协议为 2。Codex managed 会话直接转发 app-server 状态、文字增量与完成项；Antigravity ACP-managed 会话直接转发 ACP 状态与文字增量，并在回合结束后以原生 `session/load` 回放校正临时条目；Codex follower 在消费原生 owner 通知时发布最近条目及状态快照，并以 250ms 有界核对补齐；Claude managed 会话直接转发 runner 状态、文字增量与完成项，并在原生消息 ID 到达后合并临时 ID。相邻文字增量最多合并 20 ms 或 32 KiB。其余只读会话来源以 250ms 有界快照核对作为更新来源。初始化、用户刷新、明确的历史失效事件及断线恢复也会读取基线。目录订阅仅收到摘要失效通知，不为每个目录条目启动完整会话连接。
 
-与原生 Rust publisher 相比，TypeScript 迁移版的 Codex managed 会话已支持逐片段 `text-delta` 与完成项更新，但尚未移植 20ms 文本合批、32 KiB 批次及原生删除身份等能力；其他会话来源仍以快照更新正文。基线包含最新 live 状态与最近历史项，快照轮询保留作重新同步和非 managed 来源的后备机制。
+快照只在事件读取器确认覆盖完整历史页时声明完整覆盖，并携带可验证的删除项及回合 ID；超过删除记录上限会递增历史缓存 epoch，要求清除旧分页缓存。非完整历史页保留其覆盖范围外已分页的记录。尚未接入逐来源 publisher 的会话继续依赖快照核对；快照轮询同时用于重新同步。
 
 `sessions.subscribe` 返回基线或有界重放及游标，`sessions.event` 通知携带运行实例、epoch、序号与会话身份。游标独立于原生控制 revision。客户端只保存成功应用的游标；重复事件被忽略，缺口或失效游标触发重新同步。重放全部发送后用 `session-ready` 确认恢复，空重放也能恢复界面。重连只恢复观察，不重发发送、审批或管理命令。
 

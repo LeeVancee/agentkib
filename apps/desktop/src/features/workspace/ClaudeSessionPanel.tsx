@@ -14,6 +14,7 @@ import type {
 } from "../../../../../packages/web-client/src/index";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -138,18 +139,6 @@ export function ClaudeSessionPanel({
   const refreshMetadata = useCallback(() => {
     void refreshRef.current(false);
   }, []);
-  const refreshCapabilities = useCallback(() => {
-    if (!sessionId) return;
-    const generation = epoch.current;
-    void request<SessionCapabilities>("capabilities", { sessionId })
-      .then((value) => {
-        if (generation === epoch.current) setCapabilities(value);
-      })
-      .catch((error: unknown) => {
-        if (generation === epoch.current)
-          setError(error instanceof Error ? error.message : "connection_failed");
-      });
-  }, [sessionId]);
   const hasPending = useCallback(() => {
     try {
       return !!readPending(workspaceId);
@@ -174,7 +163,7 @@ export function ClaudeSessionPanel({
     setOnline,
     setError,
     refreshMetadata,
-    refreshCapabilities,
+    refreshCapabilities: refreshMetadata,
     hasPending,
   });
 
@@ -243,15 +232,17 @@ export function ClaudeSessionPanel({
             throw new Error("claude_session_unavailable");
           }
           setObservedSessionId(sessionId);
-          if (details) {
-            const [nextLive, nextCaps, nextHistory] = await Promise.all([
-              request<Live>("live", { sessionId }),
-              request<SessionCapabilities>("capabilities", { sessionId }),
-              request<ConversationEventPage>("events", { sessionId }),
-            ]);
-            if (generation !== epoch.current) return;
+          // Native state changes invalidate metadata even when history stays current.
+          // Keep dynamic capabilities in the same serialized refresh and busy recovery.
+          const [nextCaps, nextLive, nextHistory] = await Promise.all([
+            request<SessionCapabilities>("capabilities", { sessionId }),
+            details ? request<Live>("live", { sessionId }) : undefined,
+            details ? request<ConversationEventPage>("events", { sessionId }) : undefined,
+          ]);
+          if (generation !== epoch.current) return;
+          setCapabilities(nextCaps);
+          if (nextLive && nextHistory) {
             if (delivery === liveDelivery.current) setLive(nextLive);
-            setCapabilities(nextCaps);
             setHistory((old) => ({
               ...nextHistory,
               events: mergeNativeCoverage(
@@ -265,7 +256,9 @@ export function ClaudeSessionPanel({
             }));
           }
         }
-        setOnline(true);
+        // Metadata can finish after the live connection failed. Only the stream
+        // may restore an observed session's online state.
+        if (!sessionId || !hasDesktopConversation()) setOnline(true);
         setStorageBlocked(false);
         if (details) completeDeferredRead();
       } catch (e) {

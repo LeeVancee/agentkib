@@ -142,7 +142,10 @@ beforeEach(() => {
         case "capabilities":
           return {
             sessionId: "session",
-            features: { attachments: { available: true }, files: { available: true } },
+            features: {
+              attachments: { available: live.sendEnabled === true },
+              files: { available: true },
+            },
           };
         case "files":
           return {
@@ -244,6 +247,7 @@ describe("Claude local owner panel", () => {
     await enabled(screen.getByLabelText("Message"));
     const reads = calls("events").length;
     const liveReads = calls("live").length;
+    const capabilityReads = calls("capabilities").length;
     act(() => {
       emitNative(1, "text-delta", { itemId: "reply", turnId: "turn", text: "Native", offset: 0 });
       emitNative(2, "text-delta", { itemId: "reply", turnId: "turn", text: " reply", offset: 6 });
@@ -251,6 +255,7 @@ describe("Claude local owner panel", () => {
     expect(await screen.findByText("Native reply")).toBeVisible();
     expect(calls("events")).toHaveLength(reads);
     expect(calls("live")).toHaveLength(liveReads);
+    expect(calls("capabilities")).toHaveLength(capabilityReads);
     expect(
       vi.mocked(globalThis.setInterval).mock.calls.filter(([, delay]) => delay === 1000),
     ).toEqual([]);
@@ -260,6 +265,127 @@ describe("Claude local owner panel", () => {
     expect(calls("stop")).toHaveLength(0);
     expect(calls("release")).toHaveLength(0);
   });
+  it("restores attachments when a turn running on entry completes through the native stream", async () => {
+    live = { ...live, status: "running", sendEnabled: false, turnId: "turn" };
+    mount();
+    await screen.findByText("Synthetic history");
+    await enabled(screen.getByLabelText("Message"));
+    expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+    const capabilityReads = calls("capabilities").length;
+    live = { ...live, status: "idle", sendEnabled: true, revision: 2 };
+    await act(async () => {
+      emitNative(1, "state", { status: "idle", sendEnabled: true, revision: 2 });
+      emitNative(2, "invalidate", {
+        domains: ["history", "catalog", "queue", "usage", "goal", "settings"],
+      });
+      emitNative(1, "invalidate", { domains: ["catalog"] }, "");
+    });
+    expect(await screen.findByText("Idle")).toBeVisible();
+    await enabled(screen.getByLabelText("Add images or files"));
+    expect(calls("capabilities").length).toBeGreaterThan(capabilityReads);
+    expect(calls("send")).toHaveLength(0);
+  });
+  it("updates attachments when another client starts and completes a turn", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enabled(screen.getByLabelText("Add images or files"));
+    const capabilityReads = calls("capabilities").length;
+    live = { ...live, status: "running", sendEnabled: false, turnId: "turn", revision: 2 };
+    await act(async () => {
+      emitNative(1, "state", {
+        status: "running",
+        sendEnabled: false,
+        turnId: "turn",
+        revision: 2,
+      });
+      emitNative(1, "invalidate", { domains: ["catalog"] }, "");
+    });
+    await waitFor(() => expect(screen.getByLabelText("Add images or files")).toBeDisabled());
+    expect(calls("capabilities").length).toBeGreaterThan(capabilityReads);
+    const runningCapabilityReads = calls("capabilities").length;
+    live = { ...live, status: "idle", sendEnabled: true, revision: 3 };
+    await act(async () => {
+      emitNative(2, "state", { status: "idle", sendEnabled: true, revision: 3 });
+      emitNative(3, "invalidate", {
+        domains: ["history", "catalog", "queue", "usage", "goal", "settings"],
+      });
+      emitNative(2, "invalidate", { domains: ["catalog"] }, "");
+    });
+    await enabled(screen.getByLabelText("Add images or files"));
+    expect(calls("capabilities").length).toBeGreaterThan(runningCapabilityReads);
+    expect(calls("send")).toHaveLength(0);
+  });
+  it("retains a completion notification while the initial capabilities read is in flight", async () => {
+    live = { ...live, status: "running", sendEnabled: false, turnId: "turn" };
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let settle!: () => void;
+    let firstCapabilities = true;
+    vi.mocked(api.claudeRequest).mockImplementation((value) => {
+      if (value.operation !== "capabilities" || !firstCapabilities) return original(value);
+      firstCapabilities = false;
+      const result = original(value);
+      return new Promise((resolve) => {
+        settle = () => resolve(result);
+      });
+    });
+    mount();
+    await waitFor(() => expect(streams.get("session")?.size).toBe(1));
+    expect(calls("capabilities").length).toBeGreaterThan(0);
+    live = { ...live, status: "idle", sendEnabled: true, revision: 2 };
+    await act(async () => {
+      emitNative(1, "state", { status: "idle", sendEnabled: true, revision: 2 });
+      emitNative(2, "invalidate", {
+        domains: ["history", "catalog", "queue", "usage", "goal", "settings"],
+      });
+      emitNative(1, "invalidate", { domains: ["catalog"] }, "");
+    });
+    await act(async () => settle());
+    expect(await screen.findByText("Idle")).toBeVisible();
+    await enabled(screen.getByLabelText("Add images or files"));
+    expect(calls("capabilities").length).toBeGreaterThan(1);
+    expect(calls("send")).toHaveLength(0);
+  });
+  it.each(["before", "after"])(
+    "recovers admission-busy capabilities when another session settles %s the read response",
+    async (settlement) => {
+      live = { ...live, status: "running", sendEnabled: false, turnId: "turn" };
+      mount();
+      await screen.findByText("Synthetic history");
+      await enabled(screen.getByLabelText("Message"));
+      expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let reject!: (error: Error) => void;
+      let busy = true;
+      vi.mocked(api.claudeRequest).mockImplementation((value) => {
+        if (value.operation === "capabilities" && busy)
+          return new Promise((_resolve, fail) => {
+            reject = fail;
+          });
+        return original(value);
+      });
+      live = { ...live, status: "idle", sendEnabled: true, revision: 2 };
+      await act(async () => {
+        emitNative(1, "state", { status: "idle", sendEnabled: true, revision: 2 });
+        emitNative(2, "invalidate", {
+          domains: ["history", "catalog", "queue", "usage", "goal", "settings"],
+        });
+        emitNative(1, "invalidate", { domains: ["catalog"] }, "");
+      });
+      await waitFor(() => expect(reject).toBeTypeOf("function"));
+      const settled = () => {
+        for (const handlers of streams.get("") ?? [])
+          handlers.event("control-changed", JSON.stringify({ sessionId: "another-session" }));
+      };
+      await act(async () => {
+        if (settlement === "before") settled();
+        busy = false;
+        reject(new Error("Error invoking remote method 'claude:request': Error: operation_busy"));
+      });
+      if (settlement === "after") await act(async () => settled());
+      await enabled(screen.getByLabelText("Add images or files"));
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
   it("resynchronizes a sequence gap before applying new native items", async () => {
     mount();
     await screen.findByText("Synthetic history");

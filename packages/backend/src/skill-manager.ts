@@ -174,9 +174,31 @@ function samePath(left: string, right: string) {
 function sameEntryPath(left: string, right: string) {
   const first = path.resolve(left);
   const second = path.resolve(right);
+  const entryIdentity = (value: string) => {
+    const parent = path.dirname(value);
+    let physicalParent = parent;
+    try {
+      physicalParent = realpathSync.native(parent);
+    } catch {
+      // Keep the lexical identity for destinations whose parent is not created yet.
+    }
+    return path.join(physicalParent, path.basename(value));
+  };
+  const firstIdentity = entryIdentity(first);
+  const secondIdentity = entryIdentity(second);
   return process.platform === "win32"
-    ? first.toLowerCase() === second.toLowerCase()
-    : first === second;
+    ? firstIdentity.toLowerCase() === secondIdentity.toLowerCase()
+    : firstIdentity === secondIdentity;
+}
+
+function physicalPathKey(value: string) {
+  const resolved = path.resolve(value);
+  try {
+    const physical = realpathSync.native(resolved);
+    return process.platform === "win32" ? physical.toLowerCase() : physical;
+  } catch {
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
 }
 
 function groupForTarget(groups: Map<string, Target[]>, target: Target): Target[] {
@@ -1536,6 +1558,12 @@ export class SkillManager {
     return index.libraries as string[];
   }
 
+  async #assertLibraryAvailable(libraryRoot: string) {
+    const metadata = await fs.lstat(libraryRoot);
+    if (!metadata.isDirectory() || isReparseOrSymlink(libraryRoot, metadata))
+      throw new Error(`Associated Skill library is unavailable or unsafe: ${libraryRoot}`);
+  }
+
   async #registerLibrary(scope: Scope, scopeRoot: string) {
     const roots = await this.#readLibraries(scope, scopeRoot);
     if (roots.some((root) => samePath(root, this.#root))) return;
@@ -1659,13 +1687,17 @@ export class SkillManager {
     const files = new Set([this.#receiptFile("personal", this.#root)]);
     for (const workspace of this.#workspaceList()) {
       files.add(this.#receiptFile("workspace", workspace.path));
-      for (const library of await this.#readLibraries("workspace", workspace.path))
+      for (const library of await this.#readLibraries("workspace", workspace.path)) {
+        await this.#assertLibraryAvailable(library);
         files.add(path.join(library, "skill-deployments.json"));
+      }
     }
     for (const target of await this.targets()) {
       if (target.scope !== "personal") continue;
-      for (const library of await this.#readLibraries("personal", target.scope_root))
+      for (const library of await this.#readLibraries("personal", target.scope_root)) {
+        await this.#assertLibraryAvailable(library);
         files.add(path.join(library, "skill-deployments.json"));
+      }
     }
     const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
     return groups.flat();
@@ -1675,13 +1707,17 @@ export class SkillManager {
     const files = new Set([this.#reservationFile("personal", this.#root)]);
     for (const workspace of this.#workspaceList()) {
       files.add(this.#reservationFile("workspace", workspace.path));
-      for (const library of await this.#readLibraries("workspace", workspace.path))
+      for (const library of await this.#readLibraries("workspace", workspace.path)) {
+        await this.#assertLibraryAvailable(library);
         files.add(path.join(library, "skill-deployment-reservations.json"));
+      }
     }
     for (const target of await this.targets()) {
       if (target.scope !== "personal") continue;
-      for (const library of await this.#readLibraries("personal", target.scope_root))
+      for (const library of await this.#readLibraries("personal", target.scope_root)) {
+        await this.#assertLibraryAvailable(library);
         files.add(path.join(library, "skill-deployment-reservations.json"));
+      }
     }
     const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
     return groups.flat();
@@ -1694,12 +1730,7 @@ export class SkillManager {
     const journals = await this.#activeJournals();
     const known = await Promise.all(
       deployments.map(async (record) => {
-        const displayName =
-          record.display_name ??
-          (await this.#libraryDisplayName(
-            record.library_id,
-            record.library_root ?? this.#root,
-          ).catch(() => record.package_name));
+        const displayName = await this.#deploymentDisplayName(record);
         const output = {
           ...record,
           display_name: displayName,
@@ -1739,12 +1770,7 @@ export class SkillManager {
     );
     for (const { journal } of journals) {
       if (known.some((item) => sameEntryPath(item.target, journal.destination))) continue;
-      const displayName =
-        journal.next_receipt.display_name ??
-        (await this.#libraryDisplayName(
-          journal.next_receipt.library_id,
-          journal.next_receipt.library_root ?? this.#root,
-        ).catch(() => journal.next_receipt.package_name));
+      const displayName = await this.#deploymentDisplayName(journal.next_receipt);
       known.push({
         ...journal.next_receipt,
         display_name: displayName,
@@ -1798,7 +1824,7 @@ export class SkillManager {
     }
     const grouped = new Map<string, Target[]>();
     for (const target of selected) {
-      const key = path.resolve(target.root);
+      const key = physicalPathKey(target.root);
       if (!grouped.has(key))
         grouped.set(
           key,
@@ -1951,6 +1977,14 @@ export class SkillManager {
     const saved = lock?.skills?.[libraryId]?.display_name;
     if (typeof saved === "string" && saved.trim()) return saved;
     return (await this.#metadata(path.join(libraryRoot, "skills", libraryId), libraryId)).name;
+  }
+
+  async #deploymentDisplayName(record: Deployment): Promise<string> {
+    if (typeof record.display_name === "string" && record.display_name.trim())
+      return record.display_name;
+    return this.#libraryDisplayName(record.library_id, record.library_root ?? this.#root).catch(
+      () => record.package_name,
+    );
   }
 
   async readPreviewFile(params: Record<string, unknown>) {

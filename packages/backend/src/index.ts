@@ -448,19 +448,19 @@ export class TypeScriptBackend {
             const readMethod = claudeSession
               ? RUNTIME_METHODS.claudeManaged
               : RUNTIME_METHODS.webRequest;
-            const [liveValue, pageValue] = await Promise.all([
-              this.#request(readMethod, {
-                operation: "live",
-                sessionId,
-                experimentalEnabled: true,
-              }),
-              this.#request(readMethod, {
-                operation: "events",
-                sessionId,
-                cursor: null,
-                limit: 100,
-              }),
-            ]);
+            // Claude's live and history reads share an ownership lock. Keep them
+            // sequential so this runtime does not contend with itself on restart.
+            const liveValue = await this.#request(readMethod, {
+              operation: "live",
+              sessionId,
+              experimentalEnabled: true,
+            });
+            const pageValue = await this.#request(readMethod, {
+              operation: "events",
+              sessionId,
+              cursor: null,
+              limit: 100,
+            });
             const live =
               liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
                 ? (liveValue as Record<string, unknown>)

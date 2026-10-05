@@ -2796,8 +2796,22 @@ export class WebReadRequests {
   async request(value: unknown) {
     const request = requestSchema.parse(value);
     if (request.operation === "live") {
-      if (this.store.sessions.get(request.sessionId)?.agent === "antigravity")
-        return this.#antigravityLive(request.sessionId);
+      const session = this.store.sessions.get(request.sessionId);
+      if (session?.agent === "antigravity") return this.#antigravityLive(request.sessionId);
+      if (session && session.agent !== "codex" && session.agent !== "claude-code")
+        return {
+          sessionId: request.sessionId,
+          runtimeBootId: this.#bootId,
+          executionMode: "codex-follower",
+          status: "idle",
+          revision: 0,
+          turnId: null,
+          sendEnabled: false,
+          stopEnabled: false,
+          approvals: [],
+          questions: [],
+          reason: "control-disabled",
+        };
       return this.#managedLive(request.sessionId, request.experimentalEnabled === true);
     }
     if (request.operation === "context") return this.#context(request.sessionId);

@@ -107,6 +107,9 @@ export class SessionStreamHub {
         });
         this.#broadcastLatest(sessionId, source);
       }
+      // A completed read replaces the history projection even when its JSON
+      // happens to match. In-flight older reads must not be allowed to commit.
+      source.historyRevision += 1;
     }
 
     const subscriptionId = randomUUID();
@@ -301,6 +304,7 @@ export class SessionStreamHub {
           if (JSON.stringify(source.snapshot) === JSON.stringify(snapshot)) continue;
           this.#flushText(sessionId, source);
           source.snapshot = snapshot;
+          source.historyRevision += 1;
           this.#append(
             sessionId,
             source,

@@ -407,7 +407,7 @@ export class Skills {
         throw new Error("Observed Skill changed while preparing the import");
       const metadata = this.#frontmatter(
         await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
-        observation.name,
+        path.basename(observation.path),
       );
       this.#validateSkillName(metadata.name);
       const installed = await this.installed();

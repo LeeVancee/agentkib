@@ -886,7 +886,7 @@ export function SkillUsageList({
   const filteredDeployments = deployments.filter(
     (item) =>
       (showInactive || item.status !== "inactive") &&
-      matches(item.package_name, item.target, item.scope, item.visible_to),
+      matches(item.display_name ?? item.package_name, item.target, item.scope, item.visible_to),
   );
   const filteredNative = groupSkillObservations(native).filter((group) =>
     group.observations.some((item) =>
@@ -1021,7 +1021,7 @@ export function SkillUsageList({
         return (
           <div key={item.id} className="grid gap-3 rounded-xl border p-4">
             <div className="flex flex-wrap items-center gap-2">
-              <strong>{item.package_name}</strong>
+              <strong>{item.display_name ?? item.package_name}</strong>
               <Badge variant="outline">{tr("skills.manager.managedDeployment")}</Badge>
               <Badge variant="secondary">{skillStatusLabel(item.status, tr)}</Badge>
               {item.status !== "inactive" && libraryHash && libraryHash !== item.package_hash && (

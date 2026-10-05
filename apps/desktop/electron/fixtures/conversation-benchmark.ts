@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DesktopRuntimeHost } from "../main/runtime-host";
+import { RuntimeRouter } from "../main/runtime-router";
 import { ConversationHub } from "../main/conversation-hub";
 import { WebAccessService, createWebControlState } from "../main/web/service";
 import { registerConversationIpc } from "../main/ipc/conversation";
@@ -15,11 +16,14 @@ const executablePath = process.env.AGENTKIB_RUNTIME_PATH;
 if (!scratch || !executablePath) throw new Error("Missing isolated benchmark configuration");
 app.setPath("userData", path.join(scratch, "electron"));
 app.setName("AgentKib conversation benchmark");
-const runtime = new DesktopRuntimeHost({
+const runtimeHost = new DesktopRuntimeHost({
   executablePath,
+  args: process.env.AGENTKIB_RUNTIME_ARGS ? [process.env.AGENTKIB_RUNTIME_ARGS] : [],
   clientVersion: "benchmark",
   maxRestarts: 0,
+  environment: { ELECTRON_RUN_AS_NODE: "1" },
 });
+const runtime = new RuntimeRouter(runtimeHost, path.join(scratch, "backend"));
 const hub = new ConversationHub((method, params) => runtime.request(method, params));
 runtime.on("notification", (method: string, params: unknown) => hub.notification(method, params));
 const service = new WebAccessService({
@@ -63,7 +67,9 @@ async function benchmark() {
     {
       operation: "create",
       workspaceId: workspace.id,
+      deviceId: "conversation-benchmark-device",
       requestId: randomUUID(),
+      policyId: "workspace-write-on-request",
       model: "mock-model",
       effort: "medium",
     },
@@ -117,10 +123,10 @@ async function benchmark() {
       electron: process.versions.electron,
       chromium: process.versions.chrome,
       node: process.versions.node,
-      runtimeBuild: "debug + dev-app",
+      runtimeBuild: "TypeScript backend",
     },
     scope:
-      "isolated Codex mock stdout → Rust Runtime → DesktopRuntimeHost → ConversationHub → Electron IPC + production preload → EmbeddedConversation React DOM → double requestAnimationFrame",
+      "isolated Codex mock stdout → TypeScript backend → RuntimeRouter/DesktopRuntimeHost → ConversationHub → Electron IPC + production preload → EmbeddedConversation React DOM → double requestAnimationFrame",
     boundary:
       "Double rAF observes a Chromium rendering opportunity, not physical screen scanout. Local synthetic source only; no LAN, relay, real account or model generation benchmark.",
   };

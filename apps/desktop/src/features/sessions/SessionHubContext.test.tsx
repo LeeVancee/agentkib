@@ -19,7 +19,9 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   refreshControlled: vi.fn(),
 }));
-vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ localizeMessage: String }) }));
+vi.mock("@/core/useI18n", () => ({
+  useI18n: () => ({ tr: String, localizeMessage: String }),
+}));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,

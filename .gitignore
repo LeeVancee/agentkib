@@ -1,6 +1,5 @@
 node_modules/
 dist/
-target/
 work/
 outputs/
 __pycache__/
@@ -23,6 +22,7 @@ __pycache__/
 *.log
 *.tsbuildinfo
 .agentkib-local/
+.codex/config.toml
 apps/desktop/vite.config.js
 apps/desktop/vite.config.d.ts
 apps/desktop/build/

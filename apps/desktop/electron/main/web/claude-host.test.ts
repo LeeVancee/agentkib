@@ -113,7 +113,7 @@ describe("Claude host control boundary", () => {
     await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
     port = (listener.address() as { port: number }).port;
     await new Promise<void>((resolve) => listener.close(() => resolve()));
-    runtime.mockImplementation(async (value) => {
+    const claudeRequest = async (value: unknown) => {
       const params = value as Record<string, unknown>;
       if (params.operation === "catalog")
         return {
@@ -147,13 +147,14 @@ describe("Claude host control boundary", () => {
           runtimeBootId: "runtime-one",
         };
       }
-      return {};
-    });
-    managed.mockImplementation(async (value) => ({
-      accepted: true,
-      requestId: (value as Record<string, unknown>).requestId,
-      controlOutcome: "accepted",
-    }));
+      return {
+        accepted: true,
+        requestId: params.requestId,
+        controlOutcome: "accepted",
+      };
+    };
+    runtime.mockImplementation(claudeRequest);
+    managed.mockImplementation(claudeRequest);
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
@@ -259,9 +260,9 @@ describe("Claude host control boundary", () => {
     },
   );
   it("shares local Claude admission and completion notifications with desktop and Remote controls", async () => {
-    const implementation = runtime.getMockImplementation()!;
+    const implementation = managed.getMockImplementation()!;
     let finish!: (value: unknown) => void;
-    runtime.mockImplementation(async (value) => {
+    managed.mockImplementation(async (value) => {
       if ((value as Record<string, unknown>).operation === "send")
         return new Promise((resolve) => {
           finish = resolve;
@@ -304,7 +305,7 @@ describe("Claude host control boundary", () => {
       });
     }
     expect(
-      runtime.mock.calls.filter(
+      managed.mock.calls.filter(
         ([value]) => (value as Record<string, unknown>).operation === "send",
       ),
     ).toHaveLength(1);
@@ -353,6 +354,15 @@ describe("Claude host control boundary", () => {
     });
     await http(`/requests/${requestId}`);
     const localId = randomUUID();
+    const managedImplementation = managed.getMockImplementation()!;
+    let rejectLocal!: (error: Error) => void;
+    managed.mockImplementation(async (value) => {
+      if ((value as Record<string, unknown>).operation === "send")
+        return new Promise((_resolve, fail) => {
+          rejectLocal = fail;
+        });
+      return managedImplementation(value);
+    });
     const local = service.localClaude({
       operation: "send",
       sessionId: "claude-session",
@@ -363,12 +373,12 @@ describe("Claude host control boundary", () => {
     const failed = expect(local).rejects.toThrow("receipt lost");
     await vi.waitFor(() =>
       expect(
-        runtime.mock.calls.filter(
+        managed.mock.calls.filter(
           ([value]) => (value as Record<string, unknown>).operation === "send",
         ),
-      ).toHaveLength(2),
+      ).toHaveLength(1),
     );
-    reject(new Error("receipt lost"));
+    rejectLocal(new Error("receipt lost"));
     await failed;
     expect((await service.localRequest("/live?sessionId=claude-session")).body).toMatchObject({
       status: "outcome-unknown",
@@ -480,7 +490,7 @@ describe("Claude host control boundary", () => {
     });
     expect(await service.localClaude(input)).toMatchObject({ accepted: true });
     expect(
-      runtime.mock.calls.filter(
+      managed.mock.calls.filter(
         ([value]) => (value as Record<string, unknown>).operation === "send",
       ),
     ).toHaveLength(2);
@@ -536,7 +546,7 @@ describe("Claude host control boundary", () => {
       controlOutcome: "unknown",
     });
     expect(
-      runtime.mock.calls.filter(
+      managed.mock.calls.filter(
         ([value]) => (value as Record<string, unknown>).operation === "send",
       ),
     ).toHaveLength(1);
@@ -620,7 +630,7 @@ describe("Claude host control boundary", () => {
         );
       }
       expect(
-        runtime.mock.calls.filter(
+        (client === "owner" ? managed : runtime).mock.calls.filter(
           ([value]) => (value as Record<string, unknown>).operation === "send",
         ),
       ).toHaveLength(1);

@@ -1016,16 +1016,6 @@ button {
 .app-sidebar-panel-collapsed .app-activity-bar {
   border-right: 0;
 }
-.app-sidebar-sessions .context-sidebar-scroll {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.app-sidebar-sessions .app-sidebar-session-directory {
-  margin-top: 0;
-  border-top: 0;
-}
-
 .settings-sidebar-content .app-sidebar-nav {
   overflow: visible;
   padding: 0;

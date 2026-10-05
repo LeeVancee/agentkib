@@ -120,8 +120,14 @@ export function WindowNavigationControls({
   );
 }
 
-export function AppShellHeader({ children }: { children?: ReactNode }) {
-  return <div className="app-shell-header">{children}</div>;
+export function AppShellHeader({
+  children,
+  className,
+}: {
+  children?: ReactNode;
+  className?: string;
+}) {
+  return <div className={cn("app-shell-header", className)}>{children}</div>;
 }
 
 export function AppShell({
@@ -130,6 +136,7 @@ export function AppShell({
   hasSidebarPanel = true,
   children,
   toolbar,
+  headerClassName,
   headerless = false,
   mainClassName: additionalMainClassName,
   canGoBack = false,
@@ -143,6 +150,7 @@ export function AppShell({
   hasSidebarPanel?: boolean;
   children: ReactNode;
   toolbar?: ReactNode;
+  headerClassName?: string;
   headerless?: boolean;
   mainClassName?: string;
   canGoBack?: boolean;
@@ -183,7 +191,7 @@ export function AppShell({
       )}
     >
       <WindowToolbar />
-      {!headerless && <AppShellHeader>{toolbar}</AppShellHeader>}
+      {!headerless && <AppShellHeader className={headerClassName}>{toolbar}</AppShellHeader>}
       {/* Electron applies drag/no-drag regions in DOM order, independently of
           z-index. Keep these exclusions after the overlapping header drag area. */}
       <WindowNavigationControls

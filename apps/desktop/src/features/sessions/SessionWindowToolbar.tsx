@@ -64,12 +64,20 @@ export function SessionWindowToolbar() {
     });
   };
   return (
-    <div className={cn(navigationStyles.appToolbarContent, "session-window-toolbar")}>
+    <div
+      className={cn(
+        navigationStyles.appToolbarContent,
+        "session-window-toolbar gap-2 [&>button]:shrink-0 [&>div]:shrink-0",
+      )}
+    >
       <AgentIcon agent={selected.agent} compact />
-      <h1 className="session-window-title" title={displaySessionTitle(selected.title, tr)}>
+      <h1
+        className="session-window-title min-w-0 flex-1 truncate text-sm font-semibold [-webkit-app-region:drag]"
+        title={displaySessionTitle(selected.title, tr)}
+      >
         {displaySessionTitle(selected.title, tr)}
       </h1>
-      <div className="session-window-actions">
+      <div className="session-window-actions flex shrink-0 items-center gap-2 max-[1050px]:hidden">
         {hasDesktopConversation() && hub.localEnabled && (
           <Button variant="ghost" size="sm" onClick={createConversation}>
             <Plus size={15} />
@@ -98,7 +106,7 @@ export function SessionWindowToolbar() {
           <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
-      <div className="session-window-menu">
+      <div className="session-window-menu block shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger
             className={navigationStyles.appToolbarMore}

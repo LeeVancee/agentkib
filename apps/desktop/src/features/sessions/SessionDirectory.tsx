@@ -182,8 +182,11 @@ export function SessionDirectory({
     finishDrag();
   };
   return (
-    <div className="session-directory" aria-label={tr("sessions.directory")}>
-      <div className="session-directory-controls">
+    <div
+      className="session-directory flex min-w-0 min-h-0 flex-1 flex-col text-sm [&_button:focus-visible]:outline-2 [&_button:focus-visible]:outline-ring [&_button:focus-visible]:outline-offset-2"
+      aria-label={tr("sessions.directory")}
+    >
+      <div className="session-directory-controls grid gap-2.5 py-3 pb-2.5">
         <div className="flex min-h-8 items-center justify-between gap-2">
           <span className="text-sm font-medium text-muted-foreground">
             {tr("sessions.directory")}
@@ -320,7 +323,7 @@ export function SessionDirectory({
         )}
       </div>
       <div
-        className="session-directory-tree"
+        className="session-directory-tree min-h-0 flex-1 overflow-auto overscroll-contain [scrollbar-width:thin]"
         ref={scrollRef}
         onScroll={(event) => view.setScrollTop(event.currentTarget.scrollTop)}
       >
@@ -333,9 +336,11 @@ export function SessionDirectory({
                 (index === 0 ||
                   orderedGroups[index - 1].workspace.remote?.host_id !==
                     workspace.remote?.host_id) && (
-                  <div className="session-host-heading">
+                  <div className="session-host-heading flex items-center gap-[7px] px-[7px] pt-3 pb-1.5 text-xs text-muted-foreground">
                     <Monitor size={14} aria-hidden="true" />
-                    <strong>{workspace.remote?.host_name ?? tr("sessions.local")}</strong>
+                    <strong className="min-w-0 flex-1 truncate">
+                      {workspace.remote?.host_name ?? tr("sessions.local")}
+                    </strong>
                     {workspace.remote && (
                       <small>
                         {tr(
@@ -346,7 +351,7 @@ export function SessionDirectory({
                   </div>
                 )}
               <Collapsible
-                className="session-workspace"
+                className="session-workspace mb-2"
                 key={workspace.id}
                 open={!view.collapsed[workspace.id]}
                 onOpenChange={() => view.toggleWorkspace(workspace.id)}
@@ -358,12 +363,13 @@ export function SessionDirectory({
                       size="content"
                       draggable
                       className={cn(
-                        "session-workspace-heading session-directory-draggable",
-                        draggingId === `workspace:${workspace.id}` && "session-directory-dragging",
+                        "session-workspace-heading session-directory-draggable flex min-h-9 w-full items-center gap-[7px] rounded-lg px-[7px] py-[5px] text-left hover:bg-sidebar-accent cursor-grab active:cursor-grabbing [&_svg]:shrink-0 [&_strong]:min-w-0 [&_strong]:flex-1 [&_strong]:truncate [&_strong]:font-semibold [&_span]:text-muted-foreground",
+                        draggingId === `workspace:${workspace.id}` &&
+                          "session-directory-dragging opacity-[0.45]",
                         dropTargetId === workspace.id &&
                           (dropAfter
-                            ? "session-directory-drop-after"
-                            : "session-directory-drop-before"),
+                            ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                            : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
                       )}
                       onDragStart={(event) =>
                         startDrag(
@@ -394,7 +400,7 @@ export function SessionDirectory({
                   <span>{sessions.length}</span>
                 </CollapsibleTrigger>
                 <CollapsibleContent
-                  className="session-workspace-items"
+                  className="session-workspace-items h-[var(--collapsible-panel-height)] overflow-hidden opacity-100 transition-[height,opacity] duration-[180ms] ease-out motion-reduce:transition-none data-[starting-style]:h-0 data-[starting-style]:opacity-0 data-[ending-style]:h-0 data-[ending-style]:opacity-0"
                   inert={Boolean(view.collapsed[workspace.id])}
                   aria-hidden={view.collapsed[workspace.id] || undefined}
                 >
@@ -406,12 +412,13 @@ export function SessionDirectory({
                       data-session-entry
                       draggable
                       className={cn(
-                        "session-directory-item session-directory-draggable",
-                        draggingId === `session:${session.id}` && "session-directory-dragging",
+                        "session-directory-item session-directory-draggable flex min-h-9 w-full items-center gap-[9px] rounded-lg px-[9px] py-[7px] text-left hover:bg-sidebar-accent cursor-grab active:cursor-grabbing [&>div]:shrink-0 [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&_strong]:truncate aria-[current=page]:bg-[color-mix(in_srgb,var(--sidebar-accent)_82%,transparent)] aria-[current=page]:shadow-[inset_2px_0_0_var(--ring)]",
+                        draggingId === `session:${session.id}` &&
+                          "session-directory-dragging opacity-[0.45]",
                         dropTargetId === session.id &&
                           (dropAfter
-                            ? "session-directory-drop-after"
-                            : "session-directory-drop-before"),
+                            ? "session-directory-drop-after bg-sidebar-accent shadow-[inset_0_-2px_0_var(--ring)]"
+                            : "session-directory-drop-before bg-sidebar-accent shadow-[inset_0_2px_0_var(--ring)]"),
                       )}
                       onDragStart={(event) =>
                         startDrag(
@@ -448,7 +455,14 @@ export function SessionDirectory({
                     >
                       <AgentIcon agent={session.agent} compact />
                       <span>
-                        <strong>{displaySessionTitle(session.title, tr)}</strong>
+                        <strong
+                          className={cn(
+                            "truncate font-[550]",
+                            hub.selected?.id === session.id && "font-[650]",
+                          )}
+                        >
+                          {displaySessionTitle(session.title, tr)}
+                        </strong>
                       </span>
                       {isInteractiveFork(session) && (
                         <GitBranch
@@ -464,7 +478,7 @@ export function SessionDirectory({
           );
         })}
         {hub.enabled && !hub.loading && !groups.length && (
-          <div className="session-directory-empty">
+          <div className="session-directory-empty p-[18px_10px] text-center text-muted-foreground">
             <p>{tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}</p>
             {hub.sessions.length > 0 && (
               <Button variant="ghost" onClick={view.resetFilters}>
@@ -474,7 +488,10 @@ export function SessionDirectory({
           </div>
         )}
         {hub.loading && (
-          <p className="session-directory-empty" role="status">
+          <p
+            className="session-directory-empty p-[18px_10px] text-center text-muted-foreground"
+            role="status"
+          >
             {tr("conversations.scanning")}
           </p>
         )}

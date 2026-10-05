@@ -287,11 +287,12 @@ function AppShellRouter({
           <AppToolbar breadcrumb={breadcrumb} />
         )
       }
+      headerClassName={isSessions ? "!border-b-border" : undefined}
       mainClassName={
         isSettings
           ? `settings-section-${settingsSection}`
           : isSessions
-            ? "app-sessions-main"
+            ? "app-sessions-main [&>.page-scroll-container]:flex [&>.page-scroll-container]:min-h-0 [&>.page-scroll-container]:!overflow-hidden"
             : undefined
       }
       canGoBack={canGoBack}
@@ -321,7 +322,7 @@ function AppShellRouter({
           isSettings
             ? "settings-content mx-auto grid w-full gap-5 px-6 pb-10 pt-10 max-[640px]:px-4"
             : isSessions
-              ? "app-sessions-content h-full min-h-0"
+              ? "app-sessions-content flex h-full min-h-0 min-w-0 flex-1 !max-w-none !p-0"
               : isWorkspace
                 ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
                 : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",

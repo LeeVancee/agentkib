@@ -6,6 +6,7 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
+import { truncateUtf8 } from "./session-events";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -46,7 +47,12 @@ export class ClaudeRunnerState {
   textBlockSerial = 0;
   activeTextBlockIndex = -1;
   textBlocks = new Map<number, { id: string; text: string }>();
-  finalizedTextBlocks: Array<{ temporaryId: string; id: string; text: string }> = [];
+  finalizedTextBlocks: Array<{
+    index: number;
+    temporaryId: string;
+    id: string;
+    text: string;
+  }> = [];
   reason: string | null = null;
   initialized = false;
   initId = "";
@@ -359,6 +365,7 @@ export class ClaudeRunnerState {
             const streamed = this.textBlocks.get(index);
             return [
               {
+                index,
                 temporaryId: streamed?.id ?? "",
                 id: index === 0 ? nativeId : `${nativeId}:text:${index}`,
                 text: block.text,
@@ -673,7 +680,7 @@ export class ClaudeManagedRunnerProcess {
     readonly onSnapshot: (snapshot: ClaudeRunnerSnapshot) => void,
     foregroundBashContract = false,
     readonly onConversationEvent?: (
-      type: "text-delta" | "item-upsert" | "item-alias",
+      type: "text-delta" | "item-upsert" | "item-alias" | "snapshot",
       payload: Record<string, unknown>,
       live: ClaudeRunnerSnapshot,
     ) => void,
@@ -956,26 +963,66 @@ export class ClaudeManagedRunnerProcess {
         const live = this.state.snapshot();
         const itemId = this.state.streamItemId;
         const itemText = this.state.streamItemText;
-        for (const block of this.state.finalizedTextBlocks) {
-          if (block.temporaryId && block.temporaryId !== block.id)
-            this.onConversationEvent?.(
-              "item-alias",
-              { previousId: block.temporaryId, itemId: block.id },
-              live,
-            );
+        const conversationItems = this.#conversationItems(frame);
+        const hasFinalizedText = this.state.finalizedTextBlocks.length > 0;
+        if (frame.type === "assistant" && hasFinalizedText) {
+          const ordered = [
+            ...this.state.finalizedTextBlocks.map((block) => {
+              const clipped = truncateUtf8(block.text);
+              return {
+                index: block.index,
+                previousId: block.temporaryId,
+                item: {
+                  id: block.id,
+                  kind: "agent-message",
+                  turn_id: this.state.turnId,
+                  content: clipped.content,
+                  attachment_count: 0,
+                  truncated: clipped.truncated,
+                  ephemeral: false,
+                } satisfies Record<string, unknown>,
+              };
+            }),
+            ...conversationItems.map(({ index, item }) => ({ index, previousId: "", item })),
+          ].sort((left, right) => left.index - right.index);
           this.onConversationEvent?.(
-            "item-upsert",
+            "snapshot",
             {
-              id: block.id,
-              kind: "agent-message",
-              turn_id: this.state.turnId,
-              content: block.text,
-              attachment_count: 0,
-              truncated: false,
-              ephemeral: false,
+              items: ordered.map(({ item }) => item),
+              replaceItemIds: [
+                ...ordered.flatMap(({ previousId, item }) =>
+                  previousId ? [previousId, String(item.id)] : [String(item.id)],
+                ),
+              ],
+              completeItems: false,
             },
             live,
           );
+        } else {
+          for (const block of this.state.finalizedTextBlocks) {
+            const clipped = truncateUtf8(block.text);
+            if (block.temporaryId && block.temporaryId !== block.id)
+              this.onConversationEvent?.(
+                "item-alias",
+                { previousId: block.temporaryId, itemId: block.id },
+                live,
+              );
+            this.onConversationEvent?.(
+              "item-upsert",
+              {
+                id: block.id,
+                kind: "agent-message",
+                turn_id: this.state.turnId,
+                content: clipped.content,
+                attachment_count: 0,
+                truncated: clipped.truncated,
+                ephemeral: false,
+              },
+              live,
+            );
+          }
+          for (const item of conversationItems)
+            this.onConversationEvent?.("item-upsert", item.item, live);
         }
         if (
           itemId &&
@@ -1015,8 +1062,6 @@ export class ClaudeManagedRunnerProcess {
             live,
           );
         }
-        for (const item of this.#conversationItems(frame))
-          this.onConversationEvent?.("item-upsert", item, live);
         this.#notify();
         if (!wasInitialized && this.state.initialized) {
           if (response) await this.#write(response);
@@ -1038,8 +1083,8 @@ export class ClaudeManagedRunnerProcess {
       });
   }
 
-  #conversationItems(frame: JsonObject): Record<string, unknown>[] {
-    const items: Record<string, unknown>[] = [];
+  #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {
+    const items: Array<{ index: number; item: Record<string, unknown> }> = [];
     const blocks = Array.isArray(frame.message?.content) ? frame.message.content : [];
     if (frame.type === "user") {
       const id =
@@ -1065,11 +1110,14 @@ export class ClaudeManagedRunnerProcess {
         ).length;
         if (text || attachmentCount)
           items.push({
-            id,
-            kind: "user-message",
-            content: text,
-            attachment_count: attachmentCount,
-            truncated: false,
+            index: -1,
+            item: {
+              id,
+              kind: "user-message",
+              content: text,
+              attachment_count: attachmentCount,
+              truncated: false,
+            },
           });
       }
       for (const block of blocks) {
@@ -1077,7 +1125,7 @@ export class ClaudeManagedRunnerProcess {
         const item = toolId ? this.#toolItems.get(toolId) : undefined;
         if (block?.type === "tool_result" && item) {
           item.tool_status = block.is_error === true ? "failed" : "completed";
-          items.push({ ...item });
+          items.push({ index: blocks.indexOf(block), item: { ...item } });
         }
       }
     } else if (frame.type === "assistant") {
@@ -1095,7 +1143,7 @@ export class ClaudeManagedRunnerProcess {
           truncated: false,
         };
         this.#toolItems.set(id, item);
-        items.push(item);
+        items.push({ index: blocks.indexOf(block), item });
       }
     }
     return items;

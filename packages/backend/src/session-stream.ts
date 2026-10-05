@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { SessionStreamEvent, SessionSubscription } from "@agentkib/runtime-protocol";
 
 const MAX_SUBSCRIPTIONS = 128;
@@ -27,6 +27,8 @@ interface Source {
   nextPollAt: number;
   removedItemIds: Set<string>;
   removedTurnIds: Set<string>;
+  completeItemsFingerprint?: string;
+  retentionOverflowed: boolean;
   historyCacheEpoch?: string;
   pendingText?: {
     payload: Record<string, unknown>;
@@ -66,15 +68,23 @@ export class SessionStreamHub {
     const snapshot = await this.readSnapshot(sessionId);
     let source = this.#sources.get(sessionId);
     if (!source) {
+      const initialItems = [...snapshot.items];
+      const retainedAll = this.#retainItems(initialItems);
+      const completeItems = snapshot.completeItems && retainedAll;
       source = {
         epoch: randomUUID(),
         seq: 0,
-        snapshot,
+        snapshot: { ...snapshot, items: initialItems, completeItems },
         replay: [],
         replayBytes: 0,
         nextPollAt: Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000),
         removedItemIds: new Set(),
         removedTurnIds: new Set(),
+        ...(snapshot.completeItems
+          ? { completeItemsFingerprint: this.#itemsFingerprint(snapshot.items) }
+          : {}),
+        retentionOverflowed: snapshot.completeItems && !retainedAll,
+        ...(snapshot.completeItems && !retainedAll ? { historyCacheEpoch: randomUUID() } : {}),
       };
       this.#sources.set(sessionId, source);
     } else {
@@ -153,18 +163,20 @@ export class SessionStreamHub {
       const incoming = payload.items.filter(isRecord);
       const incomingIds = new Set(incoming.map((item) => item.id).filter(isString));
       const complete = payload.completeItems === true;
-      const previousEphemeral = source.snapshot.items.filter(
-        (item) => item.ephemeral === true && isString(item.id),
+      const replaceIds = new Set(
+        Array.isArray(payload.replaceItemIds) ? payload.replaceItemIds.filter(isString) : [],
       );
-      if (complete)
-        for (const item of previousEphemeral) {
+      const previousItems = source.snapshot.items.filter((item) => isString(item.id));
+      if (complete || replaceIds.size)
+        for (const item of previousItems) {
+          if (!complete && !replaceIds.has(item.id as string)) continue;
           if (incomingIds.has(item.id as string)) continue;
           source.removedItemIds.add(item.id as string);
-          if (isString(item.turn_id)) source.removedTurnIds.add(item.turn_id);
+          if (complete && isString(item.turn_id)) source.removedTurnIds.add(item.turn_id);
         }
       const items = complete
-        ? source.snapshot.items.filter((item) => item.ephemeral !== true)
-        : [...source.snapshot.items];
+        ? []
+        : source.snapshot.items.filter((item) => !replaceIds.has(String(item.id)));
       for (const item of incoming) {
         const index = items.findIndex((candidate) => candidate.id === item.id);
         if (index >= 0) items[index] = item;
@@ -172,12 +184,13 @@ export class SessionStreamHub {
         if (isString(item.id)) source.removedItemIds.delete(item.id);
         if (isString(item.turn_id)) source.removedTurnIds.delete(item.turn_id);
       }
-      this.#retainItems(items);
+      const retainedAll = this.#retainItems(items);
       source.snapshot = {
         live: live ?? (isRecord(payload.live) ? payload.live : source.snapshot.live),
         items,
-        completeItems: complete,
+        completeItems: complete && retainedAll,
       };
+      this.#recordCompleteCoverage(source, incoming, complete, retainedAll);
       this.#boundRemoved(source);
       this.#append(sessionId, source, "snapshot", this.#snapshotPayload(source));
       this.#broadcastLatest(sessionId, source);
@@ -185,9 +198,13 @@ export class SessionStreamHub {
     }
     if (live) source.snapshot = { ...source.snapshot, live };
     if (type === "item-upsert" && typeof payload.id === "string") {
-      const items = source.snapshot.items.filter((item) => item.id !== payload.id);
-      items.push(payload);
-      source.snapshot = { ...source.snapshot, items };
+      const items = [...source.snapshot.items];
+      const index = items.findIndex((item) => item.id === payload.id);
+      if (index >= 0) items[index] = payload;
+      else items.push(payload);
+      const retainedAll = this.#retainItems(items);
+      source.retentionOverflowed ||= !retainedAll;
+      source.snapshot = { ...source.snapshot, items, completeItems: false };
       source.removedItemIds.delete(payload.id);
       if (typeof payload.turn_id === "string") source.removedTurnIds.delete(payload.turn_id);
     }
@@ -215,12 +232,18 @@ export class SessionStreamHub {
     if (!previous) return;
     this.#flushText(sessionId, source);
     const replacement: Record<string, unknown> = { ...previous, id: itemId, ephemeral: false };
+    const items = [...source.snapshot.items];
+    const previousIndex = items.findIndex((item) => item.id === previousId);
+    const targetIndex = items.findIndex((item) => item.id === itemId);
+    if (previousIndex >= 0) items[previousIndex] = replacement;
+    if (targetIndex >= 0 && targetIndex !== previousIndex) items.splice(targetIndex, 1);
+    const retainedAll = this.#retainItems(items);
+    source.retentionOverflowed ||= !retainedAll;
     source.snapshot = {
       ...source.snapshot,
       live,
-      items: source.snapshot.items
-        .filter((item) => item.id !== previousId && item.id !== itemId)
-        .concat(replacement),
+      completeItems: false,
+      items,
     };
     source.removedItemIds.add(previousId);
     source.removedItemIds.delete(itemId);
@@ -339,8 +362,14 @@ export class SessionStreamHub {
       };
       if (existingIndex >= 0) items[existingIndex] = replacement;
       else items.push(replacement);
-      this.#retainItems(items);
-      source.snapshot = { ...source.snapshot, live: live ?? source.snapshot.live, items };
+      const retainedAll = this.#retainItems(items);
+      source.retentionOverflowed ||= !retainedAll;
+      source.snapshot = {
+        ...source.snapshot,
+        live: live ?? source.snapshot.live,
+        items,
+        completeItems: false,
+      };
       this.#append(sessionId, source, "item-upsert", replacement);
       this.#broadcastLatest(sessionId, source);
       return;
@@ -357,8 +386,14 @@ export class SessionStreamHub {
     };
     if (existingIndex >= 0) items[existingIndex] = item;
     else items.push(item);
-    this.#retainItems(items);
-    source.snapshot = { ...source.snapshot, live: live ?? source.snapshot.live, items };
+    const retainedAll = this.#retainItems(items);
+    source.retentionOverflowed ||= !retainedAll;
+    source.snapshot = {
+      ...source.snapshot,
+      live: live ?? source.snapshot.live,
+      items,
+      completeItems: false,
+    };
 
     const pending = source.pendingText;
     const pendingPayload = pending?.payload;
@@ -407,15 +442,23 @@ export class SessionStreamHub {
   #reconcileSnapshot(source: Source, next: Snapshot): Snapshot {
     const items = [...next.items];
     const ids = new Set(items.map((item) => item.id));
+    const activeTurn =
+      next.live.status !== "idle" && typeof next.live.turnId === "string" ? next.live.turnId : null;
     for (const item of source.snapshot.items) {
-      if (item.ephemeral === true && typeof item.id === "string" && !ids.has(item.id))
+      if (
+        item.ephemeral === true &&
+        typeof item.id === "string" &&
+        !ids.has(item.id) &&
+        (!next.completeItems || (activeTurn !== null && item.turn_id === activeTurn))
+      )
         items.push(item);
     }
-    if (source.snapshot.completeItems && next.completeItems) {
-      const nextIds = new Set(items.map((item) => item.id));
+    const coveredIds = new Set(items.map((item) => item.id));
+    let completeItems = next.completeItems;
+    if (next.completeItems) {
       const missingTurns = new Set<string>();
       for (const item of source.snapshot.items) {
-        if (typeof item.id === "string" && !nextIds.has(item.id))
+        if (typeof item.id === "string" && !coveredIds.has(item.id))
           source.removedItemIds.add(item.id);
         if (
           typeof item.turn_id === "string" &&
@@ -430,10 +473,44 @@ export class SessionStreamHub {
       }
       this.#boundRemoved(source);
     }
-    return { live: next.live, items, completeItems: next.completeItems };
+    const retainedAll = this.#retainItems(items);
+    if (!retainedAll) completeItems = false;
+    this.#recordCompleteCoverage(source, next.items, next.completeItems, retainedAll);
+    return { live: next.live, items, completeItems };
   }
 
-  #retainItems(items: Record<string, unknown>[]): void {
+  #itemsFingerprint(items: Record<string, unknown>[]): string {
+    const hash = createHash("sha256");
+    for (const item of items) hash.update(JSON.stringify(item));
+    return hash.digest("hex");
+  }
+
+  #recordCompleteCoverage(
+    source: Source,
+    items: Record<string, unknown>[],
+    complete: boolean,
+    retainedAll: boolean,
+  ): void {
+    if (!complete) {
+      source.retentionOverflowed ||= !retainedAll;
+      return;
+    }
+    const fingerprint = this.#itemsFingerprint(items);
+    if (
+      source.retentionOverflowed &&
+      source.completeItemsFingerprint &&
+      source.completeItemsFingerprint !== fingerprint
+    ) {
+      source.historyCacheEpoch = randomUUID();
+      source.removedItemIds.clear();
+      source.removedTurnIds.clear();
+    }
+    source.completeItemsFingerprint = fingerprint;
+    source.retentionOverflowed = !retainedAll;
+  }
+
+  #retainItems(items: Record<string, unknown>[]): boolean {
+    const originalCount = items.length;
     let bytes = 0;
     const bounded: Record<string, unknown>[] = [];
     for (const item of items.slice(-MAX_ITEM_COUNT)) {
@@ -446,6 +523,7 @@ export class SessionStreamHub {
       bytes += size;
     }
     items.splice(0, items.length, ...bounded);
+    return items.length === originalCount;
   }
 
   #boundRemoved(source: Source): void {

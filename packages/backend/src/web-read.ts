@@ -3159,6 +3159,8 @@ export class WebReadRequests {
     const runtimeBootId = this.#bootId;
     if (!request.experimentalEnabled || request.runtimeBootId !== runtimeBootId)
       throw new Error("stale-or-disabled-control");
+    if (managedSessionHasUnknownCommands(this.dataDir, request.sessionId))
+      throw new Error("control-outcome-unconfirmed");
     const record = await this.#antigravityRunner(request.sessionId);
     const live = record.runner.snapshot();
     if (request.expectedRevision !== live.revision) throw new Error("stale-or-disabled-control");
@@ -3298,16 +3300,21 @@ export class WebReadRequests {
     const home = canonicalize(this.sessions.codexHome());
     const endpoint = path.join(home, "ipc", "ipc.sock");
     const bridge = await CodexFollowerBridge.connect(endpoint, nativeId, (snapshot) => {
+      const live = {
+        ...snapshot.live,
+        sessionId,
+        runtimeBootId: this.#bootId,
+      };
       this.publishConversationEvent?.(
         sessionId,
         "snapshot",
         {
-          live: snapshot.live,
+          live,
           items: snapshot.items,
           replaceItems: true,
           preserveItemsOutsideCoverage: true,
         },
-        snapshot.live,
+        live,
       );
     });
     try {

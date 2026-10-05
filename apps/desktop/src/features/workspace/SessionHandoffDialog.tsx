@@ -20,6 +20,7 @@ import type {
   AgentKind,
   ContinuationCapabilityStatus,
   ConversationSessionSummary,
+  CursorBridgeStatus,
   HandoffFormat,
   PlannedSessionHandoff,
   SessionHandoffDraft,
@@ -27,8 +28,10 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
+import { useSessionSourceCapability } from "@/features/sessions/useSessionSourceCapability";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 import { withAsyncCleanup } from "@/lib/utils";
+import { CursorBridgePanel } from "./CursorBridgePanel";
 
 export function SessionHandoffDialog({
   workspace,
@@ -60,7 +63,8 @@ export function SessionHandoffDialog({
       ),
     [session.agent, targetAgents],
   );
-  const sourceCanContinue = canContinueFromHistory(session.agent);
+  const sourceCapability = useSessionSourceCapability(session.id);
+  const sourceCanContinue = canContinueFromHistory(sourceCapability);
   const defaultTarget =
     availableTargets.find(([agent]) => agent !== session.agent)?.[0] ??
     availableTargets[0]?.[0] ??
@@ -69,6 +73,19 @@ export function SessionHandoffDialog({
     initialRequest?.targetAgent ?? defaultTarget,
   );
   const [format, setFormat] = useState<HandoffFormat>(initialRequest?.format ?? "markdown");
+  const [cursorSurface, setCursorSurface] = useState<"ide" | "cli" | "agents-window">(
+    initialRequest?.targetSurface === "cursor-ide" ? "ide" : "cli",
+  );
+  const [bindingId, setBindingId] = useState(initialRequest?.bindingId ?? "");
+  const [cursorStatus, setCursorStatus] = useState<CursorBridgeStatus>();
+  const cursorIde = targetAgent === "cursor" && cursorSurface === "ide";
+  const cursorTargetReady =
+    targetAgent !== "cursor" ||
+    cursorSurface === "cli" ||
+    (cursorIde &&
+      !workspace.remote &&
+      cursorStatus?.supported === true &&
+      cursorStatus.bindings.some((binding) => binding.id === bindingId && binding.connected));
   const [historyBudget, setHistoryBudget] = useState(
     initialRequest?.historyBudgetTokens ?? 120_000,
   );
@@ -80,6 +97,7 @@ export function SessionHandoffDialog({
   const [rawError, setError] = useState<unknown>("");
   const error = rawError === "" ? "" : localizeMessage(rawError);
   const activeRef = useRef(true);
+  const busyRef = useRef(false);
   const requestGenerationRef = useRef(0);
   const identityRef = useRef({ workspaceId: workspace.id, sessionId: session.id });
   const autoPreparedRef = useRef(false);
@@ -113,6 +131,7 @@ export function SessionHandoffDialog({
     target_agent: targetAgent,
     format,
     history_budget_tokens: historyBudget,
+    ...(cursorIde ? { target_surface: "cursor-ide" as const, binding_id: bindingId } : {}),
   });
 
   const acknowledgementLosses = useMemo(
@@ -131,7 +150,9 @@ export function SessionHandoffDialog({
   };
 
   const prepare = async () => {
-    if (!sourceCanContinue) return;
+    if (!sourceCanContinue || busy || !cursorTargetReady) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -146,26 +167,37 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
 
   useEffect(() => {
-    if (!sourceCanContinue || !initialRequest?.autoPrepare || autoPreparedRef.current) return;
+    if (
+      !sourceCanContinue ||
+      !cursorTargetReady ||
+      !initialRequest?.autoPrepare ||
+      autoPreparedRef.current
+    )
+      return;
     autoPreparedRef.current = true;
     void prepare();
-  }, [initialRequest?.autoPrepare, sourceCanContinue]);
+  }, [initialRequest?.autoPrepare, sourceCanContinue, cursorTargetReady]);
 
   const plan = async () => {
-    if (!draft) return;
+    if (!draft || !sourceCanContinue) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
     await withAsyncCleanup(
       async () => {
         try {
-          const planned = await api.planSessionHandoff(
+          const planArgs: Parameters<typeof api.planSessionHandoff> = [
             session.id,
             workspace.id,
             draft.filename,
@@ -177,20 +209,31 @@ export function SessionHandoffDialog({
             acceptLosses,
             draft.history_budget_tokens,
             draft.archive_id,
-          );
+            draft.target_fingerprint,
+          ];
+          if (cursorIde) {
+            planArgs[12] = "cursor-ide";
+            planArgs[13] = bindingId;
+          }
+          const planned = await api.planSessionHandoff(...planArgs);
           if (isCurrent(identity)) onPlanned(planned);
         } catch (reason) {
           if (isCurrent(identity)) setError(reason);
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
 
   const planMcpConnection = async () => {
     if (mcpSetupStatus !== "supported") return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -209,18 +252,24 @@ export function SessionHandoffDialog({
             targetAgent,
             historyBudgetTokens: historyBudget,
             format,
+            ...(cursorIde ? { targetSurface: "cursor-ide" as const, bindingId } : {}),
           });
         } catch (reason) {
           if (isCurrent(identity)) setError(reason);
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
 
   const copy = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     const identity = captureIdentity();
     setBusy(true);
     setError("");
@@ -240,7 +289,10 @@ export function SessionHandoffDialog({
         }
       },
       () => {
-        if (isLatest(identity)) setBusy(false);
+        if (isLatest(identity)) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       },
     );
   };
@@ -275,6 +327,11 @@ export function SessionHandoffDialog({
               {tr("handoff.label")}
             </span>
             <DialogTitle className="mt-0 text-xl">{tr("handoff.title")}</DialogTitle>
+            {sourceCapability?.source_surface && (
+              <span className="mt-1 block text-xs text-muted-foreground">
+                {tr(`handoff.cursor.source.${sourceCapability.source_surface}`)}
+              </span>
+            )}
           </div>
           <Button variant="ghost" size="icon" onClick={close} aria-label={tr("common.close")}>
             <X size={17} />
@@ -301,6 +358,16 @@ export function SessionHandoffDialog({
           </div>
         ) : draft ? (
           <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto px-5 py-4">
+            {cursorIde && (
+              <p className="m-0 break-all text-xs text-muted-foreground">
+                {tr("handoff.cursor.previewBinding", {
+                  profile:
+                    cursorStatus?.bindings.find((binding) => binding.id === bindingId)?.profile ??
+                    bindingId,
+                  path: workspace.path,
+                })}
+              </p>
+            )}
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <ShieldCheck className="shrink-0 text-green-600" size={16} />
               <span>{tr("handoff.redacted", { count: draft.redaction_count })}</span>
@@ -413,7 +480,10 @@ export function SessionHandoffDialog({
             )}
             {nativeCapabilityReason && (
               <p className="m-0 text-xs text-muted-foreground">
-                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
+                {tr(`handoff.capabilityReason.${nativeCapabilityReason}`) ===
+                `handoff.capabilityReason.${nativeCapabilityReason}`
+                  ? nativeCapabilityReason
+                  : tr(`handoff.capabilityReason.${nativeCapabilityReason}`)}
               </p>
             )}
             {reasoningExcluded && (
@@ -482,6 +552,52 @@ export function SessionHandoffDialog({
                   </SelectContent>
                 </Select>
               </Label>
+              {targetAgent === "cursor" && (
+                <>
+                  <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
+                    {tr("handoff.cursor.surface")}
+                    <Select
+                      value={cursorSurface}
+                      disabled={busy}
+                      onValueChange={(value) => {
+                        if (value === "ide" || value === "cli" || value === "agents-window") {
+                          setCursorSurface(value);
+                          setError("");
+                        }
+                      }}
+                    >
+                      <SelectTrigger aria-label={tr("handoff.cursor.surface")}>
+                        <SelectValue>{tr(`handoff.cursor.surface.${cursorSurface}`)}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(["ide", "cli", "agents-window"] as const).map((surface) => (
+                          <SelectItem key={surface} value={surface}>
+                            {tr(`handoff.cursor.surface.${surface}`)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Label>
+                  {cursorSurface === "ide" ? (
+                    <CursorBridgePanel
+                      key={workspace.id}
+                      workspace={workspace}
+                      bindingId={bindingId}
+                      disabled={busy}
+                      onBindingChange={setBindingId}
+                      onStatusChange={setCursorStatus}
+                    />
+                  ) : (
+                    <p className="col-span-full m-0 text-xs text-muted-foreground">
+                      {tr(
+                        cursorSurface === "cli"
+                          ? "handoff.cursor.cliDetail"
+                          : "handoff.cursor.agentsUnavailable",
+                      )}
+                    </p>
+                  )}
+                </>
+              )}
               <Label className="col-span-full grid gap-1.5 text-xs text-muted-foreground">
                 {tr("handoff.historyBudget")}
                 <Select
@@ -550,7 +666,9 @@ export function SessionHandoffDialog({
               role="alert"
               className="mx-auto max-w-md rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-800 dark:text-amber-200"
             >
-              {tr("handoff.sourceReadOnly")}
+              {sourceCapability
+                ? sourceCapability.reason || tr("handoff.sourceReadOnly")
+                : tr("handoff.checkingSource")}
             </div>
           </div>
         )}
@@ -567,6 +685,7 @@ export function SessionHandoffDialog({
               <Button
                 disabled={
                   busy ||
+                  !sourceCanContinue ||
                   !acceptLosses ||
                   (draft.window_strategy === "windowed" && !draft.mcp_available)
                 }
@@ -577,7 +696,10 @@ export function SessionHandoffDialog({
               </Button>
             </>
           ) : (
-            <Button disabled={busy || !sourceCanContinue} onClick={() => void prepare()}>
+            <Button
+              disabled={busy || !sourceCanContinue || !cursorTargetReady}
+              onClick={() => void prepare()}
+            >
               <FileOutput size={14} />
               {tr(busy ? "common.loading" : "handoff.prepare")}
             </Button>

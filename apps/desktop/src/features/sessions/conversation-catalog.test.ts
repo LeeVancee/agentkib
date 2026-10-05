@@ -74,6 +74,32 @@ afterEach(() => {
 });
 
 describe("desktop conversation catalog", () => {
+  it("normalizes Claude's verified history alias for desktop links and continuation", async () => {
+    const { bridge } = fixture();
+    vi.mocked(bridge.request).mockResolvedValue({
+      status: 200,
+      body: {
+        sessions: [
+          {
+            id: "managed-claude",
+            indexedSessionId: "indexed-claude",
+            workspace_id: "workspace",
+            agent: "claude-code",
+            availability: "readable",
+            archived: false,
+            sidechain: false,
+          },
+        ],
+      },
+    });
+    expect(await refreshConversationCatalog()).toEqual([
+      expect.objectContaining({
+        id: "managed-claude",
+        indexedSessionIds: ["indexed-claude"],
+      }),
+    ]);
+  });
+
   it("keeps transport errors visible across successful reads until the stream recovers", async () => {
     const { bridge } = fixture();
     const disconnected = new Error("runtime_unavailable");

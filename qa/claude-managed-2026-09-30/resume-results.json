@@ -1,0 +1,53 @@
+{
+  "started": "2026-09-30T06:08:15.198Z",
+  "root": "/private/tmp/agentkib-claude-resume-2026-09-30-once",
+  "source": "/private/tmp/agentkib-claude-v1-native-2026-09-30-deepseek",
+  "sessionId": "d4af7105-e3b5-4881-a9a3-daafaa9cea16",
+  "nativeId": "7b244bd4-7c05-41d7-8fdc-7b38d68291f5",
+  "model": "deepseek-v4-pro",
+  "modelSends": 1,
+  "originalProcessAbsent": true,
+  "prefixSha256": "e4b091e00390d43fa7a1d412024642f9429592df5e62a7dc48e3ab90305fe652",
+  "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830",
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "releaseInspectAdopt": true,
+  "requestId": "fb001b43-2914-41e6-89d1-35b8920f2416",
+  "immediateReplayAccepted": true,
+  "status": "idle",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 20608,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 97,
+    "iterations": [],
+    "output_tokens": 34,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "reply": "- `d40dfa4b-1e47-431c-a8bf-6079953652b9`\n- `cobalt-lake`",
+  "markerPresent": true,
+  "decisionPresent": true,
+  "originalPrefixUnchanged": true,
+  "appendedUserTurns": 1,
+  "failure": "Cannot read properties of undefined (reading 'includes')",
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "settingsUnchanged": true,
+  "elapsedMs": 3295,
+  "launchCount": 1
+}

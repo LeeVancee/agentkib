@@ -100,6 +100,20 @@ const desktopApi = Object.freeze({
     restore: (id: string) => ipcRenderer.invoke("agentkib:skills:restore", id),
     readFile: (name: string, path: string) =>
       ipcRenderer.invoke("agentkib:skills:read-file", name, path),
+    inventory: () => ipcRenderer.invoke("agentkib:skills:inventory"),
+    targets: () => ipcRenderer.invoke("agentkib:skills:targets"),
+    getDetail: (request: unknown) => ipcRenderer.invoke("agentkib:skills:get-detail", request),
+    readDetailFile: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:read-detail-file", request),
+    prepareImport: (observationId: string) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-import", observationId),
+    readPreviewFile: (token: string, path: string, targetId?: string) =>
+      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId),
+    listDeployments: () => ipcRenderer.invoke("agentkib:skills:list-deployments"),
+    prepareDeployment: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-deployment", request),
+    applyDeployment: (token: string, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:skills:apply-deployment", token, approveHome),
   }),
   mcp: Object.freeze({
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
@@ -155,6 +169,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:insights:set-git-identity-enabled", id, enabled),
   }),
   workspace: Object.freeze({
+    cursorBridge: (request: import("../../src/core/types").CursorBridgeRequest) =>
+      ipcRenderer.invoke("agentkib:workspace:cursor-bridge", request),
+    bridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:bridge-bundle"),
+    revealBridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:reveal-bridge-bundle"),
     scan: (project: string) => ipcRenderer.invoke("agentkib:workspace:scan", project),
     prepareManifest: (project: string) =>
       ipcRenderer.invoke("agentkib:workspace:prepare-manifest", project),
@@ -179,6 +197,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:workspace:refresh-sessions", id, force),
     sessionEvents: (id: string, cursor?: string, limit?: number) =>
       ipcRenderer.invoke("agentkib:session:events", id, cursor, limit),
+    sourceCapability: (sessionId: string) =>
+      ipcRenderer.invoke("agentkib:session:source-capability", sessionId),
+    nativeImports: (workspaceId: string) =>
+      ipcRenderer.invoke("agentkib:session:native-imports", workspaceId),
     prepareHandoff: (request: unknown) =>
       ipcRenderer.invoke("agentkib:session:prepare-handoff", request),
     planMcpConnection: (workspaceId: string, targetAgent: string) =>
@@ -197,6 +219,9 @@ const desktopApi = Object.freeze({
       acceptLosses: boolean,
       historyBudgetTokens: number,
       archiveId: string | undefined,
+      targetFingerprint?: string,
+      targetSurface?: "cursor-ide",
+      bindingId?: string,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
@@ -211,6 +236,9 @@ const desktopApi = Object.freeze({
         acceptLosses,
         historyBudgetTokens,
         archiveId,
+        targetFingerprint,
+        targetSurface,
+        bindingId,
       ),
     continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
       ipcRenderer.invoke(
@@ -239,6 +267,9 @@ const desktopApi = Object.freeze({
   }),
   remote: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:remote:request", request),
+  }),
+  claude: Object.freeze({
+    request: (request: unknown) => ipcRenderer.invoke("agentkib:claude:request", request),
   }),
   web: Object.freeze({
     request: (request: unknown) => ipcRenderer.invoke("agentkib:web:request", request),

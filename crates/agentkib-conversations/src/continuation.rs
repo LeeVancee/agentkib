@@ -79,6 +79,8 @@ pub enum SessionLossCode {
     ExternalAttachment,
     ReasoningExcluded,
     SourceContentTruncated,
+    TargetToolSummary,
+    TargetAttachmentOmitted,
 }
 
 impl SessionLossCode {
@@ -170,6 +172,8 @@ pub struct SessionHandoffDraftV2 {
     pub content: String,
     pub redaction_count: usize,
     pub source_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
     pub mode: SessionContinuationMode,
     pub native_capability: NativeImportCapability,
     pub capabilities: ContinuationCapabilities,
@@ -865,6 +869,12 @@ pub fn render_codex_native_session(
     )
 }
 
+/// Additional exact CLI profile verified against the unchanged legacy renderer.
+/// New patch versions need their own official read/resume and continuation checks.
+pub fn codex_native_exact_version_supported(output: &str) -> bool {
+    output.trim() == "codex-cli 0.155.1"
+}
+
 pub fn render_codex_native_session_with_notice(
     document: &SessionDocument,
     session_id: Uuid,
@@ -885,20 +895,16 @@ pub fn render_codex_native_session_with_notice(
             "source": "exec",
             "thread_source": "exec",
             "model_provider": "openai",
-            "history_mode": "save-all"
+            "history_mode": "legacy"
         }
     })];
-    records.push(codex_message_record(
-        SessionRole::User,
-        notice,
-        generated_at,
-    ));
+    push_codex_message_records(&mut records, SessionRole::User, notice, generated_at);
     for turn in &document.turns {
         let timestamp = turn.timestamp.unwrap_or(generated_at);
         for block in &turn.blocks {
             match block {
                 SessionBlock::Text { text } => {
-                    records.push(codex_message_record(turn.role, text, timestamp));
+                    push_codex_message_records(&mut records, turn.role, text, timestamp);
                 }
                 SessionBlock::ToolCall {
                     call_id,
@@ -1083,6 +1089,13 @@ pub fn validate_native_jsonl(content: &str, target: AgentKind) -> Result<()> {
             {
                 bail!("Codex session metadata is invalid");
             }
+            // Official older rollouts omit this field (legacy). This validator
+            // also runs after the CLI has appended its own records.
+            if let Some(mode) = meta.pointer("/payload/history_mode")
+                && !matches!(mode.as_str(), Some("legacy" | "paginated"))
+            {
+                bail!("Codex session history mode is invalid");
+            }
         }
         AgentKind::ClaudeCode => {
             if values.iter().any(|value| {
@@ -1105,6 +1118,17 @@ pub fn validate_native_roundtrip(
     document: &SessionDocument,
 ) -> Result<()> {
     validate_native_jsonl(content, target)?;
+    if target == AgentKind::Codex {
+        let values = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str::<Value>)
+            .collect::<serde_json::Result<Vec<_>>>()?;
+        // Only freshly rendered imports promise one UI event per text block.
+        // Official appended history may include developer context without events
+        // or combine multiple content parts in one event.
+        validate_codex_visible_messages(&values)?;
+    }
     let expected = comparable_document_blocks(document, target);
     let actual = comparable_native_blocks(content, target)?;
     if actual != expected {
@@ -1379,6 +1403,77 @@ fn parse_data_url(value: &str) -> Option<(String, String)> {
     let value = value.strip_prefix("data:")?;
     let (media_type, data) = value.split_once(";base64,")?;
     Some((media_type.into(), data.into()))
+}
+
+// Codex keeps model context and native UI history in separate records. Persist
+// both: response_item alone resumes context but produces an empty thread/read.
+fn push_codex_message_records(
+    records: &mut Vec<Value>,
+    role: SessionRole,
+    text: &str,
+    timestamp: DateTime<Utc>,
+) {
+    records.push(codex_message_record(role, text, timestamp));
+    records.push(serde_json::json!({
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {
+            "type": if role == SessionRole::Assistant { "agent_message" } else { "user_message" },
+            "message": text
+        }
+    }));
+}
+
+fn validate_codex_visible_messages(values: &[Value]) -> Result<()> {
+    let mut context = Vec::new();
+    let mut visible = Vec::new();
+    for value in values {
+        match (
+            value.get("type").and_then(Value::as_str),
+            value.pointer("/payload/type").and_then(Value::as_str),
+        ) {
+            (Some("response_item"), Some("message")) => {
+                let role = value
+                    .pointer("/payload/role")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                for item in value
+                    .pointer("/payload/content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("input_text" | "output_text")
+                    ) {
+                        context.push((
+                            role,
+                            item.get("text").and_then(Value::as_str).unwrap_or_default(),
+                        ));
+                    }
+                }
+            }
+            (Some("event_msg"), Some(kind @ ("user_message" | "agent_message"))) => {
+                visible.push((
+                    if kind == "agent_message" {
+                        "assistant"
+                    } else {
+                        "user"
+                    },
+                    value
+                        .pointer("/payload/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if context != visible {
+        bail!("Codex visible history does not match model context");
+    }
+    Ok(())
 }
 
 fn codex_message_record(role: SessionRole, text: &str, timestamp: DateTime<Utc>) -> Value {
@@ -1966,6 +2061,167 @@ mod tests {
         assert!(encoded.contains("active answer"));
         assert!(!encoded.contains("abandoned task"));
         assert!(!encoded.contains("abandoned answer"));
+    }
+
+    fn codex_projection_document() -> SessionDocument {
+        SessionDocument {
+            schema_version: SESSION_DOCUMENT_SCHEMA_VERSION,
+            source: SessionDocumentSource {
+                agent: AgentKind::ClaudeCode,
+                workspace_id: "workspace".into(),
+                title: None,
+                created_at: None,
+                updated_at: None,
+                git_branch: None,
+            },
+            turns: [
+                (
+                    SessionRole::User,
+                    "重复文本\n项目决策：append-only SQLite WAL; namespace cobalt-lake",
+                ),
+                (SessionRole::Assistant, "收到：保持 WAL 决策，不重放工具。"),
+                (
+                    SessionRole::User,
+                    "重复文本\n项目决策：append-only SQLite WAL; namespace cobalt-lake",
+                ),
+                (SessionRole::Assistant, "收到：保持 WAL 决策，不重放工具。"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (role, text))| SessionTurn {
+                id: format!("turn-{index}"),
+                role,
+                timestamp: None,
+                blocks: vec![SessionBlock::Text { text: text.into() }],
+            })
+            .collect(),
+            losses: Vec::new(),
+            redaction_count: 0,
+        }
+    }
+
+    #[test]
+    fn codex_native_projection_preserves_repeated_text_once_per_occurrence() {
+        let document = codex_projection_document();
+        let native = render_codex_native_session(
+            &document,
+            Uuid::new_v4(),
+            Path::new("/workspace"),
+            Utc::now(),
+        )
+        .unwrap();
+        validate_native_roundtrip(&native, AgentKind::Codex, &document).unwrap();
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("rollout.jsonl");
+        fs::write(&path, &native).unwrap();
+        let parsed = read_codex_document(&source(AgentKind::Codex), &path, None).unwrap();
+        let actual = comparable_document_blocks(&parsed, AgentKind::Codex);
+        let mut expected = vec![ComparableBlock::Text(
+            SessionRole::User,
+            import_notice().into(),
+        )];
+        expected.extend(comparable_document_blocks(&document, AgentKind::Codex));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn codex_native_validation_rejects_invalid_history_mode_or_visible_text_drift() {
+        let document = codex_projection_document();
+        let native = render_codex_native_session(
+            &document,
+            Uuid::new_v4(),
+            Path::new("/workspace"),
+            Utc::now(),
+        )
+        .unwrap();
+        let original = native
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        for mutation in 0..4 {
+            let mut values = original.clone();
+            match mutation {
+                0 => values[0]["payload"]["history_mode"] = "save-all".into(),
+                1 => values.retain(|value| value["type"] != "event_msg"),
+                2 => values[2]["payload"]["message"] = "different notice".into(),
+                _ => values[2]["payload"]["type"] = "agent_message".into(),
+            }
+            assert!(
+                validate_native_roundtrip(
+                    &render_jsonl(&values).unwrap(),
+                    AgentKind::Codex,
+                    &document
+                )
+                .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_additional_native_profile_requires_the_verified_exact_cli_version() {
+        assert!(codex_native_exact_version_supported("codex-cli 0.155.1\n"));
+        for output in [
+            "codex-cli 0.155.0",
+            "codex-cli 0.155.2",
+            "codex-cli 0.156.1",
+            "codex-cli 10.155.1",
+            "0.155.1",
+            "codex-cli 0.155.1-extra",
+            "codex-cli 0.155.1\nunknown",
+        ] {
+            assert!(!codex_native_exact_version_supported(output), "{output}");
+        }
+    }
+
+    #[test]
+    fn codex_native_validation_accepts_official_appended_history() {
+        let document = codex_projection_document();
+        let native = render_codex_native_session(
+            &document,
+            Uuid::new_v4(),
+            Path::new("/workspace"),
+            Utc::now(),
+        )
+        .unwrap();
+        let mut values = native
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        values[0]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("history_mode");
+        values.extend([
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Native runtime context"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"part one"},{"type":"input_text","text":"part two"}]}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"part one\npart two"}}),
+        ]);
+        let appended = render_jsonl(&values).unwrap();
+        validate_native_jsonl(&appended, AgentKind::Codex).unwrap();
+        // Reopening a native file accepts official layout, but this altered
+        // content must never pass verification of a newly generated import.
+        assert!(validate_native_roundtrip(&appended, AgentKind::Codex, &document).is_err());
+    }
+
+    #[test]
+    #[ignore = "Exports synthetic renderer output only when an explicit probe path is supplied"]
+    fn export_codex_native_projection_probe() {
+        let output = std::env::var("AGENTKIB_CODEX_PROBE_OUTPUT").expect("explicit output path");
+        let cwd = std::env::var("AGENTKIB_CODEX_PROBE_CWD").expect("explicit isolated workspace");
+        let document = codex_projection_document();
+        let native =
+            render_codex_native_session(&document, Uuid::new_v4(), Path::new(&cwd), Utc::now())
+                .unwrap();
+        validate_native_roundtrip(&native, AgentKind::Codex, &document).unwrap();
+        // Avoid overwriting any earlier evidence or user file.
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .unwrap();
+        file.write_all(native.as_bytes()).unwrap();
     }
 
     #[test]

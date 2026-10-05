@@ -1,0 +1,27 @@
+{
+  "nativeLogs": 1,
+  "tools": [
+    {
+      "id": "call_00_ln92q9uvWinIquX6bsYr6589",
+      "name": "Write"
+    },
+    {
+      "id": "call_00_ET_AdKPzKthM7EUzgqPN1Ww7751",
+      "name": "AskUserQuestion"
+    }
+  ],
+  "toolResults": [
+    {
+      "toolUseId": "call_00_ln92q9uvWinIquX6bsYr6589",
+      "isError": false,
+      "content": "File created successfully at: /private/tmp/agentkib-claude-interaction-native-2026-09-30-pro-once/workspace/approved-fixture.txt (file state is current in your context \u2014 no need to Read it back)"
+    },
+    {
+      "toolUseId": "call_00_ET_AdKPzKthM7EUzgqPN1Ww7751",
+      "isError": false,
+      "content": "Your questions have been answered: \"Which synthetic namespace should this project use?\"=\"cobalt-lake\". You can now continue with these answers in mind."
+    }
+  ],
+  "apiErrors": 0,
+  "userInputs": 1
+}

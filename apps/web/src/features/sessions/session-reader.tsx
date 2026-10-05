@@ -187,7 +187,7 @@ export function SessionReader() {
           access.experimentalEnabled &&
           access.protocolVersion === 2 &&
           access.device?.send ? (
-            current?.agent === "codex" ? (
+            current?.agent === "codex" || current?.agent === "claude-code" ? (
               <CodexComposer key={selected} />
             ) : (
               <form

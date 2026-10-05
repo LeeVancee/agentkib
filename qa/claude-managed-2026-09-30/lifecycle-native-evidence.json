@@ -1,0 +1,76 @@
+{
+  "cancel": {
+    "nativeUserTurns": 1,
+    "actualModels": [
+      "deepseek-v4-pro"
+    ],
+    "usage": {
+      "input_tokens": 19682,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 99,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "finalReason": "Claude background tasks are unsupported in managed sessions",
+    "toolNames": [
+      "Bash"
+    ],
+    "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830"
+  },
+  "crash": {
+    "nativeUserTurns": 1,
+    "actualModels": [],
+    "usage": null,
+    "finalReason": null,
+    "toolNames": [],
+    "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830"
+  },
+  "cancel-question": {
+    "nativeUserTurns": 1,
+    "actualModels": [
+      "deepseek-v4-pro"
+    ],
+    "usage": {
+      "input_tokens": 19684,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 229,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      },
+      "server_tool_use": {
+        "web_search_requests": 0,
+        "web_fetch_requests": 0
+      },
+      "service_tier": "standard",
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "inference_geo": "",
+      "iterations": [],
+      "speed": "standard",
+      "fallback_credit": null
+    },
+    "finalReason": null,
+    "toolNames": [
+      "AskUserQuestion"
+    ],
+    "runtimeSha256": "864cd5ee26aa2e6dd1e54a242cccd1875d46bf57c8a7e00f895f860624e37830"
+  }
+}

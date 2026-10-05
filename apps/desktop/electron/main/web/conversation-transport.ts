@@ -81,6 +81,8 @@ export function isConversationPath(path: string, post: boolean) {
         "/codex/goals",
         "/codex/context-options",
         "/managed/options",
+        "/managed/capabilities",
+        "/managed/inspect",
         "/managed/context",
         "/files/workspaces",
         "/files/list",

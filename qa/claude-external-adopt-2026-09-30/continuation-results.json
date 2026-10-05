@@ -1,0 +1,96 @@
+{
+  "root": "/private/tmp/agentkib-claude-external-adopt-2026-09-30-pro-once",
+  "runtimeSha256": "305718fcf4623cf19ebc32b3091d8453965bcd47dfab7cc2b7c2453d5b6c1bda",
+  "started": "2026-09-30T06:18:09.593Z",
+  "sourceTurns": 0,
+  "adoptedTurns": 1,
+  "requestedModel": "deepseek-v4-pro",
+  "continuationOfUndispatchedPreparation": true,
+  "mcpPort": 51936,
+  "nativeId": "ea5a4977-73b4-4c02-a05a-4108cd6678fe",
+  "originalEvidence": "/private/tmp/agentkib-claude-external-adopt-2026-09-30-pro-once/results.json",
+  "sourcePrefixSha256": "54f571e338740233e62087417bfc9ed3265c514933af8f9a3ea60f88cf2d2f9e",
+  "sourceTools": [
+    "Read"
+  ],
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "ab014e87db1aa4ee75d4f335c4c9aa8346a6a24d756483d603a9c07f2e4ca7ab",
+  "noManagedMetadataBeforeAdopt": false,
+  "discoveredOriginalHistory": true,
+  "sameNativeUuid": true,
+  "adoptedRequestId": "3aaa0271-27af-4e29-8e25-9df0bd64c932",
+  "webSendStatus": 200,
+  "webSendResponse": {
+    "accepted": true,
+    "completed": false,
+    "controlOutcome": "accepted",
+    "live": {
+      "approvals": [],
+      "cliVersion": "2.1.285 (Claude Code)",
+      "executionMode": "claude-managed",
+      "lastOutcome": null,
+      "model": null,
+      "permissionMode": "cli-configured",
+      "questions": [],
+      "reason": null,
+      "revision": 1,
+      "runtimeBootId": "dce8b6b8-b5c4-495e-be5c-22ec140fab2d",
+      "sendEnabled": false,
+      "sessionId": "ab014e87db1aa4ee75d4f335c4c9aa8346a6a24d756483d603a9c07f2e4ca7ab",
+      "sourceSessionId": "ea5a4977-73b4-4c02-a05a-4108cd6678fe",
+      "status": "running",
+      "stopEnabled": true,
+      "streamText": "",
+      "streamTextTruncated": false,
+      "tokenUsage": null,
+      "turnId": "3aaa0271-27af-4e29-8e25-9df0bd64c932",
+      "workspaceId": "07464385-10ce-44d8-abd6-3a0853462ef7"
+    },
+    "requestId": "3aaa0271-27af-4e29-8e25-9df0bd64c932",
+    "runtimeBootId": "dce8b6b8-b5c4-495e-be5c-22ec140fab2d",
+    "sessionId": "ab014e87db1aa4ee75d4f335c4c9aa8346a6a24d756483d603a9c07f2e4ca7ab"
+  },
+  "webSendAccepted": true,
+  "status": "idle",
+  "model": "deepseek-v4-pro",
+  "adoptedUsage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 20049,
+    "iterations": [],
+    "output_tokens": 58,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "reason": null,
+  "reply": "Private synthetic marker: 9b16d041-0694-4ff1-9e7a-f4c9f821203b\n\nProject decision: namespace-cbefade7-ecd5-4441-a8b0-26a5aa53fdcd",
+  "recalledMarker": true,
+  "recalledDecision": true,
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "originalPrefixUnchanged": true,
+  "noExtraSession": true,
+  "noHistoricalToolReplay": true,
+  "totalNativeUserInputs": 2,
+  "nativeApiErrors": 0,
+  "settingsUnchanged": true,
+  "elapsedMs": 3669,
+  "launchCount": 2
+}

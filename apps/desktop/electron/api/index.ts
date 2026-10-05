@@ -50,6 +50,9 @@ import type {
   ConversationEventPage,
   ConversationIndexStatus,
   ConversationSessionSummary,
+  CursorBridgeRequest,
+  CursorBridgeResponse,
+  CursorBridgeBundle,
   SessionHandoffRequest,
   SessionHandoffPreparation,
   SessionContinuationMode,
@@ -84,6 +87,15 @@ import type {
   SkillFilePreview,
   SkillOperationPreview,
   SkillSource,
+  SkillInventory,
+  SkillTargetCapability,
+  SkillDetailRequest,
+  SkillDetail,
+  SkillPreviewFile,
+  SkillDeployment,
+  PrepareSkillDeploymentRequest,
+  SkillDeploymentPreview,
+  SkillDeploymentReport,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
 } from "../../src/core/types";
@@ -113,6 +125,7 @@ export interface DesktopRuntimeStatus {
 }
 
 export interface DesktopApi {
+  claude: { request(input: Record<string, unknown>): Promise<unknown> };
   account: {
     request(input: DesktopAccountRequest): Promise<DesktopAccountStatus>;
     onStatus(listener: (status: DesktopAccountStatus) => void): DesktopEventUnsubscribe;
@@ -168,6 +181,15 @@ export interface DesktopApi {
     removed(): Promise<RemovedSkill[]>;
     restore(id: string): Promise<InstalledSkill>;
     readFile(name: string, path: string): Promise<SkillFilePreview>;
+    inventory(): Promise<SkillInventory>;
+    targets(): Promise<SkillTargetCapability[]>;
+    getDetail(request: SkillDetailRequest): Promise<SkillDetail>;
+    readDetailFile(request: SkillDetailRequest & { path: string }): Promise<SkillPreviewFile>;
+    prepareImport(observationId: string): Promise<SkillOperationPreview>;
+    readPreviewFile(token: string, path: string, targetId?: string): Promise<SkillPreviewFile>;
+    listDeployments(): Promise<SkillDeployment[]>;
+    prepareDeployment(request: PrepareSkillDeploymentRequest): Promise<SkillDeploymentPreview>;
+    applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;
   };
   mcp: {
     hubStatus(): Promise<McpHubStatus>;
@@ -216,6 +238,9 @@ export interface DesktopApi {
     setGitIdentityEnabled(id: string, enabled: boolean): Promise<void>;
   };
   workspace: {
+    cursorBridge(request: CursorBridgeRequest): Promise<CursorBridgeResponse>;
+    bridgeBundle(): Promise<CursorBridgeBundle>;
+    revealBridgeBundle(): Promise<void>;
     scan(project: string): Promise<WorkspaceScan>;
     prepareManifest(project: string): Promise<Manifest>;
     resolveContext(project: string, cwd: string, agent: AgentKind): Promise<ContextPreview>;
@@ -232,6 +257,12 @@ export interface DesktopApi {
     sessionStatus(id: string): Promise<ConversationIndexStatus[]>;
     refreshSessions(id: string, force?: boolean): Promise<ConversationSessionSummary[]>;
     sessionEvents(id: string, cursor?: string, limit?: number): Promise<ConversationEventPage>;
+    sourceCapability(
+      sessionId: string,
+    ): Promise<import("../../src/core/types").ContinuationCapability>;
+    nativeImports(
+      workspaceId: string,
+    ): Promise<import("../../src/core/types").NativeImportOperation[]>;
     prepareHandoff(request: SessionHandoffRequest): Promise<SessionHandoffPreparation>;
     planMcpConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
     sanitizeHandoff(format: HandoffFormat, editedContent: string): Promise<string>;
@@ -247,6 +278,9 @@ export interface DesktopApi {
       acceptLosses: boolean,
       historyBudgetTokens: number,
       archiveId: string | undefined,
+      targetFingerprint?: string,
+      targetSurface?: "cursor-ide",
+      bindingId?: string,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,

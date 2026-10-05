@@ -9,7 +9,11 @@ import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();
 let session: {
-  client: { request: ReturnType<typeof vi.fn>; receipt: ReturnType<typeof vi.fn> };
+  client: {
+    request: ReturnType<typeof vi.fn>;
+    receipt: ReturnType<typeof vi.fn>;
+    managedInspect: ReturnType<typeof vi.fn>;
+  };
   origin: string;
   access: {
     protocolVersion: number;
@@ -19,7 +23,7 @@ let session: {
     device: { id: string; manage: boolean };
   };
   current: { agent: string };
-  live: { executionMode: string };
+  live: { executionMode: string; status?: string; revision?: number };
   selected: string;
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
@@ -34,7 +38,7 @@ vi.mock("@/components/ui/dialog", () => ({
 }));
 const options = { available: true, workspaces: [{ id: "workspace", name: "Project" }], models: [] };
 const mutations = () =>
-  session.client.request.mock.calls.filter(([path]) => path !== "managed/options");
+  session.client.request.mock.calls.filter(([path]) => !path.startsWith("managed/options"));
 describe("ManagedTasks", () => {
   beforeEach(() => {
     navigate.mockReset();
@@ -43,8 +47,14 @@ describe("ManagedTasks", () => {
       origin: "",
       client: {
         receipt: vi.fn(async (requestId: string) => ({ found: false, requestId })),
+        managedInspect: vi.fn(async (sessionId: string) => ({
+          sessionId,
+          handoffFingerprint: "verified-history",
+        })),
         request: vi.fn(async (path: string) =>
-          path === "managed/options" ? options : { sessionId: "new-session", reconciled: true },
+          path.startsWith("managed/options")
+            ? options
+            : { sessionId: "new-session", reconciled: true },
         ),
       },
       access: {
@@ -64,10 +74,59 @@ describe("ManagedTasks", () => {
   afterEach(cleanup);
   async function show(create = false) {
     const view = render(<ManagedTasks create={create} />);
-    fireEvent.click(screen.getByRole("button", { name: create ? "New Codex task" : "Execution" }));
+    fireEvent.click(screen.getByRole("button", { name: create ? "New task" : "Execution" }));
     await screen.findByRole("button", { name: create ? "Create" : /Hand over|Release to/ });
     return view;
   }
+  it("creates Claude tasks through the shared management entry without Codex model fields", async () => {
+    await show(true);
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "claude-code" } });
+    await waitFor(() =>
+      expect(session.client.request).toHaveBeenCalledWith(
+        "managed/options?agent=claude-code",
+        undefined,
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Create" }));
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(mutations()).toEqual([
+      [
+        "managed/create",
+        {
+          agent: "claude-code",
+          bootId: "boot",
+          requestId: expect.any(String),
+          workspaceId: "workspace",
+        },
+      ],
+    ]);
+  });
+  it("requires Claude's verified history fingerprint before handing over ownership", async () => {
+    session.current.agent = "claude-code";
+    let complete!: (value: { sessionId: string; handoffFingerprint: string }) => void;
+    session.client.managedInspect.mockReturnValue(new Promise((resolve) => (complete = resolve)));
+    await show();
+    fireEvent.click(screen.getByRole("checkbox"));
+    const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
+    expect(handoff).toBeDisabled();
+    expect(mutations()).toEqual([]);
+    await act(async () =>
+      complete({ sessionId: "original-session", handoffFingerprint: "verified-history" }),
+    );
+    fireEvent.click(handoff);
+    await waitFor(() => expect(session.refresh).toHaveBeenCalledWith(true));
+    expect(mutations()[0]).toEqual([
+      "managed/adopt",
+      expect.objectContaining({
+        agent: "claude-code",
+        sessionId: "original-session",
+        handoffConfirmed: true,
+        handoffFingerprint: "verified-history",
+      }),
+    ]);
+  });
   it.each(["permission", "experimental", "agent"])(
     "hides execution management when %s is unavailable",
     (reason) => {

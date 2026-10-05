@@ -615,6 +615,15 @@ fn parse_data_url(value: &str) -> Option<(String, String)> {
 }
 
 #[cfg(test)]
+pub(super) fn matrix_parse(value: Value) -> Result<SessionDocument> {
+    parse_exported_session(
+        &crate::hermes::fixture_source(AgentKind::OpenCode),
+        serde_json::from_value(value)?,
+        None,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{ConversationSessionSummary, SessionAvailability};

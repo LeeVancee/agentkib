@@ -12,15 +12,20 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 mod antigravity_runner;
+mod claude_managed;
 mod claude_runner;
 mod codex_item;
 mod codex_managed;
+mod continuation_worker;
+mod cursor_bridge;
 #[cfg(target_os = "macos")]
 mod follower_stream;
+mod native_import;
 mod obsidian;
 mod relay_csr;
 mod runtime_output;
 mod session_stream;
+mod skill_manager;
 mod skill_worker;
 mod web;
 
@@ -28,7 +33,7 @@ use agentkib_conversations::{
     ContinuationCapabilities, ContinuationCapability, ContinuationCapabilityStatus, HandoffFormat,
     NativeImportCapability, SessionContinuationMode, SessionDocument, SessionHandoffDraftV2,
     SessionHandoffPreparationV2, SessionHandoffRequest, SessionWindowStrategy, archive_directory,
-    build_session_archive, fingerprint, plan_session_window, provider, providers,
+    build_session_archive, fingerprint, plan_session_window,
     render_claude_native_session_with_notice, render_codex_native_session_with_notice,
     render_handoff_with_notice, sanitize_handoff_export, stats, validate_history_budget,
     validate_native_jsonl, validate_native_roundtrip, validate_session_archive,
@@ -109,6 +114,37 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+fn provider(
+    agent: AgentKind,
+    workspace: &Path,
+) -> Option<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
+    match cursor_bridge::profiles(workspace) {
+        Ok(profiles) => agentkib_conversations::provider_with_cursor_ide_profiles(agent, &profiles),
+        Err(_) if agent == AgentKind::Cursor => Some(Box::new(
+            agentkib_conversations::CursorProvider::with_unavailable_ide(),
+        )),
+        Err(_) => agentkib_conversations::provider(agent),
+    }
+}
+fn providers(
+    workspace: &Path,
+) -> Vec<Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>> {
+    match cursor_bridge::profiles(workspace) {
+        Ok(profiles) => agentkib_conversations::providers_with_cursor_ide_profiles(&profiles),
+        Err(_) => agentkib_conversations::providers()
+            .into_iter()
+            .map(|p| {
+                if p.agent() == AgentKind::Cursor {
+                    Box::new(agentkib_conversations::CursorProvider::with_unavailable_ide())
+                        as Box<dyn agentkib_conversations::ConversationProvider + Send + Sync>
+                } else {
+                    p
+                }
+            })
+            .collect(),
+    }
+}
+
 static MCP_HUB: OnceLock<agentkib_mcp::HubController> = OnceLock::new();
 static SKILL_HUB: OnceLock<agentkib_skills::SkillHub> = OnceLock::new();
 static SESSION_INDEX_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -144,9 +180,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         execute_skill_request,
     );
 
+    let continuation_events = events_tx.clone();
+    let mut continuation_worker = continuation_worker::Worker::new(
+        move |response| {
+            let _ = continuation_events.send(RuntimeEvent::ContinuationFinished { response });
+        },
+        |request, deadline, _| native_import::with_deadline(deadline, || handle_request(request).0),
+    );
+
     while let Ok(event) = events_rx.recv() {
         match event {
             RuntimeEvent::Input(Err(error)) => {
+                native_import::STOPPING.store(true, Ordering::SeqCst);
+                cursor_bridge::shutdown();
+                continuation_worker.shutdown();
                 shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                 return Err(error.into());
             }
@@ -222,6 +269,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if request.method == agentkib_protocol::WEB_REQUEST_METHOD
+                    || request.method == agentkib_protocol::CLAUDE_MANAGED_METHOD
                     || request.method == agentkib_protocol::CODEX_MANAGED_METHOD
                     || request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
                     || request.method == agentkib_protocol::SESSIONS_SUBSCRIBE_METHOD
@@ -244,6 +292,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     continue;
                 }
+                if is_continuation_method(&request.method) {
+                    if let Some(response) = continuation_worker.submit(request) {
+                        write_response(&mut stdout, response)?;
+                    }
+                    continue;
+                }
                 let starts_hub = request.method == HANDSHAKE_METHOD;
                 let (response, should_shutdown) = handle_request(request);
                 let handshake_succeeded = starts_hub && response.error.is_none();
@@ -252,6 +306,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         scan.cancelled.store(true, Ordering::SeqCst);
                     }
                     agent_tool_workers.cancel_and_join();
+                    native_import::STOPPING.store(true, Ordering::SeqCst);
+                    cursor_bridge::shutdown();
+                    continuation_worker.shutdown();
                     shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                     if let Some(hub) = MCP_HUB.get() {
                         hub.shutdown();
@@ -266,6 +323,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     initialize_mcp_hub()?;
                     initialize_skill_hub()?;
                     remote_worker.initialize();
+                    cursor_bridge::initialize();
                 }
             }
             RuntimeEvent::EndOfInput => {
@@ -273,6 +331,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     scan.cancelled.store(true, Ordering::SeqCst);
                 }
                 agent_tool_workers.cancel_and_join();
+                native_import::STOPPING.store(true, Ordering::SeqCst);
+                cursor_bridge::shutdown();
+                continuation_worker.shutdown();
                 shutdown_skill_worker(&mut skill_worker, &events_rx, &mut stdout)?;
                 if let Some(hub) = MCP_HUB.get() {
                     hub.shutdown();
@@ -312,7 +373,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             RuntimeEvent::RemoteFinished { request_id, result } => {
                 write_response(&mut stdout, result_response(request_id, *result))?;
             }
-            RuntimeEvent::SkillFinished { response } => {
+            RuntimeEvent::SkillFinished { response }
+            | RuntimeEvent::ContinuationFinished { response } => {
                 write_response(&mut stdout, response)?;
             }
         }
@@ -346,6 +408,9 @@ fn initialize_skill_hub() -> anyhow::Result<()> {
 }
 
 enum RuntimeEvent {
+    ContinuationFinished {
+        response: RpcResponse,
+    },
     RemoteFinished {
         request_id: Value,
         result: Box<anyhow::Result<Value>>,
@@ -566,8 +631,8 @@ impl agentkib_remote::Source for RemoteSessionSource {
             .ok_or_else(|| anyhow::anyhow!("session-unavailable"))?;
         // Lookup through the registry, never accept a remote-supplied path or native transcript reference.
         let workspace = store.workspace_path(&session.workspace_id)?;
-        let source =
-            provider(session.agent).ok_or_else(|| anyhow::anyhow!("provider-unavailable"))?;
+        let source = provider(session.agent, &workspace)
+            .ok_or_else(|| anyhow::anyhow!("provider-unavailable"))?;
         let native = source
             .list_sessions(&workspace)?
             .into_iter()
@@ -785,11 +850,27 @@ fn write_pending_skill_responses(
     stdout: &mut impl Write,
 ) -> io::Result<()> {
     for event in events.try_iter() {
-        if let RuntimeEvent::SkillFinished { response } = event {
+        if let RuntimeEvent::SkillFinished { response }
+        | RuntimeEvent::ContinuationFinished { response } = event
+        {
             write_response(stdout, response)?;
         }
     }
     Ok(())
+}
+
+fn is_continuation_method(method: &str) -> bool {
+    matches!(
+        method,
+        agentkib_protocol::CURSOR_BRIDGE_METHOD
+            | agentkib_protocol::SESSION_SOURCE_CAPABILITY_METHOD
+            | agentkib_protocol::LIST_NATIVE_IMPORTS_METHOD
+            | PREPARE_SESSION_HANDOFF_METHOD
+            | PLAN_SESSION_HANDOFF_METHOD
+            | CONTINUE_SESSION_HANDOFF_METHOD
+            | LAUNCH_SESSION_HANDOFF_METHOD
+            | PLAN_SESSION_MCP_CONNECTION_METHOD
+    )
 }
 
 fn shutdown_skill_worker(
@@ -823,21 +904,22 @@ fn skill_hub() -> anyhow::Result<&'static agentkib_skills::SkillHub> {
 }
 
 fn is_skill_method(method: &str) -> bool {
-    matches!(
-        method,
-        LIST_SKILL_CATALOG_METHOD
-            | DISCOVER_SKILLS_METHOD
-            | LIST_INSTALLED_SKILLS_METHOD
-            | PREPARE_SKILL_INSTALL_METHOD
-            | APPLY_SKILL_OPERATION_METHOD
-            | CHECK_SKILL_UPDATES_METHOD
-            | PREPARE_SKILL_UPDATE_METHOD
-            | ROLLBACK_SKILL_METHOD
-            | UNINSTALL_SKILL_METHOD
-            | LIST_REMOVED_SKILLS_METHOD
-            | RESTORE_SKILL_METHOD
-            | READ_SKILL_FILE_METHOD
-    )
+    skill_manager::is_method(method)
+        || matches!(
+            method,
+            LIST_SKILL_CATALOG_METHOD
+                | DISCOVER_SKILLS_METHOD
+                | LIST_INSTALLED_SKILLS_METHOD
+                | PREPARE_SKILL_INSTALL_METHOD
+                | APPLY_SKILL_OPERATION_METHOD
+                | CHECK_SKILL_UPDATES_METHOD
+                | PREPARE_SKILL_UPDATE_METHOD
+                | ROLLBACK_SKILL_METHOD
+                | UNINSTALL_SKILL_METHOD
+                | LIST_REMOVED_SKILLS_METHOD
+                | RESTORE_SKILL_METHOD
+                | READ_SKILL_FILE_METHOD
+        )
 }
 
 fn load_mcp_network_settings() -> McpNetworkSettings {
@@ -889,6 +971,15 @@ fn handle_request(request: RpcRequest) -> (RpcResponse, bool) {
         LIST_WORKSPACE_OPENERS_METHOD => command_response(request, list_workspace_openers),
         OPEN_WORKSPACE_WITH_APP_METHOD => command_response(request, open_workspace_with_app),
         SESSION_EVENTS_METHOD => command_response(request, session_events),
+        agentkib_protocol::SESSION_SOURCE_CAPABILITY_METHOD => {
+            command_response(request, source_continuation_capability)
+        }
+        agentkib_protocol::LIST_NATIVE_IMPORTS_METHOD => {
+            command_response(request, native_import::list)
+        }
+        agentkib_protocol::CURSOR_BRIDGE_METHOD => {
+            command_response(request, cursor_bridge::request)
+        }
         PREPARE_SESSION_HANDOFF_METHOD => command_response(request, prepare_session_handoff),
         SANITIZE_SESSION_HANDOFF_METHOD => command_response(request, sanitize_session_handoff),
         PLAN_SESSION_HANDOFF_METHOD => command_response(request, plan_session_handoff),
@@ -1226,9 +1317,10 @@ fn refresh_workspace_sessions(
     }
     let refresh_epoch = session_index_epoch();
     let store = Store::open_default()?;
+    let workspace = store.workspace_path(&request.workspace_id)?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
-        if statuses.len() == providers().len()
+        if statuses.len() == providers(&workspace).len()
             && statuses.iter().all(|status| {
                 status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
             })
@@ -1236,8 +1328,7 @@ fn refresh_workspace_sessions(
             return store.list_conversation_sessions(&request.workspace_id);
         }
     }
-    let workspace = store.workspace_path(&request.workspace_id)?;
-    for source in providers() {
+    for source in providers(&workspace) {
         let agent = source.agent();
         match source.list_sessions_detailed(&workspace) {
             Ok(listing) => {
@@ -1413,7 +1504,7 @@ fn session_events(
         .get_conversation_session(&request.session_id)?
         .ok_or_else(|| anyhow::anyhow!("Conversation metadata is no longer available"))?;
     let workspace = store.workspace_path(&session.workspace_id)?;
-    let source = provider(session.agent)
+    let source = provider(session.agent, &workspace)
         .ok_or_else(|| anyhow::anyhow!("Conversation provider is unavailable"))?;
     let native = source
         .list_sessions(&workspace)?
@@ -1436,12 +1527,57 @@ fn session_events(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HandoffRequestEnvelope {
-    request: SessionHandoffRequest,
+    request: SurfaceHandoffRequest,
+}
+
+#[derive(Deserialize)]
+struct SurfaceHandoffRequest {
+    #[serde(flatten)]
+    base: SessionHandoffRequest,
+    target_surface: Option<String>,
+    binding_id: Option<String>,
+}
+impl std::ops::Deref for SurfaceHandoffRequest {
+    type Target = SessionHandoffRequest;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+fn cursor_target_context(
+    target: AgentKind,
+    surface: Option<&str>,
+    binding: Option<&str>,
+    workspace: &Path,
+) -> anyhow::Result<Option<cursor_bridge::Context>> {
+    match surface {
+        None => {
+            anyhow::ensure!(
+                binding.is_none(),
+                "Binding requires an explicit target surface"
+            );
+            Ok(None)
+        }
+        Some("cursor-ide") if target == AgentKind::Cursor => Ok(Some(cursor_bridge::context(
+            binding.context("Select a connected Cursor IDE window")?,
+            workspace,
+        )?)),
+        _ => anyhow::bail!("Unsupported target product surface"),
+    }
+}
+fn cursor_native_capability(context: &cursor_bridge::Context) -> NativeImportCapability {
+    let checked = cursor_bridge::validate_context(context);
+    NativeImportCapability {
+        supported: checked.is_ok(),
+        beta: true,
+        reason: checked.err().map(|e| e.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "kebab-case")]
 enum SessionHandoffLaunchRequest {
+    NativeImport(native_import::ImportRequest),
     NativeSession {
         workspace_id: String,
         target_agent: AgentKind,
@@ -1466,6 +1602,7 @@ enum SessionHandoffLaunchRequest {
 impl SessionHandoffLaunchRequest {
     fn workspace_id(&self) -> &str {
         match self {
+            Self::NativeImport(request) => &request.workspace_id,
             Self::NativeSession { workspace_id, .. } | Self::HandoffFile { workspace_id, .. } => {
                 workspace_id
             }
@@ -1474,6 +1611,7 @@ impl SessionHandoffLaunchRequest {
 
     fn target_agent(&self) -> AgentKind {
         match self {
+            Self::NativeImport(request) => request.target_agent,
             Self::NativeSession { target_agent, .. } | Self::HandoffFile { target_agent, .. } => {
                 *target_agent
             }
@@ -1482,6 +1620,7 @@ impl SessionHandoffLaunchRequest {
 
     fn archive(&self) -> Option<(&str, &str)> {
         match self {
+            Self::NativeImport(_) => None,
             Self::NativeSession {
                 archive_id,
                 archive_hash,
@@ -1513,6 +1652,7 @@ struct HandoffLaunchReceipt {
 enum HandoffContinuationResult {
     Launched { receipt: HandoffLaunchReceipt },
     AppliedLaunchFailed { error: Value },
+    ImportOutcomeUnknown { error: Value },
 }
 
 fn load_session_document(
@@ -1521,12 +1661,22 @@ fn load_session_document(
     agentkib_conversations::ConversationSessionSummary,
     SessionDocument,
 )> {
+    load_session_document_with_surface(session_id).map(|(session, document, _)| (session, document))
+}
+
+fn load_session_document_with_surface(
+    session_id: &str,
+) -> anyhow::Result<(
+    agentkib_conversations::ConversationSessionSummary,
+    SessionDocument,
+    Option<&'static str>,
+)> {
     let store = Store::open_default()?;
     let session = store
         .get_conversation_session(session_id)?
         .ok_or_else(|| anyhow::anyhow!("Conversation metadata is no longer available"))?;
     let workspace = store.workspace_path(&session.workspace_id)?;
-    let source = provider(session.agent)
+    let source = provider(session.agent, &workspace)
         .ok_or_else(|| anyhow::anyhow!("Conversation provider is unavailable"))?;
     let native = source
         .list_sessions(&workspace)?
@@ -1539,7 +1689,14 @@ fn load_session_document(
         .ok_or_else(|| anyhow::anyhow!("Conversation transcript is no longer available"))?;
     let document =
         source.read_session_document(&session, &native.native_ref, dirs::home_dir().as_deref())?;
-    Ok((session, document))
+    let surface = (session.agent == AgentKind::Cursor).then(|| {
+        if native.native_ref.starts_with("cursor-ide-") {
+            "cursor-ide"
+        } else {
+            "cursor-cli"
+        }
+    });
+    Ok((session, document, surface))
 }
 
 fn ensure_session_workspace(
@@ -1566,6 +1723,33 @@ fn use_continuation_workspace_id(document: &mut SessionDocument, workspace_id: &
     document.source.workspace_id = workspace_id.to_owned();
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceCapabilityRequest {
+    session_id: String,
+}
+
+fn source_continuation_capability(request: SourceCapabilityRequest) -> anyhow::Result<Value> {
+    let (capability, surface) = match load_session_document_with_surface(&request.session_id) {
+        Ok((_, _, surface)) => (
+            continuation_capability(ContinuationCapabilityStatus::Supported, None),
+            surface,
+        ),
+        Err(error) => (
+            continuation_capability(
+                ContinuationCapabilityStatus::Unavailable,
+                Some(&error.to_string()),
+            ),
+            None,
+        ),
+    };
+    let mut result = serde_json::to_value(capability)?;
+    if let Some(surface) = surface {
+        result["source_surface"] = json!(surface);
+    }
+    Ok(result)
+}
+
 fn prepare_session_handoff(
     envelope: HandoffRequestEnvelope,
 ) -> anyhow::Result<SessionHandoffPreparationV2> {
@@ -1578,8 +1762,38 @@ fn prepare_session_handoff(
     let continuation_workspace_id = continuation_workspace_id(&store, &source.workspace_id)?;
     use_continuation_workspace_id(&mut document, &continuation_workspace_id);
     validate_history_budget(envelope.request.history_budget_tokens)?;
+    let source_fingerprint = fingerprint(&document)?;
     let generated_at = Utc::now();
-    let native_capability = native_import_capability(envelope.request.target_agent);
+    let project = store.workspace_path(&source.workspace_id)?;
+    let cursor = cursor_target_context(
+        envelope.request.target_agent,
+        envelope.request.target_surface.as_deref(),
+        envelope.request.binding_id.as_deref(),
+        &agentkib_core::canonical_project(&project)?,
+    )?;
+    let native_capability = cursor
+        .as_ref()
+        .map(cursor_native_capability)
+        .unwrap_or_else(|| native_import_capability(envelope.request.target_agent));
+    let mut target_fingerprint = None;
+    if let Some(context) = &cursor {
+        target_fingerprint = Some(native_import::cursor_fingerprint(context)?);
+        document = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+            &document,
+            &uuid::Uuid::nil().to_string(),
+            &project,
+        )?
+        .expected;
+    } else if native_capability.supported && native_import::is_target(envelope.request.target_agent)
+    {
+        let project = store.workspace_path(&source.workspace_id)?;
+        target_fingerprint = Some(native_import::target_fingerprint(
+            envelope.request.target_agent,
+            &document,
+            &project,
+        )?);
+        document = native_import::projected(envelope.request.target_agent, &document, &project)?;
+    }
     let mode = if native_capability.supported {
         SessionContinuationMode::NativeSession
     } else {
@@ -1637,7 +1851,8 @@ fn prepare_session_handoff(
             format: envelope.request.format,
             content,
             redaction_count: document.redaction_count,
-            source_fingerprint: fingerprint(&document)?,
+            source_fingerprint,
+            target_fingerprint,
             mode,
             native_capability,
             stats: stats(&document),
@@ -1671,6 +1886,8 @@ fn sanitize_session_handoff(request: SanitizeHandoffRequest) -> anyhow::Result<S
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanSessionHandoffRequest {
+    target_surface: Option<String>,
+    binding_id: Option<String>,
     session_id: String,
     workspace_id: String,
     filename: String,
@@ -1679,6 +1896,8 @@ struct PlanSessionHandoffRequest {
     target_agent: AgentKind,
     mode: SessionContinuationMode,
     source_fingerprint: String,
+    #[serde(default)]
+    target_fingerprint: Option<String>,
     accept_losses: bool,
     history_budget_tokens: usize,
     archive_id: Option<String>,
@@ -1731,6 +1950,38 @@ fn plan_session_handoff(
         fingerprint(&document)? == request.source_fingerprint,
         "Conversation changed after the continuation preview was prepared"
     );
+    let import_document = document.clone();
+    let cursor = cursor_target_context(
+        request.target_agent,
+        request.target_surface.as_deref(),
+        request.binding_id.as_deref(),
+        &agentkib_core::canonical_project(&project)?,
+    )?;
+    if let Some(context) = &cursor {
+        anyhow::ensure!(
+            request.target_fingerprint.as_deref()
+                == Some(native_import::cursor_fingerprint(context)?.as_str()),
+            "Cursor binding changed after preview"
+        );
+        document = agentkib_conversations::cursor_ide::prepare_cursor_ide_import(
+            &document,
+            &uuid::Uuid::nil().to_string(),
+            &project,
+        )?
+        .expected;
+    } else if native_import::is_target(request.target_agent)
+        && request.mode == SessionContinuationMode::NativeSession
+    {
+        anyhow::ensure!(
+            request.target_fingerprint.as_deref()
+                == Some(
+                    native_import::target_fingerprint(request.target_agent, &document, &project)?
+                        .as_str()
+                ),
+            "Target import settings changed after preview"
+        );
+        document = native_import::projected(request.target_agent, &document, &project)?;
+    }
     anyhow::ensure!(
         !document
             .losses
@@ -1751,7 +2002,10 @@ fn plan_session_handoff(
     )?;
     let archive_id =
         (window.strategy == SessionWindowStrategy::Windowed).then_some(planning_archive_id);
-    let native_capability = native_import_capability(request.target_agent);
+    let native_capability = cursor
+        .as_ref()
+        .map(cursor_native_capability)
+        .unwrap_or_else(|| native_import_capability(request.target_agent));
     let mcp_available = continuation_mcp_status(window.strategy, || {
         continuation_mcp_available(&continuation_workspace_id, request.target_agent)
     })?;
@@ -1798,6 +2052,36 @@ fn plan_session_handoff(
             native_capability.supported,
             "Native session import is no longer available"
         );
+        if let Some(context) = cursor {
+            anyhow::ensure!(
+                window.strategy == SessionWindowStrategy::Full,
+                "Windowed history retrieval is not verified for Cursor IDE"
+            );
+            return native_import::plan_cursor(
+                &project,
+                &continuation_workspace_id,
+                &request.session_id,
+                &request.source_fingerprint,
+                &import_document,
+                capabilities,
+                context,
+            );
+        }
+        if native_import::is_target(request.target_agent) {
+            anyhow::ensure!(
+                window.strategy == SessionWindowStrategy::Full,
+                "Windowed history retrieval is not verified for this importer"
+            );
+            return native_import::plan(
+                &project,
+                &continuation_workspace_id,
+                &request.session_id,
+                &request.source_fingerprint,
+                request.target_agent,
+                &import_document,
+                capabilities,
+            );
+        }
         let artifact = plan_native_session_artifact(
             &project,
             request.target_agent,
@@ -1886,6 +2170,28 @@ struct ContinueSessionHandoffRequest {
 fn continue_session_handoff(
     request: ContinueSessionHandoffRequest,
 ) -> anyhow::Result<HandoffContinuationResult> {
+    if let SessionHandoffLaunchRequest::NativeImport(import) = &request.launch_request {
+        let path = native_import::plan_path(import)?;
+        if !path.exists() {
+            native_import::validate_request(&request.change_set, import)?;
+            anyhow::ensure!(
+                request.approve_home,
+                "Native import requires Agent Home approval"
+            );
+            apply_changes(ApplyChangesRequest {
+                change_set: request.change_set,
+                approve_home: true,
+            })?;
+        }
+        return Ok(
+            match native_import::execute(import, request.approve_home, false) {
+                Ok(result) => result,
+                Err(error) => HandoffContinuationResult::ImportOutcomeUnknown {
+                    error: json!({"key":"errors.handoff.importOutcomeUnknown","params":{},"detail":error.to_string()}),
+                },
+            },
+        );
+    }
     let store = Store::open_default()?;
     let workspace = store.workspace_path(request.launch_request.workspace_id())?;
     validate_handoff_change_set(&request.change_set, &request.launch_request, &workspace)?;
@@ -1917,6 +2223,13 @@ fn continue_session_handoff(
 fn launch_session_handoff(
     request: SessionHandoffLaunchRequest,
 ) -> anyhow::Result<HandoffLaunchReceipt> {
+    if let SessionHandoffLaunchRequest::NativeImport(import) = &request {
+        return match native_import::execute(import, true, true)? {
+            HandoffContinuationResult::Launched { receipt } => Ok(receipt),
+            HandoffContinuationResult::AppliedLaunchFailed { error }
+            | HandoffContinuationResult::ImportOutcomeUnknown { error } => anyhow::bail!("{error}"),
+        };
+    }
     let store = Store::open_default()?;
     let workspace = store.workspace_path(request.workspace_id())?;
     validate_applied_continuation(&workspace, &request)?;
@@ -1997,6 +2310,9 @@ fn validate_handoff_change_set(
     request: &SessionHandoffLaunchRequest,
     workspace: &Path,
 ) -> anyhow::Result<()> {
+    if let SessionHandoffLaunchRequest::NativeImport(import) = request {
+        return native_import::validate_request(change_set, import);
+    }
     let workspace = agentkib_core::canonical_project(workspace)?;
     let change_root = agentkib_core::canonical_project(&change_set.project_root)?;
     anyhow::ensure!(
@@ -2178,6 +2494,9 @@ fn prepare_handoff_interactive_command(
     let workspace =
         agentkib_core::canonical_project(&store.workspace_path(request.workspace_id())?)?;
     let (command_name, arguments): (&str, Vec<OsString>) = match request {
+        SessionHandoffLaunchRequest::NativeImport(_) => {
+            anyhow::bail!("Command imports must use their verified operation receipt")
+        }
         SessionHandoffLaunchRequest::NativeSession {
             target_agent: AgentKind::Codex,
             target_session_id,
@@ -2241,6 +2560,7 @@ fn prepare_handoff_interactive_command(
         executable,
         arguments,
         working_directory: workspace,
+        environment: Vec::new(),
     })
 }
 
@@ -2257,6 +2577,14 @@ struct NativeSessionArtifact {
 }
 
 fn native_import_capability(target: AgentKind) -> NativeImportCapability {
+    if native_import::is_target(target) {
+        let result = native_import::installation(target);
+        return NativeImportCapability {
+            supported: result.is_ok(),
+            beta: true,
+            reason: result.err().map(|error| error.to_string()),
+        };
+    }
     let (command, expected_version) = match target {
         AgentKind::Codex => ("codex", (0, 146)),
         AgentKind::ClaudeCode => ("claude", (2, 1)),
@@ -2282,8 +2610,14 @@ fn native_import_capability(target: AgentKind) -> NativeImportCapability {
             reason: Some("cli-unavailable".into()),
         };
     };
-    let version_matches =
-        cli_version_matches(&executable, expected_version, NATIVE_VERSION_PROBE_TIMEOUT);
+    let version_matches = if target == AgentKind::Codex {
+        cli_version_matches_with(&executable, NATIVE_VERSION_PROBE_TIMEOUT, |output| {
+            parse_cli_major_minor(output) == Some(expected_version)
+                || agentkib_conversations::codex_native_exact_version_supported(output)
+        })
+    } else {
+        cli_version_matches(&executable, expected_version, NATIVE_VERSION_PROBE_TIMEOUT)
+    };
     let schema_matches = latest_native_session(target).as_ref().map(|path| {
         read_first_jsonl_value(path).is_some_and(|value| matches_native_schema(&value, target))
     });
@@ -2326,7 +2660,9 @@ fn native_resume_capability(
             Some("native-history-import-unsupported"),
         );
     }
-    if !matches!(target, AgentKind::Codex | AgentKind::ClaudeCode) {
+    if !matches!(target, AgentKind::Codex | AgentKind::ClaudeCode)
+        && !native_import::is_target(target)
+    {
         return continuation_capability(
             ContinuationCapabilityStatus::Unsupported,
             Some("target-not-supported"),
@@ -2378,7 +2714,9 @@ fn continuation_capabilities(
             Some("mcp-not-connected"),
         )
     };
-    let interactive_launch = if !target_supports_continuation {
+    let interactive_launch = if native_import::is_target(target) {
+        native_resume_capability(target, native)
+    } else if !target_supports_continuation {
         continuation_capability(
             ContinuationCapabilityStatus::Unsupported,
             Some("target-not-supported"),
@@ -2418,6 +2756,16 @@ const NATIVE_VERSION_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250)
 const MAX_NATIVE_VERSION_OUTPUT_BYTES: u64 = 64 * 1024;
 
 fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout: Duration) -> bool {
+    cli_version_matches_with(executable, timeout, |output| {
+        parse_cli_major_minor(output) == Some(expected_version)
+    })
+}
+
+fn cli_version_matches_with(
+    executable: &Path,
+    timeout: Duration,
+    matches: impl FnOnce(&str) -> bool,
+) -> bool {
     let mut command = Command::new(executable);
     command
         .arg("--version")
@@ -2474,8 +2822,7 @@ fn cli_version_matches(executable: &Path, expected_version: (u64, u64), timeout:
         && output.len() as u64 <= MAX_NATIVE_VERSION_OUTPUT_BYTES
         && String::from_utf8(output)
             .ok()
-            .and_then(|version| parse_cli_major_minor(&version))
-            == Some(expected_version)
+            .is_some_and(|version| matches(&version))
 }
 
 fn parse_cli_major_minor(output: &str) -> Option<(u64, u64)> {
@@ -2738,6 +3085,9 @@ fn validate_applied_continuation(
     request: &SessionHandoffLaunchRequest,
 ) -> anyhow::Result<()> {
     match request {
+        SessionHandoffLaunchRequest::NativeImport(_) => {
+            anyhow::bail!("Command import requires operation verification")
+        }
         SessionHandoffLaunchRequest::HandoffFile { filename, .. } => {
             validate_handoff_file(workspace, filename)?;
         }
@@ -3424,6 +3774,12 @@ fn validate_application_data_changes(
         .collect::<Vec<_>>();
     if changes.is_empty() {
         return Ok(Vec::new());
+    }
+    if changes
+        .iter()
+        .any(|change| change.target.ends_with("plan.json"))
+    {
+        return native_import::validate_changes(change_set, workspace_id);
     }
     anyhow::ensure!(
         changes.len() == 3,
@@ -4295,6 +4651,7 @@ fn execute_skill_request(
         LIST_REMOVED_SKILLS_METHOD => command_response(request, list_removed_skills).0,
         RESTORE_SKILL_METHOD => command_response(request, restore_skill).0,
         READ_SKILL_FILE_METHOD => command_response(request, read_skill_file).0,
+        _ if skill_manager::is_method(&method) => skill_manager::execute(request),
         _ => RpcResponse::error(
             request.id,
             -32601,
@@ -4382,10 +4739,13 @@ struct ApplySkillOperationRequest {
 
 fn apply_skill_operation(
     request: ApplySkillOperationRequest,
-) -> anyhow::Result<agentkib_core::InstalledSkill> {
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.apply(&request.token, request.confirmed, request.allow_modified)?;
-    complete_skill_mutation("skill.apply", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.apply", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
 #[derive(Deserialize)]
@@ -4399,16 +4759,27 @@ struct ConfirmSkillRequest {
     confirmed: bool,
 }
 
-fn rollback_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+fn rollback_skill(
+    request: ConfirmSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.rollback(&request.name, request.confirmed)?;
-    complete_skill_mutation("skill.rollback", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.rollback", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
-fn uninstall_skill(request: ConfirmSkillRequest) -> anyhow::Result<agentkib_core::RemovedSkill> {
+fn uninstall_skill(
+    request: ConfirmSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::RemovedSkill>> {
+    skill_manager::ensure_library_removable(&request.name)?;
     let skill = skill_hub()?.uninstall(&request.name, request.confirmed)?;
-    complete_skill_mutation("skill.uninstall", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.uninstall", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
 fn list_removed_skills(_: EmptyRequest) -> anyhow::Result<Vec<agentkib_core::RemovedSkill>> {
@@ -4421,19 +4792,39 @@ struct RestoreSkillRequest {
     confirmed: bool,
 }
 
-fn restore_skill(request: RestoreSkillRequest) -> anyhow::Result<agentkib_core::InstalledSkill> {
+fn restore_skill(
+    request: RestoreSkillRequest,
+) -> anyhow::Result<SkillMutationOutcome<agentkib_core::InstalledSkill>> {
     let skill = skill_hub()?.restore(&request.id, request.confirmed)?;
-    complete_skill_mutation("skill.restore", &skill.name);
-    Ok(skill)
+    let warnings = complete_skill_mutation("skill.restore", &skill.name);
+    Ok(SkillMutationOutcome {
+        value: skill,
+        warnings,
+    })
 }
 
-fn complete_skill_mutation(action: &str, name: &str) {
+#[derive(Serialize)]
+struct SkillMutationOutcome<T> {
+    #[serde(flatten)]
+    value: T,
+    warnings: Vec<String>,
+}
+
+fn complete_skill_mutation(action: &str, name: &str) -> Vec<String> {
     // The filesystem mutation is already durable; follow-up bookkeeping must not turn it into a
     // reported failure that encourages the user to repeat the operation.
-    if let Ok(store) = Store::open_default() {
-        let _ = store.audit(None, action, name);
+    let mut warnings = Vec::new();
+    if let Err(error) = Store::open_default().and_then(|store| store.audit(None, action, name)) {
+        warnings.push(format!(
+            "Skill operation succeeded, but its audit could not be saved: {error}"
+        ));
     }
-    let _ = refresh_discovery(EmptyRequest {});
+    if let Err(error) = refresh_discovery(EmptyRequest {}) {
+        warnings.push(format!(
+            "Skill operation succeeded, but discovery could not be refreshed: {error}"
+        ));
+    }
+    warnings
 }
 
 #[derive(Deserialize)]
@@ -5383,6 +5774,9 @@ mod tests {
             assert!(is_skill_method(method), "{method} was not routed");
         }
         assert!(!is_skill_method(RUNTIME_INFO_METHOD));
+        for method in skill_manager::METHODS {
+            assert!(is_skill_method(method), "{method} was not routed");
+        }
     }
 
     #[test]
@@ -5867,18 +6261,23 @@ mod tests {
     #[test]
     fn declared_history_support_matches_registered_providers_without_expanding_control() {
         use agentkib_core::{AgentControlSupport, AgentSupportCapabilities};
+        let workspace = tempfile::tempdir().unwrap();
         for agent in AgentKind::ALL {
             let support = AgentSupportCapabilities::for_agent(agent);
-            assert_eq!(support.session_list, provider(agent).is_some(), "{agent:?}");
+            assert_eq!(
+                support.session_list,
+                provider(agent, workspace.path()).is_some(),
+                "{agent:?}"
+            );
             assert_eq!(support.history_read, support.session_list);
             if matches!(
                 agent,
-                AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::GrokBuild
+                AgentKind::OpenClaw | AgentKind::Hermes | AgentKind::GrokBuild | AgentKind::Cursor
             ) {
-                assert!(!support.continuation);
+                assert!(support.continuation);
                 assert_eq!(support.control, AgentControlSupport::None);
                 assert!(
-                    provider(agent)
+                    provider(agent, workspace.path())
                         .unwrap()
                         .verified_control_id("untrusted")
                         .unwrap()

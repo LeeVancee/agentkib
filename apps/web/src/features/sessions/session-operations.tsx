@@ -46,6 +46,26 @@ export function SessionOperations({
       )}
     </div>
   );
+  if (current?.agent === "claude-code")
+    return (
+      <ManagedTasks
+        active={open}
+        onClose={() => onOpenChange(false)}
+        renderContent={(ownership) =>
+          open ? (
+            <Dialog
+              panel
+              title={webLayoutCopy[locale].actions}
+              closeLabel={t.close}
+              onClose={() => onOpenChange(false)}
+            >
+              {shortcuts}
+              {ownership}
+            </Dialog>
+          ) : null
+        }
+      />
+    );
   if (current?.agent !== "codex")
     return open ? (
       <Dialog

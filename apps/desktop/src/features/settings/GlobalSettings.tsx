@@ -10,7 +10,6 @@ import {
   FolderPlus,
   GitCommitHorizontal,
   History,
-  Keyboard,
   RefreshCw,
   Trash2,
   X,
@@ -73,15 +72,9 @@ import type {
 import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { cn } from "@/lib/utils";
-import { useShortcutHelp } from "@/features/app/ShortcutHelpContext";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
-import {
-  ariaShortcut,
-  currentAppPlatform,
-  formatShortcut,
-  getShortcutDefinition,
-} from "@/core/keyboard-shortcuts";
+import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
 
 const buildPlatform = desktopApi().platform;
 const appPlatform = normalizePlatform(buildPlatform);
@@ -162,6 +155,8 @@ export function GlobalSettings({
     );
   }
 
+  if (section === "shortcuts") return <KeyboardShortcutsSettings />;
+
   if (section === "general")
     return (
       <SettingsPage variant="form">
@@ -194,7 +189,6 @@ export function GlobalSettings({
             </SettingsNotice>
           )}
         </SettingsSection>
-        <KeyboardShortcutsSetting />
         <QuotaAutoRefreshSetting runtime={runtime} onChanged={onLocaleChanged} />
       </SettingsPage>
     );
@@ -621,32 +615,6 @@ function FileAccessSettingsRow() {
         </SettingsNotice>
       )}
     </>
-  );
-}
-
-function KeyboardShortcutsSetting() {
-  const { t: tr } = useTranslation();
-  const { openShortcutHelp } = useShortcutHelp();
-  const platform = currentAppPlatform();
-  const definition = getShortcutDefinition("open-help");
-  return (
-    <SettingsSection title={tr("settings.shortcutsTitle")} target="general-shortcuts">
-      <SettingsRow border={false}>
-        <SettingsCopy>
-          <strong>{tr("settings.shortcuts")}</strong>
-        </SettingsCopy>
-        <Button
-          variant="outline"
-          type="button"
-          aria-keyshortcuts={ariaShortcut(definition, platform)}
-          title={`${tr("settings.viewShortcuts")} (${formatShortcut(definition, platform)})`}
-          onClick={openShortcutHelp}
-        >
-          <Keyboard size={14} />
-          {tr("settings.viewShortcuts")}
-        </Button>
-      </SettingsRow>
-    </SettingsSection>
   );
 }
 

@@ -1,0 +1,56 @@
+{
+  "root": "/private/tmp/agentkib-claude-v1-native-2026-09-30-flash-haiku-vision",
+  "runtimeSha256": "7c7512ea06ee732ea98a67ecc9f57d3afbec79104490bf0b9ae577cf2b9cf198",
+  "started": "2026-09-30T06:52:16.291Z",
+  "modelSends": 1,
+  "requestedModel": "claude-haiku-4-5",
+  "mcpPort": 61642,
+  "lastRpcMethod": "web.request",
+  "lastRpcOperation": "events",
+  "cliVersion": "2.1.285 (Claude Code)",
+  "sessionId": "684174e9-50db-4bb9-a84e-25c66db2b522",
+  "sourceSessionId": "14279465-e101-467f-aec3-2bccdfb669db",
+  "emptyWithoutModel": true,
+  "webSameSession": true,
+  "sendAccepted": true,
+  "status": "idle",
+  "reason": null,
+  "model": "claude-haiku-4-5",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 28672,
+    "fallback_credit": null,
+    "inference_geo": "",
+    "input_tokens": 28767,
+    "iterations": [],
+    "output_tokens": 317,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_fetch_requests": 0,
+      "web_search_requests": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  },
+  "approvalCount": 1,
+  "reply": "**Secret marker:** `a6c8f5af-fc1a-4742-87f7-3a208a440886`\n\n**Project decision:** storage namespace `cobalt-lake`\n\n**Image color:** purple (violet)",
+  "markerPresent": true,
+  "decisionPresent": true,
+  "imageColorPresent": false,
+  "webEvents": 4,
+  "runtimeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "runtimeRestartHistory": true,
+  "failure": "expected false to be true // Object.is equality",
+  "settingsUnchanged": true,
+  "elapsedMs": 4701,
+  "launchCount": 1
+}

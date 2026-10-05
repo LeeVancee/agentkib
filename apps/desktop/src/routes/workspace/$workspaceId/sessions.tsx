@@ -54,6 +54,8 @@ function WorkspaceSessionsRoute() {
               targetAgent: search.handoffTarget,
               historyBudgetTokens: search.handoffBudget,
               format: search.handoffFormat,
+              targetSurface: search.handoffSurface,
+              bindingId: search.handoffBinding,
               autoPrepare: search.handoffResume === "recheck",
             }
           : undefined
@@ -69,6 +71,8 @@ function WorkspaceSessionsRoute() {
             handoffTarget: undefined,
             handoffBudget: undefined,
             handoffFormat: undefined,
+            handoffSurface: undefined,
+            handoffBinding: undefined,
             handoffResume: undefined,
           }),
         });
@@ -86,6 +90,8 @@ function WorkspaceSessionsRoute() {
             handoffTarget: request.targetAgent,
             handoffBudget: request.historyBudgetTokens as 64_000 | 120_000 | 180_000,
             handoffFormat: request.format,
+            handoffSurface: request.targetSurface,
+            handoffBinding: request.bindingId,
             handoffResume: "return" as const,
           }),
         });

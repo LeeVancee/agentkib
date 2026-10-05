@@ -116,6 +116,7 @@ export function Changes({
   const active = useRef(true);
   const change = changeSet?.changes[selected];
   const launchSupported = launchRequest?.capabilities?.interactive_launch.status === "supported";
+  const isNativeImport = launchRequest?.mode === "native-import";
   const targetAgentName = launchRequest ? agentLabels[launchRequest.target_agent] : "";
   useEffect(() => {
     active.current = true;
@@ -147,17 +148,19 @@ export function Changes({
       },
     );
   };
-  if (!changeSet && launchRequest && appliedLaunchFailure)
+  if (!changeSet && launchRequest && (appliedLaunchFailure || isNativeImport))
     return (
       <Card className="rounded-xl border border-border bg-card shadow-sm grid items-center gap-4 p-5 md:grid-cols-[auto_minmax(0,1fr)_auto]">
         <CircleAlert size={24} />
         <div>
-          <h2>{tr("handoff.savedLaunchFailed")}</h2>
+          <h2>{tr(isNativeImport ? "handoff.importNeedsCheck" : "handoff.savedLaunchFailed")}</h2>
           <p>{error || appliedLaunchFailure}</p>
           <code>
-            {launchRequest.mode === "native-session"
-              ? shortPath(launchRequest.target_path)
-              : `.agentkib/handoffs/${launchRequest.filename}`}
+            {launchRequest.mode === "native-import"
+              ? launchRequest.operation_id
+              : launchRequest.mode === "native-session"
+                ? shortPath(launchRequest.target_path)
+                : `.agentkib/handoffs/${launchRequest.filename}`}
           </code>
         </div>
         <Button
@@ -173,7 +176,14 @@ export function Changes({
           }
         >
           <ExternalLink size={15} />
-          {tr(busy ? "handoff.opening" : "handoff.retryOpen", { agent: targetAgentName })}
+          {tr(
+            busy
+              ? "handoff.opening"
+              : isNativeImport
+                ? "handoff.recovery.check"
+                : "handoff.retryOpen",
+            { agent: targetAgentName },
+          )}
         </Button>
       </Card>
     );
@@ -195,7 +205,19 @@ export function Changes({
   const applyAndContinue = async () => {
     if (!launchRequest || !launchSupported) return;
     await runLocked(async () => {
-      const result = await api.continueSessionHandoff(changeSet, launchRequest, homeApproved);
+      let result;
+      try {
+        result = await api.continueSessionHandoff(changeSet, launchRequest, homeApproved);
+      } catch (reason) {
+        if (launchRequest.mode !== "native-import") throw reason;
+        // A transport failure cannot tell us whether the external CLI wrote.
+        // Retain the operation for reconciliation instead of submitting again.
+        if (active.current) {
+          setAppliedLaunchFailure(localizeMessage(reason));
+          await onApplied(true);
+        }
+        return;
+      }
       if (!active.current) return;
       if (result.status === "launched") {
         await onApplied(false);
@@ -231,7 +253,7 @@ export function Changes({
         {origin === "handoff" && (
           <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700">
             <CircleAlert size={14} />
-            {tr("handoff.changeSetWarning")}
+            {tr(isNativeImport ? "handoff.nativeImportWarning" : "handoff.changeSetWarning")}
           </div>
         )}
         {changeSet.changes.map((file, index) => (
@@ -276,7 +298,7 @@ export function Changes({
         {changeSet.requires_home_approval && (
           <Label className="flex items-center gap-2 border-t border-border p-4 text-xs text-muted-foreground">
             <Checkbox checked={homeApproved} onCheckedChange={setHomeApproved} />
-            {tr("changes.homeApproval")}
+            {tr(isNativeImport ? "handoff.nativeImportApproval" : "changes.homeApproval")}
           </Label>
         )}
       </div>
@@ -326,7 +348,7 @@ export function Changes({
             >
               {tr("changes.reject")}
             </Button>
-            {origin === "handoff" && launchSupported && (
+            {origin === "handoff" && launchSupported && !isNativeImport && (
               <Button
                 className="border border-transparent bg-transparent text-foreground hover:bg-muted"
                 onClick={() => void apply()}
@@ -413,6 +435,8 @@ function WorkspaceChangesRoute() {
           handoffTarget: search.handoffTarget,
           handoffBudget: search.handoffBudget,
           handoffFormat: search.handoffFormat,
+          handoffSurface: search.handoffSurface,
+          handoffBinding: search.handoffBinding,
           handoffResume: autoPrepare ? ("recheck" as const) : ("return" as const),
         }),
       });
@@ -421,6 +445,8 @@ function WorkspaceChangesRoute() {
       navigate,
       search.handoffBudget,
       search.handoffFormat,
+      search.handoffSurface,
+      search.handoffBinding,
       search.handoffSession,
       search.handoffTarget,
       workspaceId,

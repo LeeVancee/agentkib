@@ -4,6 +4,8 @@ Web 是 AgentKib 桌面应用的一部分，不是官方云服务。安装包包
 
 本文描述内置同源模式，适用于本机或自行管理网络的开发使用。邀请内测的手机访问主要流程见 [一键开通托管连接](REMOTE-CODEX-WEB.md)，不要求按本文自行部署。另有[托管 Web 与局域网直连](WEB-HOSTED-LAN.md)：网页独立托管到 `remote.agentkib.com`，通过单独、默认关闭的局域网 HTTP 监听器连接桌面，不使用本节 cookie 或扩大原监听范围。
 
+历史读取、跨 Agent 原生导入与 Web 托管控制分别判断能力。桌面新增的 OpenCode/Hermes/OpenClaw 实验导入不赋予它们 Web 控制能力，也不修改远程授权。具体来源、目标版本和验收状态见[会话互通矩阵](SESSION-INTEROPERABILITY.md)；Claude 托管控制与 Codex 实验能力仍遵循各自已有门限。
+
 ## 开启与本机使用
 
 1. 安装对应版本的 AgentKib，打开设置 → 远程连接 → Web 访问。

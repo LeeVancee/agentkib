@@ -1,0 +1,63 @@
+{
+  "nativeHistorySha256": "43330420d470b38654ec5c47f70a77aff157b1f96b73e3f4b738c61b05c136a4",
+  "nativeImages": [
+    {
+      "sha256": "4f53aad3f14de29b6627045fd1da8db81ddb354fdeab573f675a77e350bc7c96",
+      "bytes": 95,
+      "mediaType": "image/png",
+      "width": 32,
+      "height": 32,
+      "crcValid": true,
+      "allPixelsRGB": [
+        0,
+        0,
+        255
+      ]
+    }
+  ],
+  "storedImages": [
+    {
+      "sha256": "4f53aad3f14de29b6627045fd1da8db81ddb354fdeab573f675a77e350bc7c96",
+      "bytes": 95
+    }
+  ],
+  "hostToNativeImageIdentical": true,
+  "nativeBlockSummary": [
+    {
+      "role": "user",
+      "type": "text"
+    },
+    {
+      "role": "user",
+      "type": "text"
+    },
+    {
+      "role": "user",
+      "type": "image"
+    },
+    {
+      "role": "user",
+      "type": "text"
+    },
+    {
+      "role": "assistant",
+      "type": "thinking"
+    },
+    {
+      "role": "assistant",
+      "type": "tool_use"
+    },
+    {
+      "role": "user",
+      "type": "tool_result"
+    },
+    {
+      "role": "assistant",
+      "type": "thinking"
+    },
+    {
+      "role": "assistant",
+      "type": "text"
+    }
+  ]
+}

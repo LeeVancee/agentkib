@@ -1,0 +1,27 @@
+{
+  "nativeTranscriptSha256": "a528e487a8e709d8392674723ed260964f3a13c1cf2533cedae0ba3cb5a8d8b0",
+  "nativeImages": [
+    {
+      "role": "user",
+      "type": "image",
+      "mediaType": "image/png",
+      "bytes": 95,
+      "sha256": "4f53aad3f14de29b6627045fd1da8db81ddb354fdeab573f675a77e350bc7c96",
+      "pngMagic": true,
+      "dimensions": [
+        32,
+        32
+      ]
+    }
+  ],
+  "attachmentImages": [
+    {
+      "bytes": 95,
+      "sha256": "4f53aad3f14de29b6627045fd1da8db81ddb354fdeab573f675a77e350bc7c96"
+    }
+  ],
+  "sameImageBytes": true,
+  "settingsUnchanged": true,
+  "launchCount": 1,
+  "modelSends": 1
+}

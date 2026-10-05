@@ -51,6 +51,9 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
       const catalog = await desktopConversationRequest<ConversationCatalog>("catalog");
       const sessions: ConversationSessionSummary[] = catalog.sessions.map((session) => ({
         ...session,
+        indexedSessionIds:
+          session.indexedSessionIds ??
+          (session.indexedSessionId ? [session.indexedSessionId] : undefined),
         created_at: session.created_at ?? undefined,
         git_branch: session.git_branch ?? undefined,
         forked_from_session_id: session.forked_from_session_id ?? undefined,

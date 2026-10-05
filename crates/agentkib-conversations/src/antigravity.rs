@@ -135,6 +135,8 @@ impl AntigravityProvider {
         cwd: &Path,
         deadline: Instant,
     ) -> Result<(BlockingClient, Compatibility)> {
+        #[cfg(test)]
+        tests::record_deadline("connect", deadline);
         let cwd = fs::canonicalize(cwd)
             .with_context(|| format!("Antigravity workspace is unavailable: {}", cwd.display()))?;
         let executable = self.executable()?;
@@ -463,6 +465,8 @@ fn collect_pages(
     workspace: Option<&Path>,
     deadline: Instant,
 ) -> Result<SessionCollection> {
+    #[cfg(test)]
+    tests::record_deadline("list", deadline);
     let mut output = Vec::new();
     let mut incomplete = false;
     let mut cursor = None::<String>;
@@ -567,6 +571,8 @@ fn collect_replay(
     native_ref: &str,
     deadline: Instant,
 ) -> Result<Replay> {
+    #[cfg(test)]
+    tests::record_deadline("replay", deadline);
     let mut replay = Replay::default();
     let deadline = deadline.min(Instant::now() + ACP_TIMEOUT);
     for _ in 0..=MAX_REPLAY_UPDATES {
@@ -1631,10 +1637,58 @@ fn validate_native_ref(value: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(super) fn matrix_parse(updates: &[Value]) -> Result<SessionDocument> {
+    let parsed = parse_replay(updates)?;
+    crate::continuation::finish_document(
+        &crate::hermes::fixture_source(AgentKind::Antigravity),
+        parsed.turns,
+        parsed.losses,
+        None,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    thread_local! {
+        static DEADLINE_TRACE: std::cell::RefCell<Option<Vec<(&'static str, Instant)>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn record_deadline(stage: &'static str, deadline: Instant) {
+        DEADLINE_TRACE.with_borrow_mut(|trace| {
+            if let Some(trace) = trace {
+                trace.push((stage, deadline));
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    struct DeadlineTrace;
+
+    #[cfg(unix)]
+    impl DeadlineTrace {
+        fn start() -> Self {
+            DEADLINE_TRACE.with_borrow_mut(|trace| {
+                assert!(trace.is_none(), "deadline tracing must not nest");
+                *trace = Some(Vec::new());
+            });
+            Self
+        }
+
+        fn observations(&self) -> Vec<(&'static str, Instant)> {
+            DEADLINE_TRACE.with_borrow(|trace| trace.as_ref().unwrap().clone())
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DeadlineTrace {
+        fn drop(&mut self) {
+            DEADLINE_TRACE.with_borrow_mut(|trace| *trace = None);
+        }
+    }
 
     #[cfg(unix)]
     fn acp_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -1691,7 +1745,6 @@ mod tests {
     #[test]
     fn replay_shares_one_deadline_across_session_list_and_load() {
         let (dir, script, script_body) = acp_fixture();
-        let load_marker = dir.path().join("load-started");
         fs::write(
             &script_body,
             format!(
@@ -1702,19 +1755,15 @@ while IFS= read -r line; do
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"list":{{}}}}}}}}}}'
       ;;
     *\"method\":\"session/list\"*)
-      sleep 1
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessions":[{{"sessionId":"native-1","cwd":"{}"}}]}}}}'
       ;;
     *\"method\":\"session/load\"*)
-      touch '{}'
-      sleep 3
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":null}}'
       ;;
   esac
 done
 "#,
                 dir.path().display(),
-                load_marker.display(),
             ),
         )
         .unwrap();
@@ -1722,18 +1771,72 @@ done
         let provider = AntigravityProvider {
             executable: Some(script),
         };
-        let started = Instant::now();
-        let error = provider
-            .replay_until("native-1", started + Duration::from_millis(1500))
-            .unwrap_err();
-        assert!(
-            load_marker.exists(),
-            "session/load was not reached: {error:#}"
+        // Observe the exact deadline passed between stages instead of racing two
+        // process startups against a 500ms margin. Transport expiration is tested
+        // separately by the bridge and the expired-caller test above.
+        let trace = DeadlineTrace::start();
+        let deadline = Instant::now() + HISTORY_TIMEOUT;
+        let (session, replay) = provider.replay_until("native-1", deadline).unwrap();
+        assert_eq!(session.id, "native-1");
+        assert_eq!(session.workspace, fs::canonicalize(dir.path()).unwrap());
+        assert!(replay.updates.is_empty());
+        assert_eq!(
+            trace.observations(),
+            vec![
+                ("connect", deadline),
+                ("list", deadline),
+                ("connect", deadline),
+                ("replay", deadline)
+            ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_wait_honors_deadline_after_load_has_started() {
+        let (dir, script, body) = acp_fixture();
+        fs::write(&body, r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}'
+      ;;
+    *\"method\":\"session/load\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"load-ready"}}}}'
+      read -r hold
+      ;;
+  esac
+done
+"#).unwrap();
+        let provider = AntigravityProvider {
+            executable: Some(script),
+        };
+        let (client, compatibility) = provider
+            .connect_until(dir.path(), Instant::now() + HISTORY_TIMEOUT)
+            .unwrap();
+        assert!(compatibility.load_session);
+        let request = client.load_session("native-1", dir.path()).unwrap();
+        // Start the short wait only after a native event proves load was entered.
+        // There are no sleeps or process startups inside this timing interval.
+        let event = client.next_event(ACP_TIMEOUT).unwrap().unwrap();
+        assert!(
+            matches!(event, Event::SessionUpdate { session_id, update } if session_id == "native-1" && update["content"]["text"] == "load-ready")
+        );
+        let started = Instant::now();
+        let Err(error) = collect_replay(
+            &client,
+            &request,
+            "native-1",
+            started + Duration::from_millis(100),
+        ) else {
+            panic!("unresponsive load must time out");
+        };
+        let elapsed = started.elapsed();
+        let _ = client.shutdown();
         assert!(error.to_string().contains("timed out"), "{error:#}");
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "the second ACP stage received a fresh timeout: {error:#}"
+            elapsed < Duration::from_secs(2),
+            "load ignored its caller deadline: {elapsed:?}"
         );
     }
 

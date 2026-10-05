@@ -1,0 +1,393 @@
+{
+  "revision": "057da8b81a3f3c9536a568287175af8e50c12176",
+  "dirty": true,
+  "workspace": "/Users/kouzen/.codex/worktrees/all-agent-continuation/agentkib",
+  "comparison": "/tmp/agentkib-all-agent-baseline/files.json",
+  "excluded_manifests": [
+    "qa/all-agent-continuation-2026-09-27-files.json",
+    "qa/all-agent-continuation-2026-09-28-files.json"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "baseline_sha256": "df6bf21e637c21568b90862c626c4b6147d0e5975c32189f7d0e60ad72c86d6b",
+      "sha256": "4a2d60eaeffcef5a5f6e197797e82bf3d6ca928bf35acbb36d5d1b678be0c4ee"
+    },
+    {
+      "path": "apps/desktop/electron/api/index.ts",
+      "baseline_sha256": "d3fc16d09b0641ef8d07ce6acd19330f85036afdf31fd09632fd5573a3527136",
+      "sha256": "132f94cee93f6720be9bcea5bff3930f391e65f8687f4a8df0c9c5167fa084f2"
+    },
+    {
+      "path": "apps/desktop/electron/generated/runtime-protocol.ts",
+      "baseline_sha256": "fdeab5d2724c5183cec07a7e44c164451b52a8a76ac7e8b5451bf7305221e649",
+      "sha256": "5e46594df0fa070ea5b9edd91bcdff86ed6b94064913bdb41d0c2b3dcf3fbd91"
+    },
+    {
+      "path": "apps/desktop/electron/main/ipc/runtime.ts",
+      "baseline_sha256": "953d5383926c9d0842414760719d0d36ae6bd118a575be0294dd53f9c48b8008",
+      "sha256": "5ee6305448dbdb15dfdbe698b3426bd8d17783ab80ef1b7c6a684adfb98b0066"
+    },
+    {
+      "path": "apps/desktop/electron/preload/index.ts",
+      "baseline_sha256": "e5440f75ea7cd945484a6010d7b91f5246a27a7dc8247f356522136560ffcfc8",
+      "sha256": "0acda0354ffc6c44f84eed225eae7b7290122424af0da60412cae032c9479891"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "baseline_sha256": "bf64fe8da279206b1ff69299181529d4cc37f038c6939ccdc45334145ef65702",
+      "sha256": "adacb7b52052d1def7629e2982e0e7484c95cf463e72e4b36177339b1c514b41"
+    },
+    {
+      "path": "apps/desktop/src/core/api.ts",
+      "baseline_sha256": "2ede10c06019d1bca85813a9c92508a77157bc55c5a2f3161f90d5f69eaf3c94",
+      "sha256": "3444df2cc0e0be82bde8999937105aa423850bb63b8b233322c06fce5c7e053e"
+    },
+    {
+      "path": "apps/desktop/src/core/types.ts",
+      "baseline_sha256": "18dd3661bb0feddb4eb6c7cac55958fe5d6ab7aeee5330d34e37119ae072fa88",
+      "sha256": "026ef7770498250c8aec5d0bc6234fbb60dd1d25ba1f119ce6a29e37870d2477"
+    },
+    {
+      "path": "apps/desktop/src/features/agents/agent-capabilities.test.ts",
+      "baseline_sha256": "d75bde8514eb83fb38aa73cb147e6c42c9b4acb65e14d6c78ce78a6e3701d743",
+      "sha256": "b6531887dc360557a8671f5c22408e844fa3bf35434d7276e26fb959c6fd5f6b"
+    },
+    {
+      "path": "apps/desktop/src/features/agents/agent-capabilities.ts",
+      "baseline_sha256": "0ee14d8857b3bf8c2f996b880f645cd0a93dd861d8c712b98ab65e019f47f54e",
+      "sha256": "37288ef53e40ab7282a9b581fb2b18d4c56955b2b8257bb80004c8fc6e3e70e7"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/RemoteConnectionPanel.test.tsx",
+      "baseline_sha256": "e4a483eb9c40e21595ee428e99ae3529eaeac06fe655bb6e8d6ebf7e3b131652",
+      "sha256": "1963a040c5efe2bade02aa5c62b9a621a433af2ff3f2261378969b3e85e7b9dd"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/RemoteConnectionPanel.tsx",
+      "baseline_sha256": "8f46580a0cd3386f776c8df473d99f0f9b431d0a60c8ba9e48d110131078e5cf",
+      "sha256": "567b2d5cb584c3051ad8448a1ca09aab3472c39bb9f92713fcc9bdd95d3ed9ac"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/WebAccessSettings.test.tsx",
+      "baseline_sha256": "da11be28660f7bd508db466fdff792f8f597ba3b4b6b94488ccd820a2ae23a06",
+      "sha256": "3caec1be83ff7d4fc35e8b039bd8e29b8187f96dcd90076e02d21b0e8198e283"
+    },
+    {
+      "path": "apps/desktop/src/features/remote/WebAccessSettings.tsx",
+      "baseline_sha256": "cadf352f91ce111d870ac6b9ebd6597cc80cf912207b7a524c0495c34388128b",
+      "sha256": "24b9b36d222ca3c5db8727eaf6a74fbe4e3d4014e5c0dabaf8093e58213b88c6"
+    },
+    {
+      "path": "apps/desktop/src/features/sessions/SessionHubPage.test.tsx",
+      "baseline_sha256": "dee4383581c943c0a54738292dbc21d284b8d45c31455c52c7966c442393ba2d",
+      "sha256": "5f4e821858f6558878966de2d5b8334eeb287f094d83e64d5fa91d31da03c537"
+    },
+    {
+      "path": "apps/desktop/src/features/sessions/SessionWindowToolbar.tsx",
+      "baseline_sha256": "c1a2d6eecdb8aff13b4a5fda82bb5114a53277642cc93fafdde112f5c0c7e9f6",
+      "sha256": "703f51d4d19ae449bad4e57f2376695b82a443b6c361f42cb9f96e9d6e71bc08"
+    },
+    {
+      "path": "apps/desktop/src/features/sessions/useSessionSourceCapability.test.tsx",
+      "baseline_sha256": null,
+      "sha256": "fd77ec6faeeaba82038a30c48fea014db4312de7dc9c6715555e8b43ed29b768"
+    },
+    {
+      "path": "apps/desktop/src/features/sessions/useSessionSourceCapability.ts",
+      "baseline_sha256": null,
+      "sha256": "f565da04fdab0877646c7c16cc66d86ecc4ed840a628df320b3db851e701f835"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/NativeImportRecoveryPanel.test.tsx",
+      "baseline_sha256": null,
+      "sha256": "b957d7d5c17c607cc150375ce7c4394a4aebebf2404da28cab823e16df2bd166"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/NativeImportRecoveryPanel.tsx",
+      "baseline_sha256": null,
+      "sha256": "b24951d2e926f67bf4d0ca225dbe3d56649f063140b7790336488cd46a7e6526"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/SessionHandoffDialog.test.tsx",
+      "baseline_sha256": "875ce4fc7678ae4787534819e058c4ce14f9fad7b0662f8d1c61948b0379ee71",
+      "sha256": "1d070c9e4d5b2692c1de439b4b9cba6b1a617eda097d4fd1723b893971c37b40"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/SessionHandoffDialog.tsx",
+      "baseline_sha256": "f47e37fbeee937751356ca91c450ca0c0b445134fce17f270a59c3bef469b94f",
+      "sha256": "c08e392c5b7e2a72d866aa047e5c1bd28aeca9c19cb9dabc35fc91b4c4b25252"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/WorkspaceSessionsPage.test.tsx",
+      "baseline_sha256": "10d7e0725894990b7c79df0294552b3a5d51d2f250139d5cd799c9f15c418c3e",
+      "sha256": "556a0d87a6ee3b634fc00043d4719108c25d78a7aca9760f99dc66f010173767"
+    },
+    {
+      "path": "apps/desktop/src/features/workspace/WorkspaceSessionsPage.tsx",
+      "baseline_sha256": "b1c1b204fc2006cbb3c1e632d946febb0ceb80914c9438df1d5df1c3a87ef8ef",
+      "sha256": "05ebf4580441469c73a89bd4de1c18a3dfe3241e3885f3c25bcf3fe56cd2da84"
+    },
+    {
+      "path": "apps/desktop/src/locales/en-US.json",
+      "baseline_sha256": "1b64339220c93dc242599a2c03aea4d91e17db1192639fd41bb60cbaa7393f32",
+      "sha256": "5e93480b38e76052a8f55cd82fb729f99e8bd99b8db53f10f8ee650a2bf1994f"
+    },
+    {
+      "path": "apps/desktop/src/locales/ja-JP.json",
+      "baseline_sha256": "cc4f8b8f52972036d0619e7aaea2193fb35e3aaab3c1c88c022689fd448f68a3",
+      "sha256": "43404924f3c03e35f7d4e1ed1c5c9e2fb760298597fd4df25c38519e79932212"
+    },
+    {
+      "path": "apps/desktop/src/locales/zh-CN.json",
+      "baseline_sha256": "28648f4f6fc6b6ee001a0fce6cc6b12e77d1c95099de3fff8754a8fe6242d255",
+      "sha256": "99782b63c94e29b183391e910407a7389b2fd34fc2a36e06bee7ccfe5709b2f9"
+    },
+    {
+      "path": "apps/desktop/src/locales/zh-TW.json",
+      "baseline_sha256": "cd934c832d1ce0765c00ea5f912061b59381fd2ebed7c8f762d0cbf9739d5f14",
+      "sha256": "611946b7b3f216c93c0b4eb9175ff3bebfaf1d04c6d8206f0a13f596cf6272ce"
+    },
+    {
+      "path": "apps/desktop/src/routes/workspace/$workspaceId/-changes.test.tsx",
+      "baseline_sha256": "453df87d496765a0e5276d20eed0172e7d83f6074a0e44e9a2eff1666ca96ec1",
+      "sha256": "99f44a132becbf3d856d8b9941019851cd40643ec2a0e91003119087b0b85479"
+    },
+    {
+      "path": "apps/desktop/src/routes/workspace/$workspaceId/changes.tsx",
+      "baseline_sha256": "5b2c195e94ddc25946890543f8d07fa18a284efb014a27ae522f2da0b02bb072",
+      "sha256": "a9286e18244b6abb50968b19f06c015bf820532545c3750655172a96a2bbae37"
+    },
+    {
+      "path": "apps/desktop/vite.config.ts",
+      "baseline_sha256": "9b0dda60fae40f473c89ae109bfb36c11276ffa3155c76489ed80d489b25b33f",
+      "sha256": "fae02ec1d95b0d328d5ca05873f959dbf387ea61055dea719485e3aa898b0c3b"
+    },
+    {
+      "path": "apps/web/src/features/catalog/catalog-copy.ts",
+      "baseline_sha256": "15fa5c005ed8e809d92c1d044f517e95ed2c6113eaf5a3fe38b3005df5df4d36",
+      "sha256": "a57dac1e6ccdb73f4e4a961471aa7a1021261b493063963f80f1a0ea2cfadf8a"
+    },
+    {
+      "path": "apps/web/src/features/catalog/session-details-dialog.tsx",
+      "baseline_sha256": "541cc10b66357453c531490e32df48d365d00324668498757e9770fa3c4c872d",
+      "sha256": "1ee99b022118a8088943d74e9064a281d9de71f1d78e2af7c6c6feecccd31495"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/antigravity.rs",
+      "baseline_sha256": "f122a9afa89150117c8afa1a63c54c01080d4635f2cd61a0ac18a799c152a353",
+      "sha256": "bf79c831647b10014e7a952a855952979959044a7018667810489c7782c51c4c"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/continuation.rs",
+      "baseline_sha256": "b258942651668b81095cd03cb1703de8e2cc575652e4e0f3587497be31c05642",
+      "sha256": "0aa6c36fc1846489d992518ede330aaec431b769b34fa25638730701901fa51e"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/cursor.rs",
+      "baseline_sha256": null,
+      "sha256": "e027b287def56050a779990f3676d2b281a3040f73b9e1ca4b0dfe6a3bd6d767"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/grokbuild.rs",
+      "baseline_sha256": "7c252d31042643d6fc47af84c16787128e323256ae85f3fee9a1e4b1067de726",
+      "sha256": "2ce7f27251f753b58f0370ac4c2873513ca489dae0beecb812594fd7342827b3"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/hermes.rs",
+      "baseline_sha256": "fd871dac9194eb13a1c5e8955049cd64e92ed17be86544b0e261b7e84318d652",
+      "sha256": "585a552fc98b459d4cfb750a71ecacad0bd4f2ac714c43fe700cb4053c0b467c"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/interop_matrix.rs",
+      "baseline_sha256": null,
+      "sha256": "0a8c1981306b0cf3aa983c771b60e7143c1eaf88ca3f11152f51143ddc3673ca"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/lib.rs",
+      "baseline_sha256": "7621782784c13833dcb1d73b4c19b0253a43dcab6b27a471d5dd16341a5c7275",
+      "sha256": "720d80a5e6a21e84a962a520bbf24ed3f8304d671599f38b435403638270453d"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/native_targets.rs",
+      "baseline_sha256": null,
+      "sha256": "7b221bf05e95f1464c734da6546f862b0a6fa4a9e478ba9aba41d7138549527a"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/openclaw.rs",
+      "baseline_sha256": "cf6da1a16849a2092bc0fa3fa7bd07834875e05acb1a26009e8d0bfcfc0e097f",
+      "sha256": "8ca5a666e8434b1a1746412b00e2b22d62399ee310b08b79789899291e813b3c"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/openclaw_sqlite.rs",
+      "baseline_sha256": null,
+      "sha256": "aa9f0d3780fd384f3a334793ccdefe7e0f822ad10cd995c072b6d90f1f8f1dac"
+    },
+    {
+      "path": "crates/agentkib-conversations/src/opencode.rs",
+      "baseline_sha256": "2b9ac1ab103334cfbe03da449089e09ecad28f3eda483328791698153643c816",
+      "sha256": "a69e6fa79a8cf4324a5b25822690fb62415c8cf7e7a0a93af686c00a446c6948"
+    },
+    {
+      "path": "crates/agentkib-conversations/tests/fixtures/cursor-cli-2026-09-26.json",
+      "baseline_sha256": null,
+      "sha256": "832111003e9718a564fff064a21fc5d3513286c3609e68f0a86a56c3d861e50d"
+    },
+    {
+      "path": "crates/agentkib-conversations/tests/fixtures/openclaw-schema-23.sql",
+      "baseline_sha256": null,
+      "sha256": "442f6353efa48ed382711d754a8157e73dee1c7233f4a6c349c8426893c87818"
+    },
+    {
+      "path": "crates/agentkib-core/src/model.rs",
+      "baseline_sha256": "9032954b02b545b46c73235b8268b02377c24126f6e0ea6be2fa8c11f0aab1c4",
+      "sha256": "8c6c04ce73a6d48ecac1094a95c84416b4350dc94be92ca1197e395dc329326f"
+    },
+    {
+      "path": "crates/agentkib-platform/src/terminal.rs",
+      "baseline_sha256": "81015884be6164675fb99bce22b72f0e702035ce5f0ea81fe212ef3f994538a9",
+      "sha256": "5bf812b8bad4c7807957ebcf05eca4ec1fd3b5310be7eb30d74c05e3aa7f0e24"
+    },
+    {
+      "path": "crates/agentkib-protocol/src/lib.rs",
+      "baseline_sha256": "83cdddc1768252f8f278d7e5c23d1a04ea21e9e9bca02f359237fd0240ba74f9",
+      "sha256": "555d72ce599e2b86883841d0b16ad40ce53ef242bc29ef0e6c45b0b12e824c50"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed.rs",
+      "baseline_sha256": "6bbbe0f355d412a280407378c7dbfb9d078f9a1e557fa5f3c673bf18b0f417ae",
+      "sha256": "e9d15e647ee4559b05c036d068abeb9769834c495bd733ad7333dacd6c184893"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/completion.rs",
+      "baseline_sha256": "4f5bb19b81604487d4e3538c71d06ca3e65b3a719a6f4d3ae83210db10b7947f",
+      "sha256": "89fed0b688ffaa893da6477e12e82078af924f52bf8c76c1208d21633834caee"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/state.rs",
+      "baseline_sha256": "5847d09204450ed890c1c8deeb9bedbfbf8d0b822deff5d1a2b1090cbf17d0f2",
+      "sha256": "a3ac63c9570c0d55b54ba4502cb76f3284bebeab7730250aac7570d75a342a92"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/codex_managed/transport.rs",
+      "baseline_sha256": "d7fa5134b6d82489c71cc509df4beaba7cf45b3df04e1189efc6e552ae08fe90",
+      "sha256": "3b00c26f6023617bcd474fae3f18be28bbe9184ccaf59f1753f760b7be5c903d"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/continuation_worker.rs",
+      "baseline_sha256": null,
+      "sha256": "d172dacabc6959b50afc1bf1a9f81b32f6e6e424f38de3ebecad6f6c2cd4b79f"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/main.rs",
+      "baseline_sha256": "f19edd3f4ce6a864c6f085e7075270f04fc30727bb0801e887ef5347fb538726",
+      "sha256": "0f3e1daa636b0c84b26d297cbe2392b366119dc3b49d0aa239d9a0475f0188ff"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/native_import.rs",
+      "baseline_sha256": null,
+      "sha256": "d2e8aef9f02b560467be2c3439591b47d0c24250868ddf13ef01ba20140efdab"
+    },
+    {
+      "path": "crates/agentkib-runtime/src/native_import/openclaw.rs",
+      "baseline_sha256": null,
+      "sha256": "c8dbc7207786de75ae960e466d80e3cc8ac9d942aae1a9d2d509a8558cb6ca31"
+    },
+    {
+      "path": "crates/agentkib-runtime/tests/native_import.rs",
+      "baseline_sha256": null,
+      "sha256": "ad0c676bca41c23678719fb0eec4aa3814a086604c1a61ac2a68d0943de74ca0"
+    },
+    {
+      "path": "crates/agentkib-store/src/lib.rs",
+      "baseline_sha256": "24931d46f4e949e911c34e94a666546da393f7aaf84c772c27b396720edc154a",
+      "sha256": "0ee5bbd7e1eaa7a3a6f7b00e3d1d39c5e7eedd37893ff17079e74ca941797d67"
+    },
+    {
+      "path": "docs/CLAUDE-WEB.md",
+      "baseline_sha256": "5adf4f7a69bfa5f3c5eaf9914ff7c40d75f2acd1814cbcf0bf361459ead73b0a",
+      "sha256": "62eebf150119ba36859e7d0f1c424f5885a41373065e45ac11797b2d1ec5bfd8"
+    },
+    {
+      "path": "docs/FEATURES.md",
+      "baseline_sha256": "6e054291285e9a2a92097eda7b53b8414b493c96f13120c047c62b9b8515655d",
+      "sha256": "5474648b40bf287b2c8e787f023f0cab513fb14e932e9b677085ebd4fb8a75ee"
+    },
+    {
+      "path": "docs/SESSION-INTEROPERABILITY.md",
+      "baseline_sha256": null,
+      "sha256": "157ce0cb45cbd610ed440faba323ff76470d9d3dd985bec891b59be45a4d058b"
+    },
+    {
+      "path": "docs/WEB-SELF-HOSTING.md",
+      "baseline_sha256": "7dc369421ee51b6d7939f174e586bb316d9854cd34714ab73f688e22d22995ff",
+      "sha256": "081780694b5a1d958060da89dca0cbb9a41c5c3d6779400eee07d6c4ea4d426f"
+    },
+    {
+      "path": "qa/all-agent-continuation-2026-09-27.md",
+      "baseline_sha256": null,
+      "sha256": "3cdfc7513e6b532371959dfc31a7f19ab1d93878dd2725484a650dc003bea576"
+    },
+    {
+      "path": "qa/all-agent-continuation-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "8757d88e3ac9174a090d33564aeaf90f53fc5931a280bedcefe24cb0dbb053cf"
+    },
+    {
+      "path": "qa/codex-native-isolation-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "320b30c5275ee5421ed950de7ace65003353bde518b4958b06e251116648aa11"
+    },
+    {
+      "path": "qa/cursor-interop-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "98643bb5b49b32bd8f7f5e91624d27bc36dbdc716274873ae242174baedfa817"
+    },
+    {
+      "path": "qa/free-model-native-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "0a35a5bad0d01358dfae94fcaead3ed9176af6077d3627955b2c3781fe442def"
+    },
+    {
+      "path": "qa/interop-matrix-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "43bc6e0bc1687d4a501d76b21871ae1565adfd8c99bf67147f21d768518e86a2"
+    },
+    {
+      "path": "qa/interop-platform-probes-2026-09-27.md",
+      "baseline_sha256": null,
+      "sha256": "6a598b2587caefcd329b081f530b35c5bf2f791a1150575617d39baa499c12af"
+    },
+    {
+      "path": "qa/interop-targets-2026-09-27.md",
+      "baseline_sha256": null,
+      "sha256": "1f7c96b4b2cad878fa5e6dec2bd0656390e7c0834d74c2f4848d527c2902c890"
+    },
+    {
+      "path": "qa/openclaw-sqlite-2026-09-27.md",
+      "baseline_sha256": null,
+      "sha256": "b167a50c2a11e656b1d08c6ec225d13df94291266b3c0579dd95c3e0a2d89f72"
+    },
+    {
+      "path": "qa/probes/claude-native-reply.mjs",
+      "baseline_sha256": null,
+      "sha256": "80d6f81724363ff0cf6adc9ae4df76fa529a086f2b5cf4b122510798aa614aaa"
+    },
+    {
+      "path": "qa/probes/openclaw-sqlite-fixtures.mjs",
+      "baseline_sha256": null,
+      "sha256": "7a23c53cd039c1611accd20e7f40b3734c266ba5d494da5c3bae5796ff0417b0"
+    },
+    {
+      "path": "qa/probes/opencode-native-free.mjs",
+      "baseline_sha256": null,
+      "sha256": "37212f51732e4bfda7c25bbb7da7d88f99c7a578c5e2c47b9a3e77a37b74ef89"
+    },
+    {
+      "path": "qa/quality-gates-2026-09-28.md",
+      "baseline_sha256": null,
+      "sha256": "371429edbbf5f8c6d20d0d1fe0f7f7d8537080ed338f9837a7ab26783d2c91fe"
+    }
+  ],
+  "missing_baseline_files": []
+}

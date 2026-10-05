@@ -23,6 +23,7 @@ export function CodexComposer() {
   const session = useSession();
   const {
     selected,
+    current,
     live,
     client,
     access,
@@ -40,6 +41,7 @@ export function CodexComposer() {
     controlReady,
     notice,
   } = session;
+  const isClaude = current?.agent === "claude-code";
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
@@ -248,6 +250,13 @@ export function CodexComposer() {
         if (canSend) void send("send");
       }}
     >
+      {isClaude && (live?.model || live?.cliVersion) && (
+        <p className="px-1 text-xs text-muted-foreground">
+          {[live.model, live.cliVersion && `Claude Code ${live.cliVersion}`]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
       <label className="sr-only" htmlFor="message">
         {t.message}
       </label>
@@ -348,14 +357,16 @@ export function CodexComposer() {
             event.target.value = "";
           }}
         />
-        <CodexComposerControls
-          resources={resources}
-          setResources={setResources}
-          openPhoneFiles={() => fileInput.current?.click()}
-          disabled={busy || submitted || !online}
-          action={primaryAction}
-        />
-        {access?.device?.accessMode !== "full" && (
+        {!isClaude && (
+          <CodexComposerControls
+            resources={resources}
+            setResources={setResources}
+            openPhoneFiles={() => fileInput.current?.click()}
+            disabled={busy || submitted || !online}
+            action={primaryAction}
+          />
+        )}
+        {(isClaude || access?.device?.accessMode !== "full") && (
           <div className="flex min-w-0 items-center justify-between gap-2">
             <Button
               type="button"
@@ -375,7 +386,7 @@ export function CodexComposer() {
             {primaryAction}
           </div>
         )}
-        {running && (
+        {running && !isClaude && (
           <div className="space-y-2 border-t pt-2">
             <div className="flex flex-wrap gap-2">
               <Button
@@ -415,7 +426,7 @@ export function CodexComposer() {
           {display.reason}
         </p>
       )}
-      {access?.device?.accessMode !== "full" && (
+      {!isClaude && access?.device?.accessMode !== "full" && (
         <details className="px-1 text-xs text-muted-foreground">
           <summary className="min-h-11 cursor-pointer content-center">{layout.help}</summary>
           <p className="pb-2 leading-5">{copy.composerHint}</p>

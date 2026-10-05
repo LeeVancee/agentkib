@@ -99,6 +99,7 @@ function EmbeddedShell() {
           <ManagedTasks
             key={String(props.create)}
             create
+            showTrigger={false}
             initialOpen={props.create}
             onDismiss={props.onCreateClosed}
           />

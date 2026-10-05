@@ -152,6 +152,9 @@ app.on("before-quit", (event) => {
 });
 
 nativeTheme.on("updated", () => {
+  if (process.platform !== "darwin" && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setTitleBarOverlay(mainWindowTitleBarOverlay());
+  }
   sendRendererEvent("agentkib:theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });
 
@@ -260,6 +263,10 @@ async function startApplication(): Promise<void> {
         { id: string; name: string; path: string }[]
       >;
     },
+    claudeManagedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.claudeManaged, params);
+    },
     managedRequest: (params) => {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
       return requireRuntime().request(RUNTIME_METHODS.codexManaged, params);
@@ -314,6 +321,10 @@ async function startApplication(): Promise<void> {
       return requireRuntime().request(RUNTIME_METHODS.listWorkspaces, {}) as Promise<
         { id: string; name: string; path: string }[]
       >;
+    },
+    claudeManagedRequest: (params) => {
+      if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+      return requireRuntime().request(RUNTIME_METHODS.claudeManaged, params);
     },
     managedRequest: (params) => {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
@@ -708,6 +719,11 @@ function registerHomeIpc(): void {
     assertTrustedRenderer(event);
     return requireRuntime().request(RUNTIME_METHODS.remoteRequest, requireRemoteRequest(input));
   });
+  ipcMain.handle("agentkib:claude:request", (event, input: unknown) => {
+    assertTrustedRenderer(event);
+    if (!webAccess) throw new Error("runtime_unavailable");
+    return webAccess.localClaude(input);
+  });
   ipcMain.handle("agentkib:web:request", (event, input: unknown) => {
     assertTrustedRenderer(event);
     const request = input as Parameters<WebAccessService["request"]>[0];
@@ -1021,6 +1037,17 @@ function requireRefreshCoordinator(): ElectronRefreshCoordinator {
   return refreshCoordinator;
 }
 
+// 必须与 styles.css 中窗口工具栏的高度（52px）一致，否则系统标题栏按钮与页面顶栏错位。
+const WINDOW_TOOLBAR_HEIGHT = 52;
+
+function mainWindowTitleBarOverlay() {
+  return {
+    color: "#00000000",
+    symbolColor: nativeTheme.shouldUseDarkColors ? "#f4f4f5" : "#1f2937",
+    height: WINDOW_TOOLBAR_HEIGHT,
+  };
+}
+
 async function createMainWindow(): Promise<void> {
   const window = new BrowserWindow({
     title: "AgentKib",
@@ -1036,7 +1063,10 @@ async function createMainWindow(): Promise<void> {
           titleBarStyle: "hiddenInset" as const,
           trafficLightPosition: { x: 15, y: 17 },
         }
-      : {}),
+      : {
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: mainWindowTitleBarOverlay(),
+        }),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

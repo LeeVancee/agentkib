@@ -13,7 +13,7 @@ This document describes AgentKib's current product surfaces and support boundari
 | Today | Prioritized local actions and recent workspace activity |
 | Workspaces | Discovered and manually added projects, with coverage and warnings |
 | Asset catalog | A machine-wide view of Instructions, Skills, MCP, memory, and other agent assets |
-| Skill Hub | A local Skill library, reviewed OpenAI catalog, public GitHub import, updates, rollback, and recoverable removal |
+| Skill Hub | A local Skill library, existing-installation inspection and copy import, reviewed OpenAI/GitHub sources, personal/project deployment, updates, rollback, withdrawal, and recoverable library removal |
 | Agents | Installation state, configuration homes, capabilities, and discovered assets |
 | Quota | Locally available quota windows, balances, and reset times |
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |
@@ -52,7 +52,7 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - History opens with the latest 50 records (messages and tool summaries), displayed chronologically. Load earlier records on demand.
 - Codex and Claude Code JSONL histories are read from the tail with bounded scanning and memory, rather than loading the entire transcript before pagination. Antigravity ACP histories are replayed through the official ACP server with bounded pages and update budgets. OpenCode is read through its bounded export command; OpenClaw, Hermes, and Grok Build use their verified local history sources. Page byte limits may return fewer than 50 records; an empty scan window can still offer earlier records.
 - Damaged or oversized log records produce a warning. Very distant message/tool associations or ambiguous legacy metadata may be shown conservatively with a warning instead of requiring a full-file scan.
-- History pagination is read-only. Codex, Claude Code, Antigravity ACP, and OpenCode histories can be used as reviewed handoff sources. OpenClaw, Hermes, and Grok Build histories remain read-only and cannot be exported or continued from AgentKib.
+- History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor is limited to verified CLI stores, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Their offline native storage checks have passed; OpenCode/Hermes terminal history and restart checks also pass. New-target real replies remain unverified; one OpenClaw-to-Claude production-rendered history has a correct real reply, with full per-direction acceptance still pending. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
 
 ### Skill Hub
 
@@ -61,6 +61,10 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - Discovery supports the reviewed OpenAI catalog and public GitHub repository, tree, or `SKILL.md` URLs.
 - Installation previews an immutable commit, package metadata, file list, executable resources, compatibility, license, and content changes without running package code.
 - Managed Skills support update checks, local-drift warnings, one-version rollback, recoverable removal, and restore. Unmanaged local packages remain inspectable but cannot be updated online.
+- Skill management adds existing-installation inspection and copy import, bounded content previews, and reviewed personal/project deployments for all eight writable agents. Deployments have independent update, rollback and withdrawal; native visibility and shared-directory effects are reported separately from file installation. See [Skill management](SKILLS.md).
+- Ownership checks cover ancestor project records across library homes and delayed Home-only ChangeSets. OpenCode's Claude compatibility visibility respects its disable flags and keeps its default source independent of Claude Home overrides.
+- OpenCode inspection includes native configuration directories and effective `skills.paths`, with project-disable settings and independent sources evaluated together. Deployment lists refresh current native readers without rewriting ownership receipts.
+- Local copy import preserves Skills that use their directory name instead of an explicit `name`. OpenCode compatibility inspection includes hidden, nested and ancestor sources without adding write targets.
 
 ### Tools and updates
 
@@ -78,11 +82,11 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 | Codex | Yes | Yes | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes | Yes | Yes |
 | Antigravity | Yes | Yes | ACP sessions | ACP source only | Detect/docs |
-| Cursor | Yes | Yes | — | — | Yes |
+| Cursor | Yes | Yes | Verified CLI stores | CLI, per-session check | Yes |
 | OpenCode | Yes | Yes | Yes | Yes | Yes |
-| OpenClaw | Yes | Yes | Read-only | — | Yes |
-| Hermes | Yes | Yes | Read-only | — | Yes |
-| Grok Build | Yes | Yes | Read-only | — | Yes |
+| OpenClaw | Yes | Yes | Read-only | Per-session check | Yes |
+| Hermes | Yes | Yes | Read-only | Per-session check | Yes |
+| Grok Build | Yes | Yes | Read-only | Per-session check | Yes |
 | DeepSeek Harness | Beta, read-only | Diagnostics only | — | — | — |
 
 AgentKib distinguishes an installed app or CLI from local data left behind after uninstalling it. Agent Home writes require separate approval. Antigravity ACP sessions are not claimed to be the complete Desktop/IDE or CLI history store, and current stable interfaces cannot import foreign history into an Antigravity-native session. DeepSeek Harness remains a read-only Beta target and is never written to, configured for MCP, or included in tool management.
@@ -90,7 +94,7 @@ AgentKib distinguishes an installed app or CLI from local data left behind after
 ### Web access and continuation
 
 - Pairing grants read access first. Sending and approvals are separate per-browser permissions and also require the host control switch.
-- On a verified macOS Claude Code installation, Web control starts an AgentKib-managed `claude --resume` process for the selected indexed session. It does not take over an existing terminal, and viewing history never starts a model.
+- Claude Code desktop/Web control shares one execution service on verified macOS `2.1.263` / `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Text/images/files, approvals/questions, cancellation and durable receipts are implemented. LAN uploads remain disabled; Windows/Linux control and real-device acceptance are not implied. See [Claude usage](CLAUDE-WEB.md) and [current QA](../qa/claude-managed-2026-09-30.md).
 - Codex Web control follows an already-open official owner session and remains gated to explicit acceptance builds. Unknown versions, unsupported platforms, missing owners, and unverified interaction shapes remain read-only.
 - Antigravity Web control manages only sessions returned by the official ACP server. It negotiates ACP v1 capabilities, checks the indexed session and workspace again, and requires exact revision, turn, request, and offered permission option matches.
 - A request receipt does not mean a turn or approval completed. Disconnects and uncertain outcomes are never retried automatically.
@@ -116,7 +120,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | 今日任务 | 排好优先级的本地行动项和近期工作区活动 |
 | 工作区 | 自动发现或手动添加的项目，以及覆盖情况和警告 |
 | 全局资产目录 | 跨工作区查看 Instructions、Skills、MCP、记忆和其他 Agent 资产 |
-| Skill Hub | 本地 Skill 资源库、OpenAI 精选目录、公开 GitHub 导入、更新、回滚和可恢复移除 |
+| Skill Hub | 本地 Skill 资源库、已有安装查看与复制入库、OpenAI 精选及 GitHub 导入、个人/项目部署、更新、回滚、撤销部署和资源库可恢复移除 |
 | Agent | 安装状态、配置 Home、能力和已发现资产 |
 | 额度 | 本机可读取的额度窗口、余额和重置时间 |
 | 洞察 | 本地派生的 Token、会话、Git 活动、热力图和成就 |
@@ -157,7 +161,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 默认加载最新 50 条记录（消息和工具摘要），按时间正序展示；更早记录按需加载。
 - Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。Antigravity ACP 历史通过官方 ACP server 有界回放。OpenCode 通过有界导出命令读取；OpenClaw、Hermes 和 Grok Build 使用各自经过校验的本机历史来源。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
 - 损坏或超大的日志记录会显示提示；距离过远的消息/工具关联，以及无法明确判断的旧格式元数据，会保守展示并提示，而非要求扫描完整文件。
-- 历史分页只读，不修改原记录。Codex、Claude Code、Antigravity ACP 与 OpenCode 历史可以作为经过审查的交接来源；OpenClaw、Hermes 和 Grok Build 历史保持只读，不能从 AgentKib 导出或续接。
+- 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 限已验证 CLI 格式，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。离线原生存储检查已通过，OpenCode/Hermes 终端历史与重启检查也已通过；新目标真实回复仍未验收。新版 OpenClaw 到 Claude 的生产转换载荷已有一轮正确真实回复，全部方向的完整交接验收尚未完成，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
 
 ### Skill Hub
 
@@ -166,6 +170,10 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 发现支持 OpenAI 精选目录，以及公开 GitHub 仓库、Tree 目录或 `SKILL.md` URL。
 - 安装前会预览固定到不可变 Commit 的包元数据、文件列表、可执行资源、兼容性、许可证和内容变化，不执行包内代码。
 - 受管 Skill 支持更新检查、本地漂移提醒、上一版本回滚、可恢复移除与恢复；本地未托管包可以检查，但不能在线更新。
+- Skill 管理支持查看并复制已有安装、限长内容预览，以及八种可写 Agent 的个人/项目部署。部署可独立更新、回滚和撤销；原生可见性和共享目录影响与文件落盘状态分别展示。参见 [Skill 管理说明](SKILLS.md)。
+- 所有权检查覆盖跨资源库的祖先项目记录，以及延迟应用的纯 Home ChangeSet。OpenCode 的 Claude 兼容可见性遵循禁用开关，其默认来源独立于 Claude Home 覆盖配置。
+- OpenCode 查看范围包含原生配置目录及生效的 `skills.paths`，综合项目禁用配置和独立来源判断可见性。部署列表刷新当前原生读取方，不重写所有权记录。
+- 本地复制入库支持以目录名代替显式 `name` 的 Skill。OpenCode 兼容来源扫描包含隐藏、嵌套和祖先目录，不增加写入目标。
 
 ### 工具与更新
 
@@ -183,11 +191,11 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | Codex | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Claude Code | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Antigravity | 支持 | 支持 | ACP 会话 | 仅作来源 | 检测/文档 |
-| Cursor | 支持 | 支持 | — | — | 支持 |
+| Cursor | 支持 | 支持 | 已验证 CLI 存储 | CLI，逐会话核验 | 支持 |
 | OpenCode | 支持 | 支持 | 支持 | 支持 | 支持 |
-| OpenClaw | 支持 | 支持 | 只读 | — | 支持 |
-| Hermes | 支持 | 支持 | 只读 | — | 支持 |
-| Grok Build | 支持 | 支持 | 只读 | — | 支持 |
+| OpenClaw | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Hermes | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
+| Grok Build | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
 | DeepSeek Harness | Beta，只读 | 仅诊断 | — | — | — |
 
 AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉及 Agent Home 的写入会单独请求授权。Antigravity ACP 会话不代表完整的 Desktop/IDE 或 CLI 历史；当前稳定接口也不能把外部历史导入 Antigravity 原生会话。DeepSeek Harness 仍是只读 Beta 目标，不会被写入、配置 MCP 或纳入工具管理。
@@ -195,7 +203,7 @@ AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉�
 ### Web 访问与续接
 
 - 配对首先授予读取权限；发送和审批是单独的浏览器权限，同时还需要打开主机控制开关。
-- 对经过验证的 macOS Claude Code 安装，Web 控制会为所选的已索引会话启动 AgentKib 托管的 `claude --resume` 进程。它不会接管已有终端，查看历史也不会启动模型。
+- Claude Code 桌面/Web 在已验证 macOS `2.1.263` / `2.1.285` 上共用执行服务：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。已实现文本/图片/文件、审批/问题、取消与持久回执；LAN 仍禁上传，Windows/Linux 控制及真实设备验收不据此宣称通过。详见 [Claude 使用说明](CLAUDE-WEB.md) 与[本轮 QA](../qa/claude-managed-2026-09-30.md)。
 - Codex Web 控制跟随官方客户端中已打开的 owner 会话，并继续只在明确的验收构建中开放。版本未知、平台不支持、没有 owner 或交互结构未经验证时保持只读。
 - Antigravity Web 控制只管理官方 ACP server 返回的会话。运行时协商 ACP v1 能力，重新核验索引会话和工作区，并要求 revision、turn、request 与服务端提供的权限选项全部精确匹配。
 - 请求回执不代表轮次或审批已经完成。断线或结果不明确时不会自动重试。

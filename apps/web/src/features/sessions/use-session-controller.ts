@@ -1192,10 +1192,15 @@ export function useSessionController({
   const hasSupportedQuestion = live?.questions?.some((item) => item.supported) ?? false;
   useEffect(() => {
     setCapabilities(undefined);
-    if (!selected || access?.status !== "approved" || selectedAgent !== "codex") return;
+    if (
+      !selected ||
+      access?.status !== "approved" ||
+      (selectedAgent !== "codex" && selectedAgent !== "claude-code")
+    )
+      return;
     const abort = new AbortController();
     void client
-      .codexCapabilities(selected, abort.signal)
+      .sessionCapabilities(selected, selectedAgent, abort.signal)
       .then((result) => {
         if (!abort.signal.aborted && result.sessionId === selected && result.features)
           setCapabilities(result);
@@ -1389,12 +1394,15 @@ export function useSessionController({
     const g = generation.current,
       id = selected;
     const requestId = crypto.randomUUID();
-    const isCodex =
-      sessions.find((session) => session.id === id)?.agent === "codex" ||
+    const needsDurableReceipt =
+      ["codex", "claude-code"].includes(
+        sessions.find((session) => session.id === id)?.agent ?? "",
+      ) ||
+      live.executionMode === "claude-managed" ||
       live.executionMode?.startsWith("codex-");
-    const scope = isCodex ? durableScope.current : undefined;
+    const scope = needsDurableReceipt ? durableScope.current : undefined;
     try {
-      if (isCodex) {
+      if (needsDurableReceipt) {
         try {
           if (!scope) throw new Error("missing_device_scope");
           rememberPending(scope, { requestId, sessionId: id, kind });

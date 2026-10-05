@@ -1404,7 +1404,7 @@ describe("busy full-refresh recovery", () => {
     "does not acknowledge a new unknown outcome through an old manual retry (durable: %s)",
     async (durable) => {
       const { client, streams, sessions } = fixture();
-      if (durable) sessions[0].agent = "codex";
+      sessions[0].agent = durable ? "codex" : "antigravity";
       vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
         found: true,
         requestId,
@@ -1908,7 +1908,7 @@ describe("session refresh ownership", () => {
     "retains session-specific unknown outcomes across navigation (durable %s)",
     async (durable) => {
       const { client, sessions } = fixture();
-      if (durable) sessions[0].agent = "codex";
+      sessions[0].agent = durable ? "codex" : "antigravity";
       vi.spyOn(client, "receipt").mockImplementation(async (requestId) => ({
         found: true,
         requestId,
@@ -1969,6 +1969,7 @@ describe("shared embedded conversation", () => {
     );
     expect(await screen.findByRole("dialog")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "New task" })).not.toBeInTheDocument();
   });
 
   it.each(["reconnect", "settlement", "runtime restart"])(

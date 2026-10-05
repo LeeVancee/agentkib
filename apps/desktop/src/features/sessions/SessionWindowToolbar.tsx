@@ -1,5 +1,7 @@
+import { cn } from "@/lib/utils";
+import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, ArrowUpRight, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
+import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,6 +13,7 @@ import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { displaySessionTitle } from "@/features/workspace/session-title";
+import { useSessionSourceCapability } from "./useSessionSourceCapability";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
@@ -26,10 +29,14 @@ export function SessionWindowToolbar() {
     useSessionViewStore.getState().setCreatingConversation(true);
     hub.select();
   };
+  const historyId = selected?.indexedSessionIds ? selected.indexedSessionIds[0] : selected?.id;
+  const sourceCapability = useSessionSourceCapability(
+    selected && !selected.remote && selected.availability === "readable" ? historyId : undefined,
+  );
   if (!selected)
     return (
-      <div className="app-toolbar-content">
-        <div className="app-toolbar-breadcrumb" aria-label={tr("common.breadcrumb")}>
+      <div className={navigationStyles.appToolbarContent}>
+        <div className={navigationStyles.appToolbarBreadcrumb} aria-label={tr("common.breadcrumb")}>
           {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
         {hasDesktopConversation() && hub.localEnabled && (
@@ -40,13 +47,12 @@ export function SessionWindowToolbar() {
         )}
       </div>
     );
-  const historyId = selected.indexedSessionIds ? selected.indexedSessionIds[0] : selected.id;
   const canContinue =
     historyId &&
     workspace &&
     !selected.remote &&
     selected.availability === "readable" &&
-    canContinueFromHistory(selected.agent);
+    canContinueFromHistory(sourceCapability);
   const continueSession = () => {
     if (!canContinue) return;
     void navigate({
@@ -56,18 +62,7 @@ export function SessionWindowToolbar() {
     });
   };
   return (
-    <div className="app-toolbar-content session-window-toolbar">
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={tr("sessions.backOverview")}
-        onClick={() => {
-          useSessionViewStore.getState().setCreatingConversation(false);
-          hub.select();
-        }}
-      >
-        <ArrowLeft size={17} />
-      </Button>
+    <div className={cn(navigationStyles.appToolbarContent, "session-window-toolbar")}>
       <AgentIcon agent={selected.agent} compact />
       <h1 className="session-window-title" title={displaySessionTitle(selected.title, tr)}>
         {displaySessionTitle(selected.title, tr)}
@@ -80,24 +75,33 @@ export function SessionWindowToolbar() {
           </Button>
         )}
         {canContinue && (
-          <Button variant="ghost" size="sm" onClick={continueSession}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={tr("sessions.continueWorkspace")}
+            title={tr("sessions.continueWorkspace")}
+            onClick={continueSession}
+          >
             <ArrowUpRight size={15} />
-            {tr("sessions.continueWorkspace")}
           </Button>
         )}
         <Button
-          variant="ghost"
-          size="sm"
+          variant="outline"
+          size="icon"
           disabled={hub.refreshing}
+          aria-label={tr("sessions.refresh")}
+          title={tr("sessions.refresh")}
           onClick={() => void hub.refresh()}
         >
           <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
-          {tr("sessions.refresh")}
         </Button>
       </div>
       <div className="session-window-menu">
         <DropdownMenu>
-          <DropdownMenuTrigger className="app-toolbar-more" aria-label={tr("common.moreActions")}>
+          <DropdownMenuTrigger
+            className={navigationStyles.appToolbarMore}
+            aria-label={tr("common.moreActions")}
+          >
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
@@ -107,6 +111,15 @@ export function SessionWindowToolbar() {
                 {tr("sessions.newConversation")}
               </DropdownMenuItem>
             )}
+            <DropdownMenuItem
+              onClick={() => {
+                useSessionViewStore.getState().setCreatingConversation(false);
+                hub.select();
+              }}
+            >
+              <LayoutDashboard size={15} />
+              {tr("sessions.backOverview")}
+            </DropdownMenuItem>
             {canContinue && (
               <DropdownMenuItem onClick={continueSession}>
                 <ArrowUpRight size={15} />

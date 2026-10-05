@@ -9,6 +9,7 @@ import type {
   AppUpdateProgress,
   ChangeSet,
   CloseBehavior,
+  CursorBridgeRequest,
   ContextDoctorSummary,
   GitDiffRequest,
   GitHistoryQuery,
@@ -20,6 +21,8 @@ import type {
   McpRegistryEntry,
   McpServerConfig,
   SkillSource,
+  SkillDetailRequest,
+  PrepareSkillDeploymentRequest,
   MemoryStatus,
   MemoryType,
   OnboardingEvent,
@@ -35,6 +38,7 @@ import type {
 const DOCTOR_SUMMARY_BATCH_LIMIT = 100;
 
 export const api = {
+  claudeRequest: (request: Record<string, unknown>) => desktopApi().claude.request(request),
   remoteRequest: <T extends RemoteRequest>(request: T) => desktopApi().remote.request(request),
   scan: (project: string) => desktopApi().workspace.scan(project),
   manifest: async (project: string) => {
@@ -129,6 +133,19 @@ export const api = {
   removedSkills: () => desktopApi().skills.removed(),
   restoreSkill: (id: string) => desktopApi().skills.restore(id),
   readSkillFile: (name: string, path: string) => desktopApi().skills.readFile(name, path),
+  skillInventory: () => desktopApi().skills.inventory(),
+  skillTargets: () => desktopApi().skills.targets(),
+  skillDetail: (request: SkillDetailRequest) => desktopApi().skills.getDetail(request),
+  readSkillDetailFile: (request: SkillDetailRequest & { path: string }) =>
+    desktopApi().skills.readDetailFile(request),
+  prepareSkillImport: (observationId: string) => desktopApi().skills.prepareImport(observationId),
+  readSkillPreviewFile: (token: string, path: string, targetId?: string) =>
+    desktopApi().skills.readPreviewFile(token, path, targetId),
+  skillDeployments: () => desktopApi().skills.listDeployments(),
+  prepareSkillDeployment: (request: PrepareSkillDeploymentRequest) =>
+    desktopApi().skills.prepareDeployment(request),
+  applySkillDeployment: (token: string, approveHome: boolean) =>
+    desktopApi().skills.applyDeployment(token, approveHome),
   nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     desktopApi().mcp.planMigration(project, candidateIds),
@@ -170,6 +187,13 @@ export const api = {
     desktopApi().workspace.refreshSessions(workspaceId, force),
   sessionEvents: (sessionId: string, cursor?: string, limit = DEFAULT_SESSION_PAGE_SIZE) =>
     desktopApi().workspace.sessionEvents(sessionId, cursor, limit),
+  sessionSourceCapability: (sessionId: string) =>
+    desktopApi().workspace.sourceCapability(sessionId),
+  nativeImportOperations: (workspaceId: string) =>
+    desktopApi().workspace.nativeImports(workspaceId),
+  cursorBridge: (request: CursorBridgeRequest) => desktopApi().workspace.cursorBridge(request),
+  cursorBridgeBundle: () => desktopApi().workspace.bridgeBundle(),
+  revealCursorBridgeBundle: () => desktopApi().workspace.revealBridgeBundle(),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
   planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
@@ -188,6 +212,9 @@ export const api = {
     acceptLosses: boolean,
     historyBudgetTokens: number,
     archiveId: string | undefined,
+    targetFingerprint?: string,
+    targetSurface?: "cursor-ide",
+    bindingId?: string,
   ) =>
     desktopApi().workspace.planHandoff(
       sessionId,
@@ -201,6 +228,9 @@ export const api = {
       acceptLosses,
       historyBudgetTokens,
       archiveId,
+      targetFingerprint,
+      targetSurface,
+      bindingId,
     ),
   continueSessionHandoff: (
     changeSet: ChangeSet,

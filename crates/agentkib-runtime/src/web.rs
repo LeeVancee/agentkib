@@ -24,6 +24,7 @@ impl Worker {
             let mut service = Service::default();
             let hub = crate::session_stream::Hub::new(service.boot.clone(), notify);
             service.managed.set_streams(hub.clone());
+            service.claude_managed.set_streams(hub.clone());
             service.streams = Some(hub);
             while let Ok(request) = receiver.recv() {
                 let session = request.params["sessionId"].as_str().map(str::to_owned);
@@ -36,12 +37,27 @@ impl Worker {
                 } else if request.method == agentkib_protocol::SESSIONS_UNSUBSCRIBE_METHOD {
                     service.unsubscribe(request.params)
                 } else if request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD {
-                    service.managed.receipt(request.params)
+                    service
+                        .managed
+                        .receipt(request.params)
+                        .and_then(|receipt| service.claude_managed.receipt(receipt, &service.boot))
+                } else if request.method == agentkib_protocol::CLAUDE_MANAGED_METHOD {
+                    service
+                        .claude_managed
+                        .request(request.params, &service.boot, true)
                 } else if request.method == agentkib_protocol::CODEX_MANAGED_METHOD {
                     service.managed.request(request.params, &service.boot, true)
                 } else {
                     service.request(request.params)
                 };
+                let session = session.or_else(|| {
+                    result
+                        .as_ref()
+                        .ok()?
+                        .get("sessionId")?
+                        .as_str()
+                        .map(str::to_owned)
+                });
                 if !matches!(
                     operation.as_str(),
                     "" | "live"
@@ -97,6 +113,7 @@ impl Worker {
                 request.params["operation"].as_str(),
                 Some(
                     "catalog"
+                        | "options"
                         | "events"
                         | "live"
                         | "capabilities"
@@ -109,16 +126,22 @@ impl Worker {
                         | "resources"
                 )
             );
-        let claimed = self
-            .pending
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                if (read && n < 32) || n == 0 {
-                    Some(n + 1)
-                } else {
-                    None
-                }
-            });
-        if claimed.is_err() {
+        let mut pending = self.pending.load(Ordering::SeqCst);
+        let claimed = loop {
+            if !((read && pending < 32) || pending == 0) {
+                break false;
+            }
+            match self.pending.compare_exchange_weak(
+                pending,
+                pending + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break true,
+                Err(current) => pending = current,
+            }
+        };
+        if !claimed {
             return Some(RpcResponse::error(id, -32000, "web-busy", None));
         }
         if self
@@ -241,6 +264,7 @@ fn follower_thread_settings(
 struct Service {
     streams: Option<crate::session_stream::Hub>,
     managed: crate::codex_managed::Service,
+    claude_managed: crate::claude_managed::Service,
     boot: String,
     used: BTreeSet<String>,
     // Independent of the bridge cache: reconnect/eviction must not turn a lost
@@ -265,6 +289,7 @@ impl Default for Service {
         Self {
             streams: None,
             managed: crate::codex_managed::Service::default(),
+            claude_managed: crate::claude_managed::Service::default(),
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
             unresolved: BTreeSet::new(),
@@ -295,6 +320,9 @@ impl Service {
         match live["executionMode"].as_str() {
             Some("codex-follower") => return Ok(()),
             Some("codex-managed") if self.managed.republish_live(id)? => return Ok(()),
+            Some("claude-managed") if self.claude_managed.republish_live(id, &live) => {
+                return Ok(());
+            }
             Some("managed-resume") => {
                 if let Some(runner) = self.claude.get(id) {
                     runner.republish_live();
@@ -422,6 +450,14 @@ impl Service {
     }
 
     fn request(&mut self, value: Value) -> anyhow::Result<Value> {
+        if let Some(id) = value["sessionId"].as_str()
+            && self.claude_managed.is_claude(id)?
+            && (self.claude_managed.has_metadata(id)? || value["operation"] != "events")
+            && value["operation"] != "diff"
+        {
+            return self.claude_managed.request(value, &self.boot, false);
+        }
+
         if matches!(
             value["operation"].as_str(),
             Some(
@@ -592,8 +628,9 @@ impl Service {
         };
         if request.operation == "catalog" {
             let mut catalog = web_catalog(&source)?;
-            let managed = self.managed.catalog()?;
-            let indexed_aliases: BTreeSet<_> = managed
+            let mut managed = self.managed.catalog()?;
+            managed.extend(self.claude_managed.catalog()?);
+            let mut indexed_aliases: BTreeSet<_> = managed
                 .iter()
                 .flat_map(|session| {
                     session["indexedSessionIds"]
@@ -603,6 +640,8 @@ impl Service {
                         .filter_map(Value::as_str)
                 })
                 .collect();
+            let claude_aliases = self.claude_managed.indexed_aliases()?;
+            indexed_aliases.extend(claude_aliases.iter().map(String::as_str));
             if !managed.is_empty() {
                 let store = Store::open_default()?;
                 let managed_workspaces: BTreeSet<_> = managed
@@ -685,7 +724,8 @@ impl Service {
                 std::time::Instant::now(),
                 request.operation != "live",
                 || {
-                    let adapter = provider(session.agent).context("provider-unavailable")?;
+                    let adapter =
+                        provider(session.agent, &workspace).context("provider-unavailable")?;
                     let native = adapter
                         .list_sessions(&workspace)?
                         .into_iter()
@@ -900,7 +940,7 @@ impl Service {
                 if session.agent != AgentKind::Codex {
                     return self.unsupported(&request, "provider-unsupported");
                 }
-                let native = provider(session.agent)
+                let native = provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .list_sessions(&workspace)?
                     .into_iter()
@@ -910,7 +950,7 @@ impl Service {
                             .is_ok_and(|found| found == id)
                     })
                     .context("session-unavailable")?;
-                let uuid = match provider(session.agent)
+                let uuid = match provider(session.agent, &workspace)
                     .context("provider-unavailable")?
                     .verified_control_id(&native.native_ref)
                 {
@@ -1580,6 +1620,110 @@ mod follower_cache_tests;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn managed_claude_subscription_receives_native_completion_without_live_polling() {
+        let (directory, mut managed, workspace) = crate::claude_managed::tests::fixture();
+        let (sent, notifications) = std::sync::mpsc::channel();
+        let boot = "boot".to_owned();
+        let hub =
+            crate::session_stream::Hub::new(boot.clone(), move |event| sent.send(event).is_ok());
+        managed.set_streams(hub.clone());
+        let mut service = super::Service {
+            streams: Some(hub.clone()),
+            claude_managed: managed,
+            boot: boot.clone(),
+            ..Default::default()
+        };
+        let created = service.claude_managed.request(
+            json!({"operation":"create","workspaceId":workspace,"requestId":uuid::Uuid::new_v4().to_string()}),
+            &boot, true,
+        ).unwrap();
+        let session = created["sessionId"].as_str().unwrap();
+        let baseline = service.subscribe(json!({"sessionId":session})).unwrap();
+        assert_eq!(
+            baseline["events"][0]["payload"]["live"]["executionMode"],
+            "claude-managed"
+        );
+        assert!(
+            !directory.path().join("starts").exists(),
+            "observing must not start Claude"
+        );
+        let request = uuid::Uuid::new_v4().to_string();
+        let result = service.request(json!({"operation":"send","sessionId":session,"requestId":request,"runtimeBootId":boot,"expectedRevision":0,"experimentalEnabled":true,"text":"hello"})).unwrap();
+        assert_eq!(result["accepted"], true, "{result}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_reply = false;
+        loop {
+            let notification = notifications
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            let event = &notification;
+            if event["type"] == "item-upsert" && event["payload"]["content"] == "reply" {
+                saw_reply = true;
+            }
+            if event["type"] == "text-delta" && event["payload"]["text"] == "reply" {
+                saw_reply = true;
+            }
+            if event["type"] == "state" && event["payload"]["status"] == "idle" {
+                break;
+            }
+        }
+        let recovered = hub.subscribe(session, None).unwrap();
+        let payload = &recovered["events"][0]["payload"];
+        assert!(saw_reply, "native output must arrive before the idle event");
+        assert_eq!(payload["live"]["status"], "idle");
+        assert_eq!(payload["live"]["workspaceId"], workspace);
+        assert_eq!(
+            payload["live"]["sourceSessionId"],
+            created["sourceSessionId"]
+        );
+        assert_eq!(payload["live"]["executionMode"], "claude-managed");
+        let catalog = service.claude_managed.catalog().unwrap();
+        assert_eq!(
+            catalog[0]["indexedSessionIds"],
+            json!([catalog[0]["indexedSessionId"]])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_empty_claude_session_keeps_managed_event_routing_and_can_be_readopted() {
+        let (directory, managed, workspace) = crate::claude_managed::tests::fixture();
+        let mut service = super::Service {
+            claude_managed: managed,
+            ..Default::default()
+        };
+        let boot = service.boot.clone();
+        let id = || uuid::Uuid::new_v4().to_string();
+        let created = service
+            .claude_managed
+            .request(
+                serde_json::json!({"operation":"create","workspaceId":workspace,"requestId":id()}),
+                &boot,
+                true,
+            )
+            .unwrap();
+        let session = created["sessionId"].as_str().unwrap();
+        let released = service.claude_managed.request(serde_json::json!({"operation":"release","sessionId":session,"requestId":id(),"runtimeBootId":boot,"expectedRevision":0}), &boot, true).unwrap();
+        assert_eq!(released["accepted"], true);
+        assert!(!service.claude_managed.owns(session).unwrap());
+        assert!(service.claude_managed.has_metadata(session).unwrap());
+        let events = service
+            .request(serde_json::json!({"operation":"events","sessionId":session}))
+            .unwrap();
+        assert_eq!(events["events"], serde_json::json!([]));
+        let live = service.request(serde_json::json!({"operation":"live","sessionId":session,"experimentalEnabled":true})).unwrap();
+        assert_eq!(live["status"], "released");
+        assert_eq!(live["sendEnabled"], false);
+        let inspected = service.request(serde_json::json!({"operation":"inspect","sessionId":session,"experimentalEnabled":true})).unwrap();
+        let adopted = service.claude_managed.request(serde_json::json!({"operation":"adopt","sessionId":session,"requestId":id(),"handoffConfirmed":true,"handoffFingerprint":inspected["handoffFingerprint"]}), &boot, true).unwrap();
+        assert_eq!(adopted["sourceSessionId"], created["sourceSessionId"]);
+        let live = service.request(serde_json::json!({"operation":"live","sessionId":session,"experimentalEnabled":true})).unwrap();
+        assert_eq!(live["status"], "idle");
+        assert_eq!(live["sendEnabled"], true);
+        assert!(!directory.path().join("starts").exists());
+    }
     use super::*;
 
     #[test]
@@ -2408,6 +2552,65 @@ sleep 5
         }
         assert_eq!(worker.pending.load(Ordering::SeqCst), 32);
     }
+
+    #[test]
+    fn worker_admits_only_available_slots_under_concurrent_submissions() {
+        for (operation, capacity) in [("events", 32), ("send", 1)] {
+            let (sender, receiver) = mpsc::sync_channel(32);
+            let worker = Worker {
+                sender: Some(sender),
+                pending: Arc::new(AtomicU64::new(0)),
+                handle: None,
+            };
+            let barrier = std::sync::Barrier::new(64);
+            let accepted = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..64)
+                    .map(|id| {
+                        let worker = &worker;
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":id,"method":"web.request","params":{"operation":operation}})).unwrap();
+                            barrier.wait();
+                            match worker.submit(request) {
+                                None => 1,
+                                Some(response) => {
+                                    assert_eq!(response.error.unwrap().message, "web-busy");
+                                    0
+                                }
+                            }
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .sum::<u64>()
+            });
+            assert_eq!(accepted, capacity);
+            assert_eq!(worker.pending.load(Ordering::SeqCst), capacity);
+            assert_eq!(receiver.try_iter().count() as u64, capacity);
+        }
+    }
+
+    #[test]
+    fn worker_releases_claimed_slot_when_delivery_fails() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = Worker {
+            sender: Some(sender),
+            pending: Arc::new(AtomicU64::new(0)),
+            handle: None,
+        };
+        drop(receiver);
+        for operation in ["events", "send"] {
+            let request = serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"web.request","params":{"operation":operation}})).unwrap();
+            assert_eq!(
+                worker.submit(request).unwrap().error.unwrap().message,
+                "web-unavailable"
+            );
+            assert_eq!(worker.pending.load(Ordering::SeqCst), 0);
+        }
+    }
+
     #[test]
     fn rejects_arbitrary_fields_and_stale_replays() {
         assert!(

@@ -543,6 +543,7 @@ impl AgentSupportCapabilities {
             agent,
             AgentKind::Codex
                 | AgentKind::ClaudeCode
+                | AgentKind::Cursor
                 | AgentKind::OpenCode
                 | AgentKind::OpenClaw
                 | AgentKind::Hermes
@@ -553,13 +554,9 @@ impl AgentSupportCapabilities {
             workspace_discovery: true,
             session_list,
             history_read: session_list,
-            continuation: matches!(
-                agent,
-                AgentKind::Codex
-                    | AgentKind::ClaudeCode
-                    | AgentKind::OpenCode
-                    | AgentKind::Antigravity
-            ),
+            // Coarse source availability; the Runtime still parses the selected
+            // session before exposing continuation for a concrete history.
+            continuation: session_list,
             control: matches!(agent, AgentKind::Codex | AgentKind::Antigravity)
                 .then_some(AgentControlSupport::Experimental)
                 .unwrap_or_default(),
@@ -742,6 +739,7 @@ pub struct SkillSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFileEntry {
+    /// Package-relative path; a trailing `/` denotes a display-only directory entry.
     pub path: String,
     pub size: u64,
     pub executable: bool,
@@ -753,7 +751,7 @@ pub struct SkillCandidate {
     pub description: String,
     pub license: Option<String>,
     pub compatibility: Option<String>,
-    pub source: SkillSource,
+    pub source: Option<SkillSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -789,6 +787,8 @@ pub struct InstalledSkill {
     pub path: PathBuf,
     pub size: u64,
     pub modified_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub content_sha256: Option<String>,
     pub status: InstalledSkillStatus,
     pub source: Option<SkillSource>,
     pub installed_at: Option<DateTime<Utc>>,
@@ -1163,7 +1163,8 @@ mod tests {
 
         let cursor = AgentSupportCapabilities::for_agent(AgentKind::Cursor);
         assert!(cursor.workspace_discovery);
-        assert!(!cursor.session_list);
+        assert!(cursor.session_list);
+        assert!(cursor.continuation);
         assert_eq!(cursor.control, AgentControlSupport::None);
 
         let legacy: AgentInstallation = serde_json::from_value(serde_json::json!({

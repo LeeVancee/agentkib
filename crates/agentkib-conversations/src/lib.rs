@@ -16,15 +16,20 @@ use walkdir::WalkDir;
 mod antigravity;
 mod archive;
 mod continuation;
+mod cursor;
+pub mod cursor_ide;
 mod grokbuild;
 mod hermes;
 mod history;
+pub mod native_targets;
 mod openclaw;
 mod opencode;
 mod paging;
 pub use antigravity::{AntigravityProvider, project_stream_replay};
 pub use archive::*;
 pub use continuation::*;
+pub use cursor::CursorProvider;
+pub use cursor_ide::{CursorIdeIdentity, CursorIdeImportPayload, CursorIdeProfile};
 pub use grokbuild::GrokBuildProvider;
 pub use hermes::HermesProvider;
 pub use openclaw::OpenClawProvider;
@@ -945,6 +950,11 @@ pub struct VerifiedClaudeControlTarget {
 }
 
 impl VerifiedClaudeControlTarget {
+    /// Native transcript already checked by the provider; revalidate before use.
+    pub fn transcript_path(&self) -> &Path {
+        &self.transcript
+    }
+
     pub fn revalidate(&self) -> Result<()> {
         let id = uuid::Uuid::parse_str(&self.session_id)?;
         let reader = BufReader::new(File::open(&self.transcript)?.take(256 * 1024));
@@ -1015,10 +1025,19 @@ pub trait ConversationProvider {
 }
 
 pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
+    providers_with_cursor_ide_profiles(&[])
+}
+
+/// IDE history is opt-in: callers supply only profiles explicitly registered by
+/// the local bridge. Default providers retain the existing CLI-only behavior.
+pub fn providers_with_cursor_ide_profiles(
+    profiles: &[CursorIdeProfile],
+) -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
     vec![
         Box::new(CodexProvider::default()),
         Box::new(ClaudeProvider::default()),
         Box::new(OpenCodeProvider::default()),
+        Box::new(CursorProvider::with_ide_profiles(profiles.to_vec())),
         Box::new(OpenClawProvider::default()),
         Box::new(HermesProvider::default()),
         Box::new(GrokBuildProvider::default()),
@@ -1027,10 +1046,20 @@ pub fn providers() -> Vec<Box<dyn ConversationProvider + Send + Sync>> {
 }
 
 pub fn provider(agent: AgentKind) -> Option<Box<dyn ConversationProvider + Send + Sync>> {
+    provider_with_cursor_ide_profiles(agent, &[])
+}
+
+pub fn provider_with_cursor_ide_profiles(
+    agent: AgentKind,
+    profiles: &[CursorIdeProfile],
+) -> Option<Box<dyn ConversationProvider + Send + Sync>> {
     match agent {
         AgentKind::Codex => Some(Box::new(CodexProvider::default())),
         AgentKind::ClaudeCode => Some(Box::new(ClaudeProvider::default())),
         AgentKind::OpenCode => Some(Box::new(OpenCodeProvider::default())),
+        AgentKind::Cursor => Some(Box::new(CursorProvider::with_ide_profiles(
+            profiles.to_vec(),
+        ))),
         AgentKind::OpenClaw => Some(Box::new(OpenClawProvider::default())),
         AgentKind::Hermes => Some(Box::new(HermesProvider::default())),
         AgentKind::GrokBuild => Some(Box::new(GrokBuildProvider::default())),
@@ -1202,7 +1231,8 @@ impl CodexProvider {
             !session.forked_from_database && session.forked_from_session_id.is_none();
         let needs_agent_details = session.origin == SessionOrigin::Auxiliary
             && session.agent_path.is_none()
-            && session.agent_nickname.is_none();
+            && (sanitize_title(session.title.as_deref()).is_none()
+                || session.agent_nickname.is_none());
         if !needs_origin && !needs_spawned && !needs_forked && !needs_agent_details {
             return session;
         }
@@ -3427,6 +3457,75 @@ mod tests {
     }
 
     #[test]
+    fn codex_recovers_subagent_task_name_from_missing_or_partial_database_metadata() {
+        for partial_metadata in [false, true] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let transcript = dir.path().join("header-only-subagent.jsonl");
+            fs::write(
+                &transcript,
+                format!(
+                    "{}\n",
+                    codex_meta_line(
+                        "header-only-subagent",
+                        serde_json::json!({
+                            "subagent": {
+                                "thread_spawn": {
+                                    "agent_path": "/root/fix_title_bug",
+                                    "agent_nickname": "Cedar"
+                                }
+                            }
+                        }),
+                        serde_json::Value::Null,
+                    )
+                ),
+            )
+            .unwrap();
+            let database = Connection::open(dir.path().join("state_1.sqlite")).unwrap();
+            database
+                .execute_batch(
+                    "CREATE TABLE threads(
+                        id TEXT,
+                        rollout_path TEXT,
+                        cwd TEXT,
+                        title TEXT,
+                        created_at INTEGER,
+                        updated_at INTEGER,
+                        source TEXT,
+                        agent_nickname TEXT,
+                        parent_thread_id TEXT,
+                        forked_from_id TEXT
+                    );",
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO threads VALUES (?1, ?2, ?3, '', 1, 2, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        "header-only-subagent",
+                        transcript.display().to_string(),
+                        workspace.display().to_string(),
+                        partial_metadata.then(|| serde_json::json!({"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}}).to_string()),
+                        partial_metadata.then_some("Cedar"),
+                        partial_metadata.then_some("parent"),
+                        partial_metadata.then_some("fork"),
+                    ],
+                )
+                .unwrap();
+            drop(database);
+
+            let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+                .list_sessions(&workspace)
+                .unwrap();
+
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].origin, SessionOrigin::Auxiliary);
+            assert_eq!(sessions[0].title.as_deref(), Some("fix_title_bug"));
+        }
+    }
+
+    #[test]
     fn codex_recovers_subagent_title_from_header_when_database_has_no_agent_metadata() {
         let dir = tempdir().unwrap();
         let workspace = dir.path().join("workspace");
@@ -4676,3 +4775,6 @@ mod tests {
         assert!(sanitize_handoff_export(&markdown, HandoffFormat::Markdown, None).is_ok());
     }
 }
+
+#[cfg(test)]
+mod interop_matrix;

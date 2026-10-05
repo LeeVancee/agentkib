@@ -36,6 +36,8 @@ export function sessionDisplayState(state: State) {
   if (busy) return { label: c.busy, reason: c.busy, tone: "active" };
   if (!access?.experimentalEnabled || !access.device?.send)
     return { label: c.readonly, reason: c.readonly, tone: "muted" };
+  if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
+    return { label: c.cancelled, reason: "", tone: "muted" };
   if (canSend) return { label: c.ready, reason: "", tone: "active" };
   const reason = live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
   if (reason) return { label: c.readonly, reason: codexReason(locale, reason).text, tone: "muted" };

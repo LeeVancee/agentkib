@@ -33,7 +33,7 @@ lines.on("line", (line) => {
   if (request.method === "agentkib.handshake") {
     if (mode === "never-handshake") return;
     const send = () => respond(request, {
-      protocolVersion: ${PROTOCOL_VERSION},
+      protocolVersion: mode === "previous-protocol" ? ${PROTOCOL_VERSION - 1} : ${PROTOCOL_VERSION},
       runtime: { name: "fake-runtime", version: "0.0.0" },
       pid: process.pid,
     });
@@ -113,6 +113,22 @@ describe("DesktopRuntimeHost", () => {
       RuntimeUnavailableError,
     );
     await Promise.all([starting, waiting]);
+  });
+
+  it("rejects a previous Runtime protocol without dispatching queued controls", async () => {
+    const host = createHost(() => "previous-protocol", 0);
+    const starting = expect(host.start()).rejects.toThrow("expected " + PROTOCOL_VERSION);
+    const writes = vi.spyOn(children[0].stdin, "write");
+    const control = expect(host.request("echo", { control: true })).rejects.toBeInstanceOf(
+      RuntimeUnavailableError,
+    );
+
+    await Promise.all([starting, control]);
+
+    expect(host.status.state).toBe("failed");
+    expect(writes.mock.calls.some(([line]) => String(line).includes('"method":"echo"'))).toBe(
+      false,
+    );
   });
 
   it("recovers queued startup requests after a failed first process", async () => {

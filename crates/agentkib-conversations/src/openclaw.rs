@@ -15,8 +15,11 @@ use crate::history::{
 use crate::paging;
 use crate::{
     ConversationEventPage, ConversationProvider, ConversationSessionSummary, HandoffContext,
-    NativeSessionSummary, SessionAvailability, SessionDocument,
+    NativeSessionSummary, SessionAvailability, SessionDocument, finish_document,
 };
+
+#[path = "openclaw_sqlite.rs"]
+mod sqlite;
 
 #[derive(Default)]
 pub struct OpenClawProvider {
@@ -27,6 +30,8 @@ pub struct OpenClawProvider {
 struct Session {
     native_ref: String,
     transcript: PathBuf,
+    sqlite_id: Option<String>,
+    archived: bool,
     cwd: PathBuf,
     title: Option<String>,
     created_at: Option<DateTime<Utc>>,
@@ -82,6 +87,19 @@ impl OpenClawProvider {
                 continue;
             }
             let agent_instance = entry.file_name().to_string_lossy().into_owned();
+            let database = agent_path.join("agent/openclaw-agent.sqlite");
+            if sqlite::authority_exists(&database) {
+                match sqlite::collect(&home, &agent_instance, &database, workspace) {
+                    Ok((found, partial)) => {
+                        sessions.extend(found);
+                        incomplete |= partial;
+                    }
+                    Err(_) => incomplete = true,
+                }
+                // SQLite is authoritative even when locked, damaged, or newer than
+                // our reader. Never advertise adjacent stale JSONL checkpoints.
+                continue;
+            }
             let sessions_path = agent_path.join("sessions");
             if !sessions_path.is_dir() {
                 continue;
@@ -144,13 +162,14 @@ impl OpenClawProvider {
     }
 
     fn resolve(&self, native_ref: &str) -> Result<Session> {
-        self.collect(None)
-            .map(|(sessions, _)| sessions)
-            .and_then(|sessions| {
-                sessions
-                    .into_iter()
-                    .find(|session| session.native_ref == native_ref)
-                    .context("OpenClaw session is no longer available")
+        let (sessions, incomplete) = self.collect(None)?;
+        sessions
+            .into_iter()
+            .find(|session| session.native_ref == native_ref)
+            .context(if incomplete {
+                "OpenClaw session discovery is incomplete; cannot establish session availability"
+            } else {
+                "OpenClaw session is no longer available"
             })
     }
 }
@@ -184,21 +203,169 @@ impl ConversationProvider for OpenClawProvider {
         limit: usize,
     ) -> Result<ConversationEventPage> {
         let session = self.resolve(native_ref)?;
+        if let Some(id) = &session.sqlite_id {
+            return sqlite::read_events(&session.transcript, id, cursor, limit, &session.cwd);
+        }
         paging::read_page(&session.transcript, cursor, limit, paging::Format::OpenClaw)
     }
 
-    fn read_handoff_context(&self, _native_ref: &str) -> Result<HandoffContext> {
-        bail!("OpenClaw session handoff is unsupported")
+    fn read_handoff_context(&self, native_ref: &str) -> Result<HandoffContext> {
+        let session = self.resolve(native_ref)?;
+        Ok(match &session.sqlite_id {
+            Some(id) => sqlite::read_turns(&session.transcript, id, &session.cwd)?.0,
+            None => read_original_turns(&session.transcript)?,
+        }
+        .into_handoff())
     }
 
     fn read_session_document(
         &self,
-        _source: &ConversationSessionSummary,
-        _native_ref: &str,
-        _home: Option<&Path>,
+        source: &ConversationSessionSummary,
+        native_ref: &str,
+        home: Option<&Path>,
     ) -> Result<SessionDocument> {
-        bail!("OpenClaw session documents are unsupported")
+        anyhow::ensure!(
+            source.agent == AgentKind::OpenClaw,
+            "OpenClaw source agent mismatch"
+        );
+        let session = self.resolve(native_ref)?;
+        let parsed = match &session.sqlite_id {
+            Some(id) => sqlite::read_turns(&session.transcript, id, &session.cwd)?.0,
+            None => read_original_turns(&session.transcript)?,
+        };
+        finish_document(source, parsed.turns, parsed.losses, home)
     }
+}
+
+// Legacy Pi/OpenClaw JSONL is a tree. Flat files are accepted only when they
+// predate IDs; tree files follow the last persisted leaf back to the root.
+// SQLite is the current runtime authority. Legacy checkpoint files beside it
+// are not a safe substitute for the current conversation.
+fn read_original_turns(path: &Path) -> Result<crate::hermes::OriginalTurns> {
+    if let Some(parent) = path.parent() {
+        let mut directories = vec![parent.to_path_buf()];
+        if let Some(agent) = parent.parent() {
+            // Current canonical store: agents/<id>/agent/openclaw-agent.sqlite.
+            directories.push(agent.join("agent"));
+        }
+        for directory in directories {
+            let entries = match fs::read_dir(directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let filename = entry.file_name();
+                let name = filename.to_string_lossy();
+                let main_name = name
+                    .strip_suffix("-wal")
+                    .or_else(|| name.strip_suffix("-shm"))
+                    .or_else(|| name.strip_suffix("-journal"))
+                    .unwrap_or(&name);
+                if matches!(
+                    Path::new(main_name)
+                        .extension()
+                        .and_then(|value| value.to_str()),
+                    Some("db" | "sqlite" | "sqlite3")
+                ) {
+                    bail!(
+                        "OpenClaw SQLite history is not yet verified; refusing a possibly stale JSONL checkpoint"
+                    );
+                }
+            }
+        }
+    }
+    let records = crate::hermes::read_original_jsonl(path)?;
+    let mut ids = BTreeMap::new();
+    let mut leaf = None;
+    let mut tree = false;
+    for (index, (_, record)) in records.iter().enumerate() {
+        match record.get("type").and_then(Value::as_str) {
+            Some("session") => {
+                if let Some(version) = record.get("version") {
+                    anyhow::ensure!(
+                        matches!(version.as_u64(), Some(1..=3)),
+                        "Unknown OpenClaw transcript version"
+                    );
+                }
+                anyhow::ensure!(
+                    record.get("parentSession").is_none_or(Value::is_null),
+                    "OpenClaw parent-session history requires a verified lineage reader"
+                );
+                continue;
+            }
+            Some("reset" | "compaction" | "branch_summary") => bail!(
+                "OpenClaw reset/compaction history requires a verified window reader before import"
+            ),
+            Some(
+                "message"
+                | "model_change"
+                | "thinking_level_change"
+                | "custom"
+                | "session_info"
+                | "label",
+            ) => {}
+            _ => bail!("Unsupported OpenClaw original-history entry type"),
+        }
+        if let Some(id) = record.get("id").and_then(Value::as_str) {
+            anyhow::ensure!(
+                ids.insert(id.to_owned(), index).is_none(),
+                "Duplicate OpenClaw entry identity"
+            );
+            leaf = Some(id.to_owned());
+            tree = true;
+        }
+    }
+    let mut selected = BTreeSet::new();
+    if tree {
+        while let Some(id) = leaf {
+            let index = *ids.get(&id).context("Missing OpenClaw branch ancestor")?;
+            anyhow::ensure!(selected.insert(index), "Cyclic OpenClaw transcript branch");
+            let record = &records[index].1;
+            leaf = match record.get("parentId") {
+                Some(Value::Null) => None,
+                Some(Value::String(parent)) => {
+                    anyhow::ensure!(
+                        ids.get(parent)
+                            .is_some_and(|parent_index| *parent_index < index),
+                        "OpenClaw branch ancestor is missing or out of order"
+                    );
+                    Some(parent.clone())
+                }
+                _ => bail!("OpenClaw tree entry has no valid parent identity"),
+            };
+        }
+        anyhow::ensure!(
+            records
+                .iter()
+                .all(
+                    |(_, record)| record.get("type").and_then(Value::as_str) != Some("message")
+                        || record.get("id").and_then(Value::as_str).is_some()
+                ),
+            "Mixed flat and tree OpenClaw messages are unsupported"
+        );
+    }
+    let mut parsed = crate::hermes::OriginalTurns::default();
+    for (index, (line, record)) in records.into_iter().enumerate() {
+        if tree && !selected.contains(&index) {
+            continue;
+        }
+        if record.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let message = record
+            .get("message")
+            .context("OpenClaw message envelope is missing")?;
+        parsed.push_message(
+            line,
+            message,
+            message.get("role").and_then(Value::as_str),
+            record.get("timestamp"),
+        )?;
+    }
+    parsed.ensure_readable()?;
+    Ok(parsed)
 }
 
 fn summary(session: Session) -> NativeSessionSummary {
@@ -213,9 +380,9 @@ fn summary(session: Session) -> NativeSessionSummary {
         updated_at: session.updated_at,
         message_count: None,
         git_branch: None,
-        archived: false,
+        archived: session.archived,
         sidechain: false,
-        availability: if paging::is_readable(&session.transcript) {
+        availability: if session.sqlite_id.is_some() || paging::is_readable(&session.transcript) {
             SessionAvailability::Readable
         } else {
             SessionAvailability::MetadataOnly
@@ -318,11 +485,18 @@ fn parse_session(
     Ok(Some(Session {
         native_ref,
         transcript: path.to_path_buf(),
+        sqlite_id: None,
+        archived: false,
         cwd,
         title,
         created_at,
         updated_at: updated_at.or(created_at),
     }))
+}
+
+#[cfg(test)]
+pub(super) fn matrix_document() -> SessionDocument {
+    sqlite::matrix_document()
 }
 
 #[cfg(test)]
@@ -338,6 +512,88 @@ mod tests {
             "timestamp": timestamp,
         })
         .to_string()
+    }
+
+    #[test]
+    fn original_import_refuses_missing_user_content_before_valid_assistant() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        fs::write(&path, "{\"type\":\"message\",\"message\":{\"role\":\"user\"}}\n{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"answer\"}}\n").unwrap();
+        assert!(read_original_turns(&path).is_err());
+    }
+
+    #[test]
+    fn original_tree_import_selects_latest_branch_without_resurrecting_other_leaf() {
+        use crate::SessionBlock;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let records = [
+            serde_json::json!({"type":"session","version":3,"id":"session","cwd":"/tmp/project"}),
+            serde_json::json!({"type":"message","id":"root","parentId":null,"message":{"role":"user","content":"question"}}),
+            serde_json::json!({"type":"message","id":"old","parentId":"root","message":{"role":"assistant","content":"abandoned answer"}}),
+            serde_json::json!({"type":"message","id":"new","parentId":"root","message":{"role":"assistant","content":[{"type":"toolCall","id":"call1","name":"read","arguments":{}}]}}),
+            serde_json::json!({"type":"message","id":"result","parentId":"new","message":{"role":"toolResult","toolCallId":"call1","content":[{"type":"text","text":"found"}],"isError":false}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let parsed = read_original_turns(&path).unwrap();
+        assert_eq!(parsed.turns.len(), 3);
+        assert!(
+            matches!(&parsed.turns[1].blocks[0], SessionBlock::ToolCall { call_id, .. } if call_id == "call1")
+        );
+        assert!(
+            matches!(&parsed.turns[2].blocks[0], SessionBlock::ToolResult { output, .. } if output == "found")
+        );
+        assert!(parsed.losses.is_empty());
+    }
+
+    #[test]
+    fn original_import_rejects_stale_sqlite_checkpoint_and_unknown_lifecycle() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"message","message":{"role":"user","content":"legacy"}}"#,
+        )
+        .unwrap();
+        fs::write(dir.path().join("sessions.db"), "not opened").unwrap();
+        assert!(
+            read_original_turns(&path)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("SQLite")
+        );
+        fs::remove_file(dir.path().join("sessions.db")).unwrap();
+        let sessions = dir.path().join("agents/main/sessions");
+        let store = dir.path().join("agents/main/agent");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&store).unwrap();
+        fs::copy(&path, sessions.join("legacy.jsonl")).unwrap();
+        fs::write(store.join("openclaw-agent.sqlite-wal"), "orphan WAL").unwrap();
+        assert!(
+            read_original_turns(&sessions.join("legacy.jsonl"))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("SQLite")
+        );
+        for record in [
+            r#"{"type":"reset"}"#,
+            r#"{"type":"session","version":99}"#,
+            r#"{"type":"message","id":"a","parentId":"missing","message":{"role":"user","content":"x"}}"#,
+            r#"{"type":"message","id":"a","parentId":"a","message":{"role":"user","content":"x"}}"#,
+        ] {
+            fs::write(&path, record).unwrap();
+            assert!(read_original_turns(&path).is_err());
+        }
     }
 
     #[test]

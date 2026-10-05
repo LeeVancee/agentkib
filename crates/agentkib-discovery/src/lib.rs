@@ -95,6 +95,15 @@ pub fn known_agent_homes() -> Vec<PathBuf> {
     if let Ok(home) = agentkib_skills::default_home_dir() {
         homes.entry(platform_path::identity(&home)).or_insert(home);
     }
+    if let Ok(targets) = agentkib_skills::skill_targets(&[]) {
+        for target in targets {
+            if target.scope_root.is_absolute() {
+                homes
+                    .entry(platform_path::identity(&target.scope_root))
+                    .or_insert(target.scope_root);
+            }
+        }
+    }
     homes.into_values().collect()
 }
 
@@ -153,6 +162,30 @@ pub fn discover(scan_roots: &[(PathBuf, usize)]) -> DiscoverySnapshot {
     {
         Ok(assets) => home_assets.extend(assets),
         Err(error) => errors.push(format!("AgentKib Skill library scan failed: {error}")),
+    }
+    // Keep the generic catalog in step with native personal paths. Linked
+    // packages remain in the dedicated Skill inventory, which can explain
+    // their external ownership and broken/loop diagnostics without granting
+    // the older asset editor write access to a link destination.
+    if let Ok(targets) = agentkib_skills::skill_targets(&[]) {
+        for target in targets {
+            if !target.root.is_absolute() || !target.root.is_dir() {
+                continue;
+            }
+            let Some(home) = target.root.parent() else {
+                continue;
+            };
+            match scan_known_home(target.agent, home, &["skills"]) {
+                Ok(assets) => home_assets.extend(assets),
+                Err(error) => errors.push(format!(
+                    "{} Skill Home scan failed: {error}",
+                    target.agent.as_str()
+                )),
+            }
+        }
+        home_assets
+            .sort_by(|left, right| (left.agent, &left.path).cmp(&(right.agent, &right.path)));
+        home_assets.dedup_by(|left, right| left.agent == right.agent && left.path == right.path);
     }
     for (root, started_at, finished_at, result) in scan_results {
         match result {

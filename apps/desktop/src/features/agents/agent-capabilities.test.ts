@@ -19,20 +19,13 @@ describe("Agent capability boundaries", () => {
     }
   });
 
-  it.each(["codex", "claude-code", "antigravity", "opencode"] as const)(
-    "allows continuation from %s history",
-    (agent) => {
-      expect(canContinueFromHistory(agent)).toBe(true);
-    },
-  );
-
-  it.each(["open-claw", "hermes", "grok-build"] as const)(
-    "keeps %s history read-only while preserving it as a possible target",
-    (agent) => {
-      expect(canContinueFromHistory(agent)).toBe(false);
-      expect(sessionHandoffTargets.map(([target]) => target)).toContain(agent);
-    },
-  );
+  it("enables only a successful per-session source check", () => {
+    expect(canContinueFromHistory({ status: "supported" })).toBe(true);
+    for (const status of ["unavailable", "unsupported", "unverified"] as const) {
+      expect(canContinueFromHistory({ status })).toBe(false);
+    }
+    expect(canContinueFromHistory()).toBe(false);
+  });
 
   it("keeps supported Insights providers enabled", () => {
     for (const agent of insightsAgentKinds) {

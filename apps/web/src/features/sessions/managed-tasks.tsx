@@ -3,7 +3,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSessionNavigate } from "./session-navigation";
 import { subscribeSessionInvalidation } from "./session-events";
 import { Plus } from "lucide-react";
-import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
+import {
+  ApiError,
+  isLegacyPreparedReceipt,
+  type ManagedAgent,
+  type ManagedOptions,
+} from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
@@ -16,12 +21,7 @@ import {
   type PendingControl,
 } from "./pending-controls";
 
-type Options = {
-  available: boolean;
-  reason?: string;
-  models?: { id: string; name?: string; efforts?: string[] }[];
-  workspaces: { id: string; name: string }[];
-};
+type Options = ManagedOptions;
 
 export function ManagedTasks({
   create = false,
@@ -30,6 +30,7 @@ export function ManagedTasks({
   onClose,
   onDismiss,
   initialOpen = false,
+  showTrigger = true,
 }: {
   create?: boolean;
   active?: boolean;
@@ -37,6 +38,7 @@ export function ManagedTasks({
   onClose?: () => void;
   onDismiss?: () => void;
   initialOpen?: boolean;
+  showTrigger?: boolean;
 }) {
   const { client, origin, access, current, live, selected, refresh, locale } = useSession();
   const [localOpen, setLocalOpen] = useState(initialOpen);
@@ -45,6 +47,13 @@ export function ManagedTasks({
     setLocalOpen(value);
     if (!value && renderContent) onClose?.();
   }
+  const [createAgent, setCreateAgent] = useState<ManagedAgent>("codex");
+  const agent: ManagedAgent = create
+    ? createAgent
+    : current?.agent === "claude-code"
+      ? "claude-code"
+      : "codex";
+  const [handoffFingerprint, setHandoffFingerprint] = useState<string>();
   const [options, setOptions] = useState<Options>();
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
@@ -72,6 +81,7 @@ export function ManagedTasks({
     scope,
     selected,
     create,
+    agent,
     client,
     access?.bootId,
     access?.device?.manage,
@@ -84,7 +94,7 @@ export function ManagedTasks({
     try {
       const entry = readPending(scope).find((value) =>
         create
-          ? value.kind === "create"
+          ? value.kind === "create" && (value.agent ?? "codex") === agent
           : value.sessionId === selected && ["adopt", "release", "reconcile"].includes(value.kind),
       );
       setPending(entry);
@@ -99,7 +109,7 @@ export function ManagedTasks({
         ),
       );
     }
-  }, [scope, selected, create, locale]);
+  }, [scope, selected, create, agent, locale]);
   useEffect(() => {
     if (
       !scope ||
@@ -190,12 +200,17 @@ export function ManagedTasks({
   ]);
   useEffect(() => {
     setConfirmed(false);
+    setHandoffFingerprint(undefined);
     setError("");
     if (!open || !access?.device?.manage || !access.experimentalEnabled) return;
     const abort = new AbortController();
     setOptions(undefined);
     void client
-      .request<Options>("managed/options", undefined, abort.signal)
+      .request<Options>(
+        agent === "codex" ? "managed/options" : "managed/options?agent=claude-code",
+        undefined,
+        abort.signal,
+      )
       .then((value) => {
         if (abort.signal.aborted) return;
         setOptions(value);
@@ -206,11 +221,24 @@ export function ManagedTasks({
       .catch((e: unknown) => {
         if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
       });
+    if (!create && agent === "claude-code") {
+      void client
+        .managedInspect(selected, agent, abort.signal)
+        .then((value) => {
+          if (!abort.signal.aborted && value.sessionId === selected)
+            setHandoffFingerprint(value.handoffFingerprint);
+        })
+        .catch((e: unknown) => {
+          if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
+        });
+    }
     return () => {
       abort.abort();
     };
   }, [
     open,
+    agent,
+    create,
     client,
     selected,
     access?.bootId,
@@ -225,12 +253,19 @@ export function ManagedTasks({
   if (
     !access?.device?.manage ||
     !access.experimentalEnabled ||
-    (!create && current?.agent !== "codex")
+    (!create && current?.agent !== "codex" && current?.agent !== "claude-code")
   )
     return renderContent ? renderContent(null) : null;
-  const managed = live?.executionMode === "codex-managed";
+  const managed =
+    live?.executionMode === "codex-managed" ||
+    (live?.executionMode === "claude-managed" && live.status !== "released");
   async function run(operation: "create" | "adopt" | "release" | "reconcile") {
-    if (flight.current || (uncertain && operation !== "reconcile")) return;
+    if (
+      flight.current ||
+      (uncertain && operation !== "reconcile") ||
+      (operation === "adopt" && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
+    )
+      return;
     flight.current = true;
     setBusy(true);
     setError("");
@@ -239,6 +274,7 @@ export function ManagedTasks({
     const entry: PendingControl = {
       requestId,
       kind: operation,
+      agent,
       ...(operation === "create" ? { workspaceId } : { sessionId: selected }),
     };
     try {
@@ -251,12 +287,23 @@ export function ManagedTasks({
       const result = await client.request<{ sessionId?: string; reconciled?: boolean }>(
         `managed/${operation}`,
         {
+          ...(agent === "claude-code" ? { agent } : {}),
           bootId: access!.bootId,
           requestId,
+          ...(operation === "release" ? { expectedRevision: live?.revision } : {}),
           ...(operation === "create"
-            ? { workspaceId, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }
+            ? {
+                workspaceId,
+                ...(agent === "codex" && model ? { model } : {}),
+                ...(agent === "codex" && effort ? { effort } : {}),
+              }
             : { sessionId: selected }),
-          ...(operation === "adopt" ? { handoffConfirmed: confirmed } : {}),
+          ...(operation === "adopt"
+            ? {
+                handoffConfirmed: confirmed,
+                ...(agent === "claude-code" ? { handoffFingerprint } : {}),
+              }
+            : {}),
         },
       );
       if (scope) forgetPending(scope, requestId);
@@ -319,6 +366,20 @@ export function ManagedTasks({
           "AgentKib 需要保持后台运行。任务使用工作区权限，需要审批时等待你的确认。",
         )}
       </p>
+      {create && (
+        <label>
+          {managedText(locale, "Agent", "执行工具")}
+          <select
+            className="mt-2 w-full rounded border bg-background p-2"
+            value={agent}
+            disabled={busy || uncertain}
+            onChange={(event) => setCreateAgent(event.target.value as ManagedAgent)}
+          >
+            <option value="codex">Codex</option>
+            <option value="claude-code">Claude Code</option>
+          </select>
+        </label>
+      )}
       {error && (
         <p role="alert" className="break-words text-sm text-destructive">
           {error}
@@ -348,7 +409,7 @@ export function ManagedTasks({
         <>
           {!options.available && (
             <p role="status">
-              {options.reason || managedText(locale, "Codex unavailable", "Codex 暂不可用")}
+              {options.reason || managedText(locale, "Agent unavailable", "执行工具暂不可用")}
             </p>
           )}
           {create ? (
@@ -376,43 +437,56 @@ export function ManagedTasks({
                   )}
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">
-                {catalogCopy[locale].codexContextNote}
-              </p>
-              <label>
-                {managedText(locale, "Model", "模型")}
-                <select
-                  className="mt-2 w-full rounded border bg-background p-2"
-                  value={model}
-                  onChange={(e) => {
-                    setModel(e.target.value);
-                    setEffort("");
-                  }}
-                >
-                  <option value="">{managedText(locale, "Host default", "主机默认")}</option>
-                  {options.models?.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name || m.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {!!options.models?.find((m) => m.id === model)?.efforts?.length && (
-                <label>
-                  {managedText(locale, "Reasoning effort", "思考强度")}
-                  <select
-                    className="mt-2 w-full rounded border bg-background p-2"
-                    value={effort}
-                    onChange={(e) => setEffort(e.target.value)}
-                  >
-                    <option value="">{managedText(locale, "Default", "默认")}</option>
-                    {options.models
-                      .find((m) => m.id === model)!
-                      .efforts!.map((value) => (
-                        <option key={value}>{value}</option>
+              {agent === "codex" && (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    {catalogCopy[locale].codexContextNote}
+                  </p>
+                  <label>
+                    {managedText(locale, "Model", "模型")}
+                    <select
+                      className="mt-2 w-full rounded border bg-background p-2"
+                      value={model}
+                      onChange={(e) => {
+                        setModel(e.target.value);
+                        setEffort("");
+                      }}
+                    >
+                      <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                      {options.models?.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name || m.id}
+                        </option>
                       ))}
-                  </select>
-                </label>
+                    </select>
+                  </label>
+                  {!!options.models?.find((m) => m.id === model)?.efforts?.length && (
+                    <label>
+                      {managedText(locale, "Reasoning effort", "思考强度")}
+                      <select
+                        className="mt-2 w-full rounded border bg-background p-2"
+                        value={effort}
+                        onChange={(e) => setEffort(e.target.value)}
+                      >
+                        <option value="">{managedText(locale, "Default", "默认")}</option>
+                        {options.models
+                          .find((m) => m.id === model)!
+                          .efforts!.map((value) => (
+                            <option key={value}>{value}</option>
+                          ))}
+                      </select>
+                    </label>
+                  )}
+                </>
+              )}
+              {agent === "claude-code" && (
+                <p className="text-xs text-muted-foreground">
+                  {managedText(
+                    locale,
+                    "Uses the host Claude Code model and tool permissions. Creating a task does not start a model request.",
+                    "沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。",
+                  )}
+                </p>
               )}
               <Button
                 disabled={busy || uncertain || !options.available || !workspaceId}
@@ -428,8 +502,8 @@ export function ManagedTasks({
                   ? managedText(locale, "Execution belongs to AgentKib", "当前由 AgentKib 执行")
                   : managedText(
                       locale,
-                      "Execution belongs to the original Codex client",
-                      "当前由原 Codex 客户端执行",
+                      "Execution belongs to the original client",
+                      "当前由原客户端执行",
                     )}
               </p>
               {!managed && (
@@ -447,7 +521,12 @@ export function ManagedTasks({
                 </label>
               )}
               <Button
-                disabled={busy || uncertain || !options.available || (!managed && !confirmed)}
+                disabled={
+                  busy ||
+                  uncertain ||
+                  !options.available ||
+                  (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
+                }
                 onClick={() => void run(managed ? "release" : "adopt")}
               >
                 {managed
@@ -468,12 +547,14 @@ export function ManagedTasks({
   if (renderContent) return renderContent(content);
   return (
     <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        {create && <Plus size={16} />}
-        {create
-          ? managedText(locale, "New Codex task", "新建 Codex 任务")
-          : managedText(locale, "Execution", "执行管理")}
-      </Button>
+      {showTrigger && (
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+          {create && <Plus size={16} />}
+          {create
+            ? managedText(locale, "New task", "新建任务")
+            : managedText(locale, "Execution", "执行管理")}
+        </Button>
+      )}
       <Dialog
         open={open}
         onOpenChange={(value) => {
@@ -486,7 +567,7 @@ export function ManagedTasks({
         <DialogContent>
           <DialogTitle>
             {create
-              ? managedText(locale, "New Codex task", "新建 Codex 任务")
+              ? managedText(locale, "New task", "新建任务")
               : managedText(locale, "Execution ownership", "执行归属")}
           </DialogTitle>
           {content}

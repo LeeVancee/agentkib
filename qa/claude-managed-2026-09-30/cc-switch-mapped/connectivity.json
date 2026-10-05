@@ -1,0 +1,8 @@
+{
+  "scheme": "http",
+  "port": 3003,
+  "loopback": true,
+  "failureType": "ConnectionRefusedError",
+  "errno": 61,
+  "failure": "[Errno 61] Connection refused"
+}

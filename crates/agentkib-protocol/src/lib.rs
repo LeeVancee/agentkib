@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 pub const CONVERSATION_PROTOCOL_VERSION: u32 = 2;
 pub const SESSIONS_SUBSCRIBE_METHOD: &str = "sessions.subscribe";
 pub const SESSIONS_UNSUBSCRIBE_METHOD: &str = "sessions.unsubscribe";
@@ -9,6 +9,7 @@ pub const SESSION_EVENT_NOTIFICATION: &str = "sessions.event";
 pub const WEB_REQUEST_METHOD: &str = "web.request";
 pub const RELAY_CREATE_CSR_METHOD: &str = "relay.createCsr";
 pub const CONTROL_RECEIPT_METHOD: &str = "control.receipt";
+pub const CLAUDE_MANAGED_METHOD: &str = "claude.managed";
 pub const CODEX_MANAGED_METHOD: &str = "codex.managed";
 pub const REMOTE_REQUEST_METHOD: &str = "remote.request";
 pub const HANDSHAKE_METHOD: &str = "agentkib.handshake";
@@ -30,6 +31,7 @@ pub const WORKSPACE_SESSION_STATUS_METHOD: &str = "workspace.sessionStatus";
 pub const REFRESH_WORKSPACE_SESSIONS_METHOD: &str = "workspace.refreshSessions";
 pub const LIST_WORKSPACE_OPENERS_METHOD: &str = "workspace.openers";
 pub const OPEN_WORKSPACE_WITH_APP_METHOD: &str = "workspace.openWith";
+pub const CURSOR_BRIDGE_METHOD: &str = "cursor.bridge";
 pub const SESSION_EVENTS_METHOD: &str = "session.events";
 pub const RUNTIME_INFO_METHOD: &str = "runtime.info";
 pub const LIST_WORKSPACES_METHOD: &str = "workspaces.list";
@@ -49,6 +51,15 @@ pub const UNINSTALL_SKILL_METHOD: &str = "skills.uninstall";
 pub const LIST_REMOVED_SKILLS_METHOD: &str = "skills.listRemoved";
 pub const RESTORE_SKILL_METHOD: &str = "skills.restore";
 pub const READ_SKILL_FILE_METHOD: &str = "skills.readFile";
+pub const SKILL_INVENTORY_METHOD: &str = "skills.inventory";
+pub const SKILL_TARGETS_METHOD: &str = "skills.targets";
+pub const SKILL_DETAIL_METHOD: &str = "skills.getDetail";
+pub const READ_SKILL_DETAIL_FILE_METHOD: &str = "skills.readDetailFile";
+pub const PREPARE_SKILL_IMPORT_METHOD: &str = "skills.prepareImport";
+pub const READ_SKILL_PREVIEW_FILE_METHOD: &str = "skills.readPreviewFile";
+pub const LIST_SKILL_DEPLOYMENTS_METHOD: &str = "skills.listDeployments";
+pub const PREPARE_SKILL_DEPLOYMENT_METHOD: &str = "skills.prepareDeployment";
+pub const APPLY_SKILL_DEPLOYMENT_METHOD: &str = "skills.applyDeployment";
 pub const LIST_GLOBAL_MEMORIES_METHOD: &str = "memories.listGlobal";
 pub const LIST_ACTIVITY_METHOD: &str = "activity.list";
 pub const LIST_SCAN_ROOTS_METHOD: &str = "discovery.listScanRoots";
@@ -79,6 +90,8 @@ pub const LIST_MEMORIES_METHOD: &str = "memories.list";
 pub const SEARCH_MEMORIES_METHOD: &str = "memories.search";
 pub const PROPOSE_MEMORY_METHOD: &str = "memories.propose";
 pub const REVIEW_MEMORY_METHOD: &str = "memories.review";
+pub const SESSION_SOURCE_CAPABILITY_METHOD: &str = "sessions.sourceCapability";
+pub const LIST_NATIVE_IMPORTS_METHOD: &str = "sessions.nativeImports";
 pub const PREPARE_SESSION_HANDOFF_METHOD: &str = "sessions.prepareHandoff";
 pub const SANITIZE_SESSION_HANDOFF_METHOD: &str = "sessions.sanitizeHandoff";
 pub const PLAN_SESSION_HANDOFF_METHOD: &str = "sessions.planHandoff";
@@ -273,6 +286,15 @@ export const RUNTIME_METHODS = {{
   listRemovedSkills: "{LIST_REMOVED_SKILLS_METHOD}",
   restoreSkill: "{RESTORE_SKILL_METHOD}",
   readSkillFile: "{READ_SKILL_FILE_METHOD}",
+  skillInventory: "{SKILL_INVENTORY_METHOD}",
+  skillTargets: "{SKILL_TARGETS_METHOD}",
+  skillDetail: "{SKILL_DETAIL_METHOD}",
+  readSkillDetailFile: "{READ_SKILL_DETAIL_FILE_METHOD}",
+  prepareSkillImport: "{PREPARE_SKILL_IMPORT_METHOD}",
+  readSkillPreviewFile: "{READ_SKILL_PREVIEW_FILE_METHOD}",
+  listSkillDeployments: "{LIST_SKILL_DEPLOYMENTS_METHOD}",
+  prepareSkillDeployment: "{PREPARE_SKILL_DEPLOYMENT_METHOD}",
+  applySkillDeployment: "{APPLY_SKILL_DEPLOYMENT_METHOD}",
   listGlobalMemories: "{LIST_GLOBAL_MEMORIES_METHOD}",
   listActivity: "{LIST_ACTIVITY_METHOD}",
   listScanRoots: "{LIST_SCAN_ROOTS_METHOD}",
@@ -298,6 +320,7 @@ export const RUNTIME_METHODS = {{
   setSidebarWidthPreference: "{SET_SIDEBAR_WIDTH_PREFERENCE_METHOD}",
   remoteRequest: "{REMOTE_REQUEST_METHOD}",
   webRequest: "{WEB_REQUEST_METHOD}",
+  claudeManaged: "{CLAUDE_MANAGED_METHOD}",
   codexManaged: "{CODEX_MANAGED_METHOD}",
   relayCreateCsr: "{RELAY_CREATE_CSR_METHOD}",
   controlReceipt: "{CONTROL_RECEIPT_METHOD}",
@@ -308,6 +331,9 @@ export const RUNTIME_METHODS = {{
   searchMemories: "{SEARCH_MEMORIES_METHOD}",
   proposeMemory: "{PROPOSE_MEMORY_METHOD}",
   reviewMemory: "{REVIEW_MEMORY_METHOD}",
+  sessionSourceCapability: "{SESSION_SOURCE_CAPABILITY_METHOD}",
+  cursorBridge: "{CURSOR_BRIDGE_METHOD}",
+  listNativeImports: "{LIST_NATIVE_IMPORTS_METHOD}",
   prepareSessionHandoff: "{PREPARE_SESSION_HANDOFF_METHOD}",
   sanitizeSessionHandoff: "{SANITIZE_SESSION_HANDOFF_METHOD}",
   planSessionHandoff: "{PLAN_SESSION_HANDOFF_METHOD}",

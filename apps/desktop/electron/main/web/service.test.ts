@@ -924,9 +924,13 @@ describe("WebAccessService loopback security boundary", () => {
     }
   });
 
-  it.each([false, true])(
-    "preserves managed workspace authorization across metadata-free state patches: allowed=%s",
-    async (allowed) => {
+  it.each(
+    ["codex-managed", "claude-managed"].flatMap((executionMode) =>
+      [false, true].map((allowed) => ({ executionMode, allowed })),
+    ),
+  )(
+    "preserves $executionMode workspace authorization across metadata-free state patches: allowed=$allowed",
+    async ({ executionMode, allowed }) => {
       await service.request({
         operation: "configure",
         enabled: true,
@@ -945,7 +949,7 @@ describe("WebAccessService loopback security boundary", () => {
       };
       const live = {
         runtimeBootId: "runtime-one",
-        executionMode: "codex-managed",
+        executionMode,
         workspaceId: "workspace",
         revision: 4,
         ...controls,

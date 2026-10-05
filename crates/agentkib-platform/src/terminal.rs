@@ -11,6 +11,9 @@ pub struct InteractiveCommand {
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
     pub working_directory: PathBuf,
+    /// Non-secret storage/configuration roots pinned by the caller. None clears
+    /// an override inherited by an already-running system terminal.
+    pub environment: Vec<(OsString, Option<OsString>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +91,9 @@ pub fn launch_interactive_command(
 }
 
 fn validate_interactive_command(command: &InteractiveCommand) -> io::Result<()> {
+    for (name, value) in &command.environment {
+        validate_environment(name, value.as_deref(), cfg!(windows))?;
+    }
     if !command.executable.is_absolute()
         || !command.executable.is_file()
         || !command.working_directory.is_absolute()
@@ -109,6 +115,26 @@ fn validate_interactive_command(command: &InteractiveCommand) -> io::Result<()> 
                 "interactive command contains an unsafe control character",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_environment(name: &OsStr, value: Option<&OsStr>, windows: bool) -> io::Result<()> {
+    let name = name.to_str().unwrap_or("");
+    let valid_name = !name.is_empty()
+        && !name.as_bytes()[0].is_ascii_digit()
+        && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+    let valid_value = value.is_none_or(|value| {
+        value.to_str().is_some_and(|value| {
+            !value.contains(['\0', '\r', '\n'])
+                && (!windows || !value.contains(['"', '%', '!', '^', '&', '|', '<', '>']))
+        })
+    });
+    if !valid_name || !valid_value {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsafe terminal environment override",
+        ));
     }
     Ok(())
 }
@@ -195,13 +221,21 @@ fn write_launcher_script(command: &InteractiveCommand) -> io::Result<PathBuf> {
 
 #[cfg(any(not(windows), test))]
 fn build_posix_script(command: &InteractiveCommand) -> String {
+    let environment = command
+        .environment
+        .iter()
+        .map(|(name, value)| match value {
+            Some(value) => format!("export {}={}\n", name.to_string_lossy(), posix_quote(value)),
+            None => format!("unset {}\n", name.to_string_lossy()),
+        })
+        .collect::<String>();
     let mut invocation = posix_quote(command.executable.as_os_str());
     for argument in &command.arguments {
         invocation.push(' ');
         invocation.push_str(&posix_quote(argument));
     }
     format!(
-        "#!/bin/sh\nlauncher=$0\nrm -f -- \"$launcher\"\ncd -- {} || exit 1\nexec {}\n",
+        "#!/bin/sh\nlauncher=$0\nrm -f -- \"$launcher\"\n{environment}cd -- {} || exit 1\nexec {}\n",
         posix_quote(command.working_directory.as_os_str()),
         invocation,
     )
@@ -209,6 +243,17 @@ fn build_posix_script(command: &InteractiveCommand) -> String {
 
 #[cfg(any(windows, test))]
 fn build_windows_script(command: &InteractiveCommand) -> String {
+    let environment = command
+        .environment
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "set \"{}={}\"\r\n",
+                name.to_string_lossy(),
+                value.as_deref().unwrap_or_default().to_string_lossy()
+            )
+        })
+        .collect::<String>();
     let needs_call = command
         .executable
         .extension()
@@ -225,7 +270,7 @@ fn build_windows_script(command: &InteractiveCommand) -> String {
         invocation.push_str(&windows_batch_quote(argument));
     }
     format!(
-        "@echo off\r\ncd /d {} || exit /b 1\r\n{}\r\ndel \"%~f0\" >nul 2>&1\r\n",
+        "@echo off\r\nsetlocal DisableDelayedExpansion\r\n{environment}cd /d {} || exit /b 1\r\n{}\r\ndel \"%~f0\" >nul 2>&1\r\n",
         windows_batch_quote(command.working_directory.as_os_str()),
         invocation,
     )
@@ -257,7 +302,39 @@ mod tests {
                 OsString::from("Read .agentkib/handoffs/o'hare.md; do not respond."),
             ],
             working_directory: PathBuf::from("/Users/example/My Project"),
+            environment: Vec::new(),
         }
+    }
+
+    #[test]
+    fn storage_environment_is_quoted_and_inherited_overrides_can_be_cleared() {
+        let mut command = command();
+        command.environment = vec![
+            (
+                "HERMES_HOME".into(),
+                Some("/tmp/user's data; $(touch forbidden)".into()),
+            ),
+            ("XDG_DATA_HOME".into(), None),
+        ];
+        let script = build_posix_script(&command);
+        assert!(script.contains("export HERMES_HOME='/tmp/user'\"'\"'s data; $(touch forbidden)'"));
+        assert!(script.contains("unset XDG_DATA_HOME\n"));
+        assert!(validate_environment(OsStr::new("HOME;touch bad"), None, false).is_err());
+        assert!(
+            validate_environment(OsStr::new("HOME"), Some(OsStr::new("bad\nvalue")), false)
+                .is_err()
+        );
+        assert!(
+            validate_environment(OsStr::new("HOME"), Some(OsStr::new("%PATH%")), true).is_err()
+        );
+        assert!(
+            validate_environment(
+                OsStr::new("HOME"),
+                Some(OsStr::new(r"C:\Users\Test User")),
+                true
+            )
+            .is_ok()
+        );
     }
 
     #[test]

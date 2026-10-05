@@ -40,6 +40,22 @@ if (typeof window !== "undefined") {
   });
   document.documentElement.dataset.platform = "linux";
 
+  if (!window.matchMedia) {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (media: string) => ({
+        media,
+        matches: false,
+        onchange: null,
+        addListener() {},
+        removeListener() {},
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent: () => false,
+      }),
+    });
+  }
+
   class TestPointerEvent extends window.MouseEvent {
     pointerId = 1;
     pointerType = "mouse";

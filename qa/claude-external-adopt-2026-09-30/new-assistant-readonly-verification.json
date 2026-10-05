@@ -1,0 +1,13 @@
+{
+  "sourcePrefixBytes": 23990,
+  "sourcePrefixSha256": "54f571e338740233e62087417bfc9ed3265c514933af8f9a3ea60f88cf2d2f9e",
+  "appendedBytes": 133974,
+  "newAssistantTextCount": 1,
+  "newAssistantText": [
+    "Private synthetic marker: 9b16d041-0694-4ff1-9e7a-f4c9f821203b\n\nProject decision: namespace-cbefade7-ecd5-4441-a8b0-26a5aa53fdcd"
+  ],
+  "markerInNewReply": true,
+  "decisionInNewReply": true,
+  "newToolUses": 0,
+  "verification": "Read-only after original source+adopted turns; no new CLI launch or model call."
+}

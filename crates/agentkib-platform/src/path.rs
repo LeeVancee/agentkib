@@ -96,6 +96,23 @@ pub fn identity(path: &Path) -> String {
     identity_for_platform(&path.to_string_lossy(), cfg!(windows))
 }
 
+/// Identity of a recorded location, without resolving its current filesystem contents.
+/// Use this for ownership records whose directory may have been replaced by a foreign link.
+pub fn lexical_identity(path: &Path) -> String {
+    let normalized: PathBuf = strip_verbatim_prefix(path.to_path_buf())
+        .components()
+        .collect();
+    identity_for_platform(&normalized.to_string_lossy(), cfg!(windows))
+}
+
+pub fn lexical_starts_with(path: &Path, base: &Path) -> bool {
+    identity_starts_with(
+        &lexical_identity(path),
+        &lexical_identity(base),
+        cfg!(windows),
+    )
+}
+
 /// Path-shaped identity for salted keys. Preserve Unix OS bytes while applying
 /// Windows comparison rules, including when the final directory no longer exists.
 pub fn identity_path(path: &Path) -> PathBuf {
@@ -272,6 +289,28 @@ fn hex_digit(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn recorded_identity_does_not_follow_a_replaced_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original");
+        let replaced = temp.path().join("replaced");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&replaced).unwrap();
+        let recorded = lexical_identity(&replaced);
+        fs::remove_dir(&replaced).unwrap();
+        std::os::unix::fs::symlink(&original, &replaced).unwrap();
+        assert_eq!(identity(&original), identity(&replaced));
+        assert_ne!(lexical_identity(&original), lexical_identity(&replaced));
+        assert_eq!(lexical_identity(&replaced), recorded);
+        assert!(lexical_starts_with(&replaced.join("child"), &replaced));
+        assert!(!lexical_starts_with(&replaced.join("child"), &original));
+        assert!(!lexical_starts_with(
+            &temp.path().join("replaced-other"),
+            &replaced
+        ));
+    }
 
     #[test]
     fn windows_identity_ignores_case_and_verbatim_prefix() {

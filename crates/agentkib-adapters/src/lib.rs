@@ -131,23 +131,42 @@ pub fn default_manifest(project: &Path) -> Result<Manifest> {
 }
 
 fn discover_scoped_instructions(project: &Path) -> Result<Vec<agentkib_core::ScopedInstruction>> {
+    let mut ownership = agentkib_core::SkillOwnershipReader::new(project)?;
     let mut scoped = Vec::new();
-    for entry in WalkDir::new(project)
-        .min_depth(2)
+    let mut entries = WalkDir::new(project)
+        .min_depth(1)
         .max_depth(8)
         .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            is_safe_scan_entry(entry.path())
-                && (!entry.file_type().is_dir()
-                    || !matches!(
-                        entry.file_name().to_str(),
-                        Some(".git" | ".agentkib" | "node_modules" | "target" | "dist")
-                    ))
-        })
-    {
+        .into_iter();
+    let mut visited = 0;
+    while let Some(entry) = entries.next() {
         let entry = entry?;
-        if !entry.file_type().is_file() || entry.file_name() != "AGENTS.md" {
+        visited += 1;
+        anyhow::ensure!(
+            visited <= 100_000,
+            "Scoped instruction discovery exceeded its entry limit"
+        );
+        if !is_safe_scan_entry(entry.path())
+            || entry.file_type().is_dir()
+                && matches!(
+                    entry.file_name().to_str(),
+                    Some(
+                        ".git"
+                            | ".agentkib"
+                            | ".agentkib-skill-state"
+                            | "node_modules"
+                            | "target"
+                            | "dist"
+                    )
+                )
+            || ownership.contains(entry.path(), false)?
+        {
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
+        if entry.depth() < 2 || !entry.file_type().is_file() || entry.file_name() != "AGENTS.md" {
             continue;
         }
         let parent = entry
@@ -267,6 +286,9 @@ fn discover_shared_skills(project: &Path) -> Result<Vec<agentkib_core::SkillDefi
     let mut skills = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
+        if agentkib_core::is_project_skill_owned(project, &entry.path())? {
+            continue;
+        }
         let skill_file = entry.path().join("SKILL.md");
         if let Ok(package) = inspect_skill_entrypoint(&skill_file) {
             let Some(directory_name) = entry.file_name().to_str().map(str::to_string) else {
@@ -290,6 +312,7 @@ pub fn plan_workspace_changes(
 ) -> Result<ChangeSet> {
     agentkib_core::validate_manifest(manifest)?;
     let root = agentkib_core::canonical_project(project)?;
+    agentkib_core::ensure_manifest_skill_ownership(&root, manifest)?;
     let mut changes = Vec::new();
     let gateway_connections: Vec<_> = manifest
         .connections
@@ -789,6 +812,16 @@ pub fn plan_workspace_changes(
                 risk: RiskLevel::Low,
                 validator: "yaml".into(),
             },
+        );
+    }
+    // Validate concrete outputs too: the manifest's Skill entries are not the only
+    // source of writes below a package (for example, scoped instructions are outputs).
+    let mut ownership = agentkib_core::SkillOwnershipReader::new(&root)?;
+    for change in &changes {
+        anyhow::ensure!(
+            !ownership.contains(&change.target, true)?,
+            "Workspace plan overlaps a Skill deployment: {}",
+            change.target.display()
         );
     }
     let requires_home_approval = changes
@@ -2394,6 +2427,250 @@ mod tests {
         assert_eq!(manifest.skills.len(), 1);
         assert_eq!(manifest.skills[0].name, "logical-name");
         assert_eq!(manifest.skills[0].path, ".agents/skills/folder-name");
+    }
+
+    #[test]
+    fn deployed_packages_are_not_automatically_adopted_by_the_legacy_manifest() {
+        let dir = tempdir().unwrap();
+        let root = agentkib_core::canonical_project(dir.path()).unwrap();
+        let target = root.join(".agents/skills/reviewer");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join("SKILL.md"),
+            "---\nname: reviewer\ndescription: Review\n---\nReview",
+        )
+        .unwrap();
+        for path in ["AGENTS.md", "references/AGENTS.md"] {
+            let file = target.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "Skill package instructions\n").unwrap();
+        }
+        let ordinary_scopes = [".agents/skills/reviewer-project", "packages/api"];
+        for path in ordinary_scopes {
+            let directory = root.join(path);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("AGENTS.md"), "Project instructions\n").unwrap();
+        }
+        let record = agentkib_core::SkillDeployment {
+            id: uuid::Uuid::new_v4().to_string(),
+            library_id: "reviewer".into(),
+            library_root: None,
+            package_name: "reviewer".into(),
+            package_hash: "hash".into(),
+            scope: agentkib_core::SkillScope::Workspace,
+            workspace_id: Some("project".into()),
+            scope_root: root.clone(),
+            target: target.clone(),
+            agents: vec![AgentKind::Codex],
+            visible_to: vec![AgentKind::Codex],
+            status: "active".into(),
+            diagnostics: Vec::new(),
+            previous_hash: None,
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            updated_at: Utc::now(),
+        };
+        let path = agentkib_core::project_skill_record_path(&root);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            serde_json::to_vec(&agentkib_core::SkillDeploymentRecords {
+                schema_version: 1,
+                deployments: vec![record],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut manifest = default_manifest(&root).unwrap();
+        assert!(manifest.skills.is_empty());
+        assert_eq!(
+            manifest
+                .instructions
+                .scoped
+                .iter()
+                .map(|scoped| scoped.path.as_str())
+                .collect::<Vec<_>>(),
+            ordinary_scopes
+        );
+        let plan = plan_workspace_changes(&root, &manifest, &HomeTargets::default()).unwrap();
+        assert!(
+            plan.changes
+                .iter()
+                .all(|change| !path_starts_with(&change.target, &target))
+        );
+        let report = agentkib_core::apply_changeset(
+            &plan,
+            &root.join(".agentkib/backups"),
+            &agentkib_core::ApplyOptions::default(),
+        )
+        .unwrap();
+        for path in ordinary_scopes {
+            assert!(report.applied.contains(&root.join(path).join("CLAUDE.md")));
+        }
+        for path in ["AGENTS.md", "references/AGENTS.md"] {
+            assert_eq!(
+                fs::read_to_string(target.join(path)).unwrap(),
+                "Skill package instructions\n"
+            );
+        }
+        assert!(!target.join("CLAUDE.md").exists());
+        assert!(!target.join("references/CLAUDE.md").exists());
+        manifest.skills.push(agentkib_core::SkillDefinition {
+            name: "reviewer".into(),
+            path: ".agents/skills/reviewer".into(),
+            targets: Vec::new(),
+        });
+        assert!(plan_workspace_changes(&root, &manifest, &HomeTargets::default()).is_err());
+
+        // The first deployment can expose native files before its receipt exists.
+        // Its reservation must provide the same discovery and planner isolation.
+        let reservation = agentkib_core::project_skill_reservation_path(&root);
+        fs::rename(
+            agentkib_core::project_skill_record_path(&root),
+            &reservation,
+        )
+        .unwrap();
+        let original_reservation = fs::read(&reservation).unwrap();
+        let pending_manifest = default_manifest(&root).unwrap();
+        assert!(pending_manifest.skills.is_empty());
+        assert_eq!(
+            pending_manifest.instructions.scoped.len(),
+            ordinary_scopes.len()
+        );
+        let pending_plan =
+            plan_workspace_changes(&root, &pending_manifest, &HomeTargets::default()).unwrap();
+        assert!(
+            pending_plan
+                .changes
+                .iter()
+                .all(|change| !path_starts_with(&change.target, &target))
+        );
+        assert!(plan_workspace_changes(&root, &manifest, &HomeTargets::default()).is_err());
+        assert_eq!(fs::read(&reservation).unwrap(), original_reservation);
+        assert!(!agentkib_core::project_skill_record_path(&root).exists());
+
+        #[cfg(unix)]
+        {
+            let legacy = root.join("legacy-reviewer");
+            fs::rename(&target, &legacy).unwrap();
+            std::os::unix::fs::symlink(&legacy, &target).unwrap();
+            let discovered = default_manifest(&root).unwrap();
+            for path in ["legacy-reviewer", "legacy-reviewer/references"] {
+                assert!(
+                    discovered
+                        .instructions
+                        .scoped
+                        .iter()
+                        .any(|scope| scope.path == path)
+                );
+            }
+            assert!(discovered.skills.is_empty());
+            assert_eq!(fs::read(&reservation).unwrap(), original_reservation);
+        }
+    }
+
+    #[test]
+    fn default_manifest_ignores_skill_deployment_backups_and_operations_without_receipts() {
+        let dir = tempdir().unwrap();
+        let id = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        for state in [".agentkib-skill-state", ".agents/.agentkib-skill-state"] {
+            for package in [
+                format!("backups/{id}"),
+                format!("operations/{token}/{id}/incoming"),
+                format!("operations/{token}/{id}/before"),
+                format!("operations/{token}/{id}/prior-backup"),
+            ] {
+                let directory = dir.path().join(state).join(package);
+                fs::create_dir_all(directory.join("references")).unwrap();
+                fs::write(
+                    directory.join("AGENTS.md"),
+                    "Internal package instructions\n",
+                )
+                .unwrap();
+                fs::write(
+                    directory.join("references/AGENTS.md"),
+                    "Internal nested instructions\n",
+                )
+                .unwrap();
+            }
+        }
+
+        let manifest = default_manifest(dir.path()).unwrap();
+
+        assert!(manifest.instructions.scoped.is_empty());
+    }
+
+    #[test]
+    fn parent_manifest_skips_nested_project_deployments_without_adopting_or_writing_them() {
+        for pending in [false, true] {
+            let dir = tempdir().unwrap();
+            let parent = agentkib_core::canonical_project(dir.path()).unwrap();
+            let child = parent.join("packages/app");
+            let native = child.join(".agents/skills/reviewer");
+            fs::create_dir_all(native.join("references")).unwrap();
+            for path in ["AGENTS.md", "references/AGENTS.md"] {
+                fs::write(native.join(path), "package instructions").unwrap();
+            }
+            let ordinary = child.join("src");
+            fs::create_dir_all(&ordinary).unwrap();
+            fs::write(ordinary.join("AGENTS.md"), "application instructions").unwrap();
+            let record = agentkib_core::SkillDeployment {
+                id: Uuid::new_v4().to_string(),
+                library_id: "reviewer".into(),
+                library_root: None,
+                package_name: "reviewer".into(),
+                package_hash: "hash".into(),
+                scope: agentkib_core::SkillScope::Workspace,
+                workspace_id: Some("child".into()),
+                scope_root: child.clone(),
+                target: native.clone(),
+                agents: vec![AgentKind::Codex],
+                visible_to: vec![AgentKind::Codex],
+                status: "active".into(),
+                diagnostics: vec![],
+                previous_hash: None,
+                operation_id: Uuid::new_v4().to_string(),
+                updated_at: Utc::now(),
+            };
+            let receipt = if pending {
+                agentkib_core::project_skill_reservation_path(&child)
+            } else {
+                agentkib_core::project_skill_record_path(&child)
+            };
+            fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+            let bytes = agentkib_core::encode_skill_deployment_records(
+                &agentkib_core::SkillDeploymentRecords {
+                    schema_version: 1,
+                    deployments: vec![record],
+                },
+            )
+            .unwrap();
+            fs::write(&receipt, &bytes).unwrap();
+            let mut manifest = default_manifest(&parent).unwrap();
+            assert_eq!(manifest.instructions.scoped.len(), 1);
+            assert_eq!(manifest.instructions.scoped[0].path, "packages/app/src");
+            let plan = plan_workspace_changes(&parent, &manifest, &HomeTargets::default()).unwrap();
+            assert!(
+                plan.changes
+                    .iter()
+                    .all(|change| !change.target.starts_with(&native))
+            );
+            manifest
+                .instructions
+                .scoped
+                .push(agentkib_core::ScopedInstruction {
+                    path: "packages/app/.agents/skills/reviewer".into(),
+                    content: "attempted scoped overwrite".into(),
+                });
+            let error =
+                plan_workspace_changes(&parent, &manifest, &HomeTargets::default()).unwrap_err();
+            assert!(error.to_string().contains("Skill deployment"));
+            assert_eq!(fs::read(&receipt).unwrap(), bytes);
+            assert!(!parent.join(".agentkib").exists());
+            assert!(!child.join(".agentkib/skill-write.lock").exists());
+            fs::write(&receipt, "broken child receipt").unwrap();
+            assert!(default_manifest(&parent).is_err());
+        }
     }
 
     #[test]

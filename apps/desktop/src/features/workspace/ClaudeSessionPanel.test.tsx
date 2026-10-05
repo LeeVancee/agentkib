@@ -265,6 +265,148 @@ describe("Claude local owner panel", () => {
     expect(calls("stop")).toHaveLength(0);
     expect(calls("release")).toHaveLength(0);
   });
+  it.each(["options", "catalog", "capabilities"])(
+    "recovers idle controls after a transient %s failure through catalog events alone",
+    async (operation) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("Preserved draft");
+      await enabled(screen.getByRole("button", { name: "Send" }));
+      await enabled(screen.getByLabelText("Add images or files"));
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let failed = true;
+      vi.mocked(api.claudeRequest).mockImplementation((value) =>
+        value.operation === operation && failed
+          ? Promise.reject(new Error("transient_metadata_failure"))
+          : original(value),
+      );
+      const listener = [...streams.get("session")!][0];
+      const historyReads = calls("events").length;
+      const liveReads = calls("live").length;
+      await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
+      expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+      expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+      failed = false;
+      await act(async () => emitNative(2, "invalidate", { domains: ["catalog"] }, ""));
+      await enabled(screen.getByLabelText("Message"));
+      await enabled(screen.getByRole("button", { name: "Send" }));
+      await enabled(screen.getByLabelText("Add images or files"));
+      await waitFor(() =>
+        expect(screen.queryByText("transient_metadata_failure")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+      expect([...streams.get("session")!]).toEqual([listener]);
+      expect(stopped).not.toHaveBeenCalledWith("session");
+      expect(calls("events")).toHaveLength(historyReads);
+      expect(calls("live")).toHaveLength(liveReads);
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+  it("keeps controls blocked during metadata failure while continuing to display native progress", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("Preserved draft");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "options"
+        ? Promise.reject(new Error("transient_metadata_failure"))
+        : original(value),
+    );
+    await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
+    expect(await screen.findByText("transient_metadata_failure")).toBeVisible();
+    await act(async () => {
+      emitNative(1, "text-delta", { itemId: "reply", text: "Still observing", offset: 0 });
+      emitNative(2, "state", { revision: 2, status: "idle", sendEnabled: true });
+    });
+    expect(await screen.findByText("Still observing")).toBeVisible();
+    expect(screen.getByText("transient_metadata_failure")).toBeVisible();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+    expect(calls("send")).toHaveLength(0);
+  });
+  it("keeps a failed full history refresh pending until a later catalog event completes that read", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("Preserved draft");
+    const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+    let historyFailed = true;
+    vi.mocked(api.claudeRequest).mockImplementation((value) =>
+      value.operation === "events" && historyFailed
+        ? Promise.reject(new Error("history_refresh_failed"))
+        : original(value),
+    );
+    fireEvent.click(await enabled(screen.getByRole("button", { name: "Refresh" })));
+    expect(await screen.findByText("history_refresh_failed")).toBeVisible();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    const failedReads = calls("events").length;
+    await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
+    await waitFor(() => expect(calls("events").length).toBeGreaterThan(failedReads));
+    expect(screen.getByText("history_refresh_failed")).toBeVisible();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+    historyFailed = false;
+    await act(async () => emitNative(2, "invalidate", { domains: ["catalog"] }, ""));
+    await enabled(screen.getByLabelText("Message"));
+    await enabled(screen.getByRole("button", { name: "Send" }));
+    await enabled(screen.getByLabelText("Add images or files"));
+    await waitFor(() =>
+      expect(screen.queryByText("history_refresh_failed")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+    expect(calls("send")).toHaveLength(0);
+  });
+  it.each(["stream", "control"])(
+    "does not reopen controls after %s failure when metadata succeeds late or on a later event",
+    async (failure) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("Preserved draft");
+      fireEvent.click(await enabled(screen.getByRole("button", { name: "Files and artifacts" })));
+      await screen.findByRole("button", { name: "result.txt" });
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      let release!: () => void;
+      let deferCapabilities = true;
+      vi.mocked(api.claudeRequest).mockImplementation((value) => {
+        if (value.operation === "live") return Promise.reject(new Error("host_offline"));
+        if (value.operation === "capabilities" && deferCapabilities) {
+          deferCapabilities = false;
+          const result = original(value);
+          return new Promise((resolve) => {
+            release = () => resolve(result);
+          });
+        }
+        return original(value);
+      });
+      await act(async () => emitNative(1, "invalidate", { domains: ["catalog"] }, ""));
+      await waitFor(() => expect(release).toBeTypeOf("function"));
+      await act(async () => {
+        if (failure === "control") notifyControl();
+        else
+          for (const handlers of streams.get("session") ?? [])
+            handlers.error(new Error("host_offline"));
+      });
+      const expectDisconnected = () => {
+        expect(screen.getByLabelText("Message")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+        expect(
+          screen.queryByRole("button", { name: "Files and artifacts" }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText("result.txt")).not.toBeInTheDocument();
+        if (failure === "control") expect(screen.getByText("host_offline")).toBeVisible();
+      };
+      expectDisconnected();
+      await act(async () => release());
+      expectDisconnected();
+      const beforeReads = calls("capabilities").length;
+      await act(async () => emitNative(2, "invalidate", { domains: ["catalog"] }, ""));
+      await waitFor(() => expect(calls("capabilities").length).toBeGreaterThan(beforeReads));
+      expectDisconnected();
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
   it("restores attachments when a turn running on entry completes through the native stream", async () => {
     live = { ...live, status: "running", sendEnabled: false, turnId: "turn" };
     mount();

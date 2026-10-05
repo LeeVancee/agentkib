@@ -97,7 +97,9 @@ export function ClaudeSessionPanel({
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
   const [busy, setBusy] = useState(false);
-  const [online, setOnline] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const online = connected && !refreshError;
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [storageBlocked, setStorageBlocked] = useState(false);
@@ -114,6 +116,7 @@ export function ClaudeSessionPanel({
   const shown = useRef(new Set<string>());
   const refreshRef = useRef<(details?: boolean) => Promise<void>>(async () => {});
   const queuedRefresh = useRef<boolean | undefined>(undefined);
+  const refreshNeedsDetails = useRef(false);
   useEffect(() => {
     epoch.current++;
     setFilesOpen(false);
@@ -128,7 +131,9 @@ export function ClaudeSessionPanel({
     setInteraction(undefined);
     setAnswers({});
     setCustom({});
-    setOnline(false);
+    setConnected(false);
+    setRefreshError("");
+    refreshNeedsDetails.current = false;
     setError("");
     void refreshRef.current();
     return () => {
@@ -160,7 +165,7 @@ export function ClaudeSessionPanel({
     generation: epoch,
     setLive,
     setHistory,
-    setOnline,
+    setOnline: setConnected,
     setError,
     refreshMetadata,
     refreshCapabilities: refreshMetadata,
@@ -169,7 +174,7 @@ export function ClaudeSessionPanel({
 
   const refresh = useCallback(
     async (details = true) => {
-      details ||= deferredRead.current;
+      details ||= deferredRead.current || refreshNeedsDetails.current;
       if (loading.current) {
         queuedRefresh.current = queuedRefresh.current === true || details;
         return;
@@ -256,9 +261,11 @@ export function ClaudeSessionPanel({
             }));
           }
         }
-        // Metadata can finish after the live connection failed. Only the stream
-        // may restore an observed session's online state.
-        if (!sessionId || !hasDesktopConversation()) setOnline(true);
+        // Reads and the stream recover independently: neither can clear the
+        // other's failure and reopen controls before both are healthy.
+        setRefreshError("");
+        refreshNeedsDetails.current = false;
+        if (!sessionId || !hasDesktopConversation()) setConnected(true);
         setStorageBlocked(false);
         if (details) completeDeferredRead();
       } catch (e) {
@@ -267,8 +274,10 @@ export function ClaudeSessionPanel({
           deferRead(wake, generation);
           return;
         }
-        setOnline(false);
-        setError(e instanceof Error ? e.message : "connection_failed");
+        // A metadata-only success cannot recover an unread history/live page.
+        refreshNeedsDetails.current ||= details;
+        setRefreshError((e instanceof Error && e.message) || "connection_failed");
+        if (!sessionId || !hasDesktopConversation()) setConnected(false);
         try {
           readPending(workspaceId);
         } catch {
@@ -522,9 +531,9 @@ export function ClaudeSessionPanel({
             </SelectContent>
           </Select>
         </label>
-        {error && (
+        {(error || refreshError) && (
           <p role="alert" className="text-destructive break-words">
-            {error}
+            {error || refreshError}
           </p>
         )}
         {pending && (

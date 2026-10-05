@@ -139,17 +139,8 @@ export class ClaudeManagedReadOwner {
   async request(value: unknown): Promise<unknown> {
     if (!isObject(value) || typeof value.operation !== "string") throw new Error("invalid-request");
     const id = typeof value.sessionId === "string" ? value.sessionId : undefined;
-    const writeOperations = new Set([
-      "adopt",
-      "release",
-      "reconcile",
-      "send",
-      "stop",
-      "approve",
-      "answer",
-    ]);
     const run = () => this.#requestLocked(value, id);
-    return id && writeOperations.has(value.operation) ? this.#serializeSession(id, run) : run();
+    return id ? this.#serializeSession(id, run) : run();
   }
 
   async #requestLocked(value: Record<string, any>, id?: string): Promise<unknown> {

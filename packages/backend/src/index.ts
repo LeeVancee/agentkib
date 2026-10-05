@@ -560,7 +560,14 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "live") return this.#withWebRead((owner) => owner.request(params));
+      if (params.operation === "live" || params.operation === "events") {
+        const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+        const claudeSession =
+          this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
+          this.#claudeManaged!.hasManagedSession(sessionId);
+        if (claudeSession) return this.#claudeManaged!.request(params);
+        return this.#withWebRead((owner) => owner.request(params));
+      }
       if (params.operation === "settings-state")
         return this.#withWebRead((owner) => owner.managedSettingsState(params));
       if (params.operation === "queue-list")

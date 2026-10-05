@@ -155,54 +155,39 @@ function inside(file: string, root: string) {
   );
 }
 
-function samePath(left: string, right: string) {
-  const identity = (value: string) => {
-    const resolved = path.resolve(value);
+function physicalPathIdentity(value: string, preserveFinalEntry = false) {
+  let current = path.resolve(value);
+  const suffix = preserveFinalEntry ? [path.basename(current)] : [];
+  if (preserveFinalEntry) current = path.dirname(current);
+  while (true) {
     try {
-      return realpathSync.native(resolved);
+      current = realpathSync.native(current);
+      break;
     } catch {
-      return resolved;
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      suffix.unshift(path.basename(current));
+      current = parent;
     }
-  };
-  const leftIdentity = identity(left);
-  const rightIdentity = identity(right);
-  return process.platform === "win32"
-    ? leftIdentity.toLowerCase() === rightIdentity.toLowerCase()
-    : leftIdentity === rightIdentity;
+  }
+  const identity = path.join(current, ...suffix);
+  return process.platform === "win32" ? identity.toLowerCase() : identity;
+}
+
+function samePath(left: string, right: string) {
+  return physicalPathIdentity(left) === physicalPathIdentity(right);
 }
 
 function sameEntryPath(left: string, right: string) {
-  const first = path.resolve(left);
-  const second = path.resolve(right);
-  const entryIdentity = (value: string) => {
-    const parent = path.dirname(value);
-    let physicalParent = parent;
-    try {
-      physicalParent = realpathSync.native(parent);
-    } catch {
-      // Keep the lexical identity for destinations whose parent is not created yet.
-    }
-    return path.join(physicalParent, path.basename(value));
-  };
-  const firstIdentity = entryIdentity(first);
-  const secondIdentity = entryIdentity(second);
-  return process.platform === "win32"
-    ? firstIdentity.toLowerCase() === secondIdentity.toLowerCase()
-    : firstIdentity === secondIdentity;
+  return physicalPathIdentity(left, true) === physicalPathIdentity(right, true);
 }
 
 function physicalPathKey(value: string) {
-  const resolved = path.resolve(value);
-  try {
-    const physical = realpathSync.native(resolved);
-    return process.platform === "win32" ? physical.toLowerCase() : physical;
-  } catch {
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  }
+  return physicalPathIdentity(value);
 }
 
 function groupForTarget(groups: Map<string, Target[]>, target: Target): Target[] {
-  return groups.get(path.resolve(target.root)) ?? [target];
+  return groups.get(physicalPathKey(target.root)) ?? [target];
 }
 
 function wildcardMatches(pattern: string, value: string): boolean {
@@ -1425,7 +1410,10 @@ export class SkillManager {
       else if (observation.agents.length === 1 && states.some((state) => state.unknown))
         observation.status = "unverified";
     }
-    for (const receipt of await this.#allReceipts()) {
+    for (const receipt of await this.#allReceipts({
+      tolerateUnavailableLibraries: true,
+      warnings,
+    })) {
       if (receipt.status === "inactive") continue;
       for (const observation of output) {
         if (!sameEntryPath(observation.path, receipt.target)) continue;
@@ -1683,21 +1671,28 @@ export class SkillManager {
     }
   }
 
-  async #allReceipts(): Promise<Deployment[]> {
+  async #allReceipts(
+    options: { tolerateUnavailableLibraries?: boolean; warnings?: string[] } = {},
+  ) {
     const files = new Set([this.#receiptFile("personal", this.#root)]);
-    for (const workspace of this.#workspaceList()) {
-      files.add(this.#receiptFile("workspace", workspace.path));
-      for (const library of await this.#readLibraries("workspace", workspace.path)) {
+    const addLibraryReceipts = async (library: string) => {
+      try {
         await this.#assertLibraryAvailable(library);
         files.add(path.join(library, "skill-deployments.json"));
+      } catch (error) {
+        if (!options.tolerateUnavailableLibraries) throw error;
+        options.warnings?.push(`Skill ownership could not be verified for ${library}`);
       }
+    };
+    for (const workspace of this.#workspaceList()) {
+      files.add(this.#receiptFile("workspace", workspace.path));
+      for (const library of await this.#readLibraries("workspace", workspace.path))
+        await addLibraryReceipts(library);
     }
     for (const target of await this.targets()) {
       if (target.scope !== "personal") continue;
-      for (const library of await this.#readLibraries("personal", target.scope_root)) {
-        await this.#assertLibraryAvailable(library);
-        files.add(path.join(library, "skill-deployments.json"));
-      }
+      for (const library of await this.#readLibraries("personal", target.scope_root))
+        await addLibraryReceipts(library);
     }
     const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
     return groups.flat();
@@ -1726,7 +1721,7 @@ export class SkillManager {
   async listDeployments() {
     const inventory = await this.inventory();
     const observations = inventory.observations;
-    const deployments = await this.#allReceipts();
+    const deployments = await this.#allReceipts({ tolerateUnavailableLibraries: true });
     const journals = await this.#activeJournals();
     const known = await Promise.all(
       deployments.map(async (record) => {

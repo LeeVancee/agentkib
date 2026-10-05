@@ -25,7 +25,9 @@ mod state_tests;
 mod transport_tests;
 
 pub const CLIENT_TYPE: &str = "agentkib-codex-bridge";
+/// Minimum Desktop build eligible for the basic follower protocol.
 pub const DESKTOP_VERSION: &str = "26.917.62051";
+/// Minimum Desktop build eligible for the thread-settings v2 protocol.
 pub const DESKTOP_VERSION_CURRENT: &str = "26.924.22138";
 pub const EXTENSION_VERSION: &str = "26.908.40401";
 

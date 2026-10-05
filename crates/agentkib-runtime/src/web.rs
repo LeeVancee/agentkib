@@ -980,7 +980,10 @@ impl Service {
                                 )),
                             );
                         }
-                        Err(_) => return self.unsupported(&request, "open-in-original-client"),
+                        Err(error) => {
+                            return self
+                                .unsupported(&request, codex_follower_connection_reason(&error));
+                        }
                     }
                 }
                 self.recency.retain(|entry| entry != id);
@@ -1293,6 +1296,15 @@ impl Service {
         Ok(
             json!({"sessionId":request.session_id,"runtimeBootId":self.boot,"status":"unsupported","revision":null,"turnId":null,"sendEnabled":false,"approvals":[],"reason":reason}),
         )
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn codex_follower_connection_reason(error: &anyhow::Error) -> &'static str {
+    if error.to_string() == "unverified-installation" {
+        "unverified-installation"
+    } else {
+        "open-in-original-client"
     }
 }
 
@@ -1725,6 +1737,33 @@ mod tests {
         assert!(!directory.path().join("starts").exists());
     }
     use super::*;
+
+    #[test]
+    fn follower_connection_preserves_installation_reason_in_read_only_state() {
+        let service = Service::default();
+        let request: Request = serde_json::from_value(json!({
+            "operation":"live", "sessionId":"unattached-session"
+        }))
+        .unwrap();
+        for (error, reason) in [
+            ("unverified-installation", "unverified-installation"),
+            ("no session owner found", "open-in-original-client"),
+            ("incompatible state version", "open-in-original-client"),
+            (
+                "private socket path or native error",
+                "open-in-original-client",
+            ),
+        ] {
+            let error = anyhow::anyhow!(error);
+            let state = service
+                .unsupported(&request, codex_follower_connection_reason(&error))
+                .unwrap();
+            assert_eq!(state["reason"], reason);
+            assert_eq!(state["status"], "unsupported");
+            assert_eq!(state["sendEnabled"], false);
+            assert!(state["revision"].is_null());
+        }
+    }
 
     #[test]
     fn follower_settings_require_a_supported_platform_and_attached_owner() {

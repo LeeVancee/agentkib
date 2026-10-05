@@ -34,7 +34,11 @@ Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent
 
 托管只放行已核对的 `codex-cli 0.155.1` 与 `0.155.0-alpha.16.3`。通过已有平台发现解析 codex，再读取 `--version`；未知版本 fail closed。官方 thread/start/resume 回包还必须确认 cwd、sandbox、reviewer、可写根及本地环境。版本号不能替代运行时身份与策略验证。
 
-Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。当前 Desktop allowlist 为 `26.917.62051` 与 `26.924.22138`。后者精确开放 owner 的 `thread-follower-update-thread-settings` v2；由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。主机默认、token usage、goal、技能／插件资源同样没有可靠 follower 读取路径，保持 unavailable。协议核对证据见 `crates/agentkib-codex-bridge/COMPATIBILITY.md`。
+Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。基础 follower 要求 Desktop `26.917.62051` 或更新版本；owner 的 `thread-follower-update-thread-settings` v2 要求 `26.924.22138` 或更新版本。版本必须恰好包含三段数字，按三段数值组成的元组比较最低门槛；低于对应门槛或格式无效时拒绝。此调整仅适用于 Desktop follower，不改变上文托管 CLI 的精确版本限制或其他 agent 策略。
+
+满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。协议核对与历史验收证据见 [兼容性记录](../crates/agentkib-codex-bridge/COMPATIBILITY.md)。
+
+由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。主机默认、token usage、goal、技能／插件资源同样没有可靠 follower 读取路径，保持 unavailable。
 
 ## 原 ID 交接与退出
 

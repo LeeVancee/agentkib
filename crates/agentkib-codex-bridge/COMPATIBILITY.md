@@ -1,28 +1,40 @@
 # Verified protocol surface
 
-The current opt-in follower allowlist is macOS Desktop `26.917.62051` and
-`26.924.22138`;
+The opt-in basic follower requires macOS Desktop `26.917.62051` or newer;
+thread settings require `26.924.22138` or newer. Desktop versions must contain
+exactly three numeric components, compared numerically as a tuple against each
+minimum. Versions below the applicable minimum or with an invalid format fail
+closed. Meeting a minimum permits runtime compatibility checks; it is not evidence
+that the installed version has passed real owner-control acceptance.
 VS Code extension `26.908.40401` was also present for the protocol inspection.
 The OS-verified IPC peer executable determines the Desktop bundle root, including
 relocated installations and user Applications. Extension metadata is diagnostic,
 not a prerequisite for a Desktop-owned session. The socket resolves from CODEX_HOME
-(or the normal ~/.codex fallback), without copying or replacing it. This is a compatibility allowlist,
-not a claim that a production end-to-end acceptance run has passed.
+(or the normal ~/.codex fallback), without copying or replacing it.
 
 On 2026-09-24 the installed Desktop ASAR's method map was inspected without
 executing application code. Its `.vite/build/src-DldfpmrL.js` declares stream-state
 11, following/discovery/approval/user-input 1, start-turn 2, and interrupt-turn 4.
 The Desktop main and renderer owner handlers retain conversation-targeted start,
 expected-turn interruption, and typed approval/user-input response routing.
-The bridge continues to validate exact method versions, owner, host, thread,
-revision and complete approval details at runtime, failing closed on mismatch.
+The bridge continues to validate the OS-verified peer, exact method versions,
+owner, host, thread, revision and complete approval details at runtime, failing
+closed on mismatch. Control requires a matching native ACK; a timeout or lost
+receipt remains unknown and blocks subsequent control until reconciled. A newer
+Desktop version does not relax these checks or clear an unknown-result fence.
 
 On 2026-09-27 Desktop `26.924.22138` build 11645 was inspected from its packaged
 ASAR. Its owner map retains the verified basic methods and adds
 `thread-follower-update-thread-settings` version 2. The owner serializes this
 mutation, checks the supplied model/effort condition, applies settings for the next
-turn, and returns an explicit `applied` boolean. The bridge enables that one new
-method only for this exact Desktop version.
+turn, and returns an explicit `applied` boolean. This inspection establishes the
+`26.924.22138` minimum for that method; its method version remains exactly 2.
+
+The currently installed Desktop `26.930.51102` has been statically inspected for
+the method map and key payload fields only. It meets both Desktop minimums, but
+real owner-control and end-to-end acceptance have not been run for this version.
+The historical acceptance evidence below remains specific to the versions and
+operations tested.
 
 Managed execution is a separate app-server protocol. Its allowed CLI builds are
 `0.155.1` and Desktop's `0.155.0-alpha.16.3`. Both upstream source tags contain the
@@ -60,9 +72,10 @@ the older base-supported alpha has not passed this added mode fixture. See
 
 These app-server results do not enable equivalent Desktop follower methods.
 Follower advanced queue/settings/organization/expanded-approval operations remain
-unverified and unavailable except for the exact `26.924.22138` owner method
-`thread-follower-update-thread-settings` version 2. That method is limited to the
-validated model, effort, service tier, collaboration mode and three mapped
+unverified and unavailable except for the owner method
+`thread-follower-update-thread-settings` version 2 on Desktop `26.924.22138` or
+newer. That method is limited to the validated model, effort, service tier,
+collaboration mode and three mapped
 permission profiles; the owner must return `{applied:true}`. The follower stream
 does not provide the target host's model/service-tier catalog, so AgentKib exposes
 only collaboration mode and the three fixed permission profiles through Web; it
@@ -74,7 +87,7 @@ path aliases; its local transport test is not a new production follower attachme
 acceptance claim. Manual queue start and worktree/branch mutations remain disabled
 without a verified native success path.
 
-The installed `26.924.22138` bundle contains CLI `0.158.0-alpha.2.1`. Its isolated
+The inspected `26.924.22138` bundle contains CLI `0.158.0-alpha.2.1`. Its isolated
 Plan/Goal fixture was also run, but that CLI is not in the managed-execution
 allowlist. Managed execution remains pinned to `0.155.1` and
 `0.155.0-alpha.16.3` until its existing isolated protocol suite is repeated for a

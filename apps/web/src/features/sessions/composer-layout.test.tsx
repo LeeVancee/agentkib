@@ -142,6 +142,23 @@ describe("responsive composer behavior", () => {
     expect(screen.getByRole("status")).not.toBeEmptyDOMElement();
     expect(state.control).not.toHaveBeenCalled();
   });
+  it.each([
+    ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
+    ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
+  ])("shows actionable %s advice beside the disabled composer", async (reason, expected) => {
+    state = {
+      ...state,
+      canSend: false,
+      message: "Draft",
+      live: { ...state.live!, status: "unsupported", sendEnabled: false, reason },
+    };
+    render(<CodexComposer />);
+    await screen.findByRole("button", { name: /Test Model/ });
+    expect(screen.getByRole("status")).toHaveTextContent(expected);
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(state.control).not.toHaveBeenCalled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
   it("ignores late settings responses for a previously selected conversation", async () => {
     let finish!: (value: CodexSessionSettings) => void;
     vi.mocked(state.client.codexSessionSettings).mockImplementationOnce(

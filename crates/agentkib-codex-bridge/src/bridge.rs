@@ -600,8 +600,8 @@ impl Bridge {
         .map(|_| ())
     }
 
-    /// Updates only the owner protocol fields verified for the exact Desktop
-    /// allowlist. The owner condition prevents a concurrent model/effort change
+    /// Updates only the verified owner protocol fields on eligible Desktop builds.
+    /// The owner condition prevents a concurrent model/effort change
     /// from being overwritten after our final stream refresh.
     pub fn update_thread_settings_at_revision_with_authorization(
         &mut self,

@@ -4,6 +4,8 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { WebAccessService, createWebControlState } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
+import { ConversationHub } from "./conversation-hub";
+import { registerConversationIpc } from "./ipc/conversation";
 import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
   app,
@@ -70,6 +72,7 @@ let runtimeHost: DesktopRuntimeHost | undefined;
 let accountService: DesktopAccountService | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
+let conversationHub: ConversationHub | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -185,6 +188,7 @@ async function startApplication(): Promise<void> {
   });
   runtimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
+    conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
@@ -197,7 +201,30 @@ async function startApplication(): Promise<void> {
   });
 
   const sharedControl = createWebControlState();
+  conversationHub = new ConversationHub((method, params) => {
+    if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+    return requireRuntime().request(method, params);
+  });
+  runtimeHost.on("notification", (method: string, params: unknown) =>
+    conversationHub?.notification(method, params),
+  );
+  runtimeHost.on("request-completed", (method: string) => {
+    if (
+      new Set<string>([
+        RUNTIME_METHODS.addWorkspace,
+        RUNTIME_METHODS.excludeWorkspace,
+        RUNTIME_METHODS.restoreExcludedWorkspace,
+        RUNTIME_METHODS.clearSessionIndex,
+        RUNTIME_METHODS.setSessionIndexEnabled,
+      ]).has(method)
+    )
+      conversationHub?.scopesChanged();
+  });
   webAccess = new WebAccessService({
+    conversationHub,
+    desktopOrigin: process.env.VITE_DEV_SERVER_URL
+      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
+      : "app://bundle",
     sharedControl,
     account: {
       signedIn: () => accountService?.signedIn ?? false,
@@ -282,6 +309,7 @@ async function startApplication(): Promise<void> {
   await webAccess.initialize();
   lanWebAccess = new WebAccessService({
     mode: "lan",
+    conversationHub,
     sharedControl,
     receiptRequest: (params) => {
       if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
@@ -312,6 +340,7 @@ async function startApplication(): Promise<void> {
     },
   });
   await lanWebAccess.initialize();
+  registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
@@ -1073,7 +1102,10 @@ async function createMainWindow(): Promise<void> {
   window.on("hide", updateWindowActivity);
   window.on("minimize", updateWindowActivity);
   window.on("restore", updateWindowActivity);
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (webAccess?.canDownloadDesktopArtifact(url)) window.webContents.downloadURL(url);
+    return { action: "deny" };
+  });
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL
       ? new URL(process.env.VITE_DEV_SERVER_URL).origin
@@ -1195,7 +1227,7 @@ async function registerRendererProtocol(): Promise<void> {
       headers: {
         "content-type": contentType(assetPath),
         "content-security-policy":
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'",
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; media-src blob: http://127.0.0.1:*; frame-src http://127.0.0.1:*; font-src 'self' data:; connect-src 'self'; object-src 'none'",
       },
     });
   });

@@ -1,12 +1,28 @@
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
 import { WebClient, type ConversationEvent } from "@agentkib/web-client";
 import { dictionaries } from "@/i18n";
 import { useSessionController } from "./use-session-controller";
 import { SessionDialogs } from "./session-dialogs";
 
 const state = vi.hoisted(() => ({ modal: undefined as unknown }));
-vi.mock("./use-session-live", () => ({ useSessionLive: () => {} }));
+vi.mock("./use-session-live", () => ({
+  useSessionLive: ({
+    streamReady,
+    selected,
+    setControlReady,
+  }: {
+    streamReady: { current: boolean };
+    selected: string;
+    setControlReady: (ready: boolean) => void;
+  }) => {
+    useEffect(() => {
+      streamReady.current = !!selected;
+      setControlReady(!!selected);
+    }, [streamReady, selected, setControlReady]);
+  },
+}));
 vi.mock("@/features/preferences/use-appearance", () => ({ useAppearance: () => {} }));
 vi.mock("./session-context", () => ({
   useSession: () => ({ modal: state.modal, t: dictionaries["zh-CN"], locale: "zh-CN" }),
@@ -19,6 +35,7 @@ afterEach(() => {
 
 describe("production session guidance", () => {
   const t = dictionaries["zh-CN"];
+  vi.spyOn(WebClient.prototype, "stream").mockImplementation(() => () => {});
   it.each([
     ["open-in-original-client", t.openOriginalClient],
     ["unverified-installation", t.unverifiedInstallation],
@@ -29,6 +46,7 @@ describe("production session guidance", () => {
   ])("maps live reason %s in the controller", async (reason, expected) => {
     vi.spyOn(WebClient.prototype, "access").mockResolvedValue({
       status: "approved",
+      protocolVersion: 2,
       csrfToken: "test",
       bootId: "boot",
       experimentalEnabled: false,
@@ -86,6 +104,7 @@ describe("production session guidance", () => {
     async (status) => {
       vi.spyOn(WebClient.prototype, "access").mockResolvedValue({
         status: "approved",
+        protocolVersion: 2,
         csrfToken: "test",
         bootId: "boot",
         experimentalEnabled: true,

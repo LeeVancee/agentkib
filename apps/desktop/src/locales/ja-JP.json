@@ -131,6 +131,8 @@
   "sessions.clearAgentFilter": "Agent フィルターを解除",
   "sessions.clearRecordFilter": "記録フィルターを解除",
   "sessions.nav": "セッション",
+  "sessions.newConversation": "新しい会話",
+  "sessions.conversationCatalogError": "セッション一覧を更新できませんでした。",
   "sessions.more": "その他",
   "sessions.remote": "リモート接続",
   "sessions.remoteUnavailable": "近日対応予定",

@@ -23,6 +23,7 @@
     "quota:prepare": "node scripts/prepare-quota-sidecar.mjs",
     "icons:tray": "swift scripts/generate-tray-icon.swift",
     "benchmark:runtime": "node scripts/benchmark-runtime.mjs",
+    "benchmark:conversation": "node scripts/benchmark-conversation.mjs",
     "test": "pnpm cursor:test && pnpm runtime:build:dev && vitest run",
     "typecheck": "tsc -b --pretty false",
     "relay:stage": "node scripts/stage-frpc.mjs",
@@ -31,6 +32,9 @@
   },
   "dependencies": {
     "@agentkib/agent-identity": "workspace:*",
+    "@agentkib/conversation-state": "workspace:*",
+    "@agentkib/web": "workspace:*",
+    "@agentkib/web-client": "workspace:*",
     "@agentkib/session-catalog": "workspace:*",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",

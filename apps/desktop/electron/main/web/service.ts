@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { EventEmitter } from "node:events";
+import { createServer, type Server } from "node:http";
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
@@ -8,6 +9,14 @@ import { AttachmentStore, AttachmentError } from "./attachments";
 import { dispatchClaude } from "./claude-dispatch";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
+import {
+  LocalConversationResponse,
+  isConversationPath,
+  type ConversationRequest,
+  type ConversationResponse,
+} from "./conversation-transport";
+import type { ConversationHub } from "../conversation-hub";
+import type { SessionStreamEvent, SessionSubscription } from "../../generated/runtime-protocol";
 import {
   DEFAULT_RELAY_BROKER,
   RelayManager,
@@ -38,6 +47,7 @@ export function createWebControlState() {
     unconfirmed: new Set<string>(),
     unconfirmedRequests: new Map<string, string>(),
     requests: new Set<string>(),
+    events: new EventEmitter().setMaxListeners(64),
   };
 }
 
@@ -158,6 +168,23 @@ const DEFAULT: WebConfig = {
 
 /** Local-only transport. Authentication is independent of native certificate pairing. */
 export class WebAccessService {
+  private readonly localDevice: WebDevice = {
+    id: "desktop-local",
+    name: "Desktop",
+    accessMode: "full",
+    createdAt: 0,
+    send: true,
+    approve: true,
+    manage: true,
+    files: true,
+    attachments: true,
+    advancedControl: true,
+    organize: true,
+    settings: true,
+    extendedApproval: true,
+  };
+  private previewStarting?: Promise<void>;
+  private desktopPreviewStarting?: Promise<void>;
   private config = { ...DEFAULT };
   private server?: Server;
   private error?: string;
@@ -165,8 +192,7 @@ export class WebAccessService {
   private failures = 0;
   private credentials: Credential[] = [];
   private browsers = new Map<string, Browser>();
-  private streams = new Map<ServerResponse, string>();
-  private liveReads = new Map<string, Promise<unknown>>();
+  private streams = new Map<ConversationResponse, string>();
   private active = new Set<string>();
   // One runtime worker serves all Web sessions. Reserve its admission across
   // preflight and mutation; new reads must not queue behind that preflight.
@@ -176,16 +202,19 @@ export class WebAccessService {
   private unconfirmed = new Set<string>();
   private unconfirmedRequests = new Map<string, string>();
   private requests = new Set<string>();
+  private controlEvents = new EventEmitter().setMaxListeners(64);
+  private pendingControlNotifications = new Set<string>();
   private rates = new Map<string, { count: number; until: number }>();
   private adminQueue: Promise<unknown> = Promise.resolve();
   private persistence: Promise<void> = Promise.resolve();
   private bootId = token();
   private addressTimer?: ReturnType<typeof setInterval>;
   private artifacts?: ArtifactService;
+  private desktopArtifacts?: ArtifactService;
   private attachmentStore: AttachmentStore;
   private previewOrigin = "";
   private previewServer?: Server;
-  private previewStarting?: Promise<void>;
+  private desktopPreviewServer?: Server;
   private relay?: RelayManager;
   private relayEpoch = 0;
   private remotePairingInitialized = false;
@@ -201,6 +230,8 @@ export class WebAccessService {
   >();
   constructor(
     private readonly options: {
+      conversationHub?: ConversationHub;
+      desktopOrigin?: string;
       dataDir: string;
       staticDir: string;
       runtimeRequest: (params: unknown) => Promise<unknown>;
@@ -239,6 +270,7 @@ export class WebAccessService {
       this.unconfirmed = options.sharedControl.unconfirmed;
       this.unconfirmedRequests = options.sharedControl.unconfirmedRequests;
       this.requests = options.sharedControl.requests;
+      this.controlEvents = options.sharedControl.events;
     }
     if (options.mode === "lan") {
       if (options.acceptanceSessionId) throw new Error("acceptance_is_local_only");
@@ -282,37 +314,137 @@ export class WebAccessService {
       const body = input as Record<string, unknown>;
       const sessionId = this.field(body.sessionId);
       const scope = await this.localArtifactScope(sessionId);
-      if (!this.previewServer) await this.startPreview();
-      if (!this.artifacts) throw new Error("preview_unavailable");
+      await this.startDesktopPreview();
+      const artifacts = this.desktopArtifacts;
+      if (!artifacts) throw new Error("preview_unavailable");
       if (body.operation === "files")
-        return this.artifacts.list(
+        return artifacts.list(
           scope,
           body.directoryId === undefined ? undefined : this.field(body.directoryId),
         );
       if (body.operation === "file-text")
-        return this.artifacts.readText(
-          scope,
-          this.field(body.artifactId),
-          this.field(body.revision),
-        );
-      return this.artifacts.issueTicket(scope, {
+        return artifacts.readText(scope, this.field(body.artifactId), this.field(body.revision));
+      return artifacts.issueTicket(scope, {
         artifactId: this.field(body.artifactId),
         expectedRevision: this.field(body.revision),
         download: body.download === true,
       });
     }
-    return localClaudeRequest(
-      {
-        managed: this.options.claudeManagedRequest,
-        runtime: this.options.runtimeRequest,
-        receipt: this.options.receiptRequest,
-        attachments: this.attachmentStore,
-      },
-      input,
-    );
+    const body = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    const operation = String(body.operation);
+    const mutation = [
+      "create",
+      "adopt",
+      "release",
+      "reconcile",
+      "send",
+      "stop",
+      "approve",
+      "answer",
+    ].includes(operation);
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+    const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+    if (
+      mutation &&
+      (this.admission ||
+        (sessionId && this.active.has(sessionId)) ||
+        (sessionId &&
+          this.unconfirmed.has(sessionId) &&
+          operation !== "reconcile" &&
+          this.unconfirmedRequests.get(sessionId) !== requestId) ||
+        this.requests.size >= 10_000)
+    ) {
+      // A rejected duplicate may already have run through either local surface.
+      // Only its authoritative receipt can establish that it was never dispatched.
+      const control = { priorUncertain: true };
+      if (requestId) {
+        control.priorUncertain = this.requests.has(requestId);
+        try {
+          await this.controlReceipt(requestId, CLAUDE_LOCAL_OWNER, control);
+        } catch {
+          control.priorUncertain = true;
+        }
+      }
+      return {
+        accepted: false,
+        completed: false,
+        requestId,
+        controlOutcome: control.priorUncertain ? "unknown" : "not-dispatched",
+        error: this.admission ? "operation_busy" : "outcome_unknown",
+      };
+    }
+    if (mutation) {
+      this.admission = true;
+      if (sessionId) this.active.add(sessionId);
+    }
+    let dispatched = false;
+    const invoke = (request: (params: unknown) => Promise<unknown>, params: unknown) => {
+      const value = params as Record<string, unknown>;
+      if (mutation && value.operation === operation) {
+        dispatched = true;
+        if (requestId) this.requests.add(requestId);
+        if (sessionId && requestId && operation !== "reconcile") {
+          this.unconfirmed.add(sessionId);
+          this.unconfirmedRequests.set(sessionId, requestId);
+        }
+      } else if (!mutation && this.admission) throw new HttpError(409, "operation_busy");
+      return request(params);
+    };
+    try {
+      const result = await localClaudeRequest(
+        {
+          managed: (params) => invoke(this.options.claudeManagedRequest!, params),
+          runtime: (params) => invoke(this.options.runtimeRequest, params),
+          receipt: this.options.receiptRequest,
+          attachments: this.attachmentStore,
+        },
+        input,
+      );
+      if (result && typeof result === "object") {
+        const value = result as Record<string, unknown>;
+        if (
+          !dispatched &&
+          mutation &&
+          value.controlOutcome === "not-dispatched" &&
+          sessionId &&
+          this.unconfirmed.has(sessionId) &&
+          this.unconfirmedRequests.get(sessionId) === requestId
+        )
+          return { ...value, controlOutcome: "unknown" };
+        const settledSession =
+          sessionId ?? (typeof value.sessionId === "string" ? value.sessionId : undefined);
+        const acknowledged =
+          value.requestId === requestId &&
+          (value.accepted === true ||
+            value.controlOutcome === "not-dispatched" ||
+            (operation === "receipt" &&
+              value.found === true &&
+              ["accepted", "not-dispatched"].includes(String(value.status))));
+        if (operation === "reconcile" && settledSession && value.reconciled === true) {
+          this.clearUnconfirmed(settledSession);
+          this.unconfirmedRequests.delete(settledSession);
+        } else if (
+          settledSession &&
+          acknowledged &&
+          this.unconfirmedRequests.get(settledSession) === requestId &&
+          (mutation || !this.active.has(settledSession))
+        ) {
+          this.clearUnconfirmed(settledSession);
+          this.unconfirmedRequests.delete(settledSession);
+        }
+        if (operation === "live" && sessionId) return { ...value, ...this.controlGuard(sessionId) };
+      }
+      return result;
+    } finally {
+      if (mutation) {
+        if (sessionId) this.active.delete(sessionId);
+        this.admission = false;
+        this.notifyControlChanged(sessionId ?? "");
+      }
+    }
   }
   private async localArtifactScope(sessionId: string) {
-    const catalog = (await this.options.runtimeRequest({ operation: "catalog" })) as {
+    const catalog = (await this.runtime({ operation: "catalog" })) as {
       sessions: { id: string; agent: string; workspace_id: string }[];
     };
     const session = catalog.sessions.find(
@@ -368,6 +500,13 @@ export class WebAccessService {
         !(await this.workspaceAllowed(snapshot.workspaceId, device, reserved)))
     )
       return false;
+    return this.controlsEnabledForProvider(sessionId, snapshot, device);
+  }
+  private controlsEnabledForProvider(
+    sessionId: string | undefined,
+    snapshot: unknown,
+    device?: WebDevice,
+  ) {
     return (
       this.controlsEnabled(sessionId, device) &&
       (!!this.options.acceptanceSessionId ||
@@ -424,6 +563,134 @@ export class WebAccessService {
       }
     }
     if (this.config.enabled) await this.start();
+  }
+
+  /** Called only after the Electron sender check; shares all command admission and receipts. */
+  async localRequest(path: string, body?: unknown, upload?: Uint8Array) {
+    if (!path.startsWith("/")) path = `/${path}`;
+    if (this.options.mode === "lan" || !isConversationPath(path, body !== undefined || !!upload))
+      return { status: 404, body: { error: "not_found", controlOutcome: "not-dispatched" } };
+    const control = { request: false, dispatched: false, priorUncertain: false };
+    const res = new LocalConversationResponse();
+    try {
+      if (
+        path.includes("/files/") ||
+        path.includes("/artifacts") ||
+        path.includes("/artifact-tickets") ||
+        path.includes("/diff") ||
+        path.includes("/codex/context-options")
+      )
+        await this.startDesktopPreview();
+      const bytes = upload ?? Buffer.from(body === undefined ? "" : JSON.stringify(body));
+      if (upload && upload.byteLength > 25 * 1024 * 1024)
+        throw new HttpError(413, "attachment_too_large");
+      const req: ConversationRequest = {
+        method: body === undefined && !upload ? "GET" : "POST",
+        url: path.startsWith("/api/web/v1/") ? path : `/api/web/v1${path}`,
+        headers: {
+          host: `127.0.0.1:${this.config.port}`,
+          origin: `http://127.0.0.1:${this.config.port}`,
+          "content-type": "application/json",
+          "x-csrf-token": "desktop-local",
+          "x-agentkib-protocol": "2",
+        },
+        async *[Symbol.asyncIterator]() {
+          yield bytes;
+        },
+      };
+      await this.handle(req, res, control, true);
+      return { status: res.statusCode, body: res.body };
+    } catch (error) {
+      return {
+        status:
+          error instanceof HttpError ||
+          error instanceof ArtifactError ||
+          error instanceof AttachmentError
+            ? error.status
+            : 500,
+        body: {
+          error: error instanceof Error ? error.message : "request_failed",
+          ...(control.request
+            ? {
+                controlOutcome:
+                  control.dispatched || control.priorUncertain ? "unknown" : "not-dispatched",
+              }
+            : {}),
+        },
+      };
+    }
+  }
+
+  async localSubscribe(
+    sessionId: string,
+    afterCursor: string | undefined,
+    listener: (event: SessionStreamEvent) => void,
+  ): Promise<SessionSubscription> {
+    if (sessionId) this.field(sessionId);
+    if (!this.options.conversationHub) throw new Error("incompatible_protocol");
+    const result = await this.options.conversationHub.subscribe(sessionId, afterCursor, (event) =>
+      listener(this.projectControlEvent(event)),
+    );
+    return { ...result, events: result.events.map((event) => this.projectControlEvent(event)) };
+  }
+
+  canDownloadDesktopArtifact(url: string) {
+    return (
+      this.desktopArtifacts?.ownsTicketUrl(this.localDevice.id, url) === true ||
+      this.desktopArtifacts?.ownsTicketUrl(CLAUDE_LOCAL_OWNER, url) === true
+    );
+  }
+
+  private artifactsFor(deviceId: string) {
+    return deviceId === this.localDevice.id ? this.desktopArtifacts : this.artifacts;
+  }
+
+  onControlChanged(listener: (sessionId: string) => void): () => void {
+    this.controlEvents.on("changed", listener);
+    return () => this.controlEvents.off("changed", listener);
+  }
+
+  private notifyControlChanged(sessionId: string) {
+    if (this.pendingControlNotifications.has(sessionId)) return;
+    this.pendingControlNotifications.add(sessionId);
+    // Coalesce promise settlement with response finish. Never mark an active
+    // command unknown just because its native state arrived before its reply.
+    setImmediate(() => {
+      this.pendingControlNotifications.delete(sessionId);
+      this.controlEvents.emit("changed", sessionId);
+    });
+  }
+
+  private clearUnconfirmed(sessionId: string) {
+    if (this.unconfirmed.delete(sessionId)) this.notifyControlChanged(sessionId);
+  }
+
+  private controlGuard(sessionId: string) {
+    if (!this.unconfirmed.has(sessionId) || this.active.has(sessionId)) return undefined;
+    return {
+      status: "outcome-unknown",
+      revision: null,
+      sendEnabled: false,
+      stopEnabled: false,
+      approvals: [],
+      questions: [],
+      reason: "control-outcome-unconfirmed",
+    };
+  }
+
+  private projectControlEvent(event: SessionStreamEvent): SessionStreamEvent {
+    const guard = this.controlGuard(event.sessionId);
+    if (!guard) return event;
+    if (event.type === "state") return { ...event, payload: { ...event.payload, ...guard } };
+    if (event.type !== "snapshot") return event;
+    const live = event.payload.live;
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        live: { ...(live && typeof live === "object" ? live : {}), ...guard },
+      },
+    };
   }
 
   request(input: WebAdminRequest): Promise<WebAdminStatus> {
@@ -855,17 +1122,21 @@ export class WebAccessService {
     clearInterval(this.addressTimer);
     this.addressTimer = undefined;
     this.bootId = token();
-    this.liveReads.clear();
     this.contextArtifactRefs.clear();
+    await Promise.all([this.previewStarting, this.desktopPreviewStarting]).catch(() => undefined);
     this.artifacts?.clear();
+    this.desktopArtifacts?.clear();
     this.endStreams();
-    await this.previewStarting;
-    const preview = this.previewServer;
+    const previews = [this.previewServer, this.desktopPreviewServer];
     this.previewServer = undefined;
-    if (preview) {
-      preview.closeAllConnections();
-      await new Promise<void>((resolve) => preview.close(() => resolve()));
-    }
+    this.desktopPreviewServer = undefined;
+    this.artifacts = undefined;
+    this.desktopArtifacts = undefined;
+    for (const preview of previews)
+      if (preview) {
+        preview.closeAllConnections();
+        await new Promise<void>((resolve) => preview.close(() => resolve()));
+      }
     const server = this.server;
     this.server = undefined;
     if (server)
@@ -876,7 +1147,6 @@ export class WebAccessService {
   }
   runtimeUnavailable() {
     this.bootId = token();
-    this.liveReads.clear();
     this.contextArtifactRefs.clear();
     this.endStreams(undefined, this.options.mode === "lan" ? "unavailable" : "access-ended");
   }
@@ -1040,15 +1310,28 @@ export class WebAccessService {
   }
   private async startPreview() {
     if (this.previewServer) return;
-    if (!this.previewStarting)
-      this.previewStarting = this.startPreviewInner().finally(() => {
-        this.previewStarting = undefined;
-      });
-    return this.previewStarting;
+    if (this.previewStarting) return this.previewStarting;
+    this.previewStarting = this.createPreview();
+    try {
+      await this.previewStarting;
+    } finally {
+      this.previewStarting = undefined;
+    }
   }
-  private async startPreviewInner() {
+  private async startDesktopPreview() {
+    if (this.desktopPreviewServer) return;
+    if (this.desktopPreviewStarting) return this.desktopPreviewStarting;
+    this.desktopPreviewStarting = this.createPreview(true);
+    try {
+      await this.desktopPreviewStarting;
+    } finally {
+      this.desktopPreviewStarting = undefined;
+    }
+  }
+  private async createPreview(desktop = false) {
+    let artifacts: ArtifactService;
     const server = createServer((req, res) => {
-      void this.artifacts!.handle(req, res).catch((error: unknown) => {
+      void artifacts.handle(req, res).catch((error: unknown) => {
         if (!res.headersSent)
           this.json(res, error instanceof ArtifactError ? error.status : 500, {
             error: error instanceof ArtifactError ? error.message : "preview_failed",
@@ -1065,15 +1348,15 @@ export class WebAccessService {
         resolve();
       });
     });
-    this.previewServer = server;
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("preview_start_failed");
-    this.previewOrigin = `http://127.0.0.1:${address.port}`;
-    this.artifacts = new ArtifactService({
+    const previewOrigin = `http://127.0.0.1:${address.port}`;
+    artifacts = new ArtifactService({
       bytesPerSecond: this.config.previewBytesPerSecond,
       allowHttpLoopback: true,
-      appOrigin: this.config.externalOrigin || `http://127.0.0.1:${this.config.port}`,
-      previewOrigin: this.previewOrigin,
+      appOrigin: (!desktop && this.config.externalOrigin) || `http://127.0.0.1:${this.config.port}`,
+      previewOrigin,
+      desktopAppOrigin: desktop ? this.options.desktopOrigin : undefined,
       authorize: async (scope) => {
         try {
           if (scope.deviceId === CLAUDE_LOCAL_OWNER) {
@@ -1089,7 +1372,10 @@ export class WebAccessService {
               epoch: digest(`${this.bootId}|${root.path}|${scope.sessionId}`),
             };
           }
-          const credential = this.credentials.find((c) => c.device.id === scope.deviceId);
+          const credential =
+            scope.deviceId === this.localDevice.id
+              ? { hash: "desktop-local", device: this.localDevice }
+              : this.credentials.find((c) => c.device.id === scope.deviceId);
           if (!credential) throw new HttpError(401, "access_ended");
           this.grant(credential.hash, "files");
           const roots = await this.fileRoots(credential.device);
@@ -1108,6 +1394,15 @@ export class WebAccessService {
         }
       },
     });
+    if (desktop) {
+      // This listener and its tickets are never handed to the public relay.
+      this.desktopPreviewServer = server;
+      this.desktopArtifacts = artifacts;
+    } else {
+      this.previewServer = server;
+      this.previewOrigin = previewOrigin;
+      this.artifacts = artifacts;
+    }
   }
   private async fileRoots(device?: WebDevice) {
     const workspaces = await this.registeredWorkspaces();
@@ -1136,7 +1431,7 @@ export class WebAccessService {
     this.grant(hash, "files");
     return { deviceId: device.id, workspaceId };
   }
-  private async files(res: ServerResponse, hash: string, path: string, url: URL) {
+  private async files(res: ConversationResponse, hash: string, path: string, url: URL) {
     this.grant(hash, "files");
     if (path === "/files/workspaces") {
       const roots = await this.fileRoots(this.grant(hash, "files"));
@@ -1160,11 +1455,12 @@ export class WebAccessService {
         oid: url.searchParams.get("oid") ?? undefined,
       });
     } else {
-      if (!this.artifacts) throw new HttpError(503, "preview_unavailable");
+      const artifacts = this.artifactsFor(scope.deviceId);
+      if (!artifacts) throw new HttpError(503, "preview_unavailable");
       if (path === "/files/list")
-        result = await this.artifacts.list(scope, url.searchParams.get("directoryId") ?? undefined);
+        result = await artifacts.list(scope, url.searchParams.get("directoryId") ?? undefined);
       else if (path === "/files/text")
-        result = await this.artifacts.readText(
+        result = await artifacts.readText(
           scope,
           this.field(url.searchParams.get("artifactId")),
           url.searchParams.get("revision") ?? undefined,
@@ -1190,7 +1486,7 @@ export class WebAccessService {
           ].map((m) => m[1] ?? m[2]),
         );
         result = {
-          artifacts: await this.artifacts.resolveReferences(scope, refs),
+          artifacts: await artifacts.resolveReferences(scope, refs),
           next_cursor: page.next_cursor,
         };
       } else throw new HttpError(404, "not_found");
@@ -1597,9 +1893,10 @@ export class WebAccessService {
           entries: { id: string; name: string; kind: "file" | "directory"; revision: string }[];
         }
       | undefined;
-    if (this.artifacts) {
+    const artifacts = this.artifactsFor(device.id);
+    if (artifacts) {
       try {
-        directory = await this.artifacts.list(
+        directory = await artifacts.list(
           { deviceId: device.id, workspaceId, sessionId },
           directoryId,
         );
@@ -1660,6 +1957,7 @@ export class WebAccessService {
     )
       throw new HttpError(400, "invalid_resource_ids");
     const device = this.fullAccess(hash);
+    const artifacts = this.artifactsFor(device.id);
     const workspaceId = await this.codexScope(sessionId, hash, reserved);
     const { response, references } = await this.contextResources(
       sessionId,
@@ -1682,11 +1980,11 @@ export class WebAccessService {
         artifact.deviceId !== device.id ||
         artifact.sessionId !== sessionId ||
         artifact.workspaceId !== workspaceId ||
-        !this.artifacts
+        !artifacts
       )
         throw new HttpError(409, "resource_unavailable");
       try {
-        const reference = await this.artifacts.resolveContextReference(
+        const reference = await artifacts.resolveContextReference(
           { deviceId: device.id, workspaceId, sessionId },
           artifact.artifactId,
           artifact.revision,
@@ -1803,7 +2101,7 @@ export class WebAccessService {
     };
   }
   private async codexAction(
-    res: ServerResponse,
+    res: ConversationResponse,
     hash: string,
     operation: string,
     body: Record<string, unknown>,
@@ -1852,7 +2150,7 @@ export class WebAccessService {
         !this.active.has(sessionId) &&
         this.unconfirmedRequests.get(sessionId) === pendingRequest
       ) {
-        this.unconfirmed.delete(sessionId);
+        this.clearUnconfirmed(sessionId);
         this.unconfirmedRequests.delete(sessionId);
       }
       const catalog = (await this.runtime({ operation: "catalog" })) as {
@@ -2142,6 +2440,7 @@ export class WebAccessService {
       const pending = this.options.runtimeRequest(params).finally(() => {
         this.active.delete(sessionId);
         this.admission = false;
+        this.notifyControlChanged(sessionId);
       });
       const result = (await this.runtime(params, pending)) as {
         accepted?: boolean;
@@ -2152,14 +2451,14 @@ export class WebAccessService {
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       if (result.accepted !== true) {
         if (result.requestId === requestId && result.controlOutcome === "not-dispatched") {
-          this.unconfirmed.delete(sessionId);
+          this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           throw new HttpError(409, "control_preflight_rejected");
         }
         throw new HttpError(502, "outcome_unknown");
       }
       res.once("finish", () => {
-        if (!res.destroyed && res.statusCode === 200) this.unconfirmed.delete(sessionId);
+        if (!res.destroyed && res.statusCode === 200) this.clearUnconfirmed(sessionId);
       });
       return this.json(res, 200, result);
     } finally {
@@ -2187,8 +2486,8 @@ export class WebAccessService {
     return prior;
   }
   private async manage(
-    _req: IncomingMessage,
-    res: ServerResponse,
+    _req: ConversationRequest,
+    res: ConversationResponse,
     hash: string,
     operation: string,
     body: Record<string, unknown>,
@@ -2284,6 +2583,9 @@ export class WebAccessService {
       )
       .finally(() => {
         this.admission = false;
+        // A managed request may settle after the HTTP timeout, including create
+        // before a session id is known. Wake receipt reconciliation in either case.
+        this.notifyControlChanged(typeof params.sessionId === "string" ? params.sessionId : "");
       });
     const result = (await this.runtime(params, pending)) as {
       reconciled?: boolean;
@@ -2333,10 +2635,15 @@ export class WebAccessService {
       throw new HttpError(502, "outcome_unknown");
     }
     if (operation === "reconcile" && result.reconciled === true)
-      this.unconfirmed.delete(String(params.sessionId));
+      this.clearUnconfirmed(String(params.sessionId));
     return this.json(res, 200, result);
   }
-  private async projectLive(sessionId: string | undefined, snapshot: unknown, device?: WebDevice) {
+  private async projectLive(
+    sessionId: string | undefined,
+    snapshot: unknown,
+    device?: WebDevice,
+    reserved = false,
+  ) {
     if (
       sessionId &&
       this.options.receiptRequest &&
@@ -2368,11 +2675,11 @@ export class WebAccessService {
         })),
       };
     }
-    if (!sessionId || !this.unconfirmed.has(sessionId)) {
+    if (!sessionId || !this.controlGuard(sessionId)) {
       if (
         snapshot &&
         typeof snapshot === "object" &&
-        !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device))
+        !(await this.controlsEnabledForSnapshot(sessionId, snapshot, device, reserved))
       ) {
         const state = snapshot as Record<string, unknown>;
         return {
@@ -2426,12 +2733,12 @@ export class WebAccessService {
   private endStreams(hash?: string, event: "access-ended" | "unavailable" = "access-ended") {
     for (const [res, owner] of this.streams)
       if (!hash || hash === owner) {
-        res.write(`event: ${event}\ndata: {}\n\n`);
-        res.end();
+        if (!res.write(`event: ${event}\ndata: {}\n\n`)) res.destroy();
+        else res.end();
         this.streams.delete(res);
       }
   }
-  private json(res: ServerResponse, status: number, data: unknown) {
+  private json(res: ConversationResponse, status: number, data: unknown) {
     const body = JSON.stringify(data);
     if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new HttpError(413, "response_too_large");
     res.writeHead(status, {
@@ -2440,7 +2747,7 @@ export class WebAccessService {
     });
     res.end(body);
   }
-  private async body(req: IncomingMessage): Promise<Record<string, unknown>> {
+  private async body(req: ConversationRequest): Promise<Record<string, unknown>> {
     if (req.headers["content-type"]?.split(";")[0] !== "application/json")
       throw new HttpError(415, "json_required");
     const chunks: Buffer[] = [];
@@ -2448,7 +2755,7 @@ export class WebAccessService {
     for await (const chunk of req) {
       size += chunk.length;
       if (size > 64 * 1024) throw new HttpError(413, "body_too_large");
-      chunks.push(chunk);
+      chunks.push(Buffer.from(chunk));
     }
     try {
       const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -2471,6 +2778,7 @@ export class WebAccessService {
       | "settings"
       | "extendedApproval",
   ) {
+    if (hash === "desktop-local" && this.options.mode !== "lan") return this.localDevice;
     const credential = this.credentials.find((c) => c.hash === hash && c.expiresAt > Date.now());
     if (!this.server || !credential || this.browsers.get(hash)?.ended) {
       this.endStreams(hash);
@@ -2509,38 +2817,17 @@ export class WebAccessService {
       clearTimeout(timer!);
     }
   }
-  private streamSnapshot(sessionId: string | undefined, device: WebDevice) {
-    const experimentalEnabled = this.controlsEnabled(sessionId, device);
-    // Never share reads across host generations, transport modes or permission scopes.
-    const key = JSON.stringify([
-      this.bootId,
-      this.options.mode ?? "local",
-      sessionId,
-      experimentalEnabled,
-      device.send,
-      device.approve,
-    ]);
-    const existing = this.liveReads.get(key);
-    if (existing) return existing;
-    const read = this.runtime({ operation: "live", sessionId, experimentalEnabled });
-    this.liveReads.set(key, read);
-    void read
-      .finally(() => {
-        if (this.liveReads.get(key) === read) this.liveReads.delete(key);
-      })
-      .catch(() => undefined);
-    return read;
-  }
   private async handle(
-    req: IncomingMessage,
-    res: ServerResponse,
+    req: ConversationRequest,
+    res: ConversationResponse,
     control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
+    trustedLocal = false,
   ) {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: ${this.previewOrigin}; media-src ${this.previewOrigin || "'none'"}; frame-src ${this.previewOrigin || "'none'"}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob: ${this.previewOrigin}; media-src ${this.previewOrigin || "'none'"}; frame-src ${this.previewOrigin || "'none'"}; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
     );
     this.expire();
     const lan = this.options.mode === "lan";
@@ -2626,12 +2913,22 @@ export class WebAccessService {
       if (
         !allowed.includes(path) ||
         headers.some(
-          (header) => !["authorization", "content-type", "x-csrf-token"].includes(header),
+          (header) =>
+            ![
+              "authorization",
+              "content-type",
+              "x-csrf-token",
+              "x-agentkib-protocol",
+              "last-event-id",
+            ].includes(header),
         )
       )
         throw new HttpError(403, "invalid_preflight");
       res.setHeader("Access-Control-Allow-Methods", method!);
-      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-CSRF-Token");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Authorization, Content-Type, X-CSRF-Token, X-AgentKib-Protocol, Last-Event-ID",
+      );
       if (req.headers["access-control-request-private-network"] === "true")
         res.setHeader("Access-Control-Allow-Private-Network", "true");
       res.writeHead(204);
@@ -2640,7 +2937,10 @@ export class WebAccessService {
     }
     if (req.method === "GET" && path === "/info")
       return this.json(res, 200, {
+        // Legacy hosted clients check this before authentication or any reads.
+        // Negotiate realtime separately so their history and receipt access survives.
         protocolVersion: 1,
+        conversationProtocolVersion: 2,
         transport: lan ? "lan" : "local",
         capabilities: { read: true, send: this.controlsEnabled(), approve: this.controlsEnabled() },
       });
@@ -2657,6 +2957,8 @@ export class WebAccessService {
           "/managed/reconcile",
         ].includes(path)) ||
       (req.method === "POST" && path.startsWith("/codex/") && path !== "/codex/inspect");
+    if (control.request && req.headers["x-agentkib-protocol"] !== "2")
+      throw new HttpError(409, "incompatible_protocol");
     const cookieName = external ? "ak_web_secure" : "ak_web_local";
     let raw = lan
       ? req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1]
@@ -2665,8 +2967,14 @@ export class WebAccessService {
           .map((v) => v.trim())
           .find((v) => v.startsWith(`${cookieName}=`))
           ?.slice(cookieName.length + 1);
-    let hash = raw && /^[A-Za-z0-9_-]{43}$/.test(raw) ? digest(raw) : "";
-    let browser = this.browsers.get(hash);
+    let hash = trustedLocal
+      ? "desktop-local"
+      : raw && /^[A-Za-z0-9_-]{43}$/.test(raw)
+        ? digest(raw)
+        : "";
+    let browser = trustedLocal
+      ? ({ csrf: "desktop-local", expiresAt: Number.MAX_SAFE_INTEGER } as Browser)
+      : this.browsers.get(hash);
     let bearerToken: string | undefined;
     if (
       lan &&
@@ -2694,7 +3002,9 @@ export class WebAccessService {
             `${cookieName}=${raw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${MAX_AGE / 1000}${external ? "; Secure" : ""}`,
           );
       }
-      const device = this.credentials.find((c) => c.hash === hash)?.device;
+      const device = trustedLocal
+        ? this.localDevice
+        : this.credentials.find((c) => c.hash === hash)?.device;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -2703,6 +3013,7 @@ export class WebAccessService {
             : browser.pending
               ? "pending"
               : "unpaired",
+        protocolVersion: 2,
         csrfToken: browser.csrf,
         bootId: this.bootId,
         device: browser.ended ? undefined : device,
@@ -2856,8 +3167,9 @@ export class WebAccessService {
         return this.manage(req, res, hash, path.slice(9), body, control);
       if (path === "/artifact-tickets") {
         const scope = await this.fileScope(hash, this.field(body.workspaceId));
-        if (!this.artifacts) throw new HttpError(503, "preview_unavailable");
-        const result = await this.artifacts.issueTicket(scope, {
+        const artifacts = this.artifactsFor(scope.deviceId);
+        if (!artifacts) throw new HttpError(503, "preview_unavailable");
+        const result = await artifacts.issueTicket(scope, {
           artifactId: this.field(body.artifactId),
           download: body.download === true,
         });
@@ -2873,7 +3185,8 @@ export class WebAccessService {
       const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       const sessionId = this.field(body.sessionId);
-      if (this.isFullAccess(this.grant(hash))) await this.codexScope(sessionId, hash, false, false);
+      if (this.isFullAccess(this.grant(hash)))
+        await this.codexScope(sessionId, hash, path === "/stream", false);
       if (!this.controlsEnabled(sessionId, this.grant(hash)))
         throw new HttpError(403, "session_control_not_allowed");
       const claudeReplay =
@@ -3172,6 +3485,7 @@ export class WebAccessService {
           .finally(() => {
             this.active.delete(sessionId);
             this.admission = false;
+            this.notifyControlChanged(sessionId);
           });
         const result = await this.runtime(params, pending);
         // Runtime admission is not owner dispatch: the bridge rechecks state
@@ -3191,7 +3505,7 @@ export class WebAccessService {
           "runtimeBootId" in result &&
           result.runtimeBootId === snapshot.runtimeBootId
         ) {
-          this.unconfirmed.delete(sessionId);
+          this.clearUnconfirmed(sessionId);
           control.dispatched = false;
           control.priorUncertain = false;
           if ((snapshot as { executionMode?: string }).executionMode === "claude-managed")
@@ -3221,7 +3535,7 @@ export class WebAccessService {
             "accepted" in result &&
             result.accepted === true
           )
-            this.unconfirmed.delete(sessionId);
+            this.clearUnconfirmed(sessionId);
         });
         return this.json(res, 200, result);
       } finally {
@@ -3362,7 +3676,7 @@ export class WebAccessService {
           throw new HttpError(503, "receipt_unavailable");
         for (const [sessionId, pendingRequestId] of this.unconfirmedRequests) {
           if (pendingRequestId === requestId && !this.active.has(sessionId)) {
-            this.unconfirmed.delete(sessionId);
+            this.clearUnconfirmed(sessionId);
             this.unconfirmedRequests.delete(sessionId);
           }
         }
@@ -3419,7 +3733,7 @@ export class WebAccessService {
           this.unconfirmedRequests.get(result.sessionId) === requestId &&
           !this.active.has(result.sessionId)
         ) {
-          this.unconfirmed.delete(result.sessionId);
+          this.clearUnconfirmed(result.sessionId);
           this.unconfirmedRequests.delete(result.sessionId);
         }
       }
@@ -3490,100 +3804,277 @@ export class WebAccessService {
     if (path.startsWith("/files/") || path === "/artifacts" || path === "/diff")
       return this.files(res, hash, path, url);
     const sessionId =
-      path === "/catalog" ? undefined : this.field(url.searchParams.get("sessionId"));
+      path === "/catalog" || (path === "/stream" && !url.searchParams.has("sessionId"))
+        ? undefined
+        : this.field(url.searchParams.get("sessionId"));
     const streamWorkspaceId =
       sessionId && this.isFullAccess(this.grant(hash))
-        ? await this.codexScope(sessionId, hash, false, false)
+        ? await this.codexScope(sessionId, hash, path === "/stream", false)
         : undefined;
     if (path === "/stream") {
+      if (url.searchParams.get("protocolVersion") !== "2" || !this.options.conversationHub)
+        throw new HttpError(409, "incompatible_protocol");
       if (
         this.streams.size >= 16 ||
         [...this.streams.values()].filter((h) => h === hash).length >= 2
       )
         throw new HttpError(429, "stream_limit");
+      const afterCursor =
+        url.searchParams.get("afterCursor") ||
+        String(req.headers["last-event-id"] ?? "") ||
+        undefined;
+      if (afterCursor && afterCursor.length > 1024) throw new HttpError(400, "invalid_cursor");
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
       });
       this.streams.set(res, hash);
-      let timer: ReturnType<typeof setTimeout>;
-      let drainTimer: ReturnType<typeof setTimeout> | undefined;
-      let backpressured = false;
-      let previousData: string | undefined;
-      let lastWriteAt = Date.now();
+      const hub = this.options.conversationHub;
+      let subscriptionId: string | undefined;
+      let closed = false;
+      let ready = false;
+      let processing = false;
+      let readyCursor: string | undefined;
+      let controlChangedPending = false;
+      let catalogChangedPending = false;
+      let queuedBytes = 0;
+      let cancelDrain: (() => void) | undefined;
+      let controlContext: { executionMode?: unknown; workspaceId?: unknown } = {};
+      const controlMetadata = (live: unknown) => {
+        if (!live || typeof live !== "object") return {};
+        return {
+          executionMode: "executionMode" in live ? live.executionMode : undefined,
+          workspaceId: "workspaceId" in live ? live.workspaceId : undefined,
+        };
+      };
+      const queue: SessionStreamEvent[] = [];
       const cleanup = () => {
-        clearTimeout(timer);
-        clearTimeout(drainTimer);
-        res.off("drain", resume);
+        if (closed) return;
+        closed = true;
+        queue.length = 0;
+        queuedBytes = 0;
+        controlChangedPending = false;
+        catalogChangedPending = false;
+        const blocked = cancelDrain !== undefined;
+        cancelDrain?.();
+        cancelDrain = undefined;
+        if (blocked && !res.destroyed) res.destroy();
+        clearInterval(heartbeat);
+        clearTimeout(expiration);
+        hub.off("catalog-invalidated", catalogChanged);
+        hub.off("unavailable", unavailable);
+        this.controlEvents.off("changed", controlChanged);
         this.streams.delete(res);
+        if (subscriptionId) void hub.unsubscribe(subscriptionId).catch(() => undefined);
       };
-      const resume = () => {
-        clearTimeout(drainTimer);
-        backpressured = false;
-        if (this.streams.has(res) && !res.writableEnded && !res.destroyed)
-          timer = setTimeout(() => void poll(), 2000);
+      const authorized = () => {
+        const device = this.grant(hash);
+        if (
+          streamWorkspaceId &&
+          !this.isFullAccess(device) &&
+          !this.config.allowedWorkspaceIds?.includes(streamWorkspaceId)
+        )
+          throw new HttpError(403, "workspace_not_authorized");
+        return device;
       };
-      const write = (message: string) => {
-        if (res.writableEnded || res.destroyed || !this.streams.has(res)) return;
-        // false means the frame was accepted into Node's buffer. Do not resend
-        // it or poll for another snapshot until the slow reader catches up.
-        if (!res.write(message)) {
-          backpressured = true;
-          res.once("drain", resume);
-          drainTimer = setTimeout(() => {
-            cleanup();
-            res.destroy();
-          }, 30_000);
+      const unavailable = (force = false) => {
+        if (closed) return;
+        const blocked = force || cancelDrain !== undefined;
+        cleanup();
+        // end() cannot release a socket whose peer has stopped reading. Such a
+        // response must not outlive its removal from the bounded stream registry.
+        if (blocked && !res.destroyed) res.destroy();
+        else if (!res.writableEnded && !res.destroyed) res.end("event: unavailable\ndata: {}\n\n");
+      };
+      const write = async (frame: string) => {
+        authorized();
+        if (closed || res.destroyed || res.writableEnded) return;
+        if (res.write(frame)) return;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => unavailable(true), 30_000);
+          const drained = () => {
+            clearTimeout(timer);
+            res.off("drain", drained);
+            res.off("close", drained);
+            if (cancelDrain === drained) cancelDrain = undefined;
+            resolve();
+          };
+          cancelDrain = drained;
+          res.once("drain", drained);
+          res.once("close", drained);
+        });
+      };
+      const project = async (event: SessionStreamEvent): Promise<SessionStreamEvent> => {
+        const device = authorized();
+        if (event.type === "snapshot") {
+          controlContext = controlMetadata(event.payload.live);
+          return {
+            ...event,
+            payload: {
+              ...event.payload,
+              live: await this.projectLive(sessionId, event.payload.live, device, true),
+            },
+          };
         }
-        lastWriteAt = Date.now();
+        if (event.type !== "state") return event;
+        // Keep only authorization metadata, never manufacture absent patch fields
+        // or refresh chat state while projecting a native notification.
+        const patch = { ...event.payload };
+        if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
+        if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
+        const enabled =
+          this.controlsEnabledForProvider(sessionId, controlContext, device) &&
+          (!["codex-managed", "claude-managed"].includes(String(controlContext.executionMode)) ||
+            (typeof controlContext.workspaceId === "string" &&
+              (this.isFullAccess(device)
+                ? controlContext.workspaceId === streamWorkspaceId
+                : this.config.allowedWorkspaceIds?.includes(controlContext.workspaceId) === true)));
+        // Full-access streams validated their registered workspace on admission;
+        // registration changes cancel them through ConversationHub.scopesChanged.
+        if (Array.isArray(patch.approvals))
+          patch.approvals = patch.approvals.map((value) => {
+            const approval = value as Record<string, unknown>;
+            return {
+              ...approval,
+              supported:
+                approval.supported === true &&
+                enabled &&
+                device.approve &&
+                (!approval.requiresExtendedApproval || device.extendedApproval === true),
+              decisionOptions: device.extendedApproval ? approval.decisionOptions : undefined,
+              ...(!enabled ? { availableDecisions: [] } : {}),
+            };
+          });
+        if (!device.send || !enabled) {
+          if ("sendEnabled" in patch) patch.sendEnabled = false;
+          if ("stopEnabled" in patch) patch.stopEnabled = false;
+          if (Array.isArray(patch.questions))
+            patch.questions = patch.questions.map((question) => ({
+              ...question,
+              supported: false,
+            }));
+        }
+        if (sessionId) Object.assign(patch, this.controlGuard(sessionId));
+        return { ...event, payload: patch };
       };
-      const poll = async () => {
+      const flush = async () => {
+        if (processing || !ready || closed) return;
+        processing = true;
         try {
-          const device = this.grant(hash);
-          if (streamWorkspaceId && !(await this.workspaceAllowed(streamWorkspaceId, device))) {
-            cleanup();
-            res.end();
-            return;
+          while (queue.length && !closed) {
+            const event = queue.shift()!;
+            queuedBytes -= Buffer.byteLength(JSON.stringify(event));
+            const value = await project(event);
+            await write(
+              `id: ${value.cursor}\nevent: session-event\ndata: ${JSON.stringify(value)}\n\n`,
+            );
+            // Backpressure can append newer notifications while replay drains.
+            // Readiness must name the last frame preceding the marker.
+            if (readyCursor) readyCursor = value.cursor;
           }
-          const snapshot = await this.streamSnapshot(sessionId, device);
-          // Each browser remains independently authorized before and after the shared read.
-          this.grant(hash);
-          if (!this.streams.has(res)) return;
-          const data = JSON.stringify(await this.projectLive(sessionId, snapshot, device));
-          this.grant(hash);
-          if (Buffer.byteLength(data) > 4 * 1024 * 1024) throw new Error("snapshot_too_large");
-          const message =
-            data !== previousData
-              ? `event: snapshot\ndata: ${data}\n\n`
-              : Date.now() - lastWriteAt >= 15_000
-                ? ": heartbeat\n\n"
-                : undefined;
-          if (message) write(message);
-          previousData = data;
-        } catch (error) {
-          // Admission reserves runtime capacity for control. A skipped read is
-          // not a stream outage; keep polling and keep revocation checks active.
-          if (
-            !(error instanceof HttpError && error.message === "operation_busy") &&
-            !res.writableEnded
-          ) {
-            previousData = undefined;
-            write("event: unavailable\ndata: {}\n\n");
-          } else if (
-            this.streams.has(res) &&
-            !res.writableEnded &&
-            Date.now() - lastWriteAt >= 15_000
-          ) {
-            write(": heartbeat\n\n");
+          if (controlChangedPending && !closed) {
+            controlChangedPending = false;
+            // A global receipt wakeup must not disclose another session's id.
+            await write(
+              `event: control-changed\ndata: ${JSON.stringify(sessionId ? { sessionId } : {})}\n\n`,
+            );
           }
+          if (catalogChangedPending && !closed) {
+            catalogChangedPending = false;
+            await write("event: catalog-invalidated\ndata: {}\n\n");
+          }
+          if (readyCursor && !closed) {
+            const cursor = readyCursor;
+            readyCursor = undefined;
+            await write(`event: session-ready\ndata: ${JSON.stringify({ cursor })}\n\n`);
+          }
+        } catch {
+          unavailable();
+        } finally {
+          processing = false;
+          if (queue.length || controlChangedPending || catalogChangedPending) void flush();
         }
-        if (this.streams.has(res) && !backpressured && !res.writableEnded && !res.destroyed)
-          timer = setTimeout(() => void poll(), 2000);
       };
+      const enqueue = (event: SessionStreamEvent) => {
+        if (closed) return;
+        queuedBytes += Buffer.byteLength(JSON.stringify(event));
+        if (queue.length >= 512 || queuedBytes > 4 * 1024 * 1024) {
+          unavailable(true);
+          return;
+        }
+        queue.push(event);
+        void flush();
+      };
+      const controlChanged = (changedSessionId: string) => {
+        if (closed || (sessionId && changedSessionId !== sessionId)) return;
+        controlChangedPending = true;
+        void flush();
+      };
+      const catalogChanged = () => {
+        if (closed || sessionId) return;
+        catalogChangedPending = true;
+        void flush();
+      };
+      const heartbeat = setInterval(() => {
+        try {
+          authorized();
+          if (!closed && !processing && !res.write(": heartbeat\n\n")) unavailable(true);
+        } catch {
+          unavailable();
+        }
+      }, 15_000);
+      const credential = this.credentials.find((c) => c.hash === hash);
+      let expiration: ReturnType<typeof setTimeout>;
+      const checkExpiry = () => {
+        const remaining = (credential?.expiresAt ?? Date.now()) - Date.now();
+        if (remaining <= 0) {
+          this.endStreams(hash);
+          cleanup();
+        } else expiration = setTimeout(checkExpiry, Math.min(remaining, 2_147_483_647));
+      };
+      checkExpiry();
       res.once("close", cleanup);
       res.once("finish", cleanup);
-      void poll();
+      hub.on("unavailable", unavailable);
+      this.controlEvents.on("changed", controlChanged);
+
+      try {
+        const subscription = await hub.subscribe(
+          sessionId ?? "",
+          afterCursor,
+          sessionId ? enqueue : () => catalogChanged(),
+        );
+        subscriptionId = subscription.subscriptionId;
+        if (closed) {
+          void hub.unsubscribe(subscriptionId).catch(() => undefined);
+          return;
+        }
+        if (sessionId && subscription.events[0]?.type !== "snapshot") {
+          // A replay (including an empty one) may omit provider/workspace fields.
+          // Resolve them once for this connection without replacing its replay or
+          // exposing a newer live state under an older transport cursor.
+          controlContext = controlMetadata(
+            await this.runtime(
+              { operation: "live", sessionId, experimentalEnabled: true },
+              undefined,
+              true,
+            ),
+          );
+          if (closed) return;
+        }
+        authorized();
+        // Baseline/replay precedes notifications that arrived while subscribe was resolving.
+        const pending = queue.splice(0);
+        queuedBytes = 0;
+        if (sessionId) for (const event of [...subscription.events, ...pending]) enqueue(event);
+        readyCursor = subscription.cursor;
+        ready = true;
+        if (!sessionId) res.write(": connected\n\n");
+        void flush();
+      } catch {
+        unavailable();
+      }
       return;
     }
     let params: Record<string, unknown>;
@@ -3625,7 +4116,7 @@ export class WebAccessService {
     if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
     return this.json(res, 200, result);
   }
-  private async static(req: IncomingMessage, res: ServerResponse) {
+  private async static(req: ConversationRequest, res: ConversationResponse) {
     if (req.method !== "GET" && req.method !== "HEAD")
       throw new HttpError(405, "method_not_allowed");
     let pathname: string;

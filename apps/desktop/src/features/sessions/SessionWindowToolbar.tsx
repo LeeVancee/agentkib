@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, LayoutDashboard, MoreHorizontal, RefreshCw } from "lucide-react";
+import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,6 +15,8 @@ import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import { useSessionSourceCapability } from "./useSessionSourceCapability";
 import { useSessionHub } from "./SessionHubContext";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
+import { useSessionViewStore } from "./session-view-store";
 
 export function SessionWindowToolbar() {
   const { tr } = useI18n();
@@ -22,18 +24,31 @@ export function SessionWindowToolbar() {
   const navigate = useNavigate();
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
+  const creating = useSessionViewStore((state) => state.creatingConversation);
+  const createConversation = () => {
+    useSessionViewStore.getState().setCreatingConversation(true);
+    hub.select();
+  };
+  const historyId = selected?.indexedSessionIds ? selected.indexedSessionIds[0] : selected?.id;
   const sourceCapability = useSessionSourceCapability(
-    selected && !selected.remote && selected.availability === "readable" ? selected.id : undefined,
+    selected && !selected.remote && selected.availability === "readable" ? historyId : undefined,
   );
   if (!selected)
     return (
       <div className={navigationStyles.appToolbarContent}>
         <div className={navigationStyles.appToolbarBreadcrumb} aria-label={tr("common.breadcrumb")}>
-          {tr("sessions.nav")}
+          {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
+        {hasDesktopConversation() && hub.localEnabled && (
+          <Button variant="ghost" size="sm" onClick={createConversation}>
+            <Plus size={15} />
+            {tr("sessions.newConversation")}
+          </Button>
+        )}
       </div>
     );
   const canContinue =
+    historyId &&
     workspace &&
     !selected.remote &&
     selected.availability === "readable" &&
@@ -43,7 +58,7 @@ export function SessionWindowToolbar() {
     void navigate({
       to: "/workspace/$workspaceId/sessions",
       params: { workspaceId: workspace.id },
-      search: { sessionId: selected.id },
+      search: { sessionId: historyId },
     });
   };
   return (
@@ -53,6 +68,12 @@ export function SessionWindowToolbar() {
         {displaySessionTitle(selected.title, tr)}
       </h1>
       <div className="session-window-actions">
+        {hasDesktopConversation() && hub.localEnabled && (
+          <Button variant="ghost" size="sm" onClick={createConversation}>
+            <Plus size={15} />
+            {tr("sessions.newConversation")}
+          </Button>
+        )}
         {canContinue && (
           <Button
             variant="outline"
@@ -84,7 +105,18 @@ export function SessionWindowToolbar() {
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
-            <DropdownMenuItem onClick={() => hub.select()}>
+            {hasDesktopConversation() && hub.localEnabled && (
+              <DropdownMenuItem onClick={createConversation}>
+                <Plus size={15} />
+                {tr("sessions.newConversation")}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              onClick={() => {
+                useSessionViewStore.getState().setCreatingConversation(false);
+                hub.select();
+              }}
+            >
               <LayoutDashboard size={15} />
               {tr("sessions.backOverview")}
             </DropdownMenuItem>

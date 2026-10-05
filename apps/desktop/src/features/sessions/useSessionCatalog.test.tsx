@@ -112,6 +112,32 @@ describe("useSessionCatalog", () => {
     ]);
   });
 
+  it("waits for every workspace and the controlled catalog before publishing readiness", async () => {
+    const { wrapper } = setup();
+    const finalScan = deferred<ConversationSessionSummary[]>();
+    const synced = deferred<void>();
+    const afterRefresh = vi.fn(() => synced.promise);
+    vi.mocked(api.refreshWorkspaceSessions).mockImplementation(async (id) =>
+      id === "six" ? finalScan.promise : [session(id)],
+    );
+    const workspaces = ["one", "two", "three", "four", "five", "six"].map(workspace);
+    const { result } = renderHook(() => useSessionCatalog(workspaces, true, afterRefresh), {
+      wrapper,
+    });
+    await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalledTimes(6));
+    expect(afterRefresh).not.toHaveBeenCalled();
+    await act(async () => finalScan.resolve([session("six", "newly discovered")]));
+    await waitFor(() => expect(afterRefresh).toHaveBeenCalledOnce());
+    expect(result.current.ready).toBe(false);
+    expect(result.current.refreshing).toBe(true);
+    await act(async () => synced.resolve());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.sessions.find(({ workspace_id }) => workspace_id === "six")?.title).toBe(
+      "newly discovered",
+    );
+  });
+
   it("aggregates all workspaces, de-duplicates IDs, and limits all API work to four in flight", async () => {
     const { wrapper } = setup();
     let active = 0;

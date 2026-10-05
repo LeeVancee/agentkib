@@ -3,6 +3,10 @@
   "version": "0.8.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./conversation": "./src/conversation.tsx",
+    "./conversation.css": "./src/conversation.css"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "pnpm typecheck && vite build",
@@ -13,6 +17,7 @@
   },
   "dependencies": {
     "@agentkib/agent-identity": "workspace:*",
+    "@agentkib/conversation-state": "workspace:*",
     "@agentkib/session-catalog": "workspace:*",
     "@agentkib/session-ui": "workspace:*",
     "@agentkib/web-client": "workspace:*",

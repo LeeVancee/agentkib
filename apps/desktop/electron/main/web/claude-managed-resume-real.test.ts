@@ -231,6 +231,7 @@ exec '/Users/kouzen/.local/bin/claude' --settings '${settings}' --safe-mode --se
             Cookie: cookie,
             Origin: origin,
             "X-CSRF-Token": access.csrfToken,
+            "X-AgentKib-Protocol": "2",
             "Content-Type": "application/json",
           },
           body: body === undefined ? undefined : JSON.stringify(body),

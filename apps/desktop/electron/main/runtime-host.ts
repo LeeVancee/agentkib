@@ -153,7 +153,9 @@ export class DesktopRuntimeHost extends EventEmitter {
     }
     if (this.#state !== "ready")
       throw new RuntimeUnavailableError(new Error("AgentKib runtime is stopping"));
-    return this.#requestNow<TResult>(method, params);
+    const result = await this.#requestNow<TResult>(method, params);
+    this.emit("request-completed", method);
+    return result;
   }
 
   async stop(): Promise<void> {

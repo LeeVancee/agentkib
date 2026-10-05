@@ -64,12 +64,20 @@ pub fn installation_supported() -> bool {
 
 #[derive(Clone)]
 struct State {
+    publisher: Option<crate::session_stream::Publisher>,
     session_id: String,
     status: &'static str,
     revision: u64,
     turn: Option<RpcId>,
+    completed_turn: Option<String>,
+    recovering_history: bool,
+    history_sync_pending: bool,
     cancelling_since: Option<Instant>,
     stream_text: String,
+    user_messages: Vec<Value>,
+    user_updates: Vec<Value>,
+    message_texts: std::collections::BTreeMap<String, String>,
+    legacy_message_index: u64,
     updates: Vec<Value>,
     tool_calls: Vec<Value>,
     approvals: Vec<Value>,
@@ -82,12 +90,20 @@ struct State {
 impl State {
     fn new(session_id: String) -> Self {
         Self {
+            publisher: None,
             session_id,
             status: "idle",
             revision: 0,
             turn: None,
+            completed_turn: None,
+            recovering_history: false,
+            history_sync_pending: false,
             cancelling_since: None,
             stream_text: String::new(),
+            user_messages: Vec::new(),
+            user_updates: Vec::new(),
+            message_texts: Default::default(),
+            legacy_message_index: 0,
             updates: Vec::new(),
             tool_calls: Vec::new(),
             approvals: Vec::new(),
@@ -121,10 +137,35 @@ impl State {
             })
             .collect();
         json!({"status":self.status,"revision":self.revision,"turnId":self.turn_id(),
-            "sendEnabled":self.status == "idle","stopEnabled":self.turn.is_some() && matches!(self.status, "running" | "waiting-approval") && self.cancelling_since.is_none(),
+            "sendEnabled":self.status == "idle" && !self.recovering_history,"stopEnabled":self.turn.is_some() && matches!(self.status, "running" | "waiting-approval") && self.cancelling_since.is_none(),
             "cancelling":self.cancelling_since.is_some(),"streamText":self.stream_text,
             "approvals":approvals,
-            "reason":self.reason,"executionMode":"acp-managed"})
+            "reason":self.reason,"executionMode":"acp-managed","historySyncPending":self.history_sync_pending})
+    }
+
+    fn publish(&self) {
+        if let Some(publisher) = &self.publisher {
+            for user in &self.user_messages {
+                publisher.item(user.clone());
+            }
+            let turn = self.turn_id().or_else(|| self.completed_turn.clone());
+            for (id, text) in &self.message_texts {
+                publisher.item_text(id, turn.as_deref(), text);
+                if self.status == "idle" && !text.is_empty() {
+                    publisher.item(json!({"id":id,"kind":"agent-message","turn_id":turn,"content":text,"attachment_count":0,"truncated":false}));
+                }
+            }
+            publisher.observe(self.snapshot());
+            for tool in &self.tool_calls {
+                if let Some(id) = tool["toolCallId"].as_str() {
+                    let turn = self.turn_id().or_else(|| self.completed_turn.clone());
+                    publisher.item(json!({"id":id,"kind":"tool-summary","turn_id":turn,"content":"","tool_name":tool["kind"],"tool_status":tool["status"],"attachment_count":0,"truncated":false}));
+                }
+            }
+            if self.status == "idle" && !self.stream_text.is_empty() {
+                publisher.invalidate(&["history"]);
+            }
+        }
     }
 
     fn retained_content_len(&self) -> Result<usize> {
@@ -153,6 +194,7 @@ impl State {
         self.reason = Some(reason.to_string().chars().take(512).collect());
         self.retained_len = None;
         self.revision += 1;
+        self.publish();
     }
 
     fn is_outcome_unknown(&self) -> bool {
@@ -238,9 +280,12 @@ impl State {
 
     fn apply(&mut self, event: Event) -> Result<()> {
         if let Event::SessionUpdate { session_id, update } = event {
-            return self.apply_update(session_id, update);
+            self.apply_update(session_id, update)?;
+        } else {
+            self.apply_checked(event)?;
         }
-        self.apply_checked(event)
+        self.publish();
+        Ok(())
     }
 
     fn apply_update(&mut self, session_id: String, update: Value) -> Result<()> {
@@ -329,8 +374,68 @@ impl State {
             next_len <= MAX_CONTENT - 8192,
             "ACP session content exceeds 512 KiB"
         );
+        if update["sessionUpdate"] == "user_message_chunk" {
+            let mut updates = self.user_updates.clone();
+            updates.push(update.clone());
+            // Share native message IDs and content coalescing with history.
+            // A legacy replay index is meaningful only within a full load, so
+            // live legacy rows remain explicitly replaceable until recovery.
+            let turn = self.turn_id().or_else(|| self.completed_turn.clone());
+            let users = agentkib_conversations::project_stream_replay(&updates)?
+                .into_iter()
+                .map(|event| {
+                    let native = updates.iter().any(|update| update["messageId"] == event.id);
+                    let mut item = serde_json::to_value(event)?;
+                    if !native {
+                        let id = if item["id"] == "antigravity-update-0" {
+                            format!("live:{}:user", turn.as_deref().unwrap_or_default())
+                        } else {
+                            format!(
+                                "live:{}:user:{}",
+                                turn.as_deref().unwrap_or_default(),
+                                item["id"].as_str().unwrap_or_default()
+                            )
+                        };
+                        item["id"] = json!(id);
+                        item["turn_id"] = json!(turn);
+                        item["ephemeral"] = json!(true);
+                    }
+                    Ok(item)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if self.user_updates.is_empty()
+                && let Some(previous) = self
+                    .user_messages
+                    .first()
+                    .and_then(|item| item["id"].as_str())
+                && let Some(native) = users.first().and_then(|item| item["id"].as_str())
+                && let Some(publisher) = &self.publisher
+            {
+                publisher.alias_item(previous, native);
+            }
+            self.user_updates = updates;
+            self.user_messages = users;
+        }
         if let Some(text) = text {
             self.stream_text.push_str(text);
+            let id = update["messageId"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 256)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!(
+                        "live:{}:assistant:{}",
+                        self.turn_id().unwrap_or_default(),
+                        self.legacy_message_index
+                    )
+                });
+            self.message_texts.entry(id).or_default().push_str(text);
+        }
+        if matches!(
+            update["sessionUpdate"].as_str(),
+            Some("tool_call" | "tool_call_update" | "user_message_chunk")
+        ) {
+            self.legacy_message_index += 1;
         }
         if let Some((index, tool, _)) = tool_change {
             if let Some(index) = index {
@@ -368,6 +473,9 @@ impl State {
         // historical frames toward the state retained for the next live turn.
         self.apply(event)?;
         self.stream_text.clear();
+        self.user_messages.clear();
+        self.user_updates.clear();
+        self.message_texts.clear();
         self.updates.clear();
         self.tool_calls.clear();
         self.retained_len = None;
@@ -503,6 +611,7 @@ impl State {
                     "missing or unsupported ACP stop reason"
                 );
                 self.status = "idle";
+                self.completed_turn = self.turn_id();
                 self.turn = None;
                 self.cancelling_since = None;
                 self.approvals.clear();
@@ -991,6 +1100,17 @@ pub struct Runner {
 }
 
 impl Runner {
+    pub(crate) fn republish_live(&self) {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(publisher) = &state.publisher {
+            publisher.observe(state.snapshot());
+        }
+    }
+    pub(crate) fn set_publisher(&self, publisher: crate::session_stream::Publisher) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.publisher = Some(publisher);
+        state.publish();
+    }
     pub fn connect_until(
         workspace: PathBuf,
         session_id: String,
@@ -1059,6 +1179,7 @@ impl Runner {
         let client = BlockingClient::spawn(executable, args, &workspace, TIMEOUT.min(remaining))?;
         let attachment_client = client.with_deadline(deadline);
         let mut state = State::new(session_id.clone());
+        let mut can_load_history = false;
         let attached = (|| -> Result<()> {
             let initialize = attachment_client.initialize()?;
             let response = wait_response(
@@ -1069,6 +1190,7 @@ impl Runner {
                 deadline,
             )?;
             let caps = Compatibility::from_initialize(&response)?;
+            can_load_history = caps.load_session;
             Compatibility::verify_control_identity(&response)?;
             let (id, method) = if caps.resume_session {
                 (
@@ -1112,7 +1234,13 @@ impl Runner {
                         break;
                     }
                     let result = match event {
-                        Ok(Some(event)) => state.apply(event),
+                        Ok(Some(event)) => {
+                            if matches!(&event,Event::Response { method, .. } if method=="session/prompt") && (state.message_texts.keys().any(|id|id.starts_with("live:")) || state.user_messages.iter().any(|item|item["ephemeral"]==true)) {
+                                state.history_sync_pending = true;
+                                state.recovering_history = can_load_history;
+                            }
+                            state.apply(event)
+                        },
                         Ok(None) => Ok(()),
                         Err(error) => Err(error.into()),
                     };
@@ -1128,6 +1256,36 @@ impl Runner {
                     if let Err(error) = result {
                         state.fail(error);
                         break;
+                    }
+                    if state.recovering_history && state.status == "idle" {
+                        let session = state.session_id.clone();
+                        drop(state);
+                        // Only a matching native prompt response starts recovery.
+                        // The sole event consumer reads an authoritative replay;
+                        // no timer, index freshness guess, or model turn is used.
+                        let recovered = recover_native_items(&worker_client, &session, &workspace);
+                        let mut state = worker_state.lock().unwrap_or_else(|p|p.into_inner());
+                        let recovered = match recovered {
+                            Ok(completed) => completed,
+                            Err(error) => {
+                                // The session/load response has not been consumed.
+                                // Stop this reader before replay can enter a later turn.
+                                state.fail(error);
+                                break;
+                            }
+                        };
+                        state.recovering_history = false;
+                        state.revision += 1;
+                        if let Ok(items) = recovered
+                            && state.publisher.as_ref().is_none_or(|publisher| publisher.replace_items(items).is_ok())
+                        {
+                            state.history_sync_pending = false;
+                            state.user_messages.clear();
+                            state.user_updates.clear();
+                            state.message_texts.clear();
+                            state.tool_calls.clear();
+                        }
+                        state.publish();
                     }
                 }
                 let _ = worker_client.shutdown();
@@ -1186,7 +1344,7 @@ impl Runner {
             .map_err(|_| anyhow::anyhow!("ACP state unavailable"))?;
         state.revision(expected_revision)?;
         ensure!(
-            state.status == "idle" && state.turn.is_none(),
+            state.status == "idle" && state.turn.is_none() && !state.recovering_history,
             "Antigravity turn already active"
         );
         // BlockingClient cannot distinguish a request rejected before writing
@@ -1199,13 +1357,23 @@ impl Runner {
         match self.client.prompt(&state.session_id, text) {
             Ok(id) => {
                 state.turn = Some(id);
+                state.completed_turn = None;
                 state.stream_text.clear();
+                state.user_updates.clear();
+                // prompt() returns only after the complete native pipe write.
+                // ACP has no client message ID; do not claim this dispatch ID is
+                // persistent. A native echo or acknowledged load replaces it.
+                state.user_messages = vec![
+                    json!({"id":format!("live:{}:user", state.turn_id().unwrap_or_default()),"kind":"user-message","turn_id":state.turn_id(),"content":text,"attachment_count":0,"truncated":false,"ephemeral":true}),
+                ];
+                state.message_texts.clear();
                 state.updates.clear();
                 state.tool_calls.clear();
                 state.seen_permissions.clear();
                 state.reason = None;
                 state.retained_len = None;
                 state.revision += 1;
+                state.publish();
                 Ok(state.snapshot())
             }
             Err(error) => {
@@ -1229,6 +1397,7 @@ impl Runner {
                 state.retained_len = None;
                 state.status = "running";
                 state.revision += 1;
+                state.publish();
                 Ok(state.snapshot())
             }
             Err(error) => {
@@ -1260,6 +1429,7 @@ impl Runner {
                     "waiting-approval"
                 };
                 state.revision += 1;
+                state.publish();
                 Ok(state.snapshot())
             }
             Err(error) => {
@@ -1276,6 +1446,54 @@ impl Drop for Runner {
         let _ = self.client.shutdown();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+    }
+}
+
+fn recover_native_items(
+    client: &BlockingClient,
+    session: &str,
+    workspace: &Path,
+) -> Result<Result<Vec<Value>>> {
+    let id = client.load_session(session, workspace)?;
+    let deadline = Instant::now() + TIMEOUT;
+    let mut updates = Vec::new();
+    let mut bytes = 0usize;
+    loop {
+        ensure!(Instant::now() < deadline, "ACP history recovery timed out");
+        match client.next_event(deadline.saturating_duration_since(Instant::now()).min(POLL))? {
+            Some(Event::Response {
+                id: returned,
+                method,
+                result,
+            }) => {
+                ensure!(
+                    returned == id && method == "session/load",
+                    "unexpected ACP recovery response"
+                );
+                // Outer errors mean an unfinished native request. An inner
+                // error is a fully acknowledged rejection/projection failure,
+                // for which retaining the live overlay is safe.
+                return Ok(result
+                    .map_err(|error| anyhow::anyhow!("ACP history recovery failed: {}", error.code))
+                    .and_then(|_| {
+                        agentkib_conversations::project_stream_replay(&updates)?
+                            .into_iter()
+                            .map(|event| serde_json::to_value(event).map_err(Into::into))
+                            .collect()
+                    }));
+            }
+            Some(Event::SessionUpdate { session_id, update }) => {
+                ensure!(session_id == session, "ACP recovery session changed");
+                bytes += serde_json::to_vec(&update)?.len();
+                ensure!(
+                    bytes <= 16 * 1024 * 1024 && updates.len() < 100_000,
+                    "ACP history recovery limit exceeded"
+                );
+                updates.push(update);
+            }
+            None | Some(Event::Notification { .. } | Event::UnsupportedRequest { .. }) => {}
+            _ => anyhow::bail!("unexpected ACP interaction during history recovery"),
         }
     }
 }
@@ -2086,6 +2304,223 @@ done
 
     #[cfg(unix)]
     #[test]
+    fn user_subscriptions_replace_dispatch_ids_with_native_ids_across_turns() {
+        let mut script = String::from(
+            r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+"#,
+        );
+        for index in 1..=2 {
+            script.push_str(&format!(r#"
+read -r line
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"native-session","update":{{"sessionUpdate":"user_message_chunk","messageId":"user-{index}","content":{{"type":"text","text":"same "}}}}}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"native-session","update":{{"sessionUpdate":"user_message_chunk","messageId":"user-{index}","content":{{"type":"text","text":"prompt"}}}}}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"native-session","update":{{"sessionUpdate":"agent_message_chunk","messageId":"answer-{index}","content":{{"type":"text","text":"done"}}}}}}}}'
+printf '%s\n' '{{"jsonrpc":"2.0","id":{},"result":{{"stopReason":"end_turn"}}}}'
+"#, index + 2));
+        }
+        script.push_str("while read -r line; do :; done\n");
+        let runner = Runner::connect_with(
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            std::env::temp_dir().canonicalize().unwrap(),
+            "native-session".into(),
+        )
+        .unwrap();
+        let (published, events) = std::sync::mpsc::channel();
+        let hub = crate::session_stream::Hub::new("boot".into(), move |event| {
+            published.send(event).is_ok()
+        });
+        runner.set_publisher(hub.publisher("s", "acp-managed"));
+        hub.subscribe("s", None).unwrap();
+        for index in 1..=2 {
+            let revision = runner.snapshot()["revision"].as_u64().unwrap();
+            runner.send("same prompt", revision).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut dispatched = false;
+            let mut native = false;
+            loop {
+                let event = events
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                if event["type"] == "item-upsert" && event["payload"]["kind"] == "user-message" {
+                    dispatched |= event["payload"]["ephemeral"] == true
+                        && event["payload"]["content"] == "same prompt";
+                    native |= event["payload"]["id"] == format!("user-{index}")
+                        && event["payload"]["content"] == "same prompt";
+                }
+                if event["type"] == "state" && event["payload"]["status"] == "idle" {
+                    break;
+                }
+            }
+            assert!(dispatched && native);
+        }
+        let baseline = hub.subscribe("s", None).unwrap();
+        let users: Vec<_> = baseline["events"][0]["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "user-message")
+            .collect();
+        assert_eq!(users.len(), 2);
+        let replay = agentkib_conversations::project_stream_replay(&[
+            json!({"sessionUpdate":"user_message_chunk","messageId":"user-1","content":{"type":"text","text":"same prompt"}}),
+            json!({"sessionUpdate":"user_message_chunk","messageId":"user-2","content":{"type":"text","text":"same prompt"}}),
+        ]).unwrap();
+        for (user, history) in users.iter().zip(replay) {
+            assert_eq!(user["id"], history.id);
+            assert_eq!(user["turn_id"], history.turn_id.unwrap());
+            assert_eq!(user["content"], history.content.unwrap());
+            assert_ne!(user["ephemeral"], true);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_output_is_replaced_only_after_native_replay_acknowledges() {
+        for (acknowledged, older_count) in [(true, 150), (false, 0), (true, 4100)] {
+            let success = acknowledged && older_count < 4096;
+            let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"legacy done"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+read -r line
+case "$line" in *'"method":"session/load"'*) ;; *) exit 1 ;; esac
+RECOVERY_REPLY
+while read -r line; do :; done
+"#.replace("RECOVERY_REPLY", if acknowledged {r#"index=0
+while [ "$index" -lt OLDER_COUNT ]; do
+printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","messageId":"older-%s","content":{"type":"text","text":"persisted"}}}}\n' "$index"
+index=$((index + 1))
+done
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"legacy done"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{}}'"#} else {r#"printf '%s\n' '{"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"fixture failed"}}'"#}).replace("OLDER_COUNT", &older_count.to_string());
+            let runner = Runner::connect_with(
+                Path::new("/bin/sh"),
+                &["-c".into(), script.into()],
+                std::env::temp_dir().canonicalize().unwrap(),
+                "native-session".into(),
+            )
+            .unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let hub =
+                crate::session_stream::Hub::new("boot".into(), move |event| tx.send(event).is_ok());
+            runner.set_publisher(hub.publisher("s", "acp-managed"));
+            hub.subscribe("s", None).unwrap();
+            runner.send("hello", 0).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut replacement = false;
+            loop {
+                let event = rx
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                replacement |=
+                    event["type"] == "snapshot" && event["payload"]["replaceItems"] == true;
+                if event["type"] == "state" && event["payload"]["sendEnabled"] == true {
+                    break;
+                }
+            }
+            assert_eq!(replacement, success);
+            let baseline = hub.subscribe("s", None).unwrap();
+            let items = baseline["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap();
+            assert_eq!(items.len(), if success { 152 } else { 2 });
+            let resubscribed = hub.subscribe("s", None).unwrap();
+            assert_eq!(resubscribed["events"][0]["payload"]["items"], json!(items));
+            let users: Vec<_> = items
+                .iter()
+                .filter(|item| item["kind"] == "user-message")
+                .collect();
+            assert_eq!(users.len(), 1);
+            assert_eq!(users[0]["content"], "hello");
+            assert_eq!(
+                users[0]["id"].as_str().unwrap().starts_with("live:"),
+                !success
+            );
+            if success {
+                let updates: Vec<_> = (0..older_count).map(|index| json!({"sessionUpdate":"agent_message_chunk","messageId":format!("older-{index}"),"content":{"type":"text","text":"persisted"}})).chain(std::iter::once(json!({"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}))).collect();
+                let history = agentkib_conversations::project_stream_replay(&updates).unwrap();
+                assert_eq!(users[0]["id"], history.last().unwrap().id);
+                assert_eq!(items[0]["id"], "older-0");
+                assert!(serde_json::to_vec(&resubscribed).unwrap().len() < 2 * 1024 * 1024);
+            }
+            let item = items
+                .iter()
+                .find(|item| item["kind"] == "agent-message" && item["content"] == "legacy done")
+                .unwrap();
+            assert_eq!(item["content"], "legacy done");
+            assert_eq!(item["id"].as_str().unwrap().starts_with("live:"), !success);
+            assert_eq!(
+                baseline["events"][0]["payload"]["live"]["historySyncPending"],
+                !success
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_replay_stays_disabled_and_never_applies_late_history() {
+        let script = r#"
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"antigravity-acp","version":"agy_acp_server_1.1.1"},"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}}}}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+read -r line
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"original reply"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+read -r line
+case "$line" in *'"method":"session/load"'*) ;; *) exit 1 ;; esac
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wrong-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"invalid replay"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late history"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{}}'
+while read -r line; do :; done
+"#;
+        let runner = Runner::connect_with(
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            std::env::temp_dir().canonicalize().unwrap(),
+            "native-session".into(),
+        )
+        .unwrap();
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        runner.set_publisher(hub.publisher("s", "acp-managed"));
+        runner.send("hello", 0).unwrap();
+        let failed = wait_status(&runner, "failed");
+        assert_eq!(failed["sendEnabled"], false);
+        assert_eq!(failed["historySyncPending"], true);
+        assert_eq!(
+            failed["reason"],
+            "ACP protocol error: update for unattached session"
+        );
+        assert!(
+            runner
+                .send("next", failed["revision"].as_u64().unwrap())
+                .is_err()
+        );
+        let baseline = hub.subscribe("s", None).unwrap();
+        assert_eq!(
+            baseline["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == "agent-message")
+                .unwrap()["content"],
+            "original reply"
+        );
+        assert!(!baseline.to_string().contains("late history"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn blocking_runner_drains_permission_while_prompt_is_running() {
         let script = r#"
 read -r line
@@ -2197,6 +2632,12 @@ sleep 5
         .unwrap();
         let ready = wait_status_text(&runner, "stdin-closed");
         assert_eq!(ready["status"], "idle");
+        let (published, events) = std::sync::mpsc::channel();
+        let hub = crate::session_stream::Hub::new("boot".into(), move |event| {
+            published.send(event).is_ok()
+        });
+        runner.set_publisher(hub.publisher("s", "acp-managed"));
+        hub.subscribe("s", None).unwrap();
 
         // Pure local validation happens before the dispatch fence.
         assert!(runner.send(" ", 1).is_err());
@@ -2213,6 +2654,25 @@ sleep 5
         let revision = failed["revision"].as_u64().unwrap();
         assert!(runner.send("do not repeat", revision).is_err());
         assert_eq!(runner.snapshot()["status"], "outcome-unknown");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert!(
+                !(event["type"] == "item-upsert" && event["payload"]["kind"] == "user-message")
+            );
+            if event["type"] == "state" && event["payload"]["status"] == "outcome-unknown" {
+                break;
+            }
+        }
+        assert!(
+            hub.subscribe("s", None).unwrap()["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["kind"] != "user-message")
+        );
     }
 
     #[cfg(unix)]

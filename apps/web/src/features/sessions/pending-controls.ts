@@ -45,6 +45,16 @@ const pendingKinds = {
   "goal-clear": true,
 } satisfies Record<PendingControl["kind"], true>;
 const prefix = "agentkib:codex-pending:v1:";
+const listeners = new Set<() => void>();
+export function subscribePending(listener: () => void) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+function changed() {
+  for (const listener of listeners) listener();
+}
 export function pendingScope(origin: string, deviceId: string): string {
   return `${prefix}${JSON.stringify([origin || window.location.origin, deviceId])}`;
 }
@@ -103,9 +113,11 @@ export function rememberPending(scope: string, pending: PendingControl): void {
       { requestId, sessionId, workspaceId, kind, ...(agent ? { agent } : {}) },
     ]),
   );
+  changed();
 }
 export function forgetPending(scope: string, requestId: string): void {
   const entries = readPending(scope).filter((entry) => entry.requestId !== requestId);
   if (entries.length) sessionStorage.setItem(scope, JSON.stringify(entries));
   else sessionStorage.removeItem(scope);
+  changed();
 }

@@ -18,7 +18,12 @@ use std::{
 };
 const FRAME_LIMIT: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(12);
-type Pending = Arc<Mutex<HashMap<u64, mpsc::SyncSender<Value>>>>;
+type ResponseHandler = Box<dyn FnOnce(&Value) -> Result<()> + Send>;
+struct PendingRequest {
+    sender: mpsc::SyncSender<Result<Value>>,
+    apply: ResponseHandler,
+}
+type Pending = Arc<Mutex<HashMap<u64, PendingRequest>>>;
 pub(super) struct Client {
     child: Child,
     tree: ProcessTree,
@@ -79,13 +84,21 @@ impl Client {
             let mut input = BufReader::new(stdout);
             while let Ok(Some(value)) = read_frame(&mut input) {
                 if value.get("method").is_none() {
-                    if let Some(id) = value["id"].as_u64()
-                        && let Some(tx) = replies
+                    let request = value["id"].as_u64().and_then(|id| {
+                        replies
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
                             .remove(&id)
-                    {
-                        let _ = tx.send(value);
+                    });
+                    if let Some(request) = request {
+                        // Apply a recovered baseline at the response's position
+                        // in the native stream, before later notifications can
+                        // update the same state. No pending-map lock is held.
+                        let result = response_result(value).and_then(|result| {
+                            (request.apply)(&result)?;
+                            Ok(result)
+                        });
+                        let _ = request.sender.send(result);
                     }
                 } else {
                     callback(value)
@@ -121,6 +134,15 @@ impl Client {
         params: Value,
         dispatch: impl FnOnce() -> Result<()>,
     ) -> Result<Value> {
+        self.request_with_response(method, params, dispatch, |_| Ok(()))
+    }
+    pub fn request_with_response(
+        &self,
+        method: &str,
+        params: Value,
+        dispatch: impl FnOnce() -> Result<()>,
+        apply: impl FnOnce(&Value) -> Result<()> + Send + 'static,
+    ) -> Result<Value> {
         ensure!(self.connected(), "codex-disconnected");
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::sync_channel(1);
@@ -130,7 +152,13 @@ impl Client {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("codex-state-unavailable"))?;
             ensure!(pending.len() < 128, "codex-busy");
-            pending.insert(id, tx);
+            pending.insert(
+                id,
+                PendingRequest {
+                    sender: tx,
+                    apply: Box::new(apply),
+                },
+            );
         }
         let result = (|| {
             let value = json!({"id":id,"method":method,"params":params});
@@ -140,21 +168,8 @@ impl Client {
             );
             dispatch()?;
             self.write(value)?;
-            let response = rx
-                .recv_timeout(TIMEOUT)
-                .context("codex-outcome-unconfirmed")?;
-            if response.get("error").is_some() {
-                // Return a bounded category, never native diagnostics that may contain secrets.
-                let msg = response["error"]["message"].as_str().unwrap_or("");
-                if msg.contains("active writer") || msg.contains("live local writer") {
-                    bail!("codex-owner-busy")
-                }
-                bail!("codex-request-rejected")
-            }
-            response
-                .get("result")
-                .cloned()
-                .context("codex-invalid-response")
+            rx.recv_timeout(TIMEOUT)
+                .context("codex-outcome-unconfirmed")?
         })();
         self.pending
             .lock()
@@ -199,6 +214,20 @@ impl Client {
             let _ = reader.join();
         }
     }
+}
+fn response_result(response: Value) -> Result<Value> {
+    if response.get("error").is_some() {
+        // Return a bounded category, never native diagnostics that may contain secrets.
+        let msg = response["error"]["message"].as_str().unwrap_or("");
+        if msg.contains("active writer") || msg.contains("live local writer") {
+            bail!("codex-owner-busy")
+        }
+        bail!("codex-request-rejected")
+    }
+    response
+        .get("result")
+        .cloned()
+        .context("codex-invalid-response")
 }
 impl Drop for Client {
     fn drop(&mut self) {

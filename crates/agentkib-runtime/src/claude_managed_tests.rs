@@ -33,6 +33,7 @@ for line in sys.stdin:
     fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '2.1.285 (Claude Code)'; exit 0; fi\nexec /usr/bin/python3 '{}' \"$@\"\n",mock.display())).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let service = Service {
+        streams: None,
         root: Some(root),
         executable: Some(executable),
         runners: BTreeMap::new(),
@@ -144,6 +145,7 @@ fn fresh_send_has_session_id_and_durable_one_shot_receipt() {
     let executable = service.executable.clone();
     drop(service);
     let mut recovered = Service {
+        streams: None,
         root,
         executable,
         runners: BTreeMap::new(),
@@ -179,6 +181,7 @@ fn interrupted_turn_stays_unknown_and_reconcile_never_resends() {
     let executable = service.executable.clone();
     drop(service);
     let mut service = Service {
+        streams: None,
         root,
         executable,
         runners: BTreeMap::new(),
@@ -223,6 +226,7 @@ fn metadata_lock_prevents_competing_runtime_from_overwriting_dispatch_state() {
     let created = create(&mut service, &workspace);
     let id = created["sessionId"].as_str().unwrap();
     let mut other = Service {
+        streams: None,
         root: service.root.clone(),
         executable: service.executable.clone(),
         runners: BTreeMap::new(),
@@ -519,6 +523,7 @@ fn failed_cleanup_blocks_release_and_persists_unknown_after_service_exit() {
     let executable = service.executable.clone();
     drop(service);
     let mut restored = Service {
+        streams: None,
         root,
         executable,
         runners: BTreeMap::new(),
@@ -567,6 +572,7 @@ fn capacity_retirement_persists_failed_cleanup_without_waiting_for_drop() {
         "outcome-unknown"
     );
     let mut restarted = Service {
+        streams: None,
         root: service.root.clone(),
         executable: service.executable.clone(),
         runners: BTreeMap::new(),
@@ -599,6 +605,7 @@ fn implicit_cleanup_fences_disk_before_capacity_retirement_or_drop() {
         });
         observed.recv_timeout(Duration::from_secs(2)).unwrap();
         let mut restarted = Service {
+            streams: None,
             root,
             executable,
             runners: BTreeMap::new(),
@@ -611,5 +618,108 @@ fn implicit_cleanup_fences_disk_before_capacity_retirement_or_drop() {
         worker.join().unwrap();
         assert_eq!(snapshot["status"], "outcome-unknown");
         assert_eq!(snapshot["sendEnabled"], false);
+    }
+}
+
+#[test]
+fn owner_changes_reset_stream_epoch_and_receipt_replay_does_not_restart_observation() {
+    let (directory, mut service, workspace) = fixture();
+    let (sent, events) = std::sync::mpsc::channel();
+    let hub = crate::session_stream::Hub::new("boot".into(), move |event| sent.send(event).is_ok());
+    service.set_streams(hub.clone());
+    let catalog = hub.subscribe("", None).unwrap();
+    let created = create(&mut service, &workspace);
+    let id = created["sessionId"].as_str().unwrap();
+    let changed = events.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(changed["subscriptionId"], catalog["subscriptionId"]);
+    assert_eq!(changed["type"], "invalidate");
+    let before = hub.subscribe(id, None).unwrap();
+    let release = json!({"operation":"release","sessionId":id,"requestId":request_id(),"runtimeBootId":"boot","expectedRevision":0});
+    let released = service.request(release.clone(), "boot", true).unwrap();
+    assert_eq!(released["accepted"], true);
+    let after = hub.subscribe(id, before["cursor"].as_str()).unwrap();
+    assert_eq!(after["events"][0]["type"], "snapshot");
+    assert_ne!(after["events"][0]["epoch"], before["events"][0]["epoch"]);
+    assert_eq!(after["events"][0]["payload"]["live"]["status"], "released");
+    assert_eq!(after["events"][0]["payload"]["live"]["sendEnabled"], false);
+    assert_eq!(service.request(release, "boot", true).unwrap(), released);
+    assert_eq!(hub.subscribe(id, None).unwrap()["cursor"], after["cursor"]);
+    let inspected = service
+        .request(json!({"operation":"inspect","sessionId":id}), "boot", true)
+        .unwrap();
+    let adopted = service.request(json!({"operation":"adopt","sessionId":id,"requestId":request_id(),"handoffConfirmed":true,"handoffFingerprint":inspected["handoffFingerprint"]}), "boot", true).unwrap();
+    assert_eq!(adopted["accepted"], true);
+    let resumed = hub.subscribe(id, after["cursor"].as_str()).unwrap();
+    assert_eq!(resumed["events"][0]["type"], "snapshot");
+    assert_ne!(resumed["events"][0]["epoch"], after["events"][0]["epoch"]);
+    assert_eq!(resumed["events"][0]["payload"]["live"]["status"], "idle");
+    assert!(!directory.path().join("starts").exists());
+}
+
+#[test]
+fn durable_owner_changes_replace_stream_baselines_even_when_receipt_save_fails() {
+    for operation in ["create", "release", "adopt"] {
+        let (directory, mut service, workspace) = fixture();
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        service.set_streams(hub.clone());
+        let request = request_id();
+        let (input, before) = if operation == "create" {
+            (
+                json!({"operation":"create","workspaceId":workspace,"requestId":request,"deviceId":"agentkib-local-owner"}),
+                None,
+            )
+        } else {
+            let created = create(&mut service, &workspace);
+            let id = created["sessionId"].as_str().unwrap();
+            let input = if operation == "release" {
+                json!({"operation":"release","sessionId":id,"requestId":request,"deviceId":"agentkib-local-owner","runtimeBootId":"boot","expectedRevision":0})
+            } else {
+                let released = service.request(json!({"operation":"release","sessionId":id,"requestId":request_id(),"runtimeBootId":"boot","expectedRevision":0}), "boot", true).unwrap();
+                assert_eq!(released["accepted"], true);
+                let inspected = service
+                    .request(json!({"operation":"inspect","sessionId":id}), "boot", true)
+                    .unwrap();
+                json!({"operation":"adopt","sessionId":id,"requestId":request,"deviceId":"agentkib-local-owner","handoffConfirmed":true,"handoffFingerprint":inspected["handoffFingerprint"]})
+            };
+            (input, Some(hub.subscribe(id, None).unwrap()))
+        };
+        service.fail_after_record_save = true;
+        let uncertain = service.request(input.clone(), "boot", true).unwrap();
+        assert_eq!(
+            uncertain["controlOutcome"], "unknown",
+            "{operation}: {uncertain}"
+        );
+        let receipt = service
+            .ledger()
+            .unwrap()
+            .receipt(&request, "agentkib-local-owner")
+            .unwrap();
+        assert_eq!(receipt["status"], "unknown");
+        assert_eq!(receipt["completionObserved"], false);
+        let id = receipt["sessionId"].as_str().unwrap();
+        assert_eq!(
+            service.load(id).unwrap().unwrap().released,
+            operation == "release"
+        );
+        let after = hub
+            .subscribe(id, before.as_ref().and_then(|v| v["cursor"].as_str()))
+            .unwrap();
+        let baseline = &after["events"][0];
+        assert_eq!(baseline["type"], "snapshot");
+        if let Some(before) = before {
+            assert_ne!(baseline["epoch"], before["events"][0]["epoch"]);
+        }
+        assert_eq!(
+            baseline["payload"]["live"]["status"],
+            if operation == "release" {
+                "released"
+            } else {
+                "outcome-unknown"
+            }
+        );
+        assert_eq!(baseline["payload"]["live"]["sendEnabled"], false);
+        assert_eq!(service.request(input, "boot", true).unwrap(), uncertain);
+        assert_eq!(hub.subscribe(id, None).unwrap()["cursor"], after["cursor"]);
+        assert!(!directory.path().join("starts").exists());
     }
 }

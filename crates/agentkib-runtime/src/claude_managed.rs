@@ -66,6 +66,7 @@ struct Request {
 }
 #[derive(Default)]
 pub(super) struct Service {
+    streams: Option<crate::session_stream::Hub>,
     runners: BTreeMap<String, Runner>,
     owners: BTreeMap<String, fs::File>,
     installation: Option<(std::time::Instant, Option<String>)>,
@@ -77,6 +78,31 @@ pub(super) struct Service {
     fail_after_record_save: bool,
 }
 impl Service {
+    pub(super) fn set_streams(&mut self, streams: crate::session_stream::Hub) {
+        self.streams = Some(streams);
+    }
+
+    pub(super) fn republish_live(&self, id: &str, live: &Value) -> bool {
+        let Some(runner) = self.runners.get(id) else {
+            return false;
+        };
+        let Some(hub) = &self.streams else {
+            return false;
+        };
+        runner.set_managed_publisher(hub.publisher(id, "claude-managed"), live);
+        true
+    }
+
+    fn publish_owner_change(&self, id: &str, live: Value) {
+        if let Some(hub) = &self.streams {
+            let publisher = hub.publisher(id, "claude-managed");
+            // A new owner invalidates the old native revision/stream cursor.
+            // Existing native history is preserved and re-read as a baseline.
+            publisher.restart(live, vec![], &[], &[]);
+            publisher.invalidate(&["history", "catalog", "receipts"]);
+        }
+    }
+
     fn installation_version(&mut self) -> Option<String> {
         #[cfg(test)]
         if self.executable.is_some() {
@@ -386,7 +412,7 @@ impl Service {
                 continue;
             }
             let indexed_id = store.conversation_id(AgentKind::ClaudeCode, &record.native_id)?;
-            out.push(json!({"id":record.id,"indexedSessionId":indexed_id,"workspace_id":record.workspace_id,"agent":"claude-code","title":record.title,"origin":"interactive","created_at":record.created_at,"updated_at":record.created_at,"message_count":null,"git_branch":null,"archived":false,"sidechain":false,"availability":"readable","executionMode":"claude-managed","sourceSessionId":record.native_id}));
+            out.push(json!({"id":record.id,"indexedSessionId":indexed_id,"indexedSessionIds":[indexed_id],"workspace_id":record.workspace_id,"agent":"claude-code","title":record.title,"origin":"interactive","created_at":record.created_at,"updated_at":record.created_at,"message_count":null,"git_branch":null,"archived":false,"sidechain":false,"availability":"readable","executionMode":"claude-managed","sourceSessionId":record.native_id}));
         }
         Ok(out)
     }
@@ -664,6 +690,14 @@ impl Service {
             self.runners.remove(id);
             record.released = true;
             self.save(&record)?;
+            // Ownership changed durably even if recording its receipt fails.
+            // Retire old cursors now; this does not claim command success.
+            let mut released = live;
+            released["status"] = json!("released");
+            released["reason"] = json!("handoff-required");
+            released["sendEnabled"] = json!(false);
+            released["stopEnabled"] = json!(false);
+            self.publish_owner_change(id, released);
             #[cfg(test)]
             ensure!(
                 !self.fail_after_record_save,
@@ -699,6 +733,7 @@ impl Service {
         if !runner.has_worker() {
             runner.restore_revision(revision)?;
         }
+        self.republish_live(id, &live);
         // Persist uncertainty before crossing the process boundary. On restart this
         // can only become idle through evidence, never by replaying the request.
         record.snapshot = live.clone();
@@ -944,11 +979,6 @@ impl Service {
         };
         ledger.dispatch(request_id)?;
         self.save(&record)?;
-        #[cfg(test)]
-        ensure!(
-            !self.fail_after_record_save,
-            "injected receipt loss after save"
-        );
         let mut live = record.snapshot.clone();
         live["sessionId"] = json!(id);
         live["workspaceId"] = json!(record.workspace_id);
@@ -957,8 +987,24 @@ impl Service {
         live["executionMode"] = json!("claude-managed");
         live["cliVersion"] = json!(self.installation_version());
         live["permissionMode"] = json!("cli-configured");
+        // Metadata now names the new owner, but the command ledger is still
+        // dispatched. Fence controls in the new epoch until the receipt commits.
+        let mut pending = live.clone();
+        pending["status"] = json!("outcome-unknown");
+        pending["reason"] = json!("control-outcome-unconfirmed");
+        pending["sendEnabled"] = json!(false);
+        pending["stopEnabled"] = json!(false);
+        self.publish_owner_change(&id, pending);
+        #[cfg(test)]
+        ensure!(
+            !self.fail_after_record_save,
+            "injected receipt loss after save"
+        );
         let ack = json!({"accepted":true,"completed":true,"controlOutcome":"accepted","requestId":request_id,"sessionId":id,"sourceSessionId":record.native_id,"runtimeBootId":boot,"live":live});
         ledger.finish(request_id, &ack)?;
+        if let Some(hub) = &self.streams {
+            hub.publisher(&id, "claude-managed").observe(live);
+        }
         Ok(ack)
     }
 }

@@ -356,6 +356,128 @@ fn live_observation_consumes_patches_without_repeated_full_snapshots() {
     assert_eq!(full_snapshots, 2);
 }
 #[test]
+fn observer_receives_native_push_before_a_control_receipt_returns() {
+    let (_dir, path, listener) = endpoint();
+    let (published, observed) = std::sync::mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => write(
+                    &mut socket,
+                    json!({"type":"response","requestId":message["requestId"],"resultType":"success","handledByClientId":"owner"}),
+                ),
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    write(&mut socket, snapshot(1, "idle"))
+                }
+                Some("thread-stream-following-changed") => break,
+                Some("thread-follower-start-turn") => {
+                    write(
+                        &mut socket,
+                        json!({"type":"broadcast","sourceClientId":"owner","version":11,"method":"thread-stream-state-changed","params":{"hostId":"local","conversationId":SESSION,"change":{"type":"patches","baseRevision":1,"revision":2,"patches":[{"op":"add","path":["title"],"value":"push during control"}]}}}),
+                    );
+                    // With a request-held socket lock this would time out unless
+                    // the request's receive loop forwards broadcasts immediately.
+                    assert_eq!(observed.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+                    write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],"resultType":"success","method":"thread-follower-start-turn","handledByClientId":"owner","result":{"ok":true}}),
+                    );
+                }
+                _ => panic!("unexpected operation"),
+            }
+        }
+    });
+    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    bridge.enable_controls().unwrap();
+    bridge.select(SESSION).unwrap();
+    bridge.set_observer(move |state| {
+        if state.revision() == Some(2) {
+            let _ = published.send(2);
+        }
+    });
+    bridge.send_text_at_revision("synthetic", Some(1)).unwrap();
+    assert_eq!(bridge.state().unwrap().revision(), Some(2));
+    drop(bridge);
+    server.join().unwrap();
+}
+
+#[test]
+fn acknowledged_stop_confirms_once_with_final_state_before_or_after_receipt() {
+    for final_before_receipt in [false, true] {
+        let (_dir, path, listener) = endpoint();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            initialize(&mut socket);
+            let mut snapshots = 0;
+            let mut mutations = 0;
+            while let Some(message) = read(&mut socket) {
+                match message["method"].as_str() {
+                    Some("thread-owner-discovery") => write(
+                        &mut socket,
+                        json!({"type":"response","requestId":message["requestId"],"resultType":"success","handledByClientId":"owner"}),
+                    ),
+                    Some("thread-stream-following-changed")
+                        if message["params"]["following"] == true =>
+                    {
+                        snapshots += 1;
+                        write(
+                            &mut socket,
+                            snapshot(
+                                if mutations == 0 { 1 } else { 2 },
+                                if mutations == 0 { "active" } else { "idle" },
+                            ),
+                        );
+                    }
+                    Some("thread-stream-following-changed") => break,
+                    Some("thread-follower-interrupt-turn") => {
+                        mutations += 1;
+                        if final_before_receipt {
+                            write(&mut socket, snapshot(2, "idle"));
+                        }
+                        write(
+                            &mut socket,
+                            json!({"type":"response","requestId":message["requestId"],"resultType":"success","method":"thread-follower-interrupt-turn","handledByClientId":"owner","result":{"ok":true,"interruptedTurnId":"turn-1"}}),
+                        );
+                        if !final_before_receipt {
+                            write(&mut socket, snapshot(2, "idle"));
+                        }
+                    }
+                    _ => panic!("unexpected operation"),
+                }
+            }
+            (snapshots, mutations)
+        });
+        let mut bridge = Bridge::connect(&path, known()).unwrap();
+        bridge.enable_controls().unwrap();
+        bridge.select(SESSION).unwrap();
+        let statuses = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = statuses.clone();
+        bridge.set_observer(move |state| observed.lock().unwrap().push(state.status()));
+        bridge.stop("turn-1").unwrap();
+        assert!(bridge.needs_mutation_confirmation());
+        assert_eq!(bridge.state().unwrap().status(), Status::OutcomeUnknown);
+        // The runtime's sole receive worker takes this branch after the control
+        // releases its socket lock; it does not need a frontend live poll.
+        bridge.refresh().unwrap();
+        assert!(!bridge.needs_mutation_confirmation());
+        assert_eq!(bridge.state().unwrap().status(), Status::Idle);
+        assert_eq!(bridge.state().unwrap().revision(), Some(2));
+        assert_eq!(statuses.lock().unwrap().last(), Some(&Status::Idle));
+        assert!(statuses.lock().unwrap().contains(&Status::OutcomeUnknown));
+        for _ in 0..3 {
+            bridge.poll(Duration::from_millis(10)).unwrap();
+            assert!(!bridge.needs_mutation_confirmation());
+        }
+        drop(bridge);
+        assert_eq!(server.join().unwrap(), (3, 1));
+    }
+}
+
+#[test]
 fn live_observation_rejects_owner_change_without_reusing_cached_state() {
     let (_dir, path, listener) = endpoint();
     let server = thread::spawn(move || {
@@ -565,6 +687,7 @@ fn dispatch_signal_covers_send_and_approval_owner_failures() {
             };
             assert!(result.is_err());
             assert!(dispatched, "{approval} {receipt}");
+            assert!(!bridge.needs_mutation_confirmation());
             drop(bridge);
             server.join().unwrap();
         }
@@ -634,7 +757,9 @@ fn unchanged_owner_refresh_keeps_revision_and_allows_one_guarded_send() {
         .send_text_at_revision_with_dispatch("synthetic hello", revision, || dispatches += 1)
         .unwrap();
     assert_eq!(dispatches, 1);
+    assert!(bridge.needs_mutation_confirmation());
     bridge.refresh().unwrap();
+    assert!(!bridge.needs_mutation_confirmation());
     assert_eq!(bridge.state().unwrap().status(), Status::OutcomeUnknown);
     assert!(bridge.send_text_at_revision("duplicate", revision).is_err());
     drop(bridge);

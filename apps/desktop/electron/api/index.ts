@@ -1,5 +1,9 @@
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
-import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
+import type {
+  RuntimeHandshakeResult,
+  SessionStreamEvent,
+  SessionSubscription,
+} from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
 import type {
@@ -97,6 +101,22 @@ import type {
 } from "../../src/core/types";
 
 export type DesktopEventUnsubscribe = () => void;
+
+export interface DesktopConversationApi {
+  request(path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
+  upload(input: {
+    sessionId: string;
+    name: string;
+    mime: string;
+    data: ArrayBuffer;
+  }): Promise<{ status: number; body: unknown }>;
+  subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription>;
+  acknowledge(subscriptionId: string, cursor: string): Promise<void>;
+  unsubscribe(subscriptionId: string): Promise<void>;
+  onEvent(listener: (event: SessionStreamEvent) => void): DesktopEventUnsubscribe;
+  onUnavailable(listener: () => void): DesktopEventUnsubscribe;
+  onControlChanged(listener: (sessionId: string) => void): DesktopEventUnsubscribe;
+}
 
 export interface DesktopRuntimeStatus {
   state: "starting" | "ready" | "restarting" | "failed" | "stopping";

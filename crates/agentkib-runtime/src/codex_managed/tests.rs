@@ -18,6 +18,7 @@ fn fixture() -> (tempfile::TempDir, Service, String) {
     std::fs::write(&exe,format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'codex-cli 0.155.1'; exit 0; fi\nexec /usr/bin/python3 '{}' \"$@\"\n",mock.display())).unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
     let service = Service {
+        streams: None,
         ledger: Some(Ledger::open(root.join("ledger/executions.sqlite")).unwrap()),
         runners: BTreeMap::new(),
         test_root: Some(root.into()),
@@ -100,6 +101,60 @@ fn create(service: &mut Service, workspace: &str) -> Value {
     assert_eq!(result["accepted"], true, "fixture create: {result}");
     result
 }
+
+#[test]
+fn catalog_exposes_only_verified_native_index_aliases() {
+    let (temp, mut service, workspace) = fixture();
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let record = service.ledger().unwrap().get(session).unwrap().unwrap();
+    let native = record.native_id.as_ref().unwrap();
+    let unrelated = id();
+    let transcript = temp.path().join("home/session.jsonl");
+    let unrelated_transcript = temp.path().join("home/unrelated.jsonl");
+    let header = |native: &str| {
+        json!({
+            "type": "session_meta", "payload": {"id": native, "cwd": record.workspace}
+        })
+        .to_string()
+    };
+    std::fs::write(&transcript, header(native)).unwrap();
+    std::fs::write(&unrelated_transcript, header(&unrelated)).unwrap();
+    let database = rusqlite::Connection::open(temp.path().join("home/state_1.sqlite")).unwrap();
+    database
+        .execute_batch("CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT, title TEXT)")
+        .unwrap();
+    for (native, path) in [(native, &transcript), (&unrelated, &unrelated_transcript)] {
+        database
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    native,
+                    path.to_string_lossy(),
+                    record.workspace.to_string_lossy(),
+                    record.title
+                ],
+            )
+            .unwrap();
+    }
+    let indexed = service
+        .store()
+        .unwrap()
+        .conversation_id(agentkib_core::AgentKind::Codex, native)
+        .unwrap();
+    let catalog = service.catalog().unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0]["id"], session);
+    assert_eq!(catalog[0]["indexedSessionIds"], json!([indexed]));
+
+    // A database row or matching title cannot alias a different native thread.
+    std::fs::write(&transcript, header(&unrelated)).unwrap();
+    assert_eq!(
+        service.catalog().unwrap()[0]["indexedSessionIds"],
+        json!([])
+    );
+}
+
 #[test]
 fn native_context_reads_one_thread_without_turn_history_or_writer_handoff() {
     let (temp, mut service, workspace) = fixture();
@@ -195,6 +250,7 @@ fn creates_sends_and_recovers_after_restart_without_replaying() {
     drop(service);
     let root = temp.path();
     let mut service = Service {
+        streams: None,
         ledger: Some(Ledger::open(root.join("ledger/executions.sqlite")).unwrap()),
         runners: BTreeMap::new(),
         test_root: Some(root.into()),
@@ -219,6 +275,411 @@ fn creates_sends_and_recovers_after_restart_without_replaying() {
         .unwrap();
     assert_eq!(released["released"], true);
     assert_eq!(live(&mut service, &session)["sendEnabled"], false);
+}
+
+#[test]
+fn native_callbacks_deliver_text_and_completion_without_live_polling() {
+    let (_temp, mut service, workspace) = fixture();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let hub = crate::session_stream::Hub::new("boot".into(), move |event| tx.send(event).is_ok());
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let baseline = hub.subscribe(session, None).unwrap();
+    send(&mut service, session, "hello", &id()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut delta_id = None;
+    let mut completed_id = None;
+    let mut idle = false;
+    while Instant::now() < deadline && !(delta_id.is_some() && completed_id.is_some() && idle) {
+        let event = rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        assert_eq!(event["subscriptionId"], baseline["subscriptionId"]);
+        match event["type"].as_str() {
+            Some("text-delta") => {
+                assert_eq!(event["payload"]["text"], "reply");
+                delta_id = event["payload"]["itemId"].as_str().map(str::to_owned);
+            }
+            Some("item-upsert") if event["payload"]["kind"] == "agent-message" => {
+                completed_id = event["payload"]["id"].as_str().map(str::to_owned)
+            }
+            Some("state") if event["payload"]["status"] == "idle" => idle = true,
+            _ => {}
+        }
+    }
+    assert_eq!(delta_id, completed_id);
+    assert!(idle);
+}
+
+#[test]
+fn running_tools_are_pushed_and_retained_without_writing_completed_history() {
+    let (_temp, mut service, workspace) = fixture();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let hub = crate::session_stream::Hub::new("boot".into(), move |event| tx.send(event).is_ok());
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let subscription = hub.subscribe(session, None).unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    for (kind, final_status) in [
+        ("commandExecution", "completed"),
+        ("mcpToolCall", "failed"),
+        ("fileChange", "completed"),
+        ("webSearch", "completed"),
+    ] {
+        let turn = format!("turn-{kind}");
+        let item_id = format!("tool-{kind}");
+        state
+            .event(
+                json!({"method":"turn/started","params":{"turn":{"id":turn}}}),
+                &ledger,
+            )
+            .unwrap();
+        let mut item = json!({"id":item_id,"type":kind,"status":"inProgress"});
+        state
+            .event(
+                json!({"method":"item/started","params":{"turnId":"stale-turn","item":item}}),
+                &ledger,
+            )
+            .unwrap();
+        assert!(!state.items.contains_key(&item_id));
+        state
+            .event(
+                json!({"method":"item/started","params":{"turnId":turn,"item":item}}),
+                &ledger,
+            )
+            .unwrap();
+
+        // No completion is sent until the existing observer receives the
+        // running tool, as with a command or MCP call waiting on external work.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let running = loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert_eq!(event["subscriptionId"], subscription["subscriptionId"]);
+            if event["type"] == "item-upsert" && event["payload"]["id"] == item_id {
+                break event["payload"].clone();
+            }
+        };
+        assert_eq!(running["turn_id"], turn);
+        assert_eq!(running["kind"], "tool-summary");
+        assert_eq!(running["tool_name"], kind);
+        assert_eq!(running["tool_status"], "inProgress");
+        assert!(
+            ledger.events(session, None, 100).unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event["id"] != item_id)
+        );
+        let baseline = hub.subscribe(session, None).unwrap();
+        hub.unsubscribe(baseline["subscriptionId"].as_str().unwrap());
+        assert_eq!(
+            baseline["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["id"] == item_id),
+            Some(&running)
+        );
+
+        item["status"] = json!(final_status);
+        state
+            .event(
+                json!({"method":"item/completed","params":{"turnId":turn,"item":item}}),
+                &ledger,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if event["type"] == "item-upsert" && event["payload"]["id"] == item_id {
+                assert_eq!(event["payload"]["tool_status"], final_status);
+                break;
+            }
+        }
+        let completed = hub.subscribe(session, None).unwrap();
+        hub.unsubscribe(completed["subscriptionId"].as_str().unwrap());
+        let matching = completed["events"][0]["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["id"] == item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0]["tool_status"], final_status);
+        let history = ledger.events(session, None, 100).unwrap();
+        let stored = history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["id"] == item_id)
+            .collect::<Vec<_>>();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0]["tool_status"], final_status);
+    }
+}
+
+#[test]
+fn completed_items_preserve_stream_preview_and_existing_persisted_summary_budget() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    let limit = crate::session_stream::MAX_ITEM_TEXT_BYTES;
+    for (kind, method) in [
+        ("agentMessage", "item/agentMessage/delta"),
+        ("plan", "item/plan/delta"),
+    ] {
+        for (index, (content, expected_bytes, truncated)) in [
+            ("x".repeat(40_000), 40_000, false),
+            ("界".repeat(40_000), 120_000, false),
+            ("x".repeat(limit + 1), limit, true),
+            (format!("{}界", "x".repeat(limit - 2)), limit - 2, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let turn = format!("turn-{kind}-{index}");
+            let item_id = format!("answer-{kind}-{index}");
+            state
+                .event(
+                    json!({"method":"turn/started","params":{"turn":{"id":turn}}}),
+                    &ledger,
+                )
+                .unwrap();
+            state
+                .event(json!({"method":method,"params":{"turnId":turn,"itemId":item_id,"delta":content}}), &ledger)
+                .unwrap();
+            let streamed = hub.subscribe(session, None).unwrap();
+            hub.unsubscribe(streamed["subscriptionId"].as_str().unwrap());
+            let streamed_item = streamed["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == item_id)
+                .unwrap();
+            assert_eq!(streamed_item["content"], &content[..expected_bytes]);
+            assert_eq!(streamed_item["truncated"], truncated);
+            state
+                .event(json!({"method":"item/completed","params":{"turnId":turn,"item":{"id":item_id,"type":kind,"text":content}}}), &ledger)
+                .unwrap();
+            state
+                .event(
+                    json!({"method":"turn/completed","params":{"turn":{"id":turn}}}),
+                    &ledger,
+                )
+                .unwrap();
+            let completed = hub.subscribe(session, streamed["cursor"].as_str()).unwrap();
+            hub.unsubscribe(completed["subscriptionId"].as_str().unwrap());
+            let item = &completed["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["type"] == "item-upsert" && event["payload"]["id"] == item_id)
+                .unwrap()["payload"];
+            assert_eq!(item["content"], streamed_item["content"]);
+            assert_eq!(item["truncated"], truncated);
+            let restored = hub.subscribe(session, None).unwrap();
+            hub.unsubscribe(restored["subscriptionId"].as_str().unwrap());
+            let restored_item = restored["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == item_id)
+                .unwrap();
+            assert_eq!(restored_item, item);
+            let history = ledger.events(session, None, 100).unwrap();
+            let stored = history["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == item_id)
+                .unwrap();
+            assert_eq!(
+                stored["content"],
+                content.chars().take(32768).collect::<String>()
+            );
+            assert_eq!(stored["truncated"], content.len() > 128 * 1024);
+        }
+    }
+}
+
+#[test]
+fn control_republication_uses_final_state_and_rechecks_the_ledger_without_new_events() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let request = id();
+    ledger
+        .claim(
+            &request,
+            session,
+            "fixture",
+            None,
+            &json!({"operation":"send"}),
+        )
+        .unwrap();
+    ledger.dispatch(&request).unwrap();
+    let detached = {
+        let mut state = service.runners[session].state.lock().unwrap();
+        state.revision = 50;
+        state
+            .event(
+                json!({"method":"turn/started","params":{"turn":{"id":"turn"}}}),
+                &ledger,
+            )
+            .unwrap();
+        state.snapshot("boot", true)
+    };
+    assert_eq!(detached["status"], "running");
+    {
+        let mut state = service.runners[session].state.lock().unwrap();
+        state
+            .event(
+                json!({"method":"turn/completed","params":{"turn":{"id":"turn"}}}),
+                &ledger,
+            )
+            .unwrap();
+    }
+    assert!(service.republish_live(session).unwrap());
+    let guarded = hub.subscribe(session, None).unwrap();
+    let live = &guarded["events"][0]["payload"]["live"];
+    assert_eq!(live["status"], "idle");
+    assert_eq!(live["sendEnabled"], false);
+    let revision = live["revision"].clone();
+    assert!(revision.as_u64() > detached["revision"].as_u64());
+
+    // The last native completion preceded its receipt. Clearing the durable
+    // fence must publish controls even though no new native event/revision exists.
+    ledger.finish(&request, &json!({"accepted":true})).unwrap();
+    assert!(service.republish_live(session).unwrap());
+    let enabled = hub.subscribe(session, None).unwrap();
+    let live = &enabled["events"][0]["payload"]["live"];
+    assert_eq!(live["revision"], revision);
+    assert_eq!(live["status"], "idle");
+    assert_eq!(live["sendEnabled"], true);
+    assert_ne!(enabled["cursor"], guarded["cursor"]);
+    assert!(service.republish_live(session).unwrap());
+    assert_eq!(
+        hub.subscribe(session, None).unwrap()["cursor"],
+        enabled["cursor"]
+    );
+
+    service
+        .request(
+            json!({"operation":"release","sessionId":session,"requestId":id()}),
+            "boot",
+            true,
+        )
+        .unwrap();
+    assert!(!service.republish_live(session).unwrap());
+    let resumed = service.request(json!({"operation":"resume","sessionId":session,"requestId":id(),"runtimeBootId":"boot","experimentalEnabled":true,"handoffConfirmed":true}), "boot", false).unwrap();
+    assert_eq!(resumed["accepted"], true);
+    assert!(service.republish_live(session).unwrap());
+    let replacement = hub.subscribe(session, None).unwrap();
+    let live = &replacement["events"][0]["payload"]["live"];
+    assert!(live["revision"].as_u64() < revision.as_u64());
+    assert_eq!(live["status"], "idle");
+    assert_eq!(live["sendEnabled"], true);
+}
+
+#[test]
+fn native_metadata_pushes_invalidate_only_changed_control_domains() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let runner = service.runners.get(session).unwrap();
+    let native = runner
+        .state
+        .lock()
+        .unwrap()
+        .record
+        .native_id
+        .clone()
+        .unwrap();
+    let mut baseline = hub.subscribe(session, None).unwrap();
+    hub.unsubscribe(baseline["subscriptionId"].as_str().unwrap());
+    for (method, field, value, domain) in [
+        (
+            "thread/settings/updated",
+            "threadSettings",
+            json!({"model":"new-model","effort":"high"}),
+            "settings",
+        ),
+        (
+            "thread/tokenUsage/updated",
+            "tokenUsage",
+            json!({"total":{"totalTokens":73}}),
+            "usage",
+        ),
+        (
+            "thread/goal/updated",
+            "goal",
+            json!({"objective":"continue","status":"active","tokenBudget":1000}),
+            "goal",
+        ),
+        ("thread/goal/cleared", "goal", Value::Null, "goal"),
+    ] {
+        let mut params = json!({"threadId":native});
+        params[field] = value;
+        let event = json!({"method":method,"params":params});
+        for changed in [true, false] {
+            runner
+                .state
+                .lock()
+                .unwrap()
+                .event(event.clone(), &ledger)
+                .unwrap();
+            let replay = hub.subscribe(session, baseline["cursor"].as_str()).unwrap();
+            hub.unsubscribe(replay["subscriptionId"].as_str().unwrap());
+            let invalidations: Vec<_> = replay["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["type"] == "invalidate")
+                .map(|event| event["payload"]["domains"].clone())
+                .collect();
+            assert_eq!(
+                invalidations,
+                if changed {
+                    vec![json!([domain])]
+                } else {
+                    vec![]
+                },
+                "{method}"
+            );
+            baseline = replay;
+        }
+    }
+    // Read-side goal counter reconciliation must not create a request loop.
+    {
+        let mut state = runner.state.lock().unwrap();
+        state.record.goal = Some(json!({"objective":"continue","tokensUsed":42}));
+        state.save(&ledger).unwrap();
+    }
+    let replay = hub.subscribe(session, baseline["cursor"].as_str()).unwrap();
+    assert!(
+        replay["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["type"] != "invalidate")
+    );
 }
 
 #[test]
@@ -707,15 +1168,13 @@ fn released_session_requires_explicit_resume_and_keeps_native_id() {
         operation(&mut service, session, "resume", json!({}))["accepted"],
         false
     );
-    assert_eq!(
-        operation(
-            &mut service,
-            session,
-            "resume",
-            json!({"handoffConfirmed":true})
-        )["accepted"],
-        true
+    let resumed = operation(
+        &mut service,
+        session,
+        "resume",
+        json!({"handoffConfirmed":true}),
     );
+    assert_eq!(resumed["accepted"], true, "resume rejected: {resumed}");
     assert_eq!(
         service
             .ledger()
@@ -804,15 +1263,13 @@ fn host_default_model_preserves_mode_as_pending_until_native_event() {
     record.effort = None;
     record.mode = Some("plan".into());
     ledger.save(&record).unwrap();
-    assert_eq!(
-        operation(
-            &mut service,
-            session,
-            "resume",
-            json!({"handoffConfirmed":true})
-        )["accepted"],
-        true
+    let resumed = operation(
+        &mut service,
+        session,
+        "resume",
+        json!({"handoffConfirmed":true}),
     );
+    assert_eq!(resumed["accepted"], true, "resume rejected: {resumed}");
     let record = ledger.get(session).unwrap().unwrap();
     assert_eq!(record.model.as_deref(), Some("mock-model"));
     assert_eq!(record.effort.as_deref(), Some("medium"));
@@ -1346,4 +1803,332 @@ fn selected_goal_read_preserves_newer_event_and_unchanged_reads_keep_revision() 
     std::fs::remove_file(marker).unwrap();
     let repeated = service.request(query, "boot", true).unwrap();
     assert_eq!(repeated["revision"], raced["revision"]);
+}
+
+fn hydrated_thread(native: &str, turns: Value) -> Value {
+    json!({"id":native,"status":{"type":"idle"},"turns":turns})
+}
+
+fn hydration_turn(turn: &str, item: &str, text: &str) -> Value {
+    json!({"id":turn,"status":"completed","items":[{"id":item,"type":"agentMessage","text":text}]})
+}
+
+#[test]
+fn hydration_publishes_one_ordered_baseline_without_replaying_history_as_output() {
+    let (_temp, mut service, workspace) = fixture();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let hub = crate::session_stream::Hub::new("boot".into(), move |event| tx.send(event).is_ok());
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    let native = state.record.native_id.clone().unwrap();
+    let newer = hydration_turn("newer-turn", "newer", "newer text");
+    state
+        .hydrate(&hydrated_thread(&native, json!([newer])), &ledger)
+        .unwrap();
+    let subscribed = hub.subscribe(session, None).unwrap();
+    let older = hydration_turn("older-turn", "older", "older text");
+    let history = hydrated_thread(&native, json!([older, newer]));
+    let request = id();
+    ledger
+        .claim(
+            &request,
+            session,
+            "fixture",
+            None,
+            &json!({"operation":"send"}),
+        )
+        .unwrap();
+    ledger.dispatch(&request).unwrap();
+    for _ in 0..2 {
+        let revision = state.revision;
+        state.hydrate(&history, &ledger).unwrap();
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(event["subscriptionId"], subscribed["subscriptionId"]);
+        assert_eq!(event["type"], "snapshot");
+        let payload = &event["payload"];
+        assert_eq!(
+            payload["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["older", "newer"]
+        );
+        assert_eq!(payload["replaceItems"], true);
+        assert_eq!(payload["preserveItemsOutsideCoverage"], true);
+        assert_eq!(
+            payload["authoritativeTurnIds"],
+            json!(["older-turn", "newer-turn"])
+        );
+        assert_eq!(payload["live"]["executionMode"], "codex-managed");
+        assert_eq!(payload["live"]["revision"], revision + 1);
+        assert_eq!(payload["live"]["sendEnabled"], false);
+        assert_eq!(
+            ledger.get(session).unwrap().unwrap().snapshot["revision"],
+            revision + 1
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
+        let refreshed = hub
+            .subscribe(session, subscribed["cursor"].as_str())
+            .unwrap();
+        hub.unsubscribe(refreshed["subscriptionId"].as_str().unwrap());
+        assert_eq!(refreshed["events"][0]["type"], "snapshot");
+        assert_eq!(refreshed["events"][0]["payload"]["items"], payload["items"]);
+    }
+    ledger.finish(&request, &json!({"accepted":true})).unwrap();
+    state
+        .event(
+            json!({"method":"turn/started","params":{"turn":{"id":"live-turn"}}}),
+            &ledger,
+        )
+        .unwrap();
+    state.event(json!({"method":"item/completed","params":{"turnId":"live-turn","item":{"id":"live-item","type":"agentMessage","text":"real output"}}}), &ledger).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let event = rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if event["type"] == "item-upsert" {
+            assert_eq!(event["payload"]["id"], "live-item");
+            break;
+        }
+    }
+    let live = hub.subscribe(session, None).unwrap();
+    assert_eq!(
+        live["events"][0]["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["older", "newer", "live-item"]
+    );
+    assert_eq!(
+        ledger.events(session, None, 100).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn hydration_bounds_history_and_preserves_rollback_beyond_the_item_cache() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    let native = state.record.native_id.clone().unwrap();
+    let turns: Vec<_> = (0..120)
+        .map(|i| hydration_turn(&format!("turn-{i}"), &format!("item-{i}"), "history"))
+        .collect();
+    state
+        .hydrate(&hydrated_thread(&native, json!(turns)), &ledger)
+        .unwrap();
+    let before = hub.subscribe(session, None).unwrap();
+    let payload = &before["events"][0]["payload"];
+    assert_eq!(payload["items"].as_array().unwrap().len(), 100);
+    assert_eq!(payload["items"][0]["id"], "item-20");
+    assert_eq!(payload["items"][99]["id"], "item-119");
+    assert_eq!(
+        payload["authoritativeTurnIds"].as_array().unwrap().len(),
+        100
+    );
+    assert!(
+        !payload["authoritativeTurnIds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("turn-0"))
+    );
+    assert_eq!(payload["preserveItemsOutsideCoverage"], true);
+    let page = ledger.events(session, None, 100).unwrap();
+    assert_eq!(page["events"].as_array().unwrap().len(), 100);
+    assert_eq!(
+        ledger
+            .events(session, page["next_cursor"].as_str(), 100)
+            .unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        20
+    );
+    state
+        .hydrate(&hydrated_thread(&native, json!(&turns[1..119])), &ledger)
+        .unwrap();
+    let after = hub.subscribe(session, before["cursor"].as_str()).unwrap();
+    let payload = &after["events"][0]["payload"];
+    assert_eq!(payload["removedTurnIds"], json!(["turn-0", "turn-119"]));
+    let reconnect = hub.subscribe(session, None).unwrap();
+    assert_eq!(
+        reconnect["events"][0]["payload"]["removedTurnIds"],
+        payload["removedTurnIds"]
+    );
+}
+
+#[test]
+fn hydration_partial_and_truncated_turns_never_claim_complete_coverage() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    let native = state.record.native_id.clone().unwrap();
+    let items: Vec<_> = (0..110)
+        .map(|i| json!({"id":format!("item-{i}"),"type":"agentMessage","text":"history"}))
+        .collect();
+    state
+        .hydrate(
+            &hydrated_thread(
+                &native,
+                json!([{"id":"long-turn","status":"completed","items":items},{"id":"unread-turn"}]),
+            ),
+            &ledger,
+        )
+        .unwrap();
+    let snapshot = hub.subscribe(session, None).unwrap();
+    assert_eq!(
+        snapshot["events"][0]["payload"]["authoritativeTurnIds"],
+        json!([])
+    );
+    hub.unsubscribe(snapshot["subscriptionId"].as_str().unwrap());
+    let text = format!(
+        "{}界",
+        "x".repeat(crate::session_stream::MAX_ITEM_TEXT_BYTES - 2)
+    );
+    let items: Vec<_> = (0..10)
+        .map(|i| json!({"id":format!("large-{i}"),"type":"agentMessage","text":text}))
+        .collect();
+    state
+        .hydrate(
+            &hydrated_thread(
+                &native,
+                json!([{"id":"large-turn","status":"inProgress","items":items}]),
+            ),
+            &ledger,
+        )
+        .unwrap();
+    let snapshot = hub.subscribe(session, None).unwrap();
+    let payload = &snapshot["events"][0]["payload"];
+    assert!(
+        serde_json::to_vec(&payload["items"]).unwrap().len()
+            <= crate::session_stream::MAX_ITEMS_BYTES
+    );
+    assert_eq!(payload["authoritativeTurnIds"], json!([]));
+    assert!(
+        payload["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["truncated"] == true)
+    );
+    assert_eq!(payload["preserveItemsOutsideCoverage"], true);
+    assert_eq!(state.items["large-9"]["text"], text);
+}
+
+#[test]
+fn hydrate_response_precedes_following_live_notifications_on_resume_and_reconcile() {
+    for operation in ["resume", "reconcile"] {
+        let (temp, mut service, workspace) = fixture();
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        service.set_streams(hub.clone());
+        let created = create(&mut service, &workspace);
+        let session = created["sessionId"].as_str().unwrap();
+        if operation == "resume" {
+            service
+                .request(
+                    json!({"operation":"release","sessionId":session,"requestId":id()}),
+                    "boot",
+                    true,
+                )
+                .unwrap();
+        }
+        let baseline = hub.subscribe(session, None).unwrap();
+        std::fs::write(temp.path().join("home/hydrate-response-live"), "").unwrap();
+        let result = service.request(json!({"operation":operation,"sessionId":session,"requestId":id(),"runtimeBootId":"boot","experimentalEnabled":true,"handoffConfirmed":true}), "boot", true).unwrap();
+        assert_eq!(
+            result[if operation == "resume" {
+                "accepted"
+            } else {
+                "reconciled"
+            }],
+            true
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let state = service.runners[session].state.lock().unwrap();
+            if state.stream == "live after response" {
+                assert_eq!(state.status, "running");
+                assert_eq!(state.turn.as_deref(), Some("after-hydration"));
+                break;
+            }
+            drop(state);
+            assert!(
+                Instant::now() < deadline,
+                "live event was overwritten after {operation}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let replay = hub.subscribe(session, baseline["cursor"].as_str()).unwrap();
+        assert_eq!(replay["events"][0]["type"], "snapshot");
+        let payload = &replay["events"][0]["payload"];
+        assert_eq!(payload["live"]["status"], "running");
+        assert_eq!(payload["items"][0]["id"], "after-hydration-item");
+        assert_eq!(payload["items"][0]["content"], "live after response");
+    }
+}
+
+#[test]
+fn hydrated_active_text_accepts_continuing_deltas_and_empty_turns_are_authoritative() {
+    let (_temp, mut service, workspace) = fixture();
+    let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+    service.set_streams(hub.clone());
+    let created = create(&mut service, &workspace);
+    let session = created["sessionId"].as_str().unwrap();
+    let ledger = service.ledger().unwrap();
+    let mut state = service.runners[session].state.lock().unwrap();
+    let native = state.record.native_id.clone().unwrap();
+    let mut thread = hydrated_thread(
+        &native,
+        json!([
+            {"id":"empty","status":"completed","items":[]},
+            {"id":"missing","status":"completed"},
+            {"id":"active","status":"inProgress","items":[{"id":"text","type":"agentMessage","text":"prefix🙂"}]}
+        ]),
+    );
+    thread["status"]["type"] = json!("active");
+    state.hydrate(&thread, &ledger).unwrap();
+    let initial = hub.subscribe(session, None).unwrap();
+    let coverage = initial["events"][0]["payload"]["authoritativeTurnIds"]
+        .as_array()
+        .unwrap();
+    assert!(coverage.contains(&json!("empty")));
+    assert!(!coverage.contains(&json!("missing")));
+    assert_eq!(
+        initial["events"][0]["payload"]["live"]["streamText"],
+        "prefix🙂"
+    );
+    state.event(json!({"method":"item/agentMessage/delta","params":{"turnId":"active","itemId":"text","delta":" suffix"}}), &ledger).unwrap();
+    let updated = hub.subscribe(session, initial["cursor"].as_str()).unwrap();
+    let delta = updated["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "text-delta")
+        .unwrap();
+    assert_eq!(delta["payload"]["text"], " suffix");
+    assert_eq!(delta["payload"]["offset"], 8);
+    let restored = hub.subscribe(session, None).unwrap();
+    assert_eq!(
+        restored["events"][0]["payload"]["items"][0]["content"],
+        "prefix🙂 suffix"
+    );
 }

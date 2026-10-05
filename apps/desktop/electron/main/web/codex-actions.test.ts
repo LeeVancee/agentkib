@@ -59,6 +59,7 @@ async function http(path: string, data?: unknown, raw = false) {
           Cookie: cookie,
           Origin: `http://127.0.0.1:${port}`,
           "X-CSRF-Token": csrf,
+          "X-AgentKib-Protocol": "2",
           "Content-Type": raw ? "application/octet-stream" : "application/json",
         },
       },

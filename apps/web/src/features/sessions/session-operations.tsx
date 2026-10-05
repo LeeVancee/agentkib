@@ -1,5 +1,5 @@
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/dialog";
+import { Button } from "../../components/ui/button";
+import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";
 import { ManagedTasks } from "./managed-tasks";
 import { useSession } from "./session-context";
@@ -11,7 +11,7 @@ export function SessionOperations({
   open: boolean;
   onOpenChange: (value: boolean) => void;
 }) {
-  const { t, locale, current, setModal, refresh, busy } = useSession();
+  const { t, locale, current, setModal, refresh, busy, embedded } = useSession();
   const shortcuts = (
     <div className="flex flex-wrap gap-2 border-b pb-4">
       <Button
@@ -32,16 +32,18 @@ export function SessionOperations({
       >
         {t.refresh}
       </Button>
-      <Button
-        variant="outline"
-        className="min-h-11"
-        onClick={() => {
-          onOpenChange(false);
-          setModal("preferences");
-        }}
-      >
-        {t.preferences}
-      </Button>
+      {!embedded && (
+        <Button
+          variant="outline"
+          className="min-h-11"
+          onClick={() => {
+            onOpenChange(false);
+            setModal("preferences");
+          }}
+        >
+          {t.preferences}
+        </Button>
+      )}
     </div>
   );
   if (current?.agent === "claude-code")

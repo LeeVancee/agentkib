@@ -62,6 +62,7 @@ describe("same-origin one-time code full authorization", () => {
             Cookie: cookie,
             Origin: origin,
             "X-CSRF-Token": access.csrfToken,
+            "X-AgentKib-Protocol": "2",
             "Content-Type": "application/json",
           },
           body: body === undefined ? undefined : JSON.stringify(body),

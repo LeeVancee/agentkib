@@ -1,10 +1,15 @@
 import { Bell } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
-import { Button } from "@/components/ui/button";
-import { Dialog } from "@/components/dialog";
+import { useSessionNavigate } from "./session-navigation";
+import { Button } from "../../components/ui/button";
+import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
-import { pendingScope, readPending, type PendingControl } from "./pending-controls";
+import {
+  pendingScope,
+  readPending,
+  subscribePending,
+  type PendingControl,
+} from "./pending-controls";
 import { codexCopy } from "./codex-copy";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
@@ -24,7 +29,7 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<PendingControl[]>([]);
   const [failed, setFailed] = useState(false);
-  const navigate = useNavigate();
+  const navigate = useSessionNavigate();
   useEffect(() => {
     if (access?.status !== "approved" || !access.device?.id) {
       setSaved([]);
@@ -40,15 +45,18 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
       }
     };
     read();
-    const timer = setInterval(read, 2000);
-    return () => clearInterval(timer);
+    return subscribePending(read);
   }, [origin, access?.status, access?.device?.id, open, live?.revision]);
   if (access?.status !== "approved") return null;
   const pendingIds = new Set([
     ...Object.keys(pendingSessions).filter((id) => pendingSessions[id]),
     ...saved.flatMap((item) => (item.sessionId ? [item.sessionId] : [])),
   ]);
-  const interactions = [...(live?.approvals ?? []), ...(live?.questions ?? [])];
+  const interactions = sessions.some(
+    (session) => session.id === selected && session.availability === "readable",
+  )
+    ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
+    : [];
   if (interactions.length && selected) pendingIds.add(selected);
   return (
     <>

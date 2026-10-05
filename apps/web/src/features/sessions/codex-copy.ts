@@ -1,4 +1,4 @@
-import type { Locale } from "@/i18n";
+import type { Locale } from "../../i18n";
 const zh = {
   handoff: "我已处理待审批事项和后台命令，并关闭原执行客户端；以原任务 ID 恢复，不自动分支。",
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入原生队列。队列消息将自动执行。",
@@ -35,6 +35,7 @@ const zh = {
   apply: "应用到下一轮",
   attachment: "添加附件",
   attachmentNote: "选择文件或粘贴图片；上传只暂存，发送后才加入会话。",
+  previewAttachment: "预览附件",
   uploading: "上传中",
   uploadFailed: "上传失败，请重新选择文件",
   remove: "移除附件",
@@ -93,6 +94,7 @@ type Copy = { [K in keyof typeof zh]: string };
 export const codexCopy: Record<Locale, Copy> = {
   "zh-CN": zh,
   "zh-TW": {
+    previewAttachment: "預覽附件",
     composerHint: "閒置時傳送；執行中可停止，獲授權後可追加或加入原生佇列。佇列訊息將自動執行。",
     queueTooLarge: "原生佇列超過 100 條，請先在原客戶端處理；此處暫不允許編輯或排序。",
     queueAttachments: "含附件的待傳送訊息暫不支援編輯內文，可刪除後重新新增。",
@@ -183,6 +185,7 @@ export const codexCopy: Record<Locale, Copy> = {
     defaultOption: "預設",
   },
   "en-US": {
+    previewAttachment: "Preview attachment",
     composerHint:
       "Send when idle. While running, stop or—with permission—steer or queue messages. Native queued messages execute automatically.",
     queueTooLarge:
@@ -279,6 +282,7 @@ export const codexCopy: Record<Locale, Copy> = {
     defaultOption: "Default",
   },
   "ja-JP": {
+    previewAttachment: "添付ファイルをプレビュー",
     composerHint:
       "待機中は送信できます。実行中は停止、許可があれば追加入力やキュー登録ができます。キューは自動実行されます。",
     queueTooLarge:

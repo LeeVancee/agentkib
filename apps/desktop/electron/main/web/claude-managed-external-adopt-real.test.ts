@@ -320,6 +320,7 @@ it.skipIf(!enabled)(
             Origin: origin,
             "Content-Type": "application/json",
             "X-CSRF-Token": accessState.csrfToken,
+            "X-AgentKib-Protocol": "2",
           },
           body: JSON.stringify({ ...body, bootId: accessState.bootId }),
         });

@@ -4,6 +4,7 @@ mod completion;
 pub(crate) mod ledger;
 mod state;
 mod transport;
+use agentkib_conversations::ConversationProvider;
 use agentkib_store::Store;
 use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
@@ -69,6 +70,7 @@ struct Runner {
 }
 #[derive(Default)]
 pub(super) struct Service {
+    streams: Option<crate::session_stream::Hub>,
     ledger: Option<Ledger>,
     runners: BTreeMap<String, Runner>,
     #[cfg(test)]
@@ -77,6 +79,23 @@ pub(super) struct Service {
     test_executable: Option<PathBuf>,
 }
 impl Service {
+    pub(super) fn set_streams(&mut self, streams: crate::session_stream::Hub) {
+        self.streams = Some(streams);
+    }
+    pub(super) fn republish_live(&mut self, id: &str) -> Result<bool> {
+        if !self.runners.contains_key(id) {
+            return Ok(false);
+        }
+        let ledger = self.ledger()?;
+        let state = self.runners[id]
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("state-unavailable"))?;
+        // A receipt can clear the durable fence without advancing the native
+        // revision. Read both under the same lock used by native event saves.
+        state.publish(&ledger)?;
+        Ok(true)
+    }
     fn platform_supported(&self) -> bool {
         #[cfg(test)]
         if self.test_root.is_some() || self.test_executable.is_some() {
@@ -340,43 +359,58 @@ impl Service {
             return Ok(vec![]);
         };
         let store = self.store()?;
-        Ok(ledger.list()?.into_iter().filter(|r|!r.released||!r.adopted).filter(|r|store.workspace_path(&r.workspace_id).is_ok_and(|p|p.canonicalize().ok().as_ref()==Some(&r.workspace))).map(|r|json!({"id":r.id,"workspace_id":r.workspace_id,"agent":"codex","title":r.title,"origin":"interactive","created_at":r.created_at,"updated_at":r.created_at,"message_count":null,"git_branch":null,"archived":r.archived,"sidechain":false,"availability":"readable","executionMode":"codex-managed","sourceSessionId":r.source_session_id})).collect())
+        let records: Vec<_> = ledger
+            .list()?
+            .into_iter()
+            .filter(|record| !record.released || !record.adopted)
+            .filter(|record| {
+                store
+                    .workspace_path(&record.workspace_id)
+                    .is_ok_and(|path| path.canonicalize().ok().as_ref() == Some(&record.workspace))
+            })
+            .collect();
+        let aliases = self.indexed_aliases_by_session(&records)?;
+        Ok(records.into_iter().map(|record| {
+            let indexed_ids = aliases.get(&record.id).cloned().unwrap_or_default();
+            json!({"id":record.id,"workspace_id":record.workspace_id,"agent":"codex","title":record.title,"origin":"interactive","created_at":record.created_at,"updated_at":record.created_at,"message_count":null,"git_branch":null,"archived":record.archived,"sidechain":false,"availability":"readable","executionMode":"codex-managed","sourceSessionId":record.source_session_id,"indexedSessionIds":indexed_ids})
+        }).collect())
     }
-    /// The index hashes rollout references, while managed creation uses its durable
-    /// request identity. Hide verified aliases of the same native thread.
-    pub fn indexed_aliases(&mut self) -> Result<BTreeSet<String>> {
-        let Some(ledger) = self.existing_ledger()? else {
-            return Ok(BTreeSet::new());
-        };
-        let records = ledger.list()?;
+    /// Preserve verified index identities for old desktop links while displaying
+    /// one entry per managed native thread. Never infer identity from the title.
+    fn indexed_aliases_by_session(
+        &self,
+        records: &[Record],
+    ) -> Result<BTreeMap<String, BTreeSet<String>>> {
         let store = self.store()?;
-        let mut workspaces: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for record in records.into_iter().filter(|r| !r.released || !r.adopted) {
-            if self.validate_access(&record).is_err() {
+        let mut workspaces: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for record in records {
+            if self.validate_access(record).is_err() {
                 continue;
             }
-            if let Some(native) = record.native_id {
+            if let Some(native) = &record.native_id {
                 workspaces
-                    .entry(record.workspace_id)
+                    .entry(record.workspace_id.clone())
                     .or_default()
-                    .insert(native);
+                    .insert(native.clone(), record.id.clone());
             }
         }
-        let provider = agentkib_conversations::provider(agentkib_core::AgentKind::Codex)
-            .context("provider-unavailable")?;
-        let mut aliases = BTreeSet::new();
+        if workspaces.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let provider = agentkib_conversations::CodexProvider::from_home(self.home()?);
+        let mut aliases: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (workspace, natives) in workspaces {
             let Ok(candidates) = provider.list_sessions(&store.workspace_path(&workspace)?) else {
                 continue;
             };
             for candidate in candidates {
-                if provider
+                if let Some(session) = provider
                     .verified_control_id(&candidate.native_ref)
                     .ok()
                     .flatten()
-                    .is_some_and(|id| natives.contains(&id))
+                    .and_then(|native| natives.get(&native))
                 {
-                    aliases.insert(
+                    aliases.entry(session.clone()).or_default().insert(
                         store.conversation_id(
                             agentkib_core::AgentKind::Codex,
                             &candidate.native_ref,
@@ -646,45 +680,63 @@ impl Service {
                     .native_id
                     .as_deref()
                     .context("native-session-unconfirmed")?;
-                let response = runner.client.request(
+                let native = native.to_owned();
+                let hydration_record = record.clone();
+                let hydration_state = runner.state.clone();
+                let hydration_ledger = ledger.clone();
+                let hydration_boot = boot.to_owned();
+                let confirmed = Arc::new(Mutex::new(false));
+                let confirmed_response = confirmed.clone();
+                runner.client.request_with_response(
                     "thread/read",
                     json!({"threadId":native,"includeTurns":true}),
+                    || Ok(()),
+                    move |response| {
+                    ensure!(
+                        response["thread"]["id"] == native,
+                        "thread-identity-mismatch"
+                    );
+                    let unknown = hydration_ledger.unknown(&hydration_record.id)?;
+                    if !unknown.iter().all(|(request, evidence)| {
+                        settings_evidence_matches(evidence, &hydration_record)
+                            || reconciles(request, evidence, &response["thread"])
+                    }) {
+                        return Ok(());
+                    }
+                    for (request, _) in unknown {
+                        hydration_ledger.finish(&request,&json!({"accepted":true,"completed":false,"reconciled":true,"requestId":request,"runtimeBootId":hydration_boot,"sessionId":hydration_record.id}))?;
+                    }
+                    let mut state = hydration_state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("state-unavailable"))?;
+                    if state.turn.is_none() {
+                        state.hydrate(&response["thread"], &hydration_ledger)?;
+                    } else if state.reason.as_deref() == Some("control-outcome-unconfirmed") {
+                        state.reason = None;
+                        state.status = if !state.questions.is_empty() {
+                            "waiting-input"
+                        } else if !state.approvals.is_empty() {
+                            "awaiting-approval"
+                        } else {
+                            "running"
+                        }
+                        .into();
+                        state.revision += 1;
+                        state.save(&hydration_ledger)?;
+                    }
+                    *confirmed_response.lock().unwrap() = true;
+                    Ok(())
+                    },
                 )?;
-                ensure!(
-                    response["thread"]["id"] == native,
-                    "thread-identity-mismatch"
-                );
-                let unknown = ledger.unknown(id)?;
-                if !unknown.iter().all(|(request, evidence)| {
-                    settings_evidence_matches(evidence, &record)
-                        || reconciles(request, evidence, &response["thread"])
-                }) {
+                if !*confirmed.lock().unwrap() {
                     return Ok(
                         json!({"sessionId":id,"reconciled":false,"reason":"control-outcome-unconfirmed"}),
                     );
                 }
-                for (request, _) in unknown {
-                    ledger.finish(&request,&json!({"accepted":true,"completed":false,"reconciled":true,"requestId":request,"runtimeBootId":boot,"sessionId":id}))?;
-                }
-                let mut state = runner
+                let state = runner
                     .state
                     .lock()
                     .map_err(|_| anyhow::anyhow!("state-unavailable"))?;
-                if state.turn.is_none() {
-                    state.hydrate(&response["thread"], &ledger)?;
-                } else if state.reason.as_deref() == Some("control-outcome-unconfirmed") {
-                    state.reason = None;
-                    state.status = if !state.questions.is_empty() {
-                        "waiting-input"
-                    } else if !state.approvals.is_empty() {
-                        "awaiting-approval"
-                    } else {
-                        "running"
-                    }
-                    .into();
-                    state.revision += 1;
-                    state.save(&ledger)?;
-                }
                 return Ok(
                     json!({"sessionId":id,"reconciled":state.reason.is_none(),"live":state.snapshot(boot,true)}),
                 );
@@ -1319,6 +1371,8 @@ impl Service {
         lease
             .try_lock()
             .context("session-managed-by-another-runtime")?;
+        // Native notifications before the start/resume response may establish
+        // identity, but cannot replace an existing subscriber's baseline yet.
         let state = Arc::new(Mutex::new(State::new(record.clone())));
         let events = state.clone();
         let event_ledger = ledger.clone();
@@ -1401,52 +1455,60 @@ impl Service {
             "thread/start"
         };
         self.validate_access(&record)?;
-        let response = client.request_with_dispatch(method, params, dispatch)?;
-        verify_policy_response(&record, &response)?;
-        ensure!(
-            response["cwd"].as_str().is_some_and(
-                |p| Path::new(p).canonicalize().ok().as_ref() == Some(&record.workspace)
-            ),
-            "codex-workspace-mismatch"
-        );
-        ensure!(
-            response["thread"]["environments"]
-                .as_array()
-                .is_none_or(|envs| envs.iter().all(|env| env
-                    .get("id")
-                    .or_else(|| env.get("environmentId"))
-                    .is_some_and(|id| id == "local"))),
-            "remote-environment-not-supported"
-        );
-        // The native response resolves host defaults, including for legacy records
-        // that did not persist a model. Never guess them from model/list ordering.
-        let actual_model = response["model"]
-            .as_str()
-            .filter(|model| !model.is_empty() && model.len() <= 256)
-            .context("native-model-unconfirmed")?;
-        let actual_effort = match &response["reasoningEffort"] {
-            Value::Null => None,
-            Value::String(effort) => Some(effort.as_str()),
-            _ => bail!("native-effort-unconfirmed"),
-        };
-        let mut current = state.lock().unwrap();
-        current.record.model = Some(actual_model.into());
-        current.record.effort = actual_effort.map(str::to_owned);
-        current.record.service_tier = normalized_service_tier(&response["serviceTier"]);
-        // start/resume resolves these native fields but does not prove that a
-        // previously selected collaboration mode was restored. Keep its pending
-        // selection and wait for the native settings event on the next turn.
-        current.record.native_settings = Some(json!({
-            "model":actual_model,"effort":actual_effort,"serviceTier":response["serviceTier"],
-            "approvalPolicy":response["approvalPolicy"],"approvalsReviewer":response["approvalsReviewer"],
-            "sandboxPolicy":response["sandbox"],"collaborationMode":null
-        }));
-        current.record.goal = record.goal;
-        current.record.default_model = record.default_model;
-        current.record.default_effort = record.default_effort;
-        current.record.default_service_tier = record.default_service_tier;
-        current.hydrate(&response["thread"], ledger)?;
-        drop(current);
+        let publisher = self
+            .streams
+            .as_ref()
+            .map(|hub| hub.publisher(&record.id, "codex-managed"));
+        let hydration_state = state.clone();
+        let hydration_ledger = ledger.clone();
+        client.request_with_response(method, params, dispatch, move |response| {
+            verify_policy_response(&record, response)?;
+            ensure!(
+                response["cwd"].as_str().is_some_and(
+                    |p| Path::new(p).canonicalize().ok().as_ref() == Some(&record.workspace)
+                ),
+                "codex-workspace-mismatch"
+            );
+            ensure!(
+                response["thread"]["environments"]
+                    .as_array()
+                    .is_none_or(|envs| envs.iter().all(|env| env
+                        .get("id")
+                        .or_else(|| env.get("environmentId"))
+                        .is_some_and(|id| id == "local"))),
+                "remote-environment-not-supported"
+            );
+            // The native response resolves host defaults, including for legacy records
+            // that did not persist a model. Never guess them from model/list ordering.
+            let actual_model = response["model"]
+                .as_str()
+                .filter(|model| !model.is_empty() && model.len() <= 256)
+                .context("native-model-unconfirmed")?;
+            let actual_effort = match &response["reasoningEffort"] {
+                Value::Null => None,
+                Value::String(effort) => Some(effort.as_str()),
+                _ => bail!("native-effort-unconfirmed"),
+            };
+            let mut current = hydration_state.lock().unwrap();
+            current.record.model = Some(actual_model.into());
+            current.record.effort = actual_effort.map(str::to_owned);
+            current.record.service_tier = normalized_service_tier(&response["serviceTier"]);
+            // start/resume resolves these native fields but does not prove that a
+            // previously selected collaboration mode was restored. Keep its pending
+            // selection and wait for the native settings event on the next turn.
+            current.record.native_settings = Some(json!({
+                "model":actual_model,"effort":actual_effort,"serviceTier":response["serviceTier"],
+                "approvalPolicy":response["approvalPolicy"],"approvalsReviewer":response["approvalsReviewer"],
+                "sandboxPolicy":response["sandbox"],"collaborationMode":null
+            }));
+            current.record.goal = record.goal;
+            current.record.default_model = record.default_model;
+            current.record.default_effort = record.default_effort;
+            current.record.default_service_tier = record.default_service_tier;
+            current.publisher = publisher;
+            current.hydrate(&response["thread"], &hydration_ledger)?;
+            Ok(())
+        })?;
         Ok(Runner {
             client,
             state,

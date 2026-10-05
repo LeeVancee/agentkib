@@ -4,6 +4,8 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { WebAccessService, createWebControlState } from "./web/service";
 import { acceptanceSession } from "./web/acceptance";
+import { ConversationHub } from "./conversation-hub";
+import { registerConversationIpc } from "./ipc/conversation";
 import { requireRemoteRequest } from "./ipc/remote-validation";
 import {
   app,
@@ -75,6 +77,7 @@ let runtimeHost: RuntimeHost | undefined;
 let accountService: DesktopAccountService | undefined;
 let webAccess: WebAccessService | undefined;
 let lanWebAccess: WebAccessService | undefined;
+let conversationHub: ConversationHub | undefined;
 let runtimeHandshake: RuntimeHandshakeResult | undefined;
 let shutdownStarted = false;
 let quitApproved = false;
@@ -208,6 +211,7 @@ async function startApplication(): Promise<void> {
   });
   selectedRuntimeHost.on("exit", ({ expected }: { expected: boolean }) => {
     runtimeHandshake = undefined;
+    conversationHub?.unavailable();
     webAccess?.runtimeUnavailable();
     lanWebAccess?.runtimeUnavailable();
     if (!expected) refreshCoordinator?.setRuntimeAvailable(false);
@@ -220,8 +224,32 @@ async function startApplication(): Promise<void> {
   });
 
   // 本机与 LAN 两个 Web 服务共用同一个 runtime 与控制栅栏，只有传输和数据目录不同。
+  const sharedControl = createWebControlState();
+  conversationHub = new ConversationHub((method, params) => {
+    if (!runtimeHandshake) return Promise.reject(new Error("runtime_unavailable"));
+    return requireRuntime().request(method, params);
+  });
+  selectedRuntimeHost.on("notification", (method: string, params: unknown) =>
+    conversationHub?.notification(method, params),
+  );
+  selectedRuntimeHost.on("request-completed", (method: string) => {
+    if (
+      new Set<string>([
+        RUNTIME_METHODS.addWorkspace,
+        RUNTIME_METHODS.excludeWorkspace,
+        RUNTIME_METHODS.restoreExcludedWorkspace,
+        RUNTIME_METHODS.clearSessionIndex,
+        RUNTIME_METHODS.setSessionIndexEnabled,
+      ]).has(method)
+    )
+      conversationHub?.scopesChanged();
+  });
   const sharedWebOptions = {
-    sharedControl: createWebControlState(),
+    conversationHub,
+    desktopOrigin: process.env.VITE_DEV_SERVER_URL
+      ? new URL(process.env.VITE_DEV_SERVER_URL).origin
+      : "app://bundle",
+    sharedControl,
     receiptRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.controlReceipt, params),
     workspaceRequest: () =>
       requestWhenRuntimeReady<{ id: string; name: string; path: string }[]>(
@@ -297,6 +325,7 @@ async function startApplication(): Promise<void> {
     staticDir: "",
   });
   await lanWebAccess.initialize();
+  registerConversationIpc({ service: webAccess, hub: conversationHub, assertTrustedRenderer });
   registerApplicationIpc();
   refreshCoordinator = new ElectronRefreshCoordinator({
     runtime: requireRuntime,
@@ -1004,7 +1033,10 @@ async function createMainWindow(): Promise<void> {
     rendererUnresponsive = false;
   });
   window.webContents.on("render-process-gone", () => quitGuard.rendererUnavailable());
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (webAccess?.canDownloadDesktopArtifact(url)) window.webContents.downloadURL(url);
+    return { action: "deny" };
+  });
   window.webContents.on("will-navigate", (event, targetUrl) => {
     const allowedOrigin = process.env.VITE_DEV_SERVER_URL
       ? new URL(process.env.VITE_DEV_SERVER_URL).origin
@@ -1129,7 +1161,7 @@ async function registerRendererProtocol(): Promise<void> {
       headers: {
         "content-type": contentType(assetPath),
         "content-security-policy":
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'",
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; media-src blob: http://127.0.0.1:*; frame-src http://127.0.0.1:*; font-src 'self' data:; connect-src 'self'; object-src 'none'",
       },
     });
   });

@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { request, Server as TlsServer, type Server } from "node:https";
 import { Transform, type Duplex } from "node:stream";
 import { createServer as createTcpServer, connect, type Socket } from "node:net";
@@ -842,7 +842,10 @@ describe("isolated local transport fault exercise", () => {
     const control = createHttpServer((req, res) => {
       if (req.url === "/events") {
         res.writeHead(200, { "content-type": "text/event-stream" });
-        const timer = setInterval(() => res.write(`data: ${++events}\n\n`), 40);
+        const timer = setInterval(
+          () => res.write(`data: ${JSON.stringify({ seq: ++events, at: performance.now() })}\n\n`),
+          40,
+        );
         res.on("close", () => clearInterval(timer));
         return;
       }
@@ -925,14 +928,40 @@ describe("isolated local transport fault exercise", () => {
       },
     });
     let eventCount = 0;
+    const relayEventLatency: number[] = [];
+    const directEventLatency: number[] = [];
+    const measure = (latencies: number[]) => {
+      let pending = "";
+      return (chunk: Buffer) => {
+        pending += chunk.toString();
+        let boundary: number;
+        while ((boundary = pending.indexOf("\n\n")) >= 0) {
+          const frame = pending.slice(0, boundary);
+          pending = pending.slice(boundary + 2);
+          const data = JSON.parse(frame.slice(6)) as { at: number };
+          latencies.push(performance.now() - data.at);
+        }
+      };
+    };
     const sse = request(options("control", "/events"), (response) => {
       response.on("data", () => eventCount++);
+      response.on("data", measure(relayEventLatency));
       response.on("error", () => {});
     });
     sse.on("error", () => {});
     sse.end();
+    const direct = httpRequest(
+      { hostname: "127.0.0.1", port: portOf(control), path: "/events", agent: false },
+      (response) => {
+        response.on("data", measure(directEventLatency));
+        response.on("error", () => {});
+      },
+    );
+    direct.on("error", () => {});
+    direct.end();
     stops.unshift(async () => {
       sse.destroy();
+      direct.destroy();
     });
     const began = deferred<void>();
     const broken = deferred<void>();
@@ -1008,6 +1037,12 @@ describe("isolated local transport fault exercise", () => {
       remaining.end();
     });
     expect(partial + resumed).toBe(mediaSize);
+    const p95 = (values: number[]) =>
+      [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1];
+    expect(relayEventLatency.length).toBeGreaterThan(10);
+    expect(directEventLatency.length).toBeGreaterThan(10);
+    expect(p95(relayEventLatency)).toBeLessThan(150);
+    expect(p95(directEventLatency)).toBeLessThan(150);
     if (process.env.AGENTKIB_RELAY_FAULT_REPORT)
       await writeFile(
         process.env.AGENTKIB_RELAY_FAULT_REPORT,
@@ -1016,6 +1051,10 @@ describe("isolated local transport fault exercise", () => {
           controlRequests: commands,
           maximumControlLatencyMs: Math.ceil(Math.max(...latencies)),
           sseEvents: eventCount,
+          directHttpSseP95Ms: p95(directEventLatency),
+          localTlsRelaySseP95Ms: p95(relayEventLatency),
+          sseSamples: { direct: directEventLatency.length, relay: relayEventLatency.length },
+          environment: `${process.platform}/${process.arch} ${process.version}; loopback fixture, not a physical LAN or public relay`,
           partialBytes: partial,
           resumedBytes: resumed,
           totalBytes: mediaSize,

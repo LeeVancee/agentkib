@@ -329,6 +329,11 @@ export class ManagedCodexEventBridge {
     readonly session: CodexAppServerSession,
     readonly state: ManagedCodexState,
     readonly persist: (state: ManagedCodexState, event?: JsonObject) => Promise<void> | void,
+    readonly onApplied?: (
+      value: unknown,
+      result: { changed: boolean; event?: JsonObject },
+      state: ManagedCodexState,
+    ) => void,
   ) {
     session.on("notification", (value: unknown) => this.#enqueue(value));
     session.on("serverRequest", (value: unknown) => this.#enqueue(value));
@@ -355,7 +360,10 @@ export class ManagedCodexEventBridge {
     if (this.#closed) return;
     this.#pending = this.#pending.then(async () => {
       const result = this.state.apply(value);
-      if (result.changed) await this.persist(this.state, result.event);
+      if (result.changed) {
+        await this.persist(this.state, result.event);
+        this.onApplied?.(value, result, this.state);
+      }
     });
     this.#pending = this.#pending.catch(async () => {
       this.state.fail("invalid-codex-event");

@@ -52,6 +52,7 @@ describe("Claude host control boundary", () => {
                     "Content-Type": "application/json",
                     Origin: `http://127.0.0.1:${port}`,
                     "X-CSRF-Token": csrf,
+                    "X-AgentKib-Protocol": "2",
                   }
                 : {}),
             },
@@ -157,6 +158,7 @@ describe("Claude host control boundary", () => {
     service = new WebAccessService({
       dataDir: directory,
       staticDir: directory,
+      desktopOrigin: "app://bundle",
       runtimeRequest: runtime,
       claudeManagedRequest: managed,
       managedRequest: codexManaged,
@@ -232,6 +234,194 @@ describe("Claude host control boundary", () => {
         deviceId: "agentkib-local-owner",
       }),
     );
+  });
+  it.each(["capabilities", "inspect"])(
+    "exposes scoped Claude %s through the desktop conversation bridge",
+    async (operation) => {
+      expect(
+        await service.localRequest(
+          `/managed/${operation}?agent=claude-code&sessionId=claude-session`,
+        ),
+      ).toMatchObject({ status: 200 });
+      expect(managed).toHaveBeenCalledWith({
+        operation,
+        sessionId: "claude-session",
+        experimentalEnabled: true,
+      });
+      expect(codexManaged).not.toHaveBeenCalled();
+      workspaceRegistered = false;
+      managed.mockClear();
+      expect(
+        await service.localRequest(
+          `/managed/${operation}?agent=claude-code&sessionId=claude-session`,
+        ),
+      ).toMatchObject({ status: 403 });
+      expect(managed).not.toHaveBeenCalled();
+    },
+  );
+  it("shares local Claude admission and completion notifications with desktop and Remote controls", async () => {
+    const implementation = managed.getMockImplementation()!;
+    let finish!: (value: unknown) => void;
+    managed.mockImplementation(async (value) => {
+      if ((value as Record<string, unknown>).operation === "send")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return implementation(value);
+    });
+    const changed = vi.fn();
+    service.onControlChanged(changed);
+    const requestId = randomUUID();
+    const first = service.localClaude({
+      operation: "send",
+      sessionId: "claude-session",
+      requestId,
+      expectedRevision: 4,
+      text: "first",
+    });
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    const desktop = await service.localRequest("/access");
+    for (const send of [
+      () =>
+        http("/send", {
+          bootId,
+          sessionId: "claude-session",
+          requestId: randomUUID(),
+          expectedRevision: 4,
+          text: "remote",
+        }),
+      () =>
+        service.localRequest("/send", {
+          bootId: (desktop.body as { bootId: string }).bootId,
+          sessionId: "claude-session",
+          requestId: randomUUID(),
+          expectedRevision: 4,
+          text: "desktop",
+        }),
+    ]) {
+      expect(await send()).toMatchObject({
+        status: 409,
+        body: { error: "operation_busy", controlOutcome: "not-dispatched" },
+      });
+    }
+    expect(
+      managed.mock.calls.filter(
+        ([value]) => (value as Record<string, unknown>).operation === "send",
+      ),
+    ).toHaveLength(1);
+    finish({ accepted: true, requestId, controlOutcome: "accepted", runtimeBootId: "runtime-one" });
+    expect(await first).toMatchObject({ accepted: true });
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledWith("claude-session"));
+    expect((await http("/live?sessionId=claude-session")).body).toMatchObject({
+      sendEnabled: true,
+    });
+  });
+  it("rejects local Claude while Remote owns admission and preserves a lost local outcome until its receipt", async () => {
+    const implementation = runtime.getMockImplementation()!;
+    let reject!: (error: Error) => void;
+    runtime.mockImplementation(async (value) => {
+      if ((value as Record<string, unknown>).operation === "send")
+        return new Promise((_resolve, fail) => {
+          reject = fail;
+        });
+      return implementation(value);
+    });
+    const requestId = randomUUID();
+    const remote = http("/send", {
+      bootId,
+      sessionId: "claude-session",
+      requestId,
+      expectedRevision: 4,
+      text: "remote",
+    });
+    await vi.waitFor(() => expect(reject).toBeTypeOf("function"));
+    expect(
+      await service.localClaude({
+        operation: "send",
+        sessionId: "claude-session",
+        requestId: randomUUID(),
+        expectedRevision: 4,
+        text: "local",
+      }),
+    ).toMatchObject({ accepted: false, error: "operation_busy", controlOutcome: "not-dispatched" });
+    reject(new Error("receipt lost"));
+    expect(await remote).toMatchObject({ status: 500, body: { controlOutcome: "unknown" } });
+    receipts.set(requestId, {
+      found: true,
+      requestId,
+      sessionId: "claude-session",
+      status: "accepted",
+    });
+    await http(`/requests/${requestId}`);
+    const localId = randomUUID();
+    const managedImplementation = managed.getMockImplementation()!;
+    let rejectLocal!: (error: Error) => void;
+    managed.mockImplementation(async (value) => {
+      if ((value as Record<string, unknown>).operation === "send")
+        return new Promise((_resolve, fail) => {
+          rejectLocal = fail;
+        });
+      return managedImplementation(value);
+    });
+    const local = service.localClaude({
+      operation: "send",
+      sessionId: "claude-session",
+      requestId: localId,
+      expectedRevision: 4,
+      text: "local",
+    });
+    const failed = expect(local).rejects.toThrow("receipt lost");
+    await vi.waitFor(() =>
+      expect(
+        managed.mock.calls.filter(
+          ([value]) => (value as Record<string, unknown>).operation === "send",
+        ),
+      ).toHaveLength(1),
+    );
+    rejectLocal(new Error("receipt lost"));
+    await failed;
+    expect((await service.localRequest("/live?sessionId=claude-session")).body).toMatchObject({
+      status: "outcome-unknown",
+      sendEnabled: false,
+    });
+    expect(
+      await service.localClaude({
+        operation: "send",
+        sessionId: "claude-session",
+        requestId: localId,
+        expectedRevision: 0,
+        text: "local",
+      }),
+    ).toMatchObject({ controlOutcome: "unknown" });
+    expect(
+      await service.localClaude({ operation: "live", sessionId: "claude-session" }),
+    ).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+    managed.mockImplementationOnce(async (value) => ({
+      requestId: (value as Record<string, unknown>).requestId,
+      accepted: false,
+      controlOutcome: "not-dispatched",
+    }));
+    expect(
+      await service.localClaude({
+        operation: "reconcile",
+        sessionId: "claude-session",
+        requestId: randomUUID(),
+      }),
+    ).toMatchObject({ controlOutcome: "not-dispatched" });
+    expect(
+      await service.localClaude({ operation: "live", sessionId: "claude-session" }),
+    ).toMatchObject({ status: "outcome-unknown", sendEnabled: false });
+    receipts.set(localId, {
+      found: true,
+      requestId: localId,
+      sessionId: "claude-session",
+      status: "accepted",
+    });
+    await service.localClaude({ operation: "receipt", requestId: localId });
+    expect((await service.localRequest("/live?sessionId=claude-session")).body).toMatchObject({
+      status: "idle",
+      sendEnabled: true,
+    });
   });
   it("removes a new pin when the host rejects before Runtime dispatch", async () => {
     const { store, item } = await upload();
@@ -663,13 +853,16 @@ describe("Claude host control boundary", () => {
     expect(url.hostname).toBe("127.0.0.1");
     expect(url.protocol).toBe("http:");
     expect(url.port).not.toBe(String(port));
+    expect(url.port).not.toBe(String(service.relayTargets().preview.port));
+    expect(service.canDownloadDesktopArtifact(ticket.url)).toBe(true);
     // HTML tickets describe a frozen bundle; its hash differs from the listing's file revision.
     expect(ticket.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(ticket.revision).not.toBe(item.revision);
-    const preview = await fetch(url);
+    const preview = await fetch(url, { headers: { Origin: "app://bundle" } });
     expect(preview.status).toBe(200);
     expect(preview.headers.get("content-security-policy")).toContain("sandbox allow-scripts;");
     expect(preview.headers.get("content-security-policy")).not.toContain("allow-same-origin");
+    expect(preview.headers.get("content-security-policy")).toContain("app://bundle");
     expect(preview.headers.get("set-cookie")).toBeNull();
     expect(await preview.text()).toContain("synthetic preview");
     await expect(

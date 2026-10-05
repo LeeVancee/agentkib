@@ -11,11 +11,13 @@ const channels = (source: string, pattern: RegExp) =>
   new Set([...source.matchAll(pattern)].map((match) => match[1]));
 
 const preload = read("preload/index.ts");
-const main = ["main/index.ts", "main/ipc/runtime.ts"].map(read).join("\n");
+const main = ["main/index.ts", "main/ipc/runtime.ts", "main/ipc/conversation.ts"]
+  .map(read)
+  .join("\n");
 
 describe("IPC channel wiring", () => {
   it("registers a main-process handler for every channel the preload invokes", () => {
-    const invoked = channels(preload, /ipcRenderer\.invoke\(\s*"(agentkib:[^"]+)"/g);
+    const invoked = channels(preload, /ipcRenderer\s*\.\s*invoke\(\s*"(agentkib:[^"]+)"/g);
     const handled = channels(main, /\b(?:handle|forward|ipcMain\.handle)\(\s*"(agentkib:[^"]+)"/g);
     expect(invoked.size).toBeGreaterThan(100);
     expect([...invoked].filter((channel) => !handled.has(channel))).toEqual([]);

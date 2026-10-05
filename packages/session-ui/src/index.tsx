@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
@@ -25,7 +25,7 @@ export function toolStatusLabel(status: string | undefined, locale: string): str
   const value = status?.toLowerCase();
   if (["completed", "complete", "success", "succeeded"].includes(value ?? "")) return names[0];
   if (["failed", "failure", "error", "errored"].includes(value ?? "")) return names[1];
-  if (["running", "in-progress"].includes(value ?? "")) return names[2];
+  if (["running", "in-progress", "inprogress"].includes(value ?? "")) return names[2];
   if (["pending", "queued"].includes(value ?? "")) return names[3];
   if (["cancelled", "canceled"].includes(value ?? "")) return names[4];
   return status ?? "";
@@ -53,11 +53,10 @@ export function groupEvents(events: ConversationEvent[], incomplete = false) {
       const last = segments.at(-1);
       if (process && last?.process) {
         last.events.push(e);
-        last.key = e.id;
       } else segments.push({ key: e.id, process, events: [e] });
     }
     return {
-      key: run.at(-1)!.id,
+      key: run[0].id,
       complete,
       turnId: run[0].turn_id,
       time: run.find((e) => e.timestamp)?.timestamp,
@@ -65,6 +64,58 @@ export function groupEvents(events: ConversationEvent[], incomplete = false) {
     };
   });
 }
+
+type TranscriptGroup = ReturnType<typeof groupEvents>[number];
+interface TranscriptProjection {
+  events: ConversationEvent[];
+  incomplete: boolean;
+  groups: TranscriptGroup[];
+  nextKey: number;
+}
+
+function projectTranscript(
+  events: ConversationEvent[],
+  incomplete: boolean,
+  previous?: TranscriptProjection,
+): TranscriptProjection {
+  const groups = groupEvents(events, incomplete);
+  const previousByItem = new Map<string, TranscriptGroup>();
+  for (const group of previous?.groups ?? [])
+    for (const segment of group.segments)
+      for (const event of segment.events) previousByItem.set(event.id, group);
+  const usedGroups = new Set<string>();
+  let nextKey = previous?.nextKey ?? 0;
+  for (const group of groups) {
+    // Both ends of a loaded window can grow. Reuse a shared item's group and
+    // process identities so neither pagination nor live appends remount them.
+    const prior = group.segments
+      .flatMap((segment) => segment.events)
+      .map((event) => previousByItem.get(event.id))
+      .find(
+        (candidate) =>
+          candidate &&
+          !usedGroups.has(candidate.key) &&
+          (candidate.turnId?.trim() || undefined) === (group.turnId?.trim() || undefined),
+      );
+    if (prior) usedGroups.add(prior.key);
+    group.key = prior?.key ?? String(nextKey++);
+    const previousProcesses = new Map<string, TranscriptGroup["segments"][number]>();
+    for (const segment of prior?.segments ?? [])
+      if (segment.process)
+        for (const event of segment.events) previousProcesses.set(event.id, segment);
+    const usedProcesses = new Set<string>();
+    for (const segment of group.segments) {
+      if (!segment.process) continue;
+      const priorProcess = segment.events
+        .map((event) => previousProcesses.get(event.id))
+        .find((candidate) => candidate && !usedProcesses.has(candidate.key));
+      if (priorProcess) usedProcesses.add(priorProcess.key);
+      segment.key = priorProcess?.key ?? String(nextKey++);
+    }
+  }
+  return { events, incomplete, groups, nextKey };
+}
+
 export function SafeMarkdown({ text }: { text: string }) {
   return (
     <Markdown
@@ -88,7 +139,7 @@ export function SafeMarkdown({ text }: { text: string }) {
 }
 export function Transcript({
   events,
-  incomplete,
+  incomplete = false,
   labels,
   onTool,
   locale,
@@ -99,9 +150,18 @@ export function Transcript({
   onTool: (event: ConversationEvent) => void;
   locale: string;
 }) {
+  const transcriptId = useId();
+  const [projection, setProjection] = useState(() => projectTranscript(events, incomplete));
+  const current =
+    projection.events === events && projection.incomplete === incomplete
+      ? projection
+      : projectTranscript(events, incomplete, projection);
+  // Adjust before committing children; an effect would first render new keys
+  // and lose the very DOM nodes and expansion state we need to preserve.
+  if (current !== projection) setProjection(current);
   const [opened, setOpened] = useState<Record<string, boolean>>({});
   const row = (e: ConversationEvent) => (
-    <div key={e.id} data-event-id={e.id} className={`message ${e.kind}`}>
+    <div key={`item-${e.id}`} data-event-id={e.id} className={`message ${e.kind}`}>
       {e.kind === "tool-summary" ? (
         <button className="tool" onClick={() => onTool(e)}>
           ⌘ {e.tool_name || labels.unknownTool}{" "}
@@ -120,7 +180,7 @@ export function Transcript({
   );
   return (
     <div className="transcript">
-      {groupEvents(events, incomplete).map((g) => (
+      {current.groups.map((g) => (
         <section key={g.key} className="turn">
           {g.time && (
             <time
@@ -139,10 +199,10 @@ export function Transcript({
             ).length;
             const open = opened[s.key] ?? failed > 0;
             return (
-              <div key={s.key} className="process">
+              <div key={`process-${s.key}`} className="process">
                 <button
                   aria-expanded={open}
-                  aria-controls={`process-${s.key}`}
+                  aria-controls={`process-${transcriptId}-${s.key}`}
                   onClick={() => setOpened((v) => ({ ...v, [s.key]: !open }))}
                 >
                   {open ? "⌄" : "›"} {labels.process}{" "}
@@ -152,7 +212,7 @@ export function Transcript({
                   </span>
                 </button>
                 {open && (
-                  <div id={`process-${s.key}`} className="process-body">
+                  <div id={`process-${transcriptId}-${s.key}`} className="process-body">
                     {s.events.map(row)}
                   </div>
                 )}

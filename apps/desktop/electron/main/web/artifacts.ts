@@ -48,6 +48,8 @@ export interface ArtifactOptions {
   previewOrigin: string;
   appOrigin: string;
   additionalAppOrigins?: string[];
+  /** Main-process supplied Electron origin, never accepted from remote configuration. */
+  desktopAppOrigin?: string;
   authorize: (scope: ArtifactScope) => Promise<ArtifactGrant>;
   /** Only for local integration tests; never permits plain HTTP on LAN addresses. */
   allowHttpLoopback?: boolean;
@@ -373,8 +375,14 @@ export class ArtifactService {
     this.pumpChunks();
   }
   private validAdditionalOrigins(origins: string[], previewOrigin: string) {
+    const desktop = this.options.desktopAppOrigin;
+    if (desktop && desktop !== "app://bundle")
+      validOrigin(desktop, !!this.options.allowHttpLoopback);
     const validated = [
-      ...new Set(origins.map((origin) => validOrigin(origin, !!this.options.allowHttpLoopback))),
+      ...new Set([
+        ...origins.map((origin) => validOrigin(origin, !!this.options.allowHttpLoopback)),
+        ...(desktop ? [desktop] : []),
+      ]),
     ].sort();
     if (validated.includes(previewOrigin)) throw new Error("artifact_origin_must_be_isolated");
     return validated;
@@ -782,6 +790,30 @@ export class ArtifactService {
           }
         : {}),
     };
+  }
+  /** Only already-issued desktop tickets may open a native download dialog. */
+  ownsTicketUrl(deviceId: string, input: string): boolean {
+    try {
+      const url = new URL(input);
+      if (
+        url.origin !== this.previewOrigin ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      )
+        return false;
+      const match = /^\/p\/([A-Za-z0-9_-]{32})\/(.+)$/.exec(url.pathname);
+      const ticket = match && this.tickets.get(match[1]);
+      return (
+        !!ticket &&
+        ticket.scope.deviceId === deviceId &&
+        ticket.expiresAt > this.now() &&
+        url.pathname === `/p/${match![1]}/${toUrlPath(ticket.entryPath)}`
+      );
+    } catch {
+      return false;
+    }
   }
   revokeDevice(deviceId: string) {
     for (const [id, ticket] of this.tickets)

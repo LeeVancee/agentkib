@@ -1,0 +1,210 @@
+// @vitest-environment node
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer, request } from "node:http";
+import { WebAccessService, createWebControlState } from "./service";
+
+describe("trusted desktop conversation routes", () => {
+  let directory: string;
+  let service: WebAccessService;
+  let workspaceRegistered: boolean;
+  const managed = vi.fn(async (_params: unknown): Promise<unknown> => ({ accepted: true }));
+  const runtime = vi.fn(async (params: unknown): Promise<unknown> => {
+    const input = params as { operation: string };
+    if (input.operation === "catalog")
+      return {
+        workspaces: [{ id: "w", name: "Workspace" }],
+        sessions: [{ id: "s", workspace_id: "w", agent: "codex" }],
+      };
+    if (input.operation === "live")
+      return {
+        sessionId: "s",
+        workspaceId: "w",
+        executionMode: "codex-managed",
+        runtimeBootId: "r",
+        revision: 4,
+        status: "idle",
+        sendEnabled: true,
+        approvals: [],
+        questions: [],
+      };
+    return { accepted: true };
+  });
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), "agentkib-desktop-conversation-"));
+    workspaceRegistered = true;
+    runtime.mockClear();
+    managed.mockReset().mockResolvedValue({ accepted: true });
+    service = new WebAccessService({
+      dataDir: directory,
+      staticDir: directory,
+      runtimeRequest: runtime,
+      managedRequest: managed,
+      verifiedCodex: true,
+      sharedControl: createWebControlState(),
+      desktopOrigin: "app://bundle",
+      workspaceRequest: async () =>
+        workspaceRegistered ? [{ id: "w", name: "Workspace", path: directory }] : [],
+    });
+    await service.initialize();
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await service.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("reads and sends with Remote disabled without pairing or arbitrary RPC", async () => {
+    expect((await service.request({ operation: "status" })).running).toBe(false);
+    const access = await service.localRequest("/access");
+    expect(access).toMatchObject({ status: 200, body: { status: "approved", protocolVersion: 2 } });
+    const bootId = (access.body as { bootId: string }).bootId;
+    expect(
+      await service.localRequest("/send", {
+        sessionId: "s",
+        text: "hello",
+        requestId: "request",
+        expectedRevision: 4,
+        bootId,
+      }),
+    ).toMatchObject({ status: 200, body: { accepted: true } });
+    expect(await service.localRequest("/rpc", { method: "delete" })).toMatchObject({
+      status: 404,
+      body: { controlOutcome: "not-dispatched" },
+    });
+    expect(await service.localRequest("//external.test/events")).toMatchObject({ status: 404 });
+    expect(await service.localRequest("/pair", {})).toMatchObject({ status: 404 });
+  });
+
+  it("retains duplicate-command protection and detailed unknown outcomes", async () => {
+    const access = await service.localRequest("/access");
+    const body = {
+      sessionId: "s",
+      text: "hello",
+      requestId: "request",
+      expectedRevision: 4,
+      bootId: (access.body as { bootId: string }).bootId,
+    };
+    await service.localRequest("/send", body);
+    expect(await service.localRequest("/send", body)).toMatchObject({
+      status: 409,
+      body: { error: "duplicate_request", controlOutcome: "unknown" },
+    });
+    expect(
+      runtime.mock.calls.filter(([input]) => (input as { operation: string }).operation === "send"),
+    ).toHaveLength(1);
+  });
+
+  it("creates scoped file previews for the Electron origin while Web remains disabled", async () => {
+    await writeFile(join(directory, "report.html"), "<h1>Report</h1>");
+    const files = await service.localRequest("/files/list?workspaceId=w");
+    expect(files.status).toBe(200);
+    expect((await service.request({ operation: "status" })).running).toBe(false);
+  });
+
+  it("keeps desktop preview tickets on a separate loopback listener across relay origin changes", async () => {
+    const portProbe = createServer();
+    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+    const port = (portProbe.address() as { port: number }).port;
+    await new Promise<void>((resolve) => portProbe.close(() => resolve()));
+    await service.request({
+      operation: "configure",
+      enabled: true,
+      port,
+      externalOrigin: "",
+      experimentalEnabled: false,
+    });
+    await writeFile(join(directory, "report.html"), "<h1>Local report</h1>");
+    const files = await service.localRequest("/files/list?workspaceId=w");
+    const artifactId = (files.body as { entries: { id: string; name: string }[] }).entries.find(
+      (entry) => entry.name === "report.html",
+    )!.id;
+    const issue = () => service.localRequest("/artifact-tickets", { workspaceId: "w", artifactId });
+    const before = await issue();
+    const originalUrl = (before.body as { url: string }).url;
+    const targets = service.relayTargets();
+    expect(new URL(originalUrl).hostname).toBe("127.0.0.1");
+    expect(new URL(originalUrl).port).not.toBe(String(targets.preview.port));
+    await service.setRelayOrigins("https://control.example", "https://preview.example");
+    const after = await issue();
+    expect(after.status).toBe(200);
+    const nextUrl = (after.body as { url: string }).url;
+    expect(new URL(nextUrl).origin).toBe(new URL(originalUrl).origin);
+    expect(service.canDownloadDesktopArtifact(nextUrl)).toBe(true);
+    for (const url of [originalUrl, nextUrl]) {
+      const response = await fetch(url, { headers: { Origin: "app://bundle" } });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-security-policy")).toContain("frame-ancestors");
+      expect(response.headers.get("content-security-policy")).toContain("app://bundle");
+      expect(response.headers.get("content-security-policy")).not.toContain("preview.example");
+      expect(await response.text()).toContain("Local report");
+    }
+    const tunneled = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port: targets.preview.port,
+          path: new URL(nextUrl).pathname,
+          headers: { Host: "preview.example" },
+        },
+        (res) => {
+          res.resume();
+          res.once("end", () => resolve(res.statusCode!));
+        },
+      );
+      req.once("error", reject);
+      req.end();
+    });
+    expect(tunneled).toBe(410);
+    const denied = await fetch(nextUrl, { headers: { Origin: "https://untrusted.example" } });
+    expect(denied.status).toBe(403);
+    await denied.arrayBuffer();
+    workspaceRegistered = false;
+    const revoked = await fetch(nextUrl, { headers: { Origin: "app://bundle" } });
+    expect(revoked.status).toBe(403);
+    await revoked.arrayBuffer();
+  });
+
+  it.each(["create", "adopt", "release", "reconcile"])(
+    "notifies receipt observers when %s settles after timeout",
+    async (operation) => {
+      let finish!: (value: unknown) => void;
+      managed.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      let expire!: () => void;
+      const timeout = globalThis.setTimeout;
+      vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: () => void,
+        delay?: number,
+        ...args: unknown[]
+      ) => {
+        if (delay === 20_000) expire = callback;
+        return timeout(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const changed = vi.fn();
+      service.onControlChanged(changed);
+      const access = await service.localRequest("/access");
+      const pending = service.localRequest(`/managed/${operation}`, {
+        bootId: (access.body as { bootId: string }).bootId,
+        requestId: `late-${operation}`,
+        ...(operation === "create"
+          ? { workspaceId: "w" }
+          : { sessionId: "s", handoffConfirmed: true }),
+      });
+      await vi.waitFor(() => expect(managed).toHaveBeenCalledOnce());
+      expire();
+      expect(await pending).toMatchObject({ status: 504, body: { controlOutcome: "unknown" } });
+      expect(changed).not.toHaveBeenCalled();
+      finish(operation === "reconcile" ? { reconciled: true } : { accepted: true });
+      await vi.waitFor(() =>
+        expect(changed).toHaveBeenCalledWith(operation === "create" ? "" : "s"),
+      );
+    },
+  );
+});

@@ -1159,6 +1159,8 @@ export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
 export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
 export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
+  /** Verified index identities that route to this managed session. */
+  indexedSessionIds?: string[];
   remote?: RemoteRecordSource;
   id: string;
   workspace_id: string;

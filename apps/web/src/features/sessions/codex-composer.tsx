@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, X } from "lucide-react";
 import { type UploadedAttachment } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "../../components/ui/button";
+import { Dialog } from "../../components/dialog";
+import { Textarea } from "../../components/ui/textarea";
 import { useSession } from "./session-context";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
@@ -16,6 +17,7 @@ type Upload = {
   percent: number;
   result?: UploadedAttachment;
   failed?: boolean;
+  previewUrl?: string;
 };
 export function CodexComposer() {
   const session = useSession();
@@ -53,9 +55,12 @@ export function CodexComposer() {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
+  const [previewKey, setPreviewKey] = useState<string>();
+  const previewUrls = useRef(new Map<string, string>());
   const active = useRef(new Map<string, AbortController>());
   const fileInput = useRef<HTMLInputElement>(null);
   const count = useRef(0);
+  const generation = useRef(0);
   const uploadPermission = !!(
     access?.device?.attachments &&
     capabilities?.sessionId === selected &&
@@ -63,26 +68,37 @@ export function CodexComposer() {
   );
   useEffect(() => {
     const controllers = active.current;
+    const urls = previewUrls.current;
     setUploads([]);
     setResources([]);
     setSubmitted(false);
     setError("");
+    setPreviewKey(undefined);
     count.current = 0;
     return () => {
+      generation.current++;
       for (const abort of controllers.values()) abort.abort();
       controllers.clear();
+      for (const url of urls.values()) URL.revokeObjectURL(url);
+      urls.clear();
     };
   }, [selected]);
   useEffect(() => {
     if (access?.device?.attachments) return;
     for (const abort of active.current.values()) abort.abort();
     active.current.clear();
+    for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
+    previewUrls.current.clear();
+    setPreviewKey(undefined);
     count.current = 0;
     setUploads([]);
   }, [access?.device?.attachments]);
   useEffect(() => {
     if (!submitted) return;
     if (notice === "accepted") {
+      for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
+      previewUrls.current.clear();
+      setPreviewKey(undefined);
       setUploads([]);
       setResources([]);
       count.current = 0;
@@ -90,6 +106,18 @@ export function CodexComposer() {
       setSubmitted(false);
     } else if (notice === "notDispatched") setSubmitted(false);
   }, [notice, submitted, setMessage]);
+  function releasePreview(key: string) {
+    const url = previewUrls.current.get(key);
+    if (url) URL.revokeObjectURL(url);
+    previewUrls.current.delete(key);
+    setPreviewKey((current) => (current === key ? undefined : current));
+  }
+  function unavailablePreview(key: string) {
+    releasePreview(key);
+    setUploads((items) =>
+      items.map((item) => (item.key === key ? { ...item, previewUrl: undefined } : item)),
+    );
+  }
   async function add(files: File[]) {
     if (!uploadPermission || busy || submitted) return;
     setError("");
@@ -101,8 +129,16 @@ export function CodexComposer() {
       count.current++;
       const key = crypto.randomUUID();
       const abort = new AbortController();
+      // Only local raster files are rendered, through <img>. Documents and SVG
+      // remain ordinary attachments; no remote URL or executable preview is opened.
+      const previewUrl =
+        ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) &&
+        typeof URL.createObjectURL === "function"
+          ? URL.createObjectURL(file)
+          : undefined;
+      if (previewUrl) previewUrls.current.set(key, previewUrl);
       active.current.set(key, abort);
-      setUploads((items) => [...items, { key, name: file.name, percent: 0 }]);
+      setUploads((items) => [...items, { key, name: file.name, percent: 0, previewUrl }]);
       void client
         .uploadAttachment(
           selected,
@@ -121,8 +157,11 @@ export function CodexComposer() {
         })
         .catch(() => {
           if (!abort.signal.aborted) {
+            releasePreview(key);
             setUploads((items) =>
-              items.map((item) => (item.key === key ? { ...item, failed: true } : item)),
+              items.map((item) =>
+                item.key === key ? { ...item, failed: true, previewUrl: undefined } : item,
+              ),
             );
             setError(copy.uploadFailed);
           }
@@ -131,8 +170,10 @@ export function CodexComposer() {
     }
   }
   async function remove(item: Upload) {
+    const requestGeneration = generation.current;
     active.current.get(item.key)?.abort();
     active.current.delete(item.key);
+    releasePreview(item.key);
     count.current = Math.max(0, count.current - 1);
     setUploads((items) => items.filter((entry) => entry.key !== item.key));
     if (item.result) {
@@ -143,7 +184,7 @@ export function CodexComposer() {
           version: item.result.version,
         });
       } catch {
-        setError(copy.error);
+        if (requestGeneration === generation.current) setError(copy.error);
       }
     }
   }
@@ -154,6 +195,7 @@ export function CodexComposer() {
   const resourceNeedsMessage = resourceIds.length > 0 && !message.trim() && !attachmentIds.length;
   async function send(action: "send" | "steer" | "queue-add") {
     if (!valid || busy || submitted) return;
+    const requestGeneration = generation.current;
     setSubmitted(true);
     const result =
       action === "send"
@@ -167,7 +209,10 @@ export function CodexComposer() {
             ...(resourceIds.length ? { resourceIds } : {}),
             ...(action === "steer" ? { turnId: live?.turnId } : {}),
           });
-    if (result) {
+    if (result && requestGeneration === generation.current) {
+      for (const url of previewUrls.current.values()) URL.revokeObjectURL(url);
+      previewUrls.current.clear();
+      setPreviewKey(undefined);
       setUploads([]);
       setResources([]);
       count.current = 0;
@@ -175,6 +220,7 @@ export function CodexComposer() {
       setSubmitted(false);
     }
   }
+  const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
   const running = live?.status === "running";
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
   const primaryAction = canStop ? (
@@ -235,6 +281,22 @@ export function CodexComposer() {
         <ul className="space-y-2">
           {uploads.map((item) => (
             <li key={item.key} className="flex items-center gap-2 text-xs">
+              {item.previewUrl && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="size-11 shrink-0 overflow-hidden p-0"
+                  aria-label={`${copy.previewAttachment}: ${item.name}`}
+                  onClick={() => setPreviewKey(item.key)}
+                >
+                  <img
+                    src={item.previewUrl}
+                    alt=""
+                    className="size-full object-cover"
+                    onError={() => unavailablePreview(item.key)}
+                  />
+                </Button>
+              )}
               <span className="min-w-0 flex-1 truncate">{item.name}</span>
               <span role="status">
                 {item.failed
@@ -257,6 +319,20 @@ export function CodexComposer() {
             </li>
           ))}
         </ul>
+      )}
+      {preview?.previewUrl && (
+        <Dialog
+          title={`${copy.previewAttachment}: ${preview.name}`}
+          closeLabel={copy.close}
+          onClose={() => setPreviewKey(undefined)}
+        >
+          <img
+            src={preview.previewUrl}
+            alt={preview.name}
+            className="mx-auto max-h-[65dvh] max-w-full object-contain"
+            onError={() => unavailablePreview(preview.key)}
+          />
+        </Dialog>
       )}
       {resourceNeedsMessage && (
         <p role="status" className="text-sm text-muted-foreground">

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { dictionaries } from "@/i18n";
 import { sessionDisplayState } from "./session-display-state";
 import type { SessionController } from "./use-session-controller";
 const state = {
@@ -59,6 +60,30 @@ describe("session display state", () => {
     });
     expect(result.reason).not.toContain("secret");
     expect(sessionDisplayState(state).reason).toBe("");
+  });
+  it.each([
+    ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
+    ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
+  ])("explains %s from live state or send capability", (reason, expected) => {
+    const unavailable = {
+      ...state,
+      canSend: false,
+      live: { ...state.live!, status: "unsupported" as const, sendEnabled: false },
+    };
+    expect(
+      sessionDisplayState({ ...unavailable, live: { ...unavailable.live, reason } }),
+    ).toMatchObject({ label: "仅可查看", reason: expected });
+    expect(
+      sessionDisplayState({
+        ...unavailable,
+        capabilities: {
+          sessionId: "s",
+          executionMode: "codex-follower",
+          status: "unsupported",
+          features: { send: { available: false, reason } },
+        },
+      }),
+    ).toMatchObject({ label: "仅可查看", reason: expected });
   });
   it("provides localized status for every locale", () => {
     for (const locale of ["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)

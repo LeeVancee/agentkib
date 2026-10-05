@@ -29,12 +29,21 @@ importers:
       '@agentkib/backend':
         specifier: workspace:*
         version: link:../../packages/backend
+      '@agentkib/conversation-state':
+        specifier: workspace:*
+        version: link:../../packages/conversation-state
       '@agentkib/runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/runtime-protocol
       '@agentkib/session-catalog':
         specifier: workspace:*
         version: link:../../packages/session-catalog
+      '@agentkib/web':
+        specifier: workspace:*
+        version: link:../web
+      '@agentkib/web-client':
+        specifier: workspace:*
+        version: link:../../packages/web-client
       '@base-ui/react':
         specifier: ^1.7.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -189,6 +198,9 @@ importers:
       '@agentkib/agent-identity':
         specifier: workspace:*
         version: link:../../packages/agent-identity
+      '@agentkib/conversation-state':
+        specifier: workspace:*
+        version: link:../../packages/conversation-state
       '@agentkib/session-catalog':
         specifier: workspace:*
         version: link:../../packages/session-catalog
@@ -330,6 +342,8 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/conversation-state: {}
 
   packages/runtime-protocol: {}
 

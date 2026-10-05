@@ -1,13 +1,13 @@
-import { NativeScope } from "@/features/interactions/native-scope";
-import { NativeDecisions } from "@/features/interactions/native-decisions";
+import { NativeScope } from "../interactions/native-scope";
+import { NativeDecisions } from "../interactions/native-decisions";
 import { codexCopy } from "./codex-copy";
-import { PreferencesDialog } from "@/features/preferences/preferences-dialog";
-import { SessionDetailsDialog } from "@/features/catalog/session-details-dialog";
-import { Button } from "@/components/ui/button";
+import { PreferencesDialog } from "../preferences/preferences-dialog";
+import { SessionDetailsDialog } from "../catalog/session-details-dialog";
+import { Button } from "../../components/ui/button";
 import { Check } from "lucide-react";
 import { toolStatusLabel } from "@agentkib/session-ui";
-import { QuestionForm, interactionCopy } from "@/features/interactions/question-form";
-import { Dialog } from "@/components/dialog";
+import { QuestionForm, interactionCopy } from "../interactions/question-form";
+import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 export function SessionDialogs() {
   const {

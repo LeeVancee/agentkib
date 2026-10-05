@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "../lib/utils";
 import {
   Dialog as DialogRoot,
   DialogClose,
@@ -64,7 +64,7 @@ export function Dialog({
         </DialogHeader>
         <div
           className={cn(
-            "dialog-body min-w-0 space-y-4",
+            "dialog-body agentkib-conversation-dialog min-w-0 space-y-4",
             panel && "min-h-0 flex-1 overflow-y-auto overscroll-contain p-4",
           )}
         >

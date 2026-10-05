@@ -5,8 +5,12 @@ export {
   type SessionCollection,
 } from "./session-collections";
 
-export const PROTOCOL_VERSION = 16 as const;
+export const PROTOCOL_VERSION = 17 as const;
+export const CONVERSATION_PROTOCOL_VERSION = 2 as const;
+export const SESSION_EVENT_NOTIFICATION = "sessions.event" as const;
 export const RUNTIME_METHODS = {
+  sessionsSubscribe: "sessions.subscribe",
+  sessionsUnsubscribe: "sessions.unsubscribe",
   handshake: "agentkib.handshake",
   shutdown: "agentkib.shutdown",
   scanWorkspace: "workspace.scan",
@@ -160,6 +164,24 @@ export interface RuntimePeer {
 export interface RuntimeHandshakeRequest {
   protocolVersion: typeof PROTOCOL_VERSION;
   client: RuntimePeer;
+}
+
+export interface SessionStreamEvent {
+  protocolVersion: typeof CONVERSATION_PROTOCOL_VERSION;
+  subscriptionId: string;
+  sessionId: string;
+  runtimeBootId: string;
+  epoch: string;
+  seq: number;
+  cursor: string;
+  type: "snapshot" | "state" | "text-delta" | "item-upsert" | "invalidate" | "resync-required";
+  payload: Record<string, unknown>;
+}
+
+export interface SessionSubscription {
+  subscriptionId: string;
+  events: SessionStreamEvent[];
+  cursor: string;
 }
 
 export interface RuntimeHandshakeResult {

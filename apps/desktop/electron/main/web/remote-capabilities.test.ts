@@ -25,7 +25,12 @@ describe("remote capabilities share device and workspace authorization", () => {
         Cookie: cookie,
         ...(body === undefined
           ? {}
-          : { Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf }),
+          : {
+              Origin: origin,
+              "Content-Type": "application/json",
+              "X-CSRF-Token": csrf,
+              "X-AgentKib-Protocol": "2",
+            }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

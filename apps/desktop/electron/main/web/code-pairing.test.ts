@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { ConversationHub } from "../conversation-hub";
 import { WebAccessService, type WebConfig } from "./service";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 
@@ -62,6 +63,7 @@ describe("same-origin one-time code full authorization", () => {
             Cookie: cookie,
             Origin: origin,
             "X-CSRF-Token": access.csrfToken,
+            "X-AgentKib-Protocol": "2",
             "Content-Type": "application/json",
           },
           body: body === undefined ? undefined : JSON.stringify(body),
@@ -90,6 +92,11 @@ describe("same-origin one-time code full authorization", () => {
       staticDir: dir,
       runtimeRequest: runtime,
       managedRequest: managed,
+      conversationHub: new ConversationHub(async () => ({
+        subscriptionId: randomUUID(),
+        events: [],
+        cursor: "cursor",
+      })),
       workspaceRequest: async () => workspaces,
       verifiedCodex: true,
       onPairingRequested: attention,
@@ -275,9 +282,12 @@ describe("same-origin one-time code full authorization", () => {
       code: (await service.request({ operation: "generate-code", access: "read" })).code!.value,
       name: "Tablet",
     });
-    const stream = await fetch(`${origin}/api/web/v1/stream?sessionId=session-first`, {
-      headers: { Cookie: b.cookie, Origin: origin, "X-CSRF-Token": b.access.csrfToken },
-    });
+    const stream = await fetch(
+      `${origin}/api/web/v1/stream?sessionId=session-first&protocolVersion=2`,
+      {
+        headers: { Cookie: b.cookie, Origin: origin, "X-CSRF-Token": b.access.csrfToken },
+      },
+    );
     expect(stream.status).toBe(200);
     const body = stream.text();
     await service.request({ operation: "set-access", id: paired.data.device.id, access: "full" });

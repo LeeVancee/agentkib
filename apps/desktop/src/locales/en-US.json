@@ -131,6 +131,8 @@
   "sessions.clearAgentFilter": "Clear Agent filter",
   "sessions.clearRecordFilter": "Clear record filter",
   "sessions.nav": "Sessions",
+  "sessions.newConversation": "New conversation",
+  "sessions.conversationCatalogError": "The session catalog could not refresh.",
   "sessions.more": "More",
   "sessions.remote": "Remote connections",
   "sessions.remoteUnavailable": "Not available yet",

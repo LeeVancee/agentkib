@@ -9,12 +9,13 @@ import {
   type CodexGoalState,
   type CodexSessionSettings,
 } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Dialog } from "@/components/dialog";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
+import { subscribeSessionInvalidation } from "./session-events";
 
 export type CodexResource = CodexContextResource;
 
@@ -62,6 +63,15 @@ export function CodexComposerControls({
     );
   };
   const loadGeneration = useRef(0);
+  const loadFlight = useRef<
+    | {
+        generation: number;
+        dirty: boolean;
+        background: boolean;
+        promise: Promise<void>;
+      }
+    | undefined
+  >(undefined);
   const contextGeneration = useRef(0);
   const contextAbort = useRef<AbortController | undefined>(undefined);
   const resourcesRef = useRef(resources);
@@ -69,8 +79,6 @@ export function CodexComposerControls({
   const contextLocation = useRef<{ id?: string; names: string[] }>({ names: [] });
   const [contextNames, setContextNames] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
-  const revisionSeen = useRef<string | undefined>(undefined);
-  const lastNativeRead = useRef(0);
   const settingsDraftRevision = useRef<number | undefined>(undefined);
   const goalDraftRevision = useRef<number | undefined>(undefined);
   const [settingsDirty, setSettingsDirty] = useState(false);
@@ -153,40 +161,63 @@ export function CodexComposerControls({
     [client, copy.resourceRemoved, full, online, selected, setResources],
   );
 
-  const load = useCallback(async () => {
-    if (!full || !selected) return;
-    const generation = ++loadGeneration.current;
-    const results = await Promise.allSettled([
-      client.codexSessionSettings(selected),
-      client.codexGoals(selected),
-    ]);
-    if (generation !== loadGeneration.current) return;
-    const [settingsResult, goalResult] = results;
-    if (settingsResult.status === "fulfilled") {
-      applySettings(settingsResult.value);
-      setSettingsError("");
-    } else {
-      setSettings(undefined);
-      setSettingsError(unavailable(settingsResult.reason));
-    }
-    if (goalResult.status === "fulfilled") {
-      setGoal(goalResult.value);
-      if (goalDraftRevision.current === undefined) {
-        setObjective(goalResult.value.goal?.objective ?? "");
-        setTokenBudget(goalResult.value.goal?.tokenBudget?.toString() ?? "");
+  const load = useCallback(
+    (background = false): Promise<void> => {
+      if (!full || !selected) return Promise.resolve();
+      const generation = loadGeneration.current;
+      const pending = loadFlight.current;
+      if (pending?.generation === generation) {
+        pending.dirty = true;
+        pending.background &&= background;
+        return pending.promise;
       }
-      setGoalError("");
-    } else {
-      setGoal(undefined);
-      setGoalError(unavailable(goalResult.reason));
-    }
-  }, [applySettings, client, full, selected]);
+      const flight = { generation, dirty: true, background, promise: Promise.resolve() };
+      flight.promise = (async () => {
+        // Initial readiness, an idle revision and domain invalidations can arrive
+        // together. Coalesce that batch before starting one pair of native reads.
+        await Promise.resolve();
+        while (flight.dirty && generation === loadGeneration.current) {
+          const quiet = flight.background;
+          flight.dirty = false;
+          flight.background = true;
+          const [settingsResult, goalResult] = await Promise.allSettled([
+            client.codexSessionSettings(selected),
+            client.codexGoals(selected),
+          ]);
+          if (generation !== loadGeneration.current) return;
+          if (settingsResult.status === "fulfilled") {
+            applySettings(settingsResult.value);
+            setSettingsError("");
+          } else if (!quiet) {
+            setSettings(undefined);
+            setSettingsError(unavailable(settingsResult.reason));
+          }
+          if (goalResult.status === "fulfilled") {
+            setGoal(goalResult.value);
+            if (goalDraftRevision.current === undefined) {
+              setObjective(goalResult.value.goal?.objective ?? "");
+              setTokenBudget(goalResult.value.goal?.tokenBudget?.toString() ?? "");
+            }
+            setGoalError("");
+          } else if (!quiet) {
+            setGoal(undefined);
+            setGoalError(unavailable(goalResult.reason));
+          }
+        }
+        if (loadFlight.current === flight) loadFlight.current = undefined;
+      })().finally(() => {
+        if (loadFlight.current === flight) loadFlight.current = undefined;
+      });
+      loadFlight.current = flight;
+      return flight.promise;
+    },
+    [applySettings, client, full, selected],
+  );
 
   useEffect(() => {
     loadGeneration.current++;
     settingsDraftRevision.current = undefined;
     goalDraftRevision.current = undefined;
-    revisionSeen.current = undefined;
     setSettingsDirty(false);
     setGoalDirty(false);
     setSettings(undefined);
@@ -224,56 +255,36 @@ export function CodexComposerControls({
     void load();
     void loadContext(contextLocation.current.id, contextLocation.current.names);
     // Re-read only the selected session after reconnect. Native changes arrive over SSE.
+    return () => {
+      loadGeneration.current++;
+    };
   }, [full, online, selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (!full || !selected || !online) return;
+    return subscribeSessionInvalidation(client, (id, domains) => {
+      if (
+        (!id || id === selected) &&
+        domains.some((domain) => ["settings", "goal", "usage", "ownership"].includes(domain))
+      )
+        void load(true);
+    });
+  }, [client, full, load, online, selected]);
+
+  useEffect(() => {
+    // Settings and goals use the conversation's CAS revision. An unrelated
+    // idle update can advance it without invalidating either domain. Running
+    // token revisions do not trigger reads; entering idle calibrates it once.
     if (
-      !full ||
-      !selected ||
-      !online ||
-      live?.sessionId !== selected ||
-      live.revision === undefined
-    ) {
-      if (revisionSeen.current !== undefined) loadGeneration.current++;
-      revisionSeen.current = undefined;
-      return;
-    }
-    const stamp = `${selected}:${live.revision}`;
-    if (revisionSeen.current === stamp) return;
-    const first = revisionSeen.current === undefined;
-    revisionSeen.current = stamp;
-    if (first) {
-      lastNativeRead.current = Date.now();
-      return;
-    }
-    // Coalesce selected-session SSE revisions, without another subscription or resource scan.
-    const timer = window.setTimeout(
-      () => {
-        lastNativeRead.current = Date.now();
-        const generation = ++loadGeneration.current;
-        void Promise.allSettled([
-          client.codexSessionSettings(selected),
-          client.codexGoals(selected),
-        ]).then(([nextSettings, nextGoal]) => {
-          if (generation !== loadGeneration.current) return;
-          if (nextSettings.status === "fulfilled") {
-            applySettings(nextSettings.value);
-            setSettingsError("");
-          }
-          if (nextGoal.status === "fulfilled") {
-            setGoal(nextGoal.value);
-            setGoalError("");
-            if (goalDraftRevision.current === undefined) {
-              setObjective(nextGoal.value.goal?.objective ?? "");
-              setTokenBudget(nextGoal.value.goal?.tokenBudget?.toString() ?? "");
-            }
-          }
-        });
-      },
-      Math.max(0, 2000 - (Date.now() - lastNativeRead.current)),
-    );
-    return () => window.clearTimeout(timer);
-  }, [applySettings, client, full, live?.sessionId, live?.revision, online, selected]);
+      full &&
+      online &&
+      live?.sessionId === selected &&
+      live.status === "idle" &&
+      live.revision !== undefined &&
+      live.revision !== null
+    )
+      void load(true);
+  }, [full, load, online, selected, live?.sessionId, live?.status, live?.revision]);
 
   useEffect(() => {
     if (live?.settings?.sessionId === selected) {
@@ -386,6 +397,12 @@ export function CodexComposerControls({
   const goalChanged = goalDirty && goalDraftRevision.current !== goal?.revision;
   const settingsReadStale = live?.revision !== undefined && settings?.revision !== live.revision;
   const goalReadStale = live?.revision !== undefined && goal?.revision !== live.revision;
+  const openControls = (next: "settings" | "goal") => {
+    // Running revisions deliberately do not auto-read. Opening a stale panel
+    // is an explicit request to refresh its CAS read model, without submitting.
+    if (next === "settings" ? settingsReadStale : goalReadStale) void load();
+    setDialog(next);
+  };
   const editSettings = () => {
     settingsDraftRevision.current ??= settings?.revision;
     setSettingsDirty(true);
@@ -429,7 +446,7 @@ export function CodexComposerControls({
           variant="ghost"
           className="h-11 min-w-0 flex-1 shrink justify-start px-2"
           disabled={disabled}
-          onClick={() => setDialog("settings")}
+          onClick={() => openControls("settings")}
         >
           <Settings2 className="hidden shrink-0 sm:block" size={16} />
           <span className="truncate">{currentModel || copy.conversationSettings}</span>
@@ -467,7 +484,7 @@ export function CodexComposerControls({
           variant="ghost"
           className="h-auto min-h-11 w-full justify-start overflow-hidden px-2 text-xs"
           aria-label={copy.goals}
-          onClick={() => setDialog("goal")}
+          onClick={() => openControls("goal")}
         >
           <Goal className="shrink-0" size={16} />
           <span className="shrink-0">{term(goal.goal.status)}</span>
@@ -498,17 +515,19 @@ export function CodexComposerControls({
                 {settingsChanged && (
                   <div role="status" className="mb-3 text-xs">
                     {layout.nativeChanged}
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={() => {
-                        settingsDraftRevision.current = undefined;
-                        setSettingsDirty(false);
-                        applySettings(settings);
-                      }}
-                    >
-                      {layout.reloadDraft}
-                    </Button>
+                    {!settingsReadStale && (
+                      <Button
+                        variant="outline"
+                        type="button"
+                        onClick={() => {
+                          settingsDraftRevision.current = undefined;
+                          setSettingsDirty(false);
+                          applySettings(settings);
+                        }}
+                      >
+                        {layout.reloadDraft}
+                      </Button>
+                    )}
                   </div>
                 )}
                 {running && (
@@ -564,6 +583,14 @@ export function CodexComposerControls({
           closeLabel={copy.close}
           onClose={() => setDialog(undefined)}
         >
+          {settingsReadStale && (settings?.available || !!settingsError) && (
+            <div role="status" className="mb-3 text-xs text-muted-foreground">
+              {layout.connecting}
+              <Button type="button" variant="outline" onClick={() => void load()}>
+                {layout.reloadDraft}
+              </Button>
+            </div>
+          )}
           {!settings?.available ? (
             <p role="status" className="text-sm text-muted-foreground">
               {copy.settingUnavailable}
@@ -739,11 +766,6 @@ export function CodexComposerControls({
                   {layout.settingsPending}
                 </p>
               )}
-              {settingsReadStale && (
-                <p role="status" className="text-xs text-muted-foreground">
-                  {layout.connecting}
-                </p>
-              )}
               {settings.applicationStatus === "unknown" && (
                 <p role="status" className="text-xs text-muted-foreground">
                   {layout.settingsUnknown}
@@ -859,6 +881,14 @@ export function CodexComposerControls({
           closeLabel={copy.close}
           onClose={() => setDialog(undefined)}
         >
+          {goalReadStale && (goal?.available || !!goalError) && (
+            <div role="status" className="mb-3 text-xs text-muted-foreground">
+              {layout.connecting}
+              <Button type="button" variant="outline" onClick={() => void load()}>
+                {layout.reloadDraft}
+              </Button>
+            </div>
+          )}
           {!goal?.available ? (
             <p role="status" className="text-sm text-muted-foreground">
               {copy.goalUnavailable}
@@ -866,26 +896,23 @@ export function CodexComposerControls({
             </p>
           ) : (
             <section className="space-y-3">
-              {goalReadStale && (
-                <p role="status" className="text-xs text-muted-foreground">
-                  {layout.connecting}
-                </p>
-              )}
               {goalChanged && (
                 <div role="status" className="text-xs">
                   {layout.nativeChanged}
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => {
-                      goalDraftRevision.current = undefined;
-                      setGoalDirty(false);
-                      setObjective(goal.goal?.objective ?? "");
-                      setTokenBudget(goal.goal?.tokenBudget?.toString() ?? "");
-                    }}
-                  >
-                    {layout.reloadDraft}
-                  </Button>
+                  {!goalReadStale && (
+                    <Button
+                      variant="outline"
+                      type="button"
+                      onClick={() => {
+                        goalDraftRevision.current = undefined;
+                        setGoalDirty(false);
+                        setObjective(goal.goal?.objective ?? "");
+                        setTokenBudget(goal.goal?.tokenBudget?.toString() ?? "");
+                      }}
+                    >
+                      {layout.reloadDraft}
+                    </Button>
+                  )}
                 </div>
               )}
               {mutationError && (
@@ -975,7 +1002,7 @@ export function CodexComposerControls({
               type="button"
               variant="outline"
               className="min-h-11 w-full justify-start"
-              onClick={() => setDialog("goal")}
+              onClick={() => openControls("goal")}
             >
               <Goal size={16} />
               {copy.goals}

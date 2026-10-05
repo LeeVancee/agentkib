@@ -14,6 +14,7 @@ import type {
 } from "../../../../../packages/web-client/src/index";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +29,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { isClaudeReadBusy, useClaudeSessionObservation } from "./useClaudeSessionObservation";
+import {
+  mergeNativeCoverage,
+  mergeOrderedPersistedHistory,
+} from "../../../../web/src/features/sessions/session-model";
 
 type Pending = { requestId: string; operation: string; sessionId?: string; workspaceId: string };
 type Interaction = Approval | UserQuestionRequest;
@@ -80,6 +86,7 @@ export function ClaudeSessionPanel({
   const text = (zh: string, en: string) => (locale === "en-US" ? en : zh);
   const [filesOpen, setFilesOpen] = useState(false);
   const [sessionId, setSessionId] = useState(initialSessionId ?? "");
+  const [observedSessionId, setObservedSessionId] = useState("");
   const [catalog, setCatalog] = useState<ConversationCatalog>();
   const [options, setOptions] = useState<ManagedOptions>();
   const [live, setLive] = useState<Live>();
@@ -90,7 +97,8 @@ export function ClaudeSessionPanel({
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
   const [busy, setBusy] = useState(false);
-  const [online, setOnline] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [storageBlocked, setStorageBlocked] = useState(false);
@@ -105,90 +113,14 @@ export function ClaudeSessionPanel({
     liveRef.current = live;
   }, [live]);
   const shown = useRef(new Set<string>());
-
-  const refresh = useCallback(async () => {
-    if (loading.current) return;
-    loading.current = true;
-    const generation = epoch.current;
-    try {
-      const saved = readPending(workspaceId);
-      let nextPending = saved;
-      if (saved) {
-        const receipt = await request<ControlReceipt>("receipt", { requestId: saved.requestId });
-        if (generation !== epoch.current) return;
-        if (
-          receipt.found &&
-          receipt.requestId === saved.requestId &&
-          receipt.operation === saved.operation &&
-          (!saved.sessionId || saved.sessionId === receipt.sessionId) &&
-          (receipt.status === "accepted" || receipt.status === "not-dispatched")
-        ) {
-          forgetPending(workspaceId, saved.requestId);
-          nextPending = readPending(workspaceId);
-          if (receipt.status === "accepted" && saved.operation === "create")
-            setSessionId(receipt.sessionId);
-          if (
-            receipt.status === "accepted" &&
-            saved.operation === "send" &&
-            saved.sessionId === sessionId
-          ) {
-            setDraft("");
-            setAttachments([]);
-          }
-        }
-      }
-      const [nextOptions, nextCatalog] = await Promise.all([
-        request<ManagedOptions>("options"),
-        request<ConversationCatalog>("catalog"),
-      ]);
-      if (generation !== epoch.current) return;
-      setPending(nextPending);
-      setOptions(nextOptions);
-      setCatalog(nextCatalog);
-      if (sessionId) {
-        // Workspace history uses the index ID, while control uses the managed
-        // identity. Resolve only an exact, unique mapping in this workspace.
-        const localSessions = nextCatalog.sessions.filter(
-          (row) => row.workspace_id === workspaceId && row.agent === "claude-code",
-        );
-        if (!localSessions.some((row) => row.id === sessionId)) {
-          const matches = localSessions.filter((row) => row.indexedSessionId === sessionId);
-          if (matches.length === 1) {
-            setSessionId(matches[0].id);
-            return;
-          }
-          throw new Error("claude_session_unavailable");
-        }
-        const [nextLive, nextCaps, nextHistory] = await Promise.all([
-          request<Live>("live", { sessionId }),
-          request<SessionCapabilities>("capabilities", { sessionId }),
-          request<ConversationEventPage>("events", { sessionId }),
-        ]);
-        if (generation !== epoch.current) return;
-        setLive(nextLive);
-        setCapabilities(nextCaps);
-        setHistory(nextHistory);
-      }
-      setOnline(true);
-      setStorageBlocked(false);
-    } catch (e) {
-      if (generation !== epoch.current) return;
-      setOnline(false);
-      setError(e instanceof Error ? e.message : "connection_failed");
-      try {
-        readPending(workspaceId);
-      } catch {
-        setStorageBlocked(true);
-      }
-    } finally {
-      loading.current = false;
-    }
-  }, [workspaceId, sessionId]);
-
+  const refreshRef = useRef<(details?: boolean) => Promise<void>>(async () => {});
+  const queuedRefresh = useRef<boolean | undefined>(undefined);
+  const refreshNeedsDetails = useRef(false);
   useEffect(() => {
     epoch.current++;
     setFilesOpen(false);
     setLive(undefined);
+    setObservedSessionId("");
     setCapabilities(undefined);
     setHistory(undefined);
     setInspection(undefined);
@@ -198,15 +130,183 @@ export function ClaudeSessionPanel({
     setInteraction(undefined);
     setAnswers({});
     setCustom({});
-    setOnline(false);
+    setConnected(false);
+    setRefreshError("");
+    refreshNeedsDetails.current = false;
     setError("");
-    void refresh();
-    const timer = setInterval(() => void refresh(), 1000);
+    void refreshRef.current();
     return () => {
       epoch.current++;
-      clearInterval(timer);
+      queuedRefresh.current = undefined;
     };
-  }, [refresh]);
+  }, [workspaceId, sessionId]);
+  const refreshMetadata = useCallback(() => {
+    void refreshRef.current(false);
+  }, []);
+  const hasPending = useCallback(() => {
+    try {
+      return !!readPending(workspaceId);
+    } catch {
+      return true;
+    }
+  }, [workspaceId]);
+  const {
+    liveDelivery,
+    nativeCoverage,
+    catalogReady,
+    catalogError,
+    controlReady,
+    retry,
+    deferredRead,
+    deferRead,
+    refreshWake,
+    completeDeferredRead,
+  } = useClaudeSessionObservation({
+    sessionId: observedSessionId,
+    generation: epoch,
+    setLive,
+    setHistory,
+    setOnline: setConnected,
+    setError,
+    refreshMetadata,
+    refreshCapabilities: refreshMetadata,
+    hasPending,
+  });
+  const online = connected && catalogReady && !refreshError;
+
+  const refresh = useCallback(
+    async (details = true) => {
+      details ||= deferredRead.current || refreshNeedsDetails.current;
+      if (loading.current) {
+        queuedRefresh.current = queuedRefresh.current === true || details;
+        return;
+      }
+      loading.current = true;
+      const generation = epoch.current;
+      const delivery = liveDelivery.current;
+      const wake = refreshWake.current;
+      try {
+        const saved = readPending(workspaceId);
+        let nextPending = saved;
+        if (saved) {
+          const receipt = await request<ControlReceipt>("receipt", { requestId: saved.requestId });
+          if (generation !== epoch.current) return;
+          if (
+            receipt.found &&
+            receipt.requestId === saved.requestId &&
+            receipt.operation === saved.operation &&
+            (!saved.sessionId || saved.sessionId === receipt.sessionId) &&
+            (receipt.status === "accepted" || receipt.status === "not-dispatched")
+          ) {
+            forgetPending(workspaceId, saved.requestId);
+            nextPending = readPending(workspaceId);
+            if (!nextPending) retry();
+            if (receipt.status === "accepted" && saved.operation === "create")
+              setSessionId(receipt.sessionId);
+            if (
+              receipt.status === "accepted" &&
+              saved.operation === "send" &&
+              saved.sessionId === sessionId
+            ) {
+              setDraft("");
+              setAttachments([]);
+            }
+          }
+        }
+        const [nextOptions, nextCatalog] = await Promise.all([
+          request<ManagedOptions>("options"),
+          request<ConversationCatalog>("catalog"),
+        ]);
+        if (generation !== epoch.current) return;
+        setPending(nextPending);
+        setOptions(nextOptions);
+        setCatalog(nextCatalog);
+        if (sessionId) {
+          // Workspace history uses the index ID, while control uses the managed
+          // identity. Resolve only an exact, unique mapping in this workspace.
+          const localSessions = nextCatalog.sessions.filter(
+            (row) => row.workspace_id === workspaceId && row.agent === "claude-code",
+          );
+          if (!localSessions.some((row) => row.id === sessionId)) {
+            const matches = localSessions.filter(
+              (row) =>
+                row.indexedSessionId === sessionId || row.indexedSessionIds?.includes(sessionId),
+            );
+            if (matches.length === 1) {
+              setSessionId(matches[0].id);
+              return;
+            }
+            throw new Error("claude_session_unavailable");
+          }
+          setObservedSessionId(sessionId);
+          // Native state changes invalidate metadata even when history stays current.
+          // Keep dynamic capabilities in the same serialized refresh and busy recovery.
+          const [nextCaps, nextLive, nextHistory] = await Promise.all([
+            request<SessionCapabilities>("capabilities", { sessionId }),
+            details ? request<Live>("live", { sessionId }) : undefined,
+            details ? request<ConversationEventPage>("events", { sessionId }) : undefined,
+          ]);
+          if (generation !== epoch.current) return;
+          setCapabilities(nextCaps);
+          if (nextLive && nextHistory) {
+            if (delivery === liveDelivery.current) setLive(nextLive);
+            setHistory((old) => ({
+              ...nextHistory,
+              events: mergeNativeCoverage(
+                mergeOrderedPersistedHistory(
+                  old?.events ?? [],
+                  nextHistory.events,
+                  old ? "latest" : "older",
+                ),
+                nativeCoverage.current,
+              ),
+            }));
+          }
+        }
+        // Reads and the stream recover independently: neither can clear the
+        // other's failure and reopen controls before both are healthy.
+        setRefreshError("");
+        refreshNeedsDetails.current = false;
+        if (!sessionId || !hasDesktopConversation()) setConnected(true);
+        setStorageBlocked(false);
+        if (details) completeDeferredRead();
+      } catch (e) {
+        if (generation !== epoch.current) return;
+        if (isClaudeReadBusy(e)) {
+          deferRead(wake, generation);
+          return;
+        }
+        // A metadata-only success cannot recover an unread history/live page.
+        refreshNeedsDetails.current ||= details;
+        setRefreshError((e instanceof Error && e.message) || "connection_failed");
+        if (!sessionId || !hasDesktopConversation()) setConnected(false);
+        try {
+          readPending(workspaceId);
+        } catch {
+          setStorageBlocked(true);
+        }
+      } finally {
+        loading.current = false;
+        if (queuedRefresh.current !== undefined) {
+          const details = queuedRefresh.current;
+          queuedRefresh.current = undefined;
+          void refreshRef.current(details);
+        }
+      }
+    },
+    [
+      workspaceId,
+      sessionId,
+      liveDelivery,
+      nativeCoverage,
+      retry,
+      deferredRead,
+      deferRead,
+      refreshWake,
+      completeDeferredRead,
+    ],
+  );
+  refreshRef.current = refresh;
   useEffect(() => {
     if (!online || interaction || !live) return;
     const next = [...live.approvals, ...(live.questions ?? [])].find(
@@ -222,7 +322,7 @@ export function ClaudeSessionPanel({
   }, [live, interaction, online, sessionId]);
 
   async function mutate(operation: string, body: Record<string, unknown> = {}) {
-    if (flight.current || pending || storageBlocked || !online) return;
+    if (flight.current || pending || storageBlocked || !online || !controlReady) return;
     flight.current = true;
     setBusy(true);
     setError("");
@@ -263,6 +363,7 @@ export function ClaudeSessionPanel({
       setInspection(undefined);
       setConfirmed(false);
       await refresh();
+      if (generation === epoch.current) retry();
     } catch (e) {
       if (generation === epoch.current)
         setError(e instanceof Error ? e.message : "control_outcome_unconfirmed");
@@ -287,6 +388,7 @@ export function ClaudeSessionPanel({
       flight.current ||
       pending ||
       !online ||
+      !controlReady ||
       capabilities?.features.attachments?.available !== true
     )
       return;
@@ -332,7 +434,13 @@ export function ClaudeSessionPanel({
     readonly: text("只读", "Read only"),
   };
   const managed = live?.executionMode === "claude-managed" && live.status !== "released";
-  const blocked = busy || !!pending || storageBlocked || !online;
+  const blocked =
+    busy ||
+    !!pending ||
+    storageBlocked ||
+    !online ||
+    !controlReady ||
+    sessionId !== observedSessionId;
   const interactionCurrent =
     !!interaction &&
     interaction.supported &&
@@ -383,7 +491,14 @@ export function ClaudeSessionPanel({
           >
             {text("新建 Claude 任务", "New Claude task")}
           </Button>
-          <Button variant="outline" disabled={busy} onClick={() => void refresh()}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              retry();
+              void refresh();
+            }}
+          >
             {text("刷新", "Refresh")}
           </Button>
         </div>
@@ -418,9 +533,9 @@ export function ClaudeSessionPanel({
             </SelectContent>
           </Select>
         </label>
-        {error && (
+        {(error || refreshError || catalogError) && (
           <p role="alert" className="text-destructive break-words">
-            {error}
+            {error || refreshError || catalogError}
           </p>
         )}
         {pending && (
@@ -512,9 +627,14 @@ export function ClaudeSessionPanel({
                   <MarkdownContent content={event.content ?? event.tool_status ?? ""} />
                 </article>
               ))}
-              {live?.status !== "idle" && live?.streamText && (
-                <MarkdownContent content={live.streamText} />
-              )}
+              {live?.status !== "idle" &&
+                live?.streamText &&
+                !(
+                  live.turnId &&
+                  history?.events.some(
+                    (event) => event.kind === "agent-message" && event.turn_id === live.turnId,
+                  )
+                ) && <MarkdownContent content={live.streamText} />}
               {history?.warnings.map((warning) => (
                 <p key={warning} role="status">
                   {warning}

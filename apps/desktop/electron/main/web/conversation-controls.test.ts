@@ -142,7 +142,12 @@ describe("Codex conversation controls", () => {
           ...(cookie ? { Cookie: cookie } : {}),
           ...(body === undefined
             ? {}
-            : { Origin: origin, "Content-Type": "application/json", "X-CSRF-Token": csrf }),
+            : {
+                Origin: origin,
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrf,
+                "X-AgentKib-Protocol": "2",
+              }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });

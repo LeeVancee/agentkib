@@ -312,6 +312,12 @@ export class WebReadRequests {
     readonly dataDir: string,
     readonly indexGeneration: () => bigint,
     readonly environment: NodeJS.ProcessEnv,
+    readonly publishConversationEvent?: (
+      sessionId: string,
+      type: "state" | "text-delta" | "item-upsert" | "snapshot",
+      payload: Record<string, unknown>,
+      live: Record<string, unknown>,
+    ) => void,
   ) {
     this.#codex = new CodexAppServerReader(environment);
   }
@@ -2549,7 +2555,44 @@ export class WebReadRequests {
     });
     const state = new ManagedCodexState(record, record.snapshot?.revision ?? 0);
     const persist = createManagedSnapshotWriter(this.dataDir, record);
-    const bridge = new ManagedCodexEventBridge(session, state, persist);
+    let previousStreamText = "";
+    const bridge = new ManagedCodexEventBridge(
+      session,
+      state,
+      persist,
+      (value, result, current) => {
+        const live = current.snapshot(this.#bootId, session.connected);
+        const envelope = isObject(value) ? value : {};
+        const method = typeof envelope.method === "string" ? envelope.method : "";
+        const params = isObject(envelope.params) ? envelope.params : {};
+        if (method === "item/agentMessage/delta" || method === "item/plan/delta") {
+          const delta = typeof params.delta === "string" ? params.delta : "";
+          const streamText = typeof live.streamText === "string" ? live.streamText : "";
+          if (delta && streamText === previousStreamText + delta) {
+            this.publishConversationEvent?.(
+              record.id,
+              "text-delta",
+              {
+                text: delta,
+                offset: previousStreamText.length,
+                ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+                ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+                ephemeral: true,
+              },
+              live,
+            );
+          }
+          previousStreamText = streamText;
+          return;
+        }
+        previousStreamText = typeof live.streamText === "string" ? live.streamText : "";
+        if (result.event) {
+          this.publishConversationEvent?.(record.id, "item-upsert", result.event, live);
+          return;
+        }
+        this.publishConversationEvent?.(record.id, "state", live, live);
+      },
+    );
     try {
       const modelsResult = await session.request("model/list", { limit: 100 });
       const models = projectManagedModels(modelsResult);

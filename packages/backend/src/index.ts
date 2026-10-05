@@ -58,11 +58,14 @@ import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
+  SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
 } from "@agentkib/runtime-protocol";
+import { SessionStreamHub } from "./session-stream";
 import { BackendStore } from "./store";
 import {
   preferenceSnapshot,
@@ -103,6 +106,7 @@ export class TypeScriptBackend {
   #context?: Context;
   #doctor?: Doctor;
   #sessions?: SessionReaders;
+  #sessionStream?: SessionStreamHub;
   #cursorBridge?: CursorBridge;
   #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
@@ -121,7 +125,10 @@ export class TypeScriptBackend {
   #workspaceApplications?: WorkspaceApplications;
   #closing?: Promise<void>;
 
-  constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
+  constructor(
+    readonly environment: NodeJS.ProcessEnv = process.env,
+    readonly notify: (method: string, params: unknown) => void = () => {},
+  ) {}
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
   cancelPendingOperations(): void {
@@ -136,6 +143,8 @@ export class TypeScriptBackend {
   }
 
   #reset(): void {
+    this.#sessionStream?.close();
+    this.#sessionStream = undefined;
     this.#storage?.cancel();
     this.#storage = undefined;
     this.#quota = undefined;
@@ -409,6 +418,53 @@ export class TypeScriptBackend {
           const value = readPreferences(dataDir).session_index_enabled;
           return typeof value === "boolean" ? value : true;
         });
+        const runtimeBootId = randomUUID();
+        this.#sessionStream = new SessionStreamHub(
+          runtimeBootId,
+          async (sessionId) => {
+            if (sessionId === "") {
+              const catalog = await this.#request(RUNTIME_METHODS.webRequest, {
+                operation: "catalog",
+              });
+              return {
+                live:
+                  catalog && typeof catalog === "object" && !Array.isArray(catalog)
+                    ? (catalog as Record<string, unknown>)
+                    : {},
+                items: [],
+              };
+            }
+            const [liveValue, pageValue] = await Promise.all([
+              this.#request(RUNTIME_METHODS.webRequest, {
+                operation: "live",
+                sessionId,
+                experimentalEnabled: true,
+              }),
+              this.#request(RUNTIME_METHODS.webRequest, {
+                operation: "events",
+                sessionId,
+                cursor: null,
+                limit: 100,
+              }),
+            ]);
+            const live =
+              liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
+                ? (liveValue as Record<string, unknown>)
+                : { sessionId, status: "unsupported" };
+            const page =
+              pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
+                ? (pageValue as Record<string, unknown>)
+                : {};
+            const items = Array.isArray(page.events)
+              ? page.events.filter(
+                  (item): item is Record<string, unknown> =>
+                    !!item && typeof item === "object" && !Array.isArray(item),
+                )
+              : [];
+            return { live, items };
+          },
+          (event) => this.notify(SESSION_EVENT_NOTIFICATION, event),
+        );
         this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
         return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
       });
@@ -417,6 +473,17 @@ export class TypeScriptBackend {
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.sessionsSubscribe) {
+      const request = parameters(
+        z.object({ sessionId: z.string().max(256), afterCursor: z.string().max(1024).optional() }),
+        params,
+      );
+      return this.#sessionStream!.subscribe(request.sessionId, request.afterCursor);
+    }
+    if (method === RUNTIME_METHODS.sessionsUnsubscribe) {
+      const request = parameters(z.object({ subscriptionId: z.string().uuid() }), params);
+      return this.#sessionStream!.unsubscribe(request.subscriptionId);
+    }
     if (method === RUNTIME_METHODS.controlReceipt) {
       const receipt = readControlReceipt(this.#dataDir, params);
       return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
@@ -1265,6 +1332,8 @@ export class TypeScriptBackend {
         dataDir,
         () => this.#sessionIndex?.generation() ?? -1n,
         { ...process.env, ...this.environment },
+        (sessionId, type, payload, live) =>
+          this.#sessionStream?.publish(sessionId, type, payload, live),
       );
     }
     return await operation(this.#webRead);

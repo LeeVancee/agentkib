@@ -322,17 +322,23 @@ export function readManagedEvents(
     }
     const pageSize = Math.min(100, Math.max(1, limit));
     const statement = database.prepare(
-      "SELECT sequence,event FROM managed_events WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
+      "SELECT sequence,event_id,event FROM managed_events WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
     );
     statement.setReadBigInts(true);
     const rows = statement.all(sessionId, before, pageSize + 1) as Array<{
       sequence: bigint;
+      event_id: string;
       event: string;
     }>;
     const more = rows.length > pageSize;
     const page = rows.slice(0, pageSize);
     return {
-      events: page.map((row) => JSON.parse(row.event) as unknown).reverse(),
+      // The ledger stores identity in its indexed event_id column and omits it
+      // from the JSON payload. Restore it at the API boundary: transcript
+      // consumers use this stable ID for pagination, deduplication, and DOM keys.
+      events: page
+        .map((row) => ({ id: row.event_id, ...(JSON.parse(row.event) as Record<string, unknown>) }))
+        .reverse(),
       next_cursor: more && page.length ? String(page.at(-1)!.sequence) : null,
       warnings: [],
     };

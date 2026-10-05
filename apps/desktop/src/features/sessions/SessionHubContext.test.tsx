@@ -1,342 +1,205 @@
 // @vitest-environment jsdom
-
-import type { ReactNode } from "react";
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  ConversationIndexStatus,
-  ConversationSessionSummary,
-  RuntimeInfo,
-  WorkspaceSummary,
-} from "@/core/types";
+import type { ConversationSessionSummary, RuntimeInfo } from "@/core/types";
 import { useAppStore } from "@/stores/app-store";
-import { api } from "@/core/api";
-import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
 import { useSessionViewStore } from "./session-view-store";
-import { SESSION_REFRESH_EVENT } from "./session-refresh";
-import { useRemoteStore } from "@/features/remote/remote-store";
-import { useRemoteCatalogStore, remoteRecordId } from "@/features/remote/remote-catalog-store";
+import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
 
-const doubles = vi.hoisted(() => ({
+const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
-  catalog: vi.fn(),
+  bridge: true,
+  indexed: [] as ConversationSessionSummary[],
+  controlled: [] as ConversationSessionSummary[],
+  controlledReady: true,
+  controlledError: undefined as unknown,
   search: {} as { sessionId?: string },
-  workspaceQuery: {
-    data: [] as WorkspaceSummary[],
-    isPending: false,
-    error: null as Error | null,
-    refetch: vi.fn().mockResolvedValue(undefined),
-  },
+  workspaces: [{ id: "workspace", name: "Project", path: "/project" }],
+  remote: { hosts: [], sessions: [], workspaces: [], errors: {} },
+  refresh: vi.fn(),
+  refreshControlled: vi.fn(),
 }));
-
+vi.mock("@/core/useI18n", () => ({
+  useI18n: () => ({ tr: String, localizeMessage: String }),
+}));
 vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => doubles.navigate,
-  useSearch: () => doubles.search,
+  useNavigate: () => mocks.navigate,
+  useSearch: () => mocks.search,
 }));
 vi.mock("@/features/home/home-query", () => ({
-  useHomeWorkspaces: () => doubles.workspaceQuery,
+  useHomeWorkspaces: () => ({ data: mocks.workspaces, isPending: false, refetch: mocks.refresh }),
 }));
+vi.mock("@/core/conversation-bridge", () => ({ hasDesktopConversation: () => mocks.bridge }));
 vi.mock("./useSessionCatalog", () => ({
-  useSessionCatalog: (...args: unknown[]) => doubles.catalog(...args),
+  useSessionCatalog: (
+    _workspaces: unknown,
+    _enabled: boolean,
+    afterRefresh?: () => Promise<unknown>,
+  ) => ({
+    sessions: mocks.indexed,
+    ready: true,
+    refreshing: false,
+    errors: {},
+    statuses: [],
+    refresh: async () => {
+      await mocks.refresh();
+      await afterRefresh?.();
+    },
+  }),
+}));
+vi.mock("./conversation-catalog", () => ({
+  useConversationCatalog: () => ({
+    sessions: mocks.controlled,
+    ready: mocks.controlledReady,
+    error: mocks.controlledError,
+  }),
+  refreshConversationCatalog: mocks.refreshControlled,
+}));
+vi.mock("@/features/remote/remote-catalog-store", () => ({
+  useRemoteCatalogEntries: () => mocks.remote,
+  refreshRemoteCatalog: mocks.refresh,
 }));
 
-const workspace = {
-  id: "workspace",
-  name: "Project",
-  path: "/projects/example",
-} as WorkspaceSummary;
-const session: ConversationSessionSummary = {
-  id: "session",
-  workspace_id: workspace.id,
+function Directory() {
+  const hub = useSessionHub();
+  return (
+    <>
+      {hub.catalogError && <p role="alert">{hub.catalogError}</p>}
+      <button onClick={() => void hub.refresh()}>Refresh</button>
+      <output>{hub.selected?.id ?? "none"}</output>
+      {hub.sessions.map((session) => (
+        <button key={session.id} onClick={() => hub.select(session.id)}>
+          {session.id}
+        </button>
+      ))}
+    </>
+  );
+}
+const session = (id: string): ConversationSessionSummary => ({
+  id,
+  workspace_id: "workspace",
   agent: "codex",
-  title: "Review navigation",
+  title: "Same native thread",
+  availability: "readable",
   archived: false,
   sidechain: false,
-  availability: "readable",
-};
+});
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.refresh.mockResolvedValue(undefined);
+  mocks.refreshControlled.mockResolvedValue([]);
+  mocks.bridge = true;
+  mocks.indexed = [session("indexed-alias"), session("unmanaged")];
+  mocks.controlled = [session("managed-id"), session("unmanaged")];
+  mocks.controlledReady = true;
+  mocks.controlledError = undefined;
+  mocks.search = {};
+  useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
+  useSessionViewStore.getState().resetFilters();
+});
+afterEach(cleanup);
 
-function catalogState() {
-  return {
-    sessions: [] as ConversationSessionSummary[],
-    statuses: [] as ConversationIndexStatus[],
-    errors: {} as Record<string, string>,
-    loading: false,
-    refreshing: false,
-    ready: true,
-    refresh: vi.fn().mockResolvedValue(undefined),
-  };
-}
-function wrapper({ children }: { children: ReactNode }) {
-  return <SessionHubProvider>{children}</SessionHubProvider>;
-}
-function clearedSearch() {
-  const navigation = doubles.navigate.mock.calls[0]?.[0] as {
-    to: string;
-    replace: boolean;
-    search: (previous: Record<string, unknown>) => Record<string, unknown>;
-  };
-  expect(navigation.to).toBe("/sessions");
-  expect(navigation.replace).toBe(true);
-  return navigation.search({ sessionId: session.id, unrelated: "retained" });
-}
-
-describe("SessionHubProvider", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    useAppStore.getState().reset();
-    useRemoteStore.setState({ snapshot: null });
-    useRemoteCatalogStore.setState({ catalogs: {}, errors: {}, revision: 0 });
-    useAppStore.getState().setRuntime({ session_index_enabled: true } as RuntimeInfo);
-    useSessionViewStore.getState().resetFilters();
-    doubles.search = { sessionId: session.id };
-    doubles.workspaceQuery = {
-      data: [workspace],
-      isPending: false,
-      error: null,
-      refetch: vi.fn().mockResolvedValue(undefined),
-    };
-    doubles.catalog.mockReturnValue(catalogState());
-  });
-  afterEach(() => {
-    cleanup();
-    vi.restoreAllMocks();
+describe("desktop authoritative session directory", () => {
+  it("retains a valid deep link after a catalog error and recovers after retry", () => {
+    mocks.search = { sessionId: "unmanaged" };
+    mocks.controlled = [];
+    mocks.controlledError = new Error("Conversation catalog unavailable");
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("Conversation catalog unavailable");
+    mocks.controlledError = undefined;
+    mocks.controlled = [session("unmanaged")];
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "unmanaged" })).toBeTruthy();
   });
 
-  it("keeps context available but pauses reads and refresh listeners outside the session route", () => {
-    const { result } = renderHook(useSessionHub, {
-      wrapper: ({ children }) => <SessionHubProvider active={false}>{children}</SessionHubProvider>,
+  it("only clears a missing deep link after the authoritative catalog succeeds", () => {
+    mocks.search = { sessionId: "missing" };
+    mocks.controlled = [];
+    mocks.controlledReady = false;
+    const view = render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    mocks.controlledReady = true;
+    view.rerender(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(mocks.navigate).toHaveBeenCalledOnce();
+    expect(mocks.navigate.mock.calls[0][0].search(mocks.search)).toEqual({
+      sessionId: undefined,
     });
-    expect(result.current.enabled).toBe(false);
-    expect(doubles.catalog).toHaveBeenLastCalledWith([workspace], false);
-    act(() => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)));
-    expect(doubles.catalog.mock.results[0].value.refresh).not.toHaveBeenCalled();
-    expect(doubles.navigate).not.toHaveBeenCalled();
   });
 
-  it("reads and natively refreshes remote history with local indexing disabled and local workspaces pending", async () => {
-    useAppStore.getState().setRuntime({ session_index_enabled: false } as RuntimeInfo);
-    doubles.workspaceQuery.isPending = true;
-    useRemoteStore.setState({
-      snapshot: {
-        local: { id: "self", name: "Desktop", enabled: false, address: null },
-        interfaces: [],
-        discovered: [],
-        pending: [],
-        authorized: [],
-        pairing_code: null,
-        pairing_expires_at: null,
-        connections: [
-          {
-            id: "host",
-            name: "Laptop",
-            address: "192.168.1.5:42987",
-            status: "online",
-            last_seen: 1,
-            error: null,
-          },
-        ],
-      },
-    });
-    useRemoteCatalogStore.setState({
-      catalogs: {
-        host: { workspaces: [workspace], sessions: [session], syncedAt: "2026-09-07T00:00:00Z" },
-      },
-    });
-    doubles.search = { sessionId: remoteRecordId("host", session.id) };
-    const { result } = renderHook(useSessionHub, { wrapper });
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.localEnabled).toBe(false);
-    expect(result.current.workspacesLoading).toBe(false);
-    expect(result.current.selected?.remote?.host_id).toBe("host");
-    expect(result.current.selectedWorkspace?.remote?.host_name).toBe("Laptop");
-    expect(doubles.catalog).toHaveBeenLastCalledWith([workspace], false);
-    const request = vi.spyOn(api, "remoteRequest").mockResolvedValue({
-      workspaces: [workspace],
-      sessions: [{ ...session, title: "Updated remotely" }],
-    });
-    const revision = result.current.historyRevision;
-    await act(async () => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)));
-    expect(request).toHaveBeenCalledExactlyOnceWith({ operation: "catalog", id: "host" });
-    expect(doubles.catalog.mock.results[0].value.refresh).not.toHaveBeenCalled();
-    expect(result.current.selected?.title).toBe("Updated remotely");
-    expect(result.current.historyRevision).toBe(revision + 1);
-    act(() => useSessionViewStore.getState().setHost("local"));
-    expect(result.current.selected).toBeUndefined();
-    act(() =>
-      useSessionViewStore.getState().revealSession({
-        ...session,
-        id: remoteRecordId("host", session.id),
-        workspace_id: remoteRecordId("host", workspace.id),
-        remote: {
-          host_id: "host",
-          host_name: "Laptop",
-          original_id: session.id,
-          online: true,
-          last_synced_at: "2026-09-07T00:00:00Z",
-        },
+  it("does not restore an indexed alias removed by the controlled catalog", () => {
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "managed-id" }));
+    const navigation = mocks.navigate.mock.calls.at(-1)![0];
+    expect(navigation.search({})).toEqual({ sessionId: "managed-id" });
+  });
+
+  it("keeps the existing indexed directory when the desktop bridge is unavailable", () => {
+    mocks.bridge = false;
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.getByRole("button", { name: "indexed-alias" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "managed-id" })).toBeNull();
+  });
+
+  it("routes a legacy search link to its verified managed identity without duplicating it", () => {
+    mocks.search = { sessionId: "indexed-alias" };
+    mocks.controlled = [{ ...session("managed-id"), indexedSessionIds: ["indexed-alias"] }];
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.getByRole("status").textContent).toBe("managed-id");
+    expect(mocks.navigate).toHaveBeenCalledOnce();
+    const navigation = mocks.navigate.mock.calls[0][0];
+    expect(navigation.replace).toBe(true);
+    expect(navigation.search(mocks.search)).toEqual({ sessionId: "managed-id" });
+    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+  });
+
+  it("waits for scanning before reading the controlled catalog on manual refresh", async () => {
+    let finish!: () => void;
+    mocks.refresh.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
       }),
     );
-    expect(useSessionViewStore.getState().host).toBe("all");
-    expect(result.current.selected?.remote?.host_id).toBe("host");
-  });
-
-  it("retains a deep link on partial read failure, then selects it when retry recovers", () => {
-    const catalog = { ...catalogState(), errors: { [workspace.id]: "Cannot read index" } };
-    doubles.catalog.mockReturnValue(catalog);
-    const { result, rerender } = renderHook(() => useSessionHub(), { wrapper });
-    expect(result.current.selected).toBeUndefined();
-    expect(doubles.navigate).not.toHaveBeenCalled();
-
-    // A manual retry clears the old errors before the fresh records arrive.
-    doubles.catalog.mockReturnValue({ ...catalogState(), refreshing: true });
-    rerender();
-    expect(result.current.selected).toBeUndefined();
-    expect(doubles.navigate).not.toHaveBeenCalled();
-
-    doubles.catalog.mockReturnValue({ ...catalogState(), sessions: [session] });
-    rerender();
-    expect(result.current.selected).toEqual(session);
-    expect(result.current.selectedWorkspace).toEqual(workspace);
-    expect(doubles.navigate).not.toHaveBeenCalled();
-  });
-
-  it("clears a known session excluded by filters even if another workspace failed", () => {
-    doubles.catalog.mockReturnValue({
-      ...catalogState(),
-      sessions: [session],
-      refreshing: true,
-      errors: { another: "Cannot read index" },
-    });
-    useSessionViewStore.getState().setAgent("claude-code");
-    const { result } = renderHook(() => useSessionHub(), { wrapper });
-    expect(result.current.filtered).toEqual([]);
-    expect(doubles.navigate).toHaveBeenCalledOnce();
-    expect(clearedSearch()).toEqual({ sessionId: undefined, unrelated: "retained" });
-  });
-
-  it("reveals an auxiliary deep link once, then honors a user hiding it", () => {
-    const auxiliary = {
-      ...session,
-      id: "auxiliary-session",
-      origin: "auxiliary" as const,
-      spawned_by_session_id: session.id,
-    };
-    doubles.search = { sessionId: auxiliary.id };
-    doubles.catalog.mockReturnValue({ ...catalogState(), sessions: [auxiliary] });
-    const { result } = renderHook(() => useSessionHub(), { wrapper });
-    expect(result.current.selected).toEqual(auxiliary);
-    expect(useSessionViewStore.getState().showAuxiliary).toBe(true);
-    act(() => useSessionViewStore.getState().setShowAuxiliary(false));
-    expect(result.current.selected).toBeUndefined();
-    expect(doubles.navigate).toHaveBeenCalledOnce();
-  });
-
-  it("clears a truly missing session only after the complete initial load", () => {
-    doubles.catalog.mockReturnValue({ ...catalogState(), ready: false, refreshing: true });
-    const { rerender } = renderHook(() => useSessionHub(), { wrapper });
-    expect(doubles.navigate).not.toHaveBeenCalled();
-    doubles.catalog.mockReturnValue(catalogState());
-    rerender();
-    expect(doubles.navigate).toHaveBeenCalledOnce();
-    expect(clearedSearch()).toEqual({ sessionId: undefined, unrelated: "retained" });
-  });
-
-  it("does not clear the selected URL while indexing is disabled", () => {
-    useAppStore.getState().setRuntime({ session_index_enabled: false } as RuntimeInfo);
-    const { result } = renderHook(() => useSessionHub(), { wrapper });
-    expect(doubles.catalog).toHaveBeenLastCalledWith([workspace], false);
-    expect(result.current.enabled).toBe(false);
-    expect(result.current.selected).toBeUndefined();
-    expect(doubles.navigate).not.toHaveBeenCalled();
-  });
-
-  it("does not enable indexing or clear the selected URL before runtime initialization", () => {
-    useAppStore.getState().setRuntime(undefined);
-    const { result } = renderHook(() => useSessionHub(), { wrapper });
-    expect(doubles.catalog).toHaveBeenLastCalledWith([workspace], false);
-    expect(result.current.runtimeReady).toBe(false);
-    expect(doubles.navigate).not.toHaveBeenCalled();
-  });
-
-  it("retains the selected URL while workspace loading fails or is still pending", () => {
-    doubles.workspaceQuery.isPending = true;
-    const { rerender } = renderHook(() => useSessionHub(), { wrapper });
-    expect(doubles.navigate).not.toHaveBeenCalled();
-    doubles.workspaceQuery.isPending = false;
-    doubles.workspaceQuery.error = new Error("Workspace list unavailable");
-    rerender();
-    expect(doubles.navigate).not.toHaveBeenCalled();
-  });
-
-  it("increments history revision once after each completed refresh, not on unrelated renders", () => {
-    doubles.search = {};
-    const catalog = catalogState();
-    doubles.catalog.mockReturnValue(catalog);
-    const { result, rerender } = renderHook(() => useSessionHub(), { wrapper });
-    expect(result.current.historyRevision).toBe(0);
-    doubles.catalog.mockReturnValue({ ...catalog, refreshing: true });
-    rerender();
-    expect(result.current.historyRevision).toBe(0);
-    doubles.catalog.mockReturnValue(catalog);
-    rerender();
-    expect(result.current.historyRevision).toBe(1);
-    rerender();
-    expect(result.current.historyRevision).toBe(1);
-    doubles.catalog.mockReturnValue({ ...catalog, refreshing: true });
-    rerender();
-    doubles.catalog.mockReturnValue(catalog);
-    rerender();
-    expect(result.current.historyRevision).toBe(2);
-  });
-
-  it("does not increment history revision when disabling indexing interrupts a refresh", () => {
-    doubles.search = {};
-    doubles.catalog.mockReturnValue({ ...catalogState(), refreshing: true });
-    const { result, rerender } = renderHook(() => useSessionHub(), { wrapper });
-    act(() => {
-      useAppStore.getState().setRuntime({ session_index_enabled: false } as RuntimeInfo);
-      doubles.catalog.mockReturnValue(catalogState());
-      rerender();
-    });
-    expect(result.current.historyRevision).toBe(0);
-  });
-
-  it("delegates native refresh events to the current catalog callback and cleans up on unmount", async () => {
-    doubles.search = {};
-    const first = catalogState();
-    doubles.catalog.mockReturnValue(first);
-    const { rerender, unmount } = renderHook(() => useSessionHub(), { wrapper });
-    await act(async () => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)));
-    expect(first.refresh).toHaveBeenCalledOnce();
-
-    const replacement = catalogState();
-    doubles.catalog.mockReturnValue(replacement);
-    rerender();
-    await act(async () => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)));
-    expect(first.refresh).toHaveBeenCalledOnce();
-    expect(replacement.refresh).toHaveBeenCalledOnce();
-    unmount();
-    await act(async () => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)));
-    expect(replacement.refresh).toHaveBeenCalledOnce();
-  });
-
-  it("preserves unrelated search parameters for selection and overview navigation", () => {
-    doubles.search = {};
-    const { result } = renderHook(() => useSessionHub(), { wrapper });
-    act(() => result.current.select(session.id));
-    const selectedNavigation = doubles.navigate.mock.calls[0][0] as {
-      search: (previous: Record<string, unknown>) => Record<string, unknown>;
-    };
-    expect(selectedNavigation.search({ unrelated: "retained" })).toEqual({
-      unrelated: "retained",
-      sessionId: session.id,
-    });
-    act(() => result.current.select(undefined, true));
-    const overviewNavigation = doubles.navigate.mock.calls[1][0] as {
-      replace: boolean;
-      search: (previous: Record<string, unknown>) => Record<string, unknown>;
-    };
-    expect(overviewNavigation.replace).toBe(true);
-    expect(overviewNavigation.search({ sessionId: session.id })).toEqual({ sessionId: undefined });
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(mocks.refreshControlled).not.toHaveBeenCalled();
+    await act(async () => finish());
+    await waitFor(() => expect(mocks.refreshControlled).toHaveBeenCalledOnce());
   });
 });

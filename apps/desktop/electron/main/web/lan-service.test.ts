@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { ConversationHub } from "../conversation-hub";
 import { approveLegacyBrowser } from "./legacy-pairing-fixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -22,6 +23,7 @@ describe("hosted LAN transport", () => {
     headers: Record<string, string> = {},
     method = "GET",
     body?: unknown,
+    legacy = false,
   ) {
     return new Promise<{
       status: number;
@@ -38,7 +40,13 @@ describe("hosted LAN transport", () => {
             Host: `192.168.20.10:${port}`,
             Origin: HOSTED_ORIGIN,
             ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
-            ...(body ? { "Content-Type": "application/json", "X-CSRF-Token": csrf } : {}),
+            ...(body
+              ? {
+                  "Content-Type": "application/json",
+                  "X-CSRF-Token": csrf,
+                  ...(!legacy ? { "X-AgentKib-Protocol": "2" } : {}),
+                }
+              : {}),
             ...headers,
           },
         },
@@ -65,9 +73,9 @@ describe("hosted LAN transport", () => {
     bootId = result.data.bootId;
     return result;
   }
-  async function pair() {
+  async function pair(legacy = false) {
     const code = (await service.request({ operation: "generate-code" })).code!.value;
-    const response = await http("/pair", {}, "POST", { code, name: "LAN fixture" });
+    const response = await http("/pair", {}, "POST", { code, name: "LAN fixture" }, legacy);
     expect(response.status).toBe(200);
     await service.request({
       operation: "approve",
@@ -105,6 +113,31 @@ describe("hosted LAN transport", () => {
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: runtime,
+      receiptRequest: async ({ requestId }) => ({ found: false, requestId }),
+      conversationHub: new ConversationHub(async () => ({
+        subscriptionId: "lan-fixture",
+        events: [
+          {
+            protocolVersion: 2,
+            subscriptionId: "lan-fixture",
+            sessionId: "session",
+            runtimeBootId: "runtime",
+            epoch: "fixture",
+            seq: 0,
+            cursor: "fixture:0",
+            type: "snapshot",
+            payload: {
+              live: {
+                sessionId: "session",
+                status: "idle",
+                revision: 0,
+                sendEnabled: false,
+                approvals: [],
+              },
+            },
+          },
+        ],
+      })),
       addresses: () => addresses,
       sharedControl: shared,
     });
@@ -145,16 +178,52 @@ describe("hosted LAN transport", () => {
     ).toBeUndefined();
     expect((await http("/info")).data).toEqual({
       protocolVersion: 1,
+      conversationProtocolVersion: 2,
       transport: "lan",
       capabilities: { read: true, send: false, approve: false },
     });
+  });
+  it("keeps the legacy hosted handshake, pairing and reads without accepting old controls", async () => {
+    // This is the released client's pre-authentication compatibility gate.
+    const { data: info } = await http("/info");
+    const compatible =
+      info.protocolVersion === 1 &&
+      info.transport === "lan" &&
+      info.capabilities?.read === true &&
+      typeof info.capabilities.send === "boolean" &&
+      typeof info.capabilities.approve === "boolean";
+    if (!compatible) throw new Error("incompatible_protocol");
+    await bootstrap();
+    const deviceId = await pair(true);
+    expect((await http("/events?sessionId=session")).status).toBe(200);
+    const receipt = "/requests/a169d42b-c32a-45e0-83b6-c2460c111bed";
+    expect((await http(receipt)).data).toMatchObject({ found: false });
+
+    runtime.mockClear();
+    const response = await http(
+      "/send",
+      {},
+      "POST",
+      { sessionId: "session", text: "hello", requestId: "legacy", bootId, expectedRevision: 0 },
+      true,
+    );
+    expect(response.status).toBe(409);
+    expect(response.data).toMatchObject({
+      error: "incompatible_protocol",
+      controlOutcome: "not-dispatched",
+    });
+    expect(runtime).not.toHaveBeenCalled();
+    await service.request({ operation: "revoke", id: deviceId });
+    expect((await http("/events?sessionId=session")).status).toBe(401);
+    expect((await http(receipt)).status).toBe(401);
   });
   it("only preflights whitelisted routes, methods and headers", async () => {
     const response = await http(
       "/send",
       {
         "Access-Control-Request-Method": "POST",
-        "Access-Control-Request-Headers": "authorization,content-type,x-csrf-token",
+        "Access-Control-Request-Headers":
+          "authorization,content-type,x-csrf-token,x-agentkib-protocol,last-event-id",
       },
       "OPTIONS",
     );
@@ -292,7 +361,7 @@ describe("hosted LAN transport", () => {
         {
           hostname: "127.0.0.1",
           port,
-          path: "/api/web/v1/stream?sessionId=session",
+          path: "/api/web/v1/stream?sessionId=session&protocolVersion=2",
           headers: {
             Host: `192.168.20.10:${port}`,
             Origin: HOSTED_ORIGIN,
@@ -316,7 +385,7 @@ describe("hosted LAN transport", () => {
       req.on("error", reject);
       req.end();
     });
-    expect(stream).toContain("event: snapshot");
+    expect(stream).toContain("event: session-event");
     expect(stream).toContain("event: unavailable");
     expect(stream).not.toContain("event: access-ended");
     const access = await http("/access");
@@ -420,7 +489,13 @@ describe("hosted LAN transport", () => {
           headers: {
             Cookie: localCookie,
             Origin: `http://127.0.0.1:${localPort}`,
-            ...(body ? { "Content-Type": "application/json", "X-CSRF-Token": localCsrf } : {}),
+            ...(body
+              ? {
+                  "Content-Type": "application/json",
+                  "X-CSRF-Token": localCsrf,
+                  "X-AgentKib-Protocol": "2",
+                }
+              : {}),
           },
           body: body ? JSON.stringify(body) : undefined,
         });

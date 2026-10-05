@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexCapabilities, UploadedAttachment } from "@agentkib/web-client";
 import { CodexTools } from "./codex-tools";
@@ -6,6 +6,7 @@ import { CodexComposer } from "./codex-composer";
 import { NativeDecisions } from "@/features/interactions/native-decisions";
 import { useSession } from "./session-context";
 import { dictionaries } from "@/i18n";
+import { publishSessionInvalidation } from "./session-events";
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("./session-context", () => ({ useSession: vi.fn() }));
 const sessionMock = vi.mocked(useSession);
@@ -21,7 +22,11 @@ beforeEach(() => {
   const request = vi.fn().mockResolvedValue({});
   state = {
     selected: "s",
-    access: { status: "approved", device: { attachments: true, advancedControl: true } },
+    access: {
+      status: "approved",
+      protocolVersion: 2,
+      device: { attachments: true, advancedControl: true },
+    },
     live: { status: "idle" },
     client: {
       uploadAttachment: vi.fn().mockResolvedValue(uploaded),
@@ -61,6 +66,27 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("Codex composer", () => {
+  it("refreshes settings and goals from native invalidation without scanning resources", async () => {
+    state.access!.device!.accessMode = "full";
+    vi.mocked(state.client.request).mockResolvedValue({
+      sessionId: "s",
+      available: false,
+      revision: 1,
+      resources: [],
+      current: {},
+      defaults: {},
+      options: {},
+      writable: {},
+    });
+    render(<CodexComposer />);
+    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledOnce());
+    act(() => {
+      publishSessionInvalidation(state.client, "s", ["settings", "goal"]);
+    });
+    await waitFor(() => expect(state.client.codexSessionSettings).toHaveBeenCalledTimes(2));
+    expect(state.client.codexGoals).toHaveBeenCalledTimes(2);
+    expect(state.client.codexContextOptions).toHaveBeenCalledOnce();
+  });
   it("stages an attachment and sends only opaque IDs, allowing an attachment-only turn", async () => {
     render(<CodexComposer />);
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
@@ -464,4 +490,163 @@ it("keeps queued attachment messages read-only while allowing deletion", async (
   expect(screen.getByRole("button", { name: "修改" })).toBeDisabled();
   expect(screen.getByText("含附件的待发消息暂不支持编辑正文，可删除后重新添加。")).toBeVisible();
   expect(screen.getByRole("button", { name: "移除" })).toBeEnabled();
+});
+
+it("drains a queue invalidation received while an older queue read is pending", async () => {
+  let finish!: (value: { sessionId: string; data: { id: string; text: string }[] }) => void;
+  const codexQueue = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue({ sessionId: "s", data: [{ id: "new", text: "Current queue" }] });
+  state = {
+    ...state,
+    current: {
+      id: "s",
+      agent: "codex",
+      title: "Codex",
+      workspace_id: "w",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    },
+    access: { ...state.access!, experimentalEnabled: true },
+    client: Object.assign(state.client, { codexQueue }),
+    refresh: vi.fn(),
+  };
+  render(<CodexTools open />);
+  expect(codexQueue).toHaveBeenCalledOnce();
+  await act(async () => {
+    publishSessionInvalidation(state.client, "s", ["queue"]);
+    finish({ sessionId: "s", data: [{ id: "old", text: "Outdated queue" }] });
+  });
+  expect(await screen.findByText("Current queue")).toBeVisible();
+  expect(screen.queryByText("Outdated queue")).not.toBeInTheDocument();
+  expect(codexQueue).toHaveBeenCalledTimes(2);
+});
+
+it.each(["queue-first", "title-first"])(
+  "retains the manageable queue when another client renames the session (%s)",
+  async (order) => {
+    const queue = { sessionId: "s", data: [{ id: "queued", text: "Pending message" }] };
+    let finish!: (value: typeof queue) => void;
+    const codexQueue = vi
+      .fn()
+      .mockResolvedValueOnce(queue)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(queue);
+    state = {
+      ...state,
+      current: {
+        id: "s",
+        agent: "codex",
+        title: "Original conversation",
+        workspace_id: "w",
+        archived: false,
+        sidechain: false,
+        availability: "readable",
+      },
+      access: { ...state.access!, experimentalEnabled: true },
+      capabilities: {
+        sessionId: "s",
+        executionMode: "codex-managed",
+        status: "idle",
+        features: { "queue-update": { available: true }, "queue-delete": { available: true } },
+      },
+      client: Object.assign(state.client, { codexQueue }),
+      refresh: vi.fn(),
+    };
+    const view = render(<CodexTools open />);
+    await screen.findByText("Pending message");
+    // The remote rename invalidates both reads, which can finish in either order.
+    act(() => publishSessionInvalidation(state.client, "s", ["queue", "catalog"]));
+    const rename = () => {
+      state = { ...state, current: { ...state.current!, title: "Renamed conversation" } };
+      view.rerender(<CodexTools open />);
+    };
+    if (order === "title-first") rename();
+    await act(async () =>
+      finish({ ...queue, data: [{ id: "queued", text: "Updated pending message" }] }),
+    );
+    if (order === "queue-first") rename();
+
+    expect(screen.getByDisplayValue("Renamed conversation")).toBeVisible();
+    expect(screen.getByText("Updated pending message")).toBeVisible();
+    expect(screen.getByRole("button", { name: "修改" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "移除" })).toBeEnabled();
+    expect(codexQueue).toHaveBeenCalledTimes(2);
+    expect(state.client.request).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
+    await waitFor(() =>
+      expect(state.codexAction).toHaveBeenCalledExactlyOnceWith("queue-delete", {
+        queuedSubmissionId: "queued",
+      }),
+    );
+  },
+);
+
+it("clears the previous queue on session change and ignores its pending response", async () => {
+  const oldQueue = { sessionId: "s", data: [{ id: "old", text: "Previous session message" }] };
+  let finishOld!: (value: typeof oldQueue) => void;
+  let finishNew!: (value: typeof oldQueue) => void;
+  const codexQueue = vi
+    .fn()
+    .mockResolvedValueOnce(oldQueue)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishNew = resolve;
+        }),
+    );
+  state = {
+    ...state,
+    current: {
+      id: "s",
+      agent: "codex",
+      title: "Original conversation",
+      workspace_id: "w",
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+    },
+    access: { ...state.access!, experimentalEnabled: true },
+    client: Object.assign(state.client, { codexQueue }),
+    refresh: vi.fn(),
+  };
+  const view = render(<CodexTools open />);
+  await screen.findByText("Previous session message");
+  act(() => publishSessionInvalidation(state.client, "s", ["queue"]));
+  state = {
+    ...state,
+    selected: "next",
+    current: { ...state.current!, id: "next" },
+  };
+  view.rerender(<CodexTools open />);
+  expect(screen.queryByText("Previous session message")).not.toBeInTheDocument();
+  expect(codexQueue).toHaveBeenLastCalledWith("next", expect.any(AbortSignal));
+
+  await act(async () => finishOld(oldQueue));
+  expect(screen.queryByText("Previous session message")).not.toBeInTheDocument();
+  await act(async () =>
+    finishNew({ sessionId: "next", data: [{ id: "new", text: "New session message" }] }),
+  );
+  expect(screen.getByText("New session message")).toBeVisible();
+  expect(screen.queryByText("Previous session message")).not.toBeInTheDocument();
+  act(() => publishSessionInvalidation(state.client, "s", ["queue"]));
+  expect(codexQueue).toHaveBeenCalledTimes(3);
 });

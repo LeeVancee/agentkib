@@ -1,8 +1,8 @@
 import { Languages } from "lucide-react";
-import { NativeSelect } from "@/components/ui/native-select";
-import { Dialog } from "@/components/dialog";
-import { useSession } from "@/features/sessions/session-context";
-import type { Locale } from "@/i18n";
+import { NativeSelect } from "../../components/ui/native-select";
+import { Dialog } from "../../components/dialog";
+import { useSession } from "../sessions/session-context";
+import type { Locale } from "../../i18n";
 export function PreferencesDialog() {
   const { t, locale, setLocale, theme, setTheme, accent, setAccent, setModal } = useSession();
   return (

@@ -131,6 +131,8 @@
   "sessions.clearAgentFilter": "清除 Agent 篩選",
   "sessions.clearRecordFilter": "清除記錄篩選",
   "sessions.nav": "會話",
+  "sessions.newConversation": "新增對話",
+  "sessions.conversationCatalogError": "會話目錄更新失敗。",
   "sessions.more": "更多",
   "sessions.remote": "遠端連線",
   "sessions.remoteUnavailable": "尚未開放",

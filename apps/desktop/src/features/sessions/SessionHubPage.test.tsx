@@ -22,6 +22,17 @@ const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
 vi.mock("@/core/api", () => ({ api: { sessionEvents: vi.fn(), setSessionIndexEnabled: vi.fn() } }));
 vi.mock("./SessionHubContext", () => ({ useSessionHub: vi.fn() }));
+vi.mock("./DesktopConversationPane", () => ({
+  DesktopConversationPane: ({ sessionId, create }: { sessionId?: string; create?: boolean }) => (
+    <div
+      data-testid="desktop-conversation"
+      data-session-id={sessionId}
+      data-create={String(create)}
+    >
+      Interactive conversation
+    </div>
+  ),
+}));
 vi.mock("@/features/remote/remote-catalog-store", () => ({ readRemoteHistory: vi.fn() }));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: ({ agent }: { agent: string }) => <span aria-hidden="true">{agent} icon</span>,
@@ -68,10 +79,12 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     refreshing: false,
     ready: true,
     historyRevision: 0,
+    conversationRefreshRevision: 0,
     runtimeReady: true,
     enabled: true,
     workspacesLoading: false,
     workspacesError: "",
+    catalogError: "",
     select: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     retryWorkspaces: vi.fn(),
@@ -95,6 +108,7 @@ describe("SessionHubPage", () => {
     vi.clearAllMocks();
     useAppStore.getState().reset();
     useSessionViewStore.getState().resetFilters();
+    useSessionViewStore.getState().setCreatingConversation(false);
     hub = defaultHub();
     vi.mocked(useSessionHub).mockImplementation(() => hub);
     vi.mocked(api.sessionEvents)
@@ -113,7 +127,56 @@ describe("SessionHubPage", () => {
       });
     vi.mocked(api.setSessionIndexEnabled).mockReset();
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    delete window.desktopConversation;
+  });
+
+  it("opens a local supported session in place without duplicate history reads", () => {
+    Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
+    hub = { ...hub, selected: readable, selectedWorkspace: workspace };
+    render(sessionSurface());
+    expect(screen.getByTestId("desktop-conversation")).toHaveAttribute(
+      "data-session-id",
+      readable.id,
+    );
+    expect(api.sessionEvents).not.toHaveBeenCalled();
+    expect(screen.queryByText(tr("sessions.historyReadonly"))).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue in workspace" })).toBeTruthy();
+  });
+
+  it("opens task creation from the existing desktop toolbar", () => {
+    Object.defineProperty(window, "desktopConversation", { configurable: true, value: {} });
+    render(sessionSurface());
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    expect(screen.getByTestId("desktop-conversation")).toHaveAttribute("data-create", "true");
+    expect(hub.select).toHaveBeenCalledWith();
+  });
+
+  it("continues a managed session through its verified history identity", () => {
+    hub = {
+      ...hub,
+      selected: { ...readable, id: "managed-session", indexedSessionIds: ["indexed-session"] },
+      selectedWorkspace: workspace,
+    };
+    render(<SessionWindowToolbar />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue in workspace" }));
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/workspace/$workspaceId/sessions",
+      params: { workspaceId: workspace.id },
+      search: { sessionId: "indexed-session" },
+    });
+  });
+
+  it("does not route an unindexed managed session into the history-only workspace", () => {
+    hub = {
+      ...hub,
+      selected: { ...readable, id: "managed-session", indexedSessionIds: [] },
+      selectedWorkspace: workspace,
+    };
+    render(<SessionWindowToolbar />);
+    expect(screen.queryByRole("button", { name: "Continue in workspace" })).toBeNull();
+  });
 
   it("localizes remote catalog failures without exposing RPC text by default", () => {
     hub.remoteHosts = [
@@ -289,6 +352,15 @@ describe("SessionHubPage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Workspaces unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(hub.retryWorkspaces).toHaveBeenCalledOnce();
+  });
+
+  it("shows a catalog failure with retry instead of claiming there are no sessions", () => {
+    hub = { ...hub, sessions: [], filtered: [], catalogError: "Conversation catalog unavailable" };
+    render(sessionSurface());
+    expect(screen.getByRole("alert")).toHaveTextContent("Conversation catalog unavailable");
+    expect(screen.queryByText(tr("sessions.noSessions"))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(hub.refresh).toHaveBeenCalledOnce();
   });
 
   it("does not claim indexing is enabled when saving fails and blocks repeated clicks", async () => {

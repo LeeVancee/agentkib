@@ -10,6 +10,7 @@ let session: {
   current: { workspace_id: string };
   selected: string;
   locale: string;
+  embedded?: boolean;
 };
 vi.mock("./session-context", () => ({ useSession: () => session }));
 const file = (id: string, previewKind: ArtifactEntry["previewKind"], name = id): ArtifactEntry => ({
@@ -376,23 +377,31 @@ describe("ArtifactBrowser", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(opener).toHaveFocus());
   });
-  it("shows images and obtains an explicit download link only on request", async () => {
-    const view = await show();
-    fireEvent.click(screen.getByRole("button", { name: "photo.png" }));
-    expect(await screen.findByRole("img", { name: "photo.png" })).toHaveAttribute(
-      "src",
-      "https://preview.example/p/first/photo.png",
-    );
-    expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare download" }));
-    expect(await screen.findByRole("link", { name: "Download" })).toHaveAttribute("download");
-    expect(session.client.request).toHaveBeenCalledWith(
-      "artifact-tickets",
-      { workspaceId: "workspace", artifactId: "photo", download: true },
-      expect.any(AbortSignal),
-    );
-    view.unmount();
-  });
+  it.each([false, true])(
+    "obtains an explicit download link only on request (embedded: %s)",
+    async (embedded) => {
+      session.embedded = embedded;
+      const view = await show();
+      fireEvent.click(screen.getByRole("button", { name: "photo.png" }));
+      expect(await screen.findByRole("img", { name: "photo.png" })).toHaveAttribute(
+        "src",
+        "https://preview.example/p/first/photo.png",
+      );
+      expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Prepare download" }));
+      const download = await screen.findByRole("link", { name: "Download" });
+      expect(download).toHaveAttribute("download");
+      expect(download).toHaveAttribute("href", "https://preview.example/p/first/photo.png");
+      if (embedded) expect(download).toHaveAttribute("target", "_blank");
+      else expect(download).not.toHaveAttribute("target");
+      expect(session.client.request).toHaveBeenCalledWith(
+        "artifact-tickets",
+        { workspaceId: "workspace", artifactId: "photo", download: true },
+        expect.any(AbortSignal),
+      );
+      view.unmount();
+    },
+  );
   it("restores focus only after removing inert when resized through sidebar and modal", async () => {
     let wide = false;
     let update!: () => void;

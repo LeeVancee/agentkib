@@ -4,7 +4,9 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, request, ServerResponse } from "node:http";
-import { WebAccessService } from "./service";
+import { WebAccessService, createWebControlState } from "./service";
+import { ConversationHub } from "../conversation-hub";
+import { RUNTIME_METHODS, type SessionStreamEvent } from "../../generated/runtime-protocol";
 import { approveLegacyBrowser, seedLegacyPending } from "./legacy-pairing-fixture";
 
 describe("WebAccessService loopback security boundary", () => {
@@ -15,6 +17,24 @@ describe("WebAccessService loopback security boundary", () => {
   let cookie: string;
   let csrf: string;
   let bootId: string;
+  let hub: ConversationHub;
+  let control: ReturnType<typeof createWebControlState>;
+  let nextSubscription = 0;
+  const subscriptions = new Set<string>();
+  function pushEvent(type: string, payload: unknown, seq = 1) {
+    for (const subscriptionId of subscriptions)
+      hub.notification("sessions.event", {
+        protocolVersion: 2,
+        subscriptionId,
+        sessionId: "s",
+        runtimeBootId: "runtime-one",
+        epoch: "epoch-one",
+        seq,
+        cursor: `epoch-one:${seq}`,
+        type,
+        payload,
+      });
+  }
   const runtime = vi.fn(async (_params: unknown): Promise<unknown> => ({
     runtimeBootId: "runtime-one",
     revision: 4,
@@ -45,6 +65,7 @@ describe("WebAccessService loopback security boundary", () => {
           path,
           method: options.method || "GET",
           headers: {
+            "X-AgentKib-Protocol": "2",
             ...(cookie ? { Cookie: cookie } : {}),
             ...(options.body !== undefined
               ? { "Content-Type": "application/json", Origin: origin, "X-CSRF-Token": csrf }
@@ -80,13 +101,13 @@ describe("WebAccessService loopback security boundary", () => {
   async function pair(send = false, approve = false) {
     return approveLegacyBrowser(service, cookie, { send, approve });
   }
-  function openStream(streamCookie = cookie, sessionId = "s") {
+  function openStream(streamCookie = cookie, sessionId = "s", afterCursor?: string) {
     const chunks: string[] = [];
     const req = request(
       {
         hostname: "127.0.0.1",
         port,
-        path: `/api/web/v1/stream?sessionId=${sessionId}`,
+        path: `/api/web/v1/stream?protocolVersion=2${sessionId ? `&sessionId=${sessionId}` : ""}${afterCursor ? `&afterCursor=${encodeURIComponent(afterCursor)}` : ""}`,
         headers: { Cookie: streamCookie },
       },
       (res) => {
@@ -96,6 +117,13 @@ describe("WebAccessService loopback security boundary", () => {
     req.on("error", () => {});
     req.end();
     return { chunks, close: () => req.destroy() };
+  }
+  function streamEvents(chunks: string[]): SessionStreamEvent[] {
+    return chunks
+      .join("")
+      .split("\n\n")
+      .filter((frame) => frame.includes("event: session-event\n"))
+      .map((frame) => JSON.parse(frame.split("\ndata: ")[1]));
   }
   beforeEach(async () => {
     onPairingRequested.mockClear();
@@ -117,7 +145,39 @@ describe("WebAccessService loopback security boundary", () => {
     port = (listener.address() as { port: number }).port;
     await new Promise<void>((resolve) => listener.close(() => resolve()));
     origin = `http://127.0.0.1:${port}`;
+    subscriptions.clear();
+    nextSubscription = 0;
+    hub = new ConversationHub(async (method, params) => {
+      const input = params as { sessionId: string; subscriptionId: string };
+      if (method === RUNTIME_METHODS.sessionsUnsubscribe) {
+        subscriptions.delete(input.subscriptionId);
+        return { ok: true };
+      }
+      const subscriptionId = `subscription-${++nextSubscription}`;
+      const live = await runtime({ operation: "live", sessionId: input.sessionId });
+      subscriptions.add(subscriptionId);
+      return {
+        subscriptionId,
+        cursor: "epoch-one:0",
+        events: [
+          {
+            protocolVersion: 2,
+            subscriptionId,
+            sessionId: input.sessionId,
+            runtimeBootId: "runtime-one",
+            epoch: "epoch-one",
+            seq: 0,
+            cursor: "epoch-one:0",
+            type: "snapshot",
+            payload: { live },
+          },
+        ],
+      };
+    });
+    control = createWebControlState();
     service = new WebAccessService({
+      conversationHub: hub,
+      sharedControl: control,
       dataDir: dir,
       staticDir: dir,
       runtimeRequest: runtime,
@@ -336,6 +396,16 @@ describe("WebAccessService loopback security boundary", () => {
       expect((await pending).status).toBe(401);
     },
   );
+  it("allows local image attachment previews without opening blob scripts or frames", async () => {
+    const response = await http("/");
+    expect(response.status).toBe(200);
+    const csp = String(response.headers["content-security-policy"]);
+    const directives = csp.split(";").map((entry) => entry.trim());
+    expect(directives.find((entry) => entry.startsWith("img-src "))?.split(" ")).toContain("blob:");
+    expect(directives.find((entry) => entry.startsWith("script-src "))).toBe("script-src 'self'");
+    expect(directives.find((entry) => entry.startsWith("frame-src "))).not.toContain("blob:");
+  });
+
   it("requires pairing, same origin and CSRF; exposes no arbitrary runtime methods", async () => {
     expect((await http("/api/web/v1/catalog")).status).toBe(401);
     const access = await bootstrap();
@@ -832,7 +902,7 @@ describe("WebAccessService loopback security boundary", () => {
       ).toMatchObject({ controlOutcome: "unknown" });
     },
   );
-  it("keeps a real large snapshot connection open after Node drains its buffer", async () => {
+  it("streams native deltas without periodic live reads, including a large baseline", async () => {
     await bootstrap();
     await pair();
     runtime.mockResolvedValue({
@@ -842,51 +912,216 @@ describe("WebAccessService loopback security boundary", () => {
     });
     const stream = openStream();
     try {
-      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("\n\n"));
-      await vi.waitFor(() => expect(runtime.mock.calls.length).toBeGreaterThanOrEqual(2), {
-        timeout: 3000,
-      });
-      expect(stream.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-event"));
+      pushEvent("text-delta", { text: "实时", offset: 1048576 });
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("实时"));
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      expect(runtime).toHaveBeenCalledTimes(1);
+      expect(stream.chunks.join("").match(/"type":"snapshot"/g)).toHaveLength(1);
+      expect(stream.chunks.join("")).toContain("id: epoch-one:1");
     } finally {
       stream.close();
     }
   });
 
-  it("pauses SSE polling until drain without closing or resending the buffered snapshot", async () => {
-    await bootstrap();
-    await pair();
-    let response: ServerResponse | undefined;
-    const original = ServerResponse.prototype.write;
-    const write = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
-      this: ServerResponse,
-      ...args: Parameters<typeof original>
-    ) {
-      if (String(args[0]).startsWith("event: snapshot")) {
-        response = this;
-        return false;
+  it.each([false, true])(
+    "preserves managed workspace authorization across metadata-free state patches: allowed=%s",
+    async (allowed) => {
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: allowed ? ["workspace"] : [],
+      });
+      await bootstrap();
+      await pair(true, true);
+      const controls = {
+        sendEnabled: true,
+        stopEnabled: true,
+        approvals: [{ requestId: "approval", supported: true, availableDecisions: ["accept"] }],
+        questions: [{ requestId: "question", supported: true, questions: [] }],
+      };
+      const live = {
+        runtimeBootId: "runtime-one",
+        executionMode: "codex-managed",
+        workspaceId: "workspace",
+        revision: 4,
+        ...controls,
+      };
+      runtime.mockResolvedValue(live);
+      const expectedControls = {
+        ...controls,
+        sendEnabled: allowed,
+        stopEnabled: allowed,
+        approvals: [
+          {
+            ...controls.approvals[0],
+            supported: allowed,
+            availableDecisions: allowed ? ["accept"] : [],
+          },
+        ],
+        questions: [{ ...controls.questions[0], supported: allowed }],
+      };
+      const stream = openStream();
+      try {
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+        expect(streamEvents(stream.chunks)[0].payload.live).toEqual({
+          ...live,
+          ...expectedControls,
+        });
+        expect(runtime).toHaveBeenCalledTimes(1);
+        pushEvent("state", { revision: 5, ...controls });
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(2));
+        expect(streamEvents(stream.chunks)[1].payload).toEqual({
+          revision: 5,
+          ...expectedControls,
+        });
+        pushEvent("state", { revision: 6 }, 2);
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(3));
+        expect(streamEvents(stream.chunks)[2].payload).toEqual({ revision: 6 });
+        expect(runtime).toHaveBeenCalledTimes(1);
+      } finally {
+        stream.close();
       }
-      return original.apply(this, args);
+    },
+  );
+
+  it("keeps an unverified provider disabled in snapshots and metadata-free state patches", async () => {
+    await service.shutdown();
+    service = new WebAccessService({
+      conversationHub: hub,
+      sharedControl: control,
+      dataDir: dir,
+      staticDir: dir,
+      runtimeRequest: runtime,
+      verifiedCodex: true,
     });
+    await service.initialize();
+    await bootstrap();
+    await pair(true, true);
+    const controls = {
+      sendEnabled: true,
+      stopEnabled: true,
+      approvals: [{ requestId: "approval", supported: true, availableDecisions: ["accept"] }],
+      questions: [{ requestId: "question", supported: true, questions: [] }],
+    };
+    const live = {
+      runtimeBootId: "runtime-one",
+      executionMode: "managed-resume",
+      revision: 4,
+      ...controls,
+    };
+    const disabled = {
+      ...controls,
+      sendEnabled: false,
+      stopEnabled: false,
+      approvals: [{ ...controls.approvals[0], supported: false, availableDecisions: [] }],
+      questions: [{ ...controls.questions[0], supported: false }],
+    };
+    runtime.mockResolvedValue(live);
     const stream = openStream();
     try {
-      await vi.waitFor(() => expect(response).toBeDefined());
-      await new Promise((resolve) => setTimeout(resolve, 2100));
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+      expect(streamEvents(stream.chunks)[0].payload.live).toEqual({ ...live, ...disabled });
+      pushEvent("state", { revision: 5, ...controls });
+      await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(2));
+      expect(streamEvents(stream.chunks)[1].payload).toEqual({ revision: 5, ...disabled });
       expect(runtime).toHaveBeenCalledTimes(1);
-      expect(response!.writableEnded).toBe(false);
-      expect(response!.listenerCount("drain")).toBe(1);
-      response!.emit("drain");
-      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(2), { timeout: 3000 });
-      expect(
-        write.mock.calls.filter(([message]) => String(message).startsWith("event: snapshot")),
-      ).toHaveLength(1);
-      expect(response!.listenerCount("drain")).toBe(0);
     } finally {
       stream.close();
     }
-  }, 10_000);
+  });
+
+  it.each([false, true])(
+    "loads replay authorization metadata once and queues newer events behind replay: partial=%s",
+    async (partial) => {
+      await bootstrap();
+      await pair(true, true);
+      const controls = {
+        sendEnabled: true,
+        stopEnabled: true,
+        approvals: [{ requestId: "approval", supported: true, availableDecisions: ["accept"] }],
+        questions: [{ requestId: "question", supported: true, questions: [] }],
+      };
+      const live = {
+        runtimeBootId: "runtime-one",
+        executionMode: "codex-managed",
+        workspaceId: "not-authorized",
+        revision: 100,
+        streamText: "newer state must not replace replay",
+        ...controls,
+      };
+      let resolveMetadata!: (value: unknown) => void;
+      const metadata = new Promise<unknown>((resolve) => {
+        resolveMetadata = resolve;
+      });
+      // The hub fixture reads its native baseline once before returning our replay.
+      runtime.mockResolvedValueOnce(live).mockImplementationOnce(() => metadata);
+      const subscribe = hub.subscribe.bind(hub);
+      vi.spyOn(hub, "subscribe").mockImplementationOnce(async (...args) => {
+        const result = await subscribe(...args);
+        return {
+          ...result,
+          cursor: `epoch-one:${partial ? 1 : 0}`,
+          events: partial
+            ? [
+                {
+                  ...result.events[0],
+                  type: "state",
+                  seq: 1,
+                  cursor: "epoch-one:1",
+                  payload: { revision: 5, ...controls },
+                },
+              ]
+            : [],
+        };
+      });
+      const stream = openStream(cookie, "s", "epoch-one:0");
+      try {
+        await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(2));
+        expect(runtime).toHaveBeenLastCalledWith({
+          operation: "live",
+          sessionId: "s",
+          experimentalEnabled: true,
+        });
+        const nextSeq = partial ? 2 : 1;
+        pushEvent("state", { revision: 6, ...controls }, nextSeq);
+        expect(streamEvents(stream.chunks)).toEqual([]);
+        expect(stream.chunks.join("")).not.toContain("event: session-ready");
+        resolveMetadata(live);
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+        const events = streamEvents(stream.chunks);
+        expect(events.map((event) => event.seq)).toEqual(partial ? [1, 2] : [1]);
+        expect(events.map((event) => event.payload.revision)).toEqual(partial ? [5, 6] : [6]);
+        for (const event of events) {
+          expect(event.type).toBe("state");
+          expect(event.payload).toEqual({
+            revision: event.payload.revision,
+            sendEnabled: false,
+            stopEnabled: false,
+            approvals: [{ ...controls.approvals[0], supported: false, availableDecisions: [] }],
+            questions: [{ ...controls.questions[0], supported: false }],
+          });
+        }
+        expect(stream.chunks.join("")).toContain(
+          `event: session-ready\ndata: {"cursor":"epoch-one:${nextSeq}"}`,
+        );
+        expect(stream.chunks.join("")).not.toContain(live.streamText);
+        pushEvent("state", { revision: 7 }, nextSeq + 1);
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(events.length + 1));
+        expect(streamEvents(stream.chunks).at(-1)!.payload).toEqual({ revision: 7 });
+        expect(runtime).toHaveBeenCalledTimes(2);
+      } finally {
+        resolveMetadata(live);
+        stream.close();
+      }
+    },
+  );
 
   it.each(["close", "revoke", "timeout"])(
-    "cleans up a backpressured stream on %s",
+    "cleans up a backpressured event stream on %s",
     async (reason) => {
       await bootstrap();
       const id = await pair();
@@ -906,7 +1141,7 @@ describe("WebAccessService loopback security boundary", () => {
         this: ServerResponse,
         ...args: Parameters<typeof original>
       ) {
-        if (String(args[0]).startsWith("event: snapshot")) {
+        if (String(args[0]).startsWith("id: ")) {
           response = this;
           return false;
         }
@@ -919,88 +1154,347 @@ describe("WebAccessService loopback security boundary", () => {
         else if (reason === "revoke") await service.request({ operation: "revoke", id });
         else expireDrain!();
         await vi.waitFor(() => expect(response!.listenerCount("drain")).toBe(0));
-        expect(response!.destroyed || response!.writableEnded).toBe(true);
+        await vi.waitFor(() => expect(response!.destroyed || response!.writableEnded).toBe(true));
+        await vi.waitFor(() => expect(subscriptions.size).toBe(0));
       } finally {
         stream.close();
       }
     },
   );
 
-  it("shares same-scope SSE reads, omits unchanged snapshots and retains heartbeats", async () => {
+  it("queues ordered events until drain without resending an accepted frame", async () => {
     await bootstrap();
     await pair();
-    let finish!: (value: unknown) => void;
-    const snapshot = { runtimeBootId: "r", revision: 7, events: [] };
-    runtime.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-    );
-    runtime.mockResolvedValue(snapshot);
-    const first = openStream();
-    const second = openStream();
+    let response: ServerResponse | undefined;
+    const original = ServerResponse.prototype.write;
+    const frames: string[] = [];
+    const spy = vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof original>
+    ) {
+      if (String(args[0]).startsWith("id: ")) {
+        frames.push(String(args[0]));
+        response = this;
+        return false;
+      }
+      return original.apply(this, args);
+    });
+    const stream = openStream();
     try {
-      await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(1));
-      // Both clients must have entered the stream before releasing the common read.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      pushEvent("text-delta", { text: "one", offset: 0 });
+      expect(frames).toHaveLength(1);
+      response!.emit("drain");
+      await vi.waitFor(() => expect(frames).toHaveLength(2));
+      expect(frames[1]).toContain("epoch-one:1");
       expect(runtime).toHaveBeenCalledTimes(1);
-      finish(snapshot);
-      await vi.waitFor(() => {
-        expect(first.chunks.join("")).toContain("event: snapshot");
-        expect(second.chunks.join("")).toContain("event: snapshot");
-      });
-      await new Promise((resolve) => setTimeout(resolve, 2100));
-      expect(first.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
-      expect(second.chunks.join("").match(/event: snapshot/g)).toHaveLength(1);
-      const now = Date.now();
-      vi.spyOn(Date, "now").mockReturnValue(now + 16_000);
-      await new Promise((resolve) => setTimeout(resolve, 2100));
-      expect(first.chunks.join("")).toContain(": heartbeat");
-      expect(second.chunks.join("")).toContain(": heartbeat");
+      response!.emit("drain");
     } finally {
-      finish?.(snapshot);
-      first.close();
-      second.close();
+      stream.close();
+      spy.mockRestore();
     }
-  }, 10_000);
+  });
 
-  it.each([false, true])(
-    "isolates SSE scopes and independently rechecks revocation (writable peer: %s)",
-    async (writable) => {
-      await bootstrap();
-      const readOnlyId = await pair();
-      const readOnlyCookie = cookie;
-      cookie = "";
-      await bootstrap();
-      await pair(writable);
-      const finishes: Array<(value: unknown) => void> = [];
-      runtime.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            finishes.push(resolve);
-          }),
+  it("marks replay ready at the last event delivered after backpressure", async () => {
+    await bootstrap();
+    await pair();
+    const subscribe = hub.subscribe.bind(hub);
+    vi.spyOn(hub, "subscribe").mockImplementationOnce(async (...args) => {
+      const result = await subscribe(...args);
+      return {
+        ...result,
+        cursor: "epoch-one:1",
+        events: [
+          {
+            ...result.events[0],
+            type: "state",
+            seq: 1,
+            cursor: "epoch-one:1",
+            payload: { revision: 5 },
+          },
+        ],
+      };
+    });
+    const responses: ServerResponse[] = [];
+    const frames: string[] = [];
+    const original = ServerResponse.prototype.write;
+    vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+      this: ServerResponse,
+      ...args: Parameters<typeof original>
+    ) {
+      frames.push(String(args[0]));
+      if (String(args[0]).startsWith("id: epoch-one:1\n")) {
+        responses.push(this);
+        return false;
+      }
+      return original.apply(this, args);
+    });
+    const stream = openStream(cookie, "s", "epoch-one:0");
+    try {
+      await vi.waitFor(() => expect(responses[0]?.listenerCount("drain")).toBe(1));
+      pushEvent("state", { revision: 6 }, 2);
+      responses[0].emit("drain");
+      await vi.waitFor(() =>
+        expect(frames.some((frame) => frame.includes("session-ready"))).toBe(true),
       );
-      const first = openStream(readOnlyCookie);
-      const second = openStream();
+      expect(frames.map((frame) => frame.split("\n")[0])).toEqual([
+        "id: epoch-one:1",
+        "id: epoch-one:2",
+        "event: session-ready",
+      ]);
+      expect(frames[2]).toContain('"cursor":"epoch-one:2"');
+      expect(hub.subscribe).toHaveBeenCalledWith("s", "epoch-one:0", expect.any(Function));
+    } finally {
+      stream.close();
+    }
+  });
+
+  it("wakes global receipt reconciliation without disclosing the changed session", async () => {
+    await bootstrap();
+    await pair();
+    const stream = openStream(cookie, "");
+    try {
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+      const access = await service.localRequest("/access");
+      runtime.mockImplementation(async (input) => {
+        const params = input as { operation: string };
+        if (params.operation === "catalog")
+          return {
+            workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+            sessions: [{ id: "private-session", workspace_id: "workspace", agent: "codex" }],
+          };
+        if (params.operation === "live")
+          return { runtimeBootId: "r", revision: 4, sendEnabled: true, approvals: [] };
+        return { accepted: true };
+      });
+      expect(
+        await service.localRequest("/send", {
+          sessionId: "private-session",
+          text: "hello",
+          requestId: "global-receipt",
+          expectedRevision: 4,
+          bootId: (access.body as { bootId: string }).bootId,
+        }),
+      ).toMatchObject({ status: 200 });
+      await vi.waitFor(() =>
+        expect(stream.chunks.join("")).toContain("event: control-changed\ndata: {}"),
+      );
+      expect(stream.chunks.join("")).not.toContain("private-session");
+    } finally {
+      stream.close();
+    }
+  });
+
+  it.each(["resume", "revoke", "expire"])(
+    "retains global catalog invalidations during backpressure and rechecks access on %s",
+    async (action) => {
+      await bootstrap();
+      const deviceId = await pair();
+      let response: ServerResponse | undefined;
+      const frames: string[] = [];
+      const original = ServerResponse.prototype.write;
+      vi.spyOn(ServerResponse.prototype, "write").mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof original>
+      ) {
+        const frame = String(args[0]);
+        frames.push(frame);
+        const accepted = original.apply(this, args);
+        if (frame.startsWith("event: control-changed")) {
+          response = this;
+          return false;
+        }
+        return accepted;
+      });
+      const stream = openStream(cookie, "");
       try {
-        await vi.waitFor(() => expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1));
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        expect(runtime).toHaveBeenCalledTimes(writable ? 2 : 1);
-        await service.request({ operation: "revoke", id: readOnlyId });
-        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
-        await vi.waitFor(() => {
-          expect(first.chunks.join("")).toContain("event: access-ended");
-          expect(second.chunks.join("")).toContain("event: snapshot");
-        });
-        expect(first.chunks.join("")).not.toContain("event: snapshot");
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+        control.events.emit("changed", "private-session");
+        await vi.waitFor(() => expect(response?.listenerCount("drain")).toBe(1));
+        pushEvent("invalidate", { domains: ["catalog"] }, 1);
+        pushEvent("invalidate", { domains: ["catalog"] }, 2);
+        const catalogFrames = () =>
+          frames.filter((frame) => frame.startsWith("event: catalog-invalidated"));
+        expect(catalogFrames()).toHaveLength(0);
+        if (action === "revoke") await service.request({ operation: "revoke", id: deviceId });
+        else if (action === "expire")
+          vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 24 * 60 * 60 * 1000);
+        response!.emit("drain");
+        if (action === "resume") {
+          await vi.waitFor(() => expect(catalogFrames()).toHaveLength(1));
+          expect(response!.writableEnded).toBe(false);
+          pushEvent("invalidate", { domains: ["catalog"] }, 3);
+          await vi.waitFor(() => expect(catalogFrames()).toHaveLength(2));
+        } else {
+          await vi.waitFor(() => expect(response!.writableEnded).toBe(true));
+          expect(catalogFrames()).toHaveLength(0);
+          await vi.waitFor(() => expect(subscriptions.size).toBe(0));
+        }
+        expect(stream.chunks.join("")).not.toContain("private-session");
       } finally {
-        finishes.forEach((finish) => finish({ revision: 8, events: [] }));
-        first.close();
-        second.close();
+        stream.close();
       }
     },
   );
+
+  it("independently rechecks revocation while subscribers initialize", async () => {
+    await bootstrap();
+    const readOnlyId = await pair();
+    const firstCookie = cookie;
+    cookie = "";
+    await bootstrap();
+    await pair(true);
+    const finishes: Array<(value: unknown) => void> = [];
+    runtime.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishes.push(resolve);
+        }),
+    );
+    const first = openStream(firstCookie);
+    const second = openStream();
+    try {
+      await vi.waitFor(() => expect(finishes).toHaveLength(2));
+      await service.request({ operation: "revoke", id: readOnlyId });
+      finishes.forEach((finish) => finish({ revision: 8, events: [] }));
+      await vi.waitFor(() => expect(second.chunks.join("")).toContain("event: session-event"));
+      expect(first.chunks.join("")).toContain("event: access-ended");
+      expect(first.chunks.join("")).not.toContain("event: session-event");
+    } finally {
+      finishes.forEach((finish) => finish({}));
+      first.close();
+      second.close();
+    }
+  });
+
+  it("refuses old controls before dispatch but retains history access", async () => {
+    await bootstrap();
+    await pair(true);
+    const response = await http("/api/web/v1/send", {
+      method: "POST",
+      headers: { "X-AgentKib-Protocol": "1" },
+      body: { sessionId: "s", text: "hello", requestId: "old", bootId, expectedRevision: 4 },
+    });
+    expect(response.status).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: "incompatible_protocol",
+      controlOutcome: "not-dispatched",
+    });
+    expect(runtime).not.toHaveBeenCalled();
+    expect((await http("/api/web/v1/events?sessionId=s")).status).toBe(200);
+  });
+
+  it("shares desktop commands and native state with Remote without refreshing history", async () => {
+    await bootstrap();
+    await pair(true, true);
+    const live = {
+      sessionId: "s",
+      workspaceId: "workspace",
+      executionMode: "codex-managed",
+      runtimeBootId: "runtime-one",
+      revision: 4,
+      status: "idle",
+      sendEnabled: true,
+      approvals: [],
+      questions: [],
+    };
+    runtime.mockImplementation(async (params) => {
+      const input = params as { operation: string };
+      if (input.operation === "catalog")
+        return {
+          workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+          sessions: [{ id: "s", workspace_id: "workspace", agent: "codex" }],
+        };
+      if (input.operation === "send") {
+        pushEvent("state", { status: "running", revision: 5, sendEnabled: false, turnId: "turn" });
+        return { accepted: true };
+      }
+      return live;
+    });
+    const localEvents: unknown[] = [];
+    const local = await service.localSubscribe("s", undefined, (event) => localEvents.push(event));
+    const remote = openStream();
+    try {
+      await vi.waitFor(() => expect(remote.chunks.join("")).toContain('"type":"snapshot"'));
+      expect(
+        await service.localRequest("send", {
+          sessionId: "s",
+          text: "hello",
+          requestId: "desktop-send",
+          expectedRevision: 4,
+          bootId,
+        }),
+      ).toMatchObject({ status: 200, body: { accepted: true } });
+      await vi.waitFor(() => expect(remote.chunks.join("")).toContain('"status":"running"'));
+      expect(localEvents).toContainEqual(
+        expect.objectContaining({
+          type: "state",
+          payload: expect.objectContaining({ status: "running" }),
+        }),
+      );
+      await vi.waitFor(() => expect(remote.chunks.join("")).toContain("event: control-changed"));
+      pushEvent("text-delta", { itemId: "reply", turnId: "turn", text: "native", offset: 0 }, 2);
+      await vi.waitFor(() => expect(remote.chunks.join("")).toContain('"text":"native"'));
+      expect(
+        runtime.mock.calls.some(
+          ([input]) => (input as { operation: string }).operation === "events",
+        ),
+      ).toBe(false);
+    } finally {
+      remote.close();
+      await hub.unsubscribe(local.subscriptionId);
+    }
+  });
+
+  it("opens a full-access native observation while another command is pending", async () => {
+    await bootstrap();
+    const code = (await service.request({ operation: "generate-code" })).code!.value;
+    expect(
+      (await http("/api/web/v1/pair", { method: "POST", body: { code, name: "Phone" } })).status,
+    ).toBe(200);
+    let settle!: (value: unknown) => void;
+    runtime.mockImplementation(async (params) => {
+      const input = params as { operation: string };
+      if (input.operation === "catalog")
+        return {
+          workspaces: [{ id: "workspace", name: "Workspace", path: dir }],
+          sessions: [{ id: "s", workspace_id: "workspace", agent: "codex" }],
+        };
+      if (input.operation === "send")
+        return new Promise((resolve) => {
+          settle = resolve;
+        });
+      return {
+        sessionId: "s",
+        workspaceId: "workspace",
+        executionMode: "codex-managed",
+        runtimeBootId: "r",
+        revision: 4,
+        status: "idle",
+        sendEnabled: true,
+        approvals: [],
+        questions: [],
+      };
+    });
+    const control = service.localRequest("send", {
+      sessionId: "s",
+      text: "hello",
+      requestId: "desktop-send",
+      expectedRevision: 4,
+      bootId,
+    });
+    await vi.waitFor(() => expect(settle).toBeTypeOf("function"));
+    const stream = openStream();
+    try {
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+      pushEvent("text-delta", { itemId: "reply", text: "while pending", offset: 0 });
+      await vi.waitFor(() => expect(stream.chunks.join("")).toContain("while pending"));
+    } finally {
+      stream.close();
+      settle({ accepted: true });
+      await control;
+    }
+  });
 
   it("keeps SSE connected across reserved preflight and mutation, while revocation still closes it", async () => {
     await bootstrap();
@@ -1012,7 +1506,7 @@ describe("WebAccessService loopback security boundary", () => {
         {
           hostname: "127.0.0.1",
           port,
-          path: "/api/web/v1/stream?sessionId=s",
+          path: "/api/web/v1/stream?sessionId=s&protocolVersion=2",
           headers: { Cookie: cookie },
         },
         (res) => {
@@ -1026,7 +1520,7 @@ describe("WebAccessService loopback security boundary", () => {
     let preflight!: (value: unknown) => void;
     let mutation!: (value: unknown) => void;
     try {
-      await vi.waitFor(() => expect(chunks.join("")).toContain("event: snapshot"));
+      await vi.waitFor(() => expect(chunks.join("")).toContain("event: session-event"));
       runtime.mockImplementation(
         async (params) =>
           new Promise((resolve) => {
@@ -1157,13 +1651,13 @@ describe("WebAccessService loopback security boundary", () => {
         {
           hostname: "127.0.0.1",
           port,
-          path: "/api/web/v1/stream?sessionId=s",
+          path: "/api/web/v1/stream?sessionId=s&protocolVersion=2",
           headers: { Cookie: cookie },
         },
         (res) => {
           res.on("data", (chunk) => {
             chunks.push(String(chunk));
-            if (String(chunk).includes("event: snapshot")) first();
+            if (String(chunk).includes("event: session-event")) first();
           });
           res.on("end", resolve);
         },
@@ -1737,7 +2231,7 @@ describe("WebAccessService loopback security boundary", () => {
         {
           hostname: "127.0.0.1",
           port,
-          path: "/api/web/v1/stream?sessionId=s",
+          path: "/api/web/v1/stream?sessionId=s&protocolVersion=2",
           headers: { Cookie: cookie },
         },
         (res) => {
@@ -1809,6 +2303,7 @@ describe("WebAccessService loopback security boundary", () => {
         Cookie: cookie,
         Origin: origin,
         "X-CSRF-Token": csrf,
+        "X-AgentKib-Protocol": "2",
         "Content-Type": "application/json",
       },
     });

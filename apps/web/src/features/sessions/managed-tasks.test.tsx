@@ -4,12 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
 import { pendingScope, rememberPending, readPending } from "./pending-controls";
 import { ManagedTasks } from "./managed-tasks";
+import { publishSessionInvalidation } from "./session-events";
+import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();
 let session: {
   client: { request: ReturnType<typeof vi.fn>; receipt: ReturnType<typeof vi.fn> };
   origin: string;
   access: {
+    protocolVersion: number;
     status: string;
     bootId: string;
     experimentalEnabled: boolean;
@@ -46,6 +49,7 @@ describe("ManagedTasks", () => {
       },
       access: {
         status: "approved",
+        protocolVersion: 2,
         bootId: "boot",
         experimentalEnabled: true,
         device: { id: "browser", manage: true },
@@ -153,6 +157,84 @@ describe("ManagedTasks", () => {
     expect(mutations()).toHaveLength(1);
     expect(navigate).not.toHaveBeenCalled();
     expect(session.refresh).not.toHaveBeenCalled();
+  });
+  it("rechecks an unknown creation when settlement arrives during its receipt read", async () => {
+    const requestId = crypto.randomUUID();
+    const scope = pendingScope("", "browser");
+    rememberPending(scope, { requestId, kind: "create", workspaceId: "workspace" });
+    session.selected = "";
+    let finish!: (result: unknown) => void;
+    session.client.receipt.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    session.client.receipt.mockResolvedValue({
+      found: true,
+      requestId,
+      sessionId: "created-session",
+      operation: "create",
+      status: "accepted",
+    });
+    await show(true);
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+    await act(async () => {
+      publishSessionInvalidation(session.client as unknown as WebClient, "", ["receipts"]);
+      finish({ found: true, requestId, operation: "create", status: "unknown" });
+    });
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/sessions/$sessionId",
+        params: { sessionId: "created-session" },
+      }),
+    );
+    expect(session.client.receipt).toHaveBeenCalledTimes(2);
+    expect(readPending(scope)).toEqual([]);
+    expect(mutations()).toEqual([]);
+  });
+  it("starts a new receipt read after runtime restart and ignores the old runtime response", async () => {
+    const requestId = crypto.randomUUID();
+    const scope = pendingScope("", "browser");
+    rememberPending(scope, { requestId, kind: "create", workspaceId: "workspace" });
+    session.selected = "";
+    let finishOld!: (result: unknown) => void;
+    session.client.receipt.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }),
+    );
+    session.client.receipt.mockResolvedValue({
+      found: true,
+      requestId,
+      sessionId: "created-session",
+      operation: "create",
+      status: "accepted",
+    });
+    const view = await show(true);
+    expect(session.client.receipt).toHaveBeenCalledOnce();
+    session.access = { ...session.access, bootId: "new-boot" };
+    view.rerender(<ManagedTasks create />);
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/sessions/$sessionId",
+        params: { sessionId: "created-session" },
+      }),
+    );
+    expect(session.client.receipt).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      finishOld({
+        found: true,
+        requestId,
+        sessionId: "obsolete-session",
+        operation: "create",
+        status: "accepted",
+      });
+    });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(readPending(scope)).toEqual([]);
+    expect(mutations()).toEqual([]);
   });
   it("reconciles a late unknown handoff while its panel is closed and blocks replay after reopening", async () => {
     let fail!: (error: Error) => void;

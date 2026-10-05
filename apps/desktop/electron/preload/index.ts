@@ -1,6 +1,6 @@
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi, DesktopRuntimeStatus } from "../api";
+import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi } from "../api";
 import type {
   AppMenuCommandRequest,
   AppNavigationRequest,
@@ -332,3 +332,30 @@ const desktopApi = Object.freeze({
 }) satisfies DesktopApi;
 
 contextBridge.exposeInMainWorld("agentkibDesktop", desktopApi);
+contextBridge.exposeInMainWorld(
+  "desktopConversation",
+  Object.freeze({
+    request: (path, body) => ipcRenderer.invoke("agentkib:conversation:request", path, body),
+    upload: (input) => ipcRenderer.invoke("agentkib:conversation:upload", input),
+    subscribe: (sessionId, cursor) =>
+      ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor),
+    acknowledge: (id, cursor) =>
+      ipcRenderer.invoke("agentkib:conversation:acknowledge", id, cursor),
+    unsubscribe: (id) => ipcRenderer.invoke("agentkib:conversation:unsubscribe", id),
+    onEvent: (listener) => subscribe("agentkib:conversation:event", listener),
+    onUnavailable: (listener) => subscribe("agentkib:conversation:unavailable", listener),
+    onControlChanged: (listener) =>
+      subscribe<{ sessionId: string; notificationId: string }>(
+        "agentkib:conversation:control-changed",
+        ({ sessionId, notificationId }) => {
+          try {
+            listener(sessionId);
+          } finally {
+            void ipcRenderer
+              .invoke("agentkib:conversation:acknowledge-control", notificationId)
+              .catch(() => {});
+          }
+        },
+      ),
+  } satisfies DesktopConversationApi),
+);

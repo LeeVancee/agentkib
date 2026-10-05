@@ -21,14 +21,17 @@ enum PollEvent {
 
 /// Opt-in, local-only facade. IDs/commands supplied by a caller are not forwarded verbatim.
 pub struct Bridge {
+    observer: Option<crate::state::StateObserver>,
     connection: Connection,
     compatibility: Compatibility,
+    verify_installed: bool,
     controls_enabled: bool,
     selected: Option<SessionState>,
     endpoint: PathBuf,
     last_owner_check: Option<Instant>,
     last_full_refresh: Option<Instant>,
     resync_after_mutation: bool,
+    acknowledged_state: Option<(Option<u64>, Status)>,
 }
 
 impl Bridge {
@@ -40,26 +43,32 @@ impl Bridge {
             .unwrap_or_default();
         ensure!(compatibility.is_known(), "unverified-installation");
         Ok(Self {
+            observer: None,
             connection,
             compatibility,
+            verify_installed: true,
             controls_enabled: false,
             selected: None,
             endpoint: socket.to_owned(),
             last_owner_check: None,
             last_full_refresh: None,
             resync_after_mutation: false,
+            acknowledged_state: None,
         })
     }
     pub fn connect(socket: &Path, compatibility: Compatibility) -> Result<Self> {
         Ok(Self {
+            observer: None,
             connection: Connection::connect(socket)?,
             compatibility,
+            verify_installed: false,
             controls_enabled: false,
             selected: None,
             endpoint: socket.to_owned(),
             last_owner_check: None,
             last_full_refresh: None,
             resync_after_mutation: false,
+            acknowledged_state: None,
         })
     }
 
@@ -79,6 +88,56 @@ impl Bridge {
     }
     pub fn state(&self) -> Option<&SessionState> {
         self.selected.as_ref()
+    }
+    pub fn needs_reconnect(&self) -> bool {
+        !self.connection.is_connected()
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|state| state.revision().is_none())
+    }
+
+    /// An acknowledged write needs one read-only confirmation, even when the
+    /// final native update arrived while waiting for the acknowledgement.
+    pub fn needs_mutation_confirmation(&self) -> bool {
+        self.acknowledged_state.is_some()
+    }
+
+    /// Re-establish only the read-only follower after an invalidated stream.
+    /// No mutation is replayed, and a healthy outcome-unknown snapshot is retained.
+    pub fn reconnect(&mut self) -> Result<()> {
+        ensure!(self.needs_reconnect(), "session stream is still valid");
+        let conversation = self
+            .selected
+            .as_ref()
+            .context("no selected session")?
+            .conversation
+            .clone();
+        let mut replacement = if self.verify_installed {
+            Self::connect_installed(&self.endpoint)?
+        } else {
+            Self::connect(&self.endpoint, self.compatibility.clone())?
+        };
+        replacement.select(&conversation)?;
+        replacement.observer = self.observer.clone();
+        if let Some(state) = &mut replacement.selected {
+            state.observer = replacement.observer.clone();
+        }
+        *self = replacement;
+        if let Some(state) = &self.selected {
+            state.notify_observer();
+        }
+        Ok(())
+    }
+    /// Called from the single socket consumer, including broadcasts received
+    /// while a control request waits for its correlated response.
+    pub fn set_observer(&mut self, observer: impl Fn(&SessionState) + Send + Sync + 'static) {
+        let observer = std::sync::Arc::new(observer);
+        self.observer = Some(observer.clone());
+        if let Some(state) = &mut self.selected {
+            state.observer = Some(observer);
+            state.notify_observer();
+        }
     }
 
     pub fn supports_thread_settings(&self) -> bool {
@@ -163,6 +222,7 @@ impl Bridge {
             .to_owned();
         ensure!(owner != self.connection.client_id(), "cannot follow self");
         self.selected = Some(SessionState::new(conversation.into(), owner.clone()));
+        self.selected.as_mut().unwrap().observer = self.observer.clone();
         let result = (|| {
             self.connection.broadcast(
                 "thread-stream-following-changed",
@@ -189,6 +249,7 @@ impl Bridge {
             self.last_owner_check = Some(now);
             self.last_full_refresh = Some(now);
             self.resync_after_mutation = false;
+            self.acknowledged_state = None;
         }
         result
     }
@@ -300,6 +361,9 @@ impl Bridge {
     }
 
     pub fn refresh(&mut self) -> Result<()> {
+        // Consume the pending confirmation once. Failure invalidates the read
+        // stream and uses observation recovery; no control command is replayed.
+        let acknowledged_state = self.acknowledged_state.take();
         let state = self.selected.as_ref().context("no selected session")?;
         let id = state.conversation.clone();
         if state.revision().is_none() {
@@ -347,6 +411,17 @@ impl Bridge {
         if result.is_err() {
             self.invalidate(Status::Unsupported);
         } else {
+            if let (Some((revision, status)), Some(state)) =
+                (acknowledged_state, &mut self.selected)
+                && state.revision() == revision
+                && state.status == Status::OutcomeUnknown
+            {
+                // Equal-revision snapshots normally preserve the write fence.
+                // Restore only a native state actually observed during this
+                // acknowledged command, now confirmed by the owner snapshot.
+                state.status = status;
+                state.notify_observer();
+            }
             let now = Instant::now();
             self.last_owner_check = Some(now);
             self.last_full_refresh = Some(now);
@@ -852,8 +927,10 @@ impl Bridge {
         }
         match response {
             Ok(value) if value["method"] == method => {
+                self.acknowledged_state = Some((state.revision(), state.status));
                 // No blind retry or claimed success. A fresh snapshot resolves the operation.
                 state.status = Status::OutcomeUnknown;
+                state.notify_observer();
                 Ok(value["result"].clone())
             }
             Ok(_) => {
@@ -877,6 +954,7 @@ impl Bridge {
         self.last_owner_check = None;
         self.last_full_refresh = None;
         self.resync_after_mutation = false;
+        self.acknowledged_state = None;
         if let Some(state) = self.selected.take() {
             let _ = self.connection.broadcast(
                 "thread-stream-following-changed",

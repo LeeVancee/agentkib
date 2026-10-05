@@ -1,12 +1,13 @@
 import { managedText } from "./managed-copy";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useSessionNavigate } from "./session-navigation";
+import { subscribeSessionInvalidation } from "./session-events";
 import { Plus } from "lucide-react";
 import { ApiError, isLegacyPreparedReceipt } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "../../components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
-import { catalogCopy } from "@/features/catalog/catalog-copy";
+import { catalogCopy } from "../catalog/catalog-copy";
 import {
   forgetPending,
   pendingScope,
@@ -27,14 +28,18 @@ export function ManagedTasks({
   active,
   renderContent,
   onClose,
+  onDismiss,
+  initialOpen = false,
 }: {
   create?: boolean;
   active?: boolean;
   renderContent?: (content: ReactNode) => ReactNode;
   onClose?: () => void;
+  onDismiss?: () => void;
+  initialOpen?: boolean;
 }) {
   const { client, origin, access, current, live, selected, refresh, locale } = useSession();
-  const [localOpen, setLocalOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(initialOpen);
   const open = renderContent ? !!active : localOpen;
   function setOpen(value: boolean) {
     setLocalOpen(value);
@@ -55,7 +60,7 @@ export function ManagedTasks({
       : undefined;
   const flight = useRef(false);
   const epoch = useRef(0);
-  const navigate = useNavigate();
+  const navigate = useSessionNavigate();
   useEffect(() => {
     // A panel closing only hides controls; it must not invalidate an in-flight
     // command or prevent its unknown outcome from entering receipt reconciliation.
@@ -106,9 +111,8 @@ export function ManagedTasks({
       return;
     let cancelled = false;
     let checking = false;
-    const check = async () => {
-      if (checking) return;
-      checking = true;
+    let dirty = false;
+    const checkOnce = async () => {
       const generation = epoch.current;
       try {
         const result = await client.receipt(pending.requestId);
@@ -122,8 +126,8 @@ export function ManagedTasks({
               result.operation !== pending.kind ||
               result.status === "unknown"))
         )
-          return;
-        if (result.status !== "accepted" && result.status !== "not-dispatched") return;
+          return false;
+        if (result.status !== "accepted" && result.status !== "not-dispatched") return false;
         forgetPending(scope, pending.requestId);
         setPending(undefined);
         setUncertain(false);
@@ -133,28 +137,50 @@ export function ManagedTasks({
             : "",
         );
         await refresh(true);
-        if (generation !== epoch.current) return;
+        if (generation !== epoch.current) return true;
         if (result.status === "accepted") {
           setOpen(false);
           if (pending.kind === "create")
             void navigate({ to: "/sessions/$sessionId", params: { sessionId: result.sessionId } });
         }
+        return true;
       } catch {
         /* Keep the saved identity and never retry the command itself. */
+        return false;
+      }
+    };
+    const check = async () => {
+      if (checking) {
+        dirty = true;
+        return;
+      }
+      checking = true;
+      try {
+        do {
+          dirty = false;
+          if (await checkOnce()) break;
+        } while (dirty && !cancelled);
       } finally {
         checking = false;
       }
     };
     void check();
-    const timer = setInterval(() => void check(), 4000);
+    const unsubscribe = subscribeSessionInvalidation(client, (id, domains) => {
+      if (
+        (!id || id === selected) &&
+        domains.some((domain) => ["receipts", "ownership"].includes(domain))
+      )
+        void check();
+    });
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      unsubscribe();
     };
   }, [
     scope,
     pending,
     access?.status,
+    access?.bootId,
     access?.device?.manage,
     access?.experimentalEnabled,
     client,
@@ -193,8 +219,9 @@ export function ManagedTasks({
     access?.experimentalEnabled,
   ]);
   useEffect(() => {
-    if (!access?.device?.manage || !access.experimentalEnabled) setLocalOpen(false);
-  }, [access?.device?.manage, access?.experimentalEnabled]);
+    // An initial create request may arrive before the trusted access read finishes.
+    if (access && (!access.device?.manage || !access.experimentalEnabled)) setLocalOpen(false);
+  }, [access?.status, access?.device?.manage, access?.experimentalEnabled]);
   if (
     !access?.device?.manage ||
     !access.experimentalEnabled ||
@@ -450,7 +477,10 @@ export function ManagedTasks({
       <Dialog
         open={open}
         onOpenChange={(value) => {
-          if (!busy) setOpen(value);
+          if (!busy) {
+            setOpen(value);
+            if (!value) onDismiss?.();
+          }
         }}
       >
         <DialogContent>

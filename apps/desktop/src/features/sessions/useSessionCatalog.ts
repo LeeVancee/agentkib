@@ -46,7 +46,11 @@ interface CatalogState {
   ready: boolean;
 }
 
-export function useSessionCatalog(workspaces: WorkspaceSummary[], enabled: boolean) {
+export function useSessionCatalog(
+  workspaces: WorkspaceSummary[],
+  enabled: boolean,
+  afterRefresh?: () => Promise<unknown>,
+) {
   const { localizeMessage } = useI18n();
   const queryClient = useOptionalQueryClient();
   const key = JSON.stringify([...new Set(workspaces.map((workspace) => workspace.id))].sort());
@@ -130,14 +134,17 @@ export function useSessionCatalog(workspaces: WorkspaceSummary[], enabled: boole
     };
 
     let activeRefresh: Promise<void> | undefined;
-    let initializing = true;
+    let initialLoad: Promise<void> | undefined;
     const runRefresh = (force: boolean): Promise<void> => {
-      if (!enabled || !current() || !ids.length) return Promise.resolve();
+      if (!enabled || !current()) return Promise.resolve();
       if (activeRefresh) return activeRefresh;
       setState((previous) => ({ ...previous, refreshing: true, errors: {} }));
       activeRefresh = Promise.all(
         ids.map((id) => queue(() => loadWorkspace(id, true, force))),
-      ).then(() => {
+      ).then(async () => {
+        // Keep readiness pending until consumers have read the newly scanned index.
+        // Otherwise a second catalog can incorrectly reject a valid deep link.
+        if (current()) await afterRefresh?.();
         activeRefresh = undefined;
         if (current()) {
           setState((previous) => ({ ...previous, refreshing: false, ready: true }));
@@ -146,26 +153,24 @@ export function useSessionCatalog(workspaces: WorkspaceSummary[], enabled: boole
       return activeRefresh;
     };
     refreshRef.current = () => {
-      if (initializing) return Promise.resolve();
-      return runRefresh(true);
+      return initialLoad ?? runRefresh(true);
     };
     if (enabled && ids.length) {
-      void Promise.all(ids.map((id) => queue(() => loadWorkspace(id, false, false)))).then(
-        async () => {
+      initialLoad = Promise.all(ids.map((id) => queue(() => loadWorkspace(id, false, false))))
+        .then(async () => {
           if (!current()) return;
           setState((previous) => ({ ...previous, loading: false }));
-          initializing = false;
           await runRefresh(false);
-        },
-      );
-    } else {
-      initializing = false;
+        })
+        .finally(() => {
+          initialLoad = undefined;
+        });
     }
     return () => {
       generation.current += 1;
       refreshRef.current = async () => {};
     };
-  }, [enabled, ids, key, queryClient, queue]);
+  }, [enabled, ids, key, queryClient, queue, afterRefresh]);
 
   const refresh = useCallback(() => refreshRef.current(), []);
   // A just-enabled render must not treat the previous disabled empty/ready state

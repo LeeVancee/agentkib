@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-import json,sys,os,pathlib,uuid,fcntl
+import json,sys,os,pathlib,uuid,fcntl,time,threading
 if '--version' in sys.argv:
  print('codex-cli 0.155.1');sys.exit()
 home=pathlib.Path(os.environ['CODEX_HOME']);native=None;turn=None;history=[];lock=None;queued=[];name=None;goal=None;settings=None
@@ -12,10 +12,26 @@ def complete():
  global turn
  is_plan=(settings or {}).get('collaborationMode',{}).get('mode')=='plan';text='# Native plan\nInspect, then implement.' if is_plan else 'reply'
  if is_plan:event('item/plan/delta',{'threadId':native,'turnId':turn,'itemId':'item-'+turn,'delta':text})
+ else:event('item/agentMessage/delta',{'threadId':native,'turnId':turn,'itemId':'item-'+turn,'delta':text})
  item={'type':'plan' if is_plan else 'agentMessage','id':'item-'+turn,'text':text};history[-1]['items'].append(item);event('item/completed',{'threadId':native,'turnId':turn,'item':item});history[-1]['status']='completed';save();event('turn/completed',{'threadId':native,'turn':history[-1]});turn=None
  event('thread/tokenUsage/updated',{'threadId':native,'turnId':history[-1]['id'],'tokenUsage':{'total':{'inputTokens':8,'cachedInputTokens':0,'outputTokens':4,'reasoningOutputTokens':1,'totalTokens':13},'last':{'inputTokens':8,'cachedInputTokens':0,'outputTokens':4,'reasoningOutputTokens':1,'totalTokens':13},'modelContextWindow':258000}})
 
 def thread():return {'id':native,'cwd':os.getcwd(),'turns':history,'status':{'type':'idle' if turn is None else 'active'},'name':name}
+def benchmark_stream():
+ # Synthetic, opt-in fixture: timestamps originate in the native subprocess,
+ # immediately before stdout, not in the host/renderer receiving the event.
+ global turn
+ time.sleep(0.1)
+ text=''
+ for index in range(40):
+  delta='[stream-benchmark:%d:%.3f] ' % (index, time.time_ns()/1_000_000)
+  text+=delta
+  event('item/agentMessage/delta',{'threadId':native,'turnId':turn,'itemId':'benchmark-item','delta':delta})
+  time.sleep(0.08)
+ item={'type':'agentMessage','id':'benchmark-item','text':text}
+ history[-1]['items'].append(item);history[-1]['status']='completed';save()
+ event('item/completed',{'threadId':native,'turnId':turn,'item':item})
+ event('turn/completed',{'threadId':native,'turn':history[-1]});turn=None
 for line in sys.stdin:
  r=json.loads(line);method=r.get('method');p=r.get('params',{});req=r.get('id')
  if not method:
@@ -47,6 +63,7 @@ for line in sys.stdin:
   text=p['input'][0]['text'];turn=str(uuid.uuid4());user={'type':'userMessage','id':str(uuid.uuid4()),'clientId':p['clientUserMessageId'],'content':p['input']};history.append({'id':turn,'status':'inProgress','items':[user]});save();event('turn/started',{'threadId':native,'turn':history[-1]});event('item/completed',{'threadId':native,'turnId':turn,'item':user});result={'turn':{'id':turn,'status':'inProgress'}}
   if text=='approval':emit({'method':'item/commandExecution/requestApproval','id':90,'params':{'threadId':native,'turnId':turn,'itemId':'cmd','command':'/usr/bin/true','cwd':os.getcwd()}})
   elif text=='question':emit({'method':'item/tool/requestUserInput','id':91,'params':{'threadId':native,'turnId':turn,'questions':[{'id':'choice','question':'Which?','options':[{'label':'A'}],'isOther':False}]}})
+  elif text=='stream-benchmark' and (home/'allow-stream-benchmark').exists():threading.Thread(target=benchmark_stream,daemon=True).start()
   elif text!='hold':complete()
   if text=='lost-receipt':sys.exit()
  elif method=='turn/steer':
@@ -71,3 +88,8 @@ for line in sys.stdin:
   assert p['turnId']==turn;complete();result={}
  else:emit({'id':req,'error':{'code':-32601,'message':'unsupported'}});continue
  emit({'id':req,'result':result})
+ if method in ['thread/resume','thread/read'] and (home/'hydrate-response-live').exists():
+  (home/'hydrate-response-live').unlink();turn='after-hydration';history.append({'id':turn,'status':'inProgress','items':[]})
+  event('turn/started',{'threadId':native,'turn':history[-1]})
+  event('item/agentMessage/delta',{'threadId':native,'turnId':turn,'itemId':'after-hydration-item','delta':'live after response'})
+  save()

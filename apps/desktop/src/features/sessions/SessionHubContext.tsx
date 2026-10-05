@@ -16,11 +16,16 @@ import { useSessionCatalog } from "./useSessionCatalog";
 import { filterSessions } from "./session-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { SESSION_REFRESH_EVENT } from "./session-refresh";
+import { refreshConversationCatalog, useConversationCatalog } from "./conversation-catalog";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
 import {
   useRemoteCatalogEntries,
   refreshRemoteCatalog,
 } from "@/features/remote/remote-catalog-store";
 import "./sessions.css";
+
+// The catalog store retains the error for the page's retry notice.
+const refreshControlledCatalog = () => refreshConversationCatalog().catch(() => undefined);
 
 function useHub(active: boolean) {
   const { localizeMessage } = useI18n();
@@ -30,23 +35,38 @@ function useHub(active: boolean) {
   const localEnabled = runtime?.session_index_enabled === true;
   const remote = useRemoteCatalogEntries();
   const enabled = active && (localEnabled || remote.hosts.length > 0);
-  const catalog = useSessionCatalog(localWorkspaces, active && localEnabled);
+  const controlled = hasDesktopConversation();
+  const catalog = useSessionCatalog(
+    localWorkspaces,
+    active && localEnabled,
+    controlled ? refreshControlledCatalog : undefined,
+  );
+  const controlledCatalog = useConversationCatalog(active && localEnabled);
+  const catalogError =
+    controlled && active && localEnabled && controlledCatalog.error !== undefined
+      ? localizeMessage(controlledCatalog.error)
+      : "";
+  // The controlled catalog already removes indexed aliases of managed tasks.
+  // Merging the raw index back in would expose a second, unreadable route.
+  const localSessions = controlled ? controlledCatalog.sessions : catalog.sessions;
   const workspaces = useMemo(
     () => [...localWorkspaces, ...remote.workspaces],
     [localWorkspaces, remote.workspaces],
   );
   const sessions = useMemo(
-    () => [...catalog.sessions, ...remote.sessions],
-    [catalog.sessions, remote.sessions],
+    () => [...localSessions, ...remote.sessions],
+    [localSessions, remote.sessions],
   );
   const refreshCatalog = catalog.refresh;
   const [historyRevision, setHistoryRevision] = useState(0);
+  const [conversationRefreshRevision, setConversationRefreshRevision] = useState(0);
   const refresh = useCallback(async () => {
     await Promise.all([
       localEnabled ? refreshCatalog() : Promise.resolve(),
       ...remote.hosts.map((host) => refreshRemoteCatalog(host.id, true)),
     ]);
     setHistoryRevision((revision) => revision + 1);
+    setConversationRefreshRevision((revision) => revision + 1);
   }, [localEnabled, refreshCatalog, remote.hosts]);
   const wasRefreshing = useRef(false);
   useEffect(() => {
@@ -75,20 +95,32 @@ function useHub(active: boolean) {
   );
   const navigate = useNavigate();
   const { sessionId } = useSearch({ strict: false }) as { sessionId?: string };
-  const selected = enabled ? filtered.find((session) => session.id === sessionId) : undefined;
+  const canonicalId =
+    sessions.find(
+      (session) => !session.remote && session.indexedSessionIds?.includes(sessionId ?? ""),
+    )?.id ?? sessionId;
+  const selected = enabled ? filtered.find((session) => session.id === canonicalId) : undefined;
   const selectedWorkspace = selected
     ? workspaces.find((workspace) => workspace.id === selected.workspace_id)
     : undefined;
-  const select = (id?: string, replace = false) =>
-    void navigate({
-      to: "/sessions",
-      replace,
-      search: (current) => ({ ...current, sessionId: id }),
-    });
+  const select = useCallback(
+    (id?: string, replace = false) => {
+      if (id) useSessionViewStore.getState().setCreatingConversation(false);
+      void navigate({
+        to: "/sessions",
+        replace,
+        search: (current) => ({ ...current, sessionId: id }),
+      });
+    },
+    [navigate],
+  );
   const routeReveal = useRef<{ sessionId?: string; revealed: boolean; skipClear: boolean }>({
     revealed: false,
     skipClear: false,
   });
+  useEffect(() => {
+    if (enabled && selected && canonicalId !== sessionId) select(canonicalId, true);
+  }, [enabled, selected, canonicalId, sessionId, select]);
   useEffect(() => {
     if (routeReveal.current.sessionId !== sessionId) {
       routeReveal.current = { sessionId, revealed: false, skipClear: false };
@@ -112,6 +144,8 @@ function useHub(active: boolean) {
       sessionId &&
       (!sessionId.startsWith("remote:") || sessions.some((session) => session.id === sessionId)) &&
       catalog.ready &&
+      controlledCatalog.ready &&
+      !catalogError &&
       enabled &&
       !workspaceQuery.isPending &&
       !workspaceQuery.error &&
@@ -128,6 +162,8 @@ function useHub(active: boolean) {
   }, [
     sessionId,
     catalog.ready,
+    controlledCatalog.ready,
+    catalogError,
     catalog.refreshing,
     catalog.sessions,
     sessions,
@@ -140,11 +176,15 @@ function useHub(active: boolean) {
   ]);
   return {
     ...catalog,
+    ready: catalog.ready && controlledCatalog.ready,
+    loading: catalog.loading || (controlled && !controlledCatalog.ready),
+    catalogError,
     sessions,
     remoteHosts: remote.hosts,
     remoteErrors: remote.errors,
     localEnabled,
     historyRevision,
+    conversationRefreshRevision,
     refresh,
     workspaces,
     filtered,

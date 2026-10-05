@@ -13,9 +13,14 @@ use std::time::{Duration, Instant};
 
 mod antigravity_runner;
 mod claude_runner;
+mod codex_item;
 mod codex_managed;
+#[cfg(target_os = "macos")]
+mod follower_stream;
 mod obsidian;
 mod relay_csr;
+mod runtime_output;
+mod session_stream;
 mod skill_worker;
 mod web;
 
@@ -124,13 +129,13 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut stdout = io::stdout().lock();
+    let mut stdout = runtime_output::Output::new();
     let (events_tx, events_rx) = mpsc::channel();
     spawn_stdin_reader(events_tx.clone());
     let mut storage_scan: Option<StorageScan> = None;
     let mut agent_tool_workers = AgentToolWorkers::default();
     let remote_worker = RemoteWorker::new(events_tx.clone());
-    let web_worker = web::Worker::new(events_tx.clone());
+    let web_worker = web::Worker::with_notifications(events_tx.clone(), stdout.notifications());
     let skill_events = events_tx.clone();
     let mut skill_worker = skill_worker::Worker::new(
         move |response| {
@@ -219,6 +224,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if request.method == agentkib_protocol::WEB_REQUEST_METHOD
                     || request.method == agentkib_protocol::CODEX_MANAGED_METHOD
                     || request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
+                    || request.method == agentkib_protocol::SESSIONS_SUBSCRIBE_METHOD
+                    || request.method == agentkib_protocol::SESSIONS_UNSUBSCRIBE_METHOD
                 {
                     if let Some(response) = web_worker.submit(request) {
                         write_response(&mut stdout, response)?;

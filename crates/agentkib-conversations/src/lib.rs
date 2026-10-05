@@ -22,7 +22,7 @@ mod history;
 mod openclaw;
 mod opencode;
 mod paging;
-pub use antigravity::AntigravityProvider;
+pub use antigravity::{AntigravityProvider, project_stream_replay};
 pub use archive::*;
 pub use continuation::*;
 pub use grokbuild::GrokBuildProvider;
@@ -1045,9 +1045,13 @@ pub struct CodexProvider {
 }
 
 impl CodexProvider {
+    pub fn from_home(home: PathBuf) -> Self {
+        Self { home: Some(home) }
+    }
+
     #[cfg(test)]
     fn with_home(home: PathBuf) -> Self {
-        Self { home: Some(home) }
+        Self::from_home(home)
     }
 
     fn home(&self) -> Option<PathBuf> {

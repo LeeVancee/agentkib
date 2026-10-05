@@ -29,7 +29,7 @@ describe("Codex native session details", () => {
       online: true,
       liveText: "空闲",
       client: { request },
-      access: { status: "approved", device: { id: "browser" } },
+      access: { status: "approved", protocolVersion: 2, device: { id: "browser" } },
     };
     render(<SessionDetailsDialog />);
     expect(await screen.findByText("/repo/worktree")).toBeInTheDocument();
@@ -57,7 +57,7 @@ describe("Codex native session details", () => {
       online: false,
       liveText: "",
       client: { request },
-      access: { status: "approved", device: { id: "browser" } },
+      access: { status: "approved", protocolVersion: 2, device: { id: "browser" } },
     };
     render(<SessionDetailsDialog />);
     expect(await screen.findAllByText("Codex 信息不可用")).toHaveLength(3);

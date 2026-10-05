@@ -1,6 +1,6 @@
-import { NativeSelect } from "@/components/ui/native-select";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { NativeSelect } from "../../components/ui/native-select";
+import { Input } from "../../components/ui/input";
+import { Button } from "../../components/ui/button";
 import { useState } from "react";
 import {
   ChevronDown,
@@ -14,9 +14,9 @@ import {
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle, filterSessions, groupSessions } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
-import { dictionaries, type Locale } from "@/i18n";
-import { catalogCopy } from "@/features/catalog/catalog-copy";
-import { interactionCopy } from "@/features/interactions/question-form";
+import { dictionaries, type Locale } from "../../i18n";
+import { catalogCopy } from "./catalog-copy";
+import { interactionCopy } from "../interactions/question-form";
 
 export interface CatalogWorkspace {
   id: string;

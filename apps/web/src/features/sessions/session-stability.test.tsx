@@ -13,13 +13,20 @@ import { WebApplication } from "@/router";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
+  static live: (() => Live) | undefined;
   listeners: Record<string, (event: MessageEvent) => void> = {};
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
   close = vi.fn();
+  sequence = 0;
 
-  constructor() {
+  constructor(path: string) {
     FakeEventSource.instances.push(this);
+    if (new URL(path, "http://localhost").searchParams.has("sessionId"))
+      queueMicrotask(() => {
+        if (!this.close.mock.calls.length && FakeEventSource.live)
+          this.emit("snapshot", FakeEventSource.live());
+      });
   }
 
   addEventListener(name: string, listener: (event: MessageEvent) => void) {
@@ -27,12 +34,30 @@ class FakeEventSource {
   }
 
   emit(name: string, value: unknown) {
-    this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(value) }));
+    if (name === "snapshot") {
+      const live = value as Live;
+      this.listeners["session-event"]?.(
+        new MessageEvent("session-event", {
+          data: JSON.stringify({
+            protocolVersion: 2,
+            subscriptionId: "test-stream",
+            sessionId: live.sessionId,
+            runtimeBootId: "runtime",
+            epoch: "test",
+            seq: ++this.sequence,
+            cursor: `cursor-${this.sequence}`,
+            type: "snapshot",
+            payload: { live },
+          }),
+        }),
+      );
+    } else this.listeners[name]?.(new MessageEvent(name, { data: JSON.stringify(value) }));
   }
 }
 
 const approvedAccess: Access = {
   status: "approved",
+  protocolVersion: 2,
   csrfToken: "csrf",
   bootId: "boot",
   experimentalEnabled: true,
@@ -131,6 +156,7 @@ function createServer(initialLive: Live = idleLive) {
   });
   vi.stubGlobal("fetch", fetcher);
   vi.stubGlobal("EventSource", FakeEventSource);
+  FakeEventSource.live = () => state.live;
   return { state, fetcher };
 }
 
@@ -149,6 +175,7 @@ async function openSession() {
 afterEach(() => {
   cleanup();
   FakeEventSource.instances = [];
+  FakeEventSource.live = undefined;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -174,7 +201,7 @@ describe("access invalidation", () => {
           pairingMode: "code",
           device: { ...approvedAccess.device!, accessMode: "full", manage: true, files: true },
         };
-        return json({ status: "approved", device: server.state.access.device });
+        return json({ status: "approved", protocolVersion: 2, device: server.state.access.device });
       }
       return json({});
     };
@@ -238,6 +265,15 @@ describe("access invalidation", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "刷新" })[0]);
 
     await screen.findByText("历史索引未开启");
+    expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
+  });
+  it("rechecks access after an unobservable same-origin SSE authentication failure", async () => {
+    const server = createServer();
+    await openSession();
+    server.state.access = { ...approvedAccess, status: "ended" };
+    act(() => FakeEventSource.instances[0].onerror?.());
+    await screen.findByText("远程访问已结束");
     expect(screen.queryByText("Secret history")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Test session/ })).not.toBeInTheDocument();
   });
@@ -414,7 +450,7 @@ describe("host identity isolation", () => {
       const host = url.startsWith(hostB) ? hostB : hostA;
       if (url.endsWith("/info"))
         return json({
-          protocolVersion: 1,
+          protocolVersion: 2,
           transport: "lan",
           capabilities: { read: true, send: true, approve: true },
         });

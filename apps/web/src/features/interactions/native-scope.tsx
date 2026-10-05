@@ -1,4 +1,4 @@
-import type { Locale } from "@/i18n";
+import type { Locale } from "../../i18n";
 const copy = {
   "zh-CN": {
     scope: "权限范围",

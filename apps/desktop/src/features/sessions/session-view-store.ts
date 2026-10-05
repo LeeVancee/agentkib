@@ -79,6 +79,8 @@ export const useSessionViewStore = create<{
   workspaceOrder: string[];
   sessionOrder: Record<string, string[]>;
   scrollTop: number;
+  creatingConversation: boolean;
+  setCreatingConversation: (creating: boolean) => void;
   revealSession: (session: ConversationSessionSummary) => void;
   setAgent: (agent: AgentKind | "all") => void;
   setHost: (host: string) => void;
@@ -97,6 +99,8 @@ export const useSessionViewStore = create<{
   collapsed: {},
   ...initialDirectoryOrder,
   scrollTop: 0,
+  creatingConversation: false,
+  setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
   revealSession: (session) =>
     set((state) => ({
       host:

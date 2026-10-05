@@ -660,6 +660,12 @@ fn parse_replay(updates: &[Value]) -> Result<ParsedReplay> {
     parse_replay_until(updates, Instant::now() + HISTORY_TIMEOUT)
 }
 
+/// Project a bounded, authoritative session/load replay with the same identities
+/// as paginated native history. This performs no I/O or native session mutation.
+pub fn project_stream_replay(updates: &[Value]) -> Result<Vec<ConversationEvent>> {
+    Ok(parse_replay_until(updates, Instant::now() + HISTORY_TIMEOUT)?.events)
+}
+
 fn parse_replay_until(updates: &[Value], deadline: Instant) -> Result<ParsedReplay> {
     let mut parsed = ParsedReplay::default();
     let mut known_calls = BTreeMap::new();
@@ -688,7 +694,12 @@ fn parse_replay_until(updates: &[Value], deadline: Instant) -> Result<ParsedRepl
                     .map(|value| {
                         value
                             .as_str()
-                            .filter(|value| !value.is_empty())
+                            .filter(|value| {
+                                !value.is_empty()
+                                    && value.len() <= 256
+                                    && value.trim() == *value
+                                    && !value.chars().any(char::is_control)
+                            })
                             .context("Invalid Antigravity messageId")
                     })
                     .transpose()?;
@@ -713,6 +724,7 @@ fn parse_replay_until(updates: &[Value], deadline: Instant) -> Result<ParsedRepl
             }
             "tool_call" => {
                 let call_id = tool_call_id(update)?;
+                let id = call_id.clone();
                 let name = tool_name(update);
                 ensure!(
                     !known_calls.contains_key(&call_id),
@@ -798,7 +810,7 @@ fn merge_message_chunk(
     let Some(mut turn) = chunk.turns.into_iter().next() else {
         return Ok(());
     };
-    let incoming = chunk
+    let mut incoming = chunk
         .events
         .into_iter()
         .next()
@@ -836,8 +848,12 @@ fn merge_message_chunk(
                 (parsed.turns.len(), parsed.events.len()),
             );
         }
-        // Use the first chunk's stable replay index, not a provider-controlled
-        // messageId, as the public turn identity.
+        // Explicit native IDs are shared with live delivery. Legacy streams
+        // retain their replay-index identity; text is never used as identity.
+        if let Some(message_id) = message_id {
+            incoming.id = message_id.into();
+            incoming.turn_id = Some(message_id.into());
+        }
         turn.id = incoming.id.clone();
         parsed.turns.push(turn);
         parsed.events.push(incoming);
@@ -1045,7 +1061,7 @@ fn update_tool_call(
         result_event.tool_status = Some(call.status.clone());
     } else {
         call.result_position = Some((parsed.turns.len(), parsed.events.len()));
-        let result_id = format!("{id}-result");
+        let result_id = format!("{call_id}-result");
         parsed.events.push(event(
             &result_id,
             ConversationEventKind::ToolSummary,
@@ -1427,7 +1443,12 @@ fn tool_call_id(update: &Value) -> Result<String> {
     update
         .get("toolCallId")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 256
+                && value.trim() == *value
+                && !value.chars().any(char::is_control)
+        })
         .map(str::to_owned)
         .context("Antigravity ACP tool update is missing toolCallId")
 }
@@ -1979,6 +2000,17 @@ done
 
         let parsed = parse_replay(&updates).unwrap();
         assert_eq!(parsed.events.len(), 1004);
+        assert_eq!(parsed.events[0].id, "call");
+        assert_eq!(parsed.events.last().unwrap().id, "call-result");
+        assert_eq!(
+            parsed
+                .events
+                .iter()
+                .map(|event| &event.id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            parsed.events.len()
+        );
         assert!(
             parsed.events[2..1002]
                 .iter()
@@ -2299,6 +2331,8 @@ done
         );
         assert_eq!(parsed.events[0].attachment_count, 1);
         assert_eq!(parsed.events[1].attachment_count, 1);
+        assert_eq!(parsed.events[0].id, "first");
+        assert_eq!(parsed.events[1].id, "second");
         assert_ne!(parsed.events[0].id, parsed.events[1].id);
         assert_eq!(
             parsed.events[0].turn_id.as_deref(),

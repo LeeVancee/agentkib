@@ -11,6 +11,7 @@ const SCAN_LINES: usize = 20_000;
 const BLOCK_BYTES: usize = 64 * 1024;
 const MAX_ASSOCIATIONS: usize = 20_000;
 const ASSOCIATION_WINDOW: usize = 4096;
+const MIRROR_WINDOW: u64 = 64;
 const MAX_STATES: usize = 32;
 const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(15 * 60);
@@ -44,6 +45,7 @@ struct ToolResult {
 struct Mirror {
     primary: bool,
     event_id: String,
+    native_id: Option<String>,
     timestamp: Option<DateTime<Utc>>,
     turn: Option<String>,
     sequence: u64,
@@ -58,6 +60,7 @@ struct State {
     oversized: bool,
     trailing: bool,
     pending: VecDeque<ConversationEvent>,
+    pending_identities: BTreeMap<String, u64>,
     mirrors: BTreeMap<String, VecDeque<Mirror>>,
     tools: BTreeMap<String, ToolResult>,
     finished_tools: BTreeSet<String>,
@@ -65,7 +68,8 @@ struct State {
     association_order: VecDeque<(u8, String)>,
     association_warning: bool,
     candidate_turn_id: Option<String>,
-    // Index into the current response only; reset whenever a cursor is read.
+    // Index into the response followed by pending events. Stored cursors remove
+    // the delivered prefix so lookahead never assigns an older turn to it.
     turn_range_start: usize,
     sequence: u64,
 }
@@ -148,6 +152,7 @@ impl State {
                 .sum::<usize>()
             + self.candidate_turn_id.as_ref().map_or(0, String::capacity)
             + self.association_order.len() * 128
+            + self.pending_identities.len() * 256
     }
     fn new(path: &Path, file: &mut File, format: Format) -> Result<Self> {
         let metadata = file.metadata()?;
@@ -165,6 +170,7 @@ impl State {
             oversized: false,
             trailing: true,
             pending: VecDeque::new(),
+            pending_identities: BTreeMap::new(),
             mirrors: BTreeMap::new(),
             tools: BTreeMap::new(),
             finished_tools: BTreeSet::new(),
@@ -235,6 +241,17 @@ impl State {
             "TRANSCRIPT_SCAN_STATE_LIMIT"
         );
         Ok(())
+    }
+
+    fn identity_pending(&self, event: &ConversationEvent) -> bool {
+        self.pending_identities
+            .get(&event.id)
+            .is_some_and(|sequence| self.sequence.saturating_sub(*sequence) < MIRROR_WINDOW)
+    }
+
+    fn break_mirror_associations(&mut self) {
+        self.mirrors.clear();
+        self.pending_identities.clear();
     }
 }
 
@@ -337,36 +354,54 @@ pub(super) fn read_page(
         State::new(path, &mut file, format)?
     };
     state.validate(path, &mut file, format)?;
-    state.turn_range_start = 0;
     let mut events = Vec::<ConversationEvent>::new();
     let mut warnings = BTreeSet::new();
     let mut reader = ReverseReader::new(&mut file);
     let mut lines = 0;
     let mut event_bytes = 0;
+    let mut ended = false;
+    let mut scan_finished = false;
     loop {
         if let Some(event) = state.pending.front() {
             let bytes = event.content.as_ref().map_or(0, String::len);
             if events.len() >= limit.clamp(1, 100) || event_bytes + bytes > MAX_PAGE_BYTES {
                 break;
             }
-            event_bytes += bytes;
-            events.push(state.pending.pop_front().expect("front was present"));
-            continue;
+            // Resolve a no-ID Codex mirror before publishing it. Otherwise the
+            // same message gains a native ID only when both records happen to
+            // fall in one page. Lookahead uses the existing mirror/scan bounds.
+            if ended || !state.identity_pending(event) {
+                event_bytes += bytes;
+                state.pending_identities.remove(&event.id);
+                events.push(state.pending.pop_front().expect("front was present"));
+                state.check_budget()?;
+                continue;
+            }
+        }
+        if ended || scan_finished {
+            break;
         }
         if lines >= SCAN_LINES {
             warnings.insert("TRANSCRIPT_SCAN_BUDGET".to_string());
-            break;
+            scan_finished = true;
+            continue;
         }
         match reader.next(&mut state)? {
             Record::Budget => {
                 warnings.insert("TRANSCRIPT_SCAN_BUDGET".to_string());
-                break;
+                // An oversized gap cannot establish mirror identity, including
+                // when the line spans several scan-budget pages.
+                if state.oversized {
+                    state.break_mirror_associations();
+                }
+                scan_finished = true;
             }
-            Record::End => break,
+            Record::End => ended = true,
             Record::Oversized => {
                 state.trailing = false;
                 state.candidate_turn_id = None;
-                state.turn_range_start = events.len();
+                state.turn_range_start = events.len() + state.pending.len();
+                state.break_mirror_associations();
                 state.association_warning = true;
                 warnings.insert("TRANSCRIPT_OVERSIZED_LINES".to_string());
             }
@@ -389,15 +424,17 @@ pub(super) fn read_page(
                     Ok(value) => parse_record(&mut state, offset, &value, &mut events),
                     Err(_) => {
                         state.candidate_turn_id = None;
-                        state.turn_range_start = events.len();
+                        state.turn_range_start = events.len() + state.pending.len();
+                        state.break_mirror_associations();
                         state.association_warning = true;
                         warnings.insert("TRANSCRIPT_DAMAGED_LINES".to_string());
                     }
                 }
-                state.check_budget()?;
             }
         }
     }
+    state.check_budget()?;
+    state.turn_range_start = state.turn_range_start.saturating_sub(events.len());
     state.validate(path, reader.file, format)?;
     if state.association_warning {
         warnings.insert("TRANSCRIPT_ASSOCIATION_WINDOW".to_string());
@@ -564,6 +601,7 @@ fn merge_event_metadata(
 fn message(
     state: &mut State,
     offset: u64,
+    native_id: Option<&str>,
     kind: ConversationEventKind,
     timestamp: Option<DateTime<Utc>>,
     content: &str,
@@ -574,6 +612,9 @@ fn message(
     page: &mut [ConversationEvent],
 ) {
     let mut event = message_event(offset as usize, kind, timestamp, content, attachments).event;
+    if let Some(id) = native_id {
+        event.id = id.into();
+    }
     // Inferred metadata must not change established mirror selection or IDs.
     event.turn_id = turn.clone();
     event.message_phase = (kind == ConversationEventKind::AgentMessage)
@@ -590,7 +631,12 @@ fn message(
                 .enumerate()
                 .filter(|(_, mirror)| {
                     mirror.primary != primary
-                        && state.sequence.saturating_sub(mirror.sequence) <= 64
+                        && mirror
+                            .native_id
+                            .as_deref()
+                            .zip(native_id)
+                            .is_none_or(|(left, right)| left == right)
+                        && state.sequence.saturating_sub(mirror.sequence) <= MIRROR_WINDOW
                         && mirror_metadata_compatible(mirror, turn.as_deref(), timestamp)
                 })
                 .collect::<Vec<_>>();
@@ -652,6 +698,7 @@ fn message(
                 .get_mut(&key)
                 .and_then(|mirrors| mirrors.remove(index))
                 .expect("mirror exists");
+            state.pending_identities.remove(&counterpart.event_id);
             let metadata_conflict = if ambiguous {
                 if let Some(existing) = page
                     .iter_mut()
@@ -669,6 +716,11 @@ fn message(
                 .chain(state.pending.iter_mut())
                 .find(|existing| existing.id == counterpart.event_id)
             {
+                // Identity lookahead keeps the counterpart pending until the
+                // native identity can be applied, independently of page size.
+                if native_id.is_some() && counterpart.native_id.is_none() {
+                    existing.id.clone_from(&event.id);
+                }
                 merge_event_metadata(
                     existing,
                     event.turn_id.clone(),
@@ -699,11 +751,17 @@ fn message(
             .push_back(Mirror {
                 primary,
                 event_id: event.id.clone(),
+                native_id: native_id.map(str::to_owned),
                 timestamp,
                 turn,
                 sequence: state.sequence,
             });
         state.remember(0, key);
+        if native_id.is_none() {
+            state
+                .pending_identities
+                .insert(event.id.clone(), state.sequence);
+        }
     }
     state.pending.push_back(event);
 }
@@ -714,6 +772,7 @@ fn tool(
     offset: u64,
     index: usize,
     id: &str,
+    native_id: Option<&str>,
     name: &str,
     timestamp: Option<DateTime<Utc>>,
     default_status: Option<&str>,
@@ -733,7 +792,9 @@ fn tool(
     let turn = merge_turn_ids(state, turn, result_turn);
     let turn = (!turn_conflict).then_some(turn).flatten();
     state.pending.push_back(ConversationEvent {
-        id: format!("tool-{offset}-{index}"),
+        id: native_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("tool-{offset}-{index}")),
         kind: ConversationEventKind::ToolSummary,
         turn_id: turn,
         message_phase: None,
@@ -790,7 +851,7 @@ fn note_turn_boundary(
 ) {
     let Some(turn) = turn else {
         state.candidate_turn_id = None;
-        state.turn_range_start = page.len();
+        state.turn_range_start = page.len() + state.pending.len();
         return;
     };
     match boundary {
@@ -799,7 +860,7 @@ fn note_turn_boundary(
         // damaged/truncated suffix borrow the ID across an older turn.
         "complete" => {
             state.candidate_turn_id = Some(turn);
-            state.turn_range_start = page.len();
+            state.turn_range_start = page.len() + state.pending.len();
         }
         // A turn context is an explicit boundary before the records it
         // describes, and validates the completion candidate when present.
@@ -817,7 +878,7 @@ fn note_turn_boundary(
             }
             // A context only identifies its following records. Earlier user
             // messages need their own explicit ID or a matching start marker.
-            state.turn_range_start = page.len();
+            state.turn_range_start = page.len() + state.pending.len();
         }
         // A start marker is before the turn in file order. Once reached while
         // walking backwards, older records must not inherit this turn.
@@ -832,7 +893,7 @@ fn note_turn_boundary(
                 apply_turn_to_events(state, page, &turn);
             }
             state.candidate_turn_id = None;
-            state.turn_range_start = page.len();
+            state.turn_range_start = page.len() + state.pending.len();
         }
         _ => {}
     }
@@ -844,21 +905,17 @@ fn apply_turn_to_events(state: &mut State, page: &mut [ConversationEvent], turn:
     if state.association_warning {
         return;
     }
-    let start = state.turn_range_start.min(page.len());
-    let conflict = page[start..]
+    let start = state.turn_range_start;
+    let conflict = page
         .iter()
         .chain(state.pending.iter())
+        .skip(start)
         .any(|event| event.turn_id.as_deref().is_some_and(|id| id != turn));
     if conflict {
         state.association_warning = true;
         return;
     }
-    for event in &mut page[start..] {
-        if event.turn_id.is_none() {
-            event.turn_id = Some(turn.to_owned());
-        }
-    }
-    for event in &mut state.pending {
+    for event in page.iter_mut().chain(state.pending.iter_mut()).skip(start) {
         if event.turn_id.is_none() {
             event.turn_id = Some(turn.to_owned());
         }
@@ -868,6 +925,12 @@ fn apply_turn_to_events(state: &mut State, page: &mut [ConversationEvent], turn:
 fn record_turn(value: &Value, payload: &Value) -> Option<String> {
     turn_from_payload(payload)
         .or_else(|| normalized_turn(value.get("turn_id").and_then(Value::as_str)))
+}
+
+fn native_item_id(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str).filter(|id| {
+        !id.is_empty() && id.len() <= 256 && id.trim() == *id && !id.chars().any(char::is_control)
+    })
 }
 
 fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [ConversationEvent]) {
@@ -913,6 +976,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
                         offset,
                         index,
                         block.get("id").and_then(Value::as_str).unwrap_or(""),
+                        native_item_id(block.get("id")),
                         block.get("name").and_then(Value::as_str).unwrap_or("tool"),
                         timestamp,
                         Some("started"),
@@ -933,6 +997,11 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
             message(
                 state,
                 offset,
+                // Claude writes one transcript record per content block. The
+                // API message ID is shared by those records; UUID identifies
+                // the individual block even when it falls on another page.
+                native_item_id(value.get("uuid"))
+                    .or_else(|| native_item_id(value.pointer("/message/id"))),
                 if role == Some("assistant") {
                     ConversationEventKind::AgentMessage
                 } else {
@@ -951,6 +1020,8 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
     }
     let payload = value.get("payload").unwrap_or(&Value::Null);
     let id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+    let native_id =
+        native_item_id(payload.get("id")).or_else(|| native_item_id(payload.get("item_id")));
     let turn = record_turn(value, payload);
     if value.get("type").and_then(Value::as_str) == Some("turn_context") {
         note_turn_boundary(state, "context", turn, page);
@@ -978,6 +1049,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
                 message(
                     state,
                     offset,
+                    native_id,
                     if kind == "user_message" {
                         ConversationEventKind::UserMessage
                     } else {
@@ -1025,6 +1097,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
             message(
                 state,
                 offset,
+                native_id,
                 if role == Some("user") {
                     ConversationEventKind::UserMessage
                 } else {
@@ -1056,6 +1129,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
             offset,
             0,
             id,
+            native_id,
             payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -1084,6 +1158,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
                 offset,
                 0,
                 id,
+                native_id,
                 if kind == "exec_command_end" {
                     "shell"
                 } else {
@@ -1099,6 +1174,7 @@ fn parse_record(state: &mut State, offset: u64, value: &Value, page: &mut [Conve
             offset,
             0,
             "",
+            native_id,
             "web_search",
             timestamp,
             payload.get("status").and_then(Value::as_str),
@@ -1450,21 +1526,31 @@ mod tests {
     fn page_cut_does_not_scan_for_or_rewrite_an_unseen_turn_start() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("pages.jsonl");
-        write_records(&path, &turn_records("one"));
-        let latest = read_page(&path, None, 1, Format::Codex).unwrap();
-        assert!(latest.events[0].turn_id.is_none());
-        assert_eq!(
-            latest.events[0].message_phase,
-            Some(MessagePhase::FinalAnswer)
-        );
-        let older = read_page(&path, latest.next_cursor.as_deref(), 50, Format::Codex).unwrap();
-        assert!(
-            older
-                .events
-                .iter()
-                .all(|e| e.turn_id.as_deref() == Some("one"))
-        );
-        assert!(latest.events[0].turn_id.is_none());
+        for native_identity in [false, true] {
+            let mut records = turn_records("one");
+            if native_identity {
+                records[6]["payload"]["id"] = serde_json::json!("native-final");
+            } else {
+                // Identity lookahead may see nearby turn markers, but must not
+                // search beyond its bounded window merely to infer a turn.
+                records.splice(3..3, (0..MIRROR_WINDOW).map(|_| serde_json::json!({})));
+            }
+            write_records(&path, &records);
+            let latest = read_page(&path, None, 1, Format::Codex).unwrap();
+            assert!(latest.events[0].turn_id.is_none());
+            assert_eq!(
+                latest.events[0].message_phase,
+                Some(MessagePhase::FinalAnswer)
+            );
+            let older = read_page(&path, latest.next_cursor.as_deref(), 50, Format::Codex).unwrap();
+            assert!(
+                older
+                    .events
+                    .iter()
+                    .all(|e| e.turn_id.as_deref() == Some("one"))
+            );
+            assert!(latest.events[0].turn_id.is_none());
+        }
     }
 
     #[test]
@@ -1512,6 +1598,235 @@ mod tests {
         );
         assert!(page.events[3].turn_id.is_none());
         assert!(page.events[3].message_phase.is_none());
+    }
+
+    #[test]
+    fn native_message_and_tool_ids_survive_paging_and_equal_text() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("native.jsonl");
+        write_records(
+            &path,
+            &[
+                serde_json::json!({"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant","turn_id":"turn-1","content":[{"type":"output_text","text":"same"}]}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"function_call","id":"native-tool","call_id":"call-1","name":"exec","turn_id":"turn-2"}}),
+                serde_json::json!({"type":"response_item","payload":{"type":"message","id":"message-2","role":"assistant","turn_id":"turn-2","content":[{"type":"output_text","text":"same"}]}}),
+            ],
+        );
+        let full = read_page(&path, None, 50, Format::Codex).unwrap();
+        assert_eq!(
+            full.events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            ["message-1", "native-tool", "message-2"]
+        );
+        let paged = all(&path, Format::Codex, 1);
+        assert_eq!(
+            serde_json::to_value(&paged).unwrap(),
+            serde_json::to_value(&full.events).unwrap()
+        );
+        assert_eq!(full.events[2].turn_id.as_deref(), Some("turn-2"));
+    }
+
+    #[test]
+    fn native_mirrors_prefer_explicit_identity_without_merging_distinct_ids() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("native-mirror.jsonl");
+        let mut response = assistant("same", "final_answer");
+        response["payload"]["id"] = serde_json::json!("native-answer");
+        let mirror = serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"same"}});
+        for records in [
+            vec![response.clone(), mirror.clone()],
+            vec![mirror.clone(), response.clone()],
+        ] {
+            write_records(&path, &records);
+            let page = read_page(&path, None, 50, Format::Codex).unwrap();
+            assert_eq!(page.events.len(), 1);
+            assert_eq!(page.events[0].id, "native-answer");
+        }
+        let mut distinct = mirror;
+        distinct["payload"]["item_id"] = serde_json::json!("another-answer");
+        write_records(&path, &[response, distinct]);
+        assert_eq!(
+            read_page(&path, None, 50, Format::Codex)
+                .unwrap()
+                .events
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn native_mirror_identity_survives_page_sizes_and_append_refresh() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("native-mirror-pages.jsonl");
+        let mut records = vec![
+            serde_json::json!({"type":"response_item","payload":{"type":"message","id":"answer-native","role":"assistant","turn_id":"turn","content":[{"type":"output_text","text":"same"}]}}),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call","id":"tool-native","call_id":"call","name":"exec","turn_id":"turn"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"same","turn_id":"turn"}}),
+        ];
+        for index in 0..49 {
+            records.push(serde_json::json!({"type":"response_item","payload":{"type":"message","id":format!("tail-{index}"),"role":"assistant","turn_id":format!("later-{index}"),"content":[{"type":"output_text","text":format!("later-{index}")}]}}));
+        }
+        write_records(&path, &records);
+        let expected = all(&path, Format::Codex, 100);
+        for limit in [1, 2, 10, 50] {
+            let paged = all(&path, Format::Codex, limit);
+            assert_eq!(
+                paged.iter().map(|event| &event.id).collect::<Vec<_>>(),
+                expected.iter().map(|event| &event.id).collect::<Vec<_>>(),
+                "page size {limit}"
+            );
+        }
+        let before = all(&path, Format::Codex, 50);
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "{}",
+            primary("appended")
+        )
+        .unwrap();
+        let after = all(&path, Format::Codex, 50);
+        assert_eq!(before.len() + 1, after.len());
+        assert_eq!(
+            before.iter().map(|event| &event.id).collect::<Vec<_>>(),
+            after[..before.len()]
+                .iter()
+                .map(|event| &event.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            after
+                .iter()
+                .find(|event| event.content.as_deref() == Some("same"))
+                .unwrap()
+                .id,
+            "answer-native"
+        );
+    }
+
+    #[test]
+    fn mirror_identity_lookahead_continues_across_scan_budgets() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mirror-budget.jsonl");
+        let native = serde_json::json!({"type":"response_item","payload":{"type":"message","id":"native-answer","role":"assistant","turn_id":"turn","content":[{"type":"output_text","text":"answer"}]}});
+        let mirror = serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"answer","turn_id":"turn"}});
+        for byte_budget in [false, true] {
+            let mut file = File::create(&path).unwrap();
+            writeln!(file, "{native}").unwrap();
+            if byte_budget {
+                // Stay within the 64-record mirror window while exceeding the
+                // per-call byte budget. Large pending messages still obey the
+                // existing state and response byte limits.
+                for index in 0..MIRROR_WINDOW - 1 {
+                    writeln!(file, "{}", serde_json::json!({"type":"response_item","padding":"x".repeat(16 * 1024),"payload":{"type":"message","id":format!("middle-{index}"),"role":"user","content":[{"type":"input_text","text":"x".repeat(MAX_MESSAGE_BYTES)}]}})).unwrap();
+                }
+            }
+            writeln!(file, "{mirror}").unwrap();
+            if !byte_budget {
+                for _ in 0..SCAN_LINES - 1 {
+                    writeln!(file, "{{}}").unwrap();
+                }
+            }
+            drop(file);
+            let first = read_page(&path, None, 50, Format::Codex).unwrap();
+            assert!(first.events.is_empty());
+            assert!(
+                first
+                    .warnings
+                    .iter()
+                    .any(|warning| warning == "TRANSCRIPT_SCAN_BUDGET")
+            );
+            let cursor = first.next_cursor.as_deref().unwrap();
+            let next = read_page(&path, Some(cursor), 50, Format::Codex).unwrap();
+            assert!(!next.events.is_empty());
+            assert_eq!(next.events.last().unwrap().id, "native-answer");
+            assert!(
+                next.events
+                    .iter()
+                    .filter_map(|event| event.content.as_ref())
+                    .map(String::len)
+                    .sum::<usize>()
+                    <= MAX_PAGE_BYTES
+            );
+            let retry = read_page(&path, Some(cursor), 50, Format::Codex).unwrap();
+            assert_eq!(
+                serde_json::to_value(&next.events).unwrap(),
+                serde_json::to_value(retry.events).unwrap()
+            );
+            let complete = all(&path, Format::Codex, 50);
+            assert_eq!(
+                complete.len(),
+                if byte_budget {
+                    MIRROR_WINDOW as usize
+                } else {
+                    1
+                }
+            );
+            assert_eq!(
+                complete
+                    .iter()
+                    .filter(|event| event.id == "native-answer")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn claude_uses_record_identity_and_preserves_legacy_fallback() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("claude-native.jsonl");
+        write_records(
+            &path,
+            &[
+                serde_json::json!({"type":"user","uuid":"user-1","message":{"role":"user","content":"hello"}}),
+                serde_json::json!({"type":"assistant","uuid":"record-1","message":{"id":"message-1","role":"assistant","content":[{"type":"text","text":"same"},{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}}),
+                serde_json::json!({"type":"assistant","message":{"id":"message-2","role":"assistant","content":"same"}}),
+                serde_json::json!({"type":"assistant","message":{"id":"bad\nidentity","role":"assistant","content":"legacy"}}),
+            ],
+        );
+        let page = read_page(&path, None, 50, Format::Claude).unwrap();
+        assert!(page.events.iter().any(|event| event.id == "user-1"));
+        assert!(page.events.iter().any(|event| event.id == "record-1"));
+        assert!(page.events.iter().any(|event| event.id == "message-2"));
+        assert!(page.events.iter().any(|event| event.id == "tool-1"));
+        assert!(
+            page.events
+                .iter()
+                .find(|event| event.content.as_deref() == Some("legacy"))
+                .unwrap()
+                .id
+                .starts_with("event-")
+        );
+    }
+
+    #[test]
+    fn claude_blocks_with_shared_message_id_survive_page_boundaries() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("claude-blocks.jsonl");
+        write_records(
+            &path,
+            &[
+                serde_json::json!({"type":"assistant","uuid":"text-before","message":{"id":"shared-response","role":"assistant","content":[{"type":"text","text":"before tool"}]}}),
+                serde_json::json!({"type":"assistant","uuid":"tool-record","message":{"id":"shared-response","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}}),
+                serde_json::json!({"type":"assistant","uuid":"text-after","message":{"id":"shared-response","role":"assistant","content":[{"type":"text","text":"after tool"}]}}),
+            ],
+        );
+        let full = read_page(&path, None, 50, Format::Claude).unwrap();
+        assert_eq!(
+            full.events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            ["text-before", "tool-1", "text-after"]
+        );
+        assert_eq!(full.events[0].content.as_deref(), Some("before tool"));
+        assert_eq!(full.events[2].content.as_deref(), Some("after tool"));
+        let paged = all(&path, Format::Claude, 1);
+        assert_eq!(
+            serde_json::to_value(&paged).unwrap(),
+            serde_json::to_value(&full.events).unwrap()
+        );
     }
 
     #[test]

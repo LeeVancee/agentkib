@@ -62,8 +62,11 @@ pub struct Approval {
     pub details: Value,
 }
 
+pub(crate) type StateObserver = std::sync::Arc<dyn Fn(&SessionState) + Send + Sync>;
+
 /// Owns one explicitly selected conversation. Never merges another host/thread's data.
 pub struct SessionState {
+    pub(crate) observer: Option<StateObserver>,
     pub(crate) conversation: String,
     #[cfg(any(target_os = "macos", test))]
     pub(crate) owner: String,
@@ -82,6 +85,7 @@ impl SessionState {
     #[cfg(any(target_os = "macos", test))]
     pub(crate) fn new(conversation: String, owner: String) -> Self {
         Self {
+            observer: None,
             conversation,
             owner,
             revision: None,
@@ -105,6 +109,18 @@ impl SessionState {
     pub fn snapshot(&self) -> Option<&Value> {
         self.snapshot.as_ref()
     }
+    pub fn turns(&self) -> Result<Vec<&Value>> {
+        self.snapshot
+            .as_ref()
+            .map(conversation_turns)
+            .transpose()
+            .map(|turns| turns.unwrap_or_default())
+    }
+    pub(crate) fn notify_observer(&self) {
+        if let Some(observer) = &self.observer {
+            observer(self);
+        }
+    }
     #[cfg(any(target_os = "macos", test))]
     pub(crate) fn invalidate(&mut self, status: Status) {
         self.revision = None;
@@ -112,6 +128,7 @@ impl SessionState {
         self.snapshot_size = 0;
         self.status = status;
         self.valid_stream = false;
+        self.notify_observer();
     }
 
     pub fn active_turn(&self) -> Option<&str> {
@@ -223,6 +240,8 @@ impl SessionState {
         let result = self.apply_change(&message);
         if result.is_err() {
             self.invalidate(Status::Unsupported);
+        } else {
+            self.notify_observer();
         }
         result
     }

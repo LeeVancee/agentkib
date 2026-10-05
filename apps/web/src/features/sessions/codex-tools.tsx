@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useSessionNavigate } from "./session-navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ApiError,
@@ -7,12 +7,13 @@ import {
   type CodexOptions,
   type CodexQueue,
 } from "@agentkib/web-client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Dialog } from "@/components/dialog";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
+import { subscribeSessionInvalidation } from "./session-events";
 
 export function CodexTools({
   open: controlledOpen,
@@ -42,7 +43,7 @@ export function CodexTools({
     refresh,
   } = useSession();
   const copy = codexCopy[locale];
-  const navigate = useNavigate();
+  const navigate = useSessionNavigate();
   const [context, setContext] = useState<unknown>();
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -70,33 +71,44 @@ export function CodexTools({
     setModel("");
     setEffort("");
     setMode("");
-    setName(current?.title ?? "");
     setEditing("");
     setText("");
     setConfirmed(false);
+  }, [selected]);
+  useEffect(() => {
+    setName(current?.title ?? "");
   }, [selected, current?.title]);
   useEffect(() => {
     if (!open || !selected || access?.status !== "approved") return;
     const abort = new AbortController();
     let flight = false;
+    let dirty = false;
     const load = async () => {
-      if (flight) return;
+      if (flight) {
+        dirty = true;
+        return;
+      }
       flight = true;
       try {
-        const result = await client.codexQueue(selected, abort.signal);
-        if (!abort.signal.aborted) {
-          setQueue(result);
-          setQueueError("");
-        }
-      } catch (error) {
-        if (!abort.signal.aborted) {
-          setQueue(undefined);
-          setQueueError(
-            error instanceof ApiError && error.code === "queue_too_large"
-              ? copy.queueTooLarge
-              : copy.unavailableQueue,
-          );
-        }
+        do {
+          dirty = false;
+          try {
+            const result = await client.codexQueue(selected, abort.signal);
+            if (!abort.signal.aborted) {
+              setQueue(result);
+              setQueueError("");
+            }
+          } catch (error) {
+            if (!abort.signal.aborted) {
+              setQueue(undefined);
+              setQueueError(
+                error instanceof ApiError && error.code === "queue_too_large"
+                  ? copy.queueTooLarge
+                  : copy.unavailableQueue,
+              );
+            }
+          }
+        } while (dirty && !abort.signal.aborted);
       } finally {
         flight = false;
       }
@@ -110,10 +122,16 @@ export function CodexTools({
       .catch(() => {
         if (!abort.signal.aborted) setOptions(undefined);
       });
-    const timer = setInterval(() => void load(), 4000);
+    const unsubscribe = subscribeSessionInvalidation(client, (id, domains) => {
+      if (
+        (!id || id === selected) &&
+        domains.some((domain) => ["queue", "ownership"].includes(domain))
+      )
+        void load();
+    });
     return () => {
       abort.abort();
-      clearInterval(timer);
+      unsubscribe();
     };
   }, [
     open,

@@ -1,10 +1,10 @@
-import { codexCopy } from "@/features/sessions/codex-copy";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { codexCopy } from "../sessions/codex-copy";
+import { Textarea } from "../../components/ui/textarea";
+import { Input } from "../../components/ui/input";
+import { Button } from "../../components/ui/button";
 import { useState } from "react";
 import type { UserQuestionRequest } from "@agentkib/web-client";
-import type { Locale } from "@/i18n";
+import type { Locale } from "../../i18n";
 
 export const MAX_ANSWER_LENGTH = 4096;
 export const MAX_ANSWER_BYTES = 8192;

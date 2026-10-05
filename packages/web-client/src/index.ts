@@ -1,4 +1,6 @@
 export interface ConversationSessionSummary {
+  /** Verified index identities that route to this managed session. */
+  indexedSessionIds?: string[];
   id: string;
   workspace_id: string;
   agent:
@@ -22,6 +24,8 @@ export interface ConversationSessionSummary {
   availability: "readable" | "metadata-only";
   archived: boolean;
   sidechain: boolean;
+  /** Present only when the host has a live observation for this session. */
+  pendingInteraction?: boolean;
 }
 export interface ConversationWorkspaceSummary {
   id: string;
@@ -36,6 +40,8 @@ export interface ConversationCatalog {
 }
 export interface ConversationEvent {
   id: string;
+  /** Native protocols without item identity may expose a temporary live overlay. */
+  ephemeral?: boolean;
   kind: "user-message" | "agent-message" | "tool-summary";
   turn_id?: string | null;
   message_phase?: "commentary" | "final_answer" | null;
@@ -83,6 +89,8 @@ export interface ArtifactTicket {
   kind: ArtifactPreviewKind;
 }
 export interface Access {
+  /** Missing on legacy hosts: history and receipts remain readable. */
+  protocolVersion?: number;
   bearerToken?: string;
   pairingMode?: "code" | "confirmation";
   status: "unpaired" | "pending" | "approved" | "ended";
@@ -400,6 +408,25 @@ export interface CodexActionBody {
 
 export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
 
+export interface SessionStreamHandlers {
+  /** Return the last cursor actually applied by the consumer; rejected frames never advance it. */
+  event: (type: string, data: string, cursor?: string) => void | false | string;
+  open: () => void;
+  error: (error?: unknown) => void;
+}
+
+/** Trusted desktop transport. It implements the same public request projections. */
+export interface ConversationClientBridge {
+  request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T>;
+  stream(sessionId: string, handlers: SessionStreamHandlers): () => void;
+  uploadAttachment(
+    sessionId: string,
+    file: File,
+    progress: (percent: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadedAttachment>;
+}
+
 /** Legacy origin strings remain supported; they only ever select private LAN HTTP. */
 export function resolveWebConnection(connection: WebConnection | string = ""): WebConnection {
   const value =
@@ -421,10 +448,12 @@ export class WebClient {
   csrfToken = "";
   private bearerToken = "";
   private compatible = false;
+  private realtimeVersion = 0;
   private accessFlight?: Promise<Access>;
   constructor(
     private readonly transport?: typeof fetch,
     connection: WebConnection | string = { type: "same-origin" },
+    private readonly bridge?: ConversationClientBridge,
   ) {
     this.connection = resolveWebConnection(connection);
     this.origin = this.connection.type === "lan-http" ? this.connection.origin : "";
@@ -433,20 +462,23 @@ export class WebClient {
     this.bearerToken = "";
     this.csrfToken = "";
     this.compatible = false;
+    this.realtimeVersion = 0;
   }
   async info(signal?: AbortSignal) {
     const info = await this.request<{
       protocolVersion: number;
+      conversationProtocolVersion?: number;
       transport: string;
       capabilities: { read: boolean; send: boolean; approve: boolean };
     }>("info", undefined, signal);
     this.compatible =
-      info.protocolVersion === 1 &&
+      (info.protocolVersion === 1 || info.protocolVersion === 2) &&
       info.transport === "lan" &&
       info.capabilities?.read === true &&
       typeof info.capabilities.send === "boolean" &&
       typeof info.capabilities.approve === "boolean";
     if (!this.compatible) throw new ApiError(409, "incompatible_protocol");
+    this.realtimeVersion = info.conversationProtocolVersion ?? info.protocolVersion;
     return info;
   }
   private headers(body?: unknown) {
@@ -456,10 +488,21 @@ export class WebClient {
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       headers["X-CSRF-Token"] = this.csrfToken;
+      // Old LAN hosts reject unknown headers during pairing preflight. Mutations
+      // still require realtime v2 before reaching this transport boundary.
+      if (this.realtimeVersion === 2) headers["X-AgentKib-Protocol"] = "2";
     }
     return headers;
   }
   async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const operation = path.split("?")[0];
+    if (
+      body !== undefined &&
+      !["pair", "pair/cancel", "logout"].includes(operation) &&
+      this.realtimeVersion !== 2
+    )
+      throw new ApiError(409, "incompatible_protocol", "not-dispatched");
+    if (this.bridge) return this.bridge.request<T>(path, body, signal);
     if (
       this.connection.type === "lan-http" &&
       path !== "info" &&
@@ -513,32 +556,78 @@ export class WebClient {
       this.bearerToken = result.bearerToken;
     }
     this.csrfToken = result.csrfToken;
+    this.realtimeVersion = result.protocolVersion ?? 0;
     const { bearerToken: _credential, ...publicAccess } = result;
     return publicAccess;
   }
-  stream(
-    sessionId: string,
-    handlers: {
-      event: (type: string, data: string) => void;
-      open: () => void;
-      error: (error?: unknown) => void;
-    },
-  ) {
-    const path = `/api/web/v1/stream?${new URLSearchParams({ sessionId })}`;
+  stream(sessionId: string, handlers: SessionStreamHandlers) {
+    if (this.realtimeVersion !== 2) {
+      queueMicrotask(() => handlers.error(new ApiError(409, "incompatible_protocol")));
+      return () => {};
+    }
+    if (this.bridge) return this.bridge.stream(sessionId, handlers);
+    const query = new URLSearchParams({ protocolVersion: "2" });
+    if (sessionId) query.set("sessionId", sessionId);
+    const path = `/api/web/v1/stream?${query}`;
     if (this.connection.type === "same-origin") {
-      const source = new EventSource(path);
-      for (const type of ["snapshot", "unavailable", "access-ended"])
-        source.addEventListener(type, (e) => handlers.event(type, (e as MessageEvent).data));
-      source.onopen = handlers.open;
-      source.onerror = () => handlers.error();
-      return () => source.close();
+      let closed = false;
+      let source: EventSource | undefined;
+      let cursor: string | undefined;
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      const connect = () => {
+        if (closed) return;
+        const current = new EventSource(
+          cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path,
+        );
+        source = current;
+        for (const type of [
+          "session-event",
+          "session-ready",
+          "control-changed",
+          "catalog-invalidated",
+          "access-changed",
+          "unavailable",
+          "access-ended",
+        ])
+          current.addEventListener(type, (e) => {
+            if (closed || source !== current) return;
+            const event = e as MessageEvent;
+            const applied = handlers.event(type, event.data, event.lastEventId || undefined);
+            if (typeof applied === "string") cursor = applied;
+            if (type === "access-ended") {
+              closed = true;
+              current.close();
+              clearTimeout(retry);
+            }
+          });
+        current.onopen = () => {
+          if (!closed && source === current) handlers.open();
+        };
+        current.onerror = () => {
+          if (closed || source !== current) return;
+          // EventSource's implicit Last-Event-ID includes unaccepted frames. Recreate
+          // the connection ourselves using only the reducer's applied cursor.
+          current.close();
+          source = undefined;
+          handlers.error();
+          if (!closed) retry = setTimeout(connect, 2000);
+        };
+      };
+      connect();
+      return () => {
+        closed = true;
+        source?.close();
+        clearTimeout(retry);
+      };
     }
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let cursor: string | undefined;
     const run = async () => {
       try {
         if (!this.bearerToken || !this.compatible) throw new ApiError(401, "access_ended");
-        const response = await (this.transport ?? fetch)(`${this.origin}${path}`, {
+        const streamPath = cursor ? `${path}&afterCursor=${encodeURIComponent(cursor)}` : path;
+        const response = await (this.transport ?? fetch)(`${this.origin}${streamPath}`, {
           headers: this.headers(),
           credentials: "omit",
           cache: "no-store",
@@ -558,7 +647,11 @@ export class WebClient {
         handlers.open();
         const reader = response.body.getReader(),
           decoder = new TextDecoder();
-        const parser = new SseParser(handlers.event);
+        const parser = new SseParser((type, data, id) => {
+          const applied = handlers.event(type, data, id);
+          if (typeof applied === "string") cursor = applied;
+          if (type === "access-ended") abort.abort();
+        });
         try {
           while (!abort.signal.aborted) {
             const { done, value } = await reader.read();
@@ -637,6 +730,9 @@ export class WebClient {
   ): Promise<UploadedAttachment> {
     if (this.connection.type === "lan-http" && (!this.compatible || !this.bearerToken))
       return Promise.reject(new ApiError(401, "access_ended"));
+    if (this.realtimeVersion !== 2)
+      return Promise.reject(new ApiError(409, "incompatible_protocol", "not-dispatched"));
+    if (this.bridge) return this.bridge.uploadAttachment(sessionId, file, progress, signal);
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const abort = () => xhr.abort();
@@ -740,10 +836,11 @@ export class SseParser {
   private lineBytes = 0;
   private lastCodeUnit = 0;
   private event = "message";
+  private id: string | undefined;
   private data: string[] = [];
   private dataBytes = 0;
   private encoder = new TextEncoder();
-  constructor(private readonly emit: (event: string, data: string) => void) {}
+  constructor(private readonly emit: (event: string, data: string, cursor?: string) => void) {}
   push(chunk: string) {
     let start = 0;
     while (start < chunk.length) {
@@ -775,10 +872,17 @@ export class SseParser {
       this.lastCodeUnit = 0;
       start = end + 1;
       if (!line) {
-        if (this.data.length) this.emit(this.event, this.data.join("\n"));
+        if (this.data.length) {
+          if (this.id) this.emit(this.event, this.data.join("\n"), this.id);
+          else this.emit(this.event, this.data.join("\n"));
+        }
         this.event = "message";
         this.data = [];
         this.dataBytes = 0;
+      } else if (line.startsWith("id:")) {
+        const id = line.slice(3).replace(/^ /, "");
+        if (id.length > 4096) throw new Error("stream_cursor_too_large");
+        if (!id.includes("\0")) this.id = id;
       } else if (line.startsWith("event:")) {
         if (line.length > 128) throw new Error("stream_too_large");
         this.event = line.slice(6).replace(/^ /, "");

@@ -300,6 +300,22 @@ describe("authorized project artifacts", () => {
     service.revokeDevice("phone");
     expect((await http(revoked.url)).status).toBe(410);
   });
+  it("only identifies exact unexpired ticket URLs for their issuing device", async () => {
+    await writeFile(join(root, "file.txt"), "download");
+    const ticket = await service.issueTicket(scope, {
+      artifactId: (await entry("file.txt")).id,
+      ttlMs: 1000,
+    });
+    expect(service.ownsTicketUrl("phone", ticket.url)).toBe(true);
+    expect(service.ownsTicketUrl("desktop-local", ticket.url)).toBe(false);
+    expect(service.ownsTicketUrl("phone", ticket.url + "?redirect=other")).toBe(false);
+    expect(service.ownsTicketUrl("phone", ticket.url.replace("file.txt", "other.txt"))).toBe(false);
+    expect(service.ownsTicketUrl("phone", ticket.url.replace(origin, "https://example.com"))).toBe(
+      false,
+    );
+    now += 1000;
+    expect(service.ownsTicketUrl("phone", ticket.url)).toBe(false);
+  });
   it("snapshots a bounded HTML bundle, keeps relative resources and isolates script execution", async () => {
     await mkdir(join(root, "site", "assets"), { recursive: true });
     await writeFile(

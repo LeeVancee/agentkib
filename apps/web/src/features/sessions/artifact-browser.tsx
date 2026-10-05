@@ -7,7 +7,7 @@ import {
   type ArtifactTicket,
 } from "@agentkib/web-client";
 import { ArtifactPreview } from "./artifact-viewers";
-import { Button } from "@/components/ui/button";
+import { Button } from "../../components/ui/button";
 import { artifactCopy } from "./artifact-copy";
 import { ArtifactPanel } from "./artifact-panel";
 import { useSession } from "./session-context";
@@ -30,7 +30,7 @@ export function ArtifactBrowser({
   onOpenChange?: (open: boolean) => void;
   showTrigger?: boolean;
 } = {}) {
-  const { client, access, current, selected, locale } = useSession();
+  const { client, access, current, selected, locale, embedded } = useSession();
   const copy = artifactCopy(locale);
   const titleId = useId();
   const [localOpen, setLocalOpen] = useState(false);
@@ -494,6 +494,7 @@ export function ArtifactBrowser({
                     <a
                       href={download.url}
                       download
+                      target={embedded ? "_blank" : undefined}
                       rel="noreferrer"
                       className="inline-flex min-h-11 items-center px-3 underline"
                     >

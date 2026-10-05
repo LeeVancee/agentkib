@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
@@ -74,6 +74,7 @@ fn question_schema(input: &Value) -> Result<Vec<Value>> {
 
 #[derive(Default, Clone)]
 struct State {
+    publisher: Option<crate::session_stream::Publisher>,
     session_id: String,
     revision: u64,
     turn_id: String,
@@ -82,6 +83,10 @@ struct State {
     questions: Vec<Value>,
     seen_requests: HashSet<String>,
     stream_text: String,
+    message_id: String,
+    message_text: String,
+    text_block_serial: u64,
+    tools: BTreeMap<String, Value>,
     reason: Option<String>,
     initialized: bool,
     init_id: String,
@@ -90,6 +95,83 @@ struct State {
 }
 
 impl State {
+    fn snapshot(&self) -> Value {
+        let mut end = self.stream_text.len().min((512 * 1024 - 2) / 6);
+        while !self.stream_text.is_char_boundary(end) {
+            end -= 1;
+        }
+        json!({"status":self.status,"sendEnabled":self.status == "idle","stopEnabled":self.status != "idle" && !self.turn_id.is_empty() && self.reason.is_none(),"revision":self.revision,"turnId":self.turn_id,"approvals":self.approvals,"questions":self.questions,"streamText":&self.stream_text[..end],"streamTextTruncated":end < self.stream_text.len(),"reason":self.reason})
+    }
+    fn publish(&self) {
+        if let Some(publisher) = &self.publisher {
+            let fallback = format!("live:{}:assistant", self.turn_id);
+            let id = if self.message_id.is_empty() {
+                &fallback
+            } else {
+                &self.message_id
+            };
+            publisher.item_text(id, Some(&self.turn_id), &self.message_text);
+            publisher.observe(self.snapshot());
+        }
+    }
+    fn publish_completed_message(&self) {
+        if let Some(publisher) = &self.publisher
+            && !self.message_text.is_empty()
+        {
+            let id = if self.message_id.is_empty() {
+                format!("live:{}:assistant", self.turn_id)
+            } else {
+                self.message_id.clone()
+            };
+            publisher.item(json!({"id":id,"kind":"agent-message","turn_id":self.turn_id,"content":self.message_text,"timestamp":chrono::Utc::now().to_rfc3339(),"attachment_count":0,"truncated":false}));
+        }
+    }
+    fn publish_user(&self, frame: &Value) {
+        let Some(publisher) = &self.publisher else {
+            return;
+        };
+        // Match the history reader's identity, including replayed native users.
+        let Some(id) = frame["uuid"]
+            .as_str()
+            .filter(|id| valid_message_id(id))
+            .or_else(|| {
+                frame["message"]["id"]
+                    .as_str()
+                    .filter(|id| valid_message_id(id))
+            })
+        else {
+            return;
+        };
+        if frame["isCompactSummary"] == true {
+            return;
+        }
+        let content = &frame["message"]["content"];
+        let text = content.as_str().map(str::to_owned).unwrap_or_else(|| {
+            content
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|block| {
+                    matches!(
+                        block["type"].as_str(),
+                        Some("text" | "input_text" | "output_text")
+                    )
+                })
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        let attachments = content
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|block| matches!(block["type"].as_str(), Some("image" | "document")))
+            .count();
+        if text.is_empty() && attachments == 0 {
+            return;
+        }
+        publisher.item(json!({"id":id,"kind":"user-message","content":text,"attachment_count":attachments,"truncated":false}));
+    }
     fn answer(&mut self, id: &Value, turn: &str, answers: &Value, revision: u64) -> Result<Value> {
         ensure!(
             revision == self.revision && turn == self.turn_id,
@@ -138,6 +220,7 @@ impl State {
         input["answers"] = Value::Object(native);
         self.questions.remove(index);
         self.revision += 1;
+        self.publish();
         self.status = if !self.questions.is_empty() {
             "waiting-input"
         } else if !self.approvals.is_empty() {
@@ -166,6 +249,7 @@ impl State {
         self.questions.clear();
         self.pending_user = None;
         self.revision += 1;
+        self.publish();
     }
 
     fn check_interaction_budget(&self, pending: &Value) -> Result<()> {
@@ -178,12 +262,22 @@ impl State {
         Ok(())
     }
 
+    fn start_text_block(&mut self) {
+        self.text_block_serial += 1;
+        // A transcript UUID arrives only with the completed AssistantMessage.
+        // Keep partial blocks separate until that UUID replaces this identity.
+        self.message_id = format!("live:{}:assistant:{}", self.turn_id, self.text_block_serial);
+        self.message_text.clear();
+        self.partial = false;
+    }
+
     fn append(&mut self, text: &str) -> Result<()> {
         ensure!(
             self.stream_text.len() + text.len() <= MAX_TEXT,
             "Claude output exceeds 4 MiB"
         );
         self.stream_text.push_str(text);
+        self.message_text.push_str(text);
         Ok(())
     }
 
@@ -211,6 +305,7 @@ impl State {
             .context("unknown or already answered Claude approval")?;
         let approval = self.approvals.remove(index);
         self.revision += 1;
+        self.publish();
         self.status = if !self.questions.is_empty() {
             "waiting-input"
         } else if self.approvals.is_empty() {
@@ -258,6 +353,7 @@ impl State {
                 );
                 self.initialized = true;
                 self.revision += 1;
+                self.publish();
                 return Ok(self.pending_user.take());
             }
             "control_request" => {
@@ -329,6 +425,7 @@ impl State {
                     self.questions.push(pending);
                     self.status = "waiting-input".into();
                     self.revision += 1;
+                    self.publish();
                     return Ok(None);
                 }
                 ensure!(
@@ -381,22 +478,82 @@ impl State {
             }
             "stream_event" => {
                 let event = &frame["event"];
+                if event["type"] == "message_start" {
+                    self.message_id.clear();
+                    self.message_text.clear();
+                    self.partial = false;
+                }
+                if event["type"] == "content_block_start"
+                    && event["content_block"]["type"] == "text"
+                {
+                    self.start_text_block();
+                    self.append(event["content_block"]["text"].as_str().unwrap_or(""))?;
+                    self.partial = true;
+                }
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta"
                 {
                     let text = event["delta"]["text"]
                         .as_str()
                         .context("invalid Claude text delta")?;
+                    if !self.partial {
+                        self.start_text_block();
+                    }
                     self.append(text)?;
                     self.partial = true;
                 }
             }
             "assistant" => {
+                let native = frame["uuid"]
+                    .as_str()
+                    .filter(|id| valid_message_id(id))
+                    .or_else(|| {
+                        frame["message"]["id"]
+                            .as_str()
+                            .filter(|id| valid_message_id(id))
+                    })
+                    .unwrap_or("");
+                let has_text = frame["message"]["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "text"));
+                if self.partial && has_text && !native.is_empty() {
+                    if let Some(publisher) = &self.publisher {
+                        publisher.alias_item(&self.message_id, native);
+                    }
+                    self.message_id = native.into();
+                } else if !self.partial && has_text && self.message_id != native {
+                    self.message_id = native.into();
+                    self.message_text.clear();
+                }
                 if !self.partial
                     && let Some(blocks) = frame["message"]["content"].as_array()
                 {
                     for block in blocks {
                         if block["type"] == "text" {
                             self.append(block["text"].as_str().context("invalid Claude text")?)?;
+                        }
+                    }
+                }
+                if has_text {
+                    self.publish_completed_message();
+                }
+                if let Some(publisher) = &self.publisher {
+                    for block in frame["message"]["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|block| block["type"] == "tool_use")
+                    {
+                        if let Some(id) = block["id"]
+                            .as_str()
+                            .filter(|id| !id.is_empty() && id.len() <= 256)
+                        {
+                            ensure!(
+                                self.tools.len() < 1024 || self.tools.contains_key(id),
+                                "too many Claude tools"
+                            );
+                            let item = json!({"id":id,"kind":"tool-summary","turn_id":self.turn_id,"tool_name":block["name"],"tool_status":"running","attachment_count":0,"truncated":false});
+                            self.tools.insert(id.into(), item.clone());
+                            publisher.item(item);
                         }
                     }
                 }
@@ -432,6 +589,7 @@ impl State {
                     self.append(text)?;
                 }
                 self.status = "idle".into();
+                self.publish_completed_message();
                 self.stream_text.clear();
             }
             "system" => {
@@ -444,7 +602,30 @@ impl State {
                     "Claude background tasks are unsupported in managed sessions"
                 );
             }
-            "user" | "tool_progress" | "tool_use_summary" | "rate_limit_event" | "auth_status"
+            "user" => {
+                self.publish_user(&frame);
+                for block in frame["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| block["type"] == "tool_result")
+                {
+                    if let Some(item) = block["tool_use_id"]
+                        .as_str()
+                        .and_then(|id| self.tools.get_mut(id))
+                    {
+                        item["tool_status"] = json!(if block["is_error"] == true {
+                            "failed"
+                        } else {
+                            "completed"
+                        });
+                        if let Some(publisher) = &self.publisher {
+                            publisher.item(item.clone());
+                        }
+                    }
+                }
+            }
+            "tool_progress" | "tool_use_summary" | "rate_limit_event" | "auth_status"
             | "prompt_suggestion" => {}
             unknown => {
                 let safe_type: String = unknown
@@ -462,6 +643,7 @@ impl State {
             }
         }
         self.revision += 1;
+        self.publish();
         Ok(None)
     }
 }
@@ -471,7 +653,28 @@ enum Event {
     Error(String),
     Eof,
     Write(Value),
+    UserWritten(Value),
     Control(Control, SyncSender<Result<()>>),
+}
+
+fn valid_message_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && id.trim() == id && !id.chars().any(char::is_control)
+}
+
+fn write_native_frame(
+    stdin: &mut impl Write,
+    frame: Value,
+    events: &SyncSender<Event>,
+) -> Result<()> {
+    serde_json::to_writer(&mut *stdin, &frame)?;
+    stdin.write_all(b"\n")?;
+    stdin.flush()?;
+    // Queue admission and initialize acknowledgement do not prove dispatch.
+    // Only a complete pipe write publishes the original native user UUID.
+    if frame["type"] == "user" {
+        events.send(Event::UserWritten(frame))?;
+    }
+    Ok(())
 }
 
 enum Control {
@@ -549,6 +752,17 @@ fn acquire_session_lock(path: &std::path::Path) -> Result<SessionLock> {
 }
 
 impl Runner {
+    pub(crate) fn republish_live(&self) {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(publisher) = &state.publisher {
+            publisher.observe(state.snapshot());
+        }
+    }
+    pub(crate) fn set_publisher(&self, publisher: crate::session_stream::Publisher) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.publisher = Some(publisher);
+        state.publish();
+    }
     #[cfg(test)]
     pub(crate) fn mock_worker(status: &str) -> Self {
         let runner = Self::new(PathBuf::new(), "test".into());
@@ -593,6 +807,7 @@ impl Runner {
             state.init_id.clear();
             state.seen_requests.clear();
             state.revision += 1;
+            state.publish();
         }
         true
     }
@@ -615,14 +830,7 @@ impl Runner {
 
     pub fn snapshot(&self) -> Value {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        // Keep the preview below 512 KiB even with worst-case JSON escaping;
-        // retain the full output internally and in native history. Never truncate
-        // approval/question inputs, which must remain complete to be actionable.
-        let mut end = state.stream_text.len().min((512 * 1024 - 2) / 6);
-        while !state.stream_text.is_char_boundary(end) {
-            end -= 1;
-        }
-        json!({"status":state.status,"sendEnabled":state.status == "idle","stopEnabled":state.status != "idle" && !state.turn_id.is_empty() && state.reason.is_none(),"revision":state.revision,"turnId":state.turn_id,"approvals":state.approvals,"questions":state.questions,"streamText":&state.stream_text[..end],"streamTextTruncated":end < state.stream_text.len(),"reason":state.reason})
+        state.snapshot()
     }
 
     pub fn send(&self, text: &str, expected_revision: u64) -> Result<()> {
@@ -656,10 +864,14 @@ impl Runner {
         let user = json!({"type":"user","session_id":self.uuid,"parent_tool_use_id":null,"uuid":turn_id,"message":{"role":"user","content":text}});
         state.turn_id = turn_id;
         state.stream_text.clear();
+        state.message_text.clear();
+        state.message_id.clear();
+        state.tools.clear();
         state.partial = false;
         state.reason = None;
         state.status = "running".into();
         state.revision += 1;
+        state.publish();
         if let Some(worker) = worker.as_ref() {
             if let Err(error) = worker.sender.try_send(Event::Write(user)) {
                 state.fail("Claude worker unavailable");
@@ -675,6 +887,7 @@ impl Runner {
                     // callers resynchronize before explicitly trying again.
                     *state = before_start.expect("startup state captured");
                     state.revision += 1;
+                    state.publish();
                     state.reason = Some(error.to_string());
                     return Err(error);
                 }
@@ -742,6 +955,7 @@ impl Runner {
         state.pending_user = None;
         state.reason = None;
         state.revision += 1;
+        state.publish();
         Ok(())
     }
 
@@ -822,12 +1036,7 @@ impl Runner {
         // our own child, even when that child has stopped reading stdin.
         thread::spawn(move || {
             for frame in write_queue {
-                let result = (|| -> Result<()> {
-                    serde_json::to_writer(&mut stdin, &frame)?;
-                    stdin.write_all(b"\n")?;
-                    stdin.flush()?;
-                    Ok(())
-                })();
+                let result = write_native_frame(&mut stdin, frame, &write_errors);
                 if result.is_err() {
                     let _ = write_errors.send(Event::Error("Claude stdin write failed".into()));
                     break;
@@ -865,6 +1074,9 @@ impl Runner {
             let _lock = lock;
             let started = Instant::now();
             let result = (|| -> Result<()> {
+                let mut awaiting_user_write = false;
+                let mut early_frames = Vec::new();
+                let mut early_bytes = 0usize;
                 write_frame(&writer, initialize)?;
                 loop {
                     if worker_stop.load(Ordering::Acquire) {
@@ -888,15 +1100,43 @@ impl Runner {
                     }
                     match event {
                         Ok(Event::Frame(frame)) => {
+                            if awaiting_user_write {
+                                // The stdout reader can win the scheduling race
+                                // with the writer acknowledgement. Keep the user
+                                // before its reply without holding a state lock
+                                // across a potentially blocked stdin write.
+                                early_bytes += serde_json::to_vec(&frame)?.len();
+                                ensure!(
+                                    early_bytes <= MAX_LINE,
+                                    "Claude output before dispatch confirmation exceeds limit"
+                                );
+                                early_frames.push(frame);
+                                continue;
+                            }
                             let response = shared
                                 .lock()
                                 .unwrap_or_else(|p| p.into_inner())
                                 .frame(frame)?;
                             if let Some(response) = response {
+                                awaiting_user_write = response["type"] == "user";
                                 write_frame(&writer, response)?;
                             }
                         }
-                        Ok(Event::Write(frame)) => write_frame(&writer, frame)?,
+                        Ok(Event::Write(frame)) => {
+                            awaiting_user_write = frame["type"] == "user";
+                            write_frame(&writer, frame)?;
+                        }
+                        Ok(Event::UserWritten(frame)) => {
+                            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+                            state.publish_user(&frame);
+                            awaiting_user_write = false;
+                            for frame in early_frames.drain(..) {
+                                if let Some(response) = state.frame(frame)? {
+                                    write_frame(&writer, response)?;
+                                }
+                            }
+                            early_bytes = 0;
+                        }
                         Ok(Event::Control(control, reply)) => {
                             let result = process_control(
                                 &mut shared.lock().unwrap_or_else(|p| p.into_inner()),
@@ -1125,6 +1365,40 @@ mod tests {
             turn_id: "turn".into(),
             ..State::default()
         }
+    }
+    #[test]
+    fn control_republication_reads_native_completion_without_repeating_items() {
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        let runner = Runner::new(PathBuf::new(), "native".into());
+        runner.set_publisher(hub.publisher("session", "managed-resume"));
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.status = "running".into();
+            state.turn_id = "turn".into();
+            state.initialized = true;
+            state.revision = 10;
+            state.publish();
+        }
+        let detached = runner.snapshot();
+        {
+            let mut state = runner.state.lock().unwrap();
+            state.frame(json!({"type":"assistant","uuid":"answer","message":{"content":[{"type":"text","text":"done"}]}})).unwrap();
+            state
+                .frame(json!({"type":"result","subtype":"success","is_error":false}))
+                .unwrap();
+        }
+        let completed = hub.subscribe("session", None).unwrap();
+        runner.republish_live();
+        let after = hub.subscribe("session", None).unwrap();
+        let live = &after["events"][0]["payload"]["live"];
+        assert_eq!(live["status"], "idle");
+        assert_eq!(live["sendEnabled"], true);
+        assert!(live["revision"].as_u64() > detached["revision"].as_u64());
+        assert_eq!(after["cursor"], completed["cursor"]);
+        assert_eq!(
+            after["events"][0]["payload"]["items"],
+            completed["events"][0]["payload"]["items"]
+        );
     }
     fn permission(id: &str) -> Value {
         json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"}}})
@@ -1365,6 +1639,144 @@ mod tests {
         assert!(state.initialized);
     }
     #[test]
+    fn subscriptions_receive_written_users_on_initial_and_continuing_sends() {
+        let (published, events) = mpsc::channel();
+        let hub = crate::session_stream::Hub::new("boot".into(), move |event| {
+            published.send(event).is_ok()
+        });
+        let runner = Runner::new(PathBuf::new(), "native-session".into());
+        runner.set_publisher(hub.publisher("s", "managed-resume"));
+        hub.subscribe("s", None).unwrap();
+        let shared = runner.state.clone();
+        runner
+            .send_with_start("same prompt", 0, move |state, user| {
+                state.init_id = "init".into();
+                state.pending_user = Some(user);
+                let (sender, receiver) = mpsc::sync_channel(32);
+                let written = sender.clone();
+                let stop = Arc::new(AtomicBool::new(false));
+                let stopped = stop.clone();
+                let join = thread::spawn(move || {
+                    let mut stdin = Vec::new();
+                    while !stopped.load(Ordering::Acquire) {
+                        match receiver.recv_timeout(Duration::from_millis(10)) {
+                            Ok(Event::Frame(frame)) => {
+                                let response = shared.lock().unwrap().frame(frame).unwrap();
+                                if let Some(response) = response {
+                                    write_native_frame(&mut stdin, response, &written).unwrap();
+                                }
+                            }
+                            Ok(Event::Write(frame)) => {
+                                write_native_frame(&mut stdin, frame, &written).unwrap()
+                            }
+                            Ok(Event::UserWritten(frame)) => {
+                                shared.lock().unwrap().publish_user(&frame)
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            _ => break,
+                        }
+                    }
+                });
+                Ok(Worker {
+                    sender,
+                    stop,
+                    join: Some(join),
+                })
+            })
+            .unwrap();
+        let pending = hub.subscribe("s", None).unwrap();
+        assert!(
+            pending["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        hub.unsubscribe(pending["subscriptionId"].as_str().unwrap());
+        runner.worker.lock().unwrap().as_ref().unwrap().sender.send(Event::Frame(json!({"type":"control_response","response":{"request_id":"init","subtype":"success"}}))).unwrap();
+        let mut ids = Vec::new();
+        for index in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let event = loop {
+                let event = events
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                if event["type"] == "item-upsert" && event["payload"]["kind"] == "user-message" {
+                    break event;
+                }
+            };
+            let id = event["payload"]["id"].as_str().unwrap().to_owned();
+            assert_eq!(event["payload"]["content"], "same prompt");
+            assert_eq!(runner.snapshot()["turnId"], id);
+            ids.push(id.clone());
+            // The echoed/replayed native UUID has the same identity as JSONL history.
+            let mut state = runner.state.lock().unwrap();
+            state.frame(json!({"type":"user","uuid":id,"message":{"role":"user","content":"same prompt"}})).unwrap();
+            state
+                .frame(json!({"type":"result","subtype":"success","is_error":false}))
+                .unwrap();
+            let revision = state.revision;
+            drop(state);
+            if index == 0 {
+                runner.send("same prompt", revision).unwrap();
+            }
+        }
+        assert_ne!(ids[0], ids[1]);
+        let baseline = hub.subscribe("s", None).unwrap();
+        let users: Vec<_> = baseline["events"][0]["payload"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "user-message")
+            .collect();
+        assert_eq!(users.len(), 2);
+        assert_eq!(
+            users
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn failed_user_writes_and_startup_never_publish_a_user() {
+        struct FailedFlush;
+        impl Write for FailedFlush {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        assert!(
+            write_native_frame(
+                &mut FailedFlush,
+                json!({"type":"user","uuid":"user","message":{"content":"not confirmed"}}),
+                &sender
+            )
+            .is_err()
+        );
+        assert!(receiver.try_recv().is_err());
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        let runner = Runner::new(PathBuf::new(), "test".into());
+        runner.set_publisher(hub.publisher("s", "managed-resume"));
+        assert!(
+            runner
+                .send_with_start("not dispatched", 0, |_, _| bail!(
+                    "synthetic startup failure"
+                ))
+                .is_err()
+        );
+        assert!(
+            hub.subscribe("s", None).unwrap()["events"][0]["payload"]["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
     fn deny_cancel_unknown_and_failure() {
         let mut state = active();
         state.frame(permission("a")).unwrap();
@@ -1398,6 +1810,164 @@ mod tests {
             .unwrap();
         assert_eq!(state.status, "idle");
         assert!(state.stream_text.is_empty());
+    }
+    #[test]
+    fn completed_message_projection_preserves_native_and_result_only_identities() {
+        for (native, expected_id) in [
+            (Some("message-id"), "message-id"),
+            (None, "live:turn:assistant"),
+        ] {
+            let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+            let mut state = active();
+            state.publisher = Some(hub.publisher("s", "managed-resume"));
+            state.publish();
+            if let Some(native) = native {
+                state.frame(json!({"type":"assistant","uuid":native,"message":{"content":[{"type":"text","text":"hello"}]}})).unwrap();
+                let completed = hub.subscribe("s", None).unwrap();
+                hub.unsubscribe(completed["subscriptionId"].as_str().unwrap());
+                assert_eq!(
+                    completed["events"][0]["payload"]["items"][0]["id"],
+                    expected_id
+                );
+            }
+            state
+                .frame(
+                    json!({"type":"result","subtype":"success","is_error":false,"result":"hello"}),
+                )
+                .unwrap();
+            let result = hub.subscribe("s", None).unwrap();
+            let items = result["events"][0]["payload"]["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0]["id"], expected_id);
+            assert_eq!(items[0]["kind"], "agent-message");
+            assert_eq!(items[0]["content"], "hello");
+            assert_eq!(items[0]["turn_id"], state.turn_id);
+            assert_eq!(items[0]["truncated"], false);
+            assert!(items[0]["timestamp"].as_str().is_some());
+            assert!(state.stream_text.is_empty());
+        }
+    }
+
+    #[test]
+    fn native_message_ids_survive_deltas_and_multiple_messages_in_one_turn() {
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        let mut state = active();
+        state.publisher = Some(hub.publisher("s", "managed-resume"));
+        state.publish();
+        for (id, text) in [("msg-z", "first"), ("msg-a", "second")] {
+            state.frame(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":id}}})).unwrap();
+            state.frame(json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":text}}})).unwrap();
+            state.frame(json!({"type":"assistant","message":{"id":id,"content":[{"type":"text","text":text}]}})).unwrap();
+        }
+        state.frame(json!({"type":"assistant","message":{"id":"msg-a","content":[{"type":"tool_use","id":"tool-a","name":"Read","input":{}}]}})).unwrap();
+        let result = hub.subscribe("s", None).unwrap();
+        let items = result["events"][0]["payload"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["id"], "msg-z");
+        assert_eq!(items[0]["content"], "first");
+        assert_eq!(items[1]["id"], "msg-a");
+        assert_eq!(items[1]["content"], "second");
+    }
+
+    #[test]
+    fn shared_api_message_keeps_each_completed_block_and_partial_identity() {
+        for streaming in [false, true] {
+            let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+            let mut state = active();
+            state.publisher = Some(hub.publisher("s", "managed-resume"));
+            state.publish();
+            if streaming {
+                state.frame(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"shared-response"}}})).unwrap();
+            }
+            for (index, id, text) in [
+                (0, "text-before", "before tool"),
+                (2, "text-after", "after tool"),
+            ] {
+                if index == 2 {
+                    state.frame(json!({"type":"assistant","uuid":"tool-record","message":{"id":"shared-response","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}})).unwrap();
+                }
+                if streaming {
+                    state.frame(json!({"type":"stream_event","event":{"type":"content_block_start","index":index,"content_block":{"type":"text","text":""}}})).unwrap();
+                    state.frame(json!({"type":"stream_event","event":{"type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":text}}})).unwrap();
+                    let partial = hub.subscribe("s", None).unwrap();
+                    let items = partial["events"][0]["payload"]["items"].as_array().unwrap();
+                    let item = items.last().unwrap();
+                    assert!(item["id"].as_str().unwrap().starts_with("live:"));
+                    assert_eq!(item["content"], text);
+                    assert_eq!(items.len(), if index == 0 { 1 } else { 3 });
+                }
+                // Claude emits one AssistantMessage per completed block with
+                // a distinct record UUID and the same API response ID.
+                state.frame(json!({"type":"assistant","uuid":id,"message":{"id":"shared-response","content":[{"type":"text","text":text}]}})).unwrap();
+                if streaming {
+                    state.frame(json!({"type":"stream_event","event":{"type":"content_block_stop","index":index}})).unwrap();
+                }
+            }
+            assert_eq!(state.stream_text, "before toolafter tool");
+            state
+                .frame(json!({"type":"result","subtype":"success","is_error":false}))
+                .unwrap();
+            let result = hub.subscribe("s", None).unwrap();
+            let items = result["events"][0]["payload"]["items"].as_array().unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["text-before", "tool-1", "text-after"]
+            );
+            assert_eq!(items[0]["content"], "before tool");
+            assert_eq!(items[2]["content"], "after tool");
+        }
+    }
+
+    #[test]
+    fn replayed_user_uses_transcript_uuid_before_api_message_id() {
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        let mut state = active();
+        state.publisher = Some(hub.publisher("s", "managed-resume"));
+        state.frame(json!({"type":"user","uuid":"user-record","message":{"id":"api-message","content":"hello"}})).unwrap();
+        let result = hub.subscribe("s", None).unwrap();
+        assert_eq!(
+            result["events"][0]["payload"]["items"][0]["id"],
+            "user-record"
+        );
+    }
+
+    #[test]
+    fn native_tool_results_replace_running_items_and_survive_reconnect() {
+        let hub = crate::session_stream::Hub::new("boot".into(), |_| true);
+        let mut state = active();
+        state.publisher = Some(hub.publisher("s", "managed-resume"));
+        state.publish();
+        state
+            .frame(
+                json!({"type":"assistant","message":{"id":"message","content":[
+                    {"type":"tool_use","id":"read","name":"Read","input":{}},
+                    {"type":"tool_use","id":"write","name":"Write","input":{}}
+                ]}}),
+            )
+            .unwrap();
+        state.frame(json!({"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"read","content":"private result"},
+            {"type":"tool_result","tool_use_id":"write","is_error":true,"content":"private error"}
+        ]}})).unwrap();
+        state
+            .frame(json!({"type":"result","subtype":"success","is_error":false}))
+            .unwrap();
+        let baseline = hub.subscribe("s", None).unwrap();
+        let items = baseline["events"][0]["payload"]["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            items.iter().find(|item| item["id"] == "read").unwrap()["tool_status"],
+            "completed"
+        );
+        assert_eq!(
+            items.iter().find(|item| item["id"] == "write").unwrap()["tool_status"],
+            "failed"
+        );
+        assert!(!baseline.to_string().contains("private"));
     }
 
     #[test]

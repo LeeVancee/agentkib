@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Compatibility {
     desktop: Option<String>,
     extension: Option<String>,

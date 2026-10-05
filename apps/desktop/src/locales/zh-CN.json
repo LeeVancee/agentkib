@@ -131,6 +131,8 @@
   "sessions.clearAgentFilter": "清除 Agent 筛选",
   "sessions.clearRecordFilter": "清除记录筛选",
   "sessions.nav": "会话",
+  "sessions.newConversation": "新建对话",
+  "sessions.conversationCatalogError": "会话目录刷新失败。",
   "sessions.more": "更多",
   "sessions.remote": "远程连接",
   "sessions.remoteUnavailable": "尚未开放",

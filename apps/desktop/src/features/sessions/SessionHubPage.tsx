@@ -31,6 +31,8 @@ import { useSessionHistory } from "./useSessionHistory";
 import { ConversationTranscript } from "./ConversationTranscript";
 import { HistoryError, HistoryWarning } from "./HistoryFeedback";
 import { withAsyncCleanup } from "@/lib/utils";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
+import { DesktopConversationPane } from "./DesktopConversationPane";
 
 function Notice({ children, error = false }: { children: React.ReactNode; error?: boolean }) {
   return (
@@ -47,7 +49,14 @@ function Notice({ children, error = false }: { children: React.ReactNode; error?
 export function SessionHubPage() {
   const { localizeMessage, tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
-  const history = useSessionHistory(hub.selected, hub.enabled, hub.historyRevision);
+  const creating = useSessionViewStore((state) => state.creatingConversation);
+  const interactive =
+    hasDesktopConversation() &&
+    !hub.selected?.remote &&
+    (creating ||
+      (hub.selected?.availability === "readable" &&
+        ["codex", "claude-code", "antigravity"].includes(hub.selected.agent)));
+  const history = useSessionHistory(hub.selected, hub.enabled && !interactive, hub.historyRevision);
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState("");
@@ -181,9 +190,30 @@ export function SessionHubPage() {
         !hub.sessions.some((session) => session.workspace_id === item.id),
     );
 
+  const catalogNotice = hub.catalogError && (
+    <Notice error>
+      {hub.catalogError}
+      <Button variant="ghost" disabled={hub.refreshing} onClick={() => void hub.refresh()}>
+        {tr("sessions.retry")}
+      </Button>
+    </Notice>
+  );
+
+  if (interactive)
+    return (
+      <div className="session-hub-page">
+        {catalogNotice}
+        <DesktopConversationPane
+          sessionId={creating ? undefined : selected?.id}
+          create={creating}
+        />
+      </div>
+    );
+
   return (
     <div className="session-hub-page">
       <div className="session-hub-body" ref={historyRef}>
+        {catalogNotice}
         {hub.remoteHosts?.map(
           (host) =>
             (host.status !== "online" || hub.remoteErrors?.[host.id]) && (
@@ -390,7 +420,7 @@ export function SessionHubPage() {
                       </Button>
                     );
                   })}
-                  {!hub.filtered.length && !hub.loading && (
+                  {!hub.filtered.length && !hub.loading && !hub.catalogError && (
                     <div className="session-state-inline">
                       <p>
                         {tr(hub.sessions.length ? "sessions.noMatches" : "sessions.noSessions")}

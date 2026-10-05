@@ -1,4 +1,9 @@
 import {
+  createConversationStore,
+  mergeConversationItems,
+  type SessionStreamEvent,
+} from "@agentkib/conversation-state";
+import {
   forgetPending,
   pendingScope,
   readPending,
@@ -6,7 +11,14 @@ import {
   type PendingControl,
 } from "./pending-controls";
 import { useSessionLive } from "./use-session-live";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type SetStateAction,
+} from "react";
 import {
   ApiError,
   isLegacyPreparedReceipt,
@@ -25,29 +37,66 @@ import {
   type UserQuestionRequest,
 } from "@agentkib/web-client";
 import { displaySessionTitle } from "@agentkib/session-catalog";
-import { answerRequestBody, interactionCopy } from "@/features/interactions/question-form";
-import type { CatalogWorkspace } from "@/features/catalog/session-catalog";
-import { catalogCopy } from "@/features/catalog/catalog-copy";
-import { dictionaries, type Locale } from "@/i18n";
-import { unavailableReasonText } from "@/live-status";
-import { isValidMessage, mergeLatestPage } from "./session-model";
-import { useAppearance } from "@/features/preferences/use-appearance";
+import { answerRequestBody, interactionCopy } from "../interactions/question-form";
+import type { CatalogWorkspace } from "../catalog/session-catalog";
+import { catalogCopy } from "../catalog/catalog-copy";
+import { dictionaries, type Locale } from "../../i18n";
+import { unavailableReasonText } from "../../live-status";
+import {
+  isValidMessage,
+  mergeLatestPage,
+  mergeOrderedPersistedHistory,
+  removePersistedOverlays,
+  mergeNativeCoverage,
+  beginHistoryRead,
+  failHistoryRead,
+  completeHistoryRead,
+  hasAppliedNewerHistory,
+  type NativeCoverage,
+} from "./session-model";
+import {
+  applyHistoryPagination,
+  beginHistoryPagination,
+  createHistoryPagination,
+  historyPaginationCursor,
+  recordLatestHistoryPage,
+} from "./history-pagination";
+import { useAppearance } from "../preferences/use-appearance";
+import { publishSessionInvalidation, subscribeSessionInvalidation } from "./session-events";
 export function useSessionController({
   origin: legacyOrigin = "",
   connection,
   disconnect,
   initialLocale = "zh-CN",
   initialTheme = "system",
+  client: providedClient,
+  embedded = false,
 }: {
   origin?: string;
   connection?: WebConnection;
   disconnect?: () => void;
   initialLocale?: Locale;
   initialTheme?: string;
+  client?: WebClient;
+  embedded?: boolean;
 }) {
   const [capabilities, setCapabilities] = useState<CodexCapabilities>();
   const [capabilitiesEpoch, setCapabilitiesEpoch] = useState(0);
-  const [client] = useState(() => new WebClient(undefined, connection ?? legacyOrigin));
+  const [client] = useState(
+    () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
+  );
+  const [streamEpoch, setStreamEpoch] = useState(0);
+  const [liveContentVersion, setLiveContentVersion] = useState(0);
+  const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
+  const retryCatalogObservation = useRef<(() => void) | undefined>(undefined);
+  const liveDelivery = useRef(0);
+  const streamReady = useRef(false);
+  const controlReconciliationPending = useRef(false);
+  const nativeCoverage = useRef<NativeCoverage>({
+    items: [],
+    authoritativeTurnIds: [],
+    removedTurnIds: [],
+  });
   const origin = client.origin;
   const isLan = client.connection.type === "lan-http";
   const [locale, setLocale] = useState<Locale>(initialLocale),
@@ -59,7 +108,7 @@ export function useSessionController({
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),
     [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
     [selected, setSelected] = useState(""),
-    [page, setPage] = useState<ConversationEventPage>(),
+    [page, publishPage] = useState<ConversationEventPage>(),
     [live, setLive] = useState<Live>(),
     [online, setOnline] = useState(false),
     [controlReady, setControlReady] = useState(false),
@@ -74,13 +123,35 @@ export function useSessionController({
     [modal, setModal] = useState<
       "preferences" | "metadata" | ConversationEvent | Approval | UserQuestionRequest
     >();
+  const pageValue = useRef<ConversationEventPage | undefined>(undefined);
+  const setPage = useCallback((update: SetStateAction<ConversationEventPage | undefined>) => {
+    // History and pagination are one accepted projection. Resolve updates once
+    // against the latest page, before publishing React state; React may replay
+    // state updaters, which must not consume pagination tickets or reset coverage.
+    const next = typeof update === "function" ? update(pageValue.current) : update;
+    pageValue.current = next;
+    publishPage(next);
+  }, []);
   const shownInteractions = useRef(new Set<string>());
+  const readableSessionIds = useRef(new Set<string>());
+  useEffect(() => {
+    const readable = sessions.filter((session) => session.availability === "readable");
+    readableSessionIds.current = new Set(readable.map((session) => session.id));
+    setPendingSessions((previous) => {
+      // These are derived interaction badges, separate from durable unknown
+      // command receipts. Missing summaries retain only still-readable entries.
+      const next: Record<string, boolean> = {};
+      for (const session of readable) {
+        const pending = session.pendingInteraction ?? previous[session.id];
+        if (typeof pending === "boolean") next[session.id] = pending;
+      }
+      return next;
+    });
+  }, [sessions]);
   const receipt = useRef<
     { sessionId: string; requestId: string; turnId?: string; observedActive: boolean } | undefined
   >(undefined);
   const [pendingSessions, setPendingSessions] = useState<Record<string, boolean>>({});
-  const watchedSessions = useRef(new Set<string>());
-  const watchEpoch = useRef(0);
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
@@ -95,9 +166,39 @@ export function useSessionController({
   const refreshRequired = useRef(false);
   const manualRefreshRequired = useRef(false);
   const readinessEpoch = useRef(0);
-  const uncertainOutcome = useRef(false);
+  const refreshWake = useRef(0);
+  const readContention = useRef({ version: 0, wake: 0 });
+  const refreshFlight = useRef<{ generation: number; readiness: number } | undefined>(undefined);
+  const deferredRefresh = useRef<
+    | {
+        generation: number;
+        readiness: number;
+        sessionId: string;
+        resume: () => void;
+      }
+    | undefined
+  >(undefined);
+  const resumeDeferredRefresh = useCallback(() => {
+    const pending = deferredRefresh.current;
+    if (!pending) return;
+    deferredRefresh.current = undefined;
+    if (
+      pending.generation === generation.current &&
+      pending.readiness === readinessEpoch.current &&
+      pending.sessionId === selection.current &&
+      accessRef.current?.status === "approved" &&
+      accessRef.current.protocolVersion === 2
+    )
+      pending.resume();
+  }, []);
+  const wakeDeferredRefresh = useCallback(() => {
+    refreshWake.current++;
+    resumeDeferredRefresh();
+  }, [resumeDeferredRefresh]);
+  const uncertainOutcomes = useRef(new Set<string>());
   const accessEpoch = useRef(0);
-  useAppearance(locale, theme, accent);
+  const accessFlight = useRef<Promise<Access | undefined> | undefined>(undefined);
+  useAppearance(locale, theme, accent, !embedded);
   const clear = useCallback(() => {
     generation.current++;
     readinessEpoch.current++;
@@ -114,18 +215,20 @@ export function useSessionController({
     shownInteractions.current.clear();
     receipt.current = undefined;
     setPendingSessions({});
-    watchedSessions.current.clear();
-    watchEpoch.current++;
     setCode("");
     setName("");
     setOnline(false);
     setControlReady(false);
+    setCatalogObservationFailed(false);
+    streamReady.current = false;
+    nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
     refreshRequired.current = false;
     manualRefreshRequired.current = false;
-    uncertainOutcome.current = false;
+    deferredRefresh.current = undefined;
+    uncertainOutcomes.current.clear();
     durableScope.current = undefined;
     durablePending.current = [];
-  }, []);
+  }, [setPage]);
   const fail = useCallback(
     (e: unknown, g = generation.current) => {
       if (g !== generation.current) return;
@@ -155,36 +258,89 @@ export function useSessionController({
     },
     [clear, client, isLan],
   );
-  const syncAccess = useCallback(async () => {
-    const g = generation.current;
-    const epoch = ++accessEpoch.current;
-    const next = await client.access();
-    if (g !== generation.current || epoch !== accessEpoch.current) return;
-    const old = accessRef.current;
-    if (
-      old?.status === "approved" &&
-      (next.status !== "approved" ||
-        old.bootId !== next.bootId ||
-        old.device?.id !== next.device?.id)
-    )
-      clear();
-    if (next.status === "approved" && next.device?.id) {
-      const scope = pendingScope(origin, next.device.id);
-      if (durableScope.current !== scope) {
-        const pending = readPending(scope);
-        durableScope.current = scope;
-        durablePending.current = pending;
+  const readHistory = useCallback(
+    async (id: string, g: number, historyCacheEpoch: string | undefined, cursor?: string) => {
+      const attempt = beginHistoryRead(nativeCoverage.current);
+      try {
+        return { type: "page" as const, page: await client.events(id, cursor), attempt };
+      } catch (error) {
+        if (
+          g === generation.current &&
+          selection.current === id &&
+          historyCacheEpoch === nativeCoverage.current.historyCacheEpoch
+        ) {
+          // Handle history separately from the concurrent live read, including
+          // a late history failure after Promise.all has already rejected.
+          if (error instanceof DOMException && error.name === "AbortError") return undefined;
+          // Return contention separately so a concurrent real live-read failure
+          // is still observed before the caller schedules read recovery.
+          if (error instanceof ApiError && error.code === "operation_busy")
+            return { type: "busy" as const, error };
+          if (failHistoryRead(nativeCoverage.current, attempt)) {
+            setError(true);
+            fail(error, g);
+          } else if (hasAppliedNewerHistory(nativeCoverage.current, attempt)) {
+            // A newer applied history read already satisfied this refresh. Keep
+            // its completion distinct from an unresolved or out-of-scope failure.
+            return { type: "superseded" as const, attempt };
+          }
+        }
+        return undefined;
       }
-    }
-    accessRef.current = next;
-    if (isLan && next.status === "ended") client.reset();
-    setAccess(next);
-    return next;
-  }, [clear, client, origin, isLan]);
+    },
+    [client, fail],
+  );
+  const syncAccess = useCallback(
+    (stillCurrent?: () => boolean) => {
+      const g = generation.current;
+      const epoch = ++accessEpoch.current;
+      const flight = (async () => {
+        let next: Access;
+        try {
+          next = await client.access();
+        } catch (error) {
+          if (g !== generation.current) return;
+          if (epoch !== accessEpoch.current) return accessFlight.current;
+          if (stillCurrent && !stillCurrent()) return;
+          throw error;
+        }
+        if (g !== generation.current) return;
+        // A notification may require a newer access read while a full refresh is
+        // pending. Its callers must finish using that accepted read, not abandon
+        // the refresh and leave its control fence set indefinitely.
+        if (epoch !== accessEpoch.current) return accessFlight.current;
+        if (stillCurrent && !stillCurrent()) return;
+        const old = accessRef.current;
+        if (
+          old?.status === "approved" &&
+          (next.status !== "approved" ||
+            old.bootId !== next.bootId ||
+            old.device?.id !== next.device?.id)
+        )
+          clear();
+        if (next.status === "approved" && next.device?.id) {
+          const scope = pendingScope(origin, next.device.id);
+          if (durableScope.current !== scope) {
+            const pending = readPending(scope);
+            durableScope.current = scope;
+            durablePending.current = pending;
+          }
+        }
+        accessRef.current = next;
+        if (isLan && next.status === "ended") client.reset();
+        setAccess(next);
+        return next;
+      })();
+      accessFlight.current = flight;
+      return flight;
+    },
+    [clear, client, origin, isLan],
+  );
   const reconcilePending = useCallback(
     async (sessionId?: string) => {
       const scope = durableScope.current;
       if (!scope) return;
+      const epoch = readinessEpoch.current;
       // Read again so other components sharing this tab's scope see the same fence.
       durablePending.current = readPending(scope);
       const pending = durablePending.current.filter(
@@ -192,6 +348,7 @@ export function useSessionController({
           !["create", "adopt", "release", "reconcile"].includes(entry.kind) &&
           (!sessionId || entry.sessionId === sessionId),
       );
+      let resolvedSelected: string | undefined;
       for (const entry of pending) {
         const result = await client.receipt(entry.requestId);
         if (scope !== durableScope.current) return;
@@ -208,8 +365,9 @@ export function useSessionController({
         if (result.status !== "accepted" && result.status !== "not-dispatched") continue;
         forgetPending(scope, entry.requestId);
         durablePending.current = readPending(scope);
+        uncertainOutcomes.current.delete(entry.sessionId ?? "");
         if (entry.sessionId === selection.current) {
-          uncertainOutcome.current = false;
+          resolvedSelected = entry.sessionId;
           setNotice(result.status === "accepted" ? "accepted" : "notDispatched");
           // A receipt confirms admission, never resolves or removes native approvals.
           if (result.status === "accepted")
@@ -222,28 +380,61 @@ export function useSessionController({
         }
       }
       if (hasDurablePending(selection.current)) setNotice("uncertain");
+      else if (
+        resolvedSelected === selection.current &&
+        epoch === readinessEpoch.current &&
+        accessRef.current?.protocolVersion === 2
+      ) {
+        refreshRequired.current = uncertainOutcomes.current.has(selection.current);
+        setControlReady(
+          streamReady.current && !controlReconciliationPending.current && !refreshRequired.current,
+        );
+      }
     },
     [client, hasDurablePending],
   );
   const refresh = useCallback(
-    async (manual = false) => {
-      if (manual) setCapabilitiesEpoch((value) => value + 1);
+    async function refreshCurrent(manual = false, preserveHistory = false): Promise<void> {
+      if (manual) {
+        retryCatalogObservation.current?.();
+        setCapabilitiesEpoch((value) => value + 1);
+      }
       let g = generation.current;
       const epoch = ++readinessEpoch.current;
-      // A newer access request can supersede this one. Keep the full refresh
-      // pending so polling can finish it, including an explicit manual retry.
+      const wake = refreshWake.current;
+      const contention = readContention.current.version;
+      const flight = { generation: g, readiness: epoch };
+      refreshFlight.current = flight;
+      deferredRefresh.current = undefined;
+      // Concurrent access notifications share their latest accepted read with
+      // this refresh; the full refresh still owns clearing this control fence.
       refreshRequired.current = true;
       if (manual) manualRefreshRequired.current = true;
-      setError(false);
+      setError(!!nativeCoverage.current.historyRecoveryFailed);
       setControlReady(false);
+      let historyScope: { epoch?: string } | undefined;
       try {
         const next = await syncAccess();
+        if (
+          !next &&
+          g === generation.current &&
+          epoch === readinessEpoch.current &&
+          accessRef.current?.status === "approved"
+        ) {
+          // A newer catalog access read may have been discarded with its stream.
+          // This refresh still owns its fence: complete it with a fresh read.
+          await refreshCurrent(manual, preserveHistory);
+          return;
+        }
         if (next?.status !== "approved") return;
         g = generation.current;
+        flight.generation = g;
         await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
         const catalog = await client.catalog();
         if (g !== generation.current) return;
+        if (contention !== readContention.current.version)
+          throw new ApiError(409, "operation_busy");
         if (!catalog.indexEnabled) {
           clear();
           setIndexEnabled(false);
@@ -262,10 +453,115 @@ export function useSessionController({
             );
           const anchorId = anchor?.dataset.eventId;
           const anchorTop = anchor?.getBoundingClientRect().top;
-          const [history, state] = await Promise.all([client.events(id), client.live(id)]);
+          const delivered = liveDelivery.current;
+          const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
+          historyScope = { epoch: historyCacheEpoch };
+          const [historyRead, state] = await Promise.all([
+            readHistory(id, g, historyCacheEpoch),
+            client.live(id),
+          ]);
           if (g !== generation.current || selection.current !== id) return;
-          setPage((previous) => (isLan ? mergeLatestPage(previous, history) : history));
-          if (isLan && viewport && anchorId && anchorTop !== undefined)
+          if (historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch) {
+            // A replaced cache requires a new calibration, never completion
+            // using the old scope's live response or history. Only the refresh
+            // still owning this fence may restart; newer controls remain fenced.
+            if (epoch === readinessEpoch.current)
+              await refreshCurrent(
+                manual,
+                preserveHistory || contention !== readContention.current.version,
+              );
+            return;
+          }
+          // A sibling read saw newer admission contention. Its busy response
+          // cannot cancel recovery, but this older idle projection is not proof
+          // that the command has settled either.
+          if (contention !== readContention.current.version)
+            throw new ApiError(409, "operation_busy");
+          if (!historyRead) return;
+          if (historyRead.type === "busy") throw historyRead.error;
+          if (
+            historyRead.type === "superseded" &&
+            (epoch !== readinessEpoch.current ||
+              !hasAppliedNewerHistory(nativeCoverage.current, historyRead.attempt))
+          )
+            return;
+          if (historyRead.type === "page") {
+            const { page: history, attempt } = historyRead;
+            const coverage = nativeCoverage.current;
+            completeHistoryRead(nativeCoverage.current, attempt);
+            setError(!!nativeCoverage.current.historyRecoveryFailed);
+            setPage((previous) => {
+              // A newer latest read owns its whole projection, not only its
+              // cursor. A newer earlier-page read does not supersede this latest.
+              if ((coverage.historyPagination?.latestReadOrder ?? 0) > attempt.id) return previous;
+              // Admission contention does not invalidate loaded history. A
+              // bounded latest page can begin with a history-only tool result,
+              // so a missing overlap cannot justify dropping earlier pages.
+              const merged = preserveHistory
+                ? {
+                    ...history,
+                    events: mergeOrderedPersistedHistory(
+                      previous?.events ?? [],
+                      history.events,
+                      coverage.historyPagination?.persisted.size ? "latest" : "older",
+                      nativeCoverage.current.preserveItemsOutsideCoverage,
+                    ),
+                    warnings: [...new Set([...(previous?.warnings ?? []), ...history.warnings])],
+                  }
+                : mergeLatestPage(previous, history);
+              // A read started before a native update must not replace its newer
+              // item content or drop a reply appended while that read was pending.
+              const result =
+                delivered !== liveDelivery.current && previous
+                  ? {
+                      ...merged,
+                      events: mergeConversationItems(
+                        merged.events,
+                        removePersistedOverlays(
+                          previous.events,
+                          history.events,
+                          nativeCoverage.current.preserveItemsOutsideCoverage,
+                        ),
+                      ),
+                    }
+                  : {
+                      ...merged,
+                      events: mergeConversationItems(
+                        merged.events,
+                        removePersistedOverlays(
+                          previous?.events.filter((item) => item.ephemeral) ?? [],
+                          history.events,
+                          nativeCoverage.current.preserveItemsOutsideCoverage,
+                        ),
+                      ),
+                    };
+              const retainedIds = new Set(result.events.map((item) => item.id));
+              // Keep the old continuation when its displayed raw rows survive.
+              // A disjoint/empty refresh can still replace static history, but
+              // it must discard coverage for rows it removed at the same time.
+              if (
+                previous?.events.some(
+                  (item) =>
+                    coverage.historyPagination?.persisted.has(item.id) && !retainedIds.has(item.id),
+                )
+              )
+                coverage.historyPagination = createHistoryPagination();
+              const pagination = (coverage.historyPagination ??= createHistoryPagination());
+              const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
+              return {
+                ...result,
+                next_cursor: nextCursor,
+                events: mergeNativeCoverage(result.events, nativeCoverage.current),
+              };
+            });
+          }
+          if (
+            historyRead.type === "page" &&
+            isLan &&
+            viewport &&
+            anchorId &&
+            anchorTop !== undefined
+          )
             requestAnimationFrame(() => {
               if (g !== generation.current || selection.current !== id) return;
               const node = Array.from(
@@ -273,100 +569,393 @@ export function useSessionController({
               ).find((node) => node.dataset.eventId === anchorId);
               if (node) viewport.scrollTop += node.getBoundingClientRect().top - anchorTop;
             });
-          setLive(state);
+          if (delivered === liveDelivery.current) setLive(state);
+          if (manual && next.protocolVersion === 2) setStreamEpoch((value) => value + 1);
         }
         setOnline(true);
         if (epoch === readinessEpoch.current) {
           if (manualRefreshRequired.current && !hasDurablePending(selection.current))
-            uncertainOutcome.current = false;
-          setControlReady(!uncertainOutcome.current && !hasDurablePending(selection.current));
-          refreshRequired.current = false;
+            uncertainOutcomes.current.delete(selection.current);
+          setControlReady(
+            streamReady.current &&
+              !controlReconciliationPending.current &&
+              next.protocolVersion === 2 &&
+              !uncertainOutcomes.current.has(selection.current) &&
+              !hasDurablePending(selection.current),
+          );
+          refreshRequired.current = uncertainOutcomes.current.has(selection.current);
           manualRefreshRequired.current = false;
         }
       } catch (e) {
-        fail(e, g);
+        if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
+          if (e instanceof ApiError && e.code === "operation_busy") {
+            if (g !== generation.current || epoch !== readinessEpoch.current) return;
+            // Only retry this read, under the fence it originally acquired. A
+            // newer selection, refresh or uncertain control cancels its recovery.
+            deferredRefresh.current = {
+              generation: g,
+              readiness: epoch,
+              sessionId: selection.current,
+              resume: () => void refreshCurrent(manual, true),
+            };
+            // Settlement may already have arrived while the busy response was
+            // in transit. Consume that wakeup once; a repeated busy waits again.
+            if (
+              wake !== refreshWake.current ||
+              (contention !== readContention.current.version &&
+                readContention.current.wake !== refreshWake.current)
+            )
+              resumeDeferredRefresh();
+          } else fail(e, g);
+        } else if (g === generation.current && epoch === readinessEpoch.current)
+          await refreshCurrent(
+            manual,
+            preserveHistory ||
+              contention !== readContention.current.version ||
+              (e instanceof ApiError && e.code === "operation_busy"),
+          );
+      } finally {
+        if (refreshFlight.current === flight) refreshFlight.current = undefined;
       }
     },
-    [syncAccess, fail, clear, client, isLan, reconcilePending, hasDurablePending],
+    [
+      syncAccess,
+      fail,
+      clear,
+      client,
+      isLan,
+      reconcilePending,
+      hasDurablePending,
+      readHistory,
+      resumeDeferredRefresh,
+      setPage,
+    ],
+  );
+  const readBusy = useCallback(
+    (wake: number, g = generation.current) => {
+      if (g !== generation.current || accessRef.current?.status !== "approved") return;
+      readContention.current = { version: readContention.current.version + 1, wake };
+      refreshRequired.current = true;
+      setControlReady(false);
+      const pending = deferredRefresh.current;
+      if (pending?.generation === g && pending.readiness === readinessEpoch.current) {
+        if (wake !== refreshWake.current) resumeDeferredRefresh();
+        return;
+      }
+      const flight = refreshFlight.current;
+      if (flight?.generation === g && flight.readiness === readinessEpoch.current) return;
+      // A late busy response may arrive after settlement and a newer complete
+      // read. Recover with a fresh read; repeated contention waits for an event.
+      void refresh(false, true);
+    },
+    [refresh, resumeDeferredRefresh],
   );
   useEffect(() => {
     void refresh();
-    let polling = false;
-    const timer = setInterval(() => void refreshAccessOnly(), 4000);
-    async function refreshAccessOnly() {
-      if (isLan && accessRef.current?.status === "ended") return;
-      if (polling) return;
-      polling = true;
-      let g = generation.current;
-      try {
-        const before = accessRef.current?.status;
-        const next = await syncAccess();
-        g = generation.current;
-        if (
-          next?.status === "approved" &&
-          (refreshRequired.current || hasDurablePending(selection.current))
-        ) {
-          await refresh();
+    return () => {
+      generation.current++;
+      deferredRefresh.current = undefined;
+    };
+  }, [refresh]);
+  useEffect(() => {
+    if (access?.status !== "pending") return;
+    // Pending pairing precedes authenticated subscriptions. This checks only
+    // the grant transition; conversation state always arrives as native events.
+    const timer = setInterval(
+      () =>
+        void syncAccess()
+          .then((next) => {
+            if (next?.status === "approved") void refresh();
+          })
+          .catch((error) => fail(error)),
+      4000,
+    );
+    return () => clearInterval(timer);
+  }, [access?.status, syncAccess, refresh, fail]);
+  useEffect(() => {
+    if (access?.status !== "approved" || access.protocolVersion !== 2) return;
+    const store = createConversationStore<Live>("");
+    let closed = false;
+    let resetPending = false;
+    let exhausted = false;
+    let resets = 0;
+    let connectionEpoch = 0;
+    let closeStream: (() => void) | undefined;
+    const current = () =>
+      !closed &&
+      accessRef.current?.status === "approved" &&
+      accessRef.current.protocolVersion === 2 &&
+      accessRef.current.bootId === access.bootId &&
+      accessRef.current.device?.id === access.device?.id;
+    const resync = () => {
+      if (!current() || resetPending || exhausted) return;
+      resetPending = true;
+      // Invalidate callbacks and pending reads before the adapter can deliver
+      // more bootstrap events or readiness for this rejected stream.
+      connectionEpoch++;
+      queueMicrotask(() => {
+        if (!current()) return;
+        closeStream?.();
+        closeStream = undefined;
+        if (++resets > 3) {
+          exhausted = true;
+          setCatalogObservationFailed(true);
           return;
         }
-        if (next?.status === "approved" && before !== "approved") void refresh();
-        else if (next?.status === "approved") {
-          const g = generation.current;
-          const catalog = await client.catalog();
-          if (g !== generation.current) return;
-          if (!catalog.indexEnabled) {
-            clear();
-            setIndexEnabled(false);
-          } else {
+        store.reset();
+        resetPending = false;
+        connect();
+      });
+    };
+    const connect = () => {
+      const connection = ++connectionEpoch;
+      const active = () =>
+        current() && connection === connectionEpoch && !resetPending && !exhausted;
+      // A replacement subscription owns its read queue, so a stalled old read
+      // cannot delay the new baseline or overwrite its catalog when it resolves.
+      let flight = false;
+      let dirty = false;
+      let retryAfterControl = false;
+      const retryInvalidated = (g: number) => {
+        if (
+          !active() ||
+          g === generation.current ||
+          accessRef.current?.status !== "approved" ||
+          accessRef.current.protocolVersion !== 2
+        )
+          return false;
+        // Navigation invalidates reads, but does not consume a global catalog
+        // notification. Re-read under the current generation and authorization.
+        dirty = true;
+        return true;
+      };
+      const update = async () => {
+        if (!active()) return;
+        if (flight) {
+          dirty = true;
+          return;
+        }
+        flight = true;
+        do {
+          dirty = false;
+          let g = generation.current;
+          try {
+            const next = await syncAccess(active);
+            if (!active()) break;
+            if (!next) {
+              if (retryInvalidated(g)) continue;
+              break;
+            }
+            if (
+              next.status !== "approved" ||
+              accessRef.current?.status !== "approved" ||
+              accessRef.current.protocolVersion !== 2
+            )
+              break;
+            if (next !== accessRef.current) {
+              dirty = true;
+              continue;
+            }
+            // An accepted access response may clear the old runtime boot itself.
+            // syncAccess rejects superseded reads; protect subsequent reads using
+            // the generation belonging to this newly accepted access instead.
+            g = generation.current;
+            const catalog = await client.catalog();
+            if (!active()) break;
+            if (g !== generation.current) {
+              if (retryInvalidated(g)) continue;
+              break;
+            }
+            if (!catalog.indexEnabled) {
+              clear();
+              setIndexEnabled(false);
+              break;
+            }
             setIndexEnabled(true);
             setSessions(catalog.sessions);
             setWorkspaces(catalog.workspaces);
+            await reconcilePending();
+            retryAfterControl = false;
+            if (active() && g === generation.current)
+              // Management receipts have their own consumer, including creation
+              // without a selected session. Reconnects must reconcile those too.
+              publishSessionInvalidation(client, "", ["receipts"]);
+          } catch (error) {
+            if (active() && !retryInvalidated(g)) {
+              // Read contention is not an uncertain command outcome. Wait for a
+              // settlement/catalog event without fencing the selected conversation.
+              if (error instanceof ApiError && error.code === "operation_busy")
+                retryAfterControl = true;
+              else fail(error, g);
+            }
           }
-        }
-      } catch (e) {
-        fail(e, g);
-      } finally {
-        polling = false;
-      }
-    }
-    return () => {
-      clearInterval(timer);
-      generation.current++;
+        } while (dirty && active());
+        flight = false;
+      };
+      closeStream = client.stream("", {
+        open: () => {
+          if (!active()) return;
+          wakeDeferredRefresh();
+          void update();
+        },
+        error: (error) => {
+          if (!active()) return;
+          if (error instanceof ApiError && error.code === "incompatible_protocol")
+            setIncompatible(true);
+          // Native EventSource does not expose HTTP 401/403. Recheck access on
+          // failed reconnect so an expired grant clears the retained private view.
+          else void update();
+        },
+        event: (type, data) => {
+          if (!active()) return false;
+          if (type === "access-ended") {
+            fail(new ApiError(401, "access_ended"));
+            return;
+          }
+          if (type === "control-changed") {
+            try {
+              const changed = JSON.parse(data) as { sessionId?: string };
+              wakeDeferredRefresh();
+              // Settlement can arrive before the busy response. Mark an in-flight
+              // read dirty as well so that notification is not consumed too early.
+              if (retryAfterControl || flight) void update();
+              if (!selection.current || changed.sessionId !== selection.current)
+                publishSessionInvalidation(client, "", ["receipts"]);
+            } catch {
+              setError(true);
+            }
+            return;
+          }
+          if (type === "session-ready") {
+            try {
+              const ready = JSON.parse(data) as { cursor?: string };
+              const state = store.getSnapshot();
+              if (state.cursor && state.cursor === ready.cursor && !state.resyncRequired) {
+                // A baseline alone cannot reset the failure limit: replay may
+                // still contain a gap before the adapter announces readiness.
+                resets = 0;
+                setCatalogObservationFailed(false);
+              }
+            } catch {
+              // Malformed readiness never proves observation has recovered.
+            }
+            return false;
+          }
+          if (["catalog-invalidated", "access-changed"].includes(type)) {
+            wakeDeferredRefresh();
+            void update();
+            return false;
+          }
+          if (type !== "session-event") return false;
+          try {
+            const event = JSON.parse(data) as SessionStreamEvent<Live>;
+            if (event.sessionId !== "") return false;
+            const previous = store.getSnapshot();
+            const state = store.dispatch(event);
+            if (state.resyncRequired) {
+              resync();
+              return false;
+            }
+            const advanced =
+              state.cursor !== previous.cursor ||
+              state.seq !== previous.seq ||
+              state.epoch !== previous.epoch ||
+              state.runtimeBootId !== previous.runtimeBootId;
+            if (advanced) {
+              wakeDeferredRefresh();
+              if (
+                event.type === "snapshot" ||
+                (event.type === "invalidate" && event.payload.domains.includes("catalog"))
+              )
+                void update();
+              if (event.type === "invalidate")
+                publishSessionInvalidation(client, "", event.payload.domains);
+            }
+            // IPC ACKs are cumulative and may safely repeat the accepted cursor.
+            // Rejected gaps and resync markers never acknowledge received data.
+            return state.cursor ?? false;
+          } catch {
+            resync();
+            return false;
+          }
+        },
+      });
     };
-  }, [refresh, syncAccess, fail, clear, client, origin, isLan, hasDurablePending]);
+    const retry = () => {
+      if (!current() || !exhausted) return;
+      exhausted = false;
+      resetPending = false;
+      resets = 0;
+      store.reset();
+      connect();
+    };
+    retryCatalogObservation.current = retry;
+    connect();
+    return () => {
+      closed = true;
+      if (retryCatalogObservation.current === retry) retryCatalogObservation.current = undefined;
+      closeStream?.();
+    };
+  }, [
+    access?.status,
+    access?.protocolVersion,
+    access?.bootId,
+    access?.device?.id,
+    client,
+    syncAccess,
+    reconcilePending,
+    clear,
+    fail,
+    wakeDeferredRefresh,
+  ]);
+  useEffect(
+    () =>
+      subscribeSessionInvalidation(client, (id, domains) => {
+        if (id && id !== selection.current) return;
+        if (domains.some((domain) => ["capabilities", "settings", "ownership"].includes(domain)))
+          setCapabilitiesEpoch((value) => value + 1);
+        if (domains.includes("receipts"))
+          void reconcilePending(id || undefined).catch((error) => fail(error));
+      }),
+    [client, reconcilePending, fail],
+  );
   useSessionLive({
-    sessions,
-    setPendingSessions,
-    watchedSessions,
-    watchEpoch,
+    setLiveContentVersion,
+    streamReady,
+    controlReconciliationPending,
+    nativeCoverage,
+    streamEpoch,
+    liveDelivery,
     access,
     selected,
     selection,
     generation,
     client,
     fail,
+    readBusy,
+    refreshWake,
     clear,
     accessRef,
-    syncAccess,
     setLive,
     setOnline,
     setError,
-    refresh,
     hasDurablePending,
     readinessEpoch,
     refreshRequired,
     setControlReady,
     setAccess,
-    online,
-    live,
     setPage,
   });
   const choose = useCallback(
     async (id: string) => {
       if (selection.current === id) return;
       if (sessions.find((session) => session.id === id)?.availability !== "readable") return;
-      watchedSessions.current.add(id);
       generation.current++;
+      readinessEpoch.current++;
+      // The new selection owns its baseline read. An obsolete refresh cannot
+      // keep it fenced, while unknown outcomes remain attached to their session.
+      refreshRequired.current = uncertainOutcomes.current.has(id);
+      manualRefreshRequired.current = false;
       selection.current = id;
       setSelected(id);
       setPage(undefined);
@@ -376,31 +965,79 @@ export function useSessionController({
       setNotice(undefined);
       setOnline(false);
       setControlReady(false);
+      streamReady.current = false;
+      nativeCoverage.current = { items: [], authoritativeTurnIds: [], removedTurnIds: [] };
       setError(false);
       const g = generation.current;
+      const wake = refreshWake.current;
+      let historyScope: { epoch?: string } | undefined;
       try {
         await reconcilePending(id);
         if (g !== generation.current) return;
-        const [history, state] = await Promise.all([client.events(id), client.live(id)]);
-        if (g !== generation.current) return;
-        setPage(history);
-        setLive(state);
+        const delivered = liveDelivery.current;
+        const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
+        historyScope = { epoch: historyCacheEpoch };
+        const [historyRead, state] = await Promise.all([
+          readHistory(id, g, historyCacheEpoch),
+          client.live(id),
+        ]);
+        if (historyRead?.type === "busy") {
+          readBusy(wake, g);
+          return;
+        }
+        if (!historyRead || historyRead.type !== "page" || g !== generation.current) return;
+        const { page: history, attempt } = historyRead;
+        if (historyCacheEpoch === nativeCoverage.current.historyCacheEpoch) {
+          const pagination = (nativeCoverage.current.historyPagination ??=
+            createHistoryPagination());
+          const nextCursor = recordLatestHistoryPage(pagination, history, attempt.id);
+          completeHistoryRead(nativeCoverage.current, attempt);
+          setError(!!nativeCoverage.current.historyRecoveryFailed);
+          setPage((previous) => ({
+            ...history,
+            next_cursor: nextCursor,
+            events: mergeNativeCoverage(
+              mergeConversationItems(
+                mergeOrderedPersistedHistory(
+                  previous?.events ?? [],
+                  history.events,
+                  "older",
+                  nativeCoverage.current.preserveItemsOutsideCoverage,
+                ),
+                removePersistedOverlays(
+                  previous?.events ?? [],
+                  history.events,
+                  nativeCoverage.current.preserveItemsOutsideCoverage,
+                ),
+              ),
+              nativeCoverage.current,
+            ),
+          }));
+        }
+        if (delivered === liveDelivery.current) setLive(state);
         setOnline(true);
         setControlReady(
-          !refreshRequired.current && !uncertainOutcome.current && !hasDurablePending(id),
+          streamReady.current &&
+            !controlReconciliationPending.current &&
+            accessRef.current?.protocolVersion === 2 &&
+            !refreshRequired.current &&
+            !uncertainOutcomes.current.has(id) &&
+            !hasDurablePending(id),
         );
-        scroll.current?.scrollTo?.({ top: 0 });
       } catch (e) {
-        fail(e, g);
+        if (!historyScope || historyScope.epoch === nativeCoverage.current.historyCacheEpoch) {
+          if (e instanceof ApiError && e.code === "operation_busy") readBusy(wake, g);
+          else fail(e, g);
+        }
       }
     },
-    [sessions, client, fail, reconcilePending, hasDurablePending],
+    [sessions, client, fail, reconcilePending, hasDurablePending, readHistory, readBusy, setPage],
   );
   async function post(path: string, body: unknown) {
     if (mutating.current) return;
     mutating.current = true;
     setBusy(true);
-    setError(false);
+    setError(!!nativeCoverage.current.historyRecoveryFailed);
     const g = generation.current;
     try {
       await client.request(path, body);
@@ -420,6 +1057,9 @@ export function useSessionController({
   }
   async function earlier() {
     if (!page?.next_cursor || busy) return;
+    const pagination = nativeCoverage.current.historyPagination;
+    const ticket = pagination && beginHistoryPagination(pagination, page.next_cursor);
+    if (!ticket) return;
     setBusy(true);
     const id = selected,
       g = generation.current;
@@ -427,19 +1067,61 @@ export function useSessionController({
     const anchor = viewport?.querySelector<HTMLElement>("[data-event-id]");
     const top = anchor?.getBoundingClientRect().top;
     const anchorId = anchor?.dataset.eventId;
+    const historyCacheEpoch = nativeCoverage.current.historyCacheEpoch;
+    const wake = refreshWake.current;
     try {
-      const older = await client.events(id, page.next_cursor);
-      if (g !== generation.current || selection.current !== id) return;
+      const historyRead = await readHistory(id, g, historyCacheEpoch, page.next_cursor);
+      if (historyRead?.type === "busy") {
+        readBusy(wake, g);
+        return;
+      }
+      if (
+        !historyRead ||
+        historyRead.type !== "page" ||
+        g !== generation.current ||
+        selection.current !== id ||
+        historyCacheEpoch !== nativeCoverage.current.historyCacheEpoch
+      )
+        return;
+      const { page: older, attempt } = historyRead;
+      if (
+        nativeCoverage.current.historyPagination !== pagination ||
+        !applyHistoryPagination(pagination, ticket, older)
+      )
+        return;
+      const nextCursor = historyPaginationCursor(pagination);
+      const hadHistoryError = nativeCoverage.current.historyRecoveryFailed;
+      completeHistoryRead(nativeCoverage.current, attempt);
+      if (hadHistoryError) setError(!!nativeCoverage.current.historyRecoveryFailed);
       setPage((current) =>
         current
           ? {
-              events: [...older.events, ...current.events].filter(
-                (e, i, a) => a.findIndex((x) => x.id === e.id) === i,
+              events: mergeNativeCoverage(
+                mergeConversationItems(
+                  mergeOrderedPersistedHistory(
+                    current.events,
+                    older.events,
+                    "older",
+                    nativeCoverage.current.preserveItemsOutsideCoverage,
+                    ticket.beforeItemIds,
+                    ticket.afterItemIds,
+                  ),
+                  removePersistedOverlays(
+                    current.events,
+                    older.events,
+                    nativeCoverage.current.preserveItemsOutsideCoverage,
+                  ),
+                ),
+                nativeCoverage.current,
               ),
-              next_cursor: older.next_cursor,
+              next_cursor: nextCursor,
               warnings: [...new Set([...older.warnings, ...current.warnings])],
             }
-          : older,
+          : {
+              ...older,
+              next_cursor: nextCursor,
+              events: mergeNativeCoverage(older.events, nativeCoverage.current),
+            },
       );
       requestAnimationFrame(() => {
         if (anchorId && top !== undefined && viewport) {
@@ -457,10 +1139,13 @@ export function useSessionController({
   }
   useEffect(() => {
     if (!live || live.sessionId !== selected) return;
-    setPendingSessions((previous) => ({
-      ...previous,
-      [selected]: live.approvals.length > 0 || !!live.questions?.length,
-    }));
+    // A retained stream may still deliver after its catalog entry disappears.
+    // It cannot recreate a badge outside the current readable directory.
+    if (readableSessionIds.current.has(selected))
+      setPendingSessions((previous) => ({
+        ...previous,
+        [selected]: live.approvals.length > 0 || !!live.questions?.length,
+      }));
     const pendingReceipt = receipt.current;
     if (notice !== "accepted" || !pendingReceipt || pendingReceipt.sessionId !== selected) return;
     if (
@@ -558,7 +1243,8 @@ export function useSessionController({
       (action !== "inspect" && action !== "resume" && (!online || !controlReady)) ||
       capabilities?.sessionId !== selected ||
       !capabilities?.features[action]?.available ||
-      (action !== "inspect" && (uncertainOutcome.current || hasDurablePending(selected)))
+      (action !== "inspect" &&
+        (uncertainOutcomes.current.has(selected) || hasDurablePending(selected)))
     )
       return;
     const scope = durableScope.current;
@@ -622,7 +1308,7 @@ export function useSessionController({
         setControlReady(false);
         refreshRequired.current = true;
         if (!(error instanceof ApiError) || error.controlOutcome !== "not-dispatched")
-          uncertainOutcome.current = true;
+          uncertainOutcomes.current.add(id);
         await refresh(true);
       }
       return undefined;
@@ -792,7 +1478,7 @@ export function useSessionController({
             // A refresh clicked while this request was pending cannot acknowledge
             // an uncertain outcome that has only just arrived.
             manualRefreshRequired.current = false;
-            uncertainOutcome.current = true;
+            uncertainOutcomes.current.add(id);
             setNotice("uncertain");
             setOnline(false);
             fail(e, g);
@@ -819,6 +1505,7 @@ export function useSessionController({
     controlReady &&
     online &&
     !busy &&
+    access?.protocolVersion === 2 &&
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     !!live?.sendEnabled &&
@@ -827,6 +1514,7 @@ export function useSessionController({
     controlReady &&
     online &&
     !busy &&
+    access?.protocolVersion === 2 &&
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     live?.stopEnabled === true &&
@@ -855,7 +1543,9 @@ export function useSessionController({
     setModal(undefined);
   }, []);
   return {
+    liveContentVersion,
     client,
+    embedded,
     capabilities,
     codexAction,
     origin,
@@ -879,7 +1569,7 @@ export function useSessionController({
     controlReady,
     indexEnabled,
     busy,
-    error,
+    error: error || catalogObservationFailed,
     incompatible,
     setIncompatible,
     notice,

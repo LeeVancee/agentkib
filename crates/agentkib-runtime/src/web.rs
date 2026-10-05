@@ -13,20 +13,64 @@ pub(super) struct Worker {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 impl Worker {
-    pub fn new(events: Sender<RuntimeEvent>) -> Self {
+    pub fn with_notifications(
+        events: Sender<RuntimeEvent>,
+        notify: impl Fn(Value) -> bool + Send + 'static,
+    ) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<RpcRequest>(32);
         let pending = Arc::new(AtomicU64::new(0));
         let finished = pending.clone();
         let handle = std::thread::spawn(move || {
             let mut service = Service::default();
+            let hub = crate::session_stream::Hub::new(service.boot.clone(), notify);
+            service.managed.set_streams(hub.clone());
+            service.streams = Some(hub);
             while let Ok(request) = receiver.recv() {
-                let result = if request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD {
+                let session = request.params["sessionId"].as_str().map(str::to_owned);
+                let operation = request.params["operation"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                let result = if request.method == agentkib_protocol::SESSIONS_SUBSCRIBE_METHOD {
+                    service.subscribe(request.params)
+                } else if request.method == agentkib_protocol::SESSIONS_UNSUBSCRIBE_METHOD {
+                    service.unsubscribe(request.params)
+                } else if request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD {
                     service.managed.receipt(request.params)
                 } else if request.method == agentkib_protocol::CODEX_MANAGED_METHOD {
                     service.managed.request(request.params, &service.boot, true)
                 } else {
                     service.request(request.params)
                 };
+                if !matches!(
+                    operation.as_str(),
+                    "" | "live"
+                        | "events"
+                        | "catalog"
+                        | "capabilities"
+                        | "context"
+                        | "queue-list"
+                        | "settings-state"
+                        | "usage"
+                        | "goal"
+                        | "resources"
+                ) && let Some(id) = session.as_deref()
+                {
+                    // Command receipts can clear a ledger fence after the last
+                    // native event. Publish that transition without polling.
+                    let live = service
+                        .request(
+                            json!({"operation":"live","sessionId":id,"experimentalEnabled":true}),
+                        )
+                        .ok();
+                    if let Some(live) = live {
+                        let _ = service.publish_control_snapshot(id, live);
+                    }
+                    if let Some(hub) = &service.streams {
+                        hub.publisher(id, "")
+                            .invalidate(&["queue", "settings", "goal", "receipts", "catalog"]);
+                    }
+                }
                 finished.fetch_sub(1, Ordering::SeqCst);
                 let _ = events.send(RuntimeEvent::RemoteFinished {
                     request_id: request.id,
@@ -44,7 +88,11 @@ impl Worker {
         let id = request.id.clone();
         // Opening a page starts history, live and SSE reads together. Bound and serialize
         // those reads; mutations must still acquire an entirely idle worker, never queue.
-        let read = request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
+        let read = matches!(
+            request.method.as_str(),
+            agentkib_protocol::SESSIONS_SUBSCRIBE_METHOD
+                | agentkib_protocol::SESSIONS_UNSUBSCRIBE_METHOD
+        ) || request.method == agentkib_protocol::CONTROL_RECEIPT_METHOD
             || matches!(
                 request.params["operation"].as_str(),
                 Some(
@@ -125,7 +173,7 @@ struct Request {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn codex_stop_enabled(
+pub(super) fn codex_stop_enabled(
     controls: bool,
     status: agentkib_codex_bridge::Status,
     active_turn: Option<&str>,
@@ -191,6 +239,7 @@ fn follower_thread_settings(
 }
 
 struct Service {
+    streams: Option<crate::session_stream::Hub>,
     managed: crate::codex_managed::Service,
     boot: String,
     used: BTreeSet<String>,
@@ -207,13 +256,14 @@ struct Service {
     antigravity_target_retry: BTreeMap<String, std::time::Instant>,
     antigravity_available: InstallationProbe,
     #[cfg(target_os = "macos")]
-    bridges: BTreeMap<String, agentkib_codex_bridge::Bridge>,
+    bridges: BTreeMap<String, Arc<crate::follower_stream::ObservedBridge>>,
     #[cfg(target_os = "macos")]
     recency: Vec<String>,
 }
 impl Default for Service {
     fn default() -> Self {
         Self {
+            streams: None,
             managed: crate::codex_managed::Service::default(),
             boot: uuid::Uuid::new_v4().to_string(),
             used: BTreeSet::new(),
@@ -235,12 +285,110 @@ impl Default for Service {
     }
 }
 impl Service {
+    fn publish_control_snapshot(&mut self, id: &str, live: Value) -> anyhow::Result<()> {
+        let Some(hub) = &self.streams else {
+            return Ok(());
+        };
+        // The validated live read may already be stale. Native readers publish
+        // while holding their state lock, so take a fresh snapshot under that
+        // same lock instead of assigning a newer stream sequence to old state.
+        match live["executionMode"].as_str() {
+            Some("codex-follower") => return Ok(()),
+            Some("codex-managed") if self.managed.republish_live(id)? => return Ok(()),
+            Some("managed-resume") => {
+                if let Some(runner) = self.claude.get(id) {
+                    runner.republish_live();
+                    return Ok(());
+                }
+            }
+            Some("acp-managed") => {
+                if let Some(runner) = self.antigravity.get(id) {
+                    runner.republish_live();
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+        // Unsupported/access-fenced reads have no execution mode. Preserve
+        // those checks, and static projections whose runner has not started
+        // or has been removed, without attaching any native writer.
+        hub.publisher(id, "").observe(live);
+        Ok(())
+    }
+    fn subscribe(&mut self, params: Value) -> anyhow::Result<Value> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Subscribe {
+            session_id: String,
+            after_cursor: Option<String>,
+        }
+        let request: Subscribe = serde_json::from_value(params)?;
+        anyhow::ensure!(request.session_id.len() <= 256, "invalid-session");
+        anyhow::ensure!(
+            request
+                .after_cursor
+                .as_ref()
+                .is_none_or(|cursor| cursor.len() <= 256),
+            "invalid-cursor"
+        );
+        // This only attaches an observer; it must never adopt/resume a writer.
+        if request.session_id.is_empty() {
+            return self
+                .streams
+                .as_ref()
+                .context("session-stream-unavailable")?
+                .subscribe("", request.after_cursor.as_deref());
+        }
+        let live = self.request(
+            json!({"operation":"live","sessionId":request.session_id,"experimentalEnabled":true}),
+        )?;
+        self.finish_subscription(&request.session_id, request.after_cursor.as_deref(), live)
+    }
+    fn finish_subscription(
+        &mut self,
+        session: &str,
+        after: Option<&str>,
+        live: Value,
+    ) -> anyhow::Result<Value> {
+        // A capacity rejection has no native observer. Do not leave a successful
+        // subscription pointing at a stale or unsupported cached projection.
+        anyhow::ensure!(live["reason"] != "live-session-busy", "live-session-busy");
+        let hub = self
+            .streams
+            .as_ref()
+            .context("session-stream-unavailable")?
+            .clone();
+        if live["executionMode"] == "codex-follower" {
+            // The socket observer owns an existing follower projection. Seed
+            // only an absent one, atomically with respect to native publication.
+            hub.publisher(session, "").observe_if_absent(live);
+        } else {
+            // Static availability can change without an upstream event. Native
+            // runners must re-read under their state lock even if an idle Hub
+            // source was evicted while no subscriber was present.
+            self.publish_control_snapshot(session, live)?;
+        }
+        hub.subscribe(session, after)
+    }
+    fn unsubscribe(&mut self, params: Value) -> anyhow::Result<Value> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Unsubscribe {
+            subscription_id: String,
+        }
+        let request: Unsubscribe = serde_json::from_value(params)?;
+        Ok(self
+            .streams
+            .as_ref()
+            .context("session-stream-unavailable")?
+            .unsubscribe(&request.subscription_id))
+    }
     fn follower_settings_state(&self, id: &str) -> Value {
         #[cfg(target_os = "macos")]
         {
             self.bridges
                 .get(id)
-                .map(|bridge| bridge.thread_settings())
+                .map(|bridge| bridge.lock().thread_settings())
                 .unwrap_or_else(|| {
                     json!({"available":false,"executionMode":"codex-follower","reason":"open-in-original-client"})
                 })
@@ -258,7 +406,7 @@ impl Service {
             if self
                 .bridges
                 .get(id)
-                .is_some_and(|bridge| bridge.supports_thread_settings())
+                .is_some_and(|bridge| bridge.lock().supports_thread_settings())
                 && live["status"] == "idle"
             {
                 json!({"available":true})
@@ -445,7 +593,16 @@ impl Service {
         if request.operation == "catalog" {
             let mut catalog = web_catalog(&source)?;
             let managed = self.managed.catalog()?;
-            let indexed_aliases = self.managed.indexed_aliases()?;
+            let indexed_aliases: BTreeSet<_> = managed
+                .iter()
+                .flat_map(|session| {
+                    session["indexedSessionIds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                })
+                .collect();
             if !managed.is_empty() {
                 let store = Store::open_default()?;
                 let managed_workspaces: BTreeSet<_> = managed
@@ -471,6 +628,16 @@ impl Service {
                         .is_some_and(|id| ids.contains(id) || indexed_aliases.contains(id))
                 });
                 sessions.extend(managed);
+                if let Some(hub) = &self.streams {
+                    for session in sessions {
+                        if let Some(pending) = session["id"]
+                            .as_str()
+                            .and_then(|id| hub.pending_interaction(id))
+                        {
+                            session["pendingInteraction"] = json!(pending);
+                        }
+                    }
+                }
             }
             return Ok(catalog);
         }
@@ -564,6 +731,12 @@ impl Service {
                     .insert(id.to_owned(), (cwd.clone(), uuid.clone()));
                 self.claude
                     .insert(id.to_owned(), crate::claude_runner::Runner::new(cwd, uuid));
+                if let Some(hub) = &self.streams {
+                    self.claude
+                        .get(id)
+                        .unwrap()
+                        .set_publisher(hub.publisher(id, "managed-resume"));
+                }
             }
             let runner = self
                 .claude
@@ -676,6 +849,12 @@ impl Service {
                         Err(_) => return self.unsupported(&request, "open-in-original-client"),
                     };
                     self.antigravity.insert(id.to_owned(), runner);
+                    if let Some(hub) = &self.streams {
+                        self.antigravity
+                            .get(id)
+                            .unwrap()
+                            .set_publisher(hub.publisher(id, "acp-managed"));
+                    }
                 }
                 validate_session_access(&source, epoch, &store, &session, &workspace)?;
                 if request.operation == "live" {
@@ -739,41 +918,8 @@ impl Service {
                     _ => return self.unsupported(&request, "unverified-session-identity"),
                 };
                 if !self.bridges.contains_key(id) {
-                    if self.bridges.len() >= 8 {
-                        // Revalidate a cached idle snapshot before eviction. Never discard a running,
-                        // pending-approval or unresolved-outcome bridge to make room for another tab.
-                        let candidates = idle_candidates(
-                            &self.recency,
-                            self.bridges.iter().map(|(id, bridge)| {
-                                (
-                                    id.as_str(),
-                                    bridge.state().is_some_and(|state| {
-                                        state.status() == agentkib_codex_bridge::Status::Idle
-                                            && state.approvals().is_empty()
-                                    }),
-                                )
-                            }),
-                        );
-                        let mut removed = false;
-                        for candidate in candidates {
-                            let Some(bridge) = self.bridges.get_mut(&candidate) else {
-                                continue;
-                            };
-                            if bridge.refresh().is_ok()
-                                && bridge.state().is_some_and(|state| {
-                                    state.status() == agentkib_codex_bridge::Status::Idle
-                                        && state.approvals().is_empty()
-                                })
-                            {
-                                self.bridges.remove(&candidate);
-                                self.recency.retain(|id| id != &candidate);
-                                removed = true;
-                                break;
-                            }
-                        }
-                        if !removed {
-                            return self.unsupported(&request, "live-session-busy");
-                        }
+                    if self.reserve_follower_bridge(id).is_err() {
+                        return self.unsupported(&request, "live-session-busy");
                     }
                     let socket = codex_home().join("ipc/ipc.sock");
                     let connected = agentkib_codex_bridge::Bridge::connect_installed(&socket)
@@ -783,7 +929,16 @@ impl Service {
                         });
                     match connected {
                         Ok(bridge) => {
-                            self.bridges.insert(id.into(), bridge);
+                            let publisher = self
+                                .streams
+                                .as_ref()
+                                .map(|hub| hub.publisher(id, "codex-follower"));
+                            self.bridges.insert(
+                                id.into(),
+                                Arc::new(crate::follower_stream::ObservedBridge::new(
+                                    bridge, publisher,
+                                )),
+                            );
                         }
                         Err(_) => return self.unsupported(&request, "open-in-original-client"),
                     }
@@ -795,7 +950,8 @@ impl Service {
                 } else {
                     None
                 };
-                let bridge = self.bridges.get_mut(id).context("live-unavailable")?;
+                let observed = self.bridges.get(id).cloned().context("live-unavailable")?;
+                let mut bridge = observed.lock();
                 if bridge
                     .state()
                     .is_none_or(|state| state.conversation_id() != uuid)
@@ -805,7 +961,9 @@ impl Service {
                     return self.unsupported(&request, "session-identity-changed");
                 }
                 if (if request.operation == "live" {
-                    bridge.observe_live()
+                    // The observer continuously drains native pushes. Read-only
+                    // live requests no longer trigger owner/snapshot polling.
+                    Ok(())
                 } else {
                     bridge.refresh()
                 })
@@ -986,6 +1144,53 @@ impl Service {
             "duplicate-or-exhausted-request"
         );
         Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    fn reserve_follower_bridge(&mut self, id: &str) -> anyhow::Result<()> {
+        if self.bridges.contains_key(id) || self.bridges.len() < 8 {
+            return Ok(());
+        }
+        // This worker serializes observer attachment, subscription registration,
+        // cancellation and eviction. A new subscription cannot appear between
+        // this check and removal, including while refresh waits for its owner.
+        // Release the Hub lock before taking a bridge lock: its observer uses
+        // the opposite direction to publish native updates.
+        let candidates = idle_candidates(
+            &self.recency,
+            self.bridges.iter().map(|(id, bridge)| {
+                let subscribed = self
+                    .streams
+                    .as_ref()
+                    .is_some_and(|hub| hub.has_subscribers(id));
+                (
+                    id.as_str(),
+                    !subscribed
+                        && bridge.lock().state().is_some_and(|state| {
+                            state.status() == agentkib_codex_bridge::Status::Idle
+                                && state.approvals().is_empty()
+                        }),
+                )
+            }),
+        );
+        for candidate in candidates {
+            let Some(observed) = self.bridges.get(&candidate).cloned() else {
+                continue;
+            };
+            let mut bridge = observed.lock();
+            // An unsubscribed cached snapshot may have changed since the last
+            // read. Keep running, pending or unresolved owners attached.
+            if bridge.refresh().is_ok()
+                && bridge.state().is_some_and(|state| {
+                    state.status() == agentkib_codex_bridge::Status::Idle
+                        && state.approvals().is_empty()
+                })
+            {
+                self.bridges.remove(&candidate);
+                self.recency.retain(|id| id != &candidate);
+                return Ok(());
+            }
+        }
+        anyhow::bail!("live-session-busy")
     }
     fn reserve_claude_worker(&mut self, id: &str) -> anyhow::Result<()> {
         if self
@@ -1367,6 +1572,11 @@ fn complete_file_change(change: &Value) -> bool {
                 })
         })
 }
+
+#[cfg(test)]
+mod control_publication_tests;
+#[cfg(all(test, target_os = "macos"))]
+mod follower_cache_tests;
 
 #[cfg(test)]
 mod tests {

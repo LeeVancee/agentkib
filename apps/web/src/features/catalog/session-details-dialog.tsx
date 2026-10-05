@@ -1,6 +1,6 @@
 import { agentName } from "@agentkib/agent-identity";
-import { Dialog } from "@/components/dialog";
-import { useSession } from "@/features/sessions/session-context";
+import { Dialog } from "../../components/dialog";
+import { useSession } from "../sessions/session-context";
 import { useEffect, useState } from "react";
 
 type NativeContext = {

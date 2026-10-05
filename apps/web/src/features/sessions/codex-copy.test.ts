@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Locale } from "@/i18n";
+import { dictionaries, type Locale } from "@/i18n";
 import { codexReason } from "./codex-copy";
 
 describe("Codex capability reasons", () => {
@@ -27,6 +27,15 @@ describe("Codex capability reasons", () => {
       }
     },
   );
+
+  it.each(locales)("reuses specific installation and original-client advice in %s", (locale) => {
+    expect(codexReason(locale, "unverified-installation")).toEqual({
+      text: dictionaries[locale].unverifiedInstallation,
+    });
+    expect(codexReason(locale, "open-in-original-client")).toEqual({
+      text: dictionaries[locale].openOriginalClient,
+    });
+  });
 
   it("preserves technical details for unknown reasons", () => {
     expect(codexReason("zh-CN", "future-reason").technical).toBe("future-reason");

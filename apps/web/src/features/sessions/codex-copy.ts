@@ -1,4 +1,5 @@
-import type { Locale } from "../../i18n";
+import { dictionaries, type Locale } from "../../i18n";
+import { unavailableReasonText } from "../../live-status";
 const zh = {
   handoff: "我已处理待审批事项和后台命令，并关闭原执行客户端；以原任务 ID 恢复，不自动分支。",
   composerHint: "空闲时发送；运行中可停止，获授权后可追加或加入原生队列。队列消息将自动执行。",
@@ -480,6 +481,9 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
 };
 export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
+  if (reason === "unverified-installation" || reason === "open-in-original-client") {
+    return { text: unavailableReasonText(reason, dictionaries[locale]) };
+  }
   const text = reason ? reasons[locale][reason] : undefined;
   return text
     ? { text }

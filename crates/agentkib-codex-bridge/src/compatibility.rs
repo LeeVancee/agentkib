@@ -56,12 +56,10 @@ impl Compatibility {
         }
     }
 
+    /// Installation eligibility only; the selected owner must still pass the
+    /// exact native stream and control contracts before any mutation is allowed.
     pub fn is_known(&self) -> bool {
-        self.router_root.is_some()
-            && matches!(
-                self.desktop.as_deref(),
-                Some(DESKTOP_VERSION | DESKTOP_VERSION_CURRENT)
-            )
+        self.desktop_version_at_least(DESKTOP_VERSION)
     }
 
     pub fn desktop_version(&self) -> Option<&str> {
@@ -72,7 +70,15 @@ impl Compatibility {
     }
 
     pub fn supports_thread_settings(&self) -> bool {
-        self.router_root.is_some() && self.desktop.as_deref() == Some(DESKTOP_VERSION_CURRENT)
+        self.desktop_version_at_least(DESKTOP_VERSION_CURRENT)
+    }
+
+    fn desktop_version_at_least(&self, minimum: &str) -> bool {
+        let Some(version) = self.desktop.as_deref().and_then(parse_desktop_version) else {
+            return false;
+        };
+        self.router_root.is_some()
+            && parse_desktop_version(minimum).is_some_and(|minimum| version >= minimum)
     }
 
     #[cfg(target_os = "macos")]
@@ -118,11 +124,29 @@ impl Compatibility {
 
     #[cfg(all(test, target_os = "macos"))]
     pub(crate) fn settings_fixture() -> Self {
+        Self::version_fixture(DESKTOP_VERSION_CURRENT)
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn version_fixture(version: &str) -> Self {
         Self {
-            desktop: Some(DESKTOP_VERSION_CURRENT.into()),
+            desktop: Some(version.into()),
             ..Self::fixture()
         }
     }
+}
+
+fn parse_desktop_version(value: &str) -> Option<[u64; 3]> {
+    let mut components = value.split('.');
+    let mut version = [0; 3];
+    for component in &mut version {
+        let value = components.next()?;
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        *component = value.parse().ok()?;
+    }
+    components.next().is_none().then_some(version)
 }
 
 fn asar_version(path: &Path) -> Result<String> {
@@ -172,12 +196,13 @@ fn asar_version(path: &Path) -> Result<String> {
         .to_owned())
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn versions_alone_do_not_enable_control() {
         let mut compatibility = Compatibility {
             desktop: Some(DESKTOP_VERSION.into()),
@@ -210,6 +235,74 @@ mod tests {
         assert!(compatibility.supports_thread_settings());
         compatibility.desktop = Some(DESKTOP_VERSION.into());
         assert!(!compatibility.supports_thread_settings());
+    }
+
+    #[test]
+    fn desktop_versions_use_numeric_minimums_for_each_feature() {
+        for (version, basic, settings) in [
+            (None, false, false),
+            (Some("25.9999.99999"), false, false),
+            (Some("26.916.99999"), false, false),
+            (Some("26.917.62050"), false, false),
+            (Some(DESKTOP_VERSION), true, false),
+            (Some("26.917.62052"), true, false),
+            (Some("26.924.22137"), true, false),
+            (Some(DESKTOP_VERSION_CURRENT), true, true),
+            (Some("26.924.22139"), true, true),
+            (Some("26.930.51102"), true, true),
+            (Some("26.1000.1"), true, true),
+            (Some("26.924.100000"), true, true),
+            (Some("26.99.999999"), false, false),
+            (Some("27.0.0"), true, true),
+        ] {
+            let mut compatibility = Compatibility {
+                desktop: version.map(str::to_owned),
+                router_root: Some(PathBuf::from("/Applications/ChatGPT.app/Contents")),
+                ..Default::default()
+            };
+            assert_eq!(compatibility.is_known(), basic, "{version:?}");
+            assert_eq!(
+                compatibility.supports_thread_settings(),
+                settings,
+                "{version:?}"
+            );
+            compatibility.router_root = None;
+            assert!(!compatibility.is_known(), "{version:?}");
+            assert!(!compatibility.supports_thread_settings(), "{version:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_or_overflowing_versions_never_pass_the_minimum() {
+        for version in [
+            "",
+            "unknown-build",
+            "26.930",
+            "26.930.51102.1",
+            "26..51102",
+            ".930.51102",
+            "26.930.",
+            " 26.930.51102",
+            "26.930.51102 ",
+            "v26.930.51102",
+            "+26.930.51102",
+            "26.-930.51102",
+            "26.+930.51102",
+            "26.930.51102-beta",
+            "26.930.51102+build",
+            "２６.930.51102",
+            "18446744073709551616.930.51102",
+            "26.18446744073709551616.51102",
+            "26.930.18446744073709551616",
+        ] {
+            let compatibility = Compatibility {
+                desktop: Some(version.into()),
+                router_root: Some(PathBuf::from("/Applications/ChatGPT.app/Contents")),
+                ..Default::default()
+            };
+            assert!(!compatibility.is_known(), "{version}");
+            assert!(!compatibility.supports_thread_settings(), "{version}");
+        }
     }
 
     #[test]

@@ -134,6 +134,9 @@ fn initialize(socket: &mut UnixStream) {
 fn known() -> Compatibility {
     Compatibility::fixture()
 }
+fn newer_desktop() -> Compatibility {
+    Compatibility::version_fixture("26.930.51102")
+}
 fn snapshot(revision: u64, status: &str) -> Value {
     json!({"type":"broadcast","sourceClientId":"owner","version":11,"method":"thread-stream-state-changed","params":{
     "hostId":"local","conversationId":SESSION,"change":{"type":"snapshot","revision":revision,"conversationState":{
@@ -185,6 +188,7 @@ fn owner_with_refresh(
                     mutations += 1;
                     assert_eq!(mutations, 1, "duplicate mutation");
                     if method == "thread-follower-start-turn" {
+                        assert_eq!(message["version"], 2);
                         assert_eq!(
                             message["params"]["turnStart"]["request"],
                             json!({"threadId":SESSION,"input":[{"type":"text","text":"synthetic hello","text_elements":[]}]})
@@ -508,7 +512,7 @@ fn live_observation_rejects_owner_change_without_reusing_cached_state() {
             }
         }
     });
-    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    let mut bridge = Bridge::connect(&path, newer_desktop()).unwrap();
     bridge.select(SESSION).unwrap();
     bridge.force_live_checks_due(false);
     assert!(bridge.observe_live().is_err());
@@ -557,7 +561,7 @@ fn live_observation_rejects_revision_gap_in_follower_patch() {
             }
         }
     });
-    let mut bridge = Bridge::connect(&path, known()).unwrap();
+    let mut bridge = Bridge::connect(&path, newer_desktop()).unwrap();
     bridge.select(SESSION).unwrap();
     bridge.force_live_checks_due(false);
     assert!(bridge.observe_live().is_err());
@@ -601,6 +605,112 @@ fn unknown_versions_never_enable_controls() {
     b.select(SESSION).unwrap();
     assert!(b.send_text("hello").is_err());
     drop(b);
+    server.join().unwrap();
+}
+
+#[test]
+fn newer_desktop_can_follow_and_send_with_the_existing_native_contract() {
+    for version in ["26.930.51102", "26.1000.1", "27.0.0"] {
+        let (_dir, path, listener) = endpoint();
+        let server = owner_with_refresh(listener, "idle", Some("thread-follower-start-turn"), true);
+        let mut bridge = Bridge::connect(&path, Compatibility::version_fixture(version)).unwrap();
+        bridge.enable_controls().unwrap();
+        bridge.select(SESSION).unwrap();
+        assert_eq!(bridge.state().unwrap().status(), Status::Idle);
+        let mut dispatched = false;
+        bridge
+            .send_text_at_revision_with_authorization(
+                "synthetic hello",
+                Some(1),
+                || Ok(()),
+                || dispatched = true,
+            )
+            .unwrap();
+        assert!(dispatched);
+        assert!(
+            bridge.send_text("synthetic hello").is_err(),
+            "an acknowledged turn cannot be repeated without synchronization"
+        );
+        drop(bridge);
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn newer_desktop_rejects_an_unknown_native_stream_version() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        while let Some(message) = read(&mut socket) {
+            match message["method"].as_str() {
+                Some("thread-owner-discovery") => write(
+                    &mut socket,
+                    json!({
+                        "type":"response", "requestId":message["requestId"],
+                        "resultType":"success", "handledByClientId":"owner"
+                    }),
+                ),
+                Some("thread-stream-following-changed")
+                    if message["params"]["following"] == true =>
+                {
+                    let mut value = snapshot(1, "idle");
+                    value["version"] = json!(12);
+                    write(&mut socket, value);
+                }
+                Some("thread-stream-following-changed") => {}
+                _ => panic!("an incompatible stream must not receive mutations"),
+            }
+        }
+    });
+    let mut bridge = Bridge::connect(&path, newer_desktop()).unwrap();
+    bridge.enable_controls().unwrap();
+    assert!(
+        bridge
+            .select(SESSION)
+            .unwrap_err()
+            .to_string()
+            .contains("incompatible state version")
+    );
+    assert_eq!(bridge.state().unwrap().status(), Status::Unsupported);
+    assert!(bridge.state().unwrap().revision().is_none());
+    assert!(bridge.send_text("synthetic hello").is_err());
+    drop(bridge);
+    server.join().unwrap();
+}
+
+#[test]
+fn newer_desktop_without_a_session_owner_remains_read_only() {
+    let (_dir, path, listener) = endpoint();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        initialize(&mut socket);
+        let message = read(&mut socket).unwrap();
+        assert_eq!(message["method"], "thread-owner-discovery");
+        write(
+            &mut socket,
+            json!({
+                "type":"response", "requestId":message["requestId"],
+                "resultType":"success", "result":{}
+            }),
+        );
+        assert!(
+            read(&mut socket).is_none(),
+            "no owner must not lead to a mutation or subscription"
+        );
+    });
+    let mut bridge = Bridge::connect(&path, newer_desktop()).unwrap();
+    bridge.enable_controls().unwrap();
+    assert!(
+        bridge
+            .select(SESSION)
+            .unwrap_err()
+            .to_string()
+            .contains("no session owner found")
+    );
+    assert!(bridge.state().is_none());
+    assert!(bridge.send_text("synthetic hello").is_err());
+    drop(bridge);
     server.join().unwrap();
 }
 #[test]
@@ -1179,12 +1289,16 @@ fn following_status_request_is_answered_only_for_selected_owner() {
 
 #[test]
 fn native_mode_settings_require_supported_idle_owner_and_applied_receipt() {
-    for (supported, running, revision, applied) in [
-        (true, false, 1, true),
-        (true, false, 1, false),
-        (true, false, 99, true),
-        (true, true, 1, true),
-        (false, false, 1, true),
+    for (version, supported, running, revision, applied) in [
+        (crate::DESKTOP_VERSION_CURRENT, true, false, 1, true),
+        (crate::DESKTOP_VERSION_CURRENT, true, false, 1, false),
+        (crate::DESKTOP_VERSION_CURRENT, true, false, 99, true),
+        (crate::DESKTOP_VERSION_CURRENT, true, true, 1, true),
+        (crate::DESKTOP_VERSION, false, false, 1, true),
+        ("26.930.51102", true, false, 1, true),
+        ("26.930.51102", true, false, 1, false),
+        ("26.930.51102", true, false, 99, true),
+        ("26.930.51102", true, true, 1, true),
     ] {
         let (_dir, path, listener) = endpoint();
         let should_dispatch = supported && !running && revision == 1;
@@ -1254,10 +1368,10 @@ fn native_mode_settings_require_supported_idle_owner_and_applied_receipt() {
         });
         let mut bridge = Bridge::connect(
             &path,
-            if supported {
+            if version == crate::DESKTOP_VERSION_CURRENT {
                 Compatibility::settings_fixture()
             } else {
-                known()
+                Compatibility::version_fixture(version)
             },
         )
         .unwrap();

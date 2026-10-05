@@ -442,20 +442,14 @@ export class TypeScriptBackend {
                 completeItems: true,
               };
             }
-            const claudeSession =
-              this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
-              this.#claudeManaged!.hasManagedSession(sessionId);
-            const readMethod = claudeSession
-              ? RUNTIME_METHODS.claudeManaged
-              : RUNTIME_METHODS.webRequest;
             // Claude's live and history reads share an ownership lock. Keep them
             // sequential so this runtime does not contend with itself on restart.
-            const liveValue = await this.#request(readMethod, {
+            const liveValue = await this.#request(RUNTIME_METHODS.webRequest, {
               operation: "live",
               sessionId,
               experimentalEnabled: true,
             });
-            const pageValue = await this.#request(readMethod, {
+            const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
               operation: "events",
               sessionId,
               cursor: null,
@@ -565,7 +559,15 @@ export class TypeScriptBackend {
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
           this.#claudeManaged!.hasManagedSession(sessionId);
-        if (claudeSession) return this.#claudeManaged!.request(params);
+        if (claudeSession) {
+          if (
+            params.operation === "events" &&
+            this.#store!.sessions.get(sessionId)?.agent === "claude-code" &&
+            !this.#claudeManaged!.hasManagedSession(sessionId)
+          )
+            return this.#readIndexedClaudeEvents(params, sessionId);
+          return this.#claudeManaged!.request(params);
+        }
         return this.#withWebRead((owner) => owner.request(params));
       }
       if (params.operation === "settings-state")
@@ -1359,6 +1361,30 @@ export class TypeScriptBackend {
       );
     }
     return await operation(this.#webRead);
+  }
+
+  async #readIndexedClaudeEvents(params: Record<string, unknown>, sessionId: string) {
+    const store = this.#store;
+    const index = this.#sessionIndex;
+    const claude = this.#claudeManaged;
+    const before = store?.sessions.get(sessionId);
+    if (!store || !index || !claude || before?.agent !== "claude-code" || !index.enabled())
+      throw new Error("session-unavailable");
+    const generation = index.generation();
+    const result = await claude.request(params);
+    const after = store.sessions.get(sessionId);
+    if (
+      this.#store !== store ||
+      this.#sessionIndex !== index ||
+      index.generation() !== generation ||
+      !index.enabled() ||
+      after?.agent !== "claude-code" ||
+      after.workspace_id !== before.workspace_id ||
+      after.created_at !== before.created_at ||
+      after.updated_at !== before.updated_at
+    )
+      throw new Error("session-unavailable");
+    return result;
   }
 
   #setChoice(params: Record<string, unknown>, key: string, values: string[]): unknown {

@@ -1410,9 +1410,12 @@ export class SkillManager {
       else if (observation.agents.length === 1 && states.some((state) => state.unknown))
         observation.status = "unverified";
     }
+    const unverifiedOwnership: string[] = [];
     for (const receipt of await this.#allReceipts({
       tolerateUnavailableLibraries: true,
+      tolerateUnreadableReceipts: true,
       warnings,
+      unverified: unverifiedOwnership,
     })) {
       if (receipt.status === "inactive") continue;
       for (const observation of output) {
@@ -1422,6 +1425,13 @@ export class SkillManager {
           receipt.library_root && samePath(receipt.library_root, this.#root)
             ? receipt.library_id
             : null;
+      }
+    }
+    if (unverifiedOwnership.length > 0) {
+      const diagnostic = "Deployment ownership could not be verified";
+      for (const observation of output) {
+        if (observation.status !== "native-restricted") observation.status = "unverified";
+        if (!observation.diagnostics.includes(diagnostic)) observation.diagnostics.push(diagnostic);
       }
     }
     return { observations: output, warnings };
@@ -1672,7 +1682,12 @@ export class SkillManager {
   }
 
   async #allReceipts(
-    options: { tolerateUnavailableLibraries?: boolean; warnings?: string[] } = {},
+    options: {
+      tolerateUnavailableLibraries?: boolean;
+      tolerateUnreadableReceipts?: boolean;
+      warnings?: string[];
+      unverified?: string[];
+    } = {},
   ) {
     const files = new Set([this.#receiptFile("personal", this.#root)]);
     const addLibraryReceipts = async (library: string) => {
@@ -1681,7 +1696,9 @@ export class SkillManager {
         files.add(path.join(library, "skill-deployments.json"));
       } catch (error) {
         if (!options.tolerateUnavailableLibraries) throw error;
-        options.warnings?.push(`Skill ownership could not be verified for ${library}`);
+        const warning = `Skill ownership could not be verified for ${library}`;
+        options.warnings?.push(warning);
+        options.unverified?.push(warning);
       }
     };
     for (const workspace of this.#workspaceList()) {
@@ -1694,7 +1711,30 @@ export class SkillManager {
       for (const library of await this.#readLibraries("personal", target.scope_root))
         await addLibraryReceipts(library);
     }
-    const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
+    const groups: Deployment[][] = [];
+    const identities = new Set<string>();
+    const reported = new Set<string>();
+    for (const file of files) {
+      let records: Deployment[];
+      try {
+        // Validate each lexical source before collapsing physical aliases.
+        records = await this.#readReceipts(file);
+      } catch (error) {
+        if (!options.tolerateUnreadableReceipts) throw error;
+        const identity = physicalPathIdentity(file);
+        if (!reported.has(identity)) {
+          reported.add(identity);
+          const warning = `Skill ownership could not be verified for ${file}: ${error instanceof Error ? error.message : String(error)}`;
+          options.warnings?.push(warning);
+          options.unverified?.push(warning);
+        }
+        continue;
+      }
+      const identity = physicalPathIdentity(file);
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      groups.push(records);
+    }
     return groups.flat();
   }
 
@@ -1721,7 +1761,10 @@ export class SkillManager {
   async listDeployments() {
     const inventory = await this.inventory();
     const observations = inventory.observations;
-    const deployments = await this.#allReceipts({ tolerateUnavailableLibraries: true });
+    const deployments = await this.#allReceipts({
+      tolerateUnavailableLibraries: true,
+      tolerateUnreadableReceipts: true,
+    });
     const journals = await this.#activeJournals();
     const known = await Promise.all(
       deployments.map(async (record) => {

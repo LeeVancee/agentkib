@@ -1168,15 +1168,13 @@ fn released_session_requires_explicit_resume_and_keeps_native_id() {
         operation(&mut service, session, "resume", json!({}))["accepted"],
         false
     );
-    assert_eq!(
-        operation(
-            &mut service,
-            session,
-            "resume",
-            json!({"handoffConfirmed":true})
-        )["accepted"],
-        true
+    let resumed = operation(
+        &mut service,
+        session,
+        "resume",
+        json!({"handoffConfirmed":true}),
     );
+    assert_eq!(resumed["accepted"], true, "resume rejected: {resumed}");
     assert_eq!(
         service
             .ledger()
@@ -1265,15 +1263,13 @@ fn host_default_model_preserves_mode_as_pending_until_native_event() {
     record.effort = None;
     record.mode = Some("plan".into());
     ledger.save(&record).unwrap();
-    assert_eq!(
-        operation(
-            &mut service,
-            session,
-            "resume",
-            json!({"handoffConfirmed":true})
-        )["accepted"],
-        true
+    let resumed = operation(
+        &mut service,
+        session,
+        "resume",
+        json!({"handoffConfirmed":true}),
     );
+    assert_eq!(resumed["accepted"], true, "resume rejected: {resumed}");
     let record = ledger.get(session).unwrap().unwrap();
     assert_eq!(record.model.as_deref(), Some("mock-model"));
     assert_eq!(record.effort.as_deref(), Some("medium"));

@@ -62,10 +62,12 @@ pub struct Approval {
     pub details: Value,
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) type StateObserver = std::sync::Arc<dyn Fn(&SessionState) + Send + Sync>;
 
 /// Owns one explicitly selected conversation. Never merges another host/thread's data.
 pub struct SessionState {
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) observer: Option<StateObserver>,
     pub(crate) conversation: String,
     #[cfg(any(target_os = "macos", test))]
@@ -116,6 +118,7 @@ impl SessionState {
             .transpose()
             .map(|turns| turns.unwrap_or_default())
     }
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn notify_observer(&self) {
         if let Some(observer) = &self.observer {
             observer(self);

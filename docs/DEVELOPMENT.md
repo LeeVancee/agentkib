@@ -155,8 +155,6 @@ AgentKib 由多个协作部分组成一个桌面应用：
 | Quota sidecar         | 准备到 `apps/desktop/resources/quota/`                        | 分平台采集本机额度数据                                                             |
 | Runtime protocol      | 由 `apps/desktop/scripts/generate-runtime-protocol.mjs` 生成  | 在开发和构建前生成 Electron 与 TypeScript backend 的共享协议                       |
 
-`pnpm dev` 与正式安装版只启动 TypeScript backend。Electron 自带 Node runtime。原生文件替换和回滚使用暂存的 Koffi 模块，安装版会从 ASAR 解包。build 命令按照 `apps/desktop/package.json` 的顺序生成共享协议并暂存所需原生产物。
-
 `pnpm dev` 和正式安装版只启动 TypeScript backend。Electron 使用自带的 Node runtime。原生文件替换和回滚使用暂存的 Koffi 预编译模块，安装版会从 ASAR 解包。`pnpm dev`、`pnpm build` 和 `pnpm dist:electron` 会按照 `apps/desktop/package.json` 定义的顺序生成共享协议并暂存所需原生产物；不要手工编辑生成协议或其转出文件。
 
 ### 启动开发环境

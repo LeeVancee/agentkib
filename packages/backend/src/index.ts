@@ -442,13 +442,19 @@ export class TypeScriptBackend {
                 completeItems: true,
               };
             }
+            const claudeSession =
+              this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
+              this.#claudeManaged!.hasManagedSession(sessionId);
+            const readMethod = claudeSession
+              ? RUNTIME_METHODS.claudeManaged
+              : RUNTIME_METHODS.webRequest;
             const [liveValue, pageValue] = await Promise.all([
-              this.#request(RUNTIME_METHODS.webRequest, {
+              this.#request(readMethod, {
                 operation: "live",
                 sessionId,
                 experimentalEnabled: true,
               }),
-              this.#request(RUNTIME_METHODS.webRequest, {
+              this.#request(readMethod, {
                 operation: "events",
                 sessionId,
                 cursor: null,
@@ -1342,6 +1348,7 @@ export class TypeScriptBackend {
         { ...process.env, ...this.environment },
         (sessionId, type, payload, live) =>
           this.#sessionStream?.publish(sessionId, type, payload, live),
+        (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
       );
     }
     return await operation(this.#webRead);

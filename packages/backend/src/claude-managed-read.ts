@@ -1067,6 +1067,10 @@ export class ClaudeManagedReadOwner {
     });
   }
 
+  hasManagedSession(id: string): boolean {
+    return sessionIdPattern.test(id) && this.#load(id) !== null;
+  }
+
   indexedAliases(): Set<string> {
     return new Set(
       this.catalog().flatMap((record) =>

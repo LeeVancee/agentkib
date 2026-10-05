@@ -82,6 +82,7 @@ type LockEntry = {
   content_sha256: string;
   installed_at: string;
   updated_at: string;
+  display_name?: string;
   local_source?: string | null;
   local_resolved_path?: string | null;
 };
@@ -304,7 +305,7 @@ export class Skills {
       try {
         metadata = this.#frontmatter(
           await fs.readFile(path.join(folder, "SKILL.md"), "utf8"),
-          name,
+          record?.display_name ?? name,
         );
       } catch {
         if (!record) continue;
@@ -443,6 +444,7 @@ export class Skills {
           content_sha256: packageHash.hash,
           installed_at: now,
           updated_at: now,
+          display_name: metadata.name,
           local_source: observation.path,
           local_resolved_path: source,
         },
@@ -627,7 +629,9 @@ export class Skills {
     const record = {
       id,
       name,
-      display_name: await this.#displayName(target, name),
+      display_name:
+        (typeof lock.skills[name]?.display_name === "string" && lock.skills[name]?.display_name) ||
+        (await this.#displayName(target, name)),
       removed_at: new Date().toISOString(),
       lock: lock.skills[name] ?? null,
       previous: lock.previous[name] ?? null,

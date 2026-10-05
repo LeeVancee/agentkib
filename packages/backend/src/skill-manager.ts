@@ -53,6 +53,7 @@ type Deployment = {
   library_id: string;
   library_root: string | null;
   package_name: string;
+  display_name?: string;
   package_hash: string;
   scope: Scope;
   workspace_id: string | null;
@@ -72,6 +73,7 @@ type PlannedTarget = {
   agents: Agent[];
   visibleTo: Agent[];
   destination: string;
+  displayName: string;
   receiptFile: string;
   receipt: Deployment | null;
   expectedHash: string | null;
@@ -167,6 +169,14 @@ function samePath(left: string, right: string) {
   return process.platform === "win32"
     ? leftIdentity.toLowerCase() === rightIdentity.toLowerCase()
     : leftIdentity === rightIdentity;
+}
+
+function sameEntryPath(left: string, right: string) {
+  const first = path.resolve(left);
+  const second = path.resolve(right);
+  return process.platform === "win32"
+    ? first.toLowerCase() === second.toLowerCase()
+    : first === second;
 }
 
 function groupForTarget(groups: Map<string, Target[]>, target: Target): Target[] {
@@ -1396,7 +1406,7 @@ export class SkillManager {
     for (const receipt of await this.#allReceipts()) {
       if (receipt.status === "inactive") continue;
       for (const observation of output) {
-        if (!samePath(observation.path, receipt.target)) continue;
+        if (!sameEntryPath(observation.path, receipt.target)) continue;
         observation.owner = "agentkib";
         observation.library_id =
           receipt.library_root && samePath(receipt.library_root, this.#root)
@@ -1434,9 +1444,12 @@ export class SkillManager {
     const previousRoot = libraryId ? path.join(this.#root, "backups/skills", libraryId) : null;
     const previous =
       previousRoot && (await exists(previousRoot)) ? await skillPackage(previousRoot) : null;
-    const metadata = await this.#metadata(root, path.basename(origin));
     const lock = libraryId ? await this.#lock() : null;
     const record = libraryId ? lock?.skills?.[libraryId] : null;
+    const metadata = await this.#metadata(
+      root,
+      typeof record?.display_name === "string" ? record.display_name : path.basename(origin),
+    );
     return {
       library_id: libraryId,
       observation_id: observationId,
@@ -1548,7 +1561,7 @@ export class SkillManager {
   async #reserve(record: Deployment) {
     const file = this.#reservationFile(record.scope, record.scope_root);
     const reservations = await this.#readReceipts(file);
-    if (reservations.some((item) => samePath(item.target, record.target)))
+    if (reservations.some((item) => sameEntryPath(item.target, record.target)))
       throw new Error("Skill target is reserved by another operation");
     reservations.push(record);
     await this.#writeReceipts(file, reservations);
@@ -1561,7 +1574,7 @@ export class SkillManager {
       file,
       reservations.filter(
         (item) =>
-          item.operation_id !== record.operation_id || !samePath(item.target, record.target),
+          item.operation_id !== record.operation_id || !sameEntryPath(item.target, record.target),
       ),
     );
   }
@@ -1594,6 +1607,7 @@ export class SkillManager {
         typeof record.id !== "string" ||
         typeof record.library_id !== "string" ||
         typeof record.package_name !== "string" ||
+        (record.display_name !== undefined && typeof record.display_name !== "string") ||
         typeof record.package_hash !== "string" ||
         (record.scope !== "personal" && record.scope !== "workspace") ||
         typeof record.scope_root !== "string" ||
@@ -1646,12 +1660,12 @@ export class SkillManager {
     for (const workspace of this.#workspaceList()) {
       files.add(this.#receiptFile("workspace", workspace.path));
       for (const library of await this.#readLibraries("workspace", workspace.path))
-        files.add(this.#receiptFile("personal", library));
+        files.add(path.join(library, "skill-deployments.json"));
     }
     for (const target of await this.targets()) {
       if (target.scope !== "personal") continue;
       for (const library of await this.#readLibraries("personal", target.scope_root))
-        files.add(this.#receiptFile("personal", library));
+        files.add(path.join(library, "skill-deployments.json"));
     }
     const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
     return groups.flat();
@@ -1662,12 +1676,12 @@ export class SkillManager {
     for (const workspace of this.#workspaceList()) {
       files.add(this.#reservationFile("workspace", workspace.path));
       for (const library of await this.#readLibraries("workspace", workspace.path))
-        files.add(this.#reservationFile("personal", library));
+        files.add(path.join(library, "skill-deployment-reservations.json"));
     }
     for (const target of await this.targets()) {
       if (target.scope !== "personal") continue;
       for (const library of await this.#readLibraries("personal", target.scope_root))
-        files.add(this.#reservationFile("personal", library));
+        files.add(path.join(library, "skill-deployment-reservations.json"));
     }
     const groups = await Promise.all([...files].map((file) => this.#readReceipts(file)));
     return groups.flat();
@@ -1680,14 +1694,23 @@ export class SkillManager {
     const journals = await this.#activeJournals();
     const known = await Promise.all(
       deployments.map(async (record) => {
+        const displayName =
+          record.display_name ??
+          (await this.#libraryDisplayName(
+            record.library_id,
+            record.library_root ?? this.#root,
+          ).catch(() => record.package_name));
         const output = {
           ...record,
+          display_name: displayName,
           diagnostics: [...record.diagnostics],
           visible_to: [] as Agent[],
         };
         const currentLibrary =
           record.library_root !== null && samePath(record.library_root, this.#root);
-        const pending = journals.find((item) => samePath(item.journal.destination, record.target));
+        const pending = journals.find((item) =>
+          sameEntryPath(item.journal.destination, record.target),
+        );
         if (pending) {
           output.status = "recovery-required";
           output.operation_id = pending.journal.operation_id;
@@ -1701,7 +1724,7 @@ export class SkillManager {
           }
           for (const observation of observations) {
             if (
-              samePath(observation.path, record.target) ||
+              sameEntryPath(observation.path, record.target) ||
               (observation.resolved_path !== null &&
                 samePath(observation.resolved_path, record.target))
             ) {
@@ -1715,9 +1738,16 @@ export class SkillManager {
       }),
     );
     for (const { journal } of journals) {
-      if (known.some((item) => samePath(item.target, journal.destination))) continue;
+      if (known.some((item) => sameEntryPath(item.target, journal.destination))) continue;
+      const displayName =
+        journal.next_receipt.display_name ??
+        (await this.#libraryDisplayName(
+          journal.next_receipt.library_id,
+          journal.next_receipt.library_root ?? this.#root,
+        ).catch(() => journal.next_receipt.package_name));
       known.push({
         ...journal.next_receipt,
+        display_name: displayName,
         status: "recovery-required",
         operation_id: journal.operation_id,
         diagnostics: ["Interrupted Skill operation requires recovery"],
@@ -1762,7 +1792,7 @@ export class SkillManager {
       selected = currentTargets.filter(
         (target) =>
           target.scope === receipt!.scope &&
-          samePath(path.join(target.root, receipt!.package_name), receipt!.target),
+          sameEntryPath(path.join(target.root, receipt!.package_name), receipt!.target),
       );
       if (!selected.length) throw new Error("Skill target changed; refresh and retry");
     }
@@ -1786,11 +1816,12 @@ export class SkillManager {
         throw new Error("Invalid Skill package identity");
       const destination = path.join(target.root, packageName);
       const owned =
-        receipts.find((item) => item.status !== "inactive" && samePath(item.target, destination)) ??
-        null;
+        receipts.find(
+          (item) => item.status !== "inactive" && sameEntryPath(item.target, destination),
+        ) ?? null;
       const conflicts: string[] = [];
       const reservations = allReservations;
-      if (reservations.some((item) => samePath(item.target, destination)))
+      if (reservations.some((item) => sameEntryPath(item.target, destination)))
         conflicts.push("Skill target has an unfinished operation requiring recovery");
       if (group.some((item) => !item.writable))
         conflicts.push(...group.flatMap((item) => (item.reason ? [item.reason] : [])));
@@ -1816,6 +1847,11 @@ export class SkillManager {
       const sourceInfo = source && (await exists(source)) ? await skillPackage(source) : null;
       if (source && !sourceInfo) conflicts.push("Library or previous Skill package is unavailable");
       if (sourceInfo?.diagnostics.length) conflicts.push(...sourceInfo.diagnostics);
+      const displayName =
+        receipt?.display_name ??
+        (libraryId
+          ? await this.#libraryDisplayName(libraryId).catch(() => packageName)
+          : packageName);
       const previous =
         actualHash && (await exists(destination)) ? await skillPackage(destination) : null;
       const before = new Map(previous?.files.map((file) => [file.path, file]));
@@ -1832,6 +1868,7 @@ export class SkillManager {
         agents: group.map((item) => item.agent),
         visibleTo: [...new Set(group.flatMap((item) => item.visible_to))],
         destination,
+        displayName,
         receiptFile: this.#receiptFile(target.scope, target.scope_root),
         receipt: owned,
         expectedHash: actualHash,
@@ -1900,6 +1937,20 @@ export class SkillManager {
     const packageInfo = await skillPackage(directory);
     if (packageInfo.diagnostics.length) throw new Error(packageInfo.diagnostics.join("; "));
     return packageInfo.hash;
+  }
+
+  async #libraryDisplayName(libraryId: string, libraryRoot = this.#root): Promise<string> {
+    const lockPath = path.join(libraryRoot, "skills.lock.json");
+    const lock = await fs.readFile(lockPath, "utf8").then(
+      (value) => JSON.parse(value) as { skills?: Record<string, { display_name?: unknown }> },
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      },
+    );
+    const saved = lock?.skills?.[libraryId]?.display_name;
+    if (typeof saved === "string" && saved.trim()) return saved;
+    return (await this.#metadata(path.join(libraryRoot, "skills", libraryId), libraryId)).name;
   }
 
   async readPreviewFile(params: Record<string, unknown>) {
@@ -2041,11 +2092,13 @@ export class SkillManager {
     )
       throw new Error("Skill deployment ownership changed after preview");
     const otherOwners = (await this.#allReceipts()).filter(
-      (item) => item.status !== "inactive" && samePath(item.target, plan.destination),
+      (item) => item.status !== "inactive" && sameEntryPath(item.target, plan.destination),
     );
     if (otherOwners.some((item) => item.id !== currentReceipt?.id))
       throw new Error("Skill destination is owned by another library");
-    if ((await this.#allReservations()).some((item) => samePath(item.target, plan.destination)))
+    if (
+      (await this.#allReservations()).some((item) => sameEntryPath(item.target, plan.destination))
+    )
       throw new Error("Skill destination has an unfinished operation");
     const sourceHash = plan.source ? await this.#currentHash(plan.source) : null;
     if (sourceHash !== plan.sourceHash) throw new Error("Skill source changed after preview");
@@ -2058,6 +2111,7 @@ export class SkillManager {
     const next: Deployment = currentReceipt
       ? {
           ...currentReceipt,
+          display_name: plan.displayName,
           package_hash: plan.incomingHash ?? currentReceipt.package_hash,
           previous_hash:
             preview.operation === "update" || preview.operation === "rollback"
@@ -2076,6 +2130,7 @@ export class SkillManager {
           library_id: preview.libraryId!,
           library_root: this.#root,
           package_name: path.basename(plan.destination),
+          display_name: plan.displayName,
           package_hash: plan.incomingHash!,
           scope: plan.target.scope,
           workspace_id: plan.target.workspace_id,
@@ -2168,13 +2223,22 @@ export class SkillManager {
             await fs.mkdir(path.dirname(journal.backup), { recursive: true });
             await fs.rename(old, journal.backup);
           }
+        } else if (
+          !committed &&
+          journal.state === "prepared" &&
+          actual !== null &&
+          actual === journal.incoming_hash &&
+          actual !== journal.expected_hash &&
+          (await exists(path.join(directory, "new")))
+        ) {
+          throw new Error("Skill destination changed externally; recovery preserved the files");
+        } else if (!committed && actual === journal.expected_hash) {
+          if (journal.backup && (await exists(priorBackup)))
+            await fs.rename(priorBackup, journal.backup);
         } else if (!committed && (actual === journal.incoming_hash || actual === null)) {
           if (actual !== null)
             await fs.rename(journal.destination, path.join(directory, "abandoned"));
           if (await exists(old)) await fs.rename(old, journal.destination);
-          if (journal.backup && (await exists(priorBackup)))
-            await fs.rename(priorBackup, journal.backup);
-        } else if (!committed && actual === journal.expected_hash) {
           if (journal.backup && (await exists(priorBackup)))
             await fs.rename(priorBackup, journal.backup);
         } else {

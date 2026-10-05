@@ -631,6 +631,7 @@ export interface SkillDeployment {
   library_root?: string | null;
   source_is_current_library?: boolean;
   package_name: string;
+  display_name?: string;
   package_hash: string;
   scope: SkillScope;
   workspace_id: string | null;

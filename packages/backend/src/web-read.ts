@@ -329,6 +329,7 @@ export class WebReadRequests {
       payload: Record<string, unknown>,
       live: Record<string, unknown>,
     ) => void,
+    readonly isSessionObserved?: (sessionId: string) => boolean,
   ) {
     this.#codex = new CodexAppServerReader(environment);
   }
@@ -3288,6 +3289,7 @@ export class WebReadRequests {
         .filter(
           ([id, value]) =>
             id !== sessionId &&
+            !this.isSessionObserved?.(id) &&
             value.bridge.selectedState?.status === "idle" &&
             value.bridge.selectedState.approvals(false).length === 0,
         )

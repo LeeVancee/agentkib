@@ -21,6 +21,7 @@ interface Snapshot {
 interface Source {
   epoch: string;
   seq: number;
+  historyRevision: number;
   snapshot: Snapshot;
   replay: SessionStreamEvent[];
   replayBytes: number;
@@ -65,6 +66,8 @@ export class SessionStreamHub {
     if (this.#subscriptions.size >= MAX_SUBSCRIPTIONS)
       throw new Error("session-subscription-limit");
 
+    const previousSource = this.#sources.get(sessionId);
+    const previousHistoryRevision = previousSource?.historyRevision;
     const snapshot = await this.readSnapshot(sessionId);
     let source = this.#sources.get(sessionId);
     if (!source) {
@@ -74,6 +77,7 @@ export class SessionStreamHub {
       source = {
         epoch: randomUUID(),
         seq: 0,
+        historyRevision: 0,
         snapshot: { ...snapshot, items: initialItems, completeItems },
         replay: [],
         replayBytes: 0,
@@ -89,7 +93,10 @@ export class SessionStreamHub {
       this.#sources.set(sessionId, source);
     } else {
       this.#flushText(sessionId, source);
-      const reconciled = this.#reconcileSnapshot(source, snapshot);
+      const reconciled =
+        source !== previousSource || source.historyRevision !== previousHistoryRevision
+          ? source.snapshot
+          : this.#reconcileSnapshot(source, snapshot);
       if (JSON.stringify(source.snapshot) === JSON.stringify(reconciled)) {
         // Keep the live object fresh even when its JSON projection is equal.
         source.snapshot = reconciled;
@@ -145,6 +152,10 @@ export class SessionStreamHub {
     return { removed };
   }
 
+  hasSubscribers(sessionId: string): boolean {
+    return [...this.#subscriptions.values()].some((item) => item.sessionId === sessionId);
+  }
+
   publish(
     sessionId: string,
     type: SessionStreamEvent["type"],
@@ -160,6 +171,7 @@ export class SessionStreamHub {
     }
     this.#flushText(sessionId, source);
     if (type === "snapshot" && Array.isArray(payload.items)) {
+      source.historyRevision += 1;
       const incoming = payload.items.filter(isRecord);
       const incomingIds = new Set(incoming.map((item) => item.id).filter(isString));
       const complete = payload.completeItems === true;
@@ -196,8 +208,12 @@ export class SessionStreamHub {
       this.#broadcastLatest(sessionId, source);
       return;
     }
-    if (live) source.snapshot = { ...source.snapshot, live };
+    if (live) {
+      source.snapshot = { ...source.snapshot, live };
+      source.historyRevision += 1;
+    }
     if (type === "item-upsert" && typeof payload.id === "string") {
+      source.historyRevision += 1;
       const items = [...source.snapshot.items];
       const index = items.findIndex((item) => item.id === payload.id);
       if (index >= 0) items[index] = payload;
@@ -230,6 +246,7 @@ export class SessionStreamHub {
     if (previousId === itemId) return;
     const previous = source.snapshot.items.find((item) => item.id === previousId);
     if (!previous) return;
+    source.historyRevision += 1;
     this.#flushText(sessionId, source);
     const replacement: Record<string, unknown> = { ...previous, id: itemId, ephemeral: false };
     const items = [...source.snapshot.items];
@@ -273,7 +290,14 @@ export class SessionStreamHub {
         if (!source || source.nextPollAt > Date.now()) continue;
         source.nextPollAt = Date.now() + (sessionId ? SNAPSHOT_INTERVAL_MS : 2_000);
         try {
-          const snapshot = this.#reconcileSnapshot(source, await this.readSnapshot(sessionId));
+          const historyRevision = source.historyRevision;
+          const read = await this.readSnapshot(sessionId);
+          if (this.#sources.get(sessionId) !== source) continue;
+          if (source.historyRevision !== historyRevision) {
+            source.nextPollAt = Date.now();
+            continue;
+          }
+          const snapshot = this.#reconcileSnapshot(source, read);
           if (JSON.stringify(source.snapshot) === JSON.stringify(snapshot)) continue;
           this.#flushText(sessionId, source);
           source.snapshot = snapshot;
@@ -370,6 +394,7 @@ export class SessionStreamHub {
         items,
         completeItems: false,
       };
+      source.historyRevision += 1;
       this.#append(sessionId, source, "item-upsert", replacement);
       this.#broadcastLatest(sessionId, source);
       return;
@@ -394,6 +419,7 @@ export class SessionStreamHub {
       items,
       completeItems: false,
     };
+    source.historyRevision += 1;
 
     const pending = source.pendingText;
     const pendingPayload = pending?.payload;

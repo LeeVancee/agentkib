@@ -241,6 +241,189 @@ describe("Claude local owner panel", () => {
     await enterMessage("Ready after recovery");
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
   });
+  it.each(["empty-replay", "baseline"])(
+    "recovers idle controls after only the catalog subscription reconnects with %s",
+    async (recovery) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("Preserved draft");
+      await enabled(screen.getByRole("button", { name: "Send" }));
+      await enabled(screen.getByLabelText("Add images or files"));
+      const detail = [...streams.get("session")!][0];
+      const catalog = [...streams.get("")!][0];
+      const historyReads = calls("events").length;
+      const liveReads = calls("live").length;
+      const capabilityReads = calls("capabilities").length;
+      await act(async () => catalog.error(new Error("catalog_subscription_failed")));
+      expect(await screen.findByText("catalog_subscription_failed")).toBeVisible();
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+
+      await act(async () => {
+        if (recovery === "baseline")
+          emitNative(1, "snapshot", { live: { ...live, sessionId: "" } }, "");
+        catalog.event(
+          "session-ready",
+          JSON.stringify({ cursor: recovery === "baseline" ? ":1" : ":0" }),
+        );
+        catalog.open();
+      });
+      await enabled(screen.getByLabelText("Message"));
+      await enabled(screen.getByRole("button", { name: "Send" }));
+      await enabled(screen.getByLabelText("Add images or files"));
+      await waitFor(() =>
+        expect(screen.queryByText("catalog_subscription_failed")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+      expect(calls("capabilities").length).toBeGreaterThan(capabilityReads);
+      expect(calls("events")).toHaveLength(historyReads);
+      expect(calls("live")).toHaveLength(liveReads);
+      expect([...streams.get("session")!]).toEqual([detail]);
+      expect(stopped).not.toHaveBeenCalledWith("session");
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+  it("does not restore catalog readiness from a mismatched cursor", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("Preserved draft");
+    const catalog = [...streams.get("")!][0];
+    await act(async () => catalog.error(new Error("catalog_subscription_failed")));
+    await act(async () => {
+      catalog.event("session-ready", JSON.stringify({ cursor: "unapplied-cursor" }));
+      catalog.open();
+      // A healthy detail stream cannot prove that the separate catalog recovered.
+      emitNative(1, "state", { revision: 2, sendEnabled: true });
+    });
+    expect(screen.getByText("catalog_subscription_failed")).toBeVisible();
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+    await act(async () => catalog.event("session-ready", JSON.stringify({ cursor: ":0" })));
+    await enabled(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+  });
+  it("ignores obsolete catalog errors and readiness after resynchronizing a gap", async () => {
+    mount();
+    await screen.findByText("Synthetic history");
+    await enterMessage("Preserved draft");
+    const previous = [...streams.get("")!][0];
+    const detail = [...streams.get("session")!][0];
+    await act(async () => emitNative(2, "state", { revision: 2 }, ""));
+    await waitFor(() => {
+      expect(streams.get("")?.size).toBe(1);
+      expect([...streams.get("")!][0]).not.toBe(previous);
+    });
+    await enabled(screen.getByRole("button", { name: "Send" }));
+    const current = [...streams.get("")!][0];
+    await act(async () => previous.error(new Error("obsolete_catalog_failure")));
+    expect(screen.queryByText("obsolete_catalog_failure")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    await act(async () => {
+      current.error(new Error("current_catalog_failure"));
+      previous.event("session-ready", JSON.stringify({ cursor: ":0" }));
+    });
+    expect(screen.getByText("current_catalog_failure")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await act(async () => current.event("session-ready", JSON.stringify({ cursor: ":0" })));
+    await enabled(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+    expect([...streams.get("session")!]).toEqual([detail]);
+    expect(stopped).not.toHaveBeenCalledWith("session");
+    expect(calls("send")).toHaveLength(0);
+  });
+  it.each(["detail-stream", "metadata"])(
+    "keeps the independent %s failure fenced after catalog recovery",
+    async (failure) => {
+      mount();
+      await screen.findByText("Synthetic history");
+      await enterMessage("Preserved draft");
+      await enabled(screen.getByRole("button", { name: "Send" }));
+      const detail = [...streams.get("session")!][0];
+      const catalog = [...streams.get("")!][0];
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      if (failure === "metadata")
+        vi.mocked(api.claudeRequest).mockImplementation((value) =>
+          value.operation === "capabilities"
+            ? Promise.reject(new Error("metadata_unavailable"))
+            : original(value),
+        );
+      await act(async () => {
+        if (failure === "detail-stream") detail.error(new Error("detail_disconnected"));
+        else emitNative(1, "invalidate", { domains: ["catalog"] }, "");
+      });
+      if (failure === "metadata")
+        expect(await screen.findByText("metadata_unavailable")).toBeVisible();
+      await act(async () => catalog.error(new Error("catalog_subscription_failed")));
+      const capabilityReads = calls("capabilities").length;
+      await act(async () => {
+        catalog.event(
+          "session-ready",
+          JSON.stringify({ cursor: failure === "metadata" ? ":1" : ":0" }),
+        );
+        catalog.open();
+      });
+      await waitFor(() => expect(calls("capabilities").length).toBeGreaterThan(capabilityReads));
+      await waitFor(() =>
+        expect(screen.queryByText("catalog_subscription_failed")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+      expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+      expect(screen.getByLabelText("Message")).toHaveValue("Preserved draft");
+      if (failure === "metadata") expect(screen.getByText("metadata_unavailable")).toBeVisible();
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
+  it.each([false, true])(
+    "reconciles a missed receipt after catalog empty replay without replaying the command (settled=%s)",
+    async (settled) => {
+      const key = "agentkib:claude-owner-pending:v1:workspace";
+      const pending = {
+        requestId: crypto.randomUUID(),
+        operation: "send",
+        sessionId: "session",
+        workspaceId: "workspace",
+      };
+      localStorage.setItem(key, JSON.stringify(pending));
+      mount();
+      await screen.findByText("Synthetic history");
+      await waitFor(() => expect(calls("receipt").length).toBeGreaterThan(0));
+      expect(screen.getByLabelText("Message")).toBeDisabled();
+      const catalog = [...streams.get("")!][0];
+      await act(async () => catalog.error(new Error("catalog_subscription_failed")));
+      const original = vi.mocked(api.claudeRequest).getMockImplementation()!;
+      if (settled)
+        vi.mocked(api.claudeRequest).mockImplementation((value) =>
+          value.operation === "receipt"
+            ? Promise.resolve({ ...pending, found: true, status: "accepted" })
+            : original(value),
+        );
+      const receiptReads = calls("receipt").length;
+      await act(async () => {
+        catalog.event("session-ready", JSON.stringify({ cursor: ":0" }));
+        catalog.open();
+      });
+      await waitFor(() => expect(calls("receipt").length).toBeGreaterThan(receiptReads));
+      if (settled) {
+        await enabled(screen.getByLabelText("Message"));
+        await enabled(screen.getByLabelText("Add images or files"));
+        expect(localStorage.getItem(key)).toBeNull();
+        await enterMessage("New command after confirmed receipt");
+        await enabled(screen.getByRole("button", { name: "Send" }));
+      } else {
+        expect(JSON.parse(localStorage.getItem(key)!)).toEqual(pending);
+        expect(screen.getByLabelText("Message")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+        expect(screen.getByLabelText("Add images or files")).toBeDisabled();
+      }
+      await waitFor(() =>
+        expect(screen.queryByText("catalog_subscription_failed")).not.toBeInTheDocument(),
+      );
+      expect(calls("send")).toHaveLength(0);
+    },
+  );
   it("applies native text without polling history and only unsubscribes on close", async () => {
     const view = mount();
     await screen.findByText("Synthetic history");

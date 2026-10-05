@@ -99,7 +99,6 @@ export function ClaudeSessionPanel({
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [refreshError, setRefreshError] = useState("");
-  const online = connected && !refreshError;
   const [error, setError] = useState("");
   const [pending, setPending] = useState<Pending>();
   const [storageBlocked, setStorageBlocked] = useState(false);
@@ -154,6 +153,8 @@ export function ClaudeSessionPanel({
   const {
     liveDelivery,
     nativeCoverage,
+    catalogReady,
+    catalogError,
     controlReady,
     retry,
     deferredRead,
@@ -171,6 +172,7 @@ export function ClaudeSessionPanel({
     refreshCapabilities: refreshMetadata,
     hasPending,
   });
+  const online = connected && catalogReady && !refreshError;
 
   const refresh = useCallback(
     async (details = true) => {
@@ -531,9 +533,9 @@ export function ClaudeSessionPanel({
             </SelectContent>
           </Select>
         </label>
-        {(error || refreshError) && (
+        {(error || refreshError || catalogError) && (
           <p role="alert" className="text-destructive break-words">
-            {error || refreshError}
+            {error || refreshError || catalogError}
           </p>
         )}
         {pending && (

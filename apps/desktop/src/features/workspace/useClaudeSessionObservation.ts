@@ -102,6 +102,7 @@ export function useClaudeSessionObservation({
   const refreshWake = useRef(0);
   const deferredRead = useRef(false);
   const [controlReady, setControlReady] = useState(false);
+  const [catalogObservation, setCatalogObservation] = useState({ ready: false, error: "" });
   const [streamEpoch, setStreamEpoch] = useState(0);
   useEffect(() => {
     selection.current = sessionId;
@@ -194,18 +195,34 @@ export function useClaudeSessionObservation({
     [client, sessionId, refreshMetadata, refreshCapabilities],
   );
   useEffect(() => {
+    setCatalogObservation({ ready: false, error: "" });
     if (access?.status !== "approved" || access.protocolVersion !== 2) return;
     let closed = false;
     let resetPending = false;
     let resets = 0;
+    let recoveryRequired = false;
+    let connectionEpoch = 0;
     let stop: (() => void) | undefined;
     const store = createConversationStore<Live>("");
+    const catalogFailed = (error: unknown) => {
+      if (closed) return;
+      recoveryRequired = true;
+      // Directory failures must not overwrite the detailed stream's readiness.
+      setCatalogObservation({
+        ready: false,
+        error: (error instanceof Error && error.message) || "connection_failed",
+      });
+    };
     const connect = () => {
+      const connection = ++connectionEpoch;
+      const active = () => !closed && connection === connectionEpoch;
       stop = client.stream("", {
         open: () => {},
-        error: fail,
+        error: (error) => {
+          if (active()) catalogFailed(error);
+        },
         event(type, data) {
-          if (closed || resetPending) return false;
+          if (!active() || resetPending) return false;
           if (type === "control-changed") {
             try {
               const event = JSON.parse(data) as { sessionId?: string };
@@ -226,6 +243,13 @@ export function useClaudeSessionObservation({
                 !state.resyncRequired
               ) {
                 resets = 0;
+                setCatalogObservation({ ready: true, error: "" });
+                if (recoveryRequired) {
+                  recoveryRequired = false;
+                  // Empty replay can still have missed non-replayed receipts.
+                  refreshWake.current++;
+                  refreshMetadata();
+                }
                 return state.cursor;
               }
             } catch {
@@ -249,12 +273,13 @@ export function useClaudeSessionObservation({
             }
             return next.cursor ?? false;
           } catch (error) {
+            catalogFailed(error);
             resetPending = true;
+            connectionEpoch++;
             queueMicrotask(() => {
               if (closed) return;
               stop?.();
               if (++resets > 3) {
-                fail(error);
                 return;
               }
               store.reset();
@@ -271,15 +296,7 @@ export function useClaudeSessionObservation({
       closed = true;
       stop?.();
     };
-  }, [
-    client,
-    fail,
-    sessionId,
-    refreshMetadata,
-    streamEpoch,
-    access?.status,
-    access?.protocolVersion,
-  ]);
+  }, [client, sessionId, refreshMetadata, streamEpoch, access?.status, access?.protocolVersion]);
   const retry = useCallback(() => setStreamEpoch((value) => value + 1), []);
   const completeDeferredRead = useCallback(() => {
     if (!deferredRead.current) return;
@@ -290,6 +307,10 @@ export function useClaudeSessionObservation({
   return {
     liveDelivery,
     nativeCoverage,
+    catalogReady:
+      !hasDesktopConversation() ||
+      (access?.status === "approved" && access.protocolVersion === 2 && catalogObservation.ready),
+    catalogError: catalogObservation.error,
     controlReady:
       !hasDesktopConversation() || (access?.protocolVersion === 2 && (!sessionId || controlReady)),
     retry,

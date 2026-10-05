@@ -969,6 +969,7 @@ impl Publisher {
         source.push(&self.hub.0.boot, &self.session, "snapshot", payload);
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub fn retain_turns(&self, turns: &[&str]) {
         let mut state = self.hub.0.state.lock().unwrap_or_else(|p| p.into_inner());
         let Some(source) = state.sources.get_mut(&self.session) else {
@@ -1004,6 +1005,7 @@ impl Publisher {
         drop(state);
         let _ = self.hub.0.wake.try_send(());
     }
+    #[cfg(any(target_os = "macos", test))]
     pub fn remove_turns(&self, turns: &[String]) {
         if turns.is_empty() {
             return;
@@ -1046,6 +1048,7 @@ impl Publisher {
         let _ = self.hub.0.wake.try_send(());
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub fn authoritative_turns(&self, turns: &[(String, Vec<String>)]) {
         let mut state = self.hub.0.state.lock().unwrap_or_else(|p| p.into_inner());
         let Some(source) = state.sources.get_mut(&self.session) else {

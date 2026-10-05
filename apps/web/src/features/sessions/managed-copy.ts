@@ -21,6 +21,8 @@ const copy: Record<string, [string, string]> = {
     "接続が切れました。タスク一覧を確認してから再試行してください。",
   ],
   "新建 Codex 任务": ["新增 Codex 任務", "Codex タスクを作成"],
+  执行工具: ["執行工具", "実行ツール"],
+  执行工具暂不可用: ["執行工具暫不可用", "実行ツールは現在利用できません"],
   执行管理: ["執行管理", "実行管理"],
   执行归属: ["執行歸屬", "実行の所有者"],
   "AgentKib 需要保持后台运行。任务使用工作区权限，需要审批时等待你的确认。": [
@@ -65,5 +67,5 @@ export function managedText(locale: Locale, english: string, chinese: string) {
     ? english
     : locale === "zh-CN"
       ? chinese
-      : copy[chinese]![locale === "zh-TW" ? 0 : 1];
+      : (copy[chinese]?.[locale === "zh-TW" ? 0 : 1] ?? chinese);
 }

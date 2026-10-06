@@ -4,20 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { GlobalHome, type ContinuationHomeState } from "@/features/home/GlobalHome";
 import { HomeSkeleton } from "@/features/home/HomeSkeleton";
-import { api } from "../core/api";
+import { api } from "@/core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
-import { useAppStore } from "../stores/app-store";
-import { desktopApi } from "../core/desktop";
+import { useAppStore } from "@/stores/app-store";
+import { desktopApi } from "@/core/desktop";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
-import { homeBenchmarkOutcome } from "../features/home/home-benchmark";
+import { homeBenchmarkOutcome } from "@/features/home/home-benchmark";
 import {
   continuationIndexingEnabled,
   continuationRefreshFailed,
   metadataOnlyContinuationWorkspace,
   recentContinuationWorkspaces,
   selectRecentContinuations,
-} from "../features/home/home-continuations";
-import type { ConversationSessionSummary, WorkspaceSummary } from "../core/types";
+} from "@/features/home/home-continuations";
+import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   homeKeys,
   useHomeActivity,
@@ -251,4 +251,4 @@ function HomeRoute() {
   );
 }
 
-export const Route = createFileRoute("/")({ component: HomeRoute });
+export const Route = createFileRoute("/(main)/")({ component: HomeRoute });

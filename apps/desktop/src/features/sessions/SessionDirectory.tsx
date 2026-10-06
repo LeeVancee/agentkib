@@ -195,6 +195,7 @@ export function SessionDirectory({
             <DropdownMenuTrigger
               render={<Button variant="ghost" size="icon-sm" />}
               aria-label={tr("sessions.directoryOptions")}
+              data-session-directory-options=""
               disabled={!hub.enabled}
             >
               <Ellipsis size={18} aria-hidden="true" />

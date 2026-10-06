@@ -128,6 +128,8 @@
   "search.assetsLoading": "正在搜索已索引资产…",
   "search.assetLimit": "最多返回 {{count}} 条资产索引记录，并按逻辑资产合并；请缩小搜索范围以查找其他结果。",
   "sessions.directoryOptions": "会话目录选项",
+  "sessions.filesAndArtifacts": "文件与产物",
+  "sessions.conversationActions": "会话操作",
   "sessions.clearAgentFilter": "清除 Agent 筛选",
   "sessions.clearRecordFilter": "清除记录筛选",
   "sessions.nav": "会话",

@@ -7,7 +7,7 @@ type GitSearch = { gitSubview?: GitSubview };
 
 function WorkspaceGitRoute() {
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/git" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/git" });
   const search = useSearch({ strict: false }) as GitSearch;
   const { selectedWorkspace } = useWorkspaceStore();
   if (!selectedWorkspace) return <WorkspaceGitSkeleton />;
@@ -26,6 +26,6 @@ function WorkspaceGitRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/git")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/git")({
   component: WorkspaceGitRoute,
 });

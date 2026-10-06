@@ -106,4 +106,4 @@ function InsightsRoute() {
   );
 }
 
-export const Route = createFileRoute("/insights")({ component: InsightsRoute });
+export const Route = createFileRoute("/(main)/insights")({ component: InsightsRoute });

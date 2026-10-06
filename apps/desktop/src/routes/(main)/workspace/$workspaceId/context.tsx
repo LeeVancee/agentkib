@@ -4,9 +4,9 @@ import { WorkspaceContextSkeleton } from "@/features/workspace/WorkspaceSkeleton
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { api } from "../../../core/api";
+import { api } from "@/core/api";
 import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
-import { tr } from "../../../core/i18n";
+import { tr } from "@/core/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -29,7 +29,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
-import type { AgentKind, ContextPreview } from "../../../core/types";
+import type { AgentKind, ContextPreview } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
@@ -267,7 +267,7 @@ function contextWarningLabel(warning: string) {
 
 function WorkspaceContextRoute() {
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/context" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/context" });
   const { project } = useWorkspaceStore();
   if (!project) return <WorkspaceContextSkeleton />;
   return (
@@ -284,6 +284,6 @@ function WorkspaceContextRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/context")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/context")({
   component: WorkspaceContextRoute,
 });

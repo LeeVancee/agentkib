@@ -9,169 +9,175 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AgentsRouteImport } from './routes/agents'
-import { Route as CatalogRouteImport } from './routes/catalog'
-import { Route as InsightsRouteImport } from './routes/insights'
-import { Route as QuotaRouteImport } from './routes/quota'
-import { Route as SessionsRouteImport } from './routes/sessions'
-import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as WorkspacesRouteImport } from './routes/workspaces'
-import { Route as WorkspaceWorkspaceIdRouteRouteImport } from './routes/workspace/$workspaceId/route'
-import { Route as WorkspaceWorkspaceIdIndexRouteImport } from './routes/workspace/$workspaceId/index'
-import { Route as WorkspaceWorkspaceIdAssetsRouteImport } from './routes/workspace/$workspaceId/assets'
-import { Route as WorkspaceWorkspaceIdChangesRouteImport } from './routes/workspace/$workspaceId/changes'
-import { Route as WorkspaceWorkspaceIdContextRouteImport } from './routes/workspace/$workspaceId/context'
-import { Route as WorkspaceWorkspaceIdDoctorRouteImport } from './routes/workspace/$workspaceId/doctor'
-import { Route as WorkspaceWorkspaceIdGitRouteImport } from './routes/workspace/$workspaceId/git'
-import { Route as WorkspaceWorkspaceIdSessionsRouteImport } from './routes/workspace/$workspaceId/sessions'
+import { Route as mainRouteRouteImport } from './routes/(main)/route'
+import { Route as mainIndexRouteImport } from './routes/(main)/index'
+import { Route as mainAgentsRouteImport } from './routes/(main)/agents'
+import { Route as mainCatalogRouteImport } from './routes/(main)/catalog'
+import { Route as mainInsightsRouteImport } from './routes/(main)/insights'
+import { Route as mainQuotaRouteImport } from './routes/(main)/quota'
+import { Route as mainSessionsRouteImport } from './routes/(main)/sessions'
+import { Route as mainSettingsRouteImport } from './routes/(main)/settings'
+import { Route as mainWorkspacesRouteImport } from './routes/(main)/workspaces'
+import { Route as mainWorkspaceWorkspaceIdRouteRouteImport } from './routes/(main)/workspace/$workspaceId/route'
+import { Route as mainWorkspaceWorkspaceIdIndexRouteImport } from './routes/(main)/workspace/$workspaceId/index'
+import { Route as mainWorkspaceWorkspaceIdAssetsRouteImport } from './routes/(main)/workspace/$workspaceId/assets'
+import { Route as mainWorkspaceWorkspaceIdChangesRouteImport } from './routes/(main)/workspace/$workspaceId/changes'
+import { Route as mainWorkspaceWorkspaceIdContextRouteImport } from './routes/(main)/workspace/$workspaceId/context'
+import { Route as mainWorkspaceWorkspaceIdDoctorRouteImport } from './routes/(main)/workspace/$workspaceId/doctor'
+import { Route as mainWorkspaceWorkspaceIdGitRouteImport } from './routes/(main)/workspace/$workspaceId/git'
+import { Route as mainWorkspaceWorkspaceIdSessionsRouteImport } from './routes/(main)/workspace/$workspaceId/sessions'
 
-const IndexRoute = IndexRouteImport.update({
+const mainRouteRoute = mainRouteRouteImport.update({
+  id: '/(main)',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const mainIndexRoute = mainIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const AgentsRoute = AgentsRouteImport.update({
+const mainAgentsRoute = mainAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const CatalogRoute = CatalogRouteImport.update({
+const mainCatalogRoute = mainCatalogRouteImport.update({
   id: '/catalog',
   path: '/catalog',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const InsightsRoute = InsightsRouteImport.update({
+const mainInsightsRoute = mainInsightsRouteImport.update({
   id: '/insights',
   path: '/insights',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const QuotaRoute = QuotaRouteImport.update({
+const mainQuotaRoute = mainQuotaRouteImport.update({
   id: '/quota',
   path: '/quota',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const SessionsRoute = SessionsRouteImport.update({
+const mainSessionsRoute = mainSessionsRouteImport.update({
   id: '/sessions',
   path: '/sessions',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const SettingsRoute = SettingsRouteImport.update({
+const mainSettingsRoute = mainSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const WorkspacesRoute = WorkspacesRouteImport.update({
+const mainWorkspacesRoute = mainWorkspacesRouteImport.update({
   id: '/workspaces',
   path: '/workspaces',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => mainRouteRoute,
 } as any)
-const WorkspaceWorkspaceIdRouteRoute =
-  WorkspaceWorkspaceIdRouteRouteImport.update({
+const mainWorkspaceWorkspaceIdRouteRoute =
+  mainWorkspaceWorkspaceIdRouteRouteImport.update({
     id: '/workspace/$workspaceId',
     path: '/workspace/$workspaceId',
-    getParentRoute: () => rootRouteImport,
+    getParentRoute: () => mainRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdIndexRoute =
-  WorkspaceWorkspaceIdIndexRouteImport.update({
+const mainWorkspaceWorkspaceIdIndexRoute =
+  mainWorkspaceWorkspaceIdIndexRouteImport.update({
     id: '/',
     path: '/',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdAssetsRoute =
-  WorkspaceWorkspaceIdAssetsRouteImport.update({
+const mainWorkspaceWorkspaceIdAssetsRoute =
+  mainWorkspaceWorkspaceIdAssetsRouteImport.update({
     id: '/assets',
     path: '/assets',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdChangesRoute =
-  WorkspaceWorkspaceIdChangesRouteImport.update({
+const mainWorkspaceWorkspaceIdChangesRoute =
+  mainWorkspaceWorkspaceIdChangesRouteImport.update({
     id: '/changes',
     path: '/changes',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdContextRoute =
-  WorkspaceWorkspaceIdContextRouteImport.update({
+const mainWorkspaceWorkspaceIdContextRoute =
+  mainWorkspaceWorkspaceIdContextRouteImport.update({
     id: '/context',
     path: '/context',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdDoctorRoute =
-  WorkspaceWorkspaceIdDoctorRouteImport.update({
+const mainWorkspaceWorkspaceIdDoctorRoute =
+  mainWorkspaceWorkspaceIdDoctorRouteImport.update({
     id: '/doctor',
     path: '/doctor',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
-const WorkspaceWorkspaceIdGitRoute = WorkspaceWorkspaceIdGitRouteImport.update({
-  id: '/git',
-  path: '/git',
-  getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
-} as any)
-const WorkspaceWorkspaceIdSessionsRoute =
-  WorkspaceWorkspaceIdSessionsRouteImport.update({
+const mainWorkspaceWorkspaceIdGitRoute =
+  mainWorkspaceWorkspaceIdGitRouteImport.update({
+    id: '/git',
+    path: '/git',
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
+  } as any)
+const mainWorkspaceWorkspaceIdSessionsRoute =
+  mainWorkspaceWorkspaceIdSessionsRouteImport.update({
     id: '/sessions',
     path: '/sessions',
-    getParentRoute: () => WorkspaceWorkspaceIdRouteRoute,
+    getParentRoute: () => mainWorkspaceWorkspaceIdRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/agents': typeof AgentsRoute
-  '/catalog': typeof CatalogRoute
-  '/insights': typeof InsightsRoute
-  '/quota': typeof QuotaRoute
-  '/sessions': typeof SessionsRoute
-  '/settings': typeof SettingsRoute
-  '/workspaces': typeof WorkspacesRoute
-  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRouteRouteWithChildren
-  '/workspace/$workspaceId/assets': typeof WorkspaceWorkspaceIdAssetsRoute
-  '/workspace/$workspaceId/changes': typeof WorkspaceWorkspaceIdChangesRoute
-  '/workspace/$workspaceId/context': typeof WorkspaceWorkspaceIdContextRoute
-  '/workspace/$workspaceId/doctor': typeof WorkspaceWorkspaceIdDoctorRoute
-  '/workspace/$workspaceId/git': typeof WorkspaceWorkspaceIdGitRoute
-  '/workspace/$workspaceId/sessions': typeof WorkspaceWorkspaceIdSessionsRoute
-  '/workspace/$workspaceId/': typeof WorkspaceWorkspaceIdIndexRoute
+  '/agents': typeof mainAgentsRoute
+  '/catalog': typeof mainCatalogRoute
+  '/insights': typeof mainInsightsRoute
+  '/quota': typeof mainQuotaRoute
+  '/sessions': typeof mainSessionsRoute
+  '/settings': typeof mainSettingsRoute
+  '/workspaces': typeof mainWorkspacesRoute
+  '/': typeof mainIndexRoute
+  '/workspace/$workspaceId': typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
+  '/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
+  '/workspace/$workspaceId/changes': typeof mainWorkspaceWorkspaceIdChangesRoute
+  '/workspace/$workspaceId/context': typeof mainWorkspaceWorkspaceIdContextRoute
+  '/workspace/$workspaceId/doctor': typeof mainWorkspaceWorkspaceIdDoctorRoute
+  '/workspace/$workspaceId/git': typeof mainWorkspaceWorkspaceIdGitRoute
+  '/workspace/$workspaceId/sessions': typeof mainWorkspaceWorkspaceIdSessionsRoute
+  '/workspace/$workspaceId/': typeof mainWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/agents': typeof AgentsRoute
-  '/catalog': typeof CatalogRoute
-  '/insights': typeof InsightsRoute
-  '/quota': typeof QuotaRoute
-  '/sessions': typeof SessionsRoute
-  '/settings': typeof SettingsRoute
-  '/workspaces': typeof WorkspacesRoute
-  '/workspace/$workspaceId/assets': typeof WorkspaceWorkspaceIdAssetsRoute
-  '/workspace/$workspaceId/changes': typeof WorkspaceWorkspaceIdChangesRoute
-  '/workspace/$workspaceId/context': typeof WorkspaceWorkspaceIdContextRoute
-  '/workspace/$workspaceId/doctor': typeof WorkspaceWorkspaceIdDoctorRoute
-  '/workspace/$workspaceId/git': typeof WorkspaceWorkspaceIdGitRoute
-  '/workspace/$workspaceId/sessions': typeof WorkspaceWorkspaceIdSessionsRoute
-  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdIndexRoute
+  '/agents': typeof mainAgentsRoute
+  '/catalog': typeof mainCatalogRoute
+  '/insights': typeof mainInsightsRoute
+  '/quota': typeof mainQuotaRoute
+  '/sessions': typeof mainSessionsRoute
+  '/settings': typeof mainSettingsRoute
+  '/workspaces': typeof mainWorkspacesRoute
+  '/': typeof mainIndexRoute
+  '/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
+  '/workspace/$workspaceId/changes': typeof mainWorkspaceWorkspaceIdChangesRoute
+  '/workspace/$workspaceId/context': typeof mainWorkspaceWorkspaceIdContextRoute
+  '/workspace/$workspaceId/doctor': typeof mainWorkspaceWorkspaceIdDoctorRoute
+  '/workspace/$workspaceId/git': typeof mainWorkspaceWorkspaceIdGitRoute
+  '/workspace/$workspaceId/sessions': typeof mainWorkspaceWorkspaceIdSessionsRoute
+  '/workspace/$workspaceId': typeof mainWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/agents': typeof AgentsRoute
-  '/catalog': typeof CatalogRoute
-  '/insights': typeof InsightsRoute
-  '/quota': typeof QuotaRoute
-  '/sessions': typeof SessionsRoute
-  '/settings': typeof SettingsRoute
-  '/workspaces': typeof WorkspacesRoute
-  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRouteRouteWithChildren
-  '/workspace/$workspaceId/assets': typeof WorkspaceWorkspaceIdAssetsRoute
-  '/workspace/$workspaceId/changes': typeof WorkspaceWorkspaceIdChangesRoute
-  '/workspace/$workspaceId/context': typeof WorkspaceWorkspaceIdContextRoute
-  '/workspace/$workspaceId/doctor': typeof WorkspaceWorkspaceIdDoctorRoute
-  '/workspace/$workspaceId/git': typeof WorkspaceWorkspaceIdGitRoute
-  '/workspace/$workspaceId/sessions': typeof WorkspaceWorkspaceIdSessionsRoute
-  '/workspace/$workspaceId/': typeof WorkspaceWorkspaceIdIndexRoute
+  '/(main)': typeof mainRouteRouteWithChildren
+  '/(main)/agents': typeof mainAgentsRoute
+  '/(main)/catalog': typeof mainCatalogRoute
+  '/(main)/insights': typeof mainInsightsRoute
+  '/(main)/quota': typeof mainQuotaRoute
+  '/(main)/sessions': typeof mainSessionsRoute
+  '/(main)/settings': typeof mainSettingsRoute
+  '/(main)/workspaces': typeof mainWorkspacesRoute
+  '/(main)/': typeof mainIndexRoute
+  '/(main)/workspace/$workspaceId': typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
+  '/(main)/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
+  '/(main)/workspace/$workspaceId/changes': typeof mainWorkspaceWorkspaceIdChangesRoute
+  '/(main)/workspace/$workspaceId/context': typeof mainWorkspaceWorkspaceIdContextRoute
+  '/(main)/workspace/$workspaceId/doctor': typeof mainWorkspaceWorkspaceIdDoctorRoute
+  '/(main)/workspace/$workspaceId/git': typeof mainWorkspaceWorkspaceIdGitRoute
+  '/(main)/workspace/$workspaceId/sessions': typeof mainWorkspaceWorkspaceIdSessionsRoute
+  '/(main)/workspace/$workspaceId/': typeof mainWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
     | '/agents'
     | '/catalog'
     | '/insights'
@@ -179,6 +185,7 @@ export interface FileRouteTypes {
     | '/sessions'
     | '/settings'
     | '/workspaces'
+    | '/'
     | '/workspace/$workspaceId'
     | '/workspace/$workspaceId/assets'
     | '/workspace/$workspaceId/changes'
@@ -189,7 +196,6 @@ export interface FileRouteTypes {
     | '/workspace/$workspaceId/'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
     | '/agents'
     | '/catalog'
     | '/insights'
@@ -197,6 +203,7 @@ export interface FileRouteTypes {
     | '/sessions'
     | '/settings'
     | '/workspaces'
+    | '/'
     | '/workspace/$workspaceId/assets'
     | '/workspace/$workspaceId/changes'
     | '/workspace/$workspaceId/context'
@@ -206,189 +213,211 @@ export interface FileRouteTypes {
     | '/workspace/$workspaceId'
   id:
     | '__root__'
-    | '/'
-    | '/agents'
-    | '/catalog'
-    | '/insights'
-    | '/quota'
-    | '/sessions'
-    | '/settings'
-    | '/workspaces'
-    | '/workspace/$workspaceId'
-    | '/workspace/$workspaceId/assets'
-    | '/workspace/$workspaceId/changes'
-    | '/workspace/$workspaceId/context'
-    | '/workspace/$workspaceId/doctor'
-    | '/workspace/$workspaceId/git'
-    | '/workspace/$workspaceId/sessions'
-    | '/workspace/$workspaceId/'
+    | '/(main)'
+    | '/(main)/agents'
+    | '/(main)/catalog'
+    | '/(main)/insights'
+    | '/(main)/quota'
+    | '/(main)/sessions'
+    | '/(main)/settings'
+    | '/(main)/workspaces'
+    | '/(main)/'
+    | '/(main)/workspace/$workspaceId'
+    | '/(main)/workspace/$workspaceId/assets'
+    | '/(main)/workspace/$workspaceId/changes'
+    | '/(main)/workspace/$workspaceId/context'
+    | '/(main)/workspace/$workspaceId/doctor'
+    | '/(main)/workspace/$workspaceId/git'
+    | '/(main)/workspace/$workspaceId/sessions'
+    | '/(main)/workspace/$workspaceId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  AgentsRoute: typeof AgentsRoute
-  CatalogRoute: typeof CatalogRoute
-  InsightsRoute: typeof InsightsRoute
-  QuotaRoute: typeof QuotaRoute
-  SessionsRoute: typeof SessionsRoute
-  SettingsRoute: typeof SettingsRoute
-  WorkspacesRoute: typeof WorkspacesRoute
-  WorkspaceWorkspaceIdRouteRoute: typeof WorkspaceWorkspaceIdRouteRouteWithChildren
+  mainRouteRoute: typeof mainRouteRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/(main)': {
+      id: '/(main)'
+      path: ''
+      fullPath: ''
+      preLoaderRoute: typeof mainRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/(main)/': {
+      id: '/(main)/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainIndexRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/agents': {
-      id: '/agents'
+    '/(main)/agents': {
+      id: '/(main)/agents'
       path: '/agents'
       fullPath: '/agents'
-      preLoaderRoute: typeof AgentsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainAgentsRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/catalog': {
-      id: '/catalog'
+    '/(main)/catalog': {
+      id: '/(main)/catalog'
       path: '/catalog'
       fullPath: '/catalog'
-      preLoaderRoute: typeof CatalogRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainCatalogRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/insights': {
-      id: '/insights'
+    '/(main)/insights': {
+      id: '/(main)/insights'
       path: '/insights'
       fullPath: '/insights'
-      preLoaderRoute: typeof InsightsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainInsightsRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/quota': {
-      id: '/quota'
+    '/(main)/quota': {
+      id: '/(main)/quota'
       path: '/quota'
       fullPath: '/quota'
-      preLoaderRoute: typeof QuotaRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainQuotaRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/sessions': {
-      id: '/sessions'
+    '/(main)/sessions': {
+      id: '/(main)/sessions'
       path: '/sessions'
       fullPath: '/sessions'
-      preLoaderRoute: typeof SessionsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainSessionsRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/settings': {
-      id: '/settings'
+    '/(main)/settings': {
+      id: '/(main)/settings'
       path: '/settings'
       fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainSettingsRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/workspaces': {
-      id: '/workspaces'
+    '/(main)/workspaces': {
+      id: '/(main)/workspaces'
       path: '/workspaces'
       fullPath: '/workspaces'
-      preLoaderRoute: typeof WorkspacesRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainWorkspacesRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/workspace/$workspaceId': {
-      id: '/workspace/$workspaceId'
+    '/(main)/workspace/$workspaceId': {
+      id: '/(main)/workspace/$workspaceId'
       path: '/workspace/$workspaceId'
       fullPath: '/workspace/$workspaceId'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdRouteRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdRouteRouteImport
+      parentRoute: typeof mainRouteRoute
     }
-    '/workspace/$workspaceId/': {
-      id: '/workspace/$workspaceId/'
+    '/(main)/workspace/$workspaceId/': {
+      id: '/(main)/workspace/$workspaceId/'
       path: '/'
       fullPath: '/workspace/$workspaceId/'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdIndexRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdIndexRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/assets': {
-      id: '/workspace/$workspaceId/assets'
+    '/(main)/workspace/$workspaceId/assets': {
+      id: '/(main)/workspace/$workspaceId/assets'
       path: '/assets'
       fullPath: '/workspace/$workspaceId/assets'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdAssetsRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdAssetsRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/changes': {
-      id: '/workspace/$workspaceId/changes'
+    '/(main)/workspace/$workspaceId/changes': {
+      id: '/(main)/workspace/$workspaceId/changes'
       path: '/changes'
       fullPath: '/workspace/$workspaceId/changes'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdChangesRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdChangesRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/context': {
-      id: '/workspace/$workspaceId/context'
+    '/(main)/workspace/$workspaceId/context': {
+      id: '/(main)/workspace/$workspaceId/context'
       path: '/context'
       fullPath: '/workspace/$workspaceId/context'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdContextRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdContextRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/doctor': {
-      id: '/workspace/$workspaceId/doctor'
+    '/(main)/workspace/$workspaceId/doctor': {
+      id: '/(main)/workspace/$workspaceId/doctor'
       path: '/doctor'
       fullPath: '/workspace/$workspaceId/doctor'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdDoctorRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdDoctorRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/git': {
-      id: '/workspace/$workspaceId/git'
+    '/(main)/workspace/$workspaceId/git': {
+      id: '/(main)/workspace/$workspaceId/git'
       path: '/git'
       fullPath: '/workspace/$workspaceId/git'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdGitRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdGitRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
-    '/workspace/$workspaceId/sessions': {
-      id: '/workspace/$workspaceId/sessions'
+    '/(main)/workspace/$workspaceId/sessions': {
+      id: '/(main)/workspace/$workspaceId/sessions'
       path: '/sessions'
       fullPath: '/workspace/$workspaceId/sessions'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdSessionsRouteImport
-      parentRoute: typeof WorkspaceWorkspaceIdRouteRoute
+      preLoaderRoute: typeof mainWorkspaceWorkspaceIdSessionsRouteImport
+      parentRoute: typeof mainWorkspaceWorkspaceIdRouteRoute
     }
   }
 }
 
-interface WorkspaceWorkspaceIdRouteRouteChildren {
-  WorkspaceWorkspaceIdAssetsRoute: typeof WorkspaceWorkspaceIdAssetsRoute
-  WorkspaceWorkspaceIdChangesRoute: typeof WorkspaceWorkspaceIdChangesRoute
-  WorkspaceWorkspaceIdContextRoute: typeof WorkspaceWorkspaceIdContextRoute
-  WorkspaceWorkspaceIdDoctorRoute: typeof WorkspaceWorkspaceIdDoctorRoute
-  WorkspaceWorkspaceIdGitRoute: typeof WorkspaceWorkspaceIdGitRoute
-  WorkspaceWorkspaceIdSessionsRoute: typeof WorkspaceWorkspaceIdSessionsRoute
-  WorkspaceWorkspaceIdIndexRoute: typeof WorkspaceWorkspaceIdIndexRoute
+interface mainWorkspaceWorkspaceIdRouteRouteChildren {
+  mainWorkspaceWorkspaceIdAssetsRoute: typeof mainWorkspaceWorkspaceIdAssetsRoute
+  mainWorkspaceWorkspaceIdChangesRoute: typeof mainWorkspaceWorkspaceIdChangesRoute
+  mainWorkspaceWorkspaceIdContextRoute: typeof mainWorkspaceWorkspaceIdContextRoute
+  mainWorkspaceWorkspaceIdDoctorRoute: typeof mainWorkspaceWorkspaceIdDoctorRoute
+  mainWorkspaceWorkspaceIdGitRoute: typeof mainWorkspaceWorkspaceIdGitRoute
+  mainWorkspaceWorkspaceIdSessionsRoute: typeof mainWorkspaceWorkspaceIdSessionsRoute
+  mainWorkspaceWorkspaceIdIndexRoute: typeof mainWorkspaceWorkspaceIdIndexRoute
 }
 
-const WorkspaceWorkspaceIdRouteRouteChildren: WorkspaceWorkspaceIdRouteRouteChildren =
+const mainWorkspaceWorkspaceIdRouteRouteChildren: mainWorkspaceWorkspaceIdRouteRouteChildren =
   {
-    WorkspaceWorkspaceIdAssetsRoute: WorkspaceWorkspaceIdAssetsRoute,
-    WorkspaceWorkspaceIdChangesRoute: WorkspaceWorkspaceIdChangesRoute,
-    WorkspaceWorkspaceIdContextRoute: WorkspaceWorkspaceIdContextRoute,
-    WorkspaceWorkspaceIdDoctorRoute: WorkspaceWorkspaceIdDoctorRoute,
-    WorkspaceWorkspaceIdGitRoute: WorkspaceWorkspaceIdGitRoute,
-    WorkspaceWorkspaceIdSessionsRoute: WorkspaceWorkspaceIdSessionsRoute,
-    WorkspaceWorkspaceIdIndexRoute: WorkspaceWorkspaceIdIndexRoute,
+    mainWorkspaceWorkspaceIdAssetsRoute: mainWorkspaceWorkspaceIdAssetsRoute,
+    mainWorkspaceWorkspaceIdChangesRoute: mainWorkspaceWorkspaceIdChangesRoute,
+    mainWorkspaceWorkspaceIdContextRoute: mainWorkspaceWorkspaceIdContextRoute,
+    mainWorkspaceWorkspaceIdDoctorRoute: mainWorkspaceWorkspaceIdDoctorRoute,
+    mainWorkspaceWorkspaceIdGitRoute: mainWorkspaceWorkspaceIdGitRoute,
+    mainWorkspaceWorkspaceIdSessionsRoute:
+      mainWorkspaceWorkspaceIdSessionsRoute,
+    mainWorkspaceWorkspaceIdIndexRoute: mainWorkspaceWorkspaceIdIndexRoute,
   }
 
-const WorkspaceWorkspaceIdRouteRouteWithChildren =
-  WorkspaceWorkspaceIdRouteRoute._addFileChildren(
-    WorkspaceWorkspaceIdRouteRouteChildren,
+const mainWorkspaceWorkspaceIdRouteRouteWithChildren =
+  mainWorkspaceWorkspaceIdRouteRoute._addFileChildren(
+    mainWorkspaceWorkspaceIdRouteRouteChildren,
   )
 
+interface mainRouteRouteChildren {
+  mainAgentsRoute: typeof mainAgentsRoute
+  mainCatalogRoute: typeof mainCatalogRoute
+  mainInsightsRoute: typeof mainInsightsRoute
+  mainQuotaRoute: typeof mainQuotaRoute
+  mainSessionsRoute: typeof mainSessionsRoute
+  mainSettingsRoute: typeof mainSettingsRoute
+  mainWorkspacesRoute: typeof mainWorkspacesRoute
+  mainIndexRoute: typeof mainIndexRoute
+  mainWorkspaceWorkspaceIdRouteRoute: typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
+}
+
+const mainRouteRouteChildren: mainRouteRouteChildren = {
+  mainAgentsRoute: mainAgentsRoute,
+  mainCatalogRoute: mainCatalogRoute,
+  mainInsightsRoute: mainInsightsRoute,
+  mainQuotaRoute: mainQuotaRoute,
+  mainSessionsRoute: mainSessionsRoute,
+  mainSettingsRoute: mainSettingsRoute,
+  mainWorkspacesRoute: mainWorkspacesRoute,
+  mainIndexRoute: mainIndexRoute,
+  mainWorkspaceWorkspaceIdRouteRoute:
+    mainWorkspaceWorkspaceIdRouteRouteWithChildren,
+}
+
+const mainRouteRouteWithChildren = mainRouteRoute._addFileChildren(
+  mainRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  AgentsRoute: AgentsRoute,
-  CatalogRoute: CatalogRoute,
-  InsightsRoute: InsightsRoute,
-  QuotaRoute: QuotaRoute,
-  SessionsRoute: SessionsRoute,
-  SettingsRoute: SettingsRoute,
-  WorkspacesRoute: WorkspacesRoute,
-  WorkspaceWorkspaceIdRouteRoute: WorkspaceWorkspaceIdRouteRouteWithChildren,
+  mainRouteRoute: mainRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

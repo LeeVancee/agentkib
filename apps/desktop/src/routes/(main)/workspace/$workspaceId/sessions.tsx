@@ -2,13 +2,13 @@ import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/re
 import { useHomeInstallations } from "@/features/home/home-query";
 import { WorkspaceSessionsSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceSessionsPage } from "@/features/workspace/WorkspaceSessionsPage";
-import { api } from "../../../core/api";
-import { useAppStore } from "../../../stores/app-store";
+import { api } from "@/core/api";
+import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 
 function WorkspaceSessionsRoute() {
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/sessions" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/sessions" });
   const search = useSearch({ strict: false });
   const { runtime, setRuntime } = useAppStore();
   const { data: installations = [] } = useHomeInstallations();
@@ -100,6 +100,6 @@ function WorkspaceSessionsRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/sessions")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/sessions")({
   component: WorkspaceSessionsRoute,
 });

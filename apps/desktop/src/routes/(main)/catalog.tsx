@@ -25,9 +25,9 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "../core/api";
+import { api } from "@/core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
-import { useAppStore } from "../stores/app-store";
+import { useAppStore } from "@/stores/app-store";
 import {
   homeKeys,
   useHomeCatalog,
@@ -63,7 +63,7 @@ import type {
   MemoryType,
   RuntimeInfo,
   WorkspaceSummary,
-} from "../core/types";
+} from "@/core/types";
 import { cn, withAsyncCleanup } from "@/lib/utils";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
@@ -1034,7 +1034,7 @@ function McpMigrationInventory({
 }) {
   const { tr, localizeMessage } = useI18n();
   const dialogs = useAppDialogs();
-  const [candidates, setCandidates] = useState<import("../core/types").McpMigrationCandidate[]>([]);
+  const [candidates, setCandidates] = useState<import("@/core/types").McpMigrationCandidate[]>([]);
   const [scanned, setScanned] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -1154,4 +1154,4 @@ function CatalogEmpty({ title, text }: { title: string; text: string }) {
   );
 }
 
-export const Route = createFileRoute("/catalog")({ component: CatalogRoute });
+export const Route = createFileRoute("/(main)/catalog")({ component: CatalogRoute });

@@ -3,7 +3,7 @@ import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/re
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkspaceDoctorSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { WorkspaceDoctorPage } from "@/features/workspace/WorkspaceDoctorPage";
-import { api } from "../../../core/api";
+import { api } from "@/core/api";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useAppStore } from "@/stores/app-store";
 import type { ContextDoctorSummary } from "@/core/types";
@@ -11,7 +11,7 @@ import type { ContextDoctorSummary } from "@/core/types";
 function WorkspaceDoctorRoute() {
   const { localizeMessage } = useI18n();
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/doctor" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/doctor" });
   const search = useSearch({ strict: false }) as { doctorVerification?: "applied" };
   const [verification] = useState(search.doctorVerification);
   const setRuntime = useAppStore((state) => state.setRuntime);
@@ -93,6 +93,6 @@ function WorkspaceDoctorRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/doctor")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/doctor")({
   component: WorkspaceDoctorRoute,
 });

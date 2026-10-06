@@ -11,8 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { CircleAlert, Copy } from "lucide-react";
-import { formatRelativeTime } from "../../../core/i18n";
-import type { Manifest, WorkspaceScan, WorkspaceSummary } from "../../../core/types";
+import { formatRelativeTime } from "@/core/i18n";
+import type { Manifest, WorkspaceScan, WorkspaceSummary } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function relativeTime(value: string) {
   return formatRelativeTime(value);
@@ -179,7 +179,7 @@ function Overview({
 
 function WorkspaceOverviewRoute() {
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/" });
   const { selectedWorkspace, scan, manifest, changeSet, changeSetOrigin } = useWorkspaceStore();
   const doctorReport = useHomeDoctorReport(workspaceId);
   if (!selectedWorkspace || !scan || !manifest) return <WorkspaceOverviewSkeleton />;
@@ -201,6 +201,6 @@ function WorkspaceOverviewRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/")({
   component: WorkspaceOverviewRoute,
 });

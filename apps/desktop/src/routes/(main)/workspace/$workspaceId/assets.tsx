@@ -20,7 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "../../../core/types";
+import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";
 function shortPath(path: string) {
@@ -350,7 +350,7 @@ type AssetsSearch = { workspaceAssetSection?: WorkspaceAssetSection };
 
 function WorkspaceAssetsRoute() {
   const navigate = useNavigate();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/assets" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/assets" });
   const search = useSearch({ strict: false }) as AssetsSearch;
   const { scan, manifest, setManifest } = useWorkspaceStore();
   const section = search.workspaceAssetSection ?? "instructions";
@@ -372,6 +372,6 @@ function WorkspaceAssetsRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/assets")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/assets")({
   component: WorkspaceAssetsRoute,
 });

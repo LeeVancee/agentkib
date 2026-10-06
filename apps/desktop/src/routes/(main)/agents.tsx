@@ -9,7 +9,7 @@ import {
   useHomeRemoteGateways,
   useHomeWorkspaces,
 } from "@/features/home/home-query";
-import type { WorkspaceSummary } from "../core/types";
+import type { WorkspaceSummary } from "@/core/types";
 import type { AgentFilter } from "@/components/AppSidebar";
 import type { AgentKind } from "@/core/types";
 
@@ -61,4 +61,4 @@ function AgentsRoute() {
   );
 }
 
-export const Route = createFileRoute("/agents")({ component: AgentsRoute });
+export const Route = createFileRoute("/(main)/agents")({ component: AgentsRoute });

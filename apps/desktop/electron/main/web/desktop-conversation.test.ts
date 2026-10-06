@@ -32,10 +32,11 @@ describe("trusted desktop conversation routes", () => {
       };
     return { accepted: true };
   });
+  const defaultRuntime = runtime.getMockImplementation()!;
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "agentkib-desktop-conversation-"));
     workspaceRegistered = true;
-    runtime.mockClear();
+    runtime.mockReset().mockImplementation(defaultRuntime);
     managed.mockReset().mockResolvedValue({ accepted: true });
     service = new WebAccessService({
       dataDir: directory,
@@ -95,6 +96,106 @@ describe("trusted desktop conversation routes", () => {
     expect(
       runtime.mock.calls.filter(([input]) => (input as { operation: string }).operation === "send"),
     ).toHaveLength(1);
+  });
+
+  it("projects native context independently of settings and cumulative consumption", async () => {
+    runtime.mockImplementation(async (params) => {
+      const result = await defaultRuntime(params);
+      if ((params as { operation: string }).operation !== "live") return result;
+      return {
+        ...(result as Record<string, unknown>),
+        tokenUsage: {
+          last: { totalTokens: 0 },
+          total: { totalTokens: 12000 },
+          modelContextWindow: 48000,
+        },
+      };
+    });
+    const live = await service.localRequest("/live?sessionId=s");
+    expect(live).toMatchObject({
+      status: 200,
+      body: { usage: { available: true, state: "ready", usedTokens: 0, percent: 0 } },
+    });
+    expect(live.body).not.toHaveProperty("tokenUsage");
+    expect(
+      runtime.mock.calls.some(
+        ([input]) => (input as { operation: string }).operation === "settings-state",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects compaction before sending and keeps the latest report pending", async () => {
+    runtime.mockImplementation(async (params) => {
+      const result = await defaultRuntime(params);
+      return (params as { operation: string }).operation === "live"
+        ? {
+            ...(result as Record<string, unknown>),
+            activity: "compacting",
+            usage: {
+              available: true,
+              state: "ready",
+              usedTokens: 100,
+              contextWindow: 1000,
+              reportGeneration: 2,
+              reportId: 3,
+            },
+          }
+        : result;
+    });
+    const live = await service.localRequest("/live?sessionId=s");
+    expect(live.body).toMatchObject({
+      activity: "compacting",
+      usage: { state: "pending", reportGeneration: 2, reportId: 3 },
+    });
+    expect((live.body as { usage: unknown }).usage).not.toHaveProperty("percent");
+    const access = await service.localRequest("/access");
+    expect(
+      await service.localRequest("/send", {
+        sessionId: "s",
+        text: "hello",
+        requestId: "compacting",
+        expectedRevision: 4,
+        bootId: (access.body as { bootId: string }).bootId,
+      }),
+    ).toMatchObject({
+      status: 409,
+      body: { error: "session-compacting", controlOutcome: "not-dispatched" },
+    });
+    expect(
+      runtime.mock.calls.some(([input]) => (input as { operation: string }).operation === "send"),
+    ).toBe(false);
+  });
+
+  it("keeps a final compaction rejection definitive and releases the unknown fence", async () => {
+    runtime.mockImplementation(async (params) => {
+      const input = params as { operation: string; requestId: string };
+      if (input.operation === "send")
+        return {
+          accepted: false,
+          completed: false,
+          controlOutcome: "not-dispatched",
+          reason: "session-compacting",
+          requestId: input.requestId,
+          runtimeBootId: "r",
+        };
+      return defaultRuntime(params);
+    });
+    const access = await service.localRequest("/access");
+    const body = {
+      sessionId: "s",
+      text: "hello",
+      requestId: "late-compaction",
+      expectedRevision: 4,
+      bootId: (access.body as { bootId: string }).bootId,
+    };
+    expect(await service.localRequest("/send", body)).toMatchObject({
+      status: 409,
+      body: { error: "session-compacting", controlOutcome: "not-dispatched" },
+    });
+    expect(await service.localRequest("/live?sessionId=s")).toMatchObject({
+      status: 200,
+      body: { status: "idle", sendEnabled: true },
+    });
   });
 
   it("creates scoped file previews for the Electron origin while Web remains disabled", async () => {

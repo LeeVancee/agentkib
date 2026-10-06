@@ -10,6 +10,8 @@ import {
   rememberPending,
   type PendingControl,
 } from "./pending-controls";
+import { blockedWhileCompacting } from "./session-activity";
+import { contextUsageCopy } from "./context-usage-copy";
 import { useSessionLive } from "./use-session-live";
 import {
   useCallback,
@@ -86,6 +88,7 @@ export function useSessionController({
     () => providedClient ?? new WebClient(undefined, connection ?? legacyOrigin),
   );
   const [streamEpoch, setStreamEpoch] = useState(0);
+  const [usageEpoch, setUsageEpoch] = useState("");
   const [liveContentVersion, setLiveContentVersion] = useState(0);
   const [catalogObservationFailed, setCatalogObservationFailed] = useState(false);
   const retryCatalogObservation = useRef<(() => void) | undefined>(undefined);
@@ -978,6 +981,7 @@ export function useSessionController({
   );
   useSessionLive({
     setLiveContentVersion,
+    setUsageEpoch,
     streamReady,
     controlReconciliationPending,
     nativeCoverage,
@@ -1323,6 +1327,7 @@ export function useSessionController({
       (action !== "inspect" && action !== "resume" && (!online || !controlReady)) ||
       capabilities?.sessionId !== selected ||
       !capabilities?.features[action]?.available ||
+      (live.activity === "compacting" && blockedWhileCompacting(action)) ||
       (action !== "inspect" &&
         (uncertainOutcomes.current.has(selected) || hasDurablePending(selected)))
     )
@@ -1417,7 +1422,11 @@ export function useSessionController({
     )
       return;
     const text = message.trim();
-    if (kind === "send" && !isValidMessage(message, !!extra?.attachmentIds?.length)) return;
+    if (
+      kind === "send" &&
+      (live.activity === "compacting" || !isValidMessage(message, !!extra?.attachmentIds?.length))
+    )
+      return;
     if (
       extra?.attachmentIds?.length &&
       (!access.device?.attachments || !capabilities?.features.attachments?.available)
@@ -1594,7 +1603,8 @@ export function useSessionController({
     !!access?.experimentalEnabled &&
     !!access.device?.send &&
     !!live?.sendEnabled &&
-    live.status === "idle";
+    live.status === "idle" &&
+    live.activity !== "compacting";
   const canStop =
     controlReady &&
     online &&
@@ -1607,18 +1617,21 @@ export function useSessionController({
   const liveText =
     live?.reason === "control-outcome-unconfirmed"
       ? t.controlUnconfirmed
-      : live?.status === "idle"
-        ? t.idle
-        : live?.questions?.length
-          ? interactionCopy[locale].title
-          : live?.status === "running"
-            ? t.running
-            : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
-              ? t.approval
-              : live?.reason
-                ? unavailableReasonText(live.reason, t)
-                : t.unknown;
+      : live?.activity === "compacting"
+        ? contextUsageCopy[locale].compacting
+        : live?.status === "idle"
+          ? t.idle
+          : live?.questions?.length
+            ? interactionCopy[locale].title
+            : live?.status === "running"
+              ? t.running
+              : live?.status === "awaiting-approval" || live?.status === "waiting-approval"
+                ? t.approval
+                : live?.reason
+                  ? unavailableReasonText(live.reason, t)
+                  : t.unknown;
   return {
+    usageEpoch,
     liveContentVersion,
     client,
     embedded,

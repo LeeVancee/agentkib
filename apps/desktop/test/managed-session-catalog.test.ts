@@ -258,6 +258,35 @@ function fixture() {
 }
 
 describe("managed directory ownership", () => {
+  it("does not assign a persisted usage generation to the current backend without an observer", async () => {
+    const f = fixture();
+    f.saveOwners([
+      {
+        ...f.owner,
+        snapshot: {
+          ...f.owner.snapshot,
+          runtimeBootId: "previous-backend",
+          usage: {
+            available: true,
+            state: "ready",
+            usedTokens: 80,
+            contextWindow: 100,
+            reportGeneration: Number.MAX_SAFE_INTEGER,
+            reportId: 500,
+          },
+        },
+      },
+    ]);
+    const live = (await f.web.request({ operation: "live", sessionId: f.owner.id })) as {
+      runtimeBootId: string;
+      usage: unknown;
+    };
+    expect(live.runtimeBootId).not.toBe("previous-backend");
+    expect(live.usage).toMatchObject({ state: "stale", usedTokens: 80, reportId: 500 });
+    expect(live.usage).not.toHaveProperty("reportGeneration");
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
   it("retains verified managed/native aliases, ordinary forks and unknown sources without granting paired controls", async () => {
     const f = fixture();
     f.addNative(f.owner.native_id!);

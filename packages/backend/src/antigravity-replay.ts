@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { AcpCompactionState } from "./antigravity-acp";
 import { acpObject, acpTimestamp, stringifyAcpJson } from "./acp-json";
 import { hasText, property, trimWhitespace, type ConversationEvent } from "./session-events";
 import type { SessionDocument } from "./session-model";
@@ -425,7 +426,8 @@ export function parseAntigravityReplay(
 ): AntigravityReplay {
   const parsed = empty(),
     tools = new Map<string, Tool>(),
-    messages = new Map<string, [number, number]>();
+    messages = new Map<string, [number, number]>(),
+    compactions = new AcpCompactionState();
   let lastHadId = false;
   const check = () => {
     if (performance.now() >= deadline)
@@ -436,6 +438,10 @@ export function parseAntigravityReplay(
     const update = updates[index]!,
       kind = text(update.sessionUpdate, "Antigravity ACP replay update is missing sessionUpdate"),
       id = `antigravity-update-${index}`;
+    if (compactions.apply(update)) {
+      check();
+      continue;
+    }
     if (kind === "user_message_chunk" || kind === "agent_message_chunk") {
       const eventKind = kind === "user_message_chunk" ? "user-message" : "agent-message",
         role = kind === "user_message_chunk" ? "user" : "assistant";

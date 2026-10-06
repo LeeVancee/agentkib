@@ -554,7 +554,11 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "live" || params.operation === "events") {
+      if (
+        params.operation === "live" ||
+        params.operation === "events" ||
+        params.operation === "usage"
+      ) {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||

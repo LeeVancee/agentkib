@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { projectContextUsage } from "@agentkib/backend/context-usage";
 import { createServer, type Server } from "node:http";
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1707,53 +1708,31 @@ export class WebAccessService {
     return { available: value === true };
   }
   private projectUsage(raw: unknown) {
-    if (!raw || typeof raw !== "object") return undefined;
-    const data = raw as {
-      available?: unknown;
-      tokenUsage?: {
-        total?: unknown;
-        last?: unknown;
-        modelContextWindow?: unknown;
-      };
-      revision?: unknown;
-      updatedAt?: unknown;
-      reason?: unknown;
-    };
-    const tokens = (value: unknown) => {
-      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
-      if (!value || typeof value !== "object") return undefined;
-      const item = value as Record<string, unknown>;
-      for (const key of ["totalTokens", "total_tokens", "tokens"])
-        if (typeof item[key] === "number" && Number.isSafeInteger(item[key]) && item[key] >= 0)
-          return item[key] as number;
-      return undefined;
-    };
-    const contextWindow =
-      typeof data.tokenUsage?.modelContextWindow === "number" &&
-      Number.isSafeInteger(data.tokenUsage.modelContextWindow) &&
-      data.tokenUsage.modelContextWindow > 0
-        ? data.tokenUsage.modelContextWindow
+    return projectContextUsage(raw);
+  }
+  private projectUsageFields(snapshot: Record<string, unknown>, device?: WebDevice) {
+    const projected = { ...snapshot };
+    // The enclosing GET/SSE admission already checks the session's workspace.
+    // Usage is an observation: it does not depend on send readiness or unknown outcomes.
+    const permitted = this.isFullAccess(device) && device?.advancedControl === true;
+    const raw = Object.hasOwn(snapshot, "usage")
+      ? snapshot.usage
+      : "tokenUsage" in snapshot
+        ? { available: true, tokenUsage: snapshot.tokenUsage, revision: snapshot.revision }
         : undefined;
-    // Native `total` is the current context footprint; `last` only describes the
-    // most recent turn and would under-report the context progress indicator.
-    const usedTokens = tokens(data.tokenUsage?.total) ?? tokens(data.tokenUsage?.last);
-    const totalTokens = tokens(data.tokenUsage?.total);
-    const updatedAt = this.optionalString(data.updatedAt, 128);
-    const reason = this.optionalString(data.reason);
-    return {
-      available: data.available === true,
-      ...(reason ? { reason } : {}),
-      ...(Number.isSafeInteger(data.revision) && Number(data.revision) >= 0
-        ? { revision: data.revision }
-        : {}),
-      ...(usedTokens !== undefined ? { usedTokens } : {}),
-      ...(totalTokens !== undefined ? { totalTokens } : {}),
-      ...(contextWindow !== undefined ? { contextWindow } : {}),
-      ...(usedTokens !== undefined && contextWindow !== undefined
-        ? { percent: Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100)) }
-        : {}),
-      ...(updatedAt ? { updatedAt } : {}),
-    };
+    delete projected.tokenUsage;
+    delete projected.usage;
+    if (permitted && raw !== undefined) {
+      const usage =
+        projectContextUsage(raw) ??
+        (raw === null ? { available: false, state: "unavailable" as const } : undefined);
+      if (usage)
+        projected.usage =
+          snapshot.activity === "compacting"
+            ? projectContextUsage({ ...usage, state: "pending" })
+            : usage;
+    }
+    return projected;
   }
   private projectSettings(raw: unknown, usage?: unknown) {
     const data =
@@ -2234,6 +2213,7 @@ export class WebAccessService {
       inspect: "manage",
       files: "files",
       attachments: "attachments",
+      usage: "advancedControl",
     };
     return {
       ...data,
@@ -2243,12 +2223,13 @@ export class WebAccessService {
           const transport =
             this.options.mode !== "lan" || !["files", "attachments"].includes(operation);
           const execution =
-            ["files", "inspect"].includes(operation) ||
+            ["files", "inspect", "usage"].includes(operation) ||
             (this.options.verifiedClaudeManaged === true &&
               this.controlsEnabled(sessionId, device));
           const allowed =
             permission &&
             device[permission] === true &&
+            (operation !== "usage" || this.isFullAccess(device)) &&
             transport &&
             execution &&
             (operation !== "attachments" || device.send === true);
@@ -2281,7 +2262,7 @@ export class WebAccessService {
           ["context", "resources", "settings-state", "usage", "goal"].includes(operation) ||
           operation.startsWith("goal-");
         const allowed =
-          this.controlsEnabled(sessionId, device) &&
+          (operation === "usage" || this.controlsEnabled(sessionId, device)) &&
           device[this.codexPermission(operation)] === true &&
           (!fullOnly || this.isFullAccess(device)) &&
           (operation !== "fork" || device.organize === true) &&
@@ -2388,7 +2369,10 @@ export class WebAccessService {
         { operation: "capabilities", sessionId, experimentalEnabled: true },
         undefined,
         true,
-      )) as { features?: Record<string, { available: boolean }>; executionMode?: string };
+      )) as {
+        features?: Record<string, { available: boolean; reason?: string }>;
+        executionMode?: string;
+      };
       const sessionSettingsAction = operation === "settings" || operation.startsWith("goal-");
       if (
         (operation !== "resume" &&
@@ -2396,7 +2380,12 @@ export class WebAccessService {
           !(sessionSettingsAction && capabilities.executionMode === "codex-follower")) ||
         capabilities.features?.[operation]?.available !== true
       )
-        throw new HttpError(409, "capability_unavailable");
+        throw new HttpError(
+          409,
+          capabilities.features?.[operation]?.reason === "session-compacting"
+            ? "session-compacting"
+            : "capability_unavailable",
+        );
       const snapshot = (await this.runtime(
         { operation: "live", sessionId, experimentalEnabled: true },
         undefined,
@@ -2645,6 +2634,8 @@ export class WebAccessService {
         accepted?: boolean;
         requestId?: string;
         controlOutcome?: string;
+        reason?: string;
+        error?: string;
       };
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
@@ -2652,7 +2643,12 @@ export class WebAccessService {
         if (result.requestId === requestId && result.controlOutcome === "not-dispatched") {
           this.clearUnconfirmed(sessionId);
           control.dispatched = false;
-          throw new HttpError(409, "control_preflight_rejected");
+          throw new HttpError(
+            409,
+            (result.reason ?? result.error) === "session-compacting"
+              ? "session-compacting"
+              : "control_preflight_rejected",
+          );
         }
         throw new HttpError(502, "outcome_unknown");
       }
@@ -2811,6 +2807,7 @@ export class WebAccessService {
           "handoff-fingerprint-changed",
           "Claude-history-changed-requires-handoff",
           "session-busy",
+          "session-compacting",
           "session-released",
           "stale-Claude-revision",
           "codex-owner-busy",
@@ -2843,6 +2840,8 @@ export class WebAccessService {
     device?: WebDevice,
     reserved = false,
   ) {
+    if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot))
+      snapshot = this.projectUsageFields(snapshot as Record<string, unknown>, device);
     if (
       sessionId &&
       this.options.receiptRequest &&
@@ -2900,6 +2899,7 @@ export class WebAccessService {
       return snapshot;
     }
     return {
+      ...(snapshot && typeof snapshot === "object" ? snapshot : {}),
       sessionId,
       status: "outcome-unknown",
       revision: null,
@@ -3477,6 +3477,12 @@ export class WebAccessService {
           (!claudeReplay && snapshot.revision !== body.expectedRevision)
         )
           throw new HttpError(409, "stale_state");
+        if (
+          !claudeReplay &&
+          operation === "send" &&
+          (snapshot as { activity?: string }).activity === "compacting"
+        )
+          throw new HttpError(409, "session-compacting");
         if (!claudeReplay && operation === "send" && snapshot.sendEnabled !== true)
           throw new HttpError(409, "control_unavailable");
         if (
@@ -3663,7 +3669,13 @@ export class WebAccessService {
             await this.attachmentStore.settle(String(params.deviceId), sessionId, requestId);
           this.grant(hash, permission);
           if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
-          throw new HttpError(409, "control_preflight_rejected");
+          throw new HttpError(
+            409,
+            (result as { reason?: string; error?: string }).reason === "session-compacting" ||
+              (result as { error?: string }).error === "session-compacting"
+              ? "session-compacting"
+              : "control_preflight_rejected",
+          );
         }
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
@@ -4074,7 +4086,7 @@ export class WebAccessService {
         if (event.type !== "state") return event;
         // Keep only authorization metadata, never manufacture absent patch fields
         // or refresh chat state while projecting a native notification.
-        const patch = { ...event.payload };
+        const patch = this.projectUsageFields(event.payload, device);
         if ("executionMode" in patch) controlContext.executionMode = patch.executionMode;
         if ("workspaceId" in patch) controlContext.workspaceId = patch.workspaceId;
         const enabled =

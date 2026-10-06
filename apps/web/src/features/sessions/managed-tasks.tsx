@@ -262,6 +262,7 @@ export function ManagedTasks({
   async function run(operation: "create" | "adopt" | "release" | "reconcile") {
     if (
       flight.current ||
+      (live?.activity === "compacting" && (operation === "adopt" || operation === "release")) ||
       (uncertain && operation !== "reconcile") ||
       (operation === "adopt" && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
     )
@@ -524,6 +525,7 @@ export function ManagedTasks({
                 disabled={
                   busy ||
                   uncertain ||
+                  live?.activity === "compacting" ||
                   !options.available ||
                   (!managed && (!confirmed || (agent === "claude-code" && !handoffFingerprint)))
                 }

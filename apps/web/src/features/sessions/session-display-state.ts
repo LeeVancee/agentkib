@@ -1,5 +1,6 @@
 import type { SessionController } from "./use-session-controller";
 import { codexReason } from "./codex-copy";
+import { contextUsageCopy } from "./context-usage-copy";
 import { webLayoutCopy } from "./web-layout-copy";
 
 type State = Pick<
@@ -32,6 +33,12 @@ export function sessionDisplayState(state: State) {
     live?.status === "waiting-approval"
   )
     return { label: c.approval, reason: c.approval, tone: "warning" };
+  if (live?.activity === "compacting")
+    return {
+      label: contextUsageCopy[locale].compacting,
+      reason: contextUsageCopy[locale].compactingDetail,
+      tone: "active",
+    };
   if (live?.status === "running") return { label: c.running, reason: c.running, tone: "active" };
   if (busy) return { label: c.busy, reason: c.busy, tone: "active" };
   if (!access?.experimentalEnabled || !access.device?.send)

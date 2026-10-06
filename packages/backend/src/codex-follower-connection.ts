@@ -3,6 +3,7 @@ import { open, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { nativeBindings } from "./native-files";
+import { versionAtLeast } from "./native-version";
 
 const CLIENT_TYPE = "agentkib-codex-bridge";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -23,8 +24,8 @@ const METHOD_VERSIONS: Readonly<Record<string, number>> = {
   "thread-follower-interrupt-turn": 4,
   "thread-stream-state-changed": 11,
 };
-const SUPPORTED_DESKTOP_VERSIONS = new Set(["26.917.62051", "26.924.22138"]);
-const SETTINGS_DESKTOP_VERSION = "26.924.22138";
+const MINIMUM_DESKTOP_VERSION = "26.917.62051";
+const SETTINGS_MINIMUM_DESKTOP_VERSION = "26.924.22138";
 
 type JsonRecord = Record<string, unknown>;
 type Frame = { bytes: Buffer; value: unknown };
@@ -65,7 +66,7 @@ export class CodexFollowerConnection {
         throw new Error("Codex IPC endpoint changed");
       const peerPath = await realpath(verifyPeer(socket, process.getuid()));
       const desktopVersion = await readDesktopVersion(peerPath);
-      if (!SUPPORTED_DESKTOP_VERSIONS.has(desktopVersion))
+      if (!versionAtLeast(desktopVersion, MINIMUM_DESKTOP_VERSION))
         throw new Error("unverified Codex Desktop installation");
       const connection = new CodexFollowerConnection(socket, desktopVersion, endpoint);
       try {
@@ -96,7 +97,7 @@ export class CodexFollowerConnection {
   }
 
   get supportsThreadSettings(): boolean {
-    return this.desktopVersion === SETTINGS_DESKTOP_VERSION;
+    return versionAtLeast(this.desktopVersion, SETTINGS_MINIMUM_DESKTOP_VERSION);
   }
 
   disconnect(): void {

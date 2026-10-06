@@ -60,11 +60,8 @@ function ConversationTranscriptForSession({
             data-turn-key={group.key}
             key={group.key}
           >
-            {(timestamp || (group.turnId && !group.complete)) && (
+            {timestamp && (
               <div className="session-hub-turn-meta flex items-center justify-end gap-2 px-1 text-[11px] text-muted-foreground/70">
-                {group.turnId && !group.complete && (
-                  <span className="session-hub-partial-turn">{tr("sessions.partialTurn")}</span>
-                )}
                 {timestamp && (
                   <time
                     aria-label={`${tr("sessions.recordTime")}: ${formatDateTime(timestamp)}`}

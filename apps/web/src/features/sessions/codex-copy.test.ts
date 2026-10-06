@@ -19,6 +19,10 @@ describe("Codex capability reasons", () => {
         "recovery-required",
         "native-session-unconfirmed",
         "native-operation-not-integrated",
+        "codex-protocol-incompatible",
+        "codex-connection-failed",
+        "codex-owner-changed",
+        "session-compacting",
       ]) {
         const explanation = codexReason(locale, reason);
         expect(explanation.technical).toBeUndefined();

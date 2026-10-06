@@ -87,8 +87,9 @@ export class CodexAppServerSession extends EventEmitter {
     if (!Number.isSafeInteger(id)) throw new Error("Codex app-server request limit reached");
     const frame = Buffer.from(JSON.stringify({ id, method, params }) + "\n");
     if (frame.length > FRAME_LIMIT) throw new Error("Codex request exceeds the frame limit");
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const response = new Promise<Response>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error("Codex app-server request timed out"));
       }, REQUEST_TIMEOUT_MS);
@@ -104,9 +105,9 @@ export class CodexAppServerSession extends EventEmitter {
       if (value.error !== undefined) throw new Error("Codex app-server rejected the request");
       if (!("result" in value)) throw new Error("Codex app-server returned an invalid response");
       return value.result;
-    } catch (error) {
+    } finally {
+      clearTimeout(timer);
       this.#pending.delete(id);
-      throw error;
     }
   }
 

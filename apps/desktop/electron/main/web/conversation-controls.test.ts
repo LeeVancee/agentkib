@@ -222,7 +222,7 @@ describe("Codex conversation controls", () => {
       applicationStatus: "pending",
       current: { modelId: "model-a", serviceTierId: "fast", policyId: "workspace" },
       defaults: { modelId: "model-a", effort: "medium", serviceTierId: "standard" },
-      usage: { usedTokens: 12000, totalTokens: 12000, contextWindow: 48000, percent: 25 },
+      usage: { usedTokens: 3000, totalTokens: 12000, contextWindow: 48000, percent: 6.25 },
     });
     expect(settings.data.options.collaborationModes).toEqual([
       { id: "default", name: "Default" },

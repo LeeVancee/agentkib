@@ -12,7 +12,12 @@ import {
   Search,
 } from "lucide-react";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
-import { displaySessionTitle, filterSessions, groupSessions } from "@agentkib/session-catalog";
+import {
+  displaySessionTitle,
+  filterSessions,
+  groupSessions,
+  isSessionVisible,
+} from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
 import { dictionaries, type Locale } from "../../i18n";
 import { catalogCopy } from "./catalog-copy";
@@ -45,17 +50,12 @@ export function SessionCatalog({
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
   const [filter, setFilter] = useState<"current" | "archived" | "metadata" | "all">("current");
-  const [showAuxiliary, setShowAuxiliary] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const filtered = filterSessions(
-    sessions,
-    workspaces ?? [],
-    { query, agent, filter, showAuxiliary },
-    t.untitled,
-  );
+  const visibleSessions = sessions.filter(isSessionVisible);
+  const filtered = filterSessions(sessions, workspaces ?? [], { query, agent, filter }, t.untitled);
   const groups = groupSessions(filtered, workspaces ?? []);
   const agents = [
-    ...new Set([...sessions.map((s) => s.agent), ...(agent === "all" ? [] : [agent])]),
+    ...new Set([...visibleSessions.map((s) => s.agent), ...(agent === "all" ? [] : [agent])]),
   ];
   return (
     <>
@@ -90,14 +90,6 @@ export function SessionCatalog({
               </option>
             ))}
           </NativeSelect>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={showAuxiliary}
-            onChange={(e) => setShowAuxiliary(e.target.checked)}
-          />
-          {c.auxiliary}
         </label>
       </details>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-4">
@@ -170,7 +162,7 @@ export function SessionCatalog({
             })}
             {!groups.length && (
               <p className="px-3 py-8 text-center text-xs leading-6 text-muted-foreground">
-                {sessions.length ? c.noResults : t.empty}
+                {visibleSessions.length ? c.noResults : t.empty}
               </p>
             )}
           </>

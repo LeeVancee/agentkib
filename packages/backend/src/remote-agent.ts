@@ -26,6 +26,7 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
+import { projectPairedManagedSessions } from "./managed-session-catalog";
 
 type Device = {
   id: string;
@@ -747,7 +748,7 @@ export class RemoteAgent {
     if (op !== "catalog" && op !== "events") throw new Error("unsupported operation");
     this.#ensureIndex();
     const epoch = this.index.generation();
-    const output = op === "catalog" ? this.#catalog() : await this.#events(request);
+    const output = op === "catalog" ? await this.#catalog() : await this.#events(request);
     if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
     this.#ensureIndex();
     if (this.index.generation() !== epoch) throw new Error("index-disabled");
@@ -774,13 +775,30 @@ export class RemoteAgent {
       return (error as NodeJS.ErrnoException).code === "ENOENT";
     }
   }
-  #catalog() {
+  async #catalog() {
     const workspaces = this.store.listWorkspaces() as Array<Record<string, unknown>>;
-    const registered = new Set(workspaces.map((workspace) => workspace.id));
-    const sessions = workspaces.flatMap((workspace) =>
-      this.store.sessions.list(String(workspace.id)),
+    let sessions: ReturnType<BackendStore["sessions"]["list"]> = [];
+    for (const workspace of workspaces) {
+      sessions.push(...(await this.index.read(String(workspace.id))));
+      if (sessions.length > 20_000) throw new Error("response-too-large");
+    }
+    try {
+      sessions = await projectPairedManagedSessions(
+        this.store,
+        this.readers,
+        path.dirname(path.dirname(this.#file)),
+        sessions,
+      );
+    } catch {
+      // Ownership enrichment is optional. Never log native/ledger paths or IDs,
+      // and retain the untouched native catalog when ownership cannot be proved.
+      console.warn("Managed session catalog projection unavailable");
+    }
+    const registered = new Set(
+      (this.store.listWorkspaces() as Array<Record<string, unknown>>).map(
+        (workspace) => workspace.id,
+      ),
     );
-    if (sessions.length > 20_000) throw new Error("response-too-large");
     return {
       workspaces: workspaces
         .filter((workspace) => registered.has(workspace.id))

@@ -24,6 +24,8 @@ let invalidation = 0;
 let pending: Promise<ConversationSessionSummary[]> | undefined;
 let observationError: unknown;
 let retryObservation: (() => void) | undefined;
+let catalogObservers = 0;
+let stopCatalogObservation: (() => void) | undefined;
 const emptySessions: ConversationSessionSummary[] = [];
 
 function resetConversationCatalog() {
@@ -80,14 +82,24 @@ export function refreshConversationCatalog(): Promise<ConversationSessionSummary
   return task;
 }
 
+function releaseCatalogObserver() {
+  catalogObservers -= 1;
+  if (catalogObservers > 0) return;
+  stopCatalogObservation?.();
+  stopCatalogObservation = undefined;
+  resetConversationCatalog();
+}
+
 /** Includes managed tasks before they have appeared in the native history index. */
 export function useConversationCatalog(enabled: boolean) {
   const state = useConversationCatalogStore();
   useEffect(() => {
     if (!enabled || !hasDesktopConversation()) {
-      resetConversationCatalog();
+      if (catalogObservers === 0) resetConversationCatalog();
       return;
     }
+    catalogObservers += 1;
+    if (catalogObservers > 1) return releaseCatalogObserver;
     observationError = undefined;
     useConversationCatalogStore.setState({ ready: false, error: undefined });
     void refreshConversationCatalog().catch(() => {});
@@ -175,11 +187,12 @@ export function useConversationCatalog(enabled: boolean) {
     };
     retryObservation = retry;
     connect();
-    return () => {
+    stopCatalogObservation = () => {
       closed = true;
       if (retryObservation === retry) retryObservation = undefined;
       stop?.();
     };
+    return releaseCatalogObserver;
   }, [enabled]);
   return {
     ...state,

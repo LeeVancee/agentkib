@@ -17,6 +17,13 @@ import { useRemoteCatalogStore, remoteRecordId } from "@/features/remote/remote-
 
 vi.mock("./useSearchSessions", () => ({ useSearchSessions: vi.fn() }));
 vi.mock("./useSearchAssets", () => ({ SEARCH_ASSET_LIMIT: 500, useSearchAssets: vi.fn() }));
+const managedCatalog = vi.hoisted(() => ({
+  sessions: [] as ConversationSessionSummary[],
+  ready: true,
+}));
+vi.mock("@/features/sessions/conversation-catalog", () => ({
+  useConversationCatalog: () => managedCatalog,
+}));
 vi.mock("@/features/agents/AgentIcon", () => ({ AgentIcon: () => <span /> }));
 const workspace = { id: "one", name: "Same project", path: "/projects/one" } as WorkspaceSummary;
 const session: ConversationSessionSummary = {
@@ -43,6 +50,8 @@ describe("GlobalSearchDialog", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    managedCatalog.sessions = [];
+    managedCatalog.ready = true;
     useSessionViewStore.getState().resetFilters();
     useRemoteStore.setState({ snapshot: null });
     useRemoteCatalogStore.setState({ catalogs: {}, errors: {}, revision: 0 });
@@ -128,7 +137,24 @@ describe("GlobalSearchDialog", () => {
     expect(callbacks.onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("shares auxiliary source visibility with the session directory", async () => {
+  it("keeps a Runtime-verified managed execution alias searchable with its native history ID", async () => {
+    const native = { ...session, id: "managed-native", origin: "execution" as const };
+    managedCatalog.sessions = [
+      { ...native, id: "managed-owner", origin: "interactive", indexedSessionIds: [native.id] },
+    ];
+    vi.mocked(useSearchSessions).mockReturnValue({
+      sessions: [native],
+      loading: false,
+      errors: {},
+      retry: vi.fn(),
+    });
+    const callbacks = props();
+    render(<GlobalSearchDialog {...callbacks} />);
+    fireEvent.click(await screen.findByRole("option", { name: /Review search/ }));
+    expect(callbacks.onOpenSession).toHaveBeenCalledWith({ ...native, origin: "interactive" });
+  });
+
+  it("always hides auxiliary and execution records in search", async () => {
     const auxiliary: ConversationSessionSummary = {
       ...session,
       id: "auxiliary-session",
@@ -137,15 +163,18 @@ describe("GlobalSearchDialog", () => {
       spawned_by_session_id: session.id,
     };
     vi.mocked(useSearchSessions).mockReturnValue({
-      sessions: [session, auxiliary],
+      sessions: [
+        session,
+        auxiliary,
+        { ...auxiliary, id: "execution", title: "Execution result", origin: "execution" },
+      ],
       loading: false,
       errors: {},
       retry: vi.fn().mockResolvedValue(undefined),
     });
     render(<GlobalSearchDialog {...props()} />);
     expect(screen.queryByRole("option", { name: /Auxiliary result/ })).toBeNull();
-    act(() => useSessionViewStore.getState().setShowAuxiliary(true));
-    expect(await screen.findByRole("option", { name: /Auxiliary result/ })).toBeVisible();
+    expect(screen.queryByRole("option", { name: /Execution result/ })).toBeNull();
   });
 
   it("does not read sessions with indexing disabled and offers settings while other results work", async () => {

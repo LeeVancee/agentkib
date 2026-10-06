@@ -1,4 +1,12 @@
+import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
+
 type JsonRecord = Record<string, unknown>;
+type UsageRecovery = {
+  raw: unknown;
+  reportId: number;
+  updatedAt?: string;
+  barrierTurn?: string | null;
+};
 
 const MAX_SNAPSHOT_BYTES = 48 * 1024 * 1024;
 const MAX_PATCHES = 4096;
@@ -20,13 +28,30 @@ export class CodexFollowerState {
   #snapshotCount = 0;
   #valid = true;
   #status: CodexFollowerStatus = "waiting-for-snapshot";
+  #activity: "compacting" | null = null;
+  #compactions = new Set<string>();
+  #usageRaw: unknown = null;
+  #usageReport = 0;
+  readonly #usageGeneration = createContextUsageGeneration();
+  #usageUpdatedAt: string | undefined;
+  #usageState: "ready" | "pending" | "stale" = "pending";
+  #usageBarrierTurn: string | null | undefined;
+  #awaitingUsageReport = false;
   readonly conversationId: string;
   readonly ownerClientId: string;
 
-  constructor(conversationId: string, ownerClientId: string) {
+  constructor(conversationId: string, ownerClientId: string, usageRecovery?: UsageRecovery) {
     if (!conversationId || !ownerClientId) throw new Error("invalid-follower-identity");
     this.conversationId = conversationId;
     this.ownerClientId = ownerClientId;
+    if (usageRecovery) {
+      this.#usageRaw = structuredClone(usageRecovery.raw);
+      this.#usageReport = usageRecovery.reportId;
+      this.#usageUpdatedAt = usageRecovery.updatedAt;
+      this.#usageBarrierTurn = usageRecovery.barrierTurn;
+      this.#usageState = "stale";
+      this.#awaitingUsageReport = true;
+    }
   }
 
   get status(): CodexFollowerStatus {
@@ -37,8 +62,21 @@ export class CodexFollowerState {
     return this.#revision;
   }
 
+  get activity(): "compacting" | null {
+    return this.#activity;
+  }
+
   get snapshotCount(): number {
     return this.#snapshotCount;
+  }
+
+  usageRecovery(): UsageRecovery {
+    return {
+      raw: structuredClone(this.#usageRaw),
+      reportId: this.#usageReport,
+      updatedAt: this.#usageUpdatedAt,
+      barrierTurn: this.#usageBarrierTurn,
+    };
   }
 
   snapshot(): Readonly<JsonRecord> | null {
@@ -150,15 +188,33 @@ export class CodexFollowerState {
       sessionId: this.conversationId,
       executionMode: "codex-follower",
       status,
+      activity: this.#activity,
       revision: this.#revision,
       turnId,
-      sendEnabled: controls && status === "idle",
+      sendEnabled: controls && status === "idle" && this.#activity === null,
       stopEnabled:
         controls &&
         turnId !== null &&
         (this.#status === "running" || this.#status === "awaiting-approval"),
       approvals,
       questions,
+      tokenUsage: this.#usageRaw,
+      usage: projectContextUsage(
+        {
+          available: true,
+          tokenUsage: this.#usageRaw,
+          state: this.#activity ? "pending" : this.#usageState,
+          reportId: this.#usageReport,
+          reportGeneration: this.#usageGeneration,
+          updatedAt: this.#usageUpdatedAt,
+          reason: this.#activity
+            ? "session-compacting"
+            : this.#usageState === "stale"
+              ? "context-usage-unconfirmed"
+              : undefined,
+        },
+        this.#revision ?? undefined,
+      ),
       reason: status === "unsupported" ? "follower-operation-unverified" : null,
     };
   }
@@ -298,6 +354,37 @@ export class CodexFollowerState {
     this.#snapshot = null;
     this.#status = status;
     this.#valid = false;
+    this.#activity = null;
+    this.#compactions.clear();
+    this.#usageState = "stale";
+  }
+
+  /** Rechecked synchronously at dispatch; compaction never blocks a verified interrupt. */
+  assertMutationAllowed(method: string, params: JsonRecord, expectedRevision: number): void {
+    if (
+      this.#activity &&
+      [
+        "thread-follower-start-turn",
+        "thread-follower-steer-turn",
+        "thread-follower-update-thread-settings",
+        "thread-follower-compact-thread",
+      ].includes(method)
+    )
+      throw new Error("session-compacting");
+    if (this.#revision !== expectedRevision) throw new Error("stale-or-disabled-control");
+    const live = this.live(true);
+    if (this.#status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
+    if (method === "thread-follower-start-turn" && live.sendEnabled !== true)
+      throw new Error("session-busy");
+    if (method === "thread-follower-update-thread-settings" && this.#status !== "idle")
+      throw new Error("session-busy");
+    if (
+      method === "thread-follower-interrupt-turn" &&
+      (typeof params.expectedTurnId !== "string" ||
+        params.expectedTurnId !== this.activeTurn() ||
+        live.stopEnabled !== true)
+    )
+      throw new Error("stale-turn");
   }
 
   markMutationDispatched(): void {
@@ -344,6 +431,81 @@ export class CodexFollowerState {
     const snapshotBytes = jsonBytes(candidate);
     if (snapshotBytes > MAX_SNAPSHOT_BYTES) throw new Error("snapshot-limit-exceeded");
 
+    const oldSnapshot = this.#snapshot;
+    const latestTurn = lastNativeTurn(turns);
+    const oldTurns = oldSnapshot ? (conversationTurns(oldSnapshot) ?? []) : [];
+    const oldTurn = lastNativeTurn(oldTurns);
+    const oldCompactions = contextCompactionKeys(oldTurns);
+    const compactions = new Set<string>();
+    for (const turn of turns) {
+      if (turn.status !== "inProgress" || !Array.isArray(turn.items)) continue;
+      for (const item of turn.items) {
+        if (isRecord(item) && item.type === "contextCompaction" && item.completed === false)
+          compactions.add(`${String(turn.turnId)}:${String(item.id)}`);
+      }
+    }
+    const newCompaction = [...compactions].some((key) => !this.#compactions.has(key));
+    const modelChanged =
+      oldSnapshot !== null && currentFollowerModel(candidate) !== currentFollowerModel(oldSnapshot);
+    // A complete item can be the first observed evidence of a compaction. Its
+    // pre-compaction usage must not survive merely because we missed started.
+    const newLatestCompaction =
+      latestTurn !== null &&
+      turns.some(
+        (turn) =>
+          turn.turnId === latestTurn &&
+          Array.isArray(turn.items) &&
+          turn.items.some(
+            (item) =>
+              isRecord(item) &&
+              item.type === "contextCompaction" &&
+              !oldCompactions.has(`${String(turn.turnId)}:${String(item.id)}`),
+          ),
+      );
+    if (newCompaction || newLatestCompaction) {
+      this.#usageBarrierTurn = latestTurn;
+      this.#usageState = "stale";
+    } else if (modelChanged) {
+      this.#usageBarrierTurn = oldTurn;
+      this.#usageState = "stale";
+    }
+    this.#compactions = compactions;
+    this.#activity = compactions.size > 0 ? "compacting" : null;
+    const rawUsage = candidate.latestTokenUsageInfo ?? null;
+    const usagePatch =
+      change.type === "patches" &&
+      Array.isArray(change.patches) &&
+      change.patches.some(
+        (patch) =>
+          isRecord(patch) && Array.isArray(patch.path) && patch.path[0] === "latestTokenUsageInfo",
+      );
+    // A refreshed snapshot/revision is not a new usage report. Explicit usage
+    // patches also count when the native report repeats the same numeric values.
+    const usageReported =
+      isRecord(rawUsage) && (usagePatch || !deepEqual(rawUsage, this.#usageRaw));
+    if (usageReported) {
+      this.#usageRaw = structuredClone(rawUsage);
+      this.#usageReport += 1;
+      this.#usageUpdatedAt = new Date().toISOString();
+      if (oldSnapshot !== null) this.#awaitingUsageReport = false;
+      const explicitTurn = typeof rawUsage.turnId === "string" ? rawUsage.turnId : null;
+      const associatedTurn =
+        explicitTurn ?? (usagePatch && latestTurn === oldTurn ? latestTurn : null);
+      if (
+        !this.#awaitingUsageReport &&
+        (explicitTurn === null || explicitTurn === latestTurn) &&
+        this.#activity === null &&
+        (this.#usageBarrierTurn === undefined ||
+          (associatedTurn !== null && associatedTurn !== this.#usageBarrierTurn))
+      ) {
+        this.#usageBarrierTurn = undefined;
+        this.#usageState = "ready";
+      } else this.#usageState = "stale";
+    } else if (rawUsage === null) {
+      this.#usageRaw = null;
+      this.#usageState = "pending";
+    }
+
     let status: CodexFollowerStatus =
       isRecord(candidate.threadRuntimeStatus) && candidate.threadRuntimeStatus.type === "active"
         ? "running"
@@ -368,6 +530,33 @@ export class CodexFollowerState {
   #conversationTurns(): JsonRecord[] | null {
     return this.#snapshot === null ? null : conversationTurns(this.#snapshot);
   }
+}
+
+function currentFollowerModel(snapshot: JsonRecord): string | null {
+  const settings = isRecord(snapshot.latestThreadSettings) ? snapshot.latestThreadSettings : {};
+  const model = Object.hasOwn(settings, "model") ? settings.model : snapshot.latestModel;
+  return typeof model === "string" ? model : null;
+}
+
+function lastNativeTurn(turns: JsonRecord[]): string | null {
+  const active = turns.find(
+    (turn) => turn.status === "inProgress" && typeof turn.turnId === "string",
+  );
+  if (active) return active.turnId as string;
+  for (let index = turns.length - 1; index >= 0; index--)
+    if (typeof turns[index]?.turnId === "string") return turns[index]!.turnId as string;
+  return null;
+}
+
+function contextCompactionKeys(turns: JsonRecord[]): Set<string> {
+  const keys = new Set<string>();
+  for (const turn of turns) {
+    for (const item of Array.isArray(turn.items) ? turn.items : []) {
+      if (isRecord(item) && item.type === "contextCompaction")
+        keys.add(`${String(turn.turnId)}:${String(item.id)}`);
+    }
+  }
+  return keys;
 }
 
 function conversationTurns(snapshot: JsonRecord): JsonRecord[] | null {

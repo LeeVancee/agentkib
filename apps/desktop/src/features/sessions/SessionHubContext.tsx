@@ -1,5 +1,5 @@
 import { useI18n } from "@/core/useI18n";
-import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
+import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
 import type { WorkspaceSummary } from "@/core/types";
 import {
   createContext,
@@ -15,7 +15,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionCatalog } from "./useSessionCatalog";
-import { filterSessions } from "./session-catalog";
+import { filterSessions, isSessionVisible } from "./session-catalog";
 import { useSessionViewStore } from "./session-view-store";
 import { SESSION_REFRESH_EVENT } from "./session-refresh";
 import { refreshConversationCatalog, useConversationCatalog } from "./conversation-catalog";
@@ -64,17 +64,35 @@ function useHub(active: boolean) {
     controlled && active && localEnabled && controlledCatalog.error !== undefined
       ? localizeMessage(controlledCatalog.error)
       : "";
-  // The controlled catalog already removes indexed aliases of managed tasks.
-  // Merging the raw index back in would expose a second, unreadable route.
-  const localSessions = controlled ? controlledCatalog.sessions : catalog.sessions;
+  const localSessions = useMemo(() => {
+    if (!controlled) return catalog.sessions;
+    const seen = new Set(controlledCatalog.sessions.map((session) => session.id));
+    // Managed aliases belong to the controlled catalog. Conversation-only
+    // Codex collections have no filesystem workspace and remain in the index.
+    return [
+      ...controlledCatalog.sessions,
+      ...catalog.sessions.filter((session) => {
+        if (
+          session.agent !== "codex" ||
+          !sessionCollection(session.workspace_id) ||
+          seen.has(session.id)
+        )
+          return false;
+        seen.add(session.id);
+        return true;
+      }),
+    ];
+  }, [controlled, controlledCatalog.sessions, catalog.sessions]);
   const workspaces = useMemo(
     () => [...localWorkspaces, ...remote.workspaces],
     [localWorkspaces, remote.workspaces],
   );
-  const sessions = useMemo(
+  const allSessions = useMemo(
     () => [...localSessions, ...remote.sessions],
     [localSessions, remote.sessions],
   );
+  const sessions = useMemo(() => allSessions.filter(isSessionVisible), [allSessions]);
+  const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
   const refreshCatalog = catalog.refresh;
   const [historyRevision, setHistoryRevision] = useState(0);
   const [conversationRefreshRevision, setConversationRefreshRevision] = useState(0);
@@ -102,19 +120,17 @@ function useHub(active: boolean) {
   const agent = useSessionViewStore((state) => state.agent);
   const filter = useSessionViewStore((state) => state.filter);
   const host = useSessionViewStore((state) => state.host);
-  const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
-  const revealSession = useSessionViewStore((state) => state.revealSession);
   const filtered = useMemo(
     () =>
-      filterSessions(sessions, workspaces, { query: "", agent, filter, showAuxiliary }).filter(
+      filterSessions(sessions, workspaces, { query: "", agent, filter }).filter(
         (session) => host === "all" || host === (session.remote?.host_id ?? "local"),
       ),
-    [sessions, workspaces, agent, filter, host, showAuxiliary],
+    [sessions, workspaces, agent, filter, host],
   );
   const navigate = useNavigate();
   const { sessionId } = useSearch({ strict: false }) as { sessionId?: string };
   const canonicalId =
-    sessions.find(
+    allSessions.find(
       (session) => !session.remote && session.indexedSessionIds?.includes(sessionId ?? ""),
     )?.id ?? sessionId;
   const selected = enabled ? filtered.find((session) => session.id === canonicalId) : undefined;
@@ -123,6 +139,7 @@ function useHub(active: boolean) {
     : undefined;
   const select = useCallback(
     (id?: string, replace = false) => {
+      setHiddenSessionNotice(false);
       if (id) useSessionViewStore.getState().setCreatingConversation(false);
       void navigate({
         to: "/sessions",
@@ -132,31 +149,28 @@ function useHub(active: boolean) {
     },
     [navigate],
   );
-  const routeReveal = useRef<{ sessionId?: string; revealed: boolean; skipClear: boolean }>({
-    revealed: false,
-    skipClear: false,
-  });
   useEffect(() => {
     if (enabled && selected && canonicalId !== sessionId) select(canonicalId, true);
   }, [enabled, selected, canonicalId, sessionId, select]);
   useEffect(() => {
-    if (routeReveal.current.sessionId !== sessionId) {
-      routeReveal.current = { sessionId, revealed: false, skipClear: false };
-    }
-    if (!sessionId || routeReveal.current.revealed) return;
-    const target = sessions.find((session) => session.id === sessionId);
-    if (!target || target.origin !== "auxiliary") return;
-    routeReveal.current.revealed = true;
-    routeReveal.current.skipClear = true;
-    // Route targets are explicit intent. Reveal once, including auxiliary
-    // records, without re-revealing after the user changes view filters.
-    revealSession(target);
-  }, [sessionId, sessions, revealSession]);
-  useEffect(() => {
-    if (routeReveal.current.skipClear && routeReveal.current.sessionId === sessionId) {
-      routeReveal.current.skipClear = false;
+    if (!sessionId || !enabled) return;
+    const target = allSessions.find((session) => session.id === canonicalId);
+    if (!target) return;
+    if (isSessionVisible(target)) {
+      setHiddenSessionNotice(false);
       return;
     }
+    setHiddenSessionNotice(true);
+    useSessionViewStore.getState().setCreatingConversation(false);
+    void navigate({
+      to: "/sessions",
+      replace: true,
+      search: (current) => ({ ...current, sessionId: undefined }),
+    });
+  }, [sessionId, canonicalId, allSessions, enabled, navigate]);
+  useEffect(() => {
+    const target = allSessions.find((session) => session.id === canonicalId);
+    if (target && !isSessionVisible(target)) return;
     // Wait until every workspace cache has been read before validating a deep link.
     if (
       sessionId &&
@@ -179,6 +193,8 @@ function useHub(active: boolean) {
     }
   }, [
     sessionId,
+    canonicalId,
+    allSessions,
     catalog.ready,
     controlledCatalog.ready,
     catalogError,
@@ -197,6 +213,7 @@ function useHub(active: boolean) {
     ready: catalog.ready && controlledCatalog.ready,
     loading: catalog.loading || (controlled && !controlledCatalog.ready),
     catalogError,
+    hiddenSessionNotice,
     sessions,
     remoteHosts: remote.hosts,
     remoteErrors: remote.errors,

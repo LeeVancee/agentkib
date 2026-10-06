@@ -12,6 +12,22 @@ const state = {
   live: { status: "idle", sendEnabled: true, approvals: [] },
 } as unknown as SessionController;
 describe("session display state", () => {
+  it("shows compaction after actionable approvals and never over an unknown outcome", () => {
+    const compacting = { ...state, live: { ...state.live!, activity: "compacting" as const } };
+    expect(sessionDisplayState(compacting).label).toBe("正在压缩上下文");
+    expect(
+      sessionDisplayState({
+        ...compacting,
+        live: { ...compacting.live, reason: "control-outcome-unconfirmed" },
+      }).label,
+    ).toBe("结果待核对");
+    expect(
+      sessionDisplayState({
+        ...compacting,
+        live: { ...compacting.live, status: "waiting-approval" },
+      }).label,
+    ).toBe("待审批");
+  });
   it("only displays ready after the existing dispatch gate accepts", () => {
     expect(sessionDisplayState(state).label).toBe("可发送");
     expect(

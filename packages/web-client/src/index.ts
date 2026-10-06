@@ -18,7 +18,7 @@ export interface ConversationSessionSummary {
   title?: string;
   created_at?: string | null;
   updated_at?: string;
-  origin?: "interactive" | "auxiliary" | "unknown";
+  origin?: "interactive" | "auxiliary" | "execution" | "unknown";
   forked_from_session_id?: string | null;
   spawned_by_session_id?: string | null;
   git_branch?: string | null;
@@ -183,11 +183,12 @@ export interface Live {
     | "codex-follower";
   cliVersion?: string;
   model?: string;
+  activity?: "compacting" | null;
   tokenUsage?: unknown;
   streamText?: string;
   streamTextTruncated?: boolean;
   settings?: CodexSessionSettings;
-  usage?: CodexTokenUsage;
+  usage?: ContextUsage;
   goal?: CodexGoal;
 }
 export type LegacyPreparedReceipt = {
@@ -272,7 +273,7 @@ export interface CodexCapabilities {
   reason?: string;
   features: Partial<
     Record<
-      CodexAction | "attachments" | "context" | "resources" | "send" | "files",
+      CodexAction | "attachments" | "context" | "resources" | "send" | "files" | "usage",
       { available: boolean; reason?: string }
     >
   >;
@@ -340,8 +341,13 @@ export interface CodexAvailability {
   available: boolean;
   reason?: string;
 }
-export interface CodexTokenUsage {
+export interface ContextUsage {
   available: boolean;
+  state?: "ready" | "pending" | "stale" | "unavailable";
+  /** Native observer instance, ordered within a runtime boot independently of stream epochs. */
+  reportGeneration?: number;
+  /** Report sequence within its native observer, independent of the control revision. */
+  reportId?: number;
   reason?: string;
   revision?: number;
   usedTokens?: number;
@@ -350,6 +356,7 @@ export interface CodexTokenUsage {
   percent?: number;
   updatedAt?: string;
 }
+export type CodexTokenUsage = ContextUsage;
 export interface CodexSettingValues {
   modelId?: string;
   effort?: string;

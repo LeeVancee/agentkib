@@ -29,6 +29,41 @@ function toolEvent(id: string, turnId = "turn"): ConversationEvent {
 
 afterEach(cleanup);
 describe("incremental transcript identity", () => {
+  it("keeps partial paged commentary expanded without an incomplete label", () => {
+    const commentary: ConversationEvent = {
+      id: "comment",
+      turn_id: "turn",
+      kind: "agent-message",
+      content: "Still working",
+      message_phase: "commentary",
+      attachment_count: 0,
+      truncated: false,
+    };
+    const view = render(
+      <Transcript
+        events={[commentary, toolEvent("tool")]}
+        incomplete
+        labels={labels}
+        onTool={vi.fn()}
+        locale="en-US"
+      />,
+    );
+    expect(screen.getByText("Still working")).toBeVisible();
+    expect(screen.queryByText(labels.incomplete)).not.toBeInTheDocument();
+    const row = view.container.querySelector('[data-event-id="comment"]');
+    view.rerender(
+      <Transcript
+        events={[toolEvent("older", "earlier-turn"), commentary, toolEvent("tool")]}
+        incomplete
+        labels={labels}
+        onTool={vi.fn()}
+        locale="en-US"
+      />,
+    );
+    expect(view.container.querySelector('[data-event-id="comment"]')).toBe(row);
+    expect(screen.getByText("Still working")).toBeVisible();
+    expect(screen.queryByText(labels.incomplete)).not.toBeInTheDocument();
+  });
   it.each([
     ["zh-CN", "执行中", "已完成"],
     ["zh-TW", "執行中", "已完成"],

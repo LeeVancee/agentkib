@@ -9,7 +9,6 @@ import { ConversationEventRow } from "@/features/sessions/ConversationEventRow";
 import { HistoryError, HistoryWarning } from "@/features/sessions/HistoryFeedback";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -61,7 +60,11 @@ import {
   sessionSourceDetails,
   sessionAgentNames,
 } from "@/features/sessions/session-labels";
-import { isSessionVisible } from "@/features/sessions/session-catalog";
+import {
+  isSessionVisible,
+  projectManagedSessionAliases,
+} from "@/features/sessions/session-catalog";
+import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 
 type SessionFilter = "current" | "archived" | "metadata" | "all";
@@ -102,6 +105,19 @@ function matchesSessionFilter(session: ConversationSessionSummary, filter: Sessi
   return true;
 }
 
+function resolveLinkedSessionVisibility(
+  session: ConversationSessionSummary,
+  remote: WorkspaceSummary["remote"],
+  catalogReady: boolean,
+  catalogError: unknown,
+): "visible" | "pending" | "hidden" {
+  if (isSessionVisible(session)) return "visible";
+  if (session.origin === "execution" && !remote && (!catalogReady || catalogError)) {
+    return "pending";
+  }
+  return "hidden";
+}
+
 export function WorkspaceSessionsPage({
   workspace,
   enabled,
@@ -134,10 +150,25 @@ export function WorkspaceSessionsPage({
     undefined,
   );
   const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
-  const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
+  const managedCatalog = useConversationCatalog(enabled && !workspace.remote);
+  const indexedSessions = useMemo(
+    () =>
+      projectManagedSessionAliases(
+        sessions,
+        managedCatalog.sessions,
+        initialSessionId ?? resumeContinuation?.sessionId ?? selectedId,
+      ),
+    [
+      sessions,
+      managedCatalog.sessions,
+      initialSessionId,
+      resumeContinuation?.sessionId,
+      selectedId,
+    ],
+  );
+  const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
   const [readRevision, setReadRevision] = useState(0);
-
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [agent, setAgent] = useState<AgentFilter>("all");
@@ -150,14 +181,13 @@ export function WorkspaceSessionsPage({
     setListError(reason === "" ? undefined : { reason, at: Date.now() });
   const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
+  const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
   const [resumedRequest, setResumedRequest] = useState<
     (SessionContinuationResume & { autoPrepare: boolean }) | undefined
   >();
   const cacheSequence = useRef(0);
   const consumedInitialSession = useRef<string | undefined>(undefined);
-  const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
-  const setShowAuxiliary = useSessionViewStore((state) => state.setShowAuxiliary);
   const revealSession = useSessionViewStore((state) => state.revealSession);
 
   const refresh = async (force: boolean) => {
@@ -212,6 +242,7 @@ export function WorkspaceSessionsPage({
     setSessions([]);
     setStatuses([]);
     setSelectedId(undefined);
+    setHiddenSessionNotice(false);
     setRefreshing(true);
     setSlowLoading(false);
     setError("");
@@ -258,8 +289,8 @@ export function WorkspaceSessionsPage({
   }, [refreshing, sessions.length]);
 
   const visibleSessions = useMemo(
-    () => sessions.filter((session) => isSessionVisible(session, showAuxiliary)),
-    [sessions, showAuxiliary],
+    () => indexedSessions.filter(isSessionVisible),
+    [indexedSessions],
   );
   const scopedSessions = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -284,13 +315,13 @@ export function WorkspaceSessionsPage({
     [filter, scopedSessions],
   );
 
-  const selected = sessions.find((session) => session.id === selectedId);
+  const selected = visibleSessions.find((session) => session.id === selectedId);
   const sourceCapability = useSessionSourceCapability(
     enabled && selected?.availability === "readable" ? selected.id : undefined,
     readRevision,
   );
   const selectedSources = selected
-    ? sessionSourceDetails(selected, sessions, tr, formatDateTime)
+    ? sessionSourceDetails(selected, visibleSessions, tr, formatDateTime)
     : [];
   useEffect(() => {
     if (selectedId && filtered.some((session) => session.id === selectedId)) return;
@@ -300,21 +331,59 @@ export function WorkspaceSessionsPage({
 
   useEffect(() => {
     if (!initialSessionId || consumedInitialSession.current === initialSessionId) return;
-    if (!sessions.some(({ id }) => id === initialSessionId)) return;
+    const target = indexedSessions.find(({ id }) => id === initialSessionId);
+    if (!target) return;
+    const visibility = resolveLinkedSessionVisibility(
+      target,
+      workspace.remote,
+      managedCatalog.ready,
+      managedCatalog.error,
+    );
+    if (visibility === "pending") return;
+    if (visibility === "hidden") {
+      consumedInitialSession.current = initialSessionId;
+      setHiddenSessionNotice(true);
+      setShowDetail(false);
+      onInitialSessionConsumed?.();
+      return;
+    }
     consumedInitialSession.current = initialSessionId;
-    revealSession(sessions.find(({ id }) => id === initialSessionId)!);
+    setHiddenSessionNotice(false);
+    revealSession(target);
     setFilter("all");
     setSelectedId(initialSessionId);
     setShowDetail(true);
     onInitialSessionConsumed?.();
-  }, [initialSessionId, onInitialSessionConsumed, revealSession, sessions]);
+  }, [
+    initialSessionId,
+    onInitialSessionConsumed,
+    revealSession,
+    indexedSessions,
+    managedCatalog.ready,
+    managedCatalog.error,
+    workspace.remote,
+  ]);
 
   useEffect(() => {
     if (!resumeContinuation || !sessions.some(({ id }) => id === resumeContinuation.sessionId)) {
       return;
     }
-    const target = sessions.find(({ id }) => id === resumeContinuation.sessionId);
+    const target = indexedSessions.find(({ id }) => id === resumeContinuation.sessionId);
     if (!target) return;
+    const visibility = resolveLinkedSessionVisibility(
+      target,
+      workspace.remote,
+      managedCatalog.ready,
+      managedCatalog.error,
+    );
+    if (visibility === "pending") return;
+    if (visibility === "hidden") {
+      setHiddenSessionNotice(true);
+      setShowDetail(false);
+      onResumeConsumed?.();
+      return;
+    }
+    setHiddenSessionNotice(false);
     revealSession(target);
     setFilter("all");
     setSelectedId(resumeContinuation.sessionId);
@@ -322,7 +391,16 @@ export function WorkspaceSessionsPage({
     setShowDetail(true);
     setShowHandoff(true);
     onResumeConsumed?.();
-  }, [onResumeConsumed, resumeContinuation, revealSession, sessions]);
+  }, [
+    onResumeConsumed,
+    resumeContinuation,
+    revealSession,
+    sessions,
+    indexedSessions,
+    managedCatalog.ready,
+    managedCatalog.error,
+    workspace.remote,
+  ]);
 
   // 切换会话时清掉列表错误，与之前"换会话即清空错误"的行为一致。
   const [errorSessionId, setErrorSessionId] = useState(selected?.id);
@@ -412,6 +490,11 @@ export function WorkspaceSessionsPage({
 
   return (
     <>
+      {hiddenSessionNotice && (
+        <p role="status" className="mb-3 text-sm text-muted-foreground">
+          {tr("sessions.hiddenRecord")}
+        </p>
+      )}
       <div className="grid h-[calc(100vh-150px)] max-h-[calc(100vh-150px)] min-h-0 grid-cols-[minmax(340px,380px)_minmax(0,1fr)] items-stretch gap-4 max-[760px]:relative max-[760px]:h-full max-[760px]:max-h-none max-[760px]:block">
         <Card
           className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:absolute max-[760px]:inset-0 max-[760px]:h-full max-[760px]:max-h-none ${showDetail ? "max-[760px]:hidden" : ""}`}
@@ -457,7 +540,8 @@ export function WorkspaceSessionsPage({
                         ["all", tr("conversations.allAgents")],
                         ...Object.entries(sessionAgentNames).filter(
                           ([value]) =>
-                            sessions.some((session) => session.agent === value) || agent === value,
+                            visibleSessions.some((session) => session.agent === value) ||
+                            agent === value,
                         ),
                       ].map(([value, label]) => (
                         <DropdownMenuItem
@@ -476,7 +560,7 @@ export function WorkspaceSessionsPage({
                 </DropdownMenu>
                 <DropdownMenu>
                   <DropdownMenuTrigger
-                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${filter !== "current" || showAuxiliary ? "bg-accent text-accent-foreground" : ""}`}
+                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${filter !== "current" ? "bg-accent text-accent-foreground" : ""}`}
                     aria-label={tr("conversations.filterLabel")}
                     title={tr(`conversations.filter.${filter}`)}
                   >
@@ -505,12 +589,6 @@ export function WorkspaceSessionsPage({
                           </DropdownMenuItem>
                         ),
                       )}
-                      <DropdownMenuCheckboxItem
-                        checked={showAuxiliary}
-                        onCheckedChange={(checked) => setShowAuxiliary(checked === true)}
-                      >
-                        {tr("conversations.showAuxiliary")}
-                      </DropdownMenuCheckboxItem>
                     </DropdownMenuGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -581,6 +659,7 @@ export function WorkspaceSessionsPage({
                   title={sourceLabel || undefined}
                   className={`group mb-1 grid min-h-[82px] w-full grid-cols-[36px_minmax(0,1fr)_16px] items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors duration-200 ${selected?.id === session.id ? "border-primary/20 bg-accent-soft ring-1 ring-primary/5" : "border-transparent hover:border-border/70 hover:bg-muted/60"}`}
                   onClick={() => {
+                    setHiddenSessionNotice(false);
                     setSelectedId(session.id);
                     setShowDetail(true);
                   }}
@@ -771,11 +850,11 @@ export function WorkspaceSessionsPage({
               <NativeImportRecoveryPanel
                 workspaceId={workspace.id}
                 workspace={workspace}
-                readableSourceIds={sessions
+                readableSourceIds={visibleSessions
                   .filter((session) => session.availability === "readable")
                   .map((session) => session.id)}
                 onReview={(operation) => {
-                  const source = sessions.find(
+                  const source = visibleSessions.find(
                     (session) =>
                       session.id === operation.source_session_id &&
                       session.availability === "readable",

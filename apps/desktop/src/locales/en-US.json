@@ -1289,7 +1289,7 @@
   "conversations.filter.archived": "Archived",
   "conversations.filter.metadata": "Metadata only",
   "conversations.filter.all": "All",
-  "conversations.showAuxiliary": "Show auxiliary sessions",
+  "sessions.hiddenRecord": "This record belongs to a subagent or execution process and is not a regular conversation. Returned to the conversation directory.",
   "conversations.auxiliary": "Auxiliary",
   "conversations.forked": "Forked session",
   "conversations.sourceDetail": "Source: {{source}} · {{date}}",

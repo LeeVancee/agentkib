@@ -1289,7 +1289,7 @@
   "conversations.filter.archived": "封存",
   "conversations.filter.metadata": "僅中繼資料",
   "conversations.filter.all": "全部",
-  "conversations.showAuxiliary": "顯示輔助會話",
+  "sessions.hiddenRecord": "此記錄屬於子代理或執行過程，不屬於一般會話，已返回會話目錄。",
   "conversations.auxiliary": "輔助會話",
   "conversations.forked": "分叉會話",
   "conversations.sourceDetail": "來源：{{source}} · {{date}}",

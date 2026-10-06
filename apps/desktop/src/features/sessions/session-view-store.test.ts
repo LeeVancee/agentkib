@@ -32,35 +32,25 @@ describe("session view source visibility", () => {
       agent: "all",
       host: "all",
       filter: "current",
-      showAuxiliary: false,
       collapsed: { workspace: true },
       scrollTop: 0,
     });
-  });
-
-  it("shares the opt-in toggle across navigation and resets it with filters", () => {
-    useSessionViewStore.getState().setShowAuxiliary(true);
-    expect(useSessionViewStore.getState().showAuxiliary).toBe(true);
-    useSessionViewStore.getState().resetFilters();
-    expect(useSessionViewStore.getState().showAuxiliary).toBe(false);
   });
 
   it("keeps newly discovered sessions ahead of manually ordered sessions", () => {
     expect(normalizeSessionDirectoryOrder(["saved"], ["new", "saved"])).toEqual(["new", "saved"]);
   });
 
-  it("reveals an explicitly targeted auxiliary session and expands its workspace", () => {
-    useSessionViewStore.getState().revealSession(auxiliary);
-    expect(useSessionViewStore.getState()).toMatchObject({
-      showAuxiliary: true,
-      collapsed: { workspace: false },
-    });
+  it.each(["auxiliary", "execution"] as const)("does not reveal a targeted %s record", (origin) => {
+    useSessionViewStore.setState({ agent: "claude-code", filter: "archived" });
+    const before = useSessionViewStore.getState();
+    useSessionViewStore.getState().revealSession({ ...auxiliary, origin });
+    expect(useSessionViewStore.getState()).toBe(before);
   });
 
-  it("does not infer auxiliary origin from sidechain", () => {
-    useSessionViewStore.getState().setShowAuxiliary(false);
+  it("retains ordinary sidechain conversations and expands their workspace", () => {
     useSessionViewStore.getState().revealSession({ ...source, sidechain: true });
-    expect(useSessionViewStore.getState().showAuxiliary).toBe(false);
+    expect(useSessionViewStore.getState().collapsed).toEqual({ workspace: false });
   });
 
   it("restores saved order and removes stale or duplicate IDs on its next write", async () => {

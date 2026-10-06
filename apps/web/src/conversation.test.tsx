@@ -20,6 +20,7 @@ import {
 import { EmbeddedConversation } from "./conversation";
 import { useSessionController } from "./features/sessions/use-session-controller";
 import { pendingScope, readPending, rememberPending } from "./features/sessions/pending-controls";
+import { catalogCopy } from "./features/catalog/catalog-copy";
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -173,6 +174,157 @@ function emitSession(stream: SessionStreamHandlers, seq: number, type: string, p
     ),
   );
 }
+
+describe("ordinary conversation directory", () => {
+  it.each(["auxiliary", "execution"] as const)(
+    "rejects a saved %s selection before reading or observing it",
+    async (origin) => {
+      const { client, sessions } = fixture();
+      sessions[0].origin = origin;
+      const events = vi.spyOn(client, "events");
+      const live = vi.spyOn(client, "live");
+      const stream = vi.spyOn(client, "stream");
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.excludedSessionIds.has("first")).toBe(true));
+
+      await act(async () => view.result.current.choose("first"));
+
+      expect(view.result.current.sessions.map((session) => session.id)).toEqual(["second"]);
+      expect(view.result.current.selected).toBe("");
+      expect(view.result.current.catalogNotice).toBe(true);
+      expect(events).not.toHaveBeenCalled();
+      expect(live).not.toHaveBeenCalled();
+      expect(stream.mock.calls.every(([id]) => id === "")).toBe(true);
+      expect(view.result.current.canSend).toBe(false);
+    },
+  );
+
+  it.each(["refresh", "notification"] as const)(
+    "detaches a newly excluded selection during %s without stopping it or losing unknown receipts",
+    async (update) => {
+      const { client, sessions, streams, bridge } = fixture();
+      const close = vi.fn();
+      const originalStream = bridge.stream;
+      bridge.stream = (id, handlers) => {
+        const dispose = originalStream(id, handlers);
+        return () => {
+          if (id === "first") close();
+          dispose();
+        };
+      };
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+      await act(async () => view.result.current.choose("first"));
+      await waitFor(() => expect(streams.has("first")).toBe(true));
+      const staleChoose = view.result.current.choose;
+      const staleControl = view.result.current.control;
+      const pending = { requestId: crypto.randomUUID(), sessionId: "first", kind: "send" as const };
+      const scope = pendingScope(client.origin, "local");
+      rememberPending(scope, pending);
+      vi.spyOn(client, "receipt").mockResolvedValue({ found: false, requestId: pending.requestId });
+      const events = vi.spyOn(client, "events");
+      const live = vi.spyOn(client, "live");
+      const request = vi.spyOn(client, "request");
+      sessions[0].origin = "execution";
+
+      if (update === "refresh") await act(async () => view.result.current.refresh());
+      else act(() => streams.get("")!.event("catalog-invalidated", "{}"));
+      await waitFor(() => expect(view.result.current.selected).toBe(""));
+      await act(async () => {
+        await staleChoose("first");
+        await staleControl("send");
+      });
+
+      expect(view.result.current.page).toBeUndefined();
+      expect(view.result.current.live).toBeUndefined();
+      expect(view.result.current.catalogNotice).toBe(true);
+      expect(view.result.current.canSend).toBe(false);
+      expect(close).toHaveBeenCalled();
+      expect(events).not.toHaveBeenCalled();
+      expect(live).not.toHaveBeenCalled();
+      expect(request.mock.calls.some(([path]) => /^(send|stop|codex\/release)/.test(path))).toBe(
+        false,
+      );
+      expect(readPending(scope)).toContainEqual(pending);
+    },
+  );
+
+  it.each(
+    (["refresh-first", "notification-first"] as const).flatMap((order) =>
+      (["auxiliary", "execution"] as const).flatMap((origin) =>
+        (["", "second"] as const).map((selected) => ({ order, origin, selected })),
+      ),
+    ),
+  )(
+    "does not restore an unselected $origin from an obsolete $order catalog (selection: '$selected')",
+    async ({ order, origin, selected }) => {
+      const { client, sessions, streams, bridge } = fixture();
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+      if (selected) {
+        await act(async () => view.result.current.choose(selected));
+        await waitFor(() => expect(view.result.current.controlReady).toBe(true));
+      }
+      await act(async () => {});
+      const staleChoose = view.result.current.choose;
+      const oldCatalog = {
+        indexEnabled: true,
+        sessions: sessions.map((session) => ({ ...session })),
+      };
+      const obsolete = deferred<Awaited<ReturnType<WebClient["catalog"]>>>();
+      const catalog = vi.spyOn(client, "catalog").mockReturnValueOnce(obsolete.promise);
+      const events = vi.spyOn(client, "events");
+      const live = vi.spyOn(client, "live");
+      const stream = vi.spyOn(bridge, "stream");
+      let refreshing!: Promise<void>;
+      act(() => {
+        if (order === "refresh-first") refreshing = view.result.current.refresh();
+        else streams.get("")!.event("catalog-invalidated", "{}");
+      });
+      await waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+      sessions[0].origin = origin;
+      act(() => {
+        if (order === "refresh-first") streams.get("")!.event("catalog-invalidated", "{}");
+        else refreshing = view.result.current.refresh();
+      });
+      await waitFor(() => expect(view.result.current.excludedSessionIds.has("first")).toBe(true));
+      await act(async () => {
+        obsolete.resolve(oldCatalog);
+        await refreshing;
+      });
+      expect(view.result.current.sessions.map((session) => session.id)).toEqual(["second"]);
+      expect(view.result.current.excludedSessionIds.has("first")).toBe(true);
+      expect(view.result.current.selected).toBe(selected);
+      if (selected) expect(view.result.current.controlReady).toBe(true);
+      await act(async () => staleChoose("first"));
+      expect(view.result.current.selected).toBe("");
+      expect(events.mock.calls.some(([id]) => id === "first")).toBe(false);
+      expect(live.mock.calls.some(([id]) => id === "first")).toBe(false);
+      expect(stream.mock.calls.some(([id]) => id === "first")).toBe(false);
+    },
+  );
+
+  it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
+    "returns an embedded hidden deep link to the directory with a %s explanation",
+    async (locale) => {
+      const { client, sessions } = fixture();
+      sessions[0].origin = "execution";
+      const events = vi.spyOn(client, "events");
+      const onSessionChange = vi.fn();
+      render(
+        <EmbeddedConversation
+          client={client}
+          locale={locale}
+          sessionId="first"
+          onSessionChange={onSessionChange}
+        />,
+      );
+      await waitFor(() => expect(onSessionChange).toHaveBeenCalledWith(undefined));
+      expect(screen.getByText(catalogCopy[locale].excludedSession)).toBeVisible();
+      expect(events).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("history pagination refresh compatibility", () => {
   const row = (index: number): ConversationEvent => ({
@@ -2312,6 +2464,7 @@ describe("shared embedded conversation", () => {
         />,
       );
       await screen.findByText("first history");
+      await waitFor(() => expect(streams.get("first")).toBeDefined());
       const stream = streams.get("first")!;
       const pendingLive: Awaited<ReturnType<WebClient["live"]>> = {
         sessionId: "first",

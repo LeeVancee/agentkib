@@ -1,4 +1,5 @@
 import type { CodexAppServerSession } from "./codex-app-server";
+import { createContextUsageGeneration, projectContextUsage } from "./context-usage";
 
 type JsonObject = Record<string, unknown>;
 type ManagedRecord = JsonObject & {
@@ -30,11 +31,28 @@ export class ManagedCodexState {
   #resolved = new Set<string>();
   #items = new Map<string, JsonObject>();
   #reason: string | null = null;
+  #runtimeRevision = 0;
+  #compactions = new Map<string, string>();
+  #finishedCompactions = new Set<string>();
+  #closedTurns = new Set<string>();
+  #lastTurn: string | null = null;
+  readonly #usageGeneration = createContextUsageGeneration();
+  #usageReport = 0;
+  #usageUpdatedAt: string | undefined;
+  #usageState: "ready" | "pending" | "stale" = "pending";
+  #usageBarrierTurn: string | null | undefined;
+  #compactionRecoveryTurn: string | null | undefined;
 
   constructor(record: ManagedRecord, initialRevision = 0) {
     this.#record = structuredClone(record);
     this.#revision =
       Number.isSafeInteger(initialRevision) && initialRevision >= 0 ? initialRevision : 0;
+    if (isObject(record.token_usage)) this.#usageState = "stale";
+    if (record.snapshot?.activity === "compacting") {
+      this.#usageBarrierTurn =
+        typeof record.snapshot.turnId === "string" ? record.snapshot.turnId : null;
+      this.#compactionRecoveryTurn = this.#usageBarrierTurn;
+    }
   }
 
   get revision(): number {
@@ -61,6 +79,10 @@ export class ManagedCodexState {
     return this.#reason;
   }
 
+  get activity(): "compacting" | null {
+    return this.#compactions.size > 0 ? "compacting" : null;
+  }
+
   hasResolvedRequest(turnId: string, requestId: unknown): boolean {
     return this.#resolved.has(`${turnId}:${requestKey(requestId)}`);
   }
@@ -77,9 +99,10 @@ export class ManagedCodexState {
       runtimeBootId,
       executionMode: "codex-managed",
       status: this.#status,
+      activity: this.activity,
       revision: this.#revision,
       turnId: this.#turn,
-      sendEnabled: controls && healthy && this.#status === "idle",
+      sendEnabled: controls && healthy && this.#status === "idle" && this.activity === null,
       stopEnabled:
         controls &&
         healthy &&
@@ -94,6 +117,22 @@ export class ManagedCodexState {
       streamText: this.#stream,
       settings: managedSettingsProjection(this.#record),
       tokenUsage: this.#record.token_usage ?? null,
+      usage: projectContextUsage(
+        {
+          available: true,
+          tokenUsage: this.#record.token_usage,
+          state: this.activity ? "pending" : this.#usageState,
+          reportGeneration: this.#usageGeneration,
+          reportId: this.#usageReport,
+          updatedAt: this.#usageUpdatedAt,
+          reason: this.activity
+            ? "session-compacting"
+            : this.#usageState === "stale"
+              ? "context-usage-unconfirmed"
+              : undefined,
+        },
+        this.#revision,
+      ),
       goal: this.#record.goal ?? null,
       reason: this.#reason,
     };
@@ -104,6 +143,7 @@ export class ManagedCodexState {
     if (!isObject(value)) throw new Error("invalid-codex-notification");
     const method = typeof value.method === "string" ? value.method : "";
     const params = isObject(value.params) ? value.params : {};
+    let runtimeChanged = false;
     if (method === "agentkib/disconnected") {
       if (this.#record.released !== true) {
         this.fail("codex-disconnected");
@@ -124,14 +164,28 @@ export class ManagedCodexState {
       }
       case "turn/started": {
         const turn = isObject(params.turn) ? params.turn : {};
+        if (typeof turn.id === "string" && this.#closedTurns.has(turn.id))
+          return { changed: false };
         this.#turn = requiredString(turn.id, "invalid-turn");
+        this.#lastTurn = this.#turn;
+        for (const [key, id] of this.#compactions)
+          if (id !== this.#turn) this.#compactions.delete(key);
+        runtimeChanged = true;
         this.#status = "running";
         this.#stream = "";
         this.#reason = null;
         break;
       }
       case "turn/completed": {
-        if (!isObject(params.turn) || params.turn.id !== this.#turn) return { changed: false };
+        if (!isObject(params.turn) || typeof params.turn.id !== "string") return { changed: false };
+        const id = params.turn.id;
+        if (id !== this.#turn && ![...this.#compactions.values()].includes(id))
+          return { changed: false };
+        this.#lastTurn = id;
+        this.#remember(this.#closedTurns, id);
+        for (const [key, turnId] of this.#compactions)
+          if (turnId === id) this.#compactions.delete(key);
+        runtimeChanged = true;
         this.#turn = null;
         this.#status = "idle";
         this.#approvals.clear();
@@ -149,6 +203,49 @@ export class ManagedCodexState {
       }
       case "item/started":
       case "item/completed": {
+        if (isObject(params.item) && params.item.type === "contextCompaction") {
+          if (
+            typeof params.turnId !== "string" ||
+            !params.turnId ||
+            this.#closedTurns.has(params.turnId) ||
+            (this.#turn !== null && params.turnId !== this.#turn)
+          )
+            return { changed: false };
+          const id = requiredString(params.item.id, "invalid-item");
+          const key = `${params.turnId}:${id}`;
+          if (
+            this.#compactionRecoveryTurn !== undefined &&
+            (this.#compactionRecoveryTurn === null ||
+              this.#compactionRecoveryTurn === params.turnId)
+          ) {
+            this.#compactionRecoveryTurn = undefined;
+            if (this.#reason === "compaction-state-unconfirmed") {
+              this.#reason = null;
+              this.#status = this.#turn === null ? "idle" : "running";
+            }
+          }
+          if (method === "item/started") {
+            if (this.#finishedCompactions.has(key) || this.#compactions.has(key))
+              return { changed: false };
+            if (this.#compactions.size >= MAX_ITEMS) throw new Error("too-many-items");
+            this.#compactions.set(key, params.turnId);
+            this.#usageBarrierTurn = params.turnId;
+            this.#usageState = "stale";
+          } else {
+            if (
+              !this.#compactions.has(key) &&
+              this.#lastTurn !== null &&
+              this.#lastTurn !== params.turnId
+            )
+              return { changed: false };
+            this.#compactions.delete(key);
+            this.#remember(this.#finishedCompactions, key);
+            this.#usageBarrierTurn = params.turnId;
+            this.#usageState = "stale";
+          }
+          runtimeChanged = true;
+          break;
+        }
         if (this.#turn === null || params.turnId !== this.#turn || !isObject(params.item))
           return { changed: false };
         const id = requiredString(params.item.id, "invalid-item");
@@ -177,6 +274,7 @@ export class ManagedCodexState {
         }
         this.#approvals.set(requestId, projectApproval(value.id, turnId, method, details));
         this.#status = "awaiting-approval";
+        runtimeChanged = true;
         break;
       }
       case "item/tool/requestUserInput": {
@@ -194,6 +292,7 @@ export class ManagedCodexState {
           questions: projection.questions,
         });
         this.#status = "waiting-input";
+        runtimeChanged = true;
         break;
       }
       case "serverRequest/resolved": {
@@ -206,6 +305,7 @@ export class ManagedCodexState {
         this.#questions.delete(requestId);
         if (this.#approvals.size === 0 && this.#questions.size === 0 && this.#turn)
           this.#status = "running";
+        runtimeChanged = true;
         break;
       }
       case "thread/status/changed":
@@ -213,14 +313,36 @@ export class ManagedCodexState {
           this.fail("codex-thread-error");
         else return { changed: false };
         break;
-      case "thread/settings/updated":
+      case "thread/settings/updated": {
         if (!isObject(params.threadSettings)) throw new Error("invalid-thread-settings");
+        const previousModel = currentManagedModel(this.#record);
+        const applyingSelection =
+          managedModelPending(this.#record) && params.threadSettings.model === this.#record.model;
         this.#record.native_settings = structuredClone(params.threadSettings);
+        if (currentManagedModel(this.#record) !== previousModel)
+          this.#invalidateUsage(applyingSelection);
         break;
-      case "thread/tokenUsage/updated":
+      }
+      case "thread/tokenUsage/updated": {
         if (!isObject(params.tokenUsage)) throw new Error("invalid-token-usage");
+        const turnId = typeof params.turnId === "string" ? params.turnId : null;
+        if (turnId !== null && this.#lastTurn !== null && turnId !== this.#lastTurn)
+          return { changed: false };
         this.#record.token_usage = structuredClone(params.tokenUsage);
+        this.#usageReport += 1;
+        this.#usageUpdatedAt = new Date().toISOString();
+        const associated = turnId !== null && turnId === this.#lastTurn;
+        if (
+          associated &&
+          this.activity === null &&
+          (this.#usageBarrierTurn === undefined || turnId !== this.#usageBarrierTurn) &&
+          !managedModelPending(this.#record)
+        ) {
+          this.#usageBarrierTurn = undefined;
+          this.#usageState = "ready";
+        } else this.#usageState = "stale";
         break;
+      }
       case "thread/goal/updated":
         if (!isObject(params.goal)) throw new Error("invalid-goal");
         this.#record.goal = structuredClone(params.goal);
@@ -234,31 +356,29 @@ export class ManagedCodexState {
         if ("id" in value) {
           this.#status = "waiting-input";
           this.#reason = "unsupported-codex-request";
+          runtimeChanged = true;
         } else {
           return { changed: false };
         }
     }
-    return this.#changed();
+    return this.#changed(runtimeChanged);
   }
 
   hydrate(
     thread: unknown,
     incrementRevision = true,
+    readRevision?: number,
   ): { snapshot: JsonObject; events: JsonObject[] } {
     if (!isObject(thread) || typeof thread.id !== "string") throw new Error("invalid-thread");
     if (this.nativeId && this.nativeId !== thread.id) throw new Error("thread-identity-mismatch");
-    this.#record.native_id = thread.id;
-    this.#turn = null;
-    this.#status = "idle";
-    this.#reason = null;
-    this.#approvals.clear();
-    this.#questions.clear();
     const events: JsonObject[] = [];
+    let active: string | null = null;
+    let latest: JsonObject | undefined;
     for (const turn of Array.isArray(thread.turns) ? thread.turns : []) {
       if (!isObject(turn)) continue;
+      latest = turn;
       if (turn.status === "inProgress") {
-        this.#turn = typeof turn.id === "string" ? turn.id : null;
-        this.#status = "running";
+        active = typeof turn.id === "string" ? turn.id : null;
       }
       for (const item of Array.isArray(turn.items) ? turn.items : []) {
         if (!isObject(item) || typeof turn.id !== "string") continue;
@@ -266,9 +386,50 @@ export class ManagedCodexState {
         if (event) events.push(event);
       }
     }
+    // History reads can finish after newer lifecycle notifications were applied.
+    // Those events, including compaction, own the current live state.
+    if (readRevision !== undefined && this.#runtimeRevision > readRevision)
+      return { snapshot: this.snapshot("", false), events };
+    for (const turn of Array.isArray(thread.turns) ? thread.turns : []) {
+      if (
+        isObject(turn) &&
+        typeof turn.id === "string" &&
+        ["completed", "failed", "interrupted"].includes(String(turn.status))
+      )
+        this.#remember(this.#closedTurns, turn.id);
+    }
+    this.#record.native_id = thread.id;
+    this.#turn = active;
+    this.#lastTurn = active ?? (typeof latest?.id === "string" ? latest.id : this.#lastTurn);
+    this.#status = active === null ? "idle" : "running";
+    this.#reason = null;
+    this.#approvals.clear();
+    this.#questions.clear();
+    this.#items.clear();
+    if (this.#compactionRecoveryTurn !== undefined) {
+      if (
+        active !== null &&
+        (this.#compactionRecoveryTurn === null || active === this.#compactionRecoveryTurn)
+      ) {
+        this.#status = "outcome-unknown";
+        this.#reason = "compaction-state-unconfirmed";
+      } else this.#compactionRecoveryTurn = undefined;
+    }
+    if (readRevision !== undefined || this.#compactions.size === 0) {
+      for (const [key, id] of this.#compactions) if (id !== active) this.#compactions.delete(key);
+    }
+    if (
+      this.#usageReport === 0 &&
+      latest &&
+      Array.isArray(latest.items) &&
+      latest.items.some((item) => isObject(item) && item.type === "contextCompaction")
+    ) {
+      this.#usageBarrierTurn = typeof latest.id === "string" ? latest.id : null;
+      this.#usageState = "stale";
+    }
     if (isObject(thread.status) && thread.status.type === "active" && this.#turn === null)
       this.fail("unconfirmed-active-turn");
-    if (incrementRevision) this.#revision += 1;
+    if (incrementRevision) this.#runtimeRevision = ++this.#revision;
     return { snapshot: this.snapshot("", false), events };
   }
 
@@ -276,7 +437,9 @@ export class ManagedCodexState {
     this.#status = "outcome-unknown";
     this.#reason = reason;
     this.#record.native_settings = null;
-    this.#revision += 1;
+    this.#compactions.clear();
+    this.#usageState = "stale";
+    this.#runtimeRevision = ++this.#revision;
   }
 
   restoreReconciledTurn(): boolean {
@@ -288,17 +451,23 @@ export class ManagedCodexState {
         : this.#approvals.size > 0
           ? "awaiting-approval"
           : "running";
-    this.#revision += 1;
+    this.#runtimeRevision = ++this.#revision;
     return true;
   }
 
   acceptStartedTurn(turnId: string, expectedRevision: number): void {
-    if (this.#revision !== expectedRevision || this.#turn !== null || this.#status !== "idle")
+    if (
+      this.#revision !== expectedRevision ||
+      this.#turn !== null ||
+      this.#status !== "idle" ||
+      this.activity !== null
+    )
       throw new Error("stale-or-disabled-control");
     this.#turn = turnId;
+    this.#lastTurn = turnId;
     this.#status = "running";
     this.#reason = null;
-    this.#revision += 1;
+    this.#runtimeRevision = ++this.#revision;
   }
 
   commitManagedMutation(
@@ -310,13 +479,29 @@ export class ManagedCodexState {
     >,
     status?: string,
   ): void {
+    const previousModel = this.#record.model ?? null;
     Object.assign(this.#record, update);
+    if (Object.hasOwn(update, "model") && (this.#record.model ?? null) !== previousModel)
+      this.#invalidateUsage();
     if (status) this.#status = status;
     this.#revision += 1;
+    if (status) this.#runtimeRevision = this.#revision;
   }
 
-  #changed(): { changed: true } {
+  #invalidateUsage(preserveBarrier = false): void {
+    this.#usageState = "stale";
+    if (!preserveBarrier || this.#usageBarrierTurn === undefined)
+      this.#usageBarrierTurn = this.#lastTurn;
+  }
+
+  #remember(set: Set<string>, key: string): void {
+    if (set.size >= MAX_ITEMS) set.delete(set.values().next().value!);
+    set.add(key);
+  }
+
+  #changed(runtimeChanged = false): { changed: true } {
     this.#revision += 1;
+    if (runtimeChanged) this.#runtimeRevision = this.#revision;
     return { changed: true };
   }
 }
@@ -374,6 +559,17 @@ export class ManagedCodexEventBridge {
       }
     });
   }
+}
+
+function currentManagedModel(record: ManagedRecord): string | null {
+  const native = isObject(record.native_settings) ? record.native_settings : null;
+  return typeof native?.model === "string" ? native.model : null;
+}
+
+function managedModelPending(record: ManagedRecord): boolean {
+  const selected = record.model;
+  const current = currentManagedModel(record);
+  return typeof selected === "string" && current !== null && selected !== current;
 }
 
 function managedSettingsProjection(record: ManagedRecord): JsonObject {

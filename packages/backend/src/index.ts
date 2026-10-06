@@ -554,7 +554,11 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "live" || params.operation === "events") {
+      if (
+        params.operation === "live" ||
+        params.operation === "events" ||
+        params.operation === "usage"
+      ) {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
@@ -769,6 +773,10 @@ export class TypeScriptBackend {
         params,
       );
       return sanitizeHandoffExport(request.editedContent, request.format);
+    }
+    if (method === RUNTIME_METHODS.workspaceSessions) {
+      const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
+      return this.#sessionIndex!.read(workspaceId);
     }
     if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
       return this.#store.sessions.request(method, params);
@@ -1358,6 +1366,7 @@ export class TypeScriptBackend {
         (sessionId, type, payload, live) =>
           this.#sessionStream?.publish(sessionId, type, payload, live),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+        this.#sessionIndex,
       );
     }
     return await operation(this.#webRead);

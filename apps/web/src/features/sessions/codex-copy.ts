@@ -383,6 +383,10 @@ export const codexCopy: Record<Locale, Copy> = {
 
 const reasons: Record<Locale, Record<string, string>> = {
   "zh-CN": {
+    "codex-protocol-incompatible": "当前 Codex 原生协议与会话快照不兼容，请更新客户端后重试。",
+    "codex-connection-failed": "暂时无法连接 Codex 原生客户端，请核对客户端状态后重试。",
+    "codex-owner-changed": "Codex 原生执行归属已变化，正在重新核对会话。",
+    "session-compacting": "上下文正在压缩，请等待上下文压缩完成后继续。",
     "settings-not-applied": "设置尚未由 Codex 原生确认，请先发送一轮应用设置，再开始或恢复目标。",
     "collaboration-modes-unavailable": "主机尚未提供已验证的原生协作模式目录。",
     "session-busy": "此操作需要会话空闲，请等待当前轮次结束。",
@@ -403,6 +407,10 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此浏览器尚未获得对应权限，请在桌面授权。",
   },
   "zh-TW": {
+    "codex-protocol-incompatible": "目前 Codex 原生協定與對話快照不相容，請更新客戶端後重試。",
+    "codex-connection-failed": "暫時無法連線至 Codex 原生客戶端，請核對客戶端狀態後重試。",
+    "codex-owner-changed": "Codex 原生執行歸屬已變更，正在重新核對對話。",
+    "session-compacting": "上下文正在壓縮，請等待上下文壓縮完成後繼續。",
     "settings-not-applied": "設定尚未由 Codex 原生確認，請先傳送一回合套用設定，再開始或恢復目標。",
     "collaboration-modes-unavailable": "主機尚未提供已驗證的原生協作模式目錄。",
     "session-busy": "此操作需要對話閒置，請等待目前輪次結束。",
@@ -423,6 +431,14 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "此瀏覽器尚未取得對應權限，請在桌面授權。",
   },
   "en-US": {
+    "codex-protocol-incompatible":
+      "The Codex native protocol or conversation snapshot is incompatible. Update the client and retry.",
+    "codex-connection-failed":
+      "The Codex native client could not be reached. Check its state and retry.",
+    "codex-owner-changed":
+      "The native Codex owner changed. The conversation needs to be checked again.",
+    "session-compacting":
+      "Context is compacting. Wait for context compaction to finish before continuing.",
     "settings-not-applied":
       "Codex has not confirmed these settings. Send a turn to apply them before starting or resuming the goal.",
     "collaboration-modes-unavailable":
@@ -452,6 +468,12 @@ const reasons: Record<Locale, Record<string, string>> = {
     permission_denied: "This browser needs the corresponding desktop permission.",
   },
   "ja-JP": {
+    "codex-protocol-incompatible":
+      "Codex のネイティブプロトコルまたは会話スナップショットに互換性がありません。更新後に再試行してください。",
+    "codex-connection-failed":
+      "Codex のネイティブクライアントに接続できません。状態を確認して再試行してください。",
+    "codex-owner-changed": "Codex の実行所有者が変わりました。会話の状態を再確認しています。",
+    "session-compacting": "コンテキストを圧縮中です。圧縮が完了するまでお待ちください。",
     "settings-not-applied":
       "設定は Codex で未確認です。ターンを送信して反映した後、目標を開始または再開してください。",
     "collaboration-modes-unavailable":

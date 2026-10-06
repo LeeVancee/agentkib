@@ -33,6 +33,13 @@ export class SessionIndex {
     this.store.clear(workspaceId ?? null);
     return null;
   }
+  read(workspaceId: string) {
+    // A directory read only rescans the pending Codex classification, leaving
+    // other providers and the normal refresh schedule unchanged.
+    return this.store.codexClassificationPending(workspaceId)
+      ? this.#queue(workspaceId, false, true)
+      : Promise.resolve(this.store.list(workspaceId));
+  }
   refresh(value: unknown) {
     const { workspaceId, force } = parameters(
       z.object({
@@ -41,10 +48,13 @@ export class SessionIndex {
       }),
       value,
     );
+    return this.#queue(workspaceId, force, false);
+  }
+  #queue(workspaceId: string, force: boolean, codexOnly: boolean) {
     const epoch = this.#epoch;
     const previous = this.#refreshes.get(workspaceId);
     const refresh = (previous ?? Promise.resolve()).then(() =>
-      this.#scan(workspaceId, force || previous !== undefined, epoch),
+      this.#scan(workspaceId, force || previous !== undefined, epoch, codexOnly),
     );
     const completed = refresh.then(
       () => undefined,
@@ -56,11 +66,13 @@ export class SessionIndex {
     });
     return refresh;
   }
-  async #scan(workspaceId: string, force: boolean, epoch: bigint) {
+  async #scan(workspaceId: string, force: boolean, epoch: bigint, codexOnly: boolean) {
     if (this.#closed || epoch !== this.#epoch || !this.enabled()) return [];
     const collection = sessionCollection(workspaceId);
-    const agents = collection ? (["codex"] as const) : SESSION_AGENTS;
-    if (!force) {
+    const pendingClassification = this.store.codexClassificationPending(workspaceId);
+    if (codexOnly && !pendingClassification) return this.store.list(workspaceId);
+    const agents = collection || codexOnly ? (["codex"] as const) : SESSION_AGENTS;
+    if (!force && !pendingClassification) {
       const statuses = this.store.status(workspaceId);
       if (
         statuses.length === agents.length &&

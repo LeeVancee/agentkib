@@ -94,7 +94,7 @@ If the stable Antigravity interfaces cannot create a target-native conversation 
 
 ## Implementation status · 2026-09-20
 
-This implementation pins its automated contract tests to ACP v1 and the Google-distributed `antigravity-acp` 1.1.1 manifest. The inspected stable CLI was 1.2.7. Read-only history negotiates capabilities at runtime and refuses unknown protocol versions or missing `session/list`, `session/load`, and `session/resume` support. Mutating control additionally requires the exact `antigravity-acp` / `agy_acp_server_1.1.1` server identity; unknown builds remain read-only.
+The original acceptance baseline used ACP v1 and the Google-distributed `antigravity-acp` 1.1.1 manifest; the inspected stable CLI was 1.2.7. Current control accepts server versions at least `agy_acp_server_1.1.1`, with the exact `antigravity-acp` name and complete numeric version prefix. Read-only history and control still negotiate ACP v1 capabilities and validate the indexed session and native methods. Passing the minimum version check does not constitute real-environment acceptance of newer builds. Optional compaction v1 remains a Preview capability; servers that do not emit it retain ordinary execution protections without separate compaction detection.
 
 | Area | Current evidence | Status |
 | --- | --- | --- |

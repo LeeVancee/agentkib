@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AgentKind, ConversationSessionSummary } from "@/core/types";
+import { isSessionVisible } from "./session-catalog";
 
 export type SessionRecordFilter = "current" | "archived" | "metadata" | "all";
 
@@ -74,7 +75,6 @@ export const useSessionViewStore = create<{
   agent: AgentKind | "all";
   host: string;
   filter: SessionRecordFilter;
-  showAuxiliary: boolean;
   collapsed: Record<string, boolean>;
   workspaceOrder: string[];
   sessionOrder: Record<string, string[]>;
@@ -85,7 +85,6 @@ export const useSessionViewStore = create<{
   setAgent: (agent: AgentKind | "all") => void;
   setHost: (host: string) => void;
   setFilter: (filter: SessionRecordFilter) => void;
-  setShowAuxiliary: (showAuxiliary: boolean) => void;
   toggleWorkspace: (id: string) => void;
   setWorkspaceOrder: (workspaceOrder: string[]) => void;
   setSessionOrder: (workspaceId: string, sessionOrder: string[]) => void;
@@ -95,20 +94,19 @@ export const useSessionViewStore = create<{
   agent: "all",
   host: "all",
   filter: "current",
-  showAuxiliary: false,
   collapsed: {},
   ...initialDirectoryOrder,
   scrollTop: 0,
   creatingConversation: false,
   setCreatingConversation: (creatingConversation) => set({ creatingConversation }),
-  revealSession: (session) =>
+  revealSession: (session) => {
+    if (!isSessionVisible(session)) return;
     set((state) => ({
       host:
         state.host === "all" || state.host === (session.remote?.host_id ?? "local")
           ? state.host
           : "all",
       agent: state.agent === "all" || state.agent === session.agent ? state.agent : "all",
-      showAuxiliary: state.showAuxiliary || session.origin === "auxiliary",
       filter:
         (state.filter === "current" && (session.archived || session.availability !== "readable")) ||
         (state.filter === "archived" && !session.archived) ||
@@ -116,11 +114,11 @@ export const useSessionViewStore = create<{
           ? "all"
           : state.filter,
       collapsed: { ...state.collapsed, [session.workspace_id]: false },
-    })),
+    }));
+  },
   setAgent: (agent) => set({ agent }),
   setHost: (host) => set({ host }),
   setFilter: (filter) => set({ filter }),
-  setShowAuxiliary: (showAuxiliary) => set({ showAuxiliary }),
   toggleWorkspace: (id) =>
     set((state) => ({ collapsed: { ...state.collapsed, [id]: !state.collapsed[id] } })),
   setWorkspaceOrder: (workspaceOrder) =>
@@ -135,5 +133,5 @@ export const useSessionViewStore = create<{
       return { sessionOrder };
     }),
   setScrollTop: (scrollTop) => set({ scrollTop }),
-  resetFilters: () => set({ agent: "all", filter: "current", host: "all", showAuxiliary: false }),
+  resetFilters: () => set({ agent: "all", filter: "current", host: "all" }),
 }));

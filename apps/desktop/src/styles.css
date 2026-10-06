@@ -633,6 +633,13 @@ button {
   -ms-overflow-style: none;
 }
 
+.content:has(> .session-hub-page) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
 .page-scroll-container::-webkit-scrollbar {
   display: none;
   width: 0;

@@ -251,4 +251,7 @@ function HomeRoute() {
   );
 }
 
-export const Route = createFileRoute("/(main)/")({ component: HomeRoute });
+export const Route = createFileRoute("/(main)/")({
+  staticData: { appRoute: { kind: "global", page: "home" } },
+  component: HomeRoute,
+});

@@ -31,13 +31,15 @@ const EMPTY_WORKSPACES: WorkspaceSummary[] = [];
 
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
-export function useAppNavigation() {
+export function useAppNavigation(activeRoute?: ParsedRoute) {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const location = useLocation();
   const search = useSearch({ strict: false }) as AppSearch;
-  const route = parseRoute(location.pathname);
+  // Route layouts pass the active identity from TanStack matches. The fallback
+  // keeps the hook usable in isolated tests and non-route utility surfaces.
+  const route = activeRoute ?? parseRoute(location.pathname);
   const workspaceRouteId = route.kind === "workspace" ? route.workspaceId : undefined;
   const workspaceRoutePage = route.kind === "workspace" ? route.page : undefined;
   const routeGlobalPage = route.kind === "global" ? route.page : "home";
@@ -86,7 +88,7 @@ export function useAppNavigation() {
     new Map<GlobalPage | "settings", { route: ParsedRoute; search: AppSearch }>(),
   );
   useLayoutEffect(() => {
-    const currentRoute = parseRoute(location.pathname);
+    const currentRoute = route;
     const key =
       currentRoute.kind === "workspace"
         ? "workspaces"
@@ -94,7 +96,7 @@ export function useAppNavigation() {
           ? "settings"
           : currentRoute.page;
     navigationLocations.current.set(key, { route: currentRoute, search: { ...search } });
-  }, [location.href, location.pathname, search]);
+  }, [location.href, location.pathname, search, route]);
 
   const updateSearch = useCallback(
     (patch: Partial<AppSearch>) => {

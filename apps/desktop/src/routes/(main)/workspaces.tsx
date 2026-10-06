@@ -735,4 +735,7 @@ function relativeTime(value: string) {
   return formatRelativeTime(value);
 }
 
-export const Route = createFileRoute("/(main)/workspaces")({ component: WorkspacesRoute });
+export const Route = createFileRoute("/(main)/workspaces")({
+  staticData: { appRoute: { kind: "global", page: "workspaces" } },
+  component: WorkspacesRoute,
+});

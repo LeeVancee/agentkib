@@ -1154,4 +1154,7 @@ function CatalogEmpty({ title, text }: { title: string; text: string }) {
   );
 }
 
-export const Route = createFileRoute("/(main)/catalog")({ component: CatalogRoute });
+export const Route = createFileRoute("/(main)/catalog")({
+  staticData: { appRoute: { kind: "global", page: "catalog" } },
+  component: CatalogRoute,
+});

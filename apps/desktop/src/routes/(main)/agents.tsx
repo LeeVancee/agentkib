@@ -61,4 +61,7 @@ function AgentsRoute() {
   );
 }
 
-export const Route = createFileRoute("/(main)/agents")({ component: AgentsRoute });
+export const Route = createFileRoute("/(main)/agents")({
+  staticData: { appRoute: { kind: "global", page: "agents" } },
+  component: AgentsRoute,
+});

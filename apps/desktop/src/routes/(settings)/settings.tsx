@@ -153,4 +153,4 @@ function SettingsRoute() {
   );
 }
 
-export const Route = createFileRoute("/(main)/settings")({ component: SettingsRoute });
+export const Route = createFileRoute("/(settings)/settings")({ component: SettingsRoute });

@@ -373,5 +373,6 @@ function WorkspaceAssetsRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/assets")({
+  staticData: { appRoute: { kind: "workspace", page: "assets" } },
   component: WorkspaceAssetsRoute,
 });

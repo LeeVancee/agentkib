@@ -39,6 +39,17 @@ export type ParsedRoute =
   | { kind: "global"; page: GlobalPage }
   | { kind: "workspace"; workspaceId: string; page: Page };
 
+export type AppRouteMetadata =
+  | { kind: "settings" }
+  | { kind: "global"; page: GlobalPage }
+  | { kind: "workspace"; page: Page };
+
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    appRoute?: AppRouteMetadata;
+  }
+}
+
 export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
   const next = page === "git" ? current : { ...current, gitSubview: undefined };
   if (page === "sessions" || page === "changes") return next;

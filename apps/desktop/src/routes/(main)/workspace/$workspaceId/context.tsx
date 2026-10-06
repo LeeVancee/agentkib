@@ -285,5 +285,6 @@ function WorkspaceContextRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/context")({
+  staticData: { appRoute: { kind: "workspace", page: "context" } },
   component: WorkspaceContextRoute,
 });

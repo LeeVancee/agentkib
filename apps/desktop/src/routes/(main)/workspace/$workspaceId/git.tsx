@@ -27,5 +27,6 @@ function WorkspaceGitRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/git")({
+  staticData: { appRoute: { kind: "workspace", page: "git" } },
   component: WorkspaceGitRoute,
 });

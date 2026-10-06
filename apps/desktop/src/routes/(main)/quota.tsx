@@ -25,4 +25,7 @@ function QuotaRoute() {
   );
 }
 
-export const Route = createFileRoute("/(main)/quota")({ component: QuotaRoute });
+export const Route = createFileRoute("/(main)/quota")({
+  staticData: { appRoute: { kind: "global", page: "quota" } },
+  component: QuotaRoute,
+});

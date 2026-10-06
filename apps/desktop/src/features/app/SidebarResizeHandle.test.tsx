@@ -2,19 +2,40 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { initializeI18n } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
-import { AppShell } from "./AppShell";
-import { useSidebarWidthStore } from "./sidebar-width-store";
+import { SidebarResizeHandle } from "./SidebarResizeHandle";
+import { MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, useSidebarWidthStore } from "./sidebar-width-store";
 
 const { saveWidth } = vi.hoisted(() => ({ saveWidth: vi.fn() }));
 vi.mock("@/core/api", () => ({ api: { setSidebarWidthPreference: saveWidth } }));
-vi.mock("@tanstack/react-router", () => ({ useLocation: () => "/sessions" }));
-const shell = (settings = false) => (
-  <AppShell sidebar={<aside className="app-sidebar">Navigation</aside>} headerless={settings}>
-    Conversation
-  </AppShell>
-);
+function ResizeFixture({ settings = false, children }: { settings?: boolean; children: ReactNode }) {
+  const width = useSidebarWidthStore();
+  const storedCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const collapsed = !settings && storedCollapsed;
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const resize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  const maxWidth = Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, windowWidth - 640 - 52));
+  const visibleWidth = Math.min(width.width, maxWidth);
+  return (
+    <div
+      style={{ "--sidebar-expanded-width": `${visibleWidth}px` } as CSSProperties}
+      className={`app-shell${settings ? " app-shell-settings" : ""}${collapsed ? " app-shell-sidebar-collapsed" : ""}${width.dragging ? " app-shell-sidebar-resizing" : ""}`}
+    >
+      <aside className="app-sidebar">Navigation</aside>
+      {!collapsed && windowWidth >= 1024 && (
+        <SidebarResizeHandle width={visibleWidth} maxWidth={maxWidth} />
+      )}
+      {children}
+    </div>
+  );
+}
+const shell = (settings = false) => <ResizeFixture settings={settings}>Conversation</ResizeFixture>;
 const resizeWindow = (width: number) => {
   Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
   fireEvent(window, new Event("resize"));

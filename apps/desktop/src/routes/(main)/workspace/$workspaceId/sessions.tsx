@@ -101,5 +101,6 @@ function WorkspaceSessionsRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/sessions")({
+  staticData: { appRoute: { kind: "workspace", page: "sessions" } },
   component: WorkspaceSessionsRoute,
 });

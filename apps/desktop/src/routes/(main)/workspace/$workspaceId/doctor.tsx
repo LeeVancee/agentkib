@@ -94,5 +94,6 @@ function WorkspaceDoctorRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/doctor")({
+  staticData: { appRoute: { kind: "workspace", page: "doctor" } },
   component: WorkspaceDoctorRoute,
 });

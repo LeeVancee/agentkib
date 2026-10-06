@@ -202,5 +202,6 @@ function WorkspaceOverviewRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/")({
+  staticData: { appRoute: { kind: "workspace", page: "overview" } },
   component: WorkspaceOverviewRoute,
 });

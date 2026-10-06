@@ -10,14 +10,15 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as mainRouteRouteImport } from './routes/(main)/route'
+import { Route as settingsRouteRouteImport } from './routes/(settings)/route'
 import { Route as mainIndexRouteImport } from './routes/(main)/index'
 import { Route as mainAgentsRouteImport } from './routes/(main)/agents'
 import { Route as mainCatalogRouteImport } from './routes/(main)/catalog'
 import { Route as mainInsightsRouteImport } from './routes/(main)/insights'
 import { Route as mainQuotaRouteImport } from './routes/(main)/quota'
 import { Route as mainSessionsRouteImport } from './routes/(main)/sessions'
-import { Route as mainSettingsRouteImport } from './routes/(main)/settings'
 import { Route as mainWorkspacesRouteImport } from './routes/(main)/workspaces'
+import { Route as settingsSettingsRouteImport } from './routes/(settings)/settings'
 import { Route as mainWorkspaceWorkspaceIdRouteRouteImport } from './routes/(main)/workspace/$workspaceId/route'
 import { Route as mainWorkspaceWorkspaceIdIndexRouteImport } from './routes/(main)/workspace/$workspaceId/index'
 import { Route as mainWorkspaceWorkspaceIdAssetsRouteImport } from './routes/(main)/workspace/$workspaceId/assets'
@@ -29,6 +30,10 @@ import { Route as mainWorkspaceWorkspaceIdSessionsRouteImport } from './routes/(
 
 const mainRouteRoute = mainRouteRouteImport.update({
   id: '/(main)',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const settingsRouteRoute = settingsRouteRouteImport.update({
+  id: '/(settings)',
   getParentRoute: () => rootRouteImport,
 } as any)
 const mainIndexRoute = mainIndexRouteImport.update({
@@ -61,15 +66,15 @@ const mainSessionsRoute = mainSessionsRouteImport.update({
   path: '/sessions',
   getParentRoute: () => mainRouteRoute,
 } as any)
-const mainSettingsRoute = mainSettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => mainRouteRoute,
-} as any)
 const mainWorkspacesRoute = mainWorkspacesRouteImport.update({
   id: '/workspaces',
   path: '/workspaces',
   getParentRoute: () => mainRouteRoute,
+} as any)
+const settingsSettingsRoute = settingsSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => settingsRouteRoute,
 } as any)
 const mainWorkspaceWorkspaceIdRouteRoute =
   mainWorkspaceWorkspaceIdRouteRouteImport.update({
@@ -126,8 +131,8 @@ export interface FileRoutesByFullPath {
   '/insights': typeof mainInsightsRoute
   '/quota': typeof mainQuotaRoute
   '/sessions': typeof mainSessionsRoute
-  '/settings': typeof mainSettingsRoute
   '/workspaces': typeof mainWorkspacesRoute
+  '/settings': typeof settingsSettingsRoute
   '/': typeof mainIndexRoute
   '/workspace/$workspaceId': typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
   '/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
@@ -144,8 +149,8 @@ export interface FileRoutesByTo {
   '/insights': typeof mainInsightsRoute
   '/quota': typeof mainQuotaRoute
   '/sessions': typeof mainSessionsRoute
-  '/settings': typeof mainSettingsRoute
   '/workspaces': typeof mainWorkspacesRoute
+  '/settings': typeof settingsSettingsRoute
   '/': typeof mainIndexRoute
   '/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
   '/workspace/$workspaceId/changes': typeof mainWorkspaceWorkspaceIdChangesRoute
@@ -158,13 +163,14 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/(main)': typeof mainRouteRouteWithChildren
+  '/(settings)': typeof settingsRouteRouteWithChildren
   '/(main)/agents': typeof mainAgentsRoute
   '/(main)/catalog': typeof mainCatalogRoute
   '/(main)/insights': typeof mainInsightsRoute
   '/(main)/quota': typeof mainQuotaRoute
   '/(main)/sessions': typeof mainSessionsRoute
-  '/(main)/settings': typeof mainSettingsRoute
   '/(main)/workspaces': typeof mainWorkspacesRoute
+  '/(settings)/settings': typeof settingsSettingsRoute
   '/(main)/': typeof mainIndexRoute
   '/(main)/workspace/$workspaceId': typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
   '/(main)/workspace/$workspaceId/assets': typeof mainWorkspaceWorkspaceIdAssetsRoute
@@ -183,8 +189,8 @@ export interface FileRouteTypes {
     | '/insights'
     | '/quota'
     | '/sessions'
-    | '/settings'
     | '/workspaces'
+    | '/settings'
     | '/'
     | '/workspace/$workspaceId'
     | '/workspace/$workspaceId/assets'
@@ -201,8 +207,8 @@ export interface FileRouteTypes {
     | '/insights'
     | '/quota'
     | '/sessions'
-    | '/settings'
     | '/workspaces'
+    | '/settings'
     | '/'
     | '/workspace/$workspaceId/assets'
     | '/workspace/$workspaceId/changes'
@@ -214,13 +220,14 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/(main)'
+    | '/(settings)'
     | '/(main)/agents'
     | '/(main)/catalog'
     | '/(main)/insights'
     | '/(main)/quota'
     | '/(main)/sessions'
-    | '/(main)/settings'
     | '/(main)/workspaces'
+    | '/(settings)/settings'
     | '/(main)/'
     | '/(main)/workspace/$workspaceId'
     | '/(main)/workspace/$workspaceId/assets'
@@ -234,6 +241,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   mainRouteRoute: typeof mainRouteRouteWithChildren
+  settingsRouteRoute: typeof settingsRouteRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -243,6 +251,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: ''
       preLoaderRoute: typeof mainRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/(settings)': {
+      id: '/(settings)'
+      path: ''
+      fullPath: ''
+      preLoaderRoute: typeof settingsRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(main)/': {
@@ -287,19 +302,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof mainSessionsRouteImport
       parentRoute: typeof mainRouteRoute
     }
-    '/(main)/settings': {
-      id: '/(main)/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof mainSettingsRouteImport
-      parentRoute: typeof mainRouteRoute
-    }
     '/(main)/workspaces': {
       id: '/(main)/workspaces'
       path: '/workspaces'
       fullPath: '/workspaces'
       preLoaderRoute: typeof mainWorkspacesRouteImport
       parentRoute: typeof mainRouteRoute
+    }
+    '/(settings)/settings': {
+      id: '/(settings)/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof settingsSettingsRouteImport
+      parentRoute: typeof settingsRouteRoute
     }
     '/(main)/workspace/$workspaceId': {
       id: '/(main)/workspace/$workspaceId'
@@ -393,7 +408,6 @@ interface mainRouteRouteChildren {
   mainInsightsRoute: typeof mainInsightsRoute
   mainQuotaRoute: typeof mainQuotaRoute
   mainSessionsRoute: typeof mainSessionsRoute
-  mainSettingsRoute: typeof mainSettingsRoute
   mainWorkspacesRoute: typeof mainWorkspacesRoute
   mainIndexRoute: typeof mainIndexRoute
   mainWorkspaceWorkspaceIdRouteRoute: typeof mainWorkspaceWorkspaceIdRouteRouteWithChildren
@@ -405,7 +419,6 @@ const mainRouteRouteChildren: mainRouteRouteChildren = {
   mainInsightsRoute: mainInsightsRoute,
   mainQuotaRoute: mainQuotaRoute,
   mainSessionsRoute: mainSessionsRoute,
-  mainSettingsRoute: mainSettingsRoute,
   mainWorkspacesRoute: mainWorkspacesRoute,
   mainIndexRoute: mainIndexRoute,
   mainWorkspaceWorkspaceIdRouteRoute:
@@ -416,8 +429,21 @@ const mainRouteRouteWithChildren = mainRouteRoute._addFileChildren(
   mainRouteRouteChildren,
 )
 
+interface settingsRouteRouteChildren {
+  settingsSettingsRoute: typeof settingsSettingsRoute
+}
+
+const settingsRouteRouteChildren: settingsRouteRouteChildren = {
+  settingsSettingsRoute: settingsSettingsRoute,
+}
+
+const settingsRouteRouteWithChildren = settingsRouteRoute._addFileChildren(
+  settingsRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   mainRouteRoute: mainRouteRouteWithChildren,
+  settingsRouteRoute: settingsRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

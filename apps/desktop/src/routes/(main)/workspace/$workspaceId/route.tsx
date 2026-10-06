@@ -334,4 +334,7 @@ function WorkspacePageSkeleton({ page }: { page: Page }) {
   }
 }
 
-export const Route = createFileRoute("/(main)/workspace/$workspaceId")({ component: WorkspaceLayout });
+export const Route = createFileRoute("/(main)/workspace/$workspaceId")({
+  staticData: { appRoute: { kind: "workspace", page: "overview" } },
+  component: WorkspaceLayout,
+});

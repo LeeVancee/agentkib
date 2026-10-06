@@ -552,5 +552,6 @@ function WorkspaceChangesRoute() {
 }
 
 export const Route = createFileRoute("/(main)/workspace/$workspaceId/changes")({
+  staticData: { appRoute: { kind: "workspace", page: "changes" } },
   component: WorkspaceChangesRoute,
 });

@@ -1,4 +1,6 @@
 import { useI18n } from "@/core/useI18n";
+import { SESSION_COLLECTIONS, sessionCollection } from "@agentkib/runtime-protocol";
+import type { WorkspaceSummary } from "@/core/types";
 import {
   createContext,
   useCallback,
@@ -28,11 +30,27 @@ import "./sessions.css";
 const refreshControlledCatalog = () => refreshConversationCatalog().catch(() => undefined);
 
 function useHub(active: boolean) {
-  const { localizeMessage } = useI18n();
+  const { localizeMessage, tr } = useI18n();
   const workspaceQuery = useHomeWorkspaces();
-  const localWorkspaces = useMemo(() => workspaceQuery.data ?? [], [workspaceQuery.data]);
   const runtime = useAppStore((state) => state.runtime);
   const localEnabled = runtime?.session_index_enabled === true;
+  const localWorkspaces = useMemo(
+    (): WorkspaceSummary[] => [
+      ...(workspaceQuery.data ?? []),
+      ...(active && localEnabled
+        ? Object.entries(SESSION_COLLECTIONS).map(([kind, id]) => ({
+            id,
+            name: tr(kind === "projectless" ? "sessions.projectless" : "sessions.unclassified"),
+            path: "",
+            status: "healthy" as const,
+            asset_count: 0,
+            warning_count: 0,
+            sources: [],
+          }))
+        : []),
+    ],
+    [workspaceQuery.data, active, localEnabled, tr],
+  );
   const remote = useRemoteCatalogEntries();
   const enabled = active && (localEnabled || remote.hosts.length > 0);
   const controlled = hasDesktopConversation();
@@ -46,9 +64,25 @@ function useHub(active: boolean) {
     controlled && active && localEnabled && controlledCatalog.error !== undefined
       ? localizeMessage(controlledCatalog.error)
       : "";
-  // The controlled catalog already removes indexed aliases of managed tasks.
-  // Merging the raw index back in would expose a second, unreadable route.
-  const localSessions = controlled ? controlledCatalog.sessions : catalog.sessions;
+  const localSessions = useMemo(() => {
+    if (!controlled) return catalog.sessions;
+    const seen = new Set(controlledCatalog.sessions.map((session) => session.id));
+    // Managed aliases belong to the controlled catalog. Conversation-only
+    // Codex collections have no filesystem workspace and remain in the index.
+    return [
+      ...controlledCatalog.sessions,
+      ...catalog.sessions.filter((session) => {
+        if (
+          session.agent !== "codex" ||
+          !sessionCollection(session.workspace_id) ||
+          seen.has(session.id)
+        )
+          return false;
+        seen.add(session.id);
+        return true;
+      }),
+    ];
+  }, [controlled, controlledCatalog.sessions, catalog.sessions]);
   const workspaces = useMemo(
     () => [...localWorkspaces, ...remote.workspaces],
     [localWorkspaces, remote.workspaces],

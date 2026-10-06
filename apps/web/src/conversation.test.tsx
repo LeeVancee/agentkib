@@ -249,6 +249,61 @@ describe("ordinary conversation directory", () => {
     },
   );
 
+  it.each(
+    (["refresh-first", "notification-first"] as const).flatMap((order) =>
+      (["auxiliary", "execution"] as const).flatMap((origin) =>
+        (["", "second"] as const).map((selected) => ({ order, origin, selected })),
+      ),
+    ),
+  )(
+    "does not restore an unselected $origin from an obsolete $order catalog (selection: '$selected')",
+    async ({ order, origin, selected }) => {
+      const { client, sessions, streams, bridge } = fixture();
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+      if (selected) {
+        await act(async () => view.result.current.choose(selected));
+        await waitFor(() => expect(view.result.current.controlReady).toBe(true));
+      }
+      await act(async () => {});
+      const staleChoose = view.result.current.choose;
+      const oldCatalog = {
+        indexEnabled: true,
+        sessions: sessions.map((session) => ({ ...session })),
+      };
+      const obsolete = deferred<Awaited<ReturnType<WebClient["catalog"]>>>();
+      const catalog = vi.spyOn(client, "catalog").mockReturnValueOnce(obsolete.promise);
+      const events = vi.spyOn(client, "events");
+      const live = vi.spyOn(client, "live");
+      const stream = vi.spyOn(bridge, "stream");
+      let refreshing!: Promise<void>;
+      act(() => {
+        if (order === "refresh-first") refreshing = view.result.current.refresh();
+        else streams.get("")!.event("catalog-invalidated", "{}");
+      });
+      await waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+      sessions[0].origin = origin;
+      act(() => {
+        if (order === "refresh-first") streams.get("")!.event("catalog-invalidated", "{}");
+        else refreshing = view.result.current.refresh();
+      });
+      await waitFor(() => expect(view.result.current.excludedSessionIds.has("first")).toBe(true));
+      await act(async () => {
+        obsolete.resolve(oldCatalog);
+        await refreshing;
+      });
+      expect(view.result.current.sessions.map((session) => session.id)).toEqual(["second"]);
+      expect(view.result.current.excludedSessionIds.has("first")).toBe(true);
+      expect(view.result.current.selected).toBe(selected);
+      if (selected) expect(view.result.current.controlReady).toBe(true);
+      await act(async () => staleChoose("first"));
+      expect(view.result.current.selected).toBe("");
+      expect(events.mock.calls.some(([id]) => id === "first")).toBe(false);
+      expect(live.mock.calls.some(([id]) => id === "first")).toBe(false);
+      expect(stream.mock.calls.some(([id]) => id === "first")).toBe(false);
+    },
+  );
+
   it.each(["zh-CN", "zh-TW", "en-US", "ja-JP"] as const)(
     "returns an embedded hidden deep link to the directory with a %s explanation",
     async (locale) => {
@@ -2409,6 +2464,7 @@ describe("shared embedded conversation", () => {
         />,
       );
       await screen.findByText("first history");
+      await waitFor(() => expect(streams.get("first")).toBeDefined());
       const stream = streams.get("first")!;
       const pendingLive: Awaited<ReturnType<WebClient["live"]>> = {
         sessionId: "first",

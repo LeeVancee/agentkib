@@ -15,6 +15,7 @@ import {
   filterSessions as sharedFilterSessions,
   groupSessions as sharedGroupSessions,
 } from "@agentkib/session-catalog";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 
 const workspaces = [
   { id: "one", name: "Shared project" },
@@ -172,6 +173,29 @@ describe("session catalog", () => {
       metadata: 0,
     });
   });
+
+  it.each(Object.values(SESSION_COLLECTIONS))(
+    "applies ordinary directory filtering and statistics to %s",
+    (workspaceId) => {
+      const collection = { ...workspaces[0], id: workspaceId, name: "Collection", path: "" };
+      const ordinary = { ...sessions[0], workspace_id: workspaceId, origin: "unknown" as const };
+      const records = [
+        ordinary,
+        { ...ordinary, id: "execution", origin: "execution" as const },
+        { ...ordinary, id: "auxiliary", origin: "auxiliary" as const },
+      ];
+      expect(
+        filterSessions(records, [collection], { query: "", agent: "all", filter: "all" }),
+      ).toEqual([ordinary]);
+      expect(groupSessions(records, [collection])[0].sessions).toEqual([ordinary]);
+      expect(sessionCatalogStats(records)).toEqual({
+        total: 1,
+        readable: 1,
+        archived: 0,
+        metadata: 0,
+      });
+    },
+  );
 
   it("combines title and workspace name search with Agent filters, without conflating names", () => {
     expect(

@@ -25,7 +25,7 @@ logger.warnOnce = logger.warn;
 for (const name of ["bin", "codex", "claude", "runtime", "electron", "workspace"])
   await mkdir(path.join(scratch, name));
 const mock = path.join(scratch, "bin", "codex-mock.py");
-await copyFile(path.join(repository, "crates/agentkib-runtime/tests/fixtures/codex_mock.py"), mock);
+await copyFile(path.join(desktop, "scripts/fixtures/codex_mock.py"), mock);
 await writeFile(path.join(scratch, "codex", "allow-stream-benchmark"), "isolated fixture\n");
 await writeFile(
   path.join(scratch, "bin", "codex"),
@@ -62,12 +62,7 @@ function run(executable, args, options, log) {
   });
 }
 
-await run(
-  "cargo",
-  ["build", "-p", "agentkib-runtime", "--features", "dev-app"],
-  { cwd: repository },
-  "build-runtime.log",
-);
+await run("pnpm", ["--filter", "@agentkib/desktop", "backend:build"], { cwd: repository }, "build-backend.log");
 const external = ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)];
 for (const [entry, name] of [
   ["electron/fixtures/conversation-benchmark.ts", "main.cjs"],
@@ -110,13 +105,13 @@ const environment = {
   ...process.env,
   PATH: `${path.join(scratch, "bin")}${path.delimiter}${process.env.PATH ?? ""}`,
   AGENTKIB_CONVERSATION_BENCHMARK: scratch,
-  AGENTKIB_RUNTIME_PATH: path.join(repository, "target/debug/agentkib-runtime"),
+  AGENTKIB_RUNTIME_PATH: process.execPath,
+  AGENTKIB_RUNTIME_ARGS: path.join(desktop, "dist-electron/backend.cjs"),
   AGENTKIB_BENCHMARK_DATA_DIR: path.join(scratch, "runtime"),
   AGENTKIB_APP_FLAVOR: "ai.agentkib.dev",
   CODEX_HOME: path.join(scratch, "codex"),
   CLAUDE_CONFIG_DIR: path.join(scratch, "claude"),
 };
-delete environment.ELECTRON_RUN_AS_NODE;
 await run(
   electron,
   [path.join(scratch, "bundle/main.cjs")],

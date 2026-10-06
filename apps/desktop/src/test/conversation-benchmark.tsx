@@ -10,6 +10,9 @@ interface Sample {
   domMs: number;
   frameMs: number;
 }
+interface BenchmarkWindow extends Window {
+  conversationBenchmarkStage?: string;
+}
 declare global {
   interface Window {
     conversationBenchmarkResult: Promise<{
@@ -24,6 +27,10 @@ declare global {
 }
 
 async function benchmark() {
+  const setStage = (stage: string) => {
+    (window as BenchmarkWindow).conversationBenchmarkStage = stage;
+  };
+  setStage("initializing");
   const sessionId = new URL(location.href).searchParams.get("sessionId");
   const bridge = window.desktopConversation;
   if (!sessionId || !bridge) throw new Error("Missing benchmark session or production preload");
@@ -35,13 +42,17 @@ async function benchmark() {
     ...bridge,
     async subscribe(id, cursor) {
       const result = await bridge.subscribe(id, cursor);
-      if (id === sessionId) connected();
+      if (id === sessionId) {
+        setStage("subscribed");
+        connected();
+      }
       return result;
     },
   }));
   const client = new WebClient(undefined, { type: "same-origin" }, adapter);
   const samples = new Map<number, Sample>();
   const observed = new Set<number>();
+  let lastEvent = "none";
   let complete!: () => void;
   const allFrames = new Promise<void>((resolve) => {
     complete = resolve;
@@ -52,9 +63,23 @@ async function benchmark() {
   });
   let running = false;
   const stopObserving = bridge.onEvent((event) => {
-    if (event.sessionId !== sessionId || event.type !== "state") return;
-    if (event.payload.status === "running") running = true;
-    if (running && event.payload.status === "idle") turnCompleted();
+    if (event.sessionId !== sessionId) return;
+    const payload = event.payload as unknown as Record<string, unknown>;
+    const payloadItems = Array.isArray(payload.items) ? payload.items : [];
+    const observedItems = payloadItems.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      content: typeof item.content === "string" ? item.content.slice(0, 160) : null,
+    }));
+    lastEvent = `${event.type}:status=${String((payload.live as Record<string, unknown> | undefined)?.status)}:items=${JSON.stringify(observedItems)}`;
+    const status =
+      event.type === "snapshot"
+        ? (payload.live as Record<string, unknown> | undefined)?.status
+        : event.type === "state"
+          ? payload.status
+          : undefined;
+    if (status === "running") running = true;
+    if (running && status === "idle") turnCompleted();
   });
   const observer = new MutationObserver(() => {
     const text = document.querySelector('[data-event-id="benchmark-item"]')?.textContent ?? "";
@@ -90,6 +115,7 @@ async function benchmark() {
   );
   // No native output starts until the reader's actual IPC subscription exists.
   await subscribed;
+  setStage("reading-access");
   const access = await client.access();
   const live = await client.live(sessionId);
   if (!live.sendEnabled) throw new Error("Fixture session is not ready to send");
@@ -101,7 +127,19 @@ async function benchmark() {
     expectedRevision: live.revision,
   });
   if (!sent.accepted) throw new Error("Fixture send was not accepted");
-  await Promise.all([allFrames, finished]);
+  setStage("sent");
+  const timeoutError = new Promise<never>((_, reject) =>
+    setTimeout(() => {
+      const text = document.querySelector('[data-event-id="benchmark-item"]')?.textContent ?? "";
+      reject(
+        new Error(
+          `Timed out at stage ${(window as BenchmarkWindow).conversationBenchmarkStage ?? "unknown"}; samples=${samples.size}; observed=${observed.size}; item=${Boolean(text)}; text=${text.slice(0, 200)}; running=${running}; lastEvent=${lastEvent}`,
+        ),
+      );
+    }, 12_000),
+  );
+  await Promise.race([Promise.all([allFrames, finished]), timeoutError]);
+  setStage("completed");
   observer.disconnect();
   stopObserving();
   if (document.querySelectorAll('[data-event-id="benchmark-item"]').length !== 1)

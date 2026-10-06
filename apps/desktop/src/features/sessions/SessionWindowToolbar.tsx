@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
@@ -50,6 +51,7 @@ export function SessionWindowToolbar() {
   const canContinue =
     historyId &&
     workspace &&
+    !sessionCollection(workspace.id) &&
     !selected.remote &&
     selected.availability === "readable" &&
     canContinueFromHistory(sourceCapability);

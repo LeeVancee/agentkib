@@ -73,5 +73,5 @@ export function managedText(locale: Locale, english: string, chinese: string) {
     ? english
     : locale === "zh-CN"
       ? chinese
-      : copy[chinese]![locale === "zh-TW" ? 0 : 1];
+      : (copy[chinese]?.[locale === "zh-TW" ? 0 : 1] ?? chinese);
 }

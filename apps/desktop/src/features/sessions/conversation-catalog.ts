@@ -109,6 +109,23 @@ export function useConversationCatalog(enabled: boolean) {
     let exhausted = false;
     let resets = 0;
     let stop: (() => void) | undefined;
+    const resync = (error: unknown) => {
+      resyncing = true;
+      queueMicrotask(() => {
+        if (closed) return;
+        stop?.();
+        resets += 1;
+        if (resets > 3) {
+          exhausted = true;
+          observationError = error;
+          useConversationCatalogStore.setState({ error });
+          return;
+        }
+        store.reset();
+        resyncing = false;
+        connect();
+      });
+    };
     const connect = () => {
       stop = createDesktopConversationAdapter().stream("", {
         open: () => {},
@@ -135,35 +152,28 @@ export function useConversationCatalog(enabled: boolean) {
             return false;
           }
           if (type !== "session-event") return false;
+          let event: SessionStreamEvent;
+          let previous = store.getSnapshot();
+          let state = previous;
           try {
-            const event = JSON.parse(data) as SessionStreamEvent;
-            const previous = store.getSnapshot();
-            const state = store.dispatch(event);
-            if (state.resyncRequired) throw new Error("catalog-resync-required");
-            if (
-              state !== previous &&
-              (event.type === "snapshot" ||
-                (event.type === "invalidate" && event.payload.domains.includes("catalog")))
-            )
-              void refreshConversationCatalog().catch(() => {});
-            return state.cursor ?? false;
+            event = JSON.parse(data) as SessionStreamEvent;
+            previous = store.getSnapshot();
+            state = store.dispatch(event);
           } catch (error) {
-            resyncing = true;
-            queueMicrotask(() => {
-              if (closed) return;
-              stop?.();
-              if (++resets > 3) {
-                exhausted = true;
-                observationError = error;
-                useConversationCatalogStore.setState({ error });
-                return;
-              }
-              store.reset();
-              resyncing = false;
-              connect();
-            });
+            resync(error);
             return false;
           }
+          if (state.resyncRequired) {
+            resync(new Error("catalog-resync-required"));
+            return false;
+          }
+          if (
+            state !== previous &&
+            (event.type === "snapshot" ||
+              (event.type === "invalidate" && event.payload.domains.includes("catalog")))
+          )
+            void refreshConversationCatalog().catch(() => {});
+          return state.cursor ?? false;
         },
       });
     };

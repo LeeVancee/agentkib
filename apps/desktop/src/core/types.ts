@@ -631,6 +631,7 @@ export interface SkillDeployment {
   library_root?: string | null;
   source_is_current_library?: boolean;
   package_name: string;
+  display_name?: string;
   package_hash: string;
   scope: SkillScope;
   workspace_id: string | null;
@@ -974,6 +975,7 @@ export interface InsightsView {
 }
 export interface GitIdentitySummary {
   id: string;
+  /** Translation key for built-in identity sources; literal label for other sources. */
   label: string;
   source: string;
   enabled: boolean;
@@ -1276,7 +1278,7 @@ export type CursorBridgeRequest =
   | { action: "disconnect"; workspaceId: string; bindingId: string };
 export interface CursorBridgeStatus {
   supported: boolean;
-  version: string;
+  supportedVersions: string[];
   bindings: Array<{ id: string; profile: string; version: string; connected: boolean }>;
 }
 export interface CursorBridgeChallenge {
@@ -1319,6 +1321,7 @@ export type SessionHandoffLaunchRequest =
       workspace_id: string;
       target_agent: AgentKind;
       plan_hash: string;
+      binding_id?: string;
       capabilities?: ContinuationCapabilities;
     }
   | {
@@ -1342,8 +1345,8 @@ export type SessionHandoffLaunchRequest =
     };
 export interface NativeImportOperation {
   source_session_id: string;
-  binding_id?: string | null;
   launch_request: Extract<SessionHandoffLaunchRequest, { mode: "native-import" }>;
+  binding_id?: string | null;
   target_session_id?: string;
   status: "prepared" | "outcome-unknown" | "verified" | "launched";
 }

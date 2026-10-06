@@ -124,4 +124,37 @@ describe("SessionCatalog", () => {
     expect(screen.getByRole("button", { name: /未命名会话/ })).toBeVisible();
     expect(screen.getAllByRole("button", { name: /^Codex ·/ })).toHaveLength(5);
   });
+
+  it.each(["projectless", "unclassified"])(
+    "keeps ordinary conversations in the %s collection while hiding internal records from counts and search",
+    (kind) => {
+      const collection = { id: `session-collection:codex:${kind}`, name: kind, path: "" };
+      const ordinary: ConversationSessionSummary = {
+        ...sessions[0],
+        workspace_id: collection.id,
+        origin: "unknown",
+      };
+      render(
+        <SessionCatalog
+          sessions={[
+            ordinary,
+            { ...ordinary, id: "execution", title: "Execution record", origin: "execution" },
+            { ...ordinary, id: "auxiliary", title: "Auxiliary record", origin: "auxiliary" },
+          ]}
+          workspaces={[collection]}
+          selected=""
+          onSelect={vi.fn()}
+        />,
+      );
+      expect(screen.getByRole("button", { name: `${kind} · 1` })).toBeVisible();
+      expect(screen.getByRole("button", { name: /Primary session/ })).toBeVisible();
+      fireEvent.change(screen.getByRole("textbox", { name: "搜索会话" }), {
+        target: { value: "record" },
+      });
+      expect(
+        screen.queryByRole("button", { name: /Execution record|Auxiliary record/ }),
+      ).toBeNull();
+      expect(screen.queryByRole("button", { name: `${kind} · 1` })).toBeNull();
+    },
+  );
 });

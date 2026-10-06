@@ -1,6 +1,6 @@
 # Codex 托管执行
 
-本实现面向 macOS，将官方客户端 follower 与 AgentKib 自己持有的 app-server 分开。Follower 的 `executionMode` 为 `codex-follower`，托管为 `codex-managed`。创建和原 ID 交接须单独的设备管理授权；执行还须启用实验控制、允许对应工作区。Web/Electron 负责授权，Rust 只接受注册工作区 ID，并在每次操作前复核 canonical 路径和 CODEX_HOME。
+本实现面向 macOS，将官方客户端 follower 与 AgentKib 自己持有的 app-server 分开。Follower 的 `executionMode` 为 `codex-follower`，托管为 `codex-managed`。创建和原 ID 交接须单独的设备管理授权；执行还须启用实验控制、允许对应工作区。Web/Electron 负责授权，TypeScript backend 只接受注册工作区 ID，并在每次操作前复核 canonical 路径和 CODEX_HOME。
 
 ## RPC
 
@@ -14,7 +14,7 @@
 | release | `sessionId`, UUID `requestId` | `released:true`, `accepted:true` |
 | reconcile | `sessionId`, UUID `requestId` | `reconciled:true` 和 `live`，或 `false` 和原因 |
 
-HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Rust。托管 sessionId 为 64 位十六进制，对外不暴露原生路径。create 不接受首条消息；成功获取 sessionId 后再单独 send，避免创建回执丢失时重复执行首条消息。相同 requestId 和输入重试返回持久回执；同 ID 换输入会拒绝。
+HTTP 另外携带 Electron `bootId`，由 Electron 验证，不直接传给 Runtime。托管 sessionId 为 64 位十六进制，对外不暴露原生路径。create 不接受首条消息；成功获取 sessionId 后再单独 send，避免创建回执丢失时重复执行首条消息。相同 requestId 和输入重试返回持久回执；同 ID 换输入会拒绝。
 
 现有 `web.request` 对托管会话自动分派 `live`, `events`, `send`, `stop`, `approve`, `answer`。控制参数沿用 `runtimeBootId`, `expectedRevision`, UUID `requestId`, `experimentalEnabled:true`；审批/问答另外验证原生 `turnId` 和请求 ID。`events` 默认最新 50 条、页面内部按时间正序；`next_cursor` 向更早历史分页。catalog 合并持久托管记录，即使会话索引关闭或重建，托管任务仍可见。
 
@@ -36,7 +36,7 @@ Goal 使用 `thread/goal/get/set/clear` 和原生事件。`goal-set` 的 `intent
 
 Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 peer executable 推导 app bundle，支持移动安装位置和用户 Applications；不再依赖固定 `/Applications/ChatGPT.app` 或必须安装 VS Code 扩展。基础 follower 要求 Desktop `26.917.62051` 或更新版本；owner 的 `thread-follower-update-thread-settings` v2 要求 `26.924.22138` 或更新版本。版本必须恰好包含三段数字，按三段数值组成的元组比较最低门槛；低于对应门槛或格式无效时拒绝。此调整仅适用于 Desktop follower，不改变上文托管 CLI 的精确版本限制或其他 agent 策略。
 
-满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。协议核对与历史验收证据见 [兼容性记录](../crates/agentkib-codex-bridge/COMPATIBILITY.md)。
+满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。
 
 由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。主机默认、token usage、goal、技能／插件资源同样没有可靠 follower 读取路径，保持 unavailable。
 
@@ -62,26 +62,13 @@ reconcile 读取原生 thread/read。send/steer/queue-add 必须找到对应 `us
 
 ## 验证
 
-隔离 Rust mock 覆盖创建、发送、精确审批/问答、停止、模型与权限拒绝、重启恢复、丢失发送回执的原生核对、账本去重与分页、帧大小约束，以及 diff 私有路径规则：
+运行桌面验证套件：
 
 ```sh
-cargo test -p agentkib-codex-bridge -p agentkib-runtime
+pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.test.ts
 ```
 
-可显式运行真正官方 CLI 的离线互斥验收；脚本使用临时 HOME/CODEX_HOME/workspace、白名单环境变量、loopback fake Responses SSE，不读取用户 token、不调用付费模型、不操作已有会话：
-
-```sh
-python3 crates/agentkib-runtime/tests/fixtures/codex_native_writer_lock.py \
-  /Applications/ChatGPT.app/Contents/Resources/codex /opt/homebrew/bin/codex
-```
-
-2026-09-24 本机上述双版本实测输出：
-
-```json
-{"nativeFixedPolicy":true,"nativeUserMessageIdPreserved":true,"nativeWriterConflict":true,"sameIdResumeAfterRelease":true,"historyPreserved":true,"mockOnly":true}
-```
-
-这是原生策略、跨进程 writer 互斥、同 ID 释放恢复和 clientId 历史证据的验收；不等同于公网手机、真实账户审批或付费模型的完整生产验收。协议 TS 可由 `cargo run -p agentkib-protocol --bin generate-typescript` 生成，生成器含 `codexManaged` 常量。
+上游 Rust 分支保存的真实 Codex 双版本验收结果属于历史证据；它不表示这轮 TypeScript backend 已重复通过同一 CLI 实机验收。Runtime 协议类型由桌面端 `pnpm protocol:generate` 从 `packages/runtime-protocol` 生成。
 
 ## 持久控制回执与本机 CSR
 
@@ -109,13 +96,12 @@ Web 将 Codex 控制和管理操作的 requestId、sessionId/workspaceId、kind 
 
 扩展审批保留原生提供的完整决定与作用范围。结构化决定必须精确匹配当前请求的候选，包括拟议命令规则、网络规则及权限配置；未知作用域关闭操作。基本浏览器授权不会获得会话级或持久权限决定。秘密问答以密码输入显示，只按请求 ID 和 turn ID 向原生引擎回答；本地命令账本和浏览器回执不保存答案正文。
 
-离线原生协议验收（临时目录、本地模拟模型、真实 Codex 进程）：
+本地自动化覆盖：
 
 ```sh
-python3 crates/agentkib-runtime/tests/fixtures/codex_native_completion.py /opt/homebrew/bin/codex /Applications/ChatGPT.app/Contents/Resources/codex
-python3 crates/agentkib-runtime/tests/fixtures/codex_native_questions.py /opt/homebrew/bin/codex /Applications/ChatGPT.app/Contents/Resources/codex
+pnpm --filter @agentkib/desktop exec vitest run electron/main/web/codex-actions.test.ts
 ```
 
-这些测试不等同于真实公网手机验收。功能启用情况以实际频道的能力响应为准。
+这些自动化测试不等同于真实 Codex 账户或公网手机验收。功能启用情况以实际频道的能力响应为准。
 
 本轮扩展的操作/权限、原生双版本验证、构建及界面验收记录见 [Codex 远控补全验收](../qa/codex-completion-2026-09-26.md)。官方 follower 尚未验证的高级操作不会因托管 app-server 测试通过而开启。

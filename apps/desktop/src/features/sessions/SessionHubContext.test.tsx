@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSessionSummary, RuntimeInfo } from "@/core/types";
+import { SESSION_COLLECTIONS } from "@agentkib/runtime-protocol";
 import { useAppStore } from "@/stores/app-store";
 import { useSessionViewStore } from "./session-view-store";
 import { SessionHubProvider, useSessionHub } from "./SessionHubContext";
@@ -19,7 +20,9 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   refreshControlled: vi.fn(),
 }));
-vi.mock("@/core/useI18n", () => ({ useI18n: () => ({ localizeMessage: String }) }));
+vi.mock("@/core/useI18n", () => ({
+  useI18n: () => ({ tr: String, localizeMessage: String }),
+}));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,
@@ -99,6 +102,64 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it.each(
+    Object.values(SESSION_COLLECTIONS).flatMap((workspaceId) =>
+      [true, false].map((bridge) => ({ workspaceId, bridge })),
+    ),
+  )(
+    "keeps ordinary collection conversations visible and excludes internal records (collection: $workspaceId, bridge: $bridge)",
+    ({ workspaceId, bridge }) => {
+      mocks.bridge = bridge;
+      mocks.search = { sessionId: "ordinary" };
+      const records: ConversationSessionSummary[] = [
+        { ...session("ordinary"), workspace_id: workspaceId, origin: "interactive" },
+        { ...session("execution"), workspace_id: workspaceId, origin: "execution" },
+        { ...session("auxiliary"), workspace_id: workspaceId, origin: "auxiliary" },
+      ];
+      mocks.indexed = [...records, session("indexed-workspace")];
+      mocks.controlled = [session("managed-id")];
+      const view = render(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      expect(screen.getByRole("status").textContent).toBe("ordinary");
+      expect(screen.getByRole("button", { name: "ordinary" })).toBeTruthy();
+      if (bridge) {
+        expect(screen.getByRole("button", { name: "managed-id" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "indexed-workspace" })).toBeNull();
+      }
+      expect(screen.queryByRole("button", { name: "execution" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "auxiliary" })).toBeNull();
+      expect(mocks.navigate).not.toHaveBeenCalled();
+      mocks.search = { sessionId: "execution" };
+      view.rerender(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      expect(screen.getByText("Hidden record notice")).toBeTruthy();
+      expect(mocks.navigate).toHaveBeenCalledOnce();
+      expect(mocks.navigate.mock.calls[0][0].search(mocks.search)).toEqual({
+        sessionId: undefined,
+      });
+    },
+  );
+
+  it("prefers the controlled catalog on a duplicate collection identity", () => {
+    const ordinary = { ...session("ordinary"), workspace_id: SESSION_COLLECTIONS.projectless };
+    mocks.indexed = [ordinary];
+    mocks.controlled = [{ ...ordinary, origin: "execution" }];
+    mocks.search = { sessionId: ordinary.id };
+    render(
+      <SessionHubProvider>
+        <Directory />
+      </SessionHubProvider>,
+    );
+    expect(screen.queryByRole("button", { name: ordinary.id })).toBeNull();
+    expect(screen.getByText("Hidden record notice")).toBeTruthy();
+  });
+
   it.each(["auxiliary", "execution"] as const)(
     "rejects a legacy %s link without selecting or exposing the record",
     (origin) => {
@@ -190,21 +251,26 @@ describe("desktop authoritative session directory", () => {
     expect(screen.queryByRole("button", { name: "managed-id" })).toBeNull();
   });
 
-  it("routes a legacy search link to its verified managed identity without duplicating it", () => {
-    mocks.search = { sessionId: "indexed-alias" };
-    mocks.controlled = [{ ...session("managed-id"), indexedSessionIds: ["indexed-alias"] }];
-    render(
-      <SessionHubProvider>
-        <Directory />
-      </SessionHubProvider>,
-    );
-    expect(screen.getByRole("status").textContent).toBe("managed-id");
-    expect(mocks.navigate).toHaveBeenCalledOnce();
-    const navigation = mocks.navigate.mock.calls[0][0];
-    expect(navigation.replace).toBe(true);
-    expect(navigation.search(mocks.search)).toEqual({ sessionId: "managed-id" });
-    expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
-  });
+  it.each(["codex", "claude-code"] as const)(
+    "routes a legacy %s search link to its verified managed identity without duplicating it",
+    (agent) => {
+      mocks.search = { sessionId: "indexed-alias" };
+      mocks.controlled = [
+        { ...session("managed-id"), agent, indexedSessionIds: ["indexed-alias"] },
+      ];
+      render(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      expect(screen.getByRole("status").textContent).toBe("managed-id");
+      expect(mocks.navigate).toHaveBeenCalledOnce();
+      const navigation = mocks.navigate.mock.calls[0][0];
+      expect(navigation.replace).toBe(true);
+      expect(navigation.search(mocks.search)).toEqual({ sessionId: "managed-id" });
+      expect(screen.queryByRole("button", { name: "indexed-alias" })).toBeNull();
+    },
+  );
 
   it("waits for scanning before reading the controlled catalog on manual refresh", async () => {
     let finish!: () => void;

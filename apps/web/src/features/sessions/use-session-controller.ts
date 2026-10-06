@@ -137,6 +137,9 @@ export function useSessionController({
   const shownInteractions = useRef(new Set<string>());
   const catalogSessions = useRef<ConversationSessionSummary[]>([]);
   const excludedIds = useRef<ReadonlySet<string>>(new Set());
+  // Manual refresh and catalog notifications share this order. An older
+  // response cannot undo a newer directory classification or dispatch guard.
+  const catalogReadOrder = useRef(0);
   const readableSessionIds = useRef(new Set<string>());
   useEffect(() => {
     const readable = sessions.filter((session) => session.availability === "readable");
@@ -473,18 +476,23 @@ export function useSessionController({
         flight.generation = g;
         await reconcilePending(selection.current || undefined);
         if (g !== generation.current) return;
+        const catalogOrder = ++catalogReadOrder.current;
         const catalog = await client.catalog();
         if (g !== generation.current) return;
         if (contention !== readContention.current.version)
           throw new ApiError(409, "operation_busy");
-        if (!catalog.indexEnabled) {
-          clear();
-          setIndexEnabled(false);
-          return;
+        if (catalogOrder === catalogReadOrder.current) {
+          if (!catalog.indexEnabled) {
+            clear();
+            setIndexEnabled(false);
+            return;
+          }
+          setIndexEnabled(true);
+          acceptCatalog(catalog.sessions);
+          setWorkspaces(catalog.workspaces);
         }
-        setIndexEnabled(true);
-        acceptCatalog(catalog.sessions);
-        setWorkspaces(catalog.workspaces);
+        // The full refresh still owns calibrating selected history and control
+        // readiness when a notification superseded only its catalog response.
         const id = selection.current;
         if (id) {
           const viewport = scroll.current;
@@ -803,11 +811,16 @@ export function useSessionController({
             // syncAccess rejects superseded reads; protect subsequent reads using
             // the generation belonging to this newly accepted access instead.
             g = generation.current;
+            const catalogOrder = ++catalogReadOrder.current;
             const catalog = await client.catalog();
             if (!active()) break;
             if (g !== generation.current) {
               if (retryInvalidated(g)) continue;
               break;
+            }
+            if (catalogOrder !== catalogReadOrder.current) {
+              dirty = true;
+              continue;
             }
             if (!catalog.indexEnabled) {
               clear();

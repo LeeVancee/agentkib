@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Access,
@@ -9,7 +10,8 @@ import type {
   UserQuestionRequest,
 } from "@agentkib/web-client";
 import { pendingScope, readPending, rememberPending } from "./pending-controls";
-import { WebApplication } from "@/router";
+import { WebApplication, makeRouter } from "@/router";
+import { catalogCopy } from "../catalog/catalog-copy";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
@@ -20,7 +22,7 @@ class FakeEventSource {
   close = vi.fn();
   sequence = 0;
 
-  constructor(path: string) {
+  constructor(readonly path: string) {
     FakeEventSource.instances.push(this);
     if (new URL(path, "http://localhost").searchParams.has("sessionId"))
       queueMicrotask(() => {
@@ -179,6 +181,35 @@ afterEach(() => {
   FakeEventSource.live = undefined;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("ordinary session routes", () => {
+  it.each(["auxiliary", "execution"] as const)(
+    "returns an old %s deep link to the directory without requesting its content",
+    async (origin) => {
+      const server = createServer();
+      server.state.catalog = {
+        ...catalog,
+        sessions: catalog.sessions.map((session) => ({ ...session, origin })),
+      };
+      const router = makeRouter({}, true);
+      router.history.replace("/sessions/session");
+      render(<RouterProvider router={router} />);
+
+      expect(await screen.findByText(catalogCopy["zh-CN"].excludedSession)).toBeVisible();
+      await waitFor(() => expect(router.state.location.pathname).toBe("/sessions"));
+      expect(screen.queryByText("Secret history")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Test session/ })).toBeNull();
+      expect(
+        server.fetcher.mock.calls.some(([path]) => /\/(events|live)\?/.test(String(path))),
+      ).toBe(false);
+      expect(
+        FakeEventSource.instances.some((source) =>
+          new URL(source.path, "http://localhost").searchParams.has("sessionId"),
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("access invalidation", () => {

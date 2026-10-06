@@ -58,6 +58,7 @@ pub enum SessionAvailability {
 pub enum SessionOrigin {
     Interactive,
     Auxiliary,
+    Execution,
     #[default]
     Unknown,
 }
@@ -1221,10 +1222,10 @@ impl CodexProvider {
     }
 
     fn enrich_session(&self, mut session: CodexNativeSession) -> CodexNativeSession {
-        // The database is the cheap canonical source. Only inspect a transcript when a
-        // relation/classification is absent, and only after native_sessions has applied the
-        // workspace filter. This keeps unrelated projects out of the header-read path.
+        // The database is the cheap canonical source. Only inspect a transcript for
+        // absent metadata or a possible legacy exec import, after the workspace filter.
         let needs_origin = !session.source_present_in_database;
+        let needs_import_identity = session.origin == SessionOrigin::Execution;
         let needs_spawned =
             !session.spawned_from_database && session.spawned_by_session_id.is_none();
         let needs_forked =
@@ -1233,32 +1234,79 @@ impl CodexProvider {
             && session.agent_path.is_none()
             && (sanitize_title(session.title.as_deref()).is_none()
                 || session.agent_nickname.is_none());
-        if !needs_origin && !needs_spawned && !needs_forked && !needs_agent_details {
+        if !needs_origin
+            && !needs_import_identity
+            && !needs_spawned
+            && !needs_forked
+            && !needs_agent_details
+        {
             return session;
         }
         let Some(header) = read_codex_header(&session.transcript) else {
             return session;
         };
         if needs_origin
-            && ((header.origin == SessionOrigin::Auxiliary && !session.origin_authoritative)
+            && ((header.metadata.origin_authoritative && !session.origin_authoritative)
                 || session.origin == SessionOrigin::Unknown)
         {
-            session.origin = header.origin;
-            session.origin_authoritative = header.origin_authoritative;
+            session.origin = header.metadata.origin;
+            session.origin_authoritative = header.metadata.origin_authoritative;
+        }
+        // Legacy history imports deliberately used an exec source. Recognize only
+        // the complete import header for this indexed identity; this is a display
+        // classification and grants no native control rights.
+        if session.origin == SessionOrigin::Execution
+            && header
+                .legacy_import_identity
+                .as_ref()
+                .is_some_and(|(id, cwd)| {
+                    id == &session.native_ref && platform_path::equivalent(cwd, &session.cwd)
+                })
+        {
+            session.origin = SessionOrigin::Interactive;
         }
         if needs_spawned {
-            session.spawned_by_session_id = header.spawned_by_session_id;
+            session.spawned_by_session_id = header.metadata.spawned_by_session_id;
         }
         if needs_forked {
-            session.forked_from_session_id = header.forked_from_session_id;
+            session.forked_from_session_id = header.metadata.forked_from_session_id;
         }
         if session.agent_path.is_none() {
-            session.agent_path = header.agent_path;
+            session.agent_path = header.metadata.agent_path;
         }
         if session.agent_nickname.is_none() {
-            session.agent_nickname = header.agent_nickname;
+            session.agent_nickname = header.metadata.agent_nickname;
         }
         session
+    }
+
+    /// A directory ownership alias requires both the indexed ID and cwd to
+    /// match the bounded native header. This grants no control capability.
+    pub fn verified_indexed_identity(&self, native_ref: &str) -> Result<(String, PathBuf)> {
+        let session = self
+            .native_sessions(None)?
+            .into_iter()
+            .find(|session| session.native_ref == native_ref)
+            .context("Codex session is no longer available")?;
+        // A byte limit cannot bound opening a FIFO. Directory observations only
+        // accept regular transcripts, following the history reader's boundary.
+        anyhow::ensure!(
+            fs::symlink_metadata(&session.transcript)?
+                .file_type()
+                .is_file(),
+            "TRANSCRIPT_UNREADABLE"
+        );
+        let (id, header) = read_verified_codex_header(&session.transcript, native_ref)?;
+        let cwd = PathBuf::from(
+            header["payload"]["cwd"]
+                .as_str()
+                .context("missing-native-workspace")?,
+        );
+        anyhow::ensure!(
+            cwd.is_absolute() && platform_path::equivalent(&cwd, &session.cwd),
+            "session-workspace-mismatch"
+        );
+        Ok((id, cwd))
     }
 }
 
@@ -1389,6 +1437,10 @@ impl ConversationProvider for CodexProvider {
 }
 
 fn verified_codex_control_id(path: &Path, native_ref: &str) -> Result<String> {
+    read_verified_codex_header(path, native_ref).map(|(id, _)| id)
+}
+
+fn read_verified_codex_header(path: &Path, native_ref: &str) -> Result<(String, Value)> {
     let mut line = String::new();
     BufReader::new(File::open(path)?.take(64 * 1024)).read_line(&mut line)?;
     let value: Value = serde_json::from_str(&line)?;
@@ -1404,7 +1456,7 @@ fn verified_codex_control_id(path: &Path, native_ref: &str) -> Result<String> {
         id == uuid::Uuid::parse_str(native_ref)?,
         "session-identity-mismatch"
     );
-    Ok(id.to_string())
+    Ok((id.to_string(), value))
 }
 
 struct CodexNativeSession {
@@ -1437,10 +1489,16 @@ struct CodexMetadata {
     forked_from_session_id: Option<String>,
 }
 
+struct CodexHeader {
+    metadata: CodexMetadata,
+    legacy_import_identity: Option<(String, PathBuf)>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexSourceEvidence {
     Interactive,
     Auxiliary,
+    Execution,
     Unknown,
     Malformed,
 }
@@ -1462,6 +1520,7 @@ fn classify_codex_metadata(
     let origin = match parsed_source.evidence {
         CodexSourceEvidence::Auxiliary => SessionOrigin::Auxiliary,
         CodexSourceEvidence::Interactive => SessionOrigin::Interactive,
+        CodexSourceEvidence::Execution => SessionOrigin::Execution,
         CodexSourceEvidence::Unknown if !source_malformed && thread_source == Some("user") => {
             SessionOrigin::Interactive
         }
@@ -1469,7 +1528,9 @@ fn classify_codex_metadata(
     };
     let origin_authoritative = matches!(
         parsed_source.evidence,
-        CodexSourceEvidence::Auxiliary | CodexSourceEvidence::Interactive
+        CodexSourceEvidence::Auxiliary
+            | CodexSourceEvidence::Interactive
+            | CodexSourceEvidence::Execution
     );
     CodexMetadata {
         origin,
@@ -1492,6 +1553,10 @@ fn parse_codex_source(source: Option<&Value>) -> ParsedCodexSource {
         Value::String(value) => match value.as_str() {
             "cli" | "vscode" => ParsedCodexSource {
                 evidence: CodexSourceEvidence::Interactive,
+                spawned_by_session_id: None,
+            },
+            "exec" => ParsedCodexSource {
+                evidence: CodexSourceEvidence::Execution,
                 spawned_by_session_id: None,
             },
             // A bare subagent source is explicit enough to classify, but it
@@ -1620,7 +1685,7 @@ fn json_non_empty_string(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).and_then(non_empty_text)
 }
 
-fn read_codex_header(path: &Path) -> Option<CodexMetadata> {
+fn read_codex_header(path: &Path) -> Option<CodexHeader> {
     let metadata = fs::symlink_metadata(path).ok()?;
     if !metadata.file_type().is_file() {
         return None;
@@ -1647,13 +1712,21 @@ fn read_codex_header(path: &Path) -> Option<CodexMetadata> {
     let parent = json_non_empty_string(payload.get("parent_thread_id"));
     let forked = json_non_empty_string(payload.get("forked_from_id"));
     let thread_source = payload.get("thread_source").and_then(Value::as_str);
-    Some(classify_codex_metadata(
-        source.cloned(),
-        thread_source,
-        parent,
-        forked,
-        false,
-    ))
+    let legacy_import_identity = (payload.get("originator").and_then(Value::as_str)
+        == Some("agentkib")
+        && source.and_then(Value::as_str) == Some("exec")
+        && thread_source == Some("exec")
+        && payload.get("history_mode").and_then(Value::as_str) == Some("legacy"))
+    .then(|| {
+        let id = json_non_empty_string(payload.get("id"))?;
+        let cwd = PathBuf::from(json_non_empty_string(payload.get("cwd"))?);
+        cwd.is_absolute().then_some((id, cwd))
+    })
+    .flatten();
+    Some(CodexHeader {
+        metadata: classify_codex_metadata(source.cloned(), thread_source, parent, forked, false),
+        legacy_import_identity,
+    })
 }
 
 #[derive(Default)]
@@ -3180,6 +3253,10 @@ mod tests {
         assert_eq!(value.origin, SessionOrigin::Unknown);
         assert_eq!(value.spawned_by_session_id, None);
         assert_eq!(value.forked_from_session_id, None);
+        assert_eq!(
+            serde_json::to_value(SessionOrigin::Execution).unwrap(),
+            serde_json::json!("execution")
+        );
 
         let native = NativeSessionSummary {
             native_ref: "native".into(),
@@ -3227,10 +3304,16 @@ mod tests {
                 serde_json::json!({"subagent":{"thread_spawn":{"depth":1}}}),
                 serde_json::json!({}),
             ),
-            ("unknown", serde_json::json!("exec"), serde_json::json!({})),
+            ("exec", serde_json::json!("exec"), serde_json::json!({})),
+            (
+                "exec-user",
+                serde_json::json!("exec"),
+                serde_json::json!({"thread_source":"user"}),
+            ),
+            ("unknown", serde_json::json!("mcp"), serde_json::json!({})),
             (
                 "reliable-user",
-                serde_json::json!("exec"),
+                serde_json::json!("mcp"),
                 serde_json::json!({"thread_source":"user"}),
             ),
             (
@@ -3305,6 +3388,8 @@ mod tests {
         );
         assert_eq!(by_id("missing-parent").origin, SessionOrigin::Auxiliary);
         assert_eq!(by_id("missing-parent").spawned_by_session_id, None);
+        assert_eq!(by_id("exec").origin, SessionOrigin::Execution);
+        assert_eq!(by_id("exec-user").origin, SessionOrigin::Execution);
         assert_eq!(by_id("unknown").origin, SessionOrigin::Unknown);
         assert_eq!(by_id("reliable-user").origin, SessionOrigin::Interactive);
         assert_eq!(by_id("malformed").origin, SessionOrigin::Unknown);
@@ -3315,6 +3400,338 @@ mod tests {
                 .count(),
             fixture_count
         );
+    }
+
+    #[test]
+    fn codex_exec_source_overrides_user_fallback_but_not_explicit_database_sources() {
+        for (source, expected) in [
+            (Some("exec"), SessionOrigin::Execution),
+            (Some("\"exec\""), SessionOrigin::Execution),
+            (None, SessionOrigin::Execution),
+            (Some(""), SessionOrigin::Execution),
+            (Some("  "), SessionOrigin::Execution),
+            (Some("cli"), SessionOrigin::Interactive),
+            (Some("vscode"), SessionOrigin::Interactive),
+            (Some("subagent"), SessionOrigin::Auxiliary),
+            (Some("{broken"), SessionOrigin::Unknown),
+            (Some("mcp"), SessionOrigin::Interactive),
+        ] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let transcript = dir.path().join("session.jsonl");
+            fs::write(
+                &transcript,
+                format!(
+                    "{}\n",
+                    codex_meta_line(
+                        "exec-session",
+                        serde_json::json!("exec"),
+                        serde_json::json!({"thread_source":"user"}),
+                    )
+                ),
+            )
+            .unwrap();
+            write_codex_metadata_database(
+                &dir.path().join("state_1.sqlite"),
+                &[(
+                    "exec-session",
+                    transcript.as_path(),
+                    workspace.as_path(),
+                    "Execution",
+                    source,
+                    None,
+                    None,
+                    Some("user"),
+                )],
+            );
+            let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+                .list_sessions(&workspace)
+                .unwrap();
+            assert_eq!(sessions[0].origin, expected, "database source: {source:?}");
+        }
+    }
+
+    #[test]
+    fn codex_indexed_identity_requires_matching_header_workspace_without_changing_control_id() {
+        for case in [
+            "valid",
+            "wrong-id",
+            "missing-cwd",
+            "wrong-cwd",
+            "relative-cwd",
+            "oversized",
+        ] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            let native = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+            let transcript = dir.path().join("session.jsonl");
+            let mut header = serde_json::json!({
+                "type":"session_meta",
+                "payload":{"id":native,"cwd":workspace,"source":"exec"}
+            });
+            match case {
+                "wrong-id" => {
+                    header["payload"]["id"] = serde_json::json!(uuid::Uuid::new_v4().to_string())
+                }
+                "missing-cwd" => {
+                    header["payload"].as_object_mut().unwrap().remove("cwd");
+                }
+                "wrong-cwd" => {
+                    header["payload"]["cwd"] = serde_json::json!(dir.path().join("other"))
+                }
+                "relative-cwd" => header["payload"]["cwd"] = serde_json::json!("workspace"),
+                "oversized" => {
+                    header["payload"]["padding"] = serde_json::json!("x".repeat(64 * 1024))
+                }
+                _ => {}
+            }
+            fs::write(&transcript, format!("{header}\n")).unwrap();
+            write_codex_metadata_database(
+                &dir.path().join("state_1.sqlite"),
+                &[(
+                    native,
+                    transcript.as_path(),
+                    workspace.as_path(),
+                    "Execution",
+                    Some("exec"),
+                    None,
+                    None,
+                    Some("user"),
+                )],
+            );
+            let provider = CodexProvider::with_home(dir.path().to_path_buf());
+            if case == "valid" {
+                assert_eq!(
+                    provider.verified_indexed_identity(native).unwrap(),
+                    (native.to_owned(), workspace)
+                );
+            } else {
+                assert!(
+                    provider.verified_indexed_identity(native).is_err(),
+                    "{case}"
+                );
+            }
+            // Workspace verification is confined to the display exception; the
+            // existing control ID check retains its acceptance/error semantics.
+            if matches!(case, "valid" | "missing-cwd" | "wrong-cwd" | "relative-cwd") {
+                assert_eq!(
+                    provider.verified_control_id(native).unwrap(),
+                    Some(native.to_owned()),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_indexed_identity_rejects_non_regular_transcripts_without_waiting() {
+        for case in [
+            "missing",
+            "directory",
+            #[cfg(unix)]
+            "symlink",
+            #[cfg(unix)]
+            "fifo",
+        ] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            let native = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+            let transcript = dir.path().join("session.jsonl");
+            match case {
+                "missing" => {}
+                "directory" => fs::create_dir(&transcript).unwrap(),
+                #[cfg(unix)]
+                "symlink" => {
+                    let target = dir.path().join("regular.jsonl");
+                    fs::write(
+                        &target,
+                        codex_meta_line(native, Value::Null, serde_json::json!({"cwd":workspace})),
+                    )
+                    .unwrap();
+                    std::os::unix::fs::symlink(target, &transcript).unwrap();
+                }
+                #[cfg(unix)]
+                "fifo" => {
+                    assert!(
+                        std::process::Command::new("mkfifo")
+                            .arg(&transcript)
+                            .status()
+                            .unwrap()
+                            .success()
+                    );
+                }
+                _ => unreachable!(),
+            }
+            write_codex_metadata_database(
+                &dir.path().join("state_1.sqlite"),
+                &[(
+                    native,
+                    transcript.as_path(),
+                    workspace.as_path(),
+                    "Execution",
+                    Some("exec"),
+                    None,
+                    None,
+                    Some("user"),
+                )],
+            );
+            let provider = CodexProvider::with_home(dir.path().to_path_buf());
+            let sessions = provider.list_sessions(&workspace).unwrap();
+            assert_eq!(sessions[0].origin, SessionOrigin::Execution, "{case}");
+            assert_eq!(
+                sessions[0].availability,
+                SessionAvailability::MetadataOnly,
+                "{case}"
+            );
+            // A regression opening the FIFO must fail the test instead of
+            // blocking the suite. The worker owns the isolated fixture.
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _fixture = dir;
+                sender
+                    .send(provider.verified_indexed_identity(native))
+                    .unwrap();
+            });
+            let result = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("directory identity blocked on {case}"));
+            worker.join().unwrap();
+            assert!(result.is_err(), "{case}");
+        }
+    }
+
+    #[test]
+    fn codex_preserves_only_fully_identified_legacy_agentkib_imports() {
+        let cases = [
+            ("complete", None, None),
+            ("missing-originator", Some("originator"), None),
+            ("wrong-originator", Some("originator"), Some("codex-tui")),
+            ("missing-source", Some("source"), None),
+            ("wrong-source", Some("source"), Some("cli")),
+            ("missing-thread-source", Some("thread_source"), None),
+            ("wrong-thread-source", Some("thread_source"), Some("user")),
+            ("missing-history-mode", Some("history_mode"), None),
+            ("wrong-history-mode", Some("history_mode"), Some("modern")),
+            ("missing-id", Some("id"), None),
+            ("wrong-id", Some("id"), Some("another-session")),
+            ("missing-cwd", Some("cwd"), None),
+            ("wrong-cwd", Some("cwd"), Some("/another-workspace")),
+            ("relative-cwd", Some("cwd"), Some("workspace")),
+        ];
+        for (case, field, replacement) in cases {
+            for database_source in [Some("exec"), Some("\"exec\""), None] {
+                let dir = tempdir().unwrap();
+                let workspace = dir.path().join("workspace");
+                fs::create_dir_all(&workspace).unwrap();
+                let transcript = dir.path().join("session.jsonl");
+                let mut header: Value = serde_json::from_str(&codex_meta_line(
+                    "imported-session",
+                    serde_json::json!("exec"),
+                    serde_json::json!({
+                        "cwd":workspace,
+                        "originator":"agentkib",
+                        "thread_source":"exec",
+                        "history_mode":"legacy",
+                    }),
+                ))
+                .unwrap();
+                if let Some(field) = field {
+                    let payload = header["payload"].as_object_mut().unwrap();
+                    if let Some(replacement) = replacement {
+                        payload.insert(field.into(), serde_json::json!(replacement));
+                    } else {
+                        payload.remove(field);
+                    }
+                }
+                fs::write(&transcript, format!("{header}\n")).unwrap();
+                write_codex_metadata_database(
+                    &dir.path().join("state_1.sqlite"),
+                    &[(
+                        "imported-session",
+                        transcript.as_path(),
+                        workspace.as_path(),
+                        "Imported",
+                        database_source,
+                        Some("known-parent"),
+                        Some("known-fork"),
+                        Some("user"),
+                    )],
+                );
+                let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+                    .list_sessions(&workspace)
+                    .unwrap();
+                // Without exec evidence, the ordinary user/unknown fallback may
+                // remain interactive without acquiring an import exception.
+                let expected = if case == "complete"
+                    || (database_source.is_none()
+                        && matches!(case, "missing-source" | "wrong-source"))
+                {
+                    SessionOrigin::Interactive
+                } else {
+                    SessionOrigin::Execution
+                };
+                assert_eq!(
+                    sessions[0].origin, expected,
+                    "case: {case}, database source: {database_source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_import_exception_requires_bounded_first_header_and_exact_workspace() {
+        for case in ["oversized", "body-only", "descendant-workspace"] {
+            let dir = tempdir().unwrap();
+            let workspace = dir.path().join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let transcript = dir.path().join("session.jsonl");
+            let header = codex_meta_line(
+                "imported-session",
+                serde_json::json!("exec"),
+                serde_json::json!({
+                    "cwd": if case == "descendant-workspace" {
+                        workspace.join("child")
+                    } else {
+                        workspace.clone()
+                    },
+                    "originator":"agentkib",
+                    "thread_source":"exec",
+                    "history_mode":"legacy",
+                    "padding": if case == "oversized" {
+                        "x".repeat(MAX_CODEX_HEADER_BYTES)
+                    } else {
+                        String::new()
+                    },
+                }),
+            );
+            let contents = if case == "body-only" {
+                format!("{{\"type\":\"event_msg\"}}\n{header}\n")
+            } else {
+                format!("{header}\n")
+            };
+            fs::write(&transcript, &contents).unwrap();
+            write_codex_metadata_database(
+                &dir.path().join("state_1.sqlite"),
+                &[(
+                    "imported-session",
+                    transcript.as_path(),
+                    workspace.as_path(),
+                    "Imported",
+                    Some("exec"),
+                    None,
+                    None,
+                    Some("user"),
+                )],
+            );
+            let sessions = CodexProvider::with_home(dir.path().to_path_buf())
+                .list_sessions(&workspace)
+                .unwrap();
+            assert_eq!(sessions[0].origin, SessionOrigin::Execution, "{case}");
+            assert_eq!(fs::read_to_string(&transcript).unwrap(), contents);
+        }
     }
 
     #[test]
@@ -3670,7 +4087,7 @@ mod tests {
         for (source, expected_origin) in [
             ("", SessionOrigin::Auxiliary),
             ("  ", SessionOrigin::Auxiliary),
-            ("exec", SessionOrigin::Interactive),
+            ("exec", SessionOrigin::Execution),
             ("{broken", SessionOrigin::Unknown),
             ("\"cli\"", SessionOrigin::Interactive),
         ] {

@@ -66,7 +66,7 @@ describe("SessionCatalog", () => {
     expect(screen.getByRole("button", { name: /client-a/ })).toBeVisible();
   });
 
-  it("supports search, auxiliary visibility, and selection", () => {
+  it("supports search and selection without an auxiliary visibility option", () => {
     const onSelect = vi.fn();
     render(
       <SessionCatalog
@@ -83,11 +83,45 @@ describe("SessionCatalog", () => {
     expect(screen.getByRole("button", { name: /Newest session/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /Helper session/ })).toBeNull();
 
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索会话" }), { target: { value: "" } });
-    fireEvent.click(screen.getByText("目录选项"));
-    fireEvent.click(screen.getByLabelText("显示辅助会话"));
-    fireEvent.click(screen.getByRole("button", { name: /Helper session/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Newest session/ }));
+    expect(onSelect).toHaveBeenCalledWith("newest");
 
-    expect(onSelect).toHaveBeenCalledWith("helper");
+    fireEvent.click(screen.getByText("目录选项"));
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "记录类型" }), {
+      target: { value: "all" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索会话" }), {
+      target: { value: "Helper" },
+    });
+    expect(screen.queryByRole("button", { name: /Helper session/ })).toBeNull();
+  });
+
+  it("counts five ordinary conversations without the 36 execution records", () => {
+    const ordinary: ConversationSessionSummary[] = Array.from({ length: 5 }, (_, index) => ({
+      ...sessions[0],
+      id: `ordinary-${index}`,
+      title: index === 0 ? undefined : `Ordinary ${index}`,
+      origin: index === 1 ? "unknown" : "interactive",
+      ...(index === 2 ? { executionMode: "codex-managed" } : {}),
+      ...(index === 3 ? { forked_from_session_id: "parent" } : {}),
+    }));
+    const executions: ConversationSessionSummary[] = Array.from({ length: 36 }, (_, index) => ({
+      ...sessions[0],
+      id: `exec-${index}`,
+      title: undefined,
+      origin: "execution",
+    }));
+    render(
+      <SessionCatalog
+        sessions={[...ordinary, ...executions]}
+        workspaces={[workspaces[0]]}
+        selected=""
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "project · 5" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /未命名会话/ })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /^Codex ·/ })).toHaveLength(5);
   });
 });

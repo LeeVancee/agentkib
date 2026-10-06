@@ -92,6 +92,7 @@ function defaultHub(): ReturnType<typeof useSessionHub> {
     workspacesLoading: false,
     workspacesError: "",
     catalogError: "",
+    hiddenSessionNotice: false,
     select: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     retryWorkspaces: vi.fn(),
@@ -138,6 +139,16 @@ describe("SessionHubPage", () => {
   afterEach(() => {
     cleanup();
     delete window.desktopConversation;
+  });
+
+  it("explains rejected records in the directory without reading a transcript", () => {
+    hub = { ...hub, hiddenSessionNotice: true };
+    render(sessionSurface());
+    expect(
+      screen.getByText(/This record belongs to a subagent or execution process/),
+    ).toBeVisible();
+    expect(api.sessionEvents).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("desktop-conversation")).toBeNull();
   });
 
   it("opens a local supported session in place without duplicate history reads", async () => {

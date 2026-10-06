@@ -1,3 +1,4 @@
+import { projectManagedSessionAliases } from "@/features/sessions/session-catalog";
 import { describe, expect, it } from "vitest";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
@@ -20,9 +21,29 @@ const readableSession = {
 } as ConversationSessionSummary;
 
 describe("selectRecentContinuations", () => {
-  it("shares auxiliary visibility without merging same-title forks or hiding unknown sources", () => {
+  it("retains a managed native execution in recent history through the verified catalog projection", () => {
+    const native = {
+      ...readableSession,
+      id: "native",
+      workspace_id: "first",
+      origin: "execution" as const,
+    };
+    const owner = {
+      ...native,
+      id: "managed",
+      origin: "interactive" as const,
+      indexedSessionIds: [native.id],
+    };
+    const records = projectManagedSessionAliases([native], [owner]);
+    expect(
+      selectRecentContinuations(workspaces, [records]).map(({ session }) => session.id),
+    ).toEqual(["native"]);
+  });
+
+  it("hides auxiliary and execution records without merging same-title forks or hiding unknown sources", () => {
     const sessions: ConversationSessionSummary[] = [
       { ...readableSession, id: "aux", title: "Same", origin: "auxiliary" },
+      { ...readableSession, id: "exec", title: "Same", origin: "execution" },
       {
         ...readableSession,
         id: "fork",
@@ -35,10 +56,8 @@ describe("selectRecentContinuations", () => {
     expect(
       selectRecentContinuations(workspaces, [sessions]).map(({ session }) => session.id),
     ).toEqual(["fork", "unknown"]);
-    expect(selectRecentContinuations(workspaces, [sessions], 3, true)).toHaveLength(3);
     const metadata = [{ ...sessions[0], availability: "metadata-only" as const }];
     expect(metadataOnlyContinuationWorkspace(workspaces, [metadata])).toBeUndefined();
-    expect(metadataOnlyContinuationWorkspace(workspaces, [metadata], true)?.id).toBe("first");
   });
 
   it("waits for the runtime preference before enabling session indexing", () => {

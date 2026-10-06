@@ -69,6 +69,8 @@ const APP_DATA_DIRECTORY: &str = "ai.agentkib.dev";
 #[cfg(not(feature = "dev-app"))]
 const LEGACY_APP_DATA_DIRECTORY: &str = "com.agentkib.desktop";
 
+const CODEX_SESSION_CLASSIFICATION_REVISION: &str = "2";
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -544,6 +546,40 @@ impl Store {
                  INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '15');",
             )?;
         }
+        let codex_classification_revision = transaction
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'codex_session_classification_revision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if codex_classification_revision.as_deref() != Some(CODEX_SESSION_CLASSIFICATION_REVISION) {
+            // The cached origin predates explicit exec classification. Preserve
+            // identities/history and let the normal scan recalculate only Codex.
+            transaction.execute(
+                "INSERT INTO schema_meta(key, value)
+                 SELECT 'codex_session_classification_pending:' || workspace_id, ?1
+                 FROM conversation_sessions WHERE agent = 'codex' GROUP BY workspace_id
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [CODEX_SESSION_CLASSIFICATION_REVISION],
+            )?;
+            transaction.execute(
+                "INSERT INTO schema_meta(key, value)
+                 SELECT 'codex_session_classification_stale:' || id, workspace_id
+                 FROM conversation_sessions WHERE agent = 'codex'
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )?;
+            transaction.execute(
+                "UPDATE conversation_index_status SET last_success_at = NULL WHERE agent = 'codex'",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('codex_session_classification_revision', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [CODEX_SESSION_CLASSIFICATION_REVISION],
+            )?;
+        }
         let has_usage_events: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_events')",
             [],
@@ -988,6 +1024,14 @@ impl Store {
                         .map(|parent| conversation_identifier(&salt, agent, parent)),
                 ],
             )?;
+            if agent == AgentKind::Codex {
+                // A partial scan can verify individual records even while an
+                // unreadable native database keeps other cached rows stale.
+                transaction.execute(
+                    "DELETE FROM schema_meta WHERE key = ?1",
+                    [format!("codex_session_classification_stale:{id}")],
+                )?;
+            }
         }
         if owner_id != workspace_id {
             // Moving cache is not a successful owner refresh. Keep its existing
@@ -1016,6 +1060,32 @@ impl Store {
                error_detail = NULL",
             params![workspace_id, agent_value, to_i64(session_count), indexed_at.to_rfc3339()],
         )?;
+        if agent == AgentKind::Codex && replace_existing {
+            transaction.execute(
+                "DELETE FROM schema_meta WHERE key = ?1
+                   OR (key GLOB 'codex_session_classification_stale:*' AND value = ?2)",
+                params![
+                    format!("codex_session_classification_pending:{workspace_id}"),
+                    workspace_id,
+                ],
+            )?;
+        } else if agent == AgentKind::Codex {
+            // A partial source can finish the upgrade without being a complete
+            // inventory. Only cached rows still needing classification keep the
+            // upgrade read pending; marker values may predate a workspace move.
+            transaction.execute(
+                "DELETE FROM schema_meta WHERE key = ?1 AND NOT EXISTS (
+                   SELECT 1 FROM conversation_sessions AS session
+                   JOIN schema_meta AS stale
+                     ON stale.key = 'codex_session_classification_stale:' || session.id
+                   WHERE session.workspace_id = ?2 AND session.agent = 'codex'
+                 )",
+                params![
+                    format!("codex_session_classification_pending:{workspace_id}"),
+                    workspace_id,
+                ],
+            )?;
+        }
         transaction.commit()?;
         self.list_conversation_sessions(workspace_id)
     }
@@ -1085,12 +1155,26 @@ impl Store {
                     git_branch, archived, sidechain, availability, origin,
                     spawned_by_session_id, forked_from_session_id
              FROM conversation_sessions WHERE workspace_id = ?1
+               AND (agent != 'codex' OR NOT EXISTS (
+                 SELECT 1 FROM schema_meta
+                 WHERE key = 'codex_session_classification_stale:' || conversation_sessions.id
+               ))
              ORDER BY COALESCE(updated_at, created_at) DESC, id DESC",
         )?;
         statement
             .query_map([workspace_id], row_to_conversation_session)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    pub fn codex_session_classification_pending(&self, workspace_id: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key = ?1)",
+            [format!(
+                "codex_session_classification_pending:{workspace_id}"
+            )],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn get_conversation_session(&self, id: &str) -> Result<Option<ConversationSessionSummary>> {
@@ -1152,6 +1236,24 @@ impl Store {
     pub fn clear_conversation_index(&self, workspace_id: Option<&str>) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         if let Some(workspace_id) = workspace_id {
+            // Resolve live marker ownership before deleting its session row.
+            // A moved session's marker can still contain its previous workspace.
+            transaction.execute(
+                "DELETE FROM schema_meta WHERE key = ?1
+                   OR (key GLOB 'codex_session_classification_stale:*' AND (
+                     EXISTS (SELECT 1 FROM conversation_sessions AS session
+                       WHERE schema_meta.key = 'codex_session_classification_stale:' || session.id
+                         AND session.workspace_id = ?2)
+                     OR (value = ?2 AND NOT EXISTS (
+                       SELECT 1 FROM conversation_sessions AS session
+                       WHERE schema_meta.key = 'codex_session_classification_stale:' || session.id
+                     ))
+                   ))",
+                params![
+                    format!("codex_session_classification_pending:{workspace_id}"),
+                    workspace_id,
+                ],
+            )?;
             transaction.execute(
                 "DELETE FROM conversation_sessions WHERE workspace_id = ?1",
                 [workspace_id],
@@ -1161,6 +1263,12 @@ impl Store {
                 [workspace_id],
             )?;
         } else {
+            transaction.execute(
+                "DELETE FROM schema_meta
+                 WHERE key GLOB 'codex_session_classification_pending:*'
+                    OR key GLOB 'codex_session_classification_stale:*'",
+                [],
+            )?;
             transaction.execute("DELETE FROM conversation_sessions", [])?;
             transaction.execute("DELETE FROM conversation_index_status", [])?;
         }
@@ -4432,6 +4540,601 @@ mod tests {
                 .list_conversation_sessions(&registered.id)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn codex_classification_upgrade_invalidates_only_once_and_preserves_sessions() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let database = dir.path().join("db.sqlite");
+        let store = Store::open(&database).unwrap();
+        let registered = store.add_workspace(&workspace).unwrap();
+        let codex = NativeSessionSummary {
+            native_ref: "exec-before-upgrade".into(),
+            agent: AgentKind::Codex,
+            title: Some("Keep this title".into()),
+            origin: SessionOrigin::Interactive,
+            spawned_by_session_id: None,
+            forked_from_session_id: Some("fork-source".into()),
+            created_at: None,
+            updated_at: None,
+            message_count: Some(7),
+            git_branch: Some("main".into()),
+            archived: false,
+            sidechain: false,
+            availability: agentkib_conversations::SessionAvailability::Readable,
+        };
+        let claude = NativeSessionSummary {
+            native_ref: "claude-unaffected".into(),
+            agent: AgentKind::ClaudeCode,
+            forked_from_session_id: None,
+            ..codex.clone()
+        };
+        let cli = NativeSessionSummary {
+            native_ref: "cli-readable-current-database".into(),
+            forked_from_session_id: None,
+            ..codex.clone()
+        };
+        let unreadable = NativeSessionSummary {
+            native_ref: "unreadable-legacy-database".into(),
+            ..cli.clone()
+        };
+        store
+            .sync_conversation_sessions(
+                &registered.id,
+                AgentKind::Codex,
+                &[codex.clone(), cli.clone(), unreadable.clone()],
+            )
+            .unwrap();
+        store
+            .sync_conversation_sessions(&registered.id, AgentKind::ClaudeCode, &[claude])
+            .unwrap();
+        let before =
+            serde_json::to_value(store.list_conversation_sessions(&registered.id).unwrap())
+                .unwrap();
+        store
+            .connection
+            .execute(
+                "DELETE FROM schema_meta WHERE key = 'codex_session_classification_revision'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+
+        let upgraded = Store::open(&database).unwrap();
+        let status = upgraded.conversation_index_status(&registered.id).unwrap();
+        assert_eq!(
+            status
+                .iter()
+                .find(|s| s.agent == AgentKind::Codex)
+                .unwrap()
+                .freshness,
+            SessionIndexFreshness::Unavailable
+        );
+        assert_eq!(
+            status
+                .iter()
+                .find(|s| s.agent == AgentKind::ClaudeCode)
+                .unwrap()
+                .freshness,
+            SessionIndexFreshness::Fresh
+        );
+        let codex_id = upgraded
+            .conversation_id(AgentKind::Codex, &codex.native_ref)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(
+                upgraded
+                    .get_conversation_session(&codex_id)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
+            *before
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["id"] == codex_id)
+                .unwrap()
+        );
+        assert!(
+            upgraded
+                .codex_session_classification_pending(&registered.id)
+                .unwrap()
+        );
+        assert!(
+            upgraded
+                .list_conversation_sessions(&registered.id)
+                .unwrap()
+                .iter()
+                .all(|record| { record.agent == AgentKind::ClaudeCode })
+        );
+        let refreshed = NativeSessionSummary {
+            origin: SessionOrigin::Execution,
+            ..codex
+        };
+        // A partial scan verifies the current database even if a coexisting
+        // legacy database is unreadable. Only unclassified cached rows stay hidden.
+        upgraded
+            .sync_conversation_sessions_partial(
+                &registered.id,
+                AgentKind::Codex,
+                &[refreshed.clone(), cli.clone()],
+            )
+            .unwrap();
+        assert!(
+            upgraded
+                .codex_session_classification_pending(&registered.id)
+                .unwrap()
+        );
+        drop(upgraded);
+        let upgraded = Store::open(&database).unwrap();
+        let partial = upgraded.list_conversation_sessions(&registered.id).unwrap();
+        assert_eq!(partial.len(), 3);
+        let cli_id = upgraded
+            .conversation_id(AgentKind::Codex, &cli.native_ref)
+            .unwrap();
+        assert!(partial.iter().any(|session| {
+            session.id == cli_id && session.origin == SessionOrigin::Interactive
+        }));
+        assert!(partial.iter().any(|session| {
+            session.id == codex_id && session.origin == SessionOrigin::Execution
+        }));
+        let unreadable_id = upgraded
+            .conversation_id(AgentKind::Codex, &unreadable.native_ref)
+            .unwrap();
+        assert!(partial.iter().all(|session| session.id != unreadable_id));
+        assert!(
+            upgraded
+                .get_conversation_session(&unreadable_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            upgraded
+                .codex_session_classification_pending(&registered.id)
+                .unwrap()
+        );
+        upgraded
+            .sync_conversation_sessions(&registered.id, AgentKind::Codex, &[refreshed, cli])
+            .unwrap();
+        drop(upgraded);
+
+        let reopened = Store::open(&database).unwrap();
+        assert!(
+            !reopened
+                .codex_session_classification_pending(&registered.id)
+                .unwrap()
+        );
+        assert_eq!(
+            reopened
+                .list_conversation_sessions(&registered.id)
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            reopened
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_meta WHERE key GLOB 'codex_session_classification_stale:*'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert!(
+            reopened
+                .conversation_index_status(&registered.id)
+                .unwrap()
+                .iter()
+                .all(|s| { s.freshness == SessionIndexFreshness::Fresh })
+        );
+        let saved = reopened
+            .get_conversation_session(&codex_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.origin, SessionOrigin::Execution);
+        assert_eq!(saved.title.as_deref(), Some("Keep this title"));
+        assert_eq!(saved.message_count, Some(7));
+        assert!(saved.forked_from_session_id.is_some());
+    }
+
+    #[test]
+    fn clear_conversation_index_clears_classification_state_by_current_workspace() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let store = Store::open(&database).unwrap();
+        let mut workspaces = Vec::new();
+        for name in ["first", "second"] {
+            let path = dir.path().join(name);
+            fs::create_dir_all(&path).unwrap();
+            workspaces.push(store.add_workspace(&path).unwrap());
+        }
+        let first = NativeSessionSummary {
+            native_ref: "first-session".into(),
+            agent: AgentKind::Codex,
+            title: Some("Cached conversation".into()),
+            origin: SessionOrigin::Interactive,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
+            created_at: None,
+            updated_at: None,
+            message_count: None,
+            git_branch: None,
+            archived: false,
+            sidechain: false,
+            availability: agentkib_conversations::SessionAvailability::Readable,
+        };
+        let moved = NativeSessionSummary {
+            native_ref: "moved-session".into(),
+            ..first.clone()
+        };
+        let second = NativeSessionSummary {
+            native_ref: "second-session".into(),
+            ..first.clone()
+        };
+        store
+            .sync_conversation_sessions(
+                &workspaces[0].id,
+                AgentKind::Codex,
+                &[first.clone(), moved.clone()],
+            )
+            .unwrap();
+        store
+            .sync_conversation_sessions(
+                &workspaces[1].id,
+                AgentKind::Codex,
+                std::slice::from_ref(&second),
+            )
+            .unwrap();
+        let first_id = store
+            .conversation_id(AgentKind::Codex, &first.native_ref)
+            .unwrap();
+        let moved_id = store
+            .conversation_id(AgentKind::Codex, &moved.native_ref)
+            .unwrap();
+        let second_id = store
+            .conversation_id(AgentKind::Codex, &second.native_ref)
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "DELETE FROM schema_meta WHERE key = 'codex_session_classification_revision'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        // Marker values can retain old ownership after the cache row moves.
+        store
+            .connection
+            .execute(
+                "UPDATE conversation_sessions SET workspace_id = ?1 WHERE id = ?2",
+                params![workspaces[1].id, moved_id],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE schema_meta SET value = ?1 WHERE key = ?2",
+                params![
+                    workspaces[1].id,
+                    format!("codex_session_classification_stale:{first_id}"),
+                ],
+            )
+            .unwrap();
+        for (key, value) in [
+            (
+                "codex_session_classification_stale:orphan-first",
+                workspaces[0].id.as_str(),
+            ),
+            (
+                "codex_session_classification_stale:orphan-second",
+                workspaces[1].id.as_str(),
+            ),
+            ("unrelated-setting", "keep"),
+        ] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO schema_meta(key, value) VALUES (?1, ?2)",
+                    params![key, value],
+                )
+                .unwrap();
+        }
+
+        store
+            .clear_conversation_index(Some(&workspaces[0].id))
+            .unwrap();
+        assert!(
+            !store
+                .codex_session_classification_pending(&workspaces[0].id)
+                .unwrap()
+        );
+        assert!(
+            store
+                .codex_session_classification_pending(&workspaces[1].id)
+                .unwrap()
+        );
+        assert!(store.get_conversation_session(&first_id).unwrap().is_none());
+        assert_eq!(
+            store
+                .get_conversation_session(&moved_id)
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            workspaces[1].id,
+        );
+        assert!(
+            store
+                .get_conversation_session(&second_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .conversation_index_status(&workspaces[0].id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .conversation_index_status(&workspaces[1].id)
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut stale = store.connection.prepare(
+            "SELECT key FROM schema_meta WHERE key GLOB 'codex_session_classification_stale:*' ORDER BY key",
+        ).unwrap();
+        let remaining = stale
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let mut expected = vec![
+            format!("codex_session_classification_stale:{moved_id}"),
+            format!("codex_session_classification_stale:{second_id}"),
+            "codex_session_classification_stale:orphan-second".into(),
+        ];
+        expected.sort();
+        assert_eq!(remaining, expected);
+        drop(stale);
+
+        store.clear_conversation_index(None).unwrap();
+        for workspace in &workspaces {
+            assert!(
+                !store
+                    .codex_session_classification_pending(&workspace.id)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .conversation_index_status(&workspace.id)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .list_conversation_sessions(&workspace.id)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let classification_markers: i64 = store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_meta
+             WHERE key GLOB 'codex_session_classification_pending:*'
+                OR key GLOB 'codex_session_classification_stale:*'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(classification_markers, 0);
+        for (key, expected) in [
+            (
+                "codex_session_classification_revision",
+                CODEX_SESSION_CLASSIFICATION_REVISION,
+            ),
+            ("unrelated-setting", "keep"),
+        ] {
+            let value: String = store
+                .connection
+                .query_row(
+                    "SELECT value FROM schema_meta WHERE key = ?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(value, expected);
+        }
+        drop(store);
+        let reopened = Store::open(&database).unwrap();
+        for workspace in &workspaces {
+            assert!(
+                !reopened
+                    .codex_session_classification_pending(&workspace.id)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn codex_partial_classification_finishes_only_after_current_cached_rows_are_verified() {
+        let dir = tempdir().unwrap();
+        let database = dir.path().join("db.sqlite");
+        let store = Store::open(&database).unwrap();
+        let mut workspaces = Vec::new();
+        for name in ["first", "second"] {
+            let path = dir.path().join(name);
+            fs::create_dir_all(&path).unwrap();
+            workspaces.push(store.add_workspace(&path).unwrap());
+        }
+        let first = NativeSessionSummary {
+            native_ref: "first-session".into(),
+            agent: AgentKind::Codex,
+            title: Some("Cached conversation".into()),
+            origin: SessionOrigin::Interactive,
+            spawned_by_session_id: None,
+            forked_from_session_id: None,
+            created_at: None,
+            updated_at: None,
+            message_count: None,
+            git_branch: None,
+            archived: false,
+            sidechain: false,
+            availability: agentkib_conversations::SessionAvailability::Readable,
+        };
+        let last = NativeSessionSummary {
+            native_ref: "last-session".into(),
+            ..first.clone()
+        };
+        let second = NativeSessionSummary {
+            native_ref: "second-session".into(),
+            ..first.clone()
+        };
+        store
+            .sync_conversation_sessions(
+                &workspaces[0].id,
+                AgentKind::Codex,
+                &[first.clone(), last.clone()],
+            )
+            .unwrap();
+        store
+            .sync_conversation_sessions(
+                &workspaces[1].id,
+                AgentKind::Codex,
+                std::slice::from_ref(&second),
+            )
+            .unwrap();
+        let last_id = store
+            .conversation_id(AgentKind::Codex, &last.native_ref)
+            .unwrap();
+        let second_id = store
+            .conversation_id(AgentKind::Codex, &second.native_ref)
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "DELETE FROM schema_meta WHERE key = 'codex_session_classification_revision'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        for (id, old_workspace) in [
+            (&last_id, &workspaces[1].id),
+            (&second_id, &workspaces[0].id),
+        ] {
+            store
+                .connection
+                .execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = ?2",
+                    params![
+                        old_workspace,
+                        format!("codex_session_classification_stale:{id}")
+                    ],
+                )
+                .unwrap();
+        }
+        let first = NativeSessionSummary {
+            origin: SessionOrigin::Execution,
+            ..first
+        };
+        let partial = store
+            .sync_conversation_sessions_partial(&workspaces[0].id, AgentKind::Codex, &[first])
+            .unwrap();
+        assert_eq!(partial.len(), 1);
+        assert!(
+            store
+                .codex_session_classification_pending(&workspaces[0].id)
+                .unwrap()
+        );
+        assert!(
+            store
+                .codex_session_classification_pending(&workspaces[1].id)
+                .unwrap()
+        );
+        // Failed batches roll back both the updated row and its stale marker.
+        let wrong_agent = NativeSessionSummary {
+            agent: AgentKind::ClaudeCode,
+            ..last.clone()
+        };
+        assert!(
+            store
+                .sync_conversation_sessions_partial(
+                    &workspaces[0].id,
+                    AgentKind::Codex,
+                    &[last.clone(), wrong_agent],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .list_conversation_sessions(&workspaces[0].id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .codex_session_classification_pending(&workspaces[0].id)
+                .unwrap()
+        );
+
+        let partial = store
+            .sync_conversation_sessions_partial(&workspaces[0].id, AgentKind::Codex, &[last])
+            .unwrap();
+        assert_eq!(partial.len(), 2);
+        assert!(
+            !store
+                .codex_session_classification_pending(&workspaces[0].id)
+                .unwrap()
+        );
+        assert!(
+            store
+                .codex_session_classification_pending(&workspaces[1].id)
+                .unwrap()
+        );
+        assert!(
+            store
+                .list_conversation_sessions(&workspaces[1].id)
+                .unwrap()
+                .is_empty()
+        );
+        // Completing classification does not claim that the source's partial
+        // inventory succeeded; Runtime still records that failure separately.
+        store
+            .record_conversation_index_failure(
+                &workspaces[0].id,
+                AgentKind::Codex,
+                "source-unavailable",
+                "incomplete",
+            )
+            .unwrap();
+        drop(store);
+        let reopened = Store::open(&database).unwrap();
+        assert!(
+            !reopened
+                .codex_session_classification_pending(&workspaces[0].id)
+                .unwrap()
+        );
+        let status = reopened
+            .conversation_index_status(&workspaces[0].id)
+            .unwrap();
+        assert_eq!(status[0].freshness, SessionIndexFreshness::Stale);
+        assert_eq!(status[0].error_key.as_deref(), Some("source-unavailable"));
+        assert_eq!(
+            reopened
+                .list_conversation_sessions(&workspaces[0].id)
+                .unwrap()
+                .len(),
+            2
         );
     }
 

@@ -74,6 +74,42 @@ afterEach(() => {
 });
 
 describe("desktop conversation catalog", () => {
+  it("shares one observation across consumers and keeps it alive when another consumer is disabled", async () => {
+    const { bridge, emit } = fixture();
+    const first = renderHook(() => useConversationCatalog(true));
+    await waitFor(() => expect(first.result.current.sessions[0]?.id).toBe("initial"));
+    const second = renderHook(({ enabled }) => useConversationCatalog(enabled), {
+      initialProps: { enabled: true },
+    });
+    const disabled = renderHook(() => useConversationCatalog(false));
+    await waitFor(() => expect(second.result.current.sessions[0]?.id).toBe("initial"));
+    expect(bridge.subscribe).toHaveBeenCalledTimes(1);
+    expect(disabled.result.current.sessions).toEqual([]);
+    first.unmount();
+    expect(bridge.unsubscribe).not.toHaveBeenCalled();
+    vi.mocked(bridge.request).mockResolvedValue(catalog("updated"));
+    act(() =>
+      emit({
+        protocolVersion: 2,
+        sessionId: "",
+        subscriptionId: "catalog",
+        runtimeBootId: "boot",
+        epoch: "epoch",
+        seq: 1,
+        cursor: "epoch:1",
+        type: "invalidate",
+        payload: { domains: ["catalog"] },
+      }),
+    );
+    await waitFor(() => expect(second.result.current.sessions[0]?.id).toBe("updated"));
+    second.rerender({ enabled: false });
+    expect(bridge.unsubscribe).toHaveBeenCalledTimes(1);
+    second.rerender({ enabled: true });
+    await waitFor(() => expect(bridge.subscribe).toHaveBeenCalledTimes(2));
+    disabled.unmount();
+    expect(second.result.current.sessions[0]?.id).toBe("updated");
+  });
+
   it("normalizes Claude's verified history alias for desktop links and continuation", async () => {
     const { bridge } = fixture();
     vi.mocked(bridge.request).mockResolvedValue({

@@ -1287,7 +1287,7 @@
   "conversations.filter.archived": "归档",
   "conversations.filter.metadata": "仅元数据",
   "conversations.filter.all": "全部",
-  "conversations.showAuxiliary": "显示辅助会话",
+  "sessions.hiddenRecord": "该记录属于子代理或执行过程，不属于普通会话，已返回会话目录。",
   "conversations.auxiliary": "辅助会话",
   "conversations.forked": "分叉会话",
   "conversations.sourceDetail": "来源：{{source}} · {{date}}",

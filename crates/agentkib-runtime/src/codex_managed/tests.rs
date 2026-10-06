@@ -29,6 +29,1238 @@ fn fixture() -> (tempfile::TempDir, Service, String) {
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+
+// Build ownership and native metadata directly; catalog checks must never start
+// a native process, including the mock app-server used by control tests.
+struct PairedCatalogFixture {
+    temp: tempfile::TempDir,
+    store: Store,
+    record: Record,
+    database: rusqlite::Connection,
+}
+impl PairedCatalogFixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("home")).unwrap();
+        std::fs::create_dir(temp.path().join("project")).unwrap();
+        let store = Store::open(&temp.path().join("agentkib.db")).unwrap();
+        let workspace = store.add_workspace(&temp.path().join("project")).unwrap();
+        let record = serde_json::from_value(json!({
+            "id":"private-managed-owner",
+            "workspace_id":workspace.id,
+            "workspace":temp.path().join("project").canonicalize().unwrap(),
+            "home":temp.path().join("home").canonicalize().unwrap(),
+            "native_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "title":"private-ledger-title",
+            "created_at":"2026-10-06T00:00:00Z",
+            "released":false,
+            "adopted":false,
+            "source_session_id":"private-owner-source",
+            "snapshot":{"status":"idle","private":"private-owner-snapshot"}
+        }))
+        .unwrap();
+        let database = rusqlite::Connection::open(temp.path().join("home/state_1.sqlite")).unwrap();
+        database.execute_batch(
+            "CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, source TEXT, thread_source TEXT)",
+        ).unwrap();
+        Self {
+            temp,
+            store,
+            record,
+            database,
+        }
+    }
+    fn add_native(&self, native: &str, source: &str) {
+        let path = self
+            .temp
+            .path()
+            .join("home")
+            .join(format!("{native}.jsonl"));
+        std::fs::write(&path, format!("{}\n", json!({
+            "type":"session_meta",
+            "payload":{"id":native,"cwd":self.record.workspace,"source":source,"thread_source":"user"}
+        }))).unwrap();
+        self.database
+            .execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, 'Native title', ?4, 'user')",
+                rusqlite::params![
+                    native,
+                    path.to_string_lossy(),
+                    self.record.workspace.to_string_lossy(),
+                    source
+                ],
+            )
+            .unwrap();
+    }
+    fn sync(&self) {
+        let provider = agentkib_conversations::CodexProvider::from_home(self.record.home.clone());
+        self.store
+            .sync_conversation_sessions(
+                &self.record.workspace_id,
+                agentkib_core::AgentKind::Codex,
+                &provider.list_sessions(&self.record.workspace).unwrap(),
+            )
+            .unwrap();
+    }
+    fn ledger_path(&self) -> PathBuf {
+        self.temp.path().join("codex-managed/executions.sqlite")
+    }
+    fn save_owner(&self, record: &Record) {
+        Ledger::open(self.ledger_path())
+            .unwrap()
+            .save(record)
+            .unwrap();
+    }
+    fn save_inactive_owners(&self, count: usize) {
+        Ledger::open(self.ledger_path()).unwrap();
+        let mut connection = rusqlite::Connection::open(self.ledger_path()).unwrap();
+        let transaction = connection.transaction().unwrap();
+        let mut record = self.record.clone();
+        record.native_id = None;
+        record.released = true;
+        record.adopted = true;
+        {
+            let mut statement = transaction
+                .prepare("INSERT INTO managed_sessions VALUES (?1, ?2)")
+                .unwrap();
+            for index in 0..count {
+                record.id = format!("inactive-owner-{index}");
+                statement
+                    .execute(rusqlite::params![
+                        record.id,
+                        serde_json::to_string(&record).unwrap()
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+    fn catalog(&self) -> Value {
+        crate::RemoteSessionSource {
+            data_dir: self.temp.path().to_owned(),
+        }
+        .catalog_with_codex_home(Some(&self.record.home))
+        .unwrap()
+    }
+    fn local_catalog(&self) -> Vec<Value> {
+        Service {
+            ledger: Some(Ledger::open(self.ledger_path()).unwrap()),
+            test_root: Some(self.temp.path().to_owned()),
+            ..Default::default()
+        }
+        .catalog()
+        .unwrap()
+    }
+}
+
+#[test]
+fn paired_catalog_preserves_only_owned_executions_and_keeps_native_ids() {
+    use agentkib_conversations::SessionOrigin;
+    let fixture = PairedCatalogFixture::new();
+    let native = fixture.record.native_id.as_deref().unwrap();
+    fixture.add_native(native, "exec");
+    fixture.add_native(&id(), "exec");
+    fixture.add_native(&id(), "cli");
+    fixture.add_native(&id(), "subagent");
+    fixture.sync();
+    fixture.save_owner(&fixture.record);
+    let native_id = fixture
+        .store
+        .conversation_id(agentkib_core::AgentKind::Codex, native)
+        .unwrap();
+    let catalog = fixture.catalog();
+    let records = catalog["sessions"].as_array().unwrap();
+    assert_eq!(records.len(), 4);
+    assert_eq!(
+        records
+            .iter()
+            .find(|record| record["id"] == native_id)
+            .unwrap()["origin"],
+        "interactive"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["origin"] == "execution")
+            .count(),
+        1
+    );
+    // The existing frontend's visibility contract retains the native owner alias
+    // and ordinary CLI conversation while excluding executions and auxiliaries.
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["origin"] != "execution" && record["origin"] != "auxiliary")
+            .count(),
+        2
+    );
+    let encoded = catalog.to_string();
+    for private in [
+        fixture.record.id.as_str(),
+        fixture.record.title.as_str(),
+        "private-owner-source",
+        "private-owner-snapshot",
+        "executionMode",
+        "indexedSessionIds",
+    ] {
+        assert!(!encoded.contains(private), "private field: {private}");
+    }
+    assert_eq!(
+        fixture
+            .store
+            .get_conversation_session(&native_id)
+            .unwrap()
+            .unwrap()
+            .origin,
+        SessionOrigin::Execution
+    );
+    assert_eq!(fixture.catalog(), catalog);
+    fixture
+        .store
+        .exclude_workspace(&fixture.record.workspace_id)
+        .unwrap();
+    assert_eq!(fixture.catalog()["sessions"], json!([]));
+    assert_eq!(fixture.catalog()["workspaces"], json!([]));
+    std::fs::write(
+        fixture.temp.path().join("preferences.json"),
+        r#"{"session_index_enabled":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::RemoteSessionSource {
+            data_dir: fixture.temp.path().to_owned()
+        }
+        .catalog_with_codex_home(Some(&fixture.record.home))
+        .unwrap_err()
+        .to_string(),
+        "index-disabled"
+    );
+}
+
+#[test]
+fn paired_catalog_deduplicates_verified_native_aliases_and_rejects_ambiguous_owners() {
+    let fixture = PairedCatalogFixture::new();
+    let native = fixture.record.native_id.as_deref().unwrap();
+    fixture.add_native(native, "exec");
+    fixture.add_native(&native.to_uppercase(), "exec");
+    fixture.sync();
+    fixture.save_owner(&fixture.record);
+    let indexed_ids: BTreeSet<_> = fixture
+        .store
+        .list_conversation_sessions(&fixture.record.workspace_id)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.id)
+        .collect();
+    assert_eq!(indexed_ids.len(), 2);
+    let catalog = fixture.catalog();
+    assert_eq!(catalog["sessions"].as_array().unwrap().len(), 1);
+    assert!(indexed_ids.contains(catalog["sessions"][0]["id"].as_str().unwrap()));
+    assert_eq!(catalog["sessions"][0]["origin"], "interactive");
+
+    for another_workspace in [false, true] {
+        let mut conflict = fixture.record.clone();
+        conflict.id = "other-private-owner".into();
+        if another_workspace {
+            let path = fixture.temp.path().join("another-project");
+            std::fs::create_dir(&path).unwrap();
+            let workspace = fixture.store.add_workspace(&path).unwrap();
+            conflict.workspace_id = workspace.id;
+            conflict.workspace = path.canonicalize().unwrap();
+        }
+        fixture.save_owner(&conflict);
+        let catalog = fixture.catalog();
+        assert_eq!(catalog["sessions"].as_array().unwrap().len(), 2);
+        assert!(
+            catalog["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|record| record["origin"] == "execution")
+        );
+    }
+}
+
+#[test]
+fn paired_catalog_deduplicates_interactive_native_aliases_too() {
+    let fixture = PairedCatalogFixture::new();
+    let native = fixture.record.native_id.as_deref().unwrap();
+    fixture.add_native(native, "cli");
+    fixture.add_native(&native.to_uppercase(), "cli");
+    fixture.sync();
+    fixture.save_owner(&fixture.record);
+    let catalog = fixture.catalog();
+    assert_eq!(catalog["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["sessions"][0]["origin"], "interactive");
+}
+
+#[test]
+fn paired_catalog_projects_unique_ownership_at_record_limit() {
+    for owner_first in [true, false] {
+        let fixture = PairedCatalogFixture::new();
+        let native = fixture.record.native_id.as_deref().unwrap();
+        fixture.add_native(native, "exec");
+        fixture.add_native(&native.to_uppercase(), "exec");
+        let ordinary_native = id();
+        fixture.add_native(&ordinary_native, "cli");
+        fixture.sync();
+        if owner_first {
+            fixture.save_owner(&fixture.record);
+        }
+        fixture.save_inactive_owners(19_999);
+        if !owner_first {
+            fixture.save_owner(&fixture.record);
+        }
+        let ledger = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+        assert_eq!(
+            ledger
+                .query_row("SELECT COUNT(*) FROM managed_sessions", [], |row| {
+                    row.get::<_, usize>(0)
+                })
+                .unwrap(),
+            20_000
+        );
+        drop(ledger);
+        let aliases: BTreeSet<_> = [native, &native.to_uppercase()]
+            .into_iter()
+            .map(|native| {
+                fixture
+                    .store
+                    .conversation_id(agentkib_core::AgentKind::Codex, native)
+                    .unwrap()
+            })
+            .collect();
+        let ordinary_id = fixture
+            .store
+            .conversation_id(agentkib_core::AgentKind::Codex, &ordinary_native)
+            .unwrap();
+        let catalog = fixture.catalog();
+        let sessions = catalog["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2, "owner_first={owner_first}");
+        assert_eq!(
+            sessions
+                .iter()
+                .filter(|session| aliases.contains(session["id"].as_str().unwrap()))
+                .count(),
+            1,
+            "owner_first={owner_first}"
+        );
+        assert!(sessions.iter().any(|session| session["id"] == ordinary_id));
+        assert!(sessions.iter().all(|session| {
+            session["origin"] == "interactive" && session["availability"] == "readable"
+        }));
+    }
+}
+
+#[test]
+fn paired_catalog_skips_managed_projection_when_ownership_exceeds_record_limit() {
+    use agentkib_conversations::SessionOrigin;
+    use agentkib_core::AgentKind;
+    for total in [20_002, 20_001] {
+        for case in [
+            "conflict-owner-outside-range",
+            "unique-owner-first",
+            "unique-owner-last",
+            "conflict-owners-in-range",
+        ] {
+            let fixture = PairedCatalogFixture::new();
+            let native = fixture.record.native_id.as_deref().unwrap();
+            fixture.add_native(native, "exec");
+            fixture.add_native(&native.to_uppercase(), "exec");
+            let ordinary_native = id();
+            fixture.add_native(&ordinary_native, "cli");
+            fixture.sync();
+            let provider =
+                agentkib_conversations::CodexProvider::from_home(fixture.record.home.clone());
+            let mut other_agent = provider
+                .list_sessions(&fixture.record.workspace)
+                .unwrap()
+                .into_iter()
+                .find(|session| session.native_ref == ordinary_native)
+                .unwrap();
+            other_agent.agent = AgentKind::ClaudeCode;
+            fixture
+                .store
+                .sync_conversation_sessions(
+                    &fixture.record.workspace_id,
+                    other_agent.agent,
+                    &[other_agent],
+                )
+                .unwrap();
+
+            let mut old_created_owner = fixture.record.clone();
+            old_created_owner.released = true;
+            let mut new_adopted_owner = fixture.record.clone();
+            new_adopted_owner.id = "new-adopted-owner".into();
+            new_adopted_owner.adopted = true;
+            let has_conflict = case.starts_with("conflict-");
+            if case == "unique-owner-first" {
+                fixture.save_owner(&new_adopted_owner);
+            } else if case == "conflict-owner-outside-range" {
+                fixture.save_owner(&old_created_owner);
+            }
+            fixture.save_inactive_owners(total - if has_conflict { 2 } else { 1 });
+            if case == "conflict-owners-in-range" {
+                fixture.save_owner(&old_created_owner);
+            }
+            if case != "unique-owner-first" {
+                fixture.save_owner(&new_adopted_owner);
+            }
+            let ledger = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+            assert_eq!(
+                ledger
+                    .query_row("SELECT COUNT(*) FROM managed_sessions", [], |row| {
+                        row.get::<_, usize>(0)
+                    })
+                    .unwrap(),
+                total,
+                "{total}: {case}"
+            );
+            if case == "conflict-owner-outside-range" {
+                // At 20,002 rows the released created owner precedes exactly
+                // 20,000 inactive records and the live adopted owner. The old
+                // bounded read therefore cannot see the conflicting owner.
+                assert!(
+                    !ledger
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM (SELECT id FROM managed_sessions ORDER BY rowid DESC LIMIT 20000) WHERE id=?1)",
+                            [&old_created_owner.id],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .unwrap(),
+                    "{total}: {case}"
+                );
+            }
+            drop(ledger);
+
+            let indexed = fixture
+                .store
+                .list_conversation_sessions(&fixture.record.workspace_id)
+                .unwrap();
+            let indexed_ids: BTreeSet<_> =
+                indexed.iter().map(|session| session.id.as_str()).collect();
+            let execution_ids: BTreeSet<_> = indexed
+                .iter()
+                .filter(|session| session.origin == SessionOrigin::Execution)
+                .map(|session| session.id.as_str())
+                .collect();
+            assert_eq!(indexed_ids.len(), 4);
+            assert_eq!(execution_ids.len(), 2);
+            let catalog = fixture.catalog();
+            let sessions = catalog["sessions"].as_array().unwrap();
+            for session in sessions {
+                let expected = if execution_ids.contains(session["id"].as_str().unwrap()) {
+                    "execution"
+                } else {
+                    "interactive"
+                };
+                assert_eq!(session["origin"], expected, "{total}: {case}");
+                assert_eq!(session["availability"], "readable", "{total}: {case}");
+            }
+            assert_eq!(
+                sessions
+                    .iter()
+                    .map(|session| session["id"].as_str().unwrap())
+                    .collect::<BTreeSet<_>>(),
+                indexed_ids,
+                "{total}: {case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_catalog_projects_unique_aliases_at_record_limit() {
+    for owner_first in [true, false] {
+        let fixture = PairedCatalogFixture::new();
+        let native = fixture.record.native_id.as_deref().unwrap();
+        fixture.add_native(native, "exec");
+        fixture.add_native(&native.to_uppercase(), "exec");
+        fixture.sync();
+        if owner_first {
+            fixture.save_owner(&fixture.record);
+        }
+        fixture.save_inactive_owners(19_999);
+        if !owner_first {
+            fixture.save_owner(&fixture.record);
+        }
+        let count = rusqlite::Connection::open(fixture.ledger_path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM managed_sessions", [], |row| {
+                row.get::<_, usize>(0)
+            })
+            .unwrap();
+        assert_eq!(count, 20_000, "owner_first={owner_first}");
+        let expected_aliases: BTreeSet<_> = [native, &native.to_uppercase()]
+            .into_iter()
+            .map(|native| {
+                fixture
+                    .store
+                    .conversation_id(agentkib_core::AgentKind::Codex, native)
+                    .unwrap()
+            })
+            .collect();
+        let catalog = fixture.local_catalog();
+        assert_eq!(catalog.len(), 1, "owner_first={owner_first}");
+        assert_eq!(catalog[0]["id"], fixture.record.id);
+        assert_eq!(catalog[0]["executionMode"], "codex-managed");
+        assert_eq!(
+            catalog[0]["indexedSessionIds"],
+            json!(expected_aliases),
+            "owner_first={owner_first}"
+        );
+    }
+}
+
+#[test]
+fn local_catalog_omits_aliases_beyond_record_limit_and_preserves_reads() {
+    use agentkib_conversations::SessionOrigin;
+    use agentkib_core::AgentKind;
+    for total in [20_001, 20_002] {
+        for case in [
+            "conflicting-owner-old",
+            "conflicting-owner-new",
+            "unique-owner-old",
+            "unique-owner-new",
+        ] {
+            let fixture = PairedCatalogFixture::new();
+            let native = fixture.record.native_id.as_deref().unwrap();
+            fixture.add_native(native, "exec");
+            fixture.add_native(&native.to_uppercase(), "exec");
+            let ordinary_native = id();
+            fixture.add_native(&ordinary_native, "cli");
+            let ordinary_path = fixture.record.home.join(format!("{ordinary_native}.jsonl"));
+            std::fs::write(
+                &ordinary_path,
+                format!(
+                    "{}{}\n",
+                    std::fs::read_to_string(&ordinary_path).unwrap(),
+                    json!({"type":"event_msg","payload":{"type":"user_message","message":"ordinary transcript stays readable"}})
+                ),
+            )
+            .unwrap();
+
+            // Always keep a separate, newest managed entry in the bounded
+            // directory so truncation cannot make the alias check vacuous.
+            let mut retained = fixture.record.clone();
+            retained.id = "retained-managed-entry".into();
+            retained.native_id = Some(id());
+            retained.title = "Retained managed title".into();
+            fixture.add_native(retained.native_id.as_deref().unwrap(), "exec");
+            fixture.sync();
+
+            let mut owner = fixture.record.clone();
+            owner.released = true;
+            let mut conflict = fixture.record.clone();
+            conflict.id = "conflicting-managed-owner".into();
+            conflict.native_id = Some(native.to_uppercase());
+            conflict.adopted = true;
+            match case {
+                "conflicting-owner-old" => fixture.save_owner(&conflict),
+                "conflicting-owner-new" | "unique-owner-old" => fixture.save_owner(&owner),
+                "unique-owner-new" => {}
+                _ => unreachable!(),
+            }
+            fixture.save_inactive_owners(
+                total
+                    - if case.starts_with("conflicting-") {
+                        3
+                    } else {
+                        2
+                    },
+            );
+            match case {
+                "conflicting-owner-old" | "unique-owner-new" => fixture.save_owner(&owner),
+                "conflicting-owner-new" => fixture.save_owner(&conflict),
+                "unique-owner-old" => {}
+                _ => unreachable!(),
+            }
+            fixture.save_owner(&retained);
+            let count = rusqlite::Connection::open(fixture.ledger_path())
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM managed_sessions", [], |row| {
+                    row.get::<_, usize>(0)
+                })
+                .unwrap();
+            assert_eq!(count, total, "{total}: {case}");
+
+            let catalog = fixture.local_catalog();
+            let mut expected_ids = BTreeSet::from([retained.id.as_str()]);
+            match case {
+                "conflicting-owner-old" | "unique-owner-new" => {
+                    expected_ids.insert(&owner.id);
+                }
+                "conflicting-owner-new" => {
+                    expected_ids.insert(&conflict.id);
+                }
+                "unique-owner-old" => {}
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                catalog
+                    .iter()
+                    .map(|entry| entry["id"].as_str().unwrap())
+                    .collect::<BTreeSet<_>>(),
+                expected_ids,
+                "{total}: {case}"
+            );
+            assert!(
+                catalog.iter().all(|entry| {
+                    entry["indexedSessionIds"] == json!([])
+                        && entry["executionMode"] == "codex-managed"
+                        && entry["availability"] == "readable"
+                }),
+                "{total}: {case}: {catalog:?}"
+            );
+            assert_eq!(
+                catalog
+                    .iter()
+                    .find(|entry| entry["id"] == retained.id)
+                    .unwrap()["title"],
+                retained.title,
+                "{total}: {case}"
+            );
+
+            let indexed = fixture
+                .store
+                .list_conversation_sessions(&fixture.record.workspace_id)
+                .unwrap();
+            let ordinary_id = fixture
+                .store
+                .conversation_id(AgentKind::Codex, &ordinary_native)
+                .unwrap();
+            let paired = fixture.catalog();
+            let sessions = paired["sessions"].as_array().unwrap();
+            assert_eq!(sessions.len(), indexed.len(), "{total}: {case}");
+            for session in &indexed {
+                let entry = sessions
+                    .iter()
+                    .find(|entry| entry["id"] == session.id)
+                    .unwrap();
+                assert_eq!(entry["origin"], json!(session.origin), "{total}: {case}");
+                assert_eq!(entry["availability"], "readable", "{total}: {case}");
+            }
+            assert_eq!(
+                fixture
+                    .store
+                    .get_conversation_session(&ordinary_id)
+                    .unwrap()
+                    .unwrap()
+                    .origin,
+                SessionOrigin::Interactive,
+                "{total}: {case}"
+            );
+            let provider =
+                agentkib_conversations::CodexProvider::from_home(fixture.record.home.clone());
+            let events = provider.read_events(&ordinary_native, None, 10).unwrap();
+            assert_eq!(events.events.len(), 1, "{total}: {case}");
+            assert_eq!(
+                events.events[0].content.as_deref(),
+                Some("ordinary transcript stays readable"),
+                "{total}: {case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_catalog_rejects_conflicts_from_unavailable_workspaces() {
+    for case in [
+        "unregistered",
+        "workspace-mismatch",
+        "missing-workspace-path",
+    ] {
+        for conflict_first in [true, false] {
+            let fixture = PairedCatalogFixture::new();
+            let native = fixture.record.native_id.as_deref().unwrap();
+            fixture.add_native(native, "exec");
+            fixture.sync();
+            let mut conflict = fixture.record.clone();
+            conflict.id = "unavailable-workspace-owner".into();
+            conflict.native_id = Some(native.to_uppercase());
+            match case {
+                "unregistered" => conflict.workspace_id = "unregistered-workspace".into(),
+                "workspace-mismatch" | "missing-workspace-path" => {
+                    let path = fixture.temp.path().join("another-project");
+                    std::fs::create_dir(&path).unwrap();
+                    let workspace = fixture.store.add_workspace(&path).unwrap();
+                    conflict.workspace_id = workspace.id;
+                    if case == "missing-workspace-path" {
+                        conflict.workspace = path.canonicalize().unwrap();
+                        std::fs::rename(path, fixture.temp.path().join("removed-project")).unwrap();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            if conflict_first {
+                fixture.save_owner(&conflict);
+                fixture.save_owner(&fixture.record);
+            } else {
+                fixture.save_owner(&fixture.record);
+                fixture.save_owner(&conflict);
+            }
+            let catalog = fixture.local_catalog();
+            assert_eq!(catalog.len(), 1, "{case}: conflict_first={conflict_first}");
+            assert_eq!(catalog[0]["id"], fixture.record.id);
+            assert_eq!(
+                catalog[0]["indexedSessionIds"],
+                json!([]),
+                "{case}: conflict_first={conflict_first}"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_catalog_ignores_released_adopted_conflicts() {
+    for inactive_first in [true, false] {
+        let fixture = PairedCatalogFixture::new();
+        let native = fixture.record.native_id.as_deref().unwrap();
+        fixture.add_native(native, "exec");
+        fixture.sync();
+        let mut owner = fixture.record.clone();
+        owner.released = true;
+        let mut inactive = fixture.record.clone();
+        inactive.id = "released-adopted-conflict".into();
+        inactive.native_id = Some(native.to_uppercase());
+        inactive.released = true;
+        inactive.adopted = true;
+        if inactive_first {
+            fixture.save_owner(&inactive);
+            fixture.save_owner(&owner);
+        } else {
+            fixture.save_owner(&owner);
+            fixture.save_owner(&inactive);
+        }
+        let indexed_id = fixture
+            .store
+            .conversation_id(agentkib_core::AgentKind::Codex, native)
+            .unwrap();
+        let catalog = fixture.local_catalog();
+        assert_eq!(catalog.len(), 1, "inactive_first={inactive_first}");
+        assert_eq!(catalog[0]["id"], owner.id);
+        assert_eq!(
+            catalog[0]["indexedSessionIds"],
+            json!([indexed_id]),
+            "inactive_first={inactive_first}"
+        );
+    }
+}
+
+#[test]
+fn managed_catalogs_skip_non_regular_native_aliases_without_blocking_ordinary_sessions() {
+    for case in ["missing", "directory", "symlink", "fifo"] {
+        let fixture = PairedCatalogFixture::new();
+        let native = fixture.record.native_id.as_deref().unwrap();
+        fixture.add_native(native, "exec");
+        let ordinary_native = id();
+        fixture.add_native(&ordinary_native, "cli");
+        let path = fixture.record.home.join(format!("{native}.jsonl"));
+        match case {
+            "missing" => std::fs::remove_file(&path).unwrap(),
+            "directory" => {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+            }
+            "symlink" => {
+                let target = fixture.record.home.join("regular.jsonl");
+                std::fs::rename(&path, &target).unwrap();
+                std::os::unix::fs::symlink(target, &path).unwrap();
+            }
+            "fifo" => {
+                std::fs::remove_file(&path).unwrap();
+                assert!(
+                    std::process::Command::new("mkfifo")
+                        .arg(&path)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            _ => unreachable!(),
+        }
+        fixture.sync();
+        fixture.save_owner(&fixture.record);
+        let native_id = fixture
+            .store
+            .conversation_id(agentkib_core::AgentKind::Codex, native)
+            .unwrap();
+        let ordinary_id = fixture
+            .store
+            .conversation_id(agentkib_core::AgentKind::Codex, &ordinary_native)
+            .unwrap();
+        // Bound the assertion so a FIFO-open regression fails without hanging
+        // the suite; both catalogs run against the same isolated ownership data.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let paired = fixture.catalog();
+            let mut service = Service {
+                ledger: Some(Ledger::open(fixture.ledger_path()).unwrap()),
+                test_root: Some(fixture.temp.path().to_owned()),
+                ..Default::default()
+            };
+            sender.send((paired, service.catalog().unwrap())).unwrap();
+        });
+        let (paired, managed) = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("catalog blocked on {case}"));
+        worker.join().unwrap();
+        let sessions = paired["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2, "{case}");
+        let execution = sessions
+            .iter()
+            .find(|session| session["id"] == native_id)
+            .unwrap();
+        assert_eq!(execution["origin"], "execution", "{case}");
+        assert_eq!(execution["availability"], "metadata-only", "{case}");
+        let ordinary = sessions
+            .iter()
+            .find(|session| session["id"] == ordinary_id)
+            .unwrap();
+        assert_eq!(ordinary["origin"], "interactive", "{case}");
+        assert_eq!(ordinary["availability"], "readable", "{case}");
+        assert_eq!(managed.len(), 1, "{case}");
+        assert_eq!(managed[0]["indexedSessionIds"], json!([]), "{case}");
+    }
+}
+
+#[test]
+fn missing_managed_home_keeps_ordinary_catalog_and_control_error_order() {
+    let fixture = PairedCatalogFixture::new();
+    fixture.add_native(fixture.record.native_id.as_deref().unwrap(), "exec");
+    fixture.sync();
+    fixture.save_owner(&fixture.record);
+    let provider = agentkib_conversations::CodexProvider::from_home(fixture.record.home.clone());
+    let mut ordinary = provider
+        .list_sessions(&fixture.record.workspace)
+        .unwrap()
+        .remove(0);
+    ordinary.agent = agentkib_core::AgentKind::ClaudeCode;
+    ordinary.origin = agentkib_conversations::SessionOrigin::Interactive;
+    fixture
+        .store
+        .sync_conversation_sessions(&fixture.record.workspace_id, ordinary.agent, &[ordinary])
+        .unwrap();
+    let mut service = Service {
+        ledger: Some(Ledger::open(fixture.ledger_path()).unwrap()),
+        test_root: Some(fixture.temp.path().to_owned()),
+        ..Default::default()
+    };
+    std::fs::rename(
+        &fixture.record.home,
+        fixture.temp.path().join("removed-home"),
+    )
+    .unwrap();
+    let catalog = fixture.catalog();
+    assert_eq!(catalog["sessions"].as_array().unwrap().len(), 2);
+    assert!(
+        catalog["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["agent"] == "codex" && record["origin"] == "execution")
+    );
+    assert!(
+        catalog["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["agent"] == "claude-code" && record["origin"] == "interactive")
+    );
+    let managed = service.catalog().unwrap();
+    assert_eq!(managed.len(), 1);
+    assert_eq!(managed[0]["indexedSessionIds"], json!([]));
+    let mut invalid = fixture.record.clone();
+    invalid.workspace = fixture.temp.path().join("wrong-project");
+    assert_eq!(
+        service.validate_access(&invalid).unwrap_err().to_string(),
+        "session-workspace-mismatch"
+    );
+    rusqlite::Connection::open(fixture.ledger_path())
+        .unwrap()
+        .execute("DELETE FROM managed_sessions", [])
+        .unwrap();
+    assert!(service.catalog().unwrap().is_empty());
+}
+
+#[test]
+fn paired_catalog_requires_matching_header_workspace_home_and_live_ownership() {
+    for case in [
+        "header-id",
+        "header-cwd",
+        "header-cwd-missing",
+        "owner-native",
+        "owner-workspace",
+        "owner-home",
+        "released-adopted",
+        "released-created",
+        "auxiliary",
+    ] {
+        let fixture = PairedCatalogFixture::new();
+        let native = fixture.record.native_id.as_deref().unwrap();
+        fixture.add_native(
+            native,
+            if case == "auxiliary" {
+                "subagent"
+            } else {
+                "exec"
+            },
+        );
+        fixture.sync();
+        let mut owner = fixture.record.clone();
+        match case {
+            "owner-native" => owner.native_id = Some(id()),
+            "owner-workspace" => owner.workspace = fixture.temp.path().join("wrong-project"),
+            "owner-home" => owner.home = fixture.temp.path().join("wrong-home"),
+            "released-adopted" => {
+                owner.released = true;
+                owner.adopted = true;
+            }
+            "released-created" => owner.released = true,
+            _ => {}
+        }
+        fixture.save_owner(&owner);
+        if case.starts_with("header-") {
+            let path = fixture.record.home.join(format!("{native}.jsonl"));
+            let mut header: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            match case {
+                "header-id" => header["payload"]["id"] = json!(id()),
+                "header-cwd" => {
+                    header["payload"]["cwd"] = json!(fixture.temp.path().join("wrong-project"))
+                }
+                "header-cwd-missing" => {
+                    header["payload"].as_object_mut().unwrap().remove("cwd");
+                }
+                _ => unreachable!(),
+            }
+            std::fs::write(&path, header.to_string()).unwrap();
+        }
+        let catalog = fixture.catalog();
+        let expected = match case {
+            "released-created" => "interactive",
+            "auxiliary" => "auxiliary",
+            _ => "execution",
+        };
+        assert_eq!(catalog["sessions"][0]["origin"], expected, "{case}");
+    }
+}
+
+#[test]
+fn paired_catalog_does_not_create_or_migrate_ownership_data() {
+    let fixture = PairedCatalogFixture::new();
+    fixture.add_native(fixture.record.native_id.as_deref().unwrap(), "exec");
+    fixture.sync();
+    assert_eq!(fixture.catalog()["sessions"][0]["origin"], "execution");
+    assert!(!fixture.ledger_path().parent().unwrap().exists());
+
+    std::fs::create_dir(fixture.ledger_path().parent().unwrap()).unwrap();
+    let ledger = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+    ledger
+        .execute_batch("CREATE TABLE managed_sessions(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        .unwrap();
+    drop(ledger);
+    assert_eq!(fixture.catalog()["sessions"][0]["origin"], "execution");
+    let ledger = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+    ledger
+        .execute(
+            "INSERT INTO managed_sessions VALUES (?1, ?2)",
+            rusqlite::params![
+                fixture.record.id,
+                serde_json::to_string(&fixture.record).unwrap()
+            ],
+        )
+        .unwrap();
+    drop(ledger);
+    std::fs::set_permissions(
+        fixture.ledger_path(),
+        std::fs::Permissions::from_mode(0o640),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        fixture.ledger_path().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o750),
+    )
+    .unwrap();
+    let before = std::fs::read(fixture.ledger_path()).unwrap();
+    let files = || -> BTreeSet<_> {
+        std::fs::read_dir(fixture.ledger_path().parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    };
+    let files_before = files();
+    assert_eq!(fixture.catalog()["sessions"][0]["origin"], "interactive");
+    assert_eq!(std::fs::read(fixture.ledger_path()).unwrap(), before);
+    assert_eq!(files(), files_before);
+    assert_eq!(
+        std::fs::metadata(fixture.ledger_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    assert_eq!(
+        std::fs::metadata(fixture.ledger_path().parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o750
+    );
+    let ledger = rusqlite::Connection::open_with_flags(
+        fixture.ledger_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    assert_eq!(
+        ledger
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+fn paired_catalog_ledger_failure_fixture() -> (PairedCatalogFixture, String, Ledger) {
+    let fixture = PairedCatalogFixture::new();
+    fixture.add_native(fixture.record.native_id.as_deref().unwrap(), "exec");
+    let ordinary_native = id();
+    fixture.add_native(&ordinary_native, "cli");
+    let ordinary_path = fixture.record.home.join(format!("{ordinary_native}.jsonl"));
+    std::fs::write(
+        &ordinary_path,
+        format!(
+            "{}{}\n",
+            std::fs::read_to_string(&ordinary_path).unwrap(),
+            json!({"type":"event_msg","payload":{"type":"user_message","message":"ordinary transcript stays readable"}})
+        ),
+    )
+    .unwrap();
+    fixture.sync();
+    let ledger = Ledger::open(fixture.ledger_path()).unwrap();
+    ledger.save(&fixture.record).unwrap();
+    // Use a rollback journal so SQLite's read-only WAL sidecar creation does
+    // not obscure the assertion that catalog failures never repair this file.
+    rusqlite::Connection::open(fixture.ledger_path())
+        .unwrap()
+        .execute_batch("PRAGMA journal_mode=DELETE")
+        .unwrap();
+    (fixture, ordinary_native, ledger)
+}
+
+fn assert_paired_catalog_survives_ledger_failure(
+    fixture: &PairedCatalogFixture,
+    ordinary_native: &str,
+    ledger: &Ledger,
+    unreadable_owner: &str,
+) {
+    use agentkib_conversations::SessionOrigin;
+    use agentkib_core::AgentKind;
+    // This fallback belongs only to the paired directory. Durable reads used
+    // by managed controls must still report their underlying failure.
+    assert!(Ledger::existing_records(&fixture.ledger_path()).is_err());
+    assert!(ledger.get(unreadable_owner).is_err());
+
+    std::fs::set_permissions(
+        fixture.ledger_path(),
+        std::fs::Permissions::from_mode(0o640),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        fixture.ledger_path().parent().unwrap(),
+        std::fs::Permissions::from_mode(0o750),
+    )
+    .unwrap();
+    let before = std::fs::read(fixture.ledger_path()).unwrap();
+    let files = || -> BTreeSet<_> {
+        std::fs::read_dir(fixture.ledger_path().parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    };
+    let files_before = files();
+    let indexed = fixture
+        .store
+        .list_conversation_sessions(&fixture.record.workspace_id)
+        .unwrap();
+    assert_eq!(indexed.len(), 2);
+    let managed_native_id = fixture
+        .store
+        .conversation_id(
+            AgentKind::Codex,
+            fixture.record.native_id.as_deref().unwrap(),
+        )
+        .unwrap();
+    let ordinary_id = fixture
+        .store
+        .conversation_id(AgentKind::Codex, ordinary_native)
+        .unwrap();
+    assert_eq!(
+        indexed
+            .iter()
+            .find(|session| session.id == managed_native_id)
+            .unwrap()
+            .origin,
+        SessionOrigin::Execution
+    );
+    assert_eq!(
+        indexed
+            .iter()
+            .find(|session| session.id == ordinary_id)
+            .unwrap()
+            .origin,
+        SessionOrigin::Interactive
+    );
+
+    let catalog = fixture.catalog();
+    assert_eq!(catalog["sessions"], json!(indexed));
+    assert_eq!(catalog["workspaces"].as_array().unwrap().len(), 1);
+    let encoded = catalog.to_string();
+    for private in [
+        fixture.record.id.as_str(),
+        fixture.record.title.as_str(),
+        "private-owner-source",
+        "private-owner-snapshot",
+        "private-invalid-owner",
+        "private-invalid-sqlite-payload",
+        "executionMode",
+        "indexedSessionIds",
+    ] {
+        assert!(!encoded.contains(private), "private field: {private}");
+    }
+    assert_eq!(
+        json!(
+            fixture
+                .store
+                .list_conversation_sessions(&fixture.record.workspace_id)
+                .unwrap()
+        ),
+        json!(indexed)
+    );
+    let provider = agentkib_conversations::CodexProvider::from_home(fixture.record.home.clone());
+    let events = provider.read_events(ordinary_native, None, 10).unwrap();
+    assert_eq!(events.events.len(), 1);
+    assert_eq!(
+        events.events[0].content.as_deref(),
+        Some("ordinary transcript stays readable")
+    );
+    assert_eq!(std::fs::read(fixture.ledger_path()).unwrap(), before);
+    assert_eq!(files(), files_before);
+    assert_eq!(
+        std::fs::metadata(fixture.ledger_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    assert_eq!(
+        std::fs::metadata(fixture.ledger_path().parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o750
+    );
+}
+
+#[test]
+fn paired_catalog_survives_ledger_missing_managed_sessions_table() {
+    let (fixture, ordinary_native, ledger) = paired_catalog_ledger_failure_fixture();
+    rusqlite::Connection::open(fixture.ledger_path())
+        .unwrap()
+        .execute_batch("DROP TABLE managed_sessions")
+        .unwrap();
+    assert_paired_catalog_survives_ledger_failure(
+        &fixture,
+        &ordinary_native,
+        &ledger,
+        &fixture.record.id,
+    );
+}
+
+#[test]
+fn paired_catalog_survives_ledger_corrupt_sqlite() {
+    let (fixture, ordinary_native, ledger) = paired_catalog_ledger_failure_fixture();
+    std::fs::write(fixture.ledger_path(), "private-invalid-sqlite-payload").unwrap();
+    assert_paired_catalog_survives_ledger_failure(
+        &fixture,
+        &ordinary_native,
+        &ledger,
+        &fixture.record.id,
+    );
+}
+
+#[test]
+fn paired_catalog_survives_ledger_corrupt_record_after_valid_owner() {
+    let (fixture, ordinary_native, ledger) = paired_catalog_ledger_failure_fixture();
+    let connection = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+    connection
+        .execute_batch("DELETE FROM managed_sessions")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO managed_sessions VALUES (?1, ?2)",
+            rusqlite::params![
+                "private-invalid-owner",
+                r#"{"private":"private-invalid-owner-payload""#
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO managed_sessions VALUES (?1, ?2)",
+            rusqlite::params![
+                fixture.record.id,
+                serde_json::to_string(&fixture.record).unwrap()
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .prepare("SELECT id FROM managed_sessions ORDER BY rowid DESC")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap(),
+        vec![fixture.record.id.clone(), "private-invalid-owner".into()]
+    );
+    drop(connection);
+    assert!(ledger.get(&fixture.record.id).unwrap().is_some());
+    assert!(ledger.list().is_err());
+    assert_paired_catalog_survives_ledger_failure(
+        &fixture,
+        &ordinary_native,
+        &ledger,
+        "private-invalid-owner",
+    );
+}
+
+#[test]
+fn paired_catalog_survives_ledger_exclusive_lock() {
+    let (fixture, ordinary_native, ledger) = paired_catalog_ledger_failure_fixture();
+    let locked = rusqlite::Connection::open(fixture.ledger_path()).unwrap();
+    // WAL permits concurrent readers; a DELETE-journal exclusive transaction
+    // deterministically exercises the catalog's bounded database-lock failure.
+    locked
+        .execute_batch("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE")
+        .unwrap();
+    assert!(ledger.receipt("private-request", "device-a").is_err());
+    assert_paired_catalog_survives_ledger_failure(
+        &fixture,
+        &ordinary_native,
+        &ledger,
+        &fixture.record.id,
+    );
+    locked.execute_batch("ROLLBACK").unwrap();
+}
+
 #[test]
 fn platform_override_requires_a_complete_isolated_fixture() {
     let (_temp, mut service, _) = fixture();
@@ -114,7 +1346,7 @@ fn catalog_exposes_only_verified_native_index_aliases() {
     let unrelated_transcript = temp.path().join("home/unrelated.jsonl");
     let header = |native: &str| {
         json!({
-            "type": "session_meta", "payload": {"id": native, "cwd": record.workspace}
+            "type": "session_meta", "payload": {"id": native, "cwd": record.workspace, "source":"exec", "thread_source":"user"}
         })
         .to_string()
     };
@@ -122,12 +1354,12 @@ fn catalog_exposes_only_verified_native_index_aliases() {
     std::fs::write(&unrelated_transcript, header(&unrelated)).unwrap();
     let database = rusqlite::Connection::open(temp.path().join("home/state_1.sqlite")).unwrap();
     database
-        .execute_batch("CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT, title TEXT)")
+        .execute_batch("CREATE TABLE threads(id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, source TEXT, thread_source TEXT)")
         .unwrap();
     for (native, path) in [(native, &transcript), (&unrelated, &unrelated_transcript)] {
         database
             .execute(
-                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, 'exec', 'user')",
                 rusqlite::params![
                     native,
                     path.to_string_lossy(),
@@ -145,7 +1377,31 @@ fn catalog_exposes_only_verified_native_index_aliases() {
     let catalog = service.catalog().unwrap();
     assert_eq!(catalog.len(), 1);
     assert_eq!(catalog[0]["id"], session);
+    assert_eq!(catalog[0]["origin"], "interactive");
     assert_eq!(catalog[0]["indexedSessionIds"], json!([indexed]));
+    let provider = agentkib_conversations::CodexProvider::from_home(temp.path().join("home"));
+    let indexed_records = provider.list_sessions(&record.workspace).unwrap();
+    assert!(
+        indexed_records
+            .iter()
+            .all(|record| { record.origin == agentkib_conversations::SessionOrigin::Execution })
+    );
+
+    // A recovered managed entry keeps its directory identity even when the
+    // underlying native transcript is classified as an execution record.
+    let session = session.to_owned();
+    drop(service);
+    let mut service = Service {
+        ledger: Some(Ledger::open(temp.path().join("ledger/executions.sqlite")).unwrap()),
+        test_root: Some(temp.path().into()),
+        test_executable: Some(temp.path().join("codex")),
+        ..Default::default()
+    };
+    let recovered = service.catalog().unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0]["id"], session);
+    assert_eq!(recovered[0]["origin"], "interactive");
+    assert_eq!(recovered[0]["indexedSessionIds"], json!([indexed]));
 
     // A database row or matching title cannot alias a different native thread.
     std::fs::write(&transcript, header(&unrelated)).unwrap();

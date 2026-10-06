@@ -2139,7 +2139,7 @@ sleep 5
                 Ok(
                     json!({"workspaces":[{"id":"w","name":"test","path":"/projects/test",
                     "discovery_sources":["private"],"status":"active","asset_count":9}],
-                    "sessions":[{"id":"s","workspace_id":"w","origin":"auxiliary",
+                    "sessions":[{"id":"s","workspace_id":"w","origin":"execution",
                     "forked_from_session_id":"parent","spawned_by_session_id":null,
                     "created_at":"2026-09-09T00:00:00Z","git_branch":"main"}]}),
                 )

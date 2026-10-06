@@ -1,5 +1,6 @@
 import type { AgentKind, ConversationSessionSummary } from "@/core/types";
 import { tr as defaultTranslate } from "@/core/i18n";
+import { isSessionVisible } from "./session-catalog";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 
 export const sessionAgentNames: Record<AgentKind, string> = {
@@ -48,7 +49,7 @@ export function sessionSourceDetails(
   ];
   return relations.flatMap(({ kind, id }) => {
     if (!id) return [];
-    const source = sessions.find((candidate) => candidate.id === id);
+    const source = sessions.find((candidate) => candidate.id === id && isSessionVisible(candidate));
     const sourceTitle = source ? displaySessionTitle(source.title, tr) : id;
     const sourceDate =
       session.created_at ?? session.updated_at ?? source?.created_at ?? source?.updated_at;

@@ -63,6 +63,7 @@ function Directory() {
   return (
     <>
       {hub.catalogError && <p role="alert">{hub.catalogError}</p>}
+      {hub.hiddenSessionNotice && <p>Hidden record notice</p>}
       <button onClick={() => void hub.refresh()}>Refresh</button>
       <output>{hub.selected?.id ?? "none"}</output>
       {hub.sessions.map((session) => (
@@ -98,6 +99,28 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("desktop authoritative session directory", () => {
+  it.each(["auxiliary", "execution"] as const)(
+    "rejects a legacy %s link without selecting or exposing the record",
+    (origin) => {
+      mocks.search = { sessionId: "hidden" };
+      useSessionViewStore.getState().setCreatingConversation(true);
+      mocks.controlled = [{ ...session("hidden"), origin }, session("ordinary")];
+      render(
+        <SessionHubProvider>
+          <Directory />
+        </SessionHubProvider>,
+      );
+      expect(screen.queryByRole("button", { name: "hidden" })).toBeNull();
+      expect(screen.getByRole("status").textContent).toBe("none");
+      expect(screen.getByText("Hidden record notice")).toBeTruthy();
+      expect(useSessionViewStore.getState().creatingConversation).toBe(false);
+      expect(mocks.navigate).toHaveBeenCalledOnce();
+      expect(mocks.navigate.mock.calls[0][0].search(mocks.search)).toEqual({
+        sessionId: undefined,
+      });
+    },
+  );
+
   it("retains a valid deep link after a catalog error and recovers after retry", () => {
     mocks.search = { sessionId: "unmanaged" };
     mocks.controlled = [];

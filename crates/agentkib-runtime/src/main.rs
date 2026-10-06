@@ -556,28 +556,39 @@ impl RemoteSessionSource {
         anyhow::ensure!(enabled && session_index_epoch() == epoch, "index-disabled");
         Ok(())
     }
-}
-
-impl agentkib_remote::Source for RemoteSessionSource {
-    fn ensure_available(&self) -> anyhow::Result<()> {
-        self.ensure_enabled(session_index_epoch())
-    }
-
-    fn availability_epoch(&self) -> anyhow::Result<u64> {
-        let epoch = session_index_epoch();
-        self.ensure_enabled(epoch)?;
-        Ok(epoch)
-    }
-
-    fn catalog(&self) -> anyhow::Result<Value> {
+    fn catalog_with_codex_home(&self, managed_home: Option<&Path>) -> anyhow::Result<Value> {
         let epoch = session_index_epoch();
         self.ensure_enabled(epoch)?;
         let store = Store::open(&self.data_dir.join("agentkib.db"))?;
         let mut workspaces = store.list_workspaces()?;
         let mut sessions = Vec::new();
         for workspace in &workspaces {
+            if store.codex_session_classification_pending(&workspace.id)? {
+                refresh_workspace_sessions_at(
+                    RefreshWorkspaceSessionsRequest {
+                        workspace_id: workspace.id.clone(),
+                        force: false,
+                    },
+                    &self.data_dir,
+                    true,
+                )?;
+                self.ensure_enabled(epoch)?;
+            }
             sessions.extend(store.list_conversation_sessions(&workspace.id)?);
             anyhow::ensure!(sessions.len() <= 20_000, "response-too-large");
+        }
+        if codex_managed::Service::project_paired_indexed_sessions(
+            &store,
+            &self.data_dir,
+            managed_home,
+            &mut sessions,
+        )
+        .is_err()
+        {
+            // Ownership is optional directory enrichment. Projection errors occur
+            // before record mutation, so preserve the index without granting an
+            // unverified display exception or changing durable control checks.
+            eprintln!("agentkib runtime warning: paired-catalog-managed-projection-unavailable");
         }
         // Discovery/exclusion can remove a registration while the snapshot is being read.
         let registered = store
@@ -607,6 +618,22 @@ impl agentkib_remote::Source for RemoteSessionSource {
             })
             .collect::<Vec<_>>();
         Ok(json!({"workspaces": workspaces, "sessions": sessions}))
+    }
+}
+
+impl agentkib_remote::Source for RemoteSessionSource {
+    fn ensure_available(&self) -> anyhow::Result<()> {
+        self.ensure_enabled(session_index_epoch())
+    }
+
+    fn availability_epoch(&self) -> anyhow::Result<u64> {
+        let epoch = session_index_epoch();
+        self.ensure_enabled(epoch)?;
+        Ok(epoch)
+    }
+
+    fn catalog(&self) -> anyhow::Result<Value> {
+        self.catalog_with_codex_home(None)
     }
 
     fn events(
@@ -1299,7 +1326,19 @@ struct SessionEventsRequest {
 fn workspace_sessions(
     request: WorkspaceSessionRequest,
 ) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
-    Store::open_default()?.list_conversation_sessions(&request.workspace_id)
+    let data_dir = agentkib_store::default_data_dir()?;
+    let store = Store::open(&data_dir.join("agentkib.db"))?;
+    if store.codex_session_classification_pending(&request.workspace_id)? {
+        return refresh_workspace_sessions_at(
+            RefreshWorkspaceSessionsRequest {
+                workspace_id: request.workspace_id,
+                force: false,
+            },
+            &data_dir,
+            true,
+        );
+    }
+    store.list_conversation_sessions(&request.workspace_id)
 }
 
 fn workspace_session_status(
@@ -1312,15 +1351,26 @@ fn refresh_workspace_sessions(
     request: RefreshWorkspaceSessionsRequest,
 ) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
     let data_dir = agentkib_store::default_data_dir()?;
-    if !session_index_enabled(&data_dir) {
+    refresh_workspace_sessions_at(request, &data_dir, false)
+}
+
+fn refresh_workspace_sessions_at(
+    request: RefreshWorkspaceSessionsRequest,
+    data_dir: &Path,
+    codex_only: bool,
+) -> anyhow::Result<Vec<agentkib_conversations::ConversationSessionSummary>> {
+    if !session_index_enabled(data_dir) {
         return Ok(Vec::new());
     }
     let refresh_epoch = session_index_epoch();
-    let store = Store::open_default()?;
+    let store = Store::open(&data_dir.join("agentkib.db"))?;
     let workspace = store.workspace_path(&request.workspace_id)?;
+    let codex_classification_pending =
+        store.codex_session_classification_pending(&request.workspace_id)?;
     if !request.force {
         let statuses = store.conversation_index_status(&request.workspace_id)?;
-        if statuses.len() == providers(&workspace).len()
+        if !codex_classification_pending
+            && statuses.len() == providers(&workspace).len()
             && statuses.iter().all(|status| {
                 status.freshness == agentkib_conversations::SessionIndexFreshness::Fresh
             })
@@ -1328,12 +1378,18 @@ fn refresh_workspace_sessions(
             return store.list_conversation_sessions(&request.workspace_id);
         }
     }
-    for source in providers(&workspace) {
+    let mut sources = providers(&workspace);
+    if codex_only {
+        // Upgrade reads need only recalculate Codex before exposing the cache.
+        // Leave other providers to their existing refresh schedule.
+        sources.retain(|source| source.agent() == agentkib_core::AgentKind::Codex);
+    }
+    for source in sources {
         let agent = source.agent();
         match source.list_sessions_detailed(&workspace) {
             Ok(listing) => {
                 let _guard = session_index_write_lock()?;
-                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+                if !session_index_refresh_is_current(refresh_epoch, data_dir) {
                     return Ok(Vec::new());
                 }
                 if listing.incomplete {
@@ -1359,7 +1415,7 @@ fn refresh_workspace_sessions(
             }
             Err(_) => {
                 let _guard = session_index_write_lock()?;
-                if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+                if !session_index_refresh_is_current(refresh_epoch, data_dir) {
                     return Ok(Vec::new());
                 }
                 store.record_conversation_index_failure(
@@ -1372,7 +1428,7 @@ fn refresh_workspace_sessions(
         }
     }
     let _guard = session_index_write_lock()?;
-    if !session_index_refresh_is_current(refresh_epoch, &data_dir) {
+    if !session_index_refresh_is_current(refresh_epoch, data_dir) {
         return Ok(Vec::new());
     }
     store.list_conversation_sessions(&request.workspace_id)

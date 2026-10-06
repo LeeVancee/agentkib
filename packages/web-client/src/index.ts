@@ -18,7 +18,7 @@ export interface ConversationSessionSummary {
   title?: string;
   created_at?: string | null;
   updated_at?: string;
-  origin?: "interactive" | "auxiliary" | "unknown";
+  origin?: "interactive" | "auxiliary" | "execution" | "unknown";
   forked_from_session_id?: string | null;
   spawned_by_session_id?: string | null;
   git_branch?: string | null;

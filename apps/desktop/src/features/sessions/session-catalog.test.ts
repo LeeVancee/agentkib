@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { sessionSourceDetails } from "./session-labels";
 import { initializeI18n } from "@/core/i18n";
 import type { ConversationSessionSummary, WorkspaceSummary } from "@/core/types";
 import {
   filterSessions,
   groupSessions,
   sessionCatalogStats,
+  projectManagedSessionAliases,
   sortSessions,
 } from "./session-catalog";
 import {
@@ -62,29 +64,113 @@ describe("session catalog", () => {
     expect(select("all")).toEqual(["archived", "readable", "metadata"]);
   });
 
-  it("keeps auxiliary records hidden independently of record filters until opted in", () => {
-    const auxiliary = {
+  it("always hides auxiliary and execution records while retaining unknown sources", () => {
+    const records: ConversationSessionSummary[] = [
+      sessions[0],
+      { ...sessions[0], id: "auxiliary", origin: "auxiliary", archived: true },
+      { ...sessions[0], id: "execution", origin: "execution", availability: "metadata-only" },
+      { ...sessions[0], id: "unknown", origin: "unknown" },
+      { ...sessions[0], id: "untitled", title: undefined },
+      { ...sessions[0], id: "managed", origin: "interactive" },
+      { ...sessions[0], id: "fork", origin: "interactive", forked_from_session_id: "main" },
+    ];
+    expect(
+      filterSessions(records, workspaces, { query: "", agent: "all", filter: "all" }).map(
+        ({ id }) => id,
+      ),
+    ).toEqual(["readable", "unknown", "untitled", "managed", "fork"]);
+    for (const filter of ["current", "archived", "metadata", "all"] as const) {
+      expect(
+        filterSessions(records, workspaces, { query: "execution", agent: "all", filter }),
+      ).toEqual([]);
+    }
+    expect(groupSessions(records, workspaces)[0].sessions.map(({ id }) => id)).toEqual([
+      "readable",
+      "unknown",
+      "untitled",
+      "managed",
+      "fork",
+    ]);
+  });
+
+  it.each(["auxiliary", "execution"] as const)(
+    "does not turn a hidden %s parent into a source navigation link",
+    (origin) => {
+      const hidden = { ...sessions[0], id: "hidden-parent", title: "Hidden parent name", origin };
+      const fork = {
+        ...sessions[0],
+        id: "fork",
+        origin: "interactive" as const,
+        forked_from_session_id: hidden.id,
+      };
+      const [detail] = sessionSourceDetails(fork, [fork, hidden]);
+      expect(detail.session).toBeUndefined();
+      expect(detail.label).not.toContain(hidden.title);
+    },
+  );
+
+  it("preserves native IDs for verified managed execution aliases and deduplicates ownership", () => {
+    const execution = { ...sessions[0], id: "native", origin: "execution" as const };
+    const duplicate = { ...execution, id: "native-alias" };
+    const owner = {
       ...sessions[0],
-      id: "auxiliary",
-      origin: "auxiliary" as const,
-      spawned_by_session_id: sessions[0].id,
+      id: "managed",
+      origin: "interactive" as const,
+      indexedSessionIds: [execution.id, duplicate.id],
     };
-    const unknown = { ...sessions[0], id: "unknown", origin: undefined };
+    const records = [execution, duplicate, { ...execution, id: "unowned" }];
+    expect(projectManagedSessionAliases(records, [owner])).toEqual([
+      { ...execution, origin: "interactive" },
+      { ...execution, id: "unowned" },
+    ]);
+    expect(projectManagedSessionAliases(records, [owner], duplicate.id)).toEqual([
+      { ...duplicate, origin: "interactive" },
+      { ...execution, id: "unowned" },
+    ]);
+    expect(execution.origin).toBe("execution");
     expect(
-      filterSessions([sessions[0], auxiliary, unknown], workspaces, {
+      filterSessions(projectManagedSessionAliases(records, [owner]), workspaces, {
         query: "",
         agent: "all",
         filter: "all",
       }).map(({ id }) => id),
-    ).toEqual(["readable", "unknown"]);
+    ).toEqual(["native"]);
+    for (const invalidOwner of [
+      { ...owner, agent: "claude-code" as const },
+      { ...owner, workspace_id: "another" },
+      { ...owner, origin: "unknown" as const },
+      { ...owner, indexedSessionIds: undefined },
+    ])
+      expect(projectManagedSessionAliases([execution], [invalidOwner])).toEqual([execution]);
     expect(
-      filterSessions([sessions[0], auxiliary, unknown], workspaces, {
-        query: "",
-        agent: "all",
-        filter: "all",
-        showAuxiliary: true,
-      }).map(({ id }) => id),
-    ).toEqual(["readable", "auxiliary", "unknown"]);
+      projectManagedSessionAliases([execution], [owner, { ...owner, id: "other-owner" }]),
+    ).toEqual([execution]);
+    const auxiliary = { ...execution, origin: "auxiliary" as const };
+    expect(projectManagedSessionAliases([auxiliary], [owner])).toEqual([auxiliary]);
+  });
+
+  it("shows five conversations when the native index also contains thirty-six executions", () => {
+    const ordinary = Array.from({ length: 5 }, (_, index) => ({
+      ...sessions[0],
+      id: `ordinary-${index}`,
+      origin: "interactive" as const,
+    }));
+    const executions = Array.from({ length: 36 }, (_, index) => ({
+      ...sessions[0],
+      id: `exec-${index}`,
+      origin: "execution" as const,
+      title: undefined,
+    }));
+    const records = [...ordinary, ...executions];
+    expect(filterSessions(records, workspaces, { query: "", agent: "all", filter: "all" })).toEqual(
+      ordinary,
+    );
+    expect(sessionCatalogStats(records)).toEqual({
+      total: 5,
+      readable: 5,
+      archived: 0,
+      metadata: 0,
+    });
   });
 
   it("combines title and workspace name search with Agent filters, without conflating names", () => {

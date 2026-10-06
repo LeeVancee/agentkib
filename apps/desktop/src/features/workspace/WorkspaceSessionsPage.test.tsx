@@ -28,6 +28,14 @@ vi.mock("@/core/api", () => ({
     revealCursorBridgeBundle: vi.fn(),
   },
 }));
+const managedCatalog = vi.hoisted(() => ({
+  sessions: [] as ConversationSessionSummary[],
+  ready: true,
+  error: undefined as unknown,
+}));
+vi.mock("@/features/sessions/conversation-catalog", () => ({
+  useConversationCatalog: () => managedCatalog,
+}));
 vi.mock("@/features/agents/AgentIcon", () => ({
   AgentIcon: () => <span data-testid="agent-icon" />,
 }));
@@ -56,6 +64,9 @@ describe("WorkspaceSessionsPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
     vi.clearAllMocks();
+    managedCatalog.sessions = [];
+    managedCatalog.ready = true;
+    managedCatalog.error = undefined;
     vi.mocked(api.sessionSourceCapability).mockResolvedValue({ status: "supported" });
     vi.mocked(api.nativeImportOperations).mockResolvedValue([]);
     useSessionViewStore.getState().resetFilters();
@@ -389,17 +400,26 @@ describe("WorkspaceSessionsPage", () => {
     },
   );
 
-  it("uses the shared auxiliary toggle consistently with the visible workspace count", async () => {
+  it("keeps auxiliary and execution records out of the workspace count and filter menu", async () => {
     const user = userEvent.setup();
     const auxiliary = {
       ...cachedSession,
       id: "auxiliary-session",
       title: "Auxiliary continuation",
       origin: "auxiliary" as const,
-      spawned_by_session_id: cachedSession.id,
     };
-    vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession, auxiliary]);
-    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([cachedSession, auxiliary]);
+    const execution = {
+      ...cachedSession,
+      id: "execution-session",
+      title: "Execution continuation",
+      origin: "execution" as const,
+    };
+    vi.mocked(api.workspaceSessions).mockResolvedValue([cachedSession, auxiliary, execution]);
+    vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([
+      cachedSession,
+      auxiliary,
+      execution,
+    ]);
     render(
       <WorkspaceSessionsPage
         workspace={workspace}
@@ -412,13 +432,144 @@ describe("WorkspaceSessionsPage", () => {
     );
     expect(await screen.findAllByText("Cached continuation")).not.toHaveLength(0);
     expect(screen.queryByText("Auxiliary continuation")).toBeNull();
+    expect(screen.queryByText("Execution continuation")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Session history" }));
-    await user.click(
-      await screen.findByRole("menuitemcheckbox", { name: "Show auxiliary sessions" }),
-    );
-    expect(useSessionViewStore.getState().showAuxiliary).toBe(true);
-    expect(await screen.findByText("Auxiliary continuation")).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: "Show auxiliary sessions" })).toBeNull();
+    expect(await screen.findByRole("menuitem", { name: /^All\s*1$/ })).toBeTruthy();
   });
+
+  it.each([
+    ["loading", "initial"],
+    ["loading", "resume"],
+    ["failed", "initial"],
+    ["failed", "resume"],
+  ] as const)(
+    "waits for %s managed ownership on an execution %s link and retains its native history route",
+    async (status, mode) => {
+      const native = { ...cachedSession, id: "managed-native", origin: "execution" as const };
+      const otherAlias = { ...native, id: "earlier-managed-alias" };
+      vi.mocked(api.workspaceSessions).mockResolvedValue([otherAlias, native]);
+      vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([otherAlias, native]);
+      managedCatalog.ready = status === "failed";
+      managedCatalog.error = status === "failed" ? new Error("Catalog unavailable") : undefined;
+      const consumed = vi.fn();
+      const props = {
+        workspace,
+        enabled: true,
+        ...(mode === "initial"
+          ? {
+              initialSessionId: native.id,
+              onInitialSessionConsumed: consumed,
+            }
+          : {
+              resumeContinuation: {
+                sessionId: native.id,
+                targetAgent: "claude-code" as const,
+                historyBudgetTokens: 120_000,
+                format: "markdown" as const,
+                autoPrepare: false,
+              },
+              onResumeConsumed: consumed,
+            }),
+        targetAgents: ["claude-code" as const],
+        onRuntimeChanged: vi.fn(),
+        onHandoffPlanned: vi.fn(),
+        onMcpConnectionPlanned: vi.fn(),
+      };
+      const view = render(<WorkspaceSessionsPage {...props} />);
+      await waitFor(() => expect(api.refreshWorkspaceSessions).toHaveBeenCalled());
+      expect(consumed).not.toHaveBeenCalled();
+      expect(api.sessionEvents).not.toHaveBeenCalled();
+      managedCatalog.sessions = [
+        {
+          ...native,
+          id: "managed-owner",
+          origin: "interactive",
+          indexedSessionIds: [otherAlias.id, native.id],
+        },
+      ];
+      managedCatalog.ready = true;
+      managedCatalog.error = undefined;
+      view.rerender(<WorkspaceSessionsPage {...props} />);
+      await waitFor(() => expect(api.sessionEvents).toHaveBeenCalledWith(native.id));
+      expect(
+        screen.queryByText(/This record belongs to a subagent or execution process/),
+      ).toBeNull();
+      expect(consumed).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["initial", "resume"] as const)(
+    "rejects an auxiliary %s link even when managed ownership cannot be loaded",
+    async (mode) => {
+      const hidden = { ...cachedSession, id: "hidden-auxiliary", origin: "auxiliary" as const };
+      vi.mocked(api.workspaceSessions).mockResolvedValue([hidden]);
+      vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([hidden]);
+      managedCatalog.ready = false;
+      managedCatalog.error = new Error("Catalog unavailable");
+      const consumed = vi.fn();
+      render(
+        <WorkspaceSessionsPage
+          workspace={workspace}
+          enabled
+          {...(mode === "initial"
+            ? {
+                initialSessionId: hidden.id,
+                onInitialSessionConsumed: consumed,
+              }
+            : {
+                resumeContinuation: {
+                  sessionId: hidden.id,
+                  targetAgent: "claude-code" as const,
+                  historyBudgetTokens: 120_000,
+                  format: "markdown" as const,
+                  autoPrepare: false,
+                },
+                onResumeConsumed: consumed,
+              })}
+          targetAgents={["claude-code"]}
+          onRuntimeChanged={vi.fn()}
+          onHandoffPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+      expect(
+        await screen.findByText(/This record belongs to a subagent or execution process/),
+      ).toBeTruthy();
+      expect(consumed).toHaveBeenCalledOnce();
+      expect(api.sessionEvents).not.toHaveBeenCalled();
+      expect(api.sessionSourceCapability).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["auxiliary", "execution"] as const)(
+    "rejects a legacy %s deep link before reading it",
+    async (origin) => {
+      const hidden = { ...cachedSession, id: "hidden", origin, title: "Hidden execution" };
+      vi.mocked(api.workspaceSessions).mockResolvedValue([hidden]);
+      vi.mocked(api.refreshWorkspaceSessions).mockResolvedValue([hidden]);
+      const consumed = vi.fn();
+      render(
+        <WorkspaceSessionsPage
+          workspace={workspace}
+          enabled
+          initialSessionId={hidden.id}
+          onInitialSessionConsumed={consumed}
+          targetAgents={["claude-code"]}
+          onRuntimeChanged={vi.fn()}
+          onHandoffPlanned={vi.fn()}
+          onMcpConnectionPlanned={vi.fn()}
+        />,
+      );
+      expect(
+        await screen.findByText(/This record belongs to a subagent or execution process/),
+      ).toBeTruthy();
+      expect(consumed).toHaveBeenCalledOnce();
+      expect(api.sessionEvents).not.toHaveBeenCalled();
+      expect(api.sessionSourceCapability).not.toHaveBeenCalled();
+      expect(screen.queryByText("Hidden execution")).toBeNull();
+    },
+  );
 
   it.each([
     ["antigravity", "Antigravity"],

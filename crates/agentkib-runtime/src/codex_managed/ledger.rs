@@ -1,6 +1,6 @@
 //! Managed execution is durable state, deliberately separate from the disposable index.
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -133,6 +133,39 @@ impl Ledger {
     }
     pub fn list(&self) -> Result<Vec<Record>> {
         let conn = self.connection()?;
+        Self::list_records(&conn)
+    }
+    pub(super) fn complete_catalog_records(&self) -> Result<Option<Vec<Record>>> {
+        Self::existing_records(&self.path)
+    }
+    /// Catalog reads must not create or migrate the persistent ownership ledger.
+    /// None means the bounded read cannot prove complete ownership.
+    pub(super) fn existing_records(path: &Path) -> Result<Option<Vec<Record>>> {
+        if !path.is_file() {
+            return Ok(Some(Vec::new()));
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(Duration::from_secs(3))?;
+        let transaction = conn.unchecked_transaction()?;
+        // Check completeness and read owners in the same snapshot. A truncated
+        // ledger could otherwise conceal an older owner of the same native ID.
+        let incomplete = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM managed_sessions LIMIT 1 OFFSET 20000)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        let records = if incomplete {
+            None
+        } else {
+            Some(Self::list_records(&transaction)?)
+        };
+        transaction.commit()?;
+        Ok(records)
+    }
+    fn list_records(conn: &Connection) -> Result<Vec<Record>> {
         let mut stmt =
             conn.prepare("SELECT record FROM managed_sessions ORDER BY rowid DESC LIMIT 20000")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;

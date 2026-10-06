@@ -1287,7 +1287,7 @@
   "conversations.filter.archived": "アーカイブ",
   "conversations.filter.metadata": "メタデータのみ",
   "conversations.filter.all": "すべて",
-  "conversations.showAuxiliary": "補助セッションを表示",
+  "sessions.hiddenRecord": "この記録はサブエージェントまたは実行処理のもので、通常の会話ではありません。会話一覧に戻りました。",
   "conversations.auxiliary": "補助セッション",
   "conversations.forked": "フォークされたセッション",
   "conversations.sourceDetail": "ソース：{{source}} · {{date}}",

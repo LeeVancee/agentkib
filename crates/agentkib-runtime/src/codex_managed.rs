@@ -147,14 +147,20 @@ impl Service {
         ))
     }
     fn validate_access(&self, record: &Record) -> Result<()> {
+        Self::validate_workspace_at(&self.store()?, record)?;
+        ensure!(self.home()? == record.home, "codex-home-changed");
+        Ok(())
+    }
+    fn validate_workspace_at(store: &Store, record: &Record) -> Result<()> {
         ensure!(
-            self.store()?
-                .workspace_path(&record.workspace_id)?
-                .canonicalize()?
-                == record.workspace,
+            store.workspace_path(&record.workspace_id)?.canonicalize()? == record.workspace,
             "session-workspace-mismatch"
         );
-        ensure!(self.home()? == record.home, "codex-home-changed");
+        Ok(())
+    }
+    fn validate_access_at(store: &Store, home: &Path, record: &Record) -> Result<()> {
+        Self::validate_workspace_at(store, record)?;
+        ensure!(home == record.home, "codex-home-changed");
         Ok(())
     }
     fn existing_ledger(&mut self) -> Result<Option<Ledger>> {
@@ -359,17 +365,29 @@ impl Service {
             return Ok(vec![]);
         };
         let store = self.store()?;
-        let records: Vec<_> = ledger
-            .list()?
+        let (records, ownership_complete) = match ledger.complete_catalog_records()? {
+            Some(records) => (records, true),
+            None => (ledger.list()?, false),
+        };
+        let records: Vec<_> = records
             .into_iter()
             .filter(|record| !record.released || !record.adopted)
+            .collect();
+        // Alias ownership must be complete and checked before workspace
+        // filtering; an undisplayed owner can still conflict with a native ID.
+        let aliases = if ownership_complete {
+            self.indexed_aliases_by_session(&records)?
+        } else {
+            BTreeMap::new()
+        };
+        let records: Vec<_> = records
+            .into_iter()
             .filter(|record| {
                 store
                     .workspace_path(&record.workspace_id)
                     .is_ok_and(|path| path.canonicalize().ok().as_ref() == Some(&record.workspace))
             })
             .collect();
-        let aliases = self.indexed_aliases_by_session(&records)?;
         Ok(records.into_iter().map(|record| {
             let indexed_ids = aliases.get(&record.id).cloned().unwrap_or_default();
             json!({"id":record.id,"workspace_id":record.workspace_id,"agent":"codex","title":record.title,"origin":"interactive","created_at":record.created_at,"updated_at":record.created_at,"message_count":null,"git_branch":null,"archived":record.archived,"sidechain":false,"availability":"readable","executionMode":"codex-managed","sourceSessionId":record.source_session_id,"indexedSessionIds":indexed_ids})
@@ -382,44 +400,143 @@ impl Service {
         records: &[Record],
     ) -> Result<BTreeMap<String, BTreeSet<String>>> {
         let store = self.store()?;
-        let mut workspaces: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        if records.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let Ok(home) = self.home() else {
+            return Ok(BTreeMap::new());
+        };
+        Self::indexed_aliases_by_session_at(&store, &home, records)
+    }
+    fn indexed_aliases_by_session_at(
+        store: &Store,
+        home: &Path,
+        records: &[Record],
+    ) -> Result<BTreeMap<String, BTreeSet<String>>> {
+        // A native identity cannot acquire an exception from ambiguous ownership,
+        // even when the conflicting records name different workspaces.
+        let mut owners: BTreeMap<String, Option<&Record>> = BTreeMap::new();
         for record in records {
-            if self.validate_access(record).is_err() {
+            let Some(native) = record
+                .native_id
+                .as_deref()
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                .map(|id| id.to_string())
+            else {
+                continue;
+            };
+            owners
+                .entry(native)
+                .and_modify(|owner| *owner = None)
+                .or_insert(Some(record));
+        }
+        let mut workspaces: BTreeMap<&str, BTreeMap<String, &Record>> = BTreeMap::new();
+        for (native, owner) in owners {
+            let Some(record) = owner else { continue };
+            if Self::validate_access_at(store, home, record).is_err() {
                 continue;
             }
-            if let Some(native) = &record.native_id {
-                workspaces
-                    .entry(record.workspace_id.clone())
-                    .or_default()
-                    .insert(native.clone(), record.id.clone());
-            }
+            workspaces
+                .entry(&record.workspace_id)
+                .or_default()
+                .insert(native, record);
         }
         if workspaces.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let provider = agentkib_conversations::CodexProvider::from_home(self.home()?);
+        let provider = agentkib_conversations::CodexProvider::from_home(home.to_owned());
         let mut aliases: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (workspace, natives) in workspaces {
-            let Ok(candidates) = provider.list_sessions(&store.workspace_path(&workspace)?) else {
+            let Ok(candidates) = provider.list_sessions(&store.workspace_path(workspace)?) else {
                 continue;
             };
             for candidate in candidates {
-                if let Some(session) = provider
-                    .verified_control_id(&candidate.native_ref)
-                    .ok()
-                    .flatten()
-                    .and_then(|native| natives.get(&native))
-                {
-                    aliases.entry(session.clone()).or_default().insert(
-                        store.conversation_id(
-                            agentkib_core::AgentKind::Codex,
-                            &candidate.native_ref,
-                        )?,
-                    );
+                if candidate.origin == agentkib_conversations::SessionOrigin::Auxiliary {
+                    continue;
                 }
+                let Some(native) = uuid::Uuid::parse_str(&candidate.native_ref)
+                    .ok()
+                    .map(|id| id.to_string())
+                else {
+                    continue;
+                };
+                let Some(record) = natives.get(&native) else {
+                    continue;
+                };
+                let Ok((_, cwd)) = provider.verified_indexed_identity(&candidate.native_ref) else {
+                    continue;
+                };
+                if !agentkib_platform::path::equivalent(&cwd, &record.workspace) {
+                    continue;
+                }
+                aliases.entry(record.id.clone()).or_default().insert(
+                    store
+                        .conversation_id(agentkib_core::AgentKind::Codex, &candidate.native_ref)?,
+                );
             }
         }
         Ok(aliases)
+    }
+    /// Project verified ownership onto existing native IDs for the read-only
+    /// paired catalog. Ledger IDs and control capabilities never cross this path.
+    pub(super) fn project_paired_indexed_sessions(
+        store: &Store,
+        data_dir: &Path,
+        managed_home: Option<&Path>,
+        sessions: &mut Vec<agentkib_conversations::ConversationSessionSummary>,
+    ) -> Result<()> {
+        use agentkib_conversations::SessionOrigin;
+        use agentkib_core::AgentKind;
+        if !sessions.iter().any(|session| {
+            session.agent == AgentKind::Codex && session.origin != SessionOrigin::Auxiliary
+        }) {
+            return Ok(());
+        }
+        let Some(records) =
+            Ledger::existing_records(&data_dir.join("codex-managed/executions.sqlite"))?
+        else {
+            return Ok(());
+        };
+        let records: Vec<_> = records
+            .into_iter()
+            .filter(|record| !record.released || !record.adopted)
+            .collect();
+        if records.is_empty() {
+            return Ok(());
+        }
+        let home = match managed_home {
+            Some(home) => home.canonicalize().map_err(Into::into),
+            None => codex_home(),
+        };
+        let Ok(home) = home else { return Ok(()) };
+        let aliases = Self::indexed_aliases_by_session_at(store, &home, &records)?;
+        let mut owners = BTreeMap::new();
+        for record in &records {
+            for alias in aliases.get(&record.id).into_iter().flatten() {
+                owners.insert(
+                    (record.workspace_id.as_str(), alias.as_str()),
+                    record.id.as_str(),
+                );
+            }
+        }
+        let mut seen = BTreeSet::new();
+        sessions.retain_mut(|session| {
+            if session.agent != AgentKind::Codex || session.origin == SessionOrigin::Auxiliary {
+                return true;
+            }
+            let Some(owner) = owners.get(&(session.workspace_id.as_str(), session.id.as_str()))
+            else {
+                return true;
+            };
+            if !seen.insert(*owner) {
+                return false;
+            }
+            if session.origin == SessionOrigin::Execution {
+                session.origin = SessionOrigin::Interactive;
+            }
+            true
+        });
+        Ok(())
     }
     pub fn request(&mut self, value: Value, boot: &str, admin: bool) -> Result<Value> {
         let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?));

@@ -171,6 +171,11 @@ export function SessionWorkspace() {
             )}
           </div>
         </header>
+        {session.catalogNotice && (
+          <p role="status" className="border-b px-4 py-3 text-sm text-muted-foreground">
+            {session.c.excludedSession}
+          </p>
+        )}
         <div className="flex min-h-0 flex-1">
           <aside
             className={cn(

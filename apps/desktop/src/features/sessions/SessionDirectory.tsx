@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuRadioGroup,
@@ -251,20 +250,9 @@ export function SessionDirectory({
                   </DropdownMenuRadioGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-              <DropdownMenuCheckboxItem
-                checked={view.showAuxiliary}
-                onCheckedChange={(checked) => view.setShowAuxiliary(checked === true)}
-              >
-                {tr("conversations.showAuxiliary")}
-              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled={
-                  view.agent === "all" &&
-                  view.filter === "current" &&
-                  view.host === "all" &&
-                  !view.showAuxiliary
-                }
+                disabled={view.agent === "all" && view.filter === "current" && view.host === "all"}
                 onClick={view.resetFilters}
               >
                 {tr("sessions.clearFilters")}

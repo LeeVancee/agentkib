@@ -18,6 +18,7 @@ import { ManagedTasks } from "./features/sessions/managed-tasks";
 import { PendingCenter } from "./features/sessions/pending-center";
 import { Button } from "./components/ui/button";
 import { webLayoutCopy } from "./features/sessions/web-layout-copy";
+import { useSessionNavigate } from "./features/sessions/session-navigation";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
 export interface EmbeddedConversationProps {
@@ -125,6 +126,11 @@ function EmbeddedShell() {
             </Button>
           </p>
         )}
+        {session.catalogNotice && (
+          <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
+            {session.c.excludedSession}
+          </p>
+        )}
         <Outlet />
         <SessionDialogs />
       </div>
@@ -134,8 +140,10 @@ function EmbeddedShell() {
 function EmbeddedReader() {
   const props = useEmbedded();
   const params = useParams({ strict: false }) as { sessionId?: string };
-  const { choose, selected, sessions, t } = useSession();
+  const { choose, selected, sessions, t, excludedSessionIds } = useSession();
+  const navigate = useSessionNavigate();
   const id = params.sessionId;
+  const excluded = !!id && excludedSessionIds.has(id);
   const readable = sessions.some(
     (session) => session.id === id && session.availability === "readable",
   );
@@ -146,11 +154,27 @@ function EmbeddedReader() {
       if (props.sessionId !== id) return;
       props.externalNavigation.current = false;
     }
+    if (id && excluded) {
+      void choose(id);
+      props.onSessionChange(undefined);
+      void navigate({ to: "/sessions", replace: true });
+      return;
+    }
     if (!id || !readable) return;
     void choose(id);
     if (props.sessionId !== id) props.onSessionChange(id);
-  }, [id, readable, choose, props.sessionId, props.onSessionChange, props.externalNavigation]);
-  return id && selected === id ? (
+  }, [
+    id,
+    readable,
+    choose,
+    excluded,
+    navigate,
+    props.sessionId,
+    props.onSessionChange,
+    props.externalNavigation,
+  ]);
+  if (excluded) return null;
+  return id && readable && selected === id ? (
     <SessionReader />
   ) : (
     <p role="status" className="p-6 text-sm text-muted-foreground">

@@ -36,7 +36,7 @@ import {
   type Live,
   type UserQuestionRequest,
 } from "@agentkib/web-client";
-import { displaySessionTitle } from "@agentkib/session-catalog";
+import { displaySessionTitle, isSessionVisible } from "@agentkib/session-catalog";
 import { answerRequestBody, interactionCopy } from "../interactions/question-form";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
@@ -106,6 +106,8 @@ export function useSessionController({
   const c = catalogCopy[locale];
   const [access, setAccess] = useState<Access>(),
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),
+    [excludedSessionIds, setExcludedSessionIds] = useState<ReadonlySet<string>>(new Set()),
+    [catalogNotice, setCatalogNotice] = useState(false),
     [workspaces, setWorkspaces] = useState<CatalogWorkspace[]>(),
     [selected, setSelected] = useState(""),
     [page, publishPage] = useState<ConversationEventPage>(),
@@ -133,6 +135,8 @@ export function useSessionController({
     publishPage(next);
   }, []);
   const shownInteractions = useRef(new Set<string>());
+  const catalogSessions = useRef<ConversationSessionSummary[]>([]);
+  const excludedIds = useRef<ReadonlySet<string>>(new Set());
   const readableSessionIds = useRef(new Set<string>());
   useEffect(() => {
     const readable = sessions.filter((session) => session.availability === "readable");
@@ -205,6 +209,10 @@ export function useSessionController({
     selection.current = "";
     setSelected("");
     setSessions([]);
+    catalogSessions.current = [];
+    excludedIds.current = new Set();
+    setExcludedSessionIds(excludedIds.current);
+    setCatalogNotice(false);
     setWorkspaces(undefined);
     setPage(undefined);
     setLive(undefined);
@@ -229,6 +237,39 @@ export function useSessionController({
     durableScope.current = undefined;
     durablePending.current = [];
   }, [setPage]);
+  const leaveSession = useCallback(() => {
+    generation.current++;
+    readinessEpoch.current++;
+    selection.current = "";
+    deferredRefresh.current = undefined;
+    streamReady.current = false;
+    setSelected("");
+    setPage(undefined);
+    setLive(undefined);
+    setCapabilities(undefined);
+    setModal(undefined);
+    setControlReady(false);
+    setOnline(false);
+  }, [setPage]);
+  const acceptCatalog = useCallback(
+    (records: ConversationSessionSummary[]) => {
+      const excluded = new Set(
+        records.filter((record) => !isSessionVisible(record)).map((s) => s.id),
+      );
+      const visible = records.filter(isSessionVisible);
+      // Update the dispatch guard before publishing React state. A callback from
+      // the previous render must not reopen a record the new catalog excludes.
+      excludedIds.current = excluded;
+      catalogSessions.current = visible;
+      setExcludedSessionIds(excluded);
+      setSessions(visible);
+      if (excluded.has(selection.current)) {
+        leaveSession();
+        setCatalogNotice(true);
+      }
+    },
+    [leaveSession],
+  );
   const fail = useCallback(
     (e: unknown, g = generation.current) => {
       if (g !== generation.current) return;
@@ -260,6 +301,7 @@ export function useSessionController({
   );
   const readHistory = useCallback(
     async (id: string, g: number, historyCacheEpoch: string | undefined, cursor?: string) => {
+      if (excludedIds.current.has(id)) return undefined;
       const attempt = beginHistoryRead(nativeCoverage.current);
       try {
         return { type: "page" as const, page: await client.events(id, cursor), attempt };
@@ -441,7 +483,7 @@ export function useSessionController({
           return;
         }
         setIndexEnabled(true);
-        setSessions(catalog.sessions);
+        acceptCatalog(catalog.sessions);
         setWorkspaces(catalog.workspaces);
         const id = selection.current;
         if (id) {
@@ -629,6 +671,7 @@ export function useSessionController({
       readHistory,
       resumeDeferredRefresh,
       setPage,
+      acceptCatalog,
     ],
   );
   const readBusy = useCallback(
@@ -772,7 +815,7 @@ export function useSessionController({
               break;
             }
             setIndexEnabled(true);
-            setSessions(catalog.sessions);
+            acceptCatalog(catalog.sessions);
             setWorkspaces(catalog.workspaces);
             await reconcilePending();
             retryAfterControl = false;
@@ -907,6 +950,7 @@ export function useSessionController({
     clear,
     fail,
     wakeDeferredRefresh,
+    acceptCatalog,
   ]);
   useEffect(
     () =>
@@ -948,8 +992,14 @@ export function useSessionController({
   });
   const choose = useCallback(
     async (id: string) => {
+      if (excludedIds.current.has(id)) {
+        if (selection.current) leaveSession();
+        setCatalogNotice(true);
+        return;
+      }
       if (selection.current === id) return;
-      if (sessions.find((session) => session.id === id)?.availability !== "readable") return;
+      if (catalogSessions.current.find((session) => session.id === id)?.availability !== "readable")
+        return;
       generation.current++;
       readinessEpoch.current++;
       // The new selection owns its baseline read. An obsolete refresh cannot
@@ -963,6 +1013,7 @@ export function useSessionController({
       setModal(undefined);
       setMessage("");
       setNotice(undefined);
+      setCatalogNotice(false);
       setOnline(false);
       setControlReady(false);
       streamReady.current = false;
@@ -1031,7 +1082,16 @@ export function useSessionController({
         }
       }
     },
-    [sessions, client, fail, reconcilePending, hasDurablePending, readHistory, readBusy, setPage],
+    [
+      client,
+      fail,
+      reconcilePending,
+      hasDurablePending,
+      readHistory,
+      readBusy,
+      setPage,
+      leaveSession,
+    ],
   );
   async function post(path: string, body: unknown) {
     if (mutating.current) return;
@@ -1243,6 +1303,8 @@ export function useSessionController({
   ) {
     if (
       mutating.current ||
+      excludedIds.current.has(selected) ||
+      selection.current !== selected ||
       !access ||
       !live ||
       (action !== "inspect" && action !== "resume" && (!online || !controlReady)) ||
@@ -1336,6 +1398,8 @@ export function useSessionController({
       !live ||
       !online ||
       !controlReady ||
+      excludedIds.current.has(selected) ||
+      selection.current !== selected ||
       hasDurablePending(selected)
     )
       return;
@@ -1541,15 +1605,6 @@ export function useSessionController({
               : live?.reason
                 ? unavailableReasonText(live.reason, t)
                 : t.unknown;
-  const leaveSession = useCallback(() => {
-    generation.current++;
-    selection.current = "";
-    setSelected("");
-    setPage(undefined);
-    setLive(undefined);
-    setCapabilities(undefined);
-    setModal(undefined);
-  }, []);
   return {
     liveContentVersion,
     client,
@@ -1569,6 +1624,8 @@ export function useSessionController({
     c,
     access,
     sessions,
+    excludedSessionIds,
+    catalogNotice,
     workspaces,
     selected,
     page,

@@ -8,6 +8,7 @@ import {
   RouterProvider,
   useParams,
 } from "@tanstack/react-router";
+import { LoaderCircle } from "lucide-react";
 import type { WebClient } from "@agentkib/web-client";
 import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
@@ -153,9 +154,16 @@ function EmbeddedReader() {
   return id && selected === id ? (
     <SessionReader />
   ) : (
-    <p role="status" className="p-6 text-sm text-muted-foreground">
-      {t.loading}
-    </p>
+    <div
+      role="status"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
+    >
+      <LoaderCircle
+        aria-hidden="true"
+        className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
+      />
+      <p className="text-sm text-muted-foreground">{t.loading}</p>
+    </div>
   );
 }
 function EmbeddedEmpty() {

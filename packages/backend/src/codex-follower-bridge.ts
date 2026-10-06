@@ -16,6 +16,7 @@ export class CodexFollowerBridge {
   #lastFullRefresh = 0;
   #resyncAfterMutation = false;
   #closed = false;
+  #operations: Promise<void> = Promise.resolve();
 
   private constructor(
     readonly connection: CodexFollowerConnection,
@@ -53,6 +54,10 @@ export class CodexFollowerBridge {
   }
 
   async select(conversationId: string): Promise<void> {
+    return this.#enqueue(() => this.#select(conversationId));
+  }
+
+  async #select(conversationId: string): Promise<void> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId))
       throw new Error("select an explicit Codex conversation UUID");
     this.#unfollow();
@@ -79,16 +84,20 @@ export class CodexFollowerBridge {
   }
 
   async observeLive(): Promise<CodexFollowerState> {
+    return this.#enqueue(() => this.#observeLive());
+  }
+
+  async #observeLive(): Promise<CodexFollowerState> {
     const state = this.#requireState();
     if (state.revision === null) {
-      await this.select(state.conversationId);
+      await this.#select(state.conversationId);
       return this.#requireState();
     }
     if (
       this.#resyncAfterMutation ||
       Date.now() - this.#lastFullRefresh >= FULL_REFRESH_INTERVAL_MS
     ) {
-      await this.refresh();
+      await this.#refresh();
       return this.#requireState();
     }
     const before = state.snapshotCount;
@@ -138,9 +147,13 @@ export class CodexFollowerBridge {
   }
 
   async refresh(): Promise<CodexFollowerState> {
+    return this.#enqueue(() => this.#refresh());
+  }
+
+  async #refresh(): Promise<CodexFollowerState> {
     const state = this.#requireState();
     if (state.revision === null) {
-      await this.select(state.conversationId);
+      await this.#select(state.conversationId);
       return this.#requireState();
     }
     try {
@@ -175,7 +188,16 @@ export class CodexFollowerBridge {
     expectedRevision: number,
     onDispatch: () => void,
   ): Promise<unknown> {
-    const state = await this.observeLive();
+    return this.#enqueue(() => this.#mutate(method, params, expectedRevision, onDispatch));
+  }
+
+  async #mutate(
+    method: string,
+    params: JsonRecord,
+    expectedRevision: number,
+    onDispatch: () => void,
+  ): Promise<unknown> {
+    const state = await this.#observeLive();
     if (state.revision !== expectedRevision) throw new Error("stale-or-disabled-control");
     let dispatched = false;
     let followingRequested = false;
@@ -221,6 +243,17 @@ export class CodexFollowerBridge {
     this.#closed = true;
     this.#unfollow();
     this.connection.disconnect();
+  }
+
+  // Requests and notification drains share a single-consumer connection. Keep
+  // each whole operation together, including the read before a mutation.
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#operations.then(operation);
+    this.#operations = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
   }
 
   #requireState(): CodexFollowerState {

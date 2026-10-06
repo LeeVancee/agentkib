@@ -1,5 +1,11 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { createFileRoute, Outlet, useLocation, useNavigate, useSearch } from "@tanstack/react-router";
+import { type CSSProperties } from "react";
+import {
+  createFileRoute,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useSearch,
+} from "@tanstack/react-router";
 import { CircleAlert } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar, type AgentFilter } from "@/components/AppSidebar";
@@ -8,9 +14,10 @@ import { AppToolbar } from "@/features/app/AppToolbar";
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { SidebarResizeHandle } from "@/features/app/SidebarResizeHandle";
 import { useRetainedScroll } from "@/features/app/useRetainedScroll";
+import { useSidebarLayout } from "@/features/app/useSidebarLayout";
 import { retainedScrollOffsets } from "@/features/app/retained-scroll-offsets";
 import { WindowNavigationControls } from "@/features/app/WindowNavigationControls";
-import { MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, useSidebarWidthStore } from "@/features/app/sidebar-width-store";
+import { useSidebarWidthStore } from "@/features/app/sidebar-width-store";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
@@ -39,17 +46,7 @@ function MainLayout() {
     (job) => job.kind === "discovery" && job.state === "failed",
   );
   const agentFilter = search.agentFilter ?? "all";
-  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const resize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, []);
-  const maxSidebarWidth = Math.max(
-    MIN_SIDEBAR_WIDTH,
-    Math.min(MAX_SIDEBAR_WIDTH, windowWidth - 640 - 52),
-  );
-  const visibleSidebarWidth = Math.min(sidebarWidth.width, maxSidebarWidth);
+  const { maxWidth, visibleWidth, canResize } = useSidebarLayout();
   const scrollRef = useRetainedScroll(locationKey, retainedScrollOffsets);
   const hasSidebarPanel = isWorkspace || ["workspaces", "agents", "sessions", "catalog"].includes(active);
 
@@ -136,7 +133,7 @@ function MainLayout() {
   return (
     <SessionHubProvider active={isSessions}>
       <div
-        style={{ "--sidebar-expanded-width": `${visibleSidebarWidth}px` } as CSSProperties}
+        style={{ "--sidebar-expanded-width": `${visibleWidth}px` } as CSSProperties}
         className={shellClassName}
       >
         <WindowToolbar />
@@ -150,8 +147,8 @@ function MainLayout() {
           onOpenSearch={onOpenSearch}
         />
         {sidebar}
-        {hasSidebarPanel && !sidebarCollapsed && windowWidth >= 1024 && (
-          <SidebarResizeHandle width={visibleSidebarWidth} maxWidth={maxSidebarWidth} />
+        {hasSidebarPanel && !sidebarCollapsed && canResize && (
+          <SidebarResizeHandle width={visibleWidth} maxWidth={maxWidth} />
         )}
         {sidebarWidth.error && (
           <div className="sidebar-resize-error" role="alert">

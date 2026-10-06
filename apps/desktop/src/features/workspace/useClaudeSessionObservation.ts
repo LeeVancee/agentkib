@@ -114,8 +114,9 @@ export function useClaudeSessionObservation({
     accessRef.current = access;
   }, [access]);
   const fail = useCallback(
-    (error: unknown, expected = generation.current) => {
-      if (generation.current !== expected) return;
+    (error: unknown, expected?: number) => {
+      const expectedGeneration = expected ?? generation.current;
+      if (generation.current !== expectedGeneration) return;
       setOnline(false);
       setControlReady(false);
       setError(error instanceof Error ? error.message : "connection_failed");
@@ -149,8 +150,9 @@ export function useClaudeSessionObservation({
   );
   // An admission-busy read waits for settlement, catalog or reconnection events.
   const readBusy = useCallback(
-    (wake: number, expected = generation.current) => {
-      if (expected !== generation.current) return;
+    (wake: number, expected?: number) => {
+      const expectedGeneration = expected ?? generation.current;
+      if (expectedGeneration !== generation.current) return;
       deferredRead.current = true;
       refreshRequired.current = true;
       setControlReady(false);
@@ -214,7 +216,8 @@ export function useClaudeSessionObservation({
       });
     };
     const connect = () => {
-      const connection = ++connectionEpoch;
+      connectionEpoch = connectionEpoch + 1;
+      const connection = connectionEpoch;
       const active = () => !closed && connection === connectionEpoch;
       stop = client.stream("", {
         open: () => {},
@@ -262,7 +265,21 @@ export function useClaudeSessionObservation({
             const event = JSON.parse(data) as SessionStreamEvent<Live>;
             const before = store.getSnapshot();
             const next = store.dispatch(event);
-            if (next.resyncRequired) throw new Error("catalog_resync_required");
+            if (next.resyncRequired) {
+              catalogFailed(new Error("catalog_resync_required"));
+              resetPending = true;
+              connectionEpoch = connectionEpoch + 1;
+              queueMicrotask(() => {
+                if (closed) return;
+                stop?.();
+                resets = resets + 1;
+                if (resets > 3) return;
+                store.reset();
+                resetPending = false;
+                connect();
+              });
+              return false;
+            }
             if (
               next !== before &&
               (event.type === "snapshot" ||
@@ -275,13 +292,12 @@ export function useClaudeSessionObservation({
           } catch (error) {
             catalogFailed(error);
             resetPending = true;
-            connectionEpoch++;
+            connectionEpoch = connectionEpoch + 1;
             queueMicrotask(() => {
               if (closed) return;
               stop?.();
-              if (++resets > 3) {
-                return;
-              }
+              resets = resets + 1;
+              if (resets > 3) return;
               store.reset();
               resetPending = false;
               connect();

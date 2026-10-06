@@ -4,7 +4,7 @@ import { useI18n } from "@/core/useI18n";
 import { GlobalSearchDialog } from "@/features/app/GlobalSearchDialog";
 import { AppNavigationProvider } from "@/features/app/AppNavigationContext";
 import { appSearchSchema } from "@/features/app/app-search-schema";
-import type { AppSearch, ParsedRoute } from "@/features/app/app-route";
+import { routeFromMatches, type AppSearch } from "@/features/app/app-route";
 import { AppRuntimeBridge } from "@/features/app/AppRuntimeBridge";
 import { SidebarPanelProvider } from "@/features/app/SidebarPanel";
 import { ShortcutHelpDialog } from "@/features/app/ShortcutHelpDialog";
@@ -75,20 +75,6 @@ function RootLayout() {
       </ShortcutHelpProvider>
     </AppNavigationProvider>
   );
-}
-
-function routeFromMatches(matches: ReturnType<typeof useMatches>): ParsedRoute {
-  for (const match of [...matches].reverse()) {
-    const metadata = match.staticData.appRoute;
-    if (!metadata) continue;
-    if (metadata.kind === "workspace") {
-      const workspaceId = match.params.workspaceId;
-      if (typeof workspaceId === "string") return { ...metadata, workspaceId };
-      continue;
-    }
-    return metadata;
-  }
-  return { kind: "global", page: "home" };
 }
 
 export const Route = createRootRoute({

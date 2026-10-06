@@ -33,9 +33,8 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
       } catch (e) {
         if (generation === epoch.current)
           setError(e instanceof Error ? e.message : "files_unavailable");
-      } finally {
-        if (generation === epoch.current) setBusy(false);
       }
+      if (generation === epoch.current) setBusy(false);
     },
     [sessionId],
   );
@@ -82,9 +81,8 @@ export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
     } catch (e) {
       if (generation === epoch.current)
         setError(e instanceof Error ? e.message : "preview_unavailable");
-    } finally {
-      if (generation === epoch.current) setBusy(false);
     }
+    if (generation === epoch.current) setBusy(false);
   }
   return (
     <section

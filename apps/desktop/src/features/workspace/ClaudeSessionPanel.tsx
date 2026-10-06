@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   Approval,
   ControlReceipt,
@@ -176,11 +176,19 @@ export function ClaudeSessionPanel({
 
   const refresh = useCallback(
     async (details = true) => {
-      details ||= deferredRead.current || refreshNeedsDetails.current;
+      details = details || deferredRead.current || refreshNeedsDetails.current;
       if (loading.current) {
         queuedRefresh.current = queuedRefresh.current === true || details;
         return;
       }
+      const finishRefresh = () => {
+        loading.current = false;
+        if (queuedRefresh.current !== undefined) {
+          const queuedDetails = queuedRefresh.current;
+          queuedRefresh.current = undefined;
+          void refreshRef.current(queuedDetails);
+        }
+      };
       loading.current = true;
       const generation = epoch.current;
       const delivery = liveDelivery.current;
@@ -190,7 +198,10 @@ export function ClaudeSessionPanel({
         let nextPending = saved;
         if (saved) {
           const receipt = await request<ControlReceipt>("receipt", { requestId: saved.requestId });
-          if (generation !== epoch.current) return;
+          if (generation !== epoch.current) {
+            finishRefresh();
+            return;
+          }
           if (
             receipt.found &&
             receipt.requestId === saved.requestId &&
@@ -217,7 +228,10 @@ export function ClaudeSessionPanel({
           request<ManagedOptions>("options"),
           request<ConversationCatalog>("catalog"),
         ]);
-        if (generation !== epoch.current) return;
+        if (generation !== epoch.current) {
+          finishRefresh();
+          return;
+        }
         setPending(nextPending);
         setOptions(nextOptions);
         setCatalog(nextCatalog);
@@ -234,9 +248,19 @@ export function ClaudeSessionPanel({
             );
             if (matches.length === 1) {
               setSessionId(matches[0].id);
+              finishRefresh();
               return;
             }
-            throw new Error("claude_session_unavailable");
+            refreshNeedsDetails.current = refreshNeedsDetails.current || details;
+            setRefreshError("claude_session_unavailable");
+            if (!sessionId || !hasDesktopConversation()) setConnected(false);
+            try {
+              readPending(workspaceId);
+            } catch {
+              setStorageBlocked(true);
+            }
+            finishRefresh();
+            return;
           }
           setObservedSessionId(sessionId);
           // Native state changes invalidate metadata even when history stays current.
@@ -246,7 +270,10 @@ export function ClaudeSessionPanel({
             details ? request<Live>("live", { sessionId }) : undefined,
             details ? request<ConversationEventPage>("events", { sessionId }) : undefined,
           ]);
-          if (generation !== epoch.current) return;
+          if (generation !== epoch.current) {
+            finishRefresh();
+            return;
+          }
           setCapabilities(nextCaps);
           if (nextLive && nextHistory) {
             if (delivery === liveDelivery.current) setLive(nextLive);
@@ -271,13 +298,17 @@ export function ClaudeSessionPanel({
         setStorageBlocked(false);
         if (details) completeDeferredRead();
       } catch (e) {
-        if (generation !== epoch.current) return;
+        if (generation !== epoch.current) {
+          finishRefresh();
+          return;
+        }
         if (isClaudeReadBusy(e)) {
           deferRead(wake, generation);
+          finishRefresh();
           return;
         }
         // A metadata-only success cannot recover an unread history/live page.
-        refreshNeedsDetails.current ||= details;
+        refreshNeedsDetails.current = refreshNeedsDetails.current || details;
         setRefreshError((e instanceof Error && e.message) || "connection_failed");
         if (!sessionId || !hasDesktopConversation()) setConnected(false);
         try {
@@ -285,14 +316,8 @@ export function ClaudeSessionPanel({
         } catch {
           setStorageBlocked(true);
         }
-      } finally {
-        loading.current = false;
-        if (queuedRefresh.current !== undefined) {
-          const details = queuedRefresh.current;
-          queuedRefresh.current = undefined;
-          void refreshRef.current(details);
-        }
       }
+      finishRefresh();
     },
     [
       workspaceId,
@@ -306,7 +331,9 @@ export function ClaudeSessionPanel({
       completeDeferredRead,
     ],
   );
-  refreshRef.current = refresh;
+  useLayoutEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
   useEffect(() => {
     if (!online || interaction || !live) return;
     const next = [...live.approvals, ...(live.questions ?? [])].find(
@@ -335,42 +362,47 @@ export function ClaudeSessionPanel({
     };
     try {
       // Persist identity before IPC. An ambiguous failure is reconciled, never replayed.
-      if (readPending(workspaceId)) throw new Error("control_outcome_unconfirmed");
-      localStorage.setItem(pendingKey(workspaceId), JSON.stringify(entry));
-      setPending(entry);
-      const result = await request<
-        ManagedActionResult & { controlOutcome?: string; error?: string }
-      >(operation, { ...entry, ...body, expectedRevision: live?.revision });
-      if (
-        (result.accepted !== true && result.reconciled !== true) ||
-        (result.sessionId && operation !== "create" && result.sessionId !== sessionId)
-      ) {
-        if (result.controlOutcome === "not-dispatched") {
+      if (readPending(workspaceId)) {
+        if (generation === epoch.current) setError("control_outcome_unconfirmed");
+      } else {
+        localStorage.setItem(pendingKey(workspaceId), JSON.stringify(entry));
+        setPending(entry);
+        const result = await request<
+          ManagedActionResult & { controlOutcome?: string; error?: string }
+        >(operation, { ...entry, ...body, expectedRevision: live?.revision });
+        if (
+          (result.accepted !== true && result.reconciled !== true) ||
+          (result.sessionId && operation !== "create" && result.sessionId !== sessionId)
+        ) {
+          if (result.controlOutcome === "not-dispatched") {
+            forgetPending(workspaceId, entry.requestId);
+            if (generation === epoch.current) setPending(undefined);
+          }
+          if (generation === epoch.current)
+            setError(result.error || "control_outcome_unconfirmed");
+        } else {
           forgetPending(workspaceId, entry.requestId);
-          if (generation === epoch.current) setPending(undefined);
+          if (generation === epoch.current) {
+            setPending(undefined);
+            setInteraction(undefined);
+            if (operation === "create" && result.sessionId) setSessionId(result.sessionId);
+            if (operation === "send") {
+              setDraft("");
+              setAttachments([]);
+            }
+            setInspection(undefined);
+            setConfirmed(false);
+            await refresh();
+            if (generation === epoch.current) retry();
+          }
         }
-        throw new Error(result.error || "control_outcome_unconfirmed");
       }
-      forgetPending(workspaceId, entry.requestId);
-      if (generation !== epoch.current) return;
-      setPending(undefined);
-      setInteraction(undefined);
-      if (operation === "create" && result.sessionId) setSessionId(result.sessionId);
-      if (operation === "send") {
-        setDraft("");
-        setAttachments([]);
-      }
-      setInspection(undefined);
-      setConfirmed(false);
-      await refresh();
-      if (generation === epoch.current) retry();
     } catch (e) {
       if (generation === epoch.current)
         setError(e instanceof Error ? e.message : "control_outcome_unconfirmed");
-    } finally {
-      flight.current = false;
-      setBusy(false);
     }
+    flight.current = false;
+    setBusy(false);
   }
   async function inspect() {
     const generation = epoch.current;
@@ -396,24 +428,29 @@ export function ClaudeSessionPanel({
     setBusy(true);
     const generation = epoch.current;
     try {
-      if (attachments.length + files.length > 10) throw new Error("attachment_limit");
-      for (const file of files) {
-        if (file.size > 25 * 1024 * 1024) throw new Error("attachment_too_large");
-        const item = await request<UploadedAttachment>("upload", {
-          sessionId,
-          name: file.name,
-          mime: file.type || "application/octet-stream",
-          bytes: new Uint8Array(await file.arrayBuffer()),
-        });
-        if (generation !== epoch.current) return;
-        setAttachments((old) => [...old, item]);
+      if (attachments.length + files.length > 10) {
+        if (generation === epoch.current) setError("attachment_limit");
+      } else {
+        for (const file of files) {
+          if (file.size > 25 * 1024 * 1024) {
+            if (generation === epoch.current) setError("attachment_too_large");
+            break;
+          }
+          const item = await request<UploadedAttachment>("upload", {
+            sessionId,
+            name: file.name,
+            mime: file.type || "application/octet-stream",
+            bytes: new Uint8Array(await file.arrayBuffer()),
+          });
+          if (generation !== epoch.current) break;
+          setAttachments((old) => [...old, item]);
+        }
       }
     } catch (e) {
       if (generation === epoch.current) setError(e instanceof Error ? e.message : "upload_failed");
-    } finally {
-      flight.current = false;
-      setBusy(false);
     }
+    flight.current = false;
+    setBusy(false);
   }
   const filesAvailable =
     online &&

@@ -131,7 +131,7 @@ export function DesktopConversationPane({
         "[&_.agentkib-conversation_.user-message]:mb-5 [&_.agentkib-conversation_.user-message]:max-w-[82%] [&_.agentkib-conversation_.user-message]:px-4 [&_.agentkib-conversation_.process]:my-3",
         "[&_.agentkib-conversation_.reader-scroll~form]:w-[min(calc(100%-3rem),48rem)] [&_.agentkib-conversation_.reader-scroll~form]:max-w-none",
         "[&_.agentkib-conversation_.reader-scroll~form]:space-y-1.5 [&_.agentkib-conversation_.reader-scroll~form]:p-2",
-        "[&_.agentkib-conversation_.reader-scroll~form:focus-within]:outline-2 [&_.agentkib-conversation_.reader-scroll~form:focus-within]:outline-[color-mix(in_srgb,var(--ring)_20%,transparent)] [&_.agentkib-conversation_.reader-scroll~form:focus-within]:outline-offset-2",
+        "[&_.agentkib-conversation_.reader-scroll~form_textarea]:focus-visible:border-0 [&_.agentkib-conversation_.reader-scroll~form_textarea]:focus-visible:ring-0",
         "[&_.agentkib-conversation_.reader-scroll~form_textarea]:min-h-12 [&_.agentkib-conversation_.reader-scroll~form_textarea]:max-h-28",
         "[&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1]:gap-2",
         "[&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1>button]:h-11 [&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1>button]:rounded-xl [&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1>button]:transition-colors [&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1>button:first-child]:w-11 [&_.agentkib-conversation_.reader-scroll~form_div.flex.min-w-0.items-center.gap-1>button:first-child]:px-0",

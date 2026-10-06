@@ -1,5 +1,11 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { createFileRoute, Outlet, useLocation, useNavigate, useSearch } from "@tanstack/react-router";
+import { type CSSProperties } from "react";
+import {
+  createFileRoute,
+  Outlet,
+  useLocation,
+  useNavigate,
+  useSearch,
+} from "@tanstack/react-router";
 import { CircleAlert } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -8,9 +14,10 @@ import { SettingsSidebar, type SettingsSection, type SettingsTarget } from "@/fe
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { SidebarResizeHandle } from "@/features/app/SidebarResizeHandle";
 import { useRetainedScroll } from "@/features/app/useRetainedScroll";
+import { useSidebarLayout } from "@/features/app/useSidebarLayout";
 import { retainedScrollOffsets } from "@/features/app/retained-scroll-offsets";
 import { WindowNavigationControls } from "@/features/app/WindowNavigationControls";
-import { MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, useSidebarWidthStore } from "@/features/app/sidebar-width-store";
+import { useSidebarWidthStore } from "@/features/app/sidebar-width-store";
 import { useAppStore } from "@/stores/app-store";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { WindowToolbar } from "@/components/WindowToolbar";
@@ -28,17 +35,7 @@ function SettingsLayout() {
   const favoriteWorkspaceIds = useAppStore((state) => state.favoriteWorkspaceIds);
   const workspaceState = useWorkspaceStore();
   const sidebarWidth = useSidebarWidthStore();
-  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const resize = () => setWindowWidth(window.innerWidth);
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, []);
-  const maxSidebarWidth = Math.max(
-    MIN_SIDEBAR_WIDTH,
-    Math.min(MAX_SIDEBAR_WIDTH, windowWidth - 640 - 52),
-  );
-  const visibleSidebarWidth = Math.min(sidebarWidth.width, maxSidebarWidth);
+  const { maxWidth, visibleWidth, canResize } = useSidebarLayout();
   const scrollRef = useRetainedScroll(locationKey, retainedScrollOffsets);
   const section = search.settingsSection ?? "general";
   const setSettingsSection = (nextSection: SettingsSection, target?: SettingsTarget) => {
@@ -88,7 +85,7 @@ function SettingsLayout() {
 
   return (
     <div
-      style={{ "--sidebar-expanded-width": `${visibleSidebarWidth}px` } as CSSProperties}
+      style={{ "--sidebar-expanded-width": `${visibleWidth}px` } as CSSProperties}
       className={cn(
         "group app-shell app-shell-settings app-shell-headerless !grid !h-full !w-full !min-h-0 !overflow-hidden",
         sidebarWidth.dragging && "app-shell-sidebar-resizing",
@@ -105,9 +102,7 @@ function SettingsLayout() {
         onOpenSearch={onOpenSearch}
       />
       {sidebar}
-      {windowWidth >= 1024 && (
-        <SidebarResizeHandle width={visibleSidebarWidth} maxWidth={maxSidebarWidth} />
-      )}
+      {canResize && <SidebarResizeHandle width={visibleWidth} maxWidth={maxWidth} />}
       {sidebarWidth.error && (
         <div className="sidebar-resize-error" role="alert">
           <span>{tr("sidebar.resizeSaveFailed")}</span>

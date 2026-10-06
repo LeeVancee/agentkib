@@ -26,8 +26,11 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
+import { versionAtLeast } from "./native-version";
+import { projectContextUsage } from "./context-usage";
 import {
   ClaudeManagedRunnerProcess,
+  ClaudeUndispatchedError,
   type ClaudeRunnerSnapshot,
   validateClaudeContent,
 } from "./claude-managed-runner";
@@ -40,7 +43,10 @@ import {
   readUnknownManagedCommands,
 } from "./managed-ledger";
 
-const SUPPORTED_CLAUDE_VERSIONS = new Set(["2.1.263 (Claude Code)", "2.1.285 (Claude Code)"]);
+export function supportsClaudeVersion(value: string, minimum = "2.1.263"): boolean {
+  const match = /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(value);
+  return match !== null && versionAtLeast(match[1]!, minimum);
+}
 const FILE_LIMIT = 2 * 1024 * 1024;
 type ClaudeRecord = {
   version: 1;
@@ -221,11 +227,21 @@ export class ClaudeManagedReadOwner {
         if (!id) throw new Error("missing-session");
         return this.events(id, value.cursor, value.limit);
       case "settings-state":
-      case "usage":
       case "goal":
       case "resources":
         if (!id) throw new Error("missing-session");
         return this.settingsState(id);
+      case "usage": {
+        if (!id) throw new Error("missing-session");
+        const live = await this.#live(id, false);
+        return {
+          ...projectContextUsage(
+            live.usage ?? { available: false, state: "unavailable" },
+            Number(live.revision),
+          ),
+          executionMode: "claude-managed",
+        };
+      }
       case "reconcile":
         if (!id) throw new Error("missing-session");
         return this.#reconcile(value, id);
@@ -276,7 +292,6 @@ export class ClaudeManagedReadOwner {
     if (managedSessionHasUnknownCommands(this.dataDir, id))
       throw new Error("control-outcome-unconfirmed");
     const live = await this.#live(id, true);
-    if (value.expectedRevision !== live.revision) throw new Error("stale-Claude-revision");
     if (live.status === "outcome-unknown") throw new Error("control-outcome-unconfirmed");
 
     const logical = { ...value };
@@ -284,6 +299,9 @@ export class ClaudeManagedReadOwner {
     const fingerprint = createHash("sha256").update(stableJson(logical)).digest("hex");
     const prior = replayManagedCommand(this.dataDir, requestId, fingerprint);
     if (prior) return prior;
+    if (operation === "send" && live.activity === "compacting")
+      return this.#compactingResult(id, requestId);
+    if (value.expectedRevision !== live.revision) throw new Error("stale-Claude-revision");
 
     let content: unknown;
     let executable: string | null | undefined;
@@ -353,7 +371,11 @@ export class ClaudeManagedReadOwner {
       const previousSnapshot = structuredClone(record.snapshot);
       record.snapshot = { ...live, status: "outcome-unknown" };
       this.#save(record);
-      dispatchManagedCommand(this.dataDir, requestId);
+      let dispatched = false;
+      if (operation !== "send") {
+        dispatchManagedCommand(this.dataDir, requestId);
+        dispatched = true;
+      }
       let runner = existingRunner;
       if (!runner) {
         runner = new ClaudeManagedRunnerProcess(
@@ -387,7 +409,7 @@ export class ClaudeManagedReadOwner {
             const streamLive = this.#streamLive(id, snapshot, current);
             this.#publishConversationEvent?.(id, "state", streamLive, streamLive);
           },
-          this.#version?.value === "2.1.285 (Claude Code)",
+          supportsClaudeVersion(this.#version?.value ?? "", "2.1.285"),
           (type, payload, live) => {
             if (type === "item-alias")
               this.#aliasConversationItem?.(
@@ -413,6 +435,12 @@ export class ClaudeManagedReadOwner {
               content,
               requestId,
               Number(value.expectedRevision),
+              () => {
+                if (runner.snapshot().activity === "compacting")
+                  throw new ClaudeUndispatchedError();
+                dispatchManagedCommand(this.dataDir, requestId);
+                dispatched = true;
+              },
             );
             if (reservedRunnerSlot) {
               this.#runnerReservations.delete(id);
@@ -471,7 +499,10 @@ export class ClaudeManagedReadOwner {
         } else {
           record.snapshot = previousSnapshot;
         }
-        const unknown = current?.snapshot.status === "outcome-unknown";
+        const unknown =
+          !dispatched && error instanceof ClaudeUndispatchedError
+            ? false
+            : current?.snapshot.status === "outcome-unknown";
         const result = {
           accepted: false,
           completed: false,
@@ -601,6 +632,19 @@ export class ClaudeManagedReadOwner {
     }
   }
 
+  #compactingResult(id: string, requestId: string): Record<string, unknown> {
+    return {
+      accepted: false,
+      completed: false,
+      controlOutcome: "not-dispatched",
+      requestId,
+      sessionId: id,
+      runtimeBootId: this.bootId,
+      error: "session-compacting",
+      reason: "session-compacting",
+    };
+  }
+
   async #adopt(value: Record<string, any>, id: string): Promise<Record<string, unknown>> {
     const allowed = new Set([
       "operation",
@@ -634,6 +678,9 @@ export class ClaudeManagedReadOwner {
     let retainLock = false;
     try {
       const existing = this.#load(id);
+      if (existing?.snapshot.activity === "compacting") throw new Error("session-compacting");
+      if (managedSessionHasUnknownCommands(this.dataDir, id))
+        throw new Error("control-outcome-unconfirmed");
       let workspaceId: string;
       let workspace: string;
       let nativeId: string;
@@ -706,6 +753,7 @@ export class ClaudeManagedReadOwner {
           streamText: "",
         },
       };
+      if (this.#load(id)?.snapshot.activity === "compacting") throw new Error("session-compacting");
       dispatchManagedCommand(this.dataDir, requestId);
       this.#save(record);
       const live = {
@@ -776,11 +824,12 @@ export class ClaudeManagedReadOwner {
       if (record.released) throw new Error("session-released");
       const live = await this.#live(id, true);
       if (value.runtimeBootId !== this.bootId) throw new Error("stale-runtime-boot");
+      if (managedSessionHasUnknownCommands(this.dataDir, id) || live.status === "outcome-unknown")
+        throw new Error("control-outcome-unconfirmed");
+      if (live.activity === "compacting") return this.#compactingResult(id, requestId);
       if (Number(value.expectedRevision) !== live.revision)
         throw new Error("stale-Claude-revision");
       if (live.status !== "idle") throw new Error("session-busy");
-      if (managedSessionHasUnknownCommands(this.dataDir, id))
-        throw new Error("control-outcome-unconfirmed");
       const evidence = {
         operation: "release",
         workspaceId: record.workspaceId,
@@ -1219,7 +1268,7 @@ export class ClaudeManagedReadOwner {
         allowFailure: true,
       });
       const version = output.bytes.toString("utf8").trim();
-      const value = output.success && SUPPORTED_CLAUDE_VERSIONS.has(version) ? version : null;
+      const value = output.success && supportsClaudeVersion(version) ? version : null;
       this.#version = { at: Date.now(), value };
       return value;
     } catch {
@@ -1320,6 +1369,18 @@ export class ClaudeManagedReadOwner {
     live.executionMode = "claude-managed";
     live.permissionMode = "cli-configured";
     live.cliVersion = version;
+    if (!runner?.hasWorker && isObject(live.usage))
+      live.usage = projectContextUsage(
+        {
+          ...live.usage,
+          // Persisted reports can belong to another backend process; only a resident runner
+          // owns a generation in this runtime, including when its worker has retired.
+          reportGeneration: runner ? live.usage.reportGeneration : undefined,
+          state: "stale",
+          reason: "connection-unavailable",
+        },
+        Number(live.revision),
+      );
     if (!version) {
       live.sendEnabled = false;
       if (live.status === "idle") live.reason = "unverified-installation";
@@ -1437,8 +1498,10 @@ export class ClaudeManagedReadOwner {
       "rename",
       "goal",
       "resources",
+      "usage",
     ]) {
       const available =
+        operation === "usage" ||
         operation === "inspect" ||
         operation === "files" ||
         (operation === "reconcile"
@@ -1460,7 +1523,10 @@ export class ClaudeManagedReadOwner {
                       Array.isArray(live.questions) &&
                       live.questions.length > 0
                     : operation === "release"
-                      ? owned && controls && live.status === "idle"
+                      ? owned &&
+                        controls &&
+                        live.status === "idle" &&
+                        live.activity !== "compacting"
                       : false);
       features[operation] = available
         ? { available: true }

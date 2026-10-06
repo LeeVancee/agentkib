@@ -67,6 +67,7 @@ function setup(hasDurablePending = () => false) {
     const [page, setPage] = useState<ConversationEventPage>();
     const [online, setOnline] = useState(false);
     const [ready, setControlReady] = useState(false);
+    const [usageEpoch, setUsageEpoch] = useState("");
     const selection = useRef("s"),
       generation = useRef(0),
       liveDelivery = useRef(0);
@@ -99,6 +100,7 @@ function setup(hasDurablePending = () => false) {
       clear,
       accessRef,
       setLive,
+      setUsageEpoch,
       setOnline,
       setError,
       hasDurablePending,
@@ -110,6 +112,7 @@ function setup(hasDurablePending = () => false) {
     });
     return {
       live,
+      usageEpoch,
       page,
       setPage,
       online,
@@ -130,6 +133,65 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("native conversation event delivery", () => {
+  it("publishes the native observation epoch and ignores usage from a retired epoch", () => {
+    const view = setup();
+    view.emit(0, "snapshot", {
+      live: {
+        ...initial,
+        usage: { available: true, reportId: 50, usedTokens: 80, contextWindow: 100 },
+      },
+    });
+    expect(view.result.current.usageEpoch).toBe(JSON.stringify(["runtime", "epoch"]));
+    act(() =>
+      view.handlers[0].event(
+        "session-event",
+        JSON.stringify({
+          ...envelope(0, "snapshot", {
+            live: {
+              ...initial,
+              usage: { available: true, reportId: 1, usedTokens: 5, contextWindow: 100 },
+            },
+          }),
+          epoch: "replacement",
+        }),
+      ),
+    );
+    expect(view.result.current.usageEpoch).toBe(JSON.stringify(["runtime", "replacement"]));
+    view.emit(1, "state", {
+      usage: { available: true, reportId: 51, usedTokens: 99, contextWindow: 100 },
+    });
+    expect(view.result.current.live?.usage?.usedTokens).toBe(5);
+  });
+  it("preserves compaction progress and its explicit clear over an older control reconciliation", async () => {
+    const view = setup();
+    view.emit(0, "snapshot", { live: initial });
+    let finish!: (live: Live) => void;
+    vi.mocked(view.client.live).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    act(() => view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })));
+    view.emit(1, "state", {
+      revision: 11,
+      activity: "compacting",
+      usage: { available: false, state: "pending", reportId: 1 },
+    });
+    view.emit(2, "state", {
+      revision: 12,
+      activity: null,
+      usage: { available: true, state: "ready", reportId: 2, usedTokens: 0, contextWindow: 100 },
+    });
+    await act(async () => finish({ ...initial, activity: "compacting" }));
+    expect(view.client.live).toHaveBeenCalledOnce();
+    expect(view.result.current.live).toMatchObject({
+      revision: 12,
+      activity: null,
+      usage: { reportId: 2, usedTokens: 0 },
+    });
+    expect(view.result.current.ready).toBe(true);
+  });
   it("applies deltas and authoritative items without polling or reloading history", async () => {
     vi.useFakeTimers();
     const view = setup();

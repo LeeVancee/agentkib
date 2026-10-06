@@ -56,6 +56,7 @@ describe("ConversationTranscript", () => {
     fireEvent.click(screen.getByText(tr("sessions.process")));
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("commentary")).toBeVisible();
+    expect(screen.queryByText(tr("sessions.partialTurn"))).not.toBeInTheDocument();
     expect(container.querySelector('[data-event-id="tool"]')).toBeTruthy();
   });
 

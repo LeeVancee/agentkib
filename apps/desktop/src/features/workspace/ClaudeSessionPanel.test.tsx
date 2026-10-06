@@ -174,6 +174,45 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("Claude local owner panel", () => {
+  it("shares native usage and compaction state while preserving native stop", async () => {
+    live = {
+      ...live,
+      usage: { available: true, state: "ready", reportId: 1, usedTokens: 0, contextWindow: 100 },
+    };
+    mount();
+    await screen.findByText("Synthetic history");
+    await enabled(screen.getByLabelText("Message"));
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "next" } });
+    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("0%");
+    act(() =>
+      emitNative(1, "state", {
+        revision: 2,
+        status: "running",
+        turnId: "turn",
+        sendEnabled: false,
+        stopEnabled: true,
+        activity: "compacting",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
+      "Compacting context",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Release to original client" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    act(() => emitNative(2, "state", { revision: 3, activity: null }));
+    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent(
+      "Awaiting update",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    act(() =>
+      emitNative(3, "state", {
+        revision: 4,
+        usage: { available: true, state: "ready", reportId: 2, usedTokens: 4, contextWindow: 100 },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Context usage" })).toHaveTextContent("4%");
+  });
   it.each(["before", "after"])(
     "recovers an admission-busy history read when another session settles %s its response",
     async (settlement) => {

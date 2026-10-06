@@ -5,6 +5,8 @@ import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { Textarea } from "../../components/ui/textarea";
 import { useSession } from "./session-context";
+import { ContextUsageGauge } from "./context-usage";
+import { contextUsageCopy } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy } from "./codex-copy";
@@ -194,7 +196,8 @@ export function CodexComposer() {
   const valid = ready && isValidMessage(message, attachmentIds.length > 0);
   const resourceNeedsMessage = resourceIds.length > 0 && !message.trim() && !attachmentIds.length;
   async function send(action: "send" | "steer" | "queue-add") {
-    if (!valid || busy || submitted) return;
+    if (!valid || busy || submitted || (live?.activity === "compacting" && action !== "queue-add"))
+      return;
     const requestGeneration = generation.current;
     setSubmitted(true);
     const result =
@@ -221,6 +224,7 @@ export function CodexComposer() {
     }
   }
   const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
+  const compacting = live?.activity === "compacting";
   const running = live?.status === "running";
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
   const primaryAction = canStop ? (
@@ -237,7 +241,7 @@ export function CodexComposer() {
     <Button
       className="size-11 shrink-0 p-0"
       aria-label={t.send}
-      disabled={!canSend || !valid || submitted}
+      disabled={!canSend || compacting || !valid || submitted}
     >
       <ArrowUp size={20} />
     </Button>
@@ -247,7 +251,7 @@ export function CodexComposer() {
       className="mx-2 mb-[max(.5rem,env(safe-area-inset-bottom))] mt-2 w-[calc(100%-1rem)] max-w-3xl shrink-0 self-center space-y-2 rounded-2xl border bg-card p-2 shadow-sm md:mx-4 md:mb-4 md:w-[calc(100%-2rem)] md:p-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSend) void send("send");
+        if (canSend && !compacting) void send("send");
       }}
     >
       {isClaude && (live?.model || live?.cliVersion) && (
@@ -383,10 +387,13 @@ export function CodexComposer() {
             >
               {copy.attachment}
             </Button>
-            {primaryAction}
+            <div className="flex min-w-0 items-center gap-1">
+              <ContextUsageGauge />
+              {primaryAction}
+            </div>
           </div>
         )}
-        {running && !isClaude && (
+        {(running || compacting) && !isClaude && (
           <div className="space-y-2 border-t pt-2">
             <div className="flex flex-wrap gap-2">
               <Button
@@ -395,7 +402,11 @@ export function CodexComposer() {
                 className="min-h-11"
                 variant="outline"
                 disabled={
-                  !canAdvanced || !capabilities?.features.steer?.available || !valid || submitted
+                  compacting ||
+                  !canAdvanced ||
+                  !capabilities?.features.steer?.available ||
+                  !valid ||
+                  submitted
                 }
                 onClick={() => void send("steer")}
               >
@@ -421,7 +432,12 @@ export function CodexComposer() {
           </div>
         )}
       </div>
-      {!canSend && !running && (
+      {compacting && (
+        <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
+          {contextUsageCopy[locale].compactingDetail}
+        </p>
+      )}
+      {!canSend && !running && !compacting && (
         <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
           {display.reason}
         </p>

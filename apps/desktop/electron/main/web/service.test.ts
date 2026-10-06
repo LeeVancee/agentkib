@@ -960,6 +960,95 @@ describe("WebAccessService loopback security boundary", () => {
     }
   });
 
+  it.each([false, true])(
+    "uses the same context projection for HTTP and SSE, full access=%s",
+    async (full) => {
+      await service.shutdown();
+      service = new WebAccessService({
+        conversationHub: hub,
+        sharedControl: control,
+        dataDir: dir,
+        staticDir: dir,
+        runtimeRequest: runtime,
+        verifiedCodex: true,
+        workspaceRequest: async () => [{ id: "workspace", name: "Workspace", path: dir }],
+      });
+      await service.initialize();
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: ["workspace"],
+      });
+      await bootstrap();
+      if (full) {
+        const code = (await service.request({ operation: "generate-code" })).code!.value;
+        expect(
+          (await http("/api/web/v1/pair", { body: { code, name: "Fixture" }, method: "POST" }))
+            .status,
+        ).toBe(200);
+      } else await pair();
+      const tokenUsage = {
+        last: { totalTokens: 3000 },
+        total: { totalTokens: 12000 },
+        modelContextWindow: 48000,
+      };
+      const usage = { available: true, tokenUsage, reportGeneration: 2, reportId: 3 };
+      runtime.mockImplementation(async (params) =>
+        (params as { operation: string }).operation === "catalog"
+          ? { sessions: [{ id: "s", workspace_id: "workspace", agent: "codex" }] }
+          : {
+              executionMode: "codex-managed",
+              workspaceId: "workspace",
+              runtimeBootId: "runtime-one",
+              revision: 4,
+              sendEnabled: true,
+              tokenUsage,
+              usage,
+            },
+      );
+      const live = await http("/api/web/v1/live?sessionId=s");
+      expect(live.status).toBe(200);
+      expect(live.json()).not.toHaveProperty("tokenUsage");
+      if (full)
+        expect(live.json().usage).toMatchObject({
+          state: "ready",
+          usedTokens: 3000,
+          percent: 6.25,
+          reportGeneration: 2,
+          reportId: 3,
+        });
+      else expect(live.json()).not.toHaveProperty("usage");
+      const stream = openStream();
+      try {
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+        expect(streamEvents(stream.chunks)[0].payload.live).toEqual(live.json());
+        const before = runtime.mock.calls.length;
+        pushEvent("state", { revision: 5, tokenUsage, usage, activity: "compacting" });
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(2));
+        const patch = streamEvents(stream.chunks)[1].payload;
+        expect(patch).not.toHaveProperty("tokenUsage");
+        if (full) {
+          expect(patch.usage).toMatchObject({
+            state: "pending",
+            usedTokens: 3000,
+            reportGeneration: 2,
+            reportId: 3,
+          });
+          expect(patch.usage).not.toHaveProperty("percent");
+        } else expect(patch).not.toHaveProperty("usage");
+        pushEvent("state", { revision: 6, activity: null }, 2);
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(3));
+        expect(streamEvents(stream.chunks)[2].payload).toEqual({ revision: 6, activity: null });
+        expect(runtime.mock.calls).toHaveLength(before);
+      } finally {
+        stream.close();
+      }
+    },
+  );
+
   it.each(
     ["codex-managed", "claude-managed"].flatMap((executionMode) =>
       [false, true].map((allowed) => ({ executionMode, allowed })),

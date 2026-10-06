@@ -49,6 +49,58 @@ function moveTo(top: number) {
 }
 
 describe("conversation reading position", () => {
+  it("uses the same live usage gauge for an ACP composer without settings", () => {
+    state = {
+      ...state,
+      online: true,
+      busy: false,
+      canSend: true,
+      canStop: false,
+      message: "hello",
+      setMessage: vi.fn(),
+      control: vi.fn(),
+      current: { ...state.current!, agent: "antigravity" },
+      access: {
+        ...state.access!,
+        experimentalEnabled: true,
+        device: {
+          id: "device",
+          name: "Test browser",
+          approve: false,
+          send: true,
+          accessMode: "full",
+          advancedControl: true,
+        },
+      },
+      live: {
+        sessionId: "first",
+        status: "idle",
+        revision: 1,
+        sendEnabled: true,
+        approvals: [],
+        usage: { available: true, state: "ready", reportId: 1, usedTokens: 0, contextWindow: 100 },
+      },
+    };
+    const view = render(<SessionReader />);
+    expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("0%");
+    state.live = { ...state.live!, activity: "compacting" };
+    view.rerender(<SessionReader />);
+    expect(screen.getByRole("button", { name: state.t.send })).toBeDisabled();
+    fireEvent.submit(screen.getByRole("button", { name: state.t.send }).closest("form")!);
+    expect(state.control).not.toHaveBeenCalled();
+    state = {
+      ...state,
+      access: { ...state.access!, device: { ...state.access!.device!, send: false } },
+      live: {
+        ...state.live!,
+        activity: null,
+        usage: { available: true, state: "ready", reportId: 2, usedTokens: 5, contextWindow: 100 },
+      },
+    };
+    view.rerender(<SessionReader />);
+    expect(screen.getByRole("button", { name: "上下文用量" })).toHaveTextContent("5%");
+    expect(screen.queryByRole("button", { name: state.t.send })).not.toBeInTheDocument();
+  });
   it("keeps the reading position and offers an accessible jump for an appended reply", () => {
     const view = render(<SessionReader />);
     const node = moveTo(250);

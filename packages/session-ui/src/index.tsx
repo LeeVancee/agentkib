@@ -191,7 +191,6 @@ export function Transcript({
               {new Date(g.time).toLocaleString(locale)}
             </time>
           )}
-          {g.turnId && !g.complete && <small className="incomplete">{labels.incomplete}</small>}
           {g.segments.map((s) => {
             if (!s.process) return s.events.map(row);
             const failed = s.events.filter((e) =>

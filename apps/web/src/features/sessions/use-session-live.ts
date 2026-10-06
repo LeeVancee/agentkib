@@ -33,6 +33,7 @@ const nativeProgressFields = new Set([
   "settings",
   "usage",
   "tokenUsage",
+  "activity",
   "goal",
 ]);
 type ProgressPatch = Map<string, { value: unknown; revision: number }>;
@@ -64,6 +65,7 @@ interface LiveSyncOptions {
   setAccess: Setter<Access | undefined>;
   setPage: Setter<ConversationEventPage | undefined>;
   setLiveContentVersion?: Setter<number>;
+  setUsageEpoch?: Setter<string>;
 }
 export function useSessionLive({
   streamReady,
@@ -91,6 +93,7 @@ export function useSessionLive({
   streamEpoch,
   liveDelivery,
   setLiveContentVersion,
+  setUsageEpoch,
 }: LiveSyncOptions) {
   useEffect(() => {
     if (!selected || access?.status !== "approved" || access.protocolVersion !== 2) return;
@@ -447,6 +450,7 @@ export function useSessionLive({
             }
             if (next.live) {
               if (event.type === "snapshot") {
+                setUsageEpoch?.(JSON.stringify([next.runtimeBootId, next.epoch]));
                 streamReady.current = true;
                 snapshotSeen = true;
               }

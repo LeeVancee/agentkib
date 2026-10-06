@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Gauge, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
 import {
   ApiError,
   type CodexAction,
@@ -16,6 +16,7 @@ import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { subscribeSessionInvalidation } from "./session-events";
+import { ContextUsageDetails, ContextUsageGauge, useContextUsage } from "./context-usage";
 
 export type CodexResource = CodexContextResource;
 
@@ -41,8 +42,18 @@ export function CodexComposerControls({
   disabled,
   action,
 }: CodexComposerControlsProps) {
-  const { selected, client, access, locale, live, busy, online, codexAction, capabilities } =
-    useSession();
+  const {
+    selected,
+    client,
+    access,
+    locale,
+    live,
+    busy,
+    online,
+    codexAction,
+    capabilities,
+    usageEpoch,
+  } = useSession();
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const term = (value: string) => composerTerm(locale, value);
@@ -84,7 +95,7 @@ export function CodexComposerControls({
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [goalDirty, setGoalDirty] = useState(false);
   const full = access?.device?.accessMode === "full";
-  const [dialog, setDialog] = useState<"settings" | "goal" | "context" | "usage">();
+  const [dialog, setDialog] = useState<"settings" | "goal" | "context">();
   const [settings, setSettings] = useState<CodexSessionSettings>();
   const [goal, setGoal] = useState<CodexGoalState>();
   const [context, setContext] = useState<CodexContextOptions>();
@@ -110,7 +121,9 @@ export function CodexComposerControls({
   const [serviceTier, setServiceTier] = useState("");
   const [objective, setObjective] = useState("");
   const [tokenBudget, setTokenBudget] = useState("");
-  const running = live?.status !== "idle";
+  const compacting = live?.activity === "compacting";
+  const running = live?.status !== "idle" || compacting;
+  const usageView = useContextUsage(settings?.sessionId === selected ? settings.usage : undefined);
 
   const applySettings = useCallback((value: CodexSessionSettings) => {
     setSettings(value);
@@ -243,10 +256,10 @@ export function CodexComposerControls({
       contextGeneration.current++;
       contextAbort.current?.abort();
     };
-  }, [selected, setResources]);
+  }, [selected, setResources, client, access?.bootId, access?.device?.id]);
 
   useEffect(() => {
-    if (!full || !selected || !online) {
+    if (!full || !selected || !online || usageEpoch === "") {
       contextGeneration.current++;
       contextAbort.current?.abort();
       setContextLoading(false);
@@ -258,7 +271,7 @@ export function CodexComposerControls({
     return () => {
       loadGeneration.current++;
     };
-  }, [full, online, selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [full, online, selected, access?.bootId, access?.device?.id, usageEpoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!full || !selected || !online) return;
@@ -330,7 +343,7 @@ export function CodexComposerControls({
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
   ) {
-    if (!full || saving) return;
+    if (!full || saving || compacting) return;
     const readRevision = name === "settings" ? settings?.revision : goal?.revision;
     if (live?.revision !== undefined && readRevision !== live.revision) return;
     setSaving(true);
@@ -365,18 +378,6 @@ export function CodexComposerControls({
         | undefined
     )?.[name];
   const selectedModel = settings?.options.models?.find((item) => item.id === model);
-  const usage = settings?.usage;
-  const usagePercent =
-    usage?.available && usage.usedTokens !== undefined && usage.contextWindow !== undefined
-      ? Math.max(
-          0,
-          Math.min(
-            100,
-            usage.percent ??
-              (usage.contextWindow > 0 ? (usage.usedTokens / usage.contextWindow) * 100 : 0),
-          ),
-        )
-      : undefined;
   const availableResources = (context?.resources ?? []).filter((item) => {
     const needle = query.trim().toLocaleLowerCase();
     return !needle || `${item.name} ${item.description ?? ""}`.toLocaleLowerCase().includes(needle);
@@ -465,17 +466,9 @@ export function CodexComposerControls({
             <span className="shrink-0 text-xs text-muted-foreground">{layout.settingsUnknown}</span>
           )}
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-11 shrink-0 px-2 text-xs"
-          aria-label={copy.contextUsage}
-          title={`${copy.contextUsage}: ${usage?.usedTokens?.toLocaleString() ?? "?"} / ${usage?.contextWindow?.toLocaleString() ?? "?"}`}
-          onClick={() => setDialog("usage")}
-        >
-          <Gauge size={15} />
-          <span>{usagePercent === undefined ? "?" : `${Math.round(usagePercent)}%`}</span>
-        </Button>
+        <ContextUsageGauge
+          fallback={settings?.sessionId === selected ? settings.usage : undefined}
+        />
         {action}
       </div>
       {goal?.goal && (
@@ -491,21 +484,6 @@ export function CodexComposerControls({
           <span className="truncate">{goal.goal.objective}</span>
         </Button>
       )}
-      {dialog === "usage" && (
-        <Dialog
-          panel
-          title={copy.contextUsage}
-          closeLabel={copy.close}
-          onClose={() => setDialog(undefined)}
-        >
-          <p>
-            {usagePercent === undefined
-              ? copy.contextUnknown
-              : `${usage?.usedTokens?.toLocaleString()} / ${usage?.contextWindow?.toLocaleString()} (${Math.round(usagePercent)}%)`}
-          </p>
-        </Dialog>
-      )}
-
       {dialog === "settings" && (
         <Dialog
           panel
@@ -598,23 +576,7 @@ export function CodexComposerControls({
             </p>
           ) : (
             <section className="space-y-4">
-              {usage?.available &&
-              usage.usedTokens !== undefined &&
-              usage.contextWindow !== undefined ? (
-                <div className="space-y-1 rounded-lg border p-3 text-xs">
-                  <div className="flex justify-between gap-3">
-                    <span>{copy.contextUsage}</span>
-                    <span>
-                      {usage.usedTokens.toLocaleString()} / {usage.contextWindow.toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full bg-primary" style={{ width: `${usagePercent}%` }} />
-                  </div>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">{copy.contextUnknown}</p>
-              )}
+              <ContextUsageDetails {...usageView} locale={locale} online={online} />
               <label className="block space-y-1 text-sm">
                 {copy.model}
                 <select
@@ -800,6 +762,7 @@ export function CodexComposerControls({
                   disabled={
                     busy ||
                     saving ||
+                    compacting ||
                     goalChanged ||
                     goalReadStale ||
                     !goal.actions.set?.available ||
@@ -828,6 +791,7 @@ export function CodexComposerControls({
                     disabled={
                       busy ||
                       saving ||
+                      compacting ||
                       goalReadStale ||
                       !goal.actions.resume?.available ||
                       feature("goal-resume")?.available !== true
@@ -848,6 +812,7 @@ export function CodexComposerControls({
                     disabled={
                       busy ||
                       saving ||
+                      compacting ||
                       goalReadStale ||
                       !goal.actions.pause?.available ||
                       feature("goal-pause")?.available !== true
@@ -865,6 +830,7 @@ export function CodexComposerControls({
                   disabled={
                     busy ||
                     saving ||
+                    compacting ||
                     goalReadStale ||
                     !goal.actions.clear?.available ||
                     feature("goal-clear")?.available !== true
@@ -955,7 +921,7 @@ export function CodexComposerControls({
                 <textarea
                   className="min-h-24 w-full rounded-md border bg-background p-2"
                   value={objective}
-                  disabled={busy || saving}
+                  disabled={busy || saving || compacting}
                   onChange={(event) => {
                     editGoal();
                     setObjective(event.target.value);
@@ -968,7 +934,7 @@ export function CodexComposerControls({
                   type="number"
                   min={1}
                   value={tokenBudget}
-                  disabled={busy || saving}
+                  disabled={busy || saving || compacting}
                   onChange={(event) => {
                     editGoal();
                     setTokenBudget(event.target.value);

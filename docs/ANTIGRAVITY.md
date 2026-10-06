@@ -4,13 +4,19 @@ Antigravity 不能直接复用 Gemini CLI 的会话适配器。两者共享 `GEM
 
 ## 当前适配基线
 
-| 组件 | 已验证版本 | 用途 |
-| --- | --- | --- |
-| Antigravity CLI | 1.2.7 | 安装检测、版本检测和官方 CLI 入口 |
-| Antigravity ACP server | 1.1.1 | ACP v1 会话列表、加载、续接、发送、停止和逐次审批 |
-| ACP protocol | v1 | `session/list`、`session/load`、`session/resume`、`session/prompt`、`session/cancel` |
+| 组件                   | 已验证版本 | 用途                                                                                 |
+| ---------------------- | ---------- | ------------------------------------------------------------------------------------ |
+| Antigravity CLI        | 1.2.7      | 安装检测、版本检测和官方 CLI 入口                                                    |
+| Antigravity ACP server | 1.1.1      | ACP v1 会话列表、加载、续接、发送、停止和逐次审批                                    |
+| ACP protocol           | v1         | `session/list`、`session/load`、`session/resume`、`session/prompt`、`session/cancel` |
 
-AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端精确报告 `antigravity-acp` / `agy_acp_server_1.1.1`，未知版本保持只读。
+AgentKib 不自动下载 ACP server，也不读取或复制 Google 登录凭据。运行时从绝对路径环境变量 `AGENTKIB_ANTIGRAVITY_ACP_BIN` 查找服务器；未设置时查找 PATH 中的 `agy_acp_server.par` 或 `agy_acp_server.exe`。只读历史按 ACP v1 能力协商；发送、停止和审批还要求服务端精确报告身份 `antigravity-acp`，版本完整匹配 `agy_acp_server_数字.数字.数字` 且不低于 `1.1.1`。版本范围只决定尝试兼容，实际 ACP v1、加载或续接能力、会话及审批身份仍须确认。
+
+上下文占用仅接收原生 `usage_update.used` 与 `size`，缺失或无效时保持未知。连接声明可选的 ACP v1 `session.compaction` 扩展；收到压缩通知时按原生 `compactionId` 保存有界生命周期、摘要块及 nullable patch，首次接收位置保持不变，历史允许从终态开始。未知状态不能确认压缩结束；压缩结束也不能确认当前轮次结束。压缩期间禁用新发送，保留停止及有效原生审批；没有这些通知时只依赖原有运行状态锁。扩展处理与离线测试通过不证明已安装服务器实际会上报它们。
+
+压缩期间的合法用量报告保留为待确认候选，包括连续压缩或模型切换后开始的压缩。压缩结束后仍显示“用量待更新”；只有普通请求或输出边界之后的新原生报告才能恢复当前占用比例，结束通知本身不会使候选报告变为当前值。
+
+每次新建 ACP runner 都分配当前 Backend 内递增的用量报告代次。重连后的报告编号可以重新从 1 开始；桌面和 Remote 持续订阅时，也能按代次撤销旧实例报告并接受新报告。模型切换、压缩和同一连接内的状态更新保留该代次。
 
 ## 已实现范围
 

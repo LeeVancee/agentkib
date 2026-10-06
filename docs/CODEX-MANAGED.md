@@ -38,7 +38,11 @@ Follower 连接 CODEX_HOME 下官方 IPC，使用操作系统核实的实际 pee
 
 满足 Desktop 最低版本仅允许继续运行时兼容性检查，不表示该版本已通过真实控制验收。各方法仍使用固定协议版本，并继续核对 peer、owner、host、thread、revision 和原生 ACK；超时或回执丢失仍保持 unknown 屏障，版本升级不能清除屏障。当前 `26.930.51102` 仅完成方法映射及关键 payload 字段的静态核对，尚未进行真实 owner 控制或端到端验收；`26.924.22138` 的历史 owner 设置验证也只证明当时记录的操作。
 
-由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。主机默认、token usage、goal、技能／插件资源同样没有可靠 follower 读取路径，保持 unavailable。
+实时快照以独立 `activity: compacting | null` 表示上下文压缩，不改写原生 turn 状态。托管侧跟踪匹配 thread、turn 和 item 的 `contextCompaction` 开始／完成；follower 从已验证快照的活动 turn 与 `completed:false` item 识别，包含官方手动压缩的无 turn ID 占位。压缩期间禁止即时发送、steer、设置、目标修改和执行转移；有已确认活动 turn 时仍可原生停止，已有原生排队及有效待处理请求按各自能力保留。无 turn ID 时不制造停止目标。压缩结束、失败或中断由匹配原生生命周期确认；断线及过期 hydrate 不得恢复旧运行态。
+
+`usage` 仅投影最近原生报告的上下文占用与累计消费，保留兼容 `tokenUsage`。`reportGeneration` 区分原生观察实例，在当前 backend 进程内递增；`reportId` 只随真实 usage 事件或 follower usage 字段变化递增，普通 revision 或重复快照不算新报告。连接重建后可以重置 `reportId`，即使另一端持续订阅使传输 epoch 不变，两端仍能接受新实例的报告并拒绝旧实例晚到的报告。backend 重启仍通过运行实例作用域重置；没有原生观察实例的持久旧报告不沿用其代次。压缩开始使旧 Gauge 失效；期间到达的报告保留为 pending 候选，结束后同 turn 报告保持 stale，因为压缩调用输入可能仍是压缩前上下文。模型身份或托管模型选择变化也使旧报告失效；明确仍待应用的模型选择不得复用旧窗口。匹配后续新 turn 的报告可恢复 ready；无法归属、重连或恢复时不沿用旧百分比，不通过发送任务补刷新，控制恢复也不等待用量报告。
+
+由于 follower 快照没有目标主机的模型／服务档位目录，Web 只开放计划模式和三个固定策略，拒绝浏览器提交模型、effort 或服务档位字符串。上下文用量来自已验证快照的 `latestTokenUsageInfo`；主机默认、goal、技能／插件资源仍无可靠 follower 读取路径，保持 unavailable。
 
 ## 原 ID 交接与退出
 

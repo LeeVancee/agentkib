@@ -189,9 +189,9 @@ function fixture() {
     observeLive: vi.fn(async () => followerState),
     close: vi.fn(() => {}),
   };
-  vi.spyOn(CodexFollowerBridge, "connect").mockResolvedValue(
-    follower as unknown as CodexFollowerBridge,
-  );
+  const connect = vi
+    .spyOn(CodexFollowerBridge, "connect")
+    .mockResolvedValue(follower as unknown as CodexFollowerBridge);
   const web = new WebReadRequests(store, readers, root, () => 0n, environment);
   cleanups.push(async () => {
     web.close();
@@ -212,11 +212,26 @@ function fixture() {
     return result as { sessionId: string; runtimeBootId: string; live: Json };
   }
   async function observe() {
-    return (await web.request({
-      operation: "live",
-      sessionId: indexedId,
-      experimentalEnabled: true,
-    })) as Json;
+    // The mocked Desktop follower is macOS-only. Simulate its platform only
+    // during observation so managed CLI requests retain the actual host platform.
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    try {
+      const live = (await web.request({
+        operation: "live",
+        sessionId: indexedId,
+        experimentalEnabled: true,
+      })) as Json;
+      expect(connect).toHaveBeenCalledOnce();
+      expect(live).toMatchObject({
+        executionMode: "codex-follower",
+        status: "idle",
+        revision: 1,
+      });
+      return live;
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   }
   function releasedRecord(adopted = true, savedSnapshot: Json = {}) {
     saveManagedRecord(root, {

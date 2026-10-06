@@ -60,6 +60,8 @@ export class CodexFollowerBridge {
   async #select(conversationId: string): Promise<void> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId))
       throw new Error("select an explicit Codex conversation UUID");
+    const usageRecovery =
+      this.#state?.conversationId === conversationId ? this.#state.usageRecovery() : undefined;
     this.#unfollow();
     const response = await this.connection.request("thread-owner-discovery", {
       hostId: "local",
@@ -69,7 +71,7 @@ export class CodexFollowerBridge {
     if (typeof ownerClientId !== "string" || !ownerClientId)
       throw new Error("no Codex session owner found");
     if (ownerClientId === this.connection.clientId) throw new Error("cannot follow this client");
-    const state = new CodexFollowerState(conversationId, ownerClientId);
+    const state = new CodexFollowerState(conversationId, ownerClientId, usageRecovery);
     this.#state = state;
     try {
       await this.#followAndAwaitSnapshot(0);
@@ -198,7 +200,7 @@ export class CodexFollowerBridge {
     onDispatch: () => void,
   ): Promise<unknown> {
     const state = await this.#observeLive();
-    if (state.revision !== expectedRevision) throw new Error("stale-or-disabled-control");
+    state.assertMutationAllowed(method, params, expectedRevision);
     let dispatched = false;
     let followingRequested = false;
     try {
@@ -214,6 +216,7 @@ export class CodexFollowerBridge {
           }
         },
         () => {
+          state.assertMutationAllowed(method, params, expectedRevision);
           dispatched = true;
           state.markMutationDispatched();
           onDispatch();

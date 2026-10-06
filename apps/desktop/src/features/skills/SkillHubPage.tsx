@@ -50,6 +50,7 @@ import type {
   SkillInventory,
   SkillDeployment,
   SkillDetailRequest,
+  SkillSource,
   WorkspaceSummary,
 } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
@@ -64,6 +65,8 @@ import {
   SkillUsageList,
   type SkillDeploymentAction,
 } from "./SkillManagerPanels";
+import { SkillImportDialog } from "./SkillImportDialog";
+import { SkillVersionDialog } from "./SkillVersionDialog";
 
 type SkillHubSection = "library" | "workspace" | "discover";
 const noInstalledSkills: InstalledSkill[] = [];
@@ -95,6 +98,7 @@ function isSameSource(installed: InstalledSkill["source"], candidate: SkillCandi
     !!candidate &&
     installed.repository.toLowerCase() === candidate.repository.toLowerCase() &&
     installed.ref === candidate.ref &&
+    installed.ref_type === candidate.ref_type &&
     installed.path === candidate.path
   );
 }
@@ -145,6 +149,12 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<SkillOperationPreview>();
+  const [importOpen, setImportOpen] = useState(false);
+  const [versionRequest, setVersionRequest] = useState<{
+    name: string;
+    source: SkillSource;
+    libraryId?: string;
+  }>();
   const [busy, setBusy] = useState<string>();
   const [errors, setErrors] = useState<unknown[]>([]);
   const [inventory, setInventory] = useState<SkillInventory>({ observations: [], warnings: [] });
@@ -487,10 +497,24 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
               <h2 className="text-base font-semibold">{tr("skills.libraryTitle")}</h2>
               <p className="text-sm text-muted-foreground">{tr("skills.libraryDescription")}</p>
             </div>
-            <Button variant="outline" disabled={Boolean(busy)} onClick={() => void checkUpdates()}>
-              <RefreshCw className={cn(busy === "check-updates" && "animate-spin")} size={15} />
-              {tr("skills.checkUpdates")}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={Boolean(busy) || managerLoading}
+                onClick={() => setImportOpen(true)}
+              >
+                <Download size={15} />
+                {tr("skills.imports.title")}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={Boolean(busy)}
+                onClick={() => void checkUpdates()}
+              >
+                <RefreshCw className={cn(busy === "check-updates" && "animate-spin")} size={15} />
+                {tr("skills.checkUpdates")}
+              </Button>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Input
@@ -595,6 +619,11 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                   <CardContent className="grid content-center gap-2 p-0">
                     <div className="grid gap-1 text-xs text-muted-foreground">
                       <span className="truncate">{sourceLabel(skill, tr)}</span>
+                      {skill.source && (
+                        <code className="break-all">
+                          {skill.source.ref} · {skill.source.resolved_commit.slice(0, 12)}
+                        </code>
+                      )}
                       <span>
                         {formatBytes(skill.size)}
                         {skill.updated_at ? ` · ${formatDateTime(skill.updated_at)}` : ""}
@@ -625,6 +654,23 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                           ).length,
                         })}
                       </Badge>
+                      {skill.source && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={Boolean(busy)}
+                          onClick={() =>
+                            setVersionRequest({
+                              name: skill.display_name,
+                              source: skill.source!,
+                              libraryId: skill.name,
+                            })
+                          }
+                        >
+                          <History size={14} />
+                          {tr("skills.versions.choose")}
+                        </Button>
+                      )}
                       {skill.source && (
                         <Button
                           size="sm"
@@ -779,7 +825,24 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                 const existing = installed.find((skill) =>
                   isSameSource(skill.source, candidate.source),
                 );
+                const versionTarget = installed.find(
+                  (skill) =>
+                    skill.source &&
+                    candidate.source &&
+                    skill.source.repository.toLowerCase() ===
+                      candidate.source.repository.toLowerCase() &&
+                    skill.source.path === candidate.source.path,
+                );
                 const sameSource = Boolean(existing);
+                const switchingVersion = Boolean(versionTarget && !sameSource);
+                const chooseVersion = () => {
+                  if (!candidate.source) return;
+                  setVersionRequest({
+                    name: candidate.name,
+                    source: versionTarget?.source ?? candidate.source,
+                    ...(versionTarget ? { libraryId: versionTarget.name } : {}),
+                  });
+                };
                 return (
                   <Card
                     key={`${candidate.source?.repository ?? "local"}:${candidate.source?.path ?? candidate.name}`}
@@ -805,14 +868,32 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
                         </p>
                         {candidate.license && <p>{candidate.license}</p>}
                       </div>
-                      <Button
-                        size="sm"
-                        disabled={!candidate.source || Boolean(busy)}
-                        onClick={() => void prepareInstall(candidate)}
-                      >
-                        <Download size={14} />
-                        {sameSource ? tr("skills.update") : tr("skills.addToLibrary")}
-                      </Button>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        {candidate.source && !switchingVersion && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={Boolean(busy)}
+                            onClick={chooseVersion}
+                          >
+                            {tr("skills.versions.choose")}
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          disabled={!candidate.source || Boolean(busy)}
+                          onClick={() =>
+                            switchingVersion ? chooseVersion() : void prepareInstall(candidate)
+                          }
+                        >
+                          <Download size={14} />
+                          {switchingVersion
+                            ? tr("skills.versions.choose")
+                            : sameSource
+                              ? tr("skills.update")
+                              : tr("skills.addToLibrary")}
+                        </Button>
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -824,10 +905,44 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
 
       <SkillPreviewDialog
         preview={preview}
-        busy={busy?.startsWith("apply:") ?? false}
-        onClose={() => setPreview(undefined)}
+        busy={Boolean(busy?.startsWith("apply:") || busy === "discard-preview")}
+        onClose={() => {
+          const token = preview?.token;
+          if (!token) return;
+          void run("discard-preview", async () => {
+            await api.discardSkillPreview(token);
+            setPreview(undefined);
+          });
+        }}
         onApply={() => void applyPreview()}
       />
+      {importOpen && (
+        <SkillImportDialog
+          inventory={inventory}
+          deployments={deployments}
+          onClose={() => setImportOpen(false)}
+          onImported={async (skills, warnings) => {
+            setInstalled((items) =>
+              skills.reduce((current, skill) => upsertSkill(current, skill), items),
+            );
+            setSuccess(true);
+            setOperationWarnings(warnings);
+            setAddedLibraryId(skills.length === 1 ? skills[0].name : undefined);
+            setErrors([]);
+            return refreshAfterMutation();
+          }}
+        />
+      )}
+      {versionRequest && (
+        <SkillVersionDialog
+          {...versionRequest}
+          onClose={() => setVersionRequest(undefined)}
+          onPrepared={(next) => {
+            setVersionRequest(undefined);
+            setPreview(next);
+          }}
+        />
+      )}
       {detailRequest && (
         <SkillDetailDialog
           request={detailRequest}
@@ -924,6 +1039,25 @@ function SkillPreviewDialog({
                 }
               />
             </div>
+            {preview.skill.source && (
+              <div className="grid gap-3 rounded-xl border p-3 text-sm sm:grid-cols-2">
+                {preview.previous_source && (
+                  <PreviewMetric
+                    label={tr("skills.versions.current")}
+                    value={`${preview.previous_source.ref} · ${preview.previous_source.resolved_commit.slice(0, 12)}`}
+                  />
+                )}
+                <PreviewMetric
+                  label={tr("skills.versions.target")}
+                  value={`${preview.skill.source.ref} · ${preview.skill.source.resolved_commit.slice(0, 12)}`}
+                />
+              </div>
+            )}
+            {preview.operation === "update" && (
+              <p className="text-xs text-muted-foreground">
+                {tr("skills.versions.deploymentNotice")}
+              </p>
+            )}
             {(preview.skill.license || preview.skill.compatibility) && (
               <div className="grid gap-2 rounded-xl border p-3 text-sm sm:grid-cols-2">
                 {preview.skill.license && (

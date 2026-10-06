@@ -13,6 +13,8 @@ import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { webLayoutCopy } from "./web-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
+import { blockedWhileCompacting } from "./session-activity";
+import { contextUsageCopy } from "./context-usage-copy";
 import { subscribeSessionInvalidation } from "./session-events";
 
 export function CodexTools({
@@ -149,6 +151,7 @@ export function CodexTools({
       access?.experimentalEnabled &&
       !busy &&
       !operation &&
+      !(live?.activity === "compacting" && blockedWhileCompacting(action)) &&
       (action === "inspect" || action === "resume" || (online && controlReady)) &&
       capabilities?.sessionId === selected &&
       capabilities.features[action]?.available
@@ -171,7 +174,9 @@ export function CodexTools({
     attachments: copy.attachment,
   };
   const reason = (action: CodexAction) =>
-    codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
+    live?.activity === "compacting" && blockedWhileCompacting(action)
+      ? contextUsageCopy[locale].compactingDetail
+      : codexReason(locale, capabilities?.features[action]?.reason || capabilities?.reason).text;
   async function run(
     action: CodexAction,
     fields: Omit<

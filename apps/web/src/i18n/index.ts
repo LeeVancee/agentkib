@@ -53,7 +53,7 @@ const zh = {
   idle: "空闲",
   running: "运行中",
   unavailable: "实时控制暂不可用，请在桌面端检查连接状态。",
-  openOriginalClient: "请在官方客户端打开此会话",
+  openOriginalClient: "未检测到此会话的原生执行客户端。请在原客户端打开后刷新。",
   unverifiedInstallation: "未能确认主机上的 Agent 安装或版本，控制已禁用。请在桌面端检查安装。",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
@@ -173,7 +173,8 @@ const en: Words = {
   idle: "Idle",
   running: "Running",
   unavailable: "Live control is unavailable. Check the connection in the desktop app.",
-  openOriginalClient: "Open this session in the official client",
+  openOriginalClient:
+    "No native execution client was found for this conversation. Open it in the original client and refresh.",
   unverifiedInstallation:
     "The host Agent installation or version could not be verified. Control is disabled. Check the installation in the desktop app.",
   unsupportedControl:
@@ -296,7 +297,7 @@ const tw: Words = {
   idle: "閒置",
   running: "執行中",
   unavailable: "即時控制暫時無法使用，請在桌面端檢查連線狀態。",
-  openOriginalClient: "請在官方客戶端開啟此工作階段",
+  openOriginalClient: "未偵測到此對話的原生執行客戶端。請在原客戶端開啟後重新整理。",
   unverifiedInstallation: "無法確認主機上的 Agent 安裝或版本，控制已停用。請在桌面端檢查安裝。",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
@@ -414,7 +415,8 @@ const ja: Words = {
   idle: "待機中",
   running: "実行中",
   unavailable: "リアルタイム制御は利用できません。デスクトップアプリで接続状態を確認してください。",
-  openOriginalClient: "公式クライアントでこのセッションを開いてください",
+  openOriginalClient:
+    "この会話のネイティブ実行クライアントが見つかりません。元のクライアントで開いて更新してください。",
   unverifiedInstallation:
     "ホストの Agent のインストールまたはバージョンを確認できないため、制御は無効です。デスクトップアプリでインストールを確認してください。",
   unsupportedControl:

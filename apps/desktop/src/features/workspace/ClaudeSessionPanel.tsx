@@ -12,6 +12,11 @@ import type {
   UploadedAttachment,
   UserQuestionRequest,
 } from "../../../../../packages/web-client/src/index";
+import {
+  ContextUsageIndicator,
+  useObservedContextUsage,
+} from "../../../../web/src/features/sessions/context-usage";
+import { contextUsageCopy } from "../../../../web/src/features/sessions/context-usage-copy";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
@@ -152,6 +157,7 @@ export function ClaudeSessionPanel({
   }, [workspaceId]);
   const {
     liveDelivery,
+    usageEpoch,
     nativeCoverage,
     catalogReady,
     catalogError,
@@ -173,6 +179,14 @@ export function ClaudeSessionPanel({
     hasPending,
   });
   const online = connected && catalogReady && !refreshError;
+  const compacting = live?.activity === "compacting";
+  const usageView = useObservedContextUsage({
+    selected: sessionId,
+    scope: `${sessionId}\0${workspaceId}\0${usageEpoch}`,
+    live,
+    online,
+    authorized: true,
+  });
 
   const refresh = useCallback(
     async (details = true) => {
@@ -349,7 +363,15 @@ export function ClaudeSessionPanel({
   }, [live, interaction, online, sessionId]);
 
   async function mutate(operation: string, body: Record<string, unknown> = {}) {
-    if (flight.current || pending || storageBlocked || !online || !controlReady) return;
+    if (
+      flight.current ||
+      pending ||
+      storageBlocked ||
+      !online ||
+      !controlReady ||
+      (compacting && ["send", "adopt", "release"].includes(operation))
+    )
+      return;
     flight.current = true;
     setBusy(true);
     setError("");
@@ -623,7 +645,7 @@ export function ClaudeSessionPanel({
                       )}
                     </label>
                     <Button
-                      disabled={blocked || !confirmed}
+                      disabled={blocked || compacting || !confirmed}
                       onClick={() =>
                         void mutate("adopt", {
                           handoffConfirmed: true,
@@ -638,7 +660,11 @@ export function ClaudeSessionPanel({
               </div>
             ) : (
               <div className="flex gap-2">
-                <Button variant="outline" disabled={blocked} onClick={() => void mutate("release")}>
+                <Button
+                  variant="outline"
+                  disabled={blocked || compacting}
+                  onClick={() => void mutate("release")}
+                >
                   {text("释放给原客户端", "Release to original client")}
                 </Button>
                 <Button
@@ -844,10 +870,22 @@ export function ClaudeSessionPanel({
                 </Button>
               </div>
             ))}
+            {compacting && (
+              <p role="status" className="text-xs text-muted-foreground">
+                {contextUsageCopy[locale].compactingDetail}
+              </p>
+            )}
             <div className="flex gap-2">
+              <ContextUsageIndicator
+                scope={`${sessionId}\0${workspaceId}\0${usageEpoch}`}
+                locale={locale}
+                online={online}
+                view={usageView}
+              />
               <Button
                 disabled={
                   blocked ||
+                  compacting ||
                   !live?.sendEnabled ||
                   live.status !== "idle" ||
                   (!draft.trim() && !attachments.length)

@@ -8,8 +8,9 @@ import { api } from "@/core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
 import { useAppStore } from "@/stores/app-store";
 import { desktopApi } from "@/core/desktop";
-import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { homeBenchmarkOutcome } from "@/features/home/home-benchmark";
+import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
+import { projectManagedSessionAliases } from "@/features/sessions/session-catalog";
 import {
   continuationIndexingEnabled,
   continuationRefreshFailed,
@@ -35,7 +36,6 @@ function HomeRoute() {
   const navigate = useNavigate();
   const runtime = useAppStore((state) => state.runtime);
   const setRuntime = useAppStore((state) => state.setRuntime);
-  const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
   const queryClient = useQueryClient();
   const workspacesQuery = useHomeWorkspaces();
   const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
@@ -45,6 +45,7 @@ function HomeRoute() {
   );
   const continuationRuntimeReady = runtime !== undefined;
   const continuationEnabled = continuationIndexingEnabled(runtime);
+  const managedCatalog = useConversationCatalog(continuationEnabled);
   const continuationQueries = useQueries({
     queries: continuationWorkspaces.map((workspace) => ({
       queryKey: homeKeys.continuations(workspace.id),
@@ -110,20 +111,16 @@ function HomeRoute() {
     },
     [],
   );
-  const recentContinuations = continuationEnabled
-    ? selectRecentContinuations(
-        continuationWorkspaces,
-        continuationQueries.map((query) => query.data),
-        3,
-        showAuxiliary,
+  const projectedContinuationSessions = continuationEnabled
+    ? continuationQueries.map((query) =>
+        projectManagedSessionAliases(query.data ?? [], managedCatalog.sessions),
       )
     : [];
+  const recentContinuations = continuationEnabled
+    ? selectRecentContinuations(continuationWorkspaces, projectedContinuationSessions, 3)
+    : [];
   const metadataOnlyWorkspace = continuationEnabled
-    ? metadataOnlyContinuationWorkspace(
-        continuationWorkspaces,
-        continuationQueries.map((query) => query.data),
-        showAuxiliary,
-      )
+    ? metadataOnlyContinuationWorkspace(continuationWorkspaces, projectedContinuationSessions)
     : undefined;
   const continuationState: ContinuationHomeState = !continuationRuntimeReady
     ? "loading"

@@ -102,6 +102,7 @@ export function useClaudeSessionObservation({
   const refreshWake = useRef(0);
   const deferredRead = useRef(false);
   const [controlReady, setControlReady] = useState(false);
+  const [usageEpoch, setUsageEpoch] = useState("");
   const [catalogObservation, setCatalogObservation] = useState({ ready: false, error: "" });
   const [streamEpoch, setStreamEpoch] = useState(0);
   useEffect(() => {
@@ -176,6 +177,7 @@ export function useClaudeSessionObservation({
     clear,
     accessRef,
     setLive,
+    setUsageEpoch,
     setOnline,
     setError: setStreamError,
     hasDurablePending: hasPending,
@@ -321,6 +323,7 @@ export function useClaudeSessionObservation({
     setStreamEpoch((value) => value + 1);
   }, []);
   return {
+    usageEpoch,
     liveDelivery,
     nativeCoverage,
     catalogReady:

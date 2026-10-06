@@ -19,7 +19,9 @@ const relationshipId = id.nullish().transform((value) => value ?? undefined);
 const origin = z
   .string()
   .nullish()
-  .transform((value) => (value === "interactive" || value === "auxiliary" ? value : "unknown"));
+  .transform((value) =>
+    value === "interactive" || value === "auxiliary" || value === "execution" ? value : "unknown",
+  );
 const catalog = z.object({
   workspaces: z
     .array(

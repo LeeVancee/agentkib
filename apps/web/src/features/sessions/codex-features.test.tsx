@@ -66,6 +66,24 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("Codex composer", () => {
+  it("blocks send and steer during compaction while keeping explicit queueing and native stop available", () => {
+    state.message = "next";
+    state.live = {
+      ...state.live!,
+      sessionId: "s",
+      status: "running",
+      turnId: "turn",
+      activity: "compacting",
+    };
+    state.canSend = false;
+    state.canStop = true;
+    render(<CodexComposer />);
+    expect(screen.getByRole("button", { name: "追加到当前轮次" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "加入队列（将自动执行）" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: state.t.stop })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "加入队列（将自动执行）" }));
+    expect(state.codexAction).toHaveBeenCalledWith("queue-add", { text: "next" });
+  });
   it("refreshes settings and goals from native invalidation without scanning resources", async () => {
     state.access!.device!.accessMode = "full";
     vi.mocked(state.client.request).mockResolvedValue({
@@ -222,7 +240,7 @@ describe("Codex composer", () => {
     });
     render(<CodexComposer />);
     expect(await screen.findByRole("button", { name: /GPT-6 Sol/ })).toBeVisible();
-    expect(screen.getByTitle("上下文用量: 50 / 100")).toHaveTextContent("50%");
+    expect(screen.getByTitle("上下文用量: 最近原生报告: 50 / 100")).toHaveTextContent("50%");
     fireEvent.click(screen.getByRole("button", { name: /GPT-6 Sol/ }));
     expect(screen.getByLabelText("思考强度")).toHaveValue("high");
     expect(screen.getByDisplayValue("加速")).toHaveValue("fast");

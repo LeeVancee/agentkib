@@ -1,5 +1,7 @@
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
+import { ContextUsageGauge } from "./context-usage";
+import { contextUsageCopy } from "./context-usage-copy";
 import { CodexComposer } from "./codex-composer";
 import { Textarea } from "../../components/ui/textarea";
 import { Button } from "../../components/ui/button";
@@ -205,7 +207,8 @@ export function SessionReader() {
                 className="mx-4 mb-4 mt-3 w-[calc(100%-2rem)] max-w-3xl shrink-0 self-center rounded-2xl border bg-card p-3 shadow-sm focus-within:ring-2 focus-within:ring-ring/20 md:mb-6 [&>textarea]:min-h-16 [&>textarea]:max-h-40 [&>textarea]:resize-y [&>textarea]:border-0 [&>textarea]:shadow-none [&>textarea]:focus-visible:ring-0 [&>div]:flex [&>div]:items-end [&>div]:justify-between [&>div]:gap-4 [&_small]:max-w-lg [&_small]:text-xs [&_small]:leading-5 [&_small]:text-muted-foreground"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (canSend && isValidMessage(message)) void control("send");
+                  if (canSend && live?.activity !== "compacting" && isValidMessage(message))
+                    void control("send");
                 }}
               >
                 <label className="sr-only" htmlFor="message">
@@ -223,31 +226,49 @@ export function SessionReader() {
                   <small>
                     {t.experimental} · {t.controlInfo}
                   </small>
-                  {canStop ? (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      className="size-11 shrink-0 rounded-xl"
-                      aria-label={t.stop}
-                      onClick={() => void control("stop")}
-                    >
-                      <Square size={17} />
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="default"
-                      className="size-11 shrink-0 rounded-xl"
-                      aria-label={t.send}
-                      disabled={!canSend || !isValidMessage(message)}
-                    >
-                      <ArrowUp size={20} />
-                    </Button>
-                  )}
+                  <div className="flex min-w-0 items-center gap-1">
+                    <ContextUsageGauge />
+                    {canStop ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        className="size-11 shrink-0 rounded-xl"
+                        aria-label={t.stop}
+                        onClick={() => void control("stop")}
+                      >
+                        <Square size={17} />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="default"
+                        className="size-11 shrink-0 rounded-xl"
+                        aria-label={t.send}
+                        disabled={
+                          !canSend || live?.activity === "compacting" || !isValidMessage(message)
+                        }
+                      >
+                        <ArrowUp size={20} />
+                      </Button>
+                    )}
+                  </div>
                 </div>
+                {live?.activity === "compacting" && (
+                  <p role="status" className="mt-2 text-xs text-muted-foreground">
+                    {contextUsageCopy[locale].compactingDetail}
+                  </p>
+                )}
               </form>
             )
           ) : (
             <footer className="shrink-0 border-t px-5 py-4 text-center text-xs text-muted-foreground">
+              {access.protocolVersion === 2 &&
+                access.device?.accessMode === "full" &&
+                access.device.advancedControl &&
+                ["codex", "claude-code", "antigravity"].includes(current?.agent ?? "") && (
+                  <div className="flex justify-center">
+                    <ContextUsageGauge />
+                  </div>
+                )}
               {(current?.agent === "codex" ||
                 current?.agent === "claude-code" ||
                 current?.agent === "antigravity") &&

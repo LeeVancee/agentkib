@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemoteCatalog, RemoteConnection, RemoteStatus } from "@/core/remote-types";
 import type { ConversationEventPage, WorkspaceSummary } from "@/core/types";
 import { useRemoteStore } from "./remote-store";
+import { filterSessions, groupSessions } from "@agentkib/session-catalog";
+import { sessionCatalogStats } from "@/features/sessions/session-catalog";
 import {
   readRemoteHistory,
   refreshRemoteCatalog,
@@ -93,6 +95,81 @@ describe("remote catalog and history isolation", () => {
     expect(result.current.sessions[0].workspace_id).toBe(result.current.workspaces[0].id);
     expect(catalog.sessions[0].id).toBe("session");
     expect(catalog.workspaces[0].id).toBe("workspace");
+  });
+
+  it("keeps a server-projected managed native alias across parsing, namespace and directory filtering", async () => {
+    const nativeId = "managed-native-index";
+    // The host has already verified ownership and folded aliases into this native index record.
+    // Renderer parsing must retain the display classification without changing history identity.
+    const ordinary = [
+      {
+        ...catalog.sessions[0],
+        id: nativeId,
+        title: "Managed continuation",
+        origin: "interactive",
+      },
+      { ...catalog.sessions[0], id: "conversation-a", origin: "interactive" },
+      { ...catalog.sessions[0], id: "conversation-b", origin: "interactive" },
+      {
+        ...catalog.sessions[0],
+        id: "user-fork",
+        origin: "interactive",
+        forked_from_session_id: nativeId,
+      },
+      { ...catalog.sessions[0], id: "unknown", origin: "unknown" },
+    ];
+    request.mockResolvedValue({
+      ...catalog,
+      sessions: [
+        ...ordinary,
+        ...Array.from({ length: 36 }, (_, index) => ({
+          ...catalog.sessions[0],
+          id: `unowned-exec-${index}`,
+          origin: "execution",
+        })),
+        { ...catalog.sessions[0], id: "auxiliary", origin: "auxiliary" },
+      ],
+    });
+    await refreshRemoteCatalog("host-a", true);
+    const { result } = renderHook(useRemoteCatalogEntries);
+    const { sessions: remoteSessions, workspaces } = result.current;
+    const visible = filterSessions(
+      remoteSessions,
+      workspaces,
+      { query: "", agent: "all", filter: "all" },
+      "Untitled session",
+    );
+    expect(visible.map(({ remote }) => remote.original_id)).toEqual(ordinary.map(({ id }) => id));
+    expect(sessionCatalogStats(remoteSessions)).toEqual({
+      total: 5,
+      readable: 5,
+      archived: 0,
+      metadata: 0,
+    });
+    expect(groupSessions(remoteSessions, workspaces)[0].sessions).toEqual(visible);
+    const native = visible.find(({ id }) => id === remoteRecordId("host-a", nativeId))!;
+    expect(native).toMatchObject({
+      id: remoteRecordId("host-a", nativeId),
+      origin: "interactive",
+      remote: { host_id: "host-a", original_id: nativeId },
+    });
+    expect(
+      filterSessions(
+        remoteSessions,
+        workspaces,
+        { query: "Managed continuation", agent: "codex", filter: "current" },
+        "Untitled session",
+      ),
+    ).toEqual([native]);
+    request.mockResolvedValue(page);
+    expect(await readRemoteHistory(native)).toEqual(page);
+    expect(request).toHaveBeenLastCalledWith({
+      operation: "events",
+      id: "host-a",
+      sessionId: nativeId,
+      cursor: undefined,
+      limit: 50,
+    });
   });
 
   it("deduplicates reads and observes the 30 second snapshot interval", async () => {

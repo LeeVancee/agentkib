@@ -12,8 +12,9 @@ import type { SessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessionOwnership } from "./codex-session-ownership";
 import { homedir } from "node:os";
 import path from "node:path";
-import { Sql } from "./sql";
+import { Sql, type Row } from "./sql";
 import { within } from "./files";
+import { pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import { timestamp } from "./timestamps";
 import type { NativeSession } from "./session-store";
@@ -64,16 +65,18 @@ function metadata(
   fork: unknown,
   malformed = false,
 ) {
-  let evidence: "interactive" | "auxiliary" | "unknown" | "malformed" = "unknown",
+  let evidence: "interactive" | "auxiliary" | "execution" | "unknown" | "malformed" = "unknown",
     spawned: string | null = null;
   if (typeof source === "string") {
     evidence = ["cli", "vscode"].includes(source)
       ? "interactive"
       : source === "subagent"
         ? "auxiliary"
-        : ["{", "["].some((prefix) => source.trimStart().startsWith(prefix))
-          ? "malformed"
-          : "unknown";
+        : source === "exec"
+          ? "execution"
+          : ["{", "["].some((prefix) => source.trimStart().startsWith(prefix))
+            ? "malformed"
+            : "unknown";
   } else if (source !== undefined && source !== null) {
     if (typeof source === "object" && !Array.isArray(source) && "subagent" in source) {
       const sub = source.subagent;
@@ -101,12 +104,13 @@ function metadata(
       ? source.subagent.thread_spawn
       : null;
   return {
-    origin: (evidence === "interactive" || evidence === "auxiliary"
+    origin: (evidence === "interactive" || evidence === "auxiliary" || evidence === "execution"
       ? evidence
       : evidence === "unknown" && !malformed && threadSource === "user"
         ? "interactive"
         : "unknown") as NativeSession["origin"],
-    authoritative: evidence === "interactive" || evidence === "auxiliary",
+    authoritative:
+      evidence === "interactive" || evidence === "auxiliary" || evidence === "execution",
     spawned_by_session_id: nonempty(parent) ?? spawned,
     forked_from_session_id: nonempty(fork),
     agent_path:
@@ -150,26 +154,49 @@ function readable(value: string): boolean {
     return false;
   }
 }
-function header(value: string): ReturnType<typeof metadata> | null {
+function headerPayload(value: string, limit: number): Record<string, unknown> | null {
   let fd: number | undefined;
   try {
     fd = regularOpen(value);
-    const data = Buffer.allocUnsafe(256 * 1024),
+    const data = Buffer.allocUnsafe(limit),
       size = readSync(fd, data, 0, data.length, 0),
       newline = data.indexOf(10, 0);
     if (newline < 0 || newline >= size) return null;
     const parsed = JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, newline)),
     );
-    if (parsed?.type !== "session_meta" || !parsed.payload || typeof parsed.payload !== "object")
+    if (
+      parsed?.type !== "session_meta" ||
+      !parsed.payload ||
+      typeof parsed.payload !== "object" ||
+      Array.isArray(parsed.payload)
+    )
       return null;
-    const p = parsed.payload;
-    return metadata(p.source, p.thread_source, p.parent_thread_id, p.forked_from_id);
+    return parsed.payload;
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+function header(value: string) {
+  const p = headerPayload(value, 256 * 1024);
+  if (!p) return null;
+  const id = nonempty(p.id),
+    cwd = nonempty(p.cwd);
+  return {
+    metadata: metadata(p.source, p.thread_source, p.parent_thread_id, p.forked_from_id),
+    legacyImportIdentity:
+      p.originator === "agentkib" &&
+      p.source === "exec" &&
+      p.thread_source === "exec" &&
+      p.history_mode === "legacy" &&
+      id &&
+      cwd &&
+      path.isAbsolute(cwd)
+        ? { id, cwd }
+        : null,
+  };
 }
 export interface NativeSessionSource {
   collection?: SessionCollection | null;
@@ -195,20 +222,60 @@ export class CodexSessions {
     }
   }
   verifiedControlIds(nativeRefs: Iterable<string>): Set<string> {
+    return new Set(
+      this.#verifyIndexed(nativeRefs, [], (_row, transcript, id) =>
+        verifiedCodexControlId(transcript, id) ? id : null,
+      ).keys(),
+    );
+  }
+  /** Display ownership requires the indexed UUID and absolute cwd to match the native header. */
+  verifiedIndexedIdentities(
+    nativeRefs: Iterable<string>,
+  ): Map<string, { id: string; cwd: string }> {
+    return this.#verifyIndexed(
+      nativeRefs,
+      ["cwd"],
+      (row, transcript, id) => {
+        const payload = headerPayload(transcript, 64 * 1024),
+          cwd = nonempty(payload?.cwd),
+          indexedCwd = nonempty(row.cwd),
+          headerId = nonempty(payload?.id);
+        if (
+          !headerId ||
+          uuid(headerId) !== id ||
+          !cwd ||
+          !indexedCwd ||
+          !path.isAbsolute(cwd) ||
+          !path.isAbsolute(indexedCwd) ||
+          pathIdentity(cwd) !== pathIdentity(indexedCwd)
+        )
+          return null;
+        return { id, cwd };
+      },
+      { consistent: (a, b) => pathIdentity(a.cwd) === pathIdentity(b.cwd) },
+    );
+  }
+  #verifyIndexed<T>(
+    nativeRefs: Iterable<string>,
+    extraColumns: string[],
+    verify: (row: Row, transcript: string, id: string) => T | null,
+    displayProof?: { consistent: (a: T, b: T) => boolean },
+  ): Map<string, T> {
     const expected = new Set(
       [...nativeRefs].flatMap((value) => {
         const id = uuid(value);
         return id ? [id] : [];
       }),
     );
-    if (!expected.size) return new Set();
+    if (!expected.size) return new Map();
 
     const home = this.home();
     const current = this.databases(home);
     const databases = current.length ? current : this.databases(path.join(home, "sqlite"));
-    const verified = new Set<string>();
+    const verified = new Map<string, T>();
+    const rejected = new Set<string>();
     for (const file of databases) {
-      if (verified.size === expected.size) break;
+      if (!displayProof && verified.size === expected.size) break;
       const db = new DatabaseSync(file, { readOnly: true });
       try {
         const sql = new Sql(db);
@@ -216,20 +283,46 @@ export class CodexSessions {
         const columns = new Set(
           sql.rows("PRAGMA table_info(threads)").map((row) => String(row.name)),
         );
-        if (!["id", "rollout_path"].every((column) => columns.has(column))) continue;
-        const pending = [...expected].filter((id) => !verified.has(id));
+        const required = ["id", "rollout_path", ...extraColumns];
+        if (
+          !columns.has("id") ||
+          (!displayProof && !required.every((column) => columns.has(column)))
+        )
+          continue;
+        const selected = required.map((column) =>
+          columns.has(column) ? column : `NULL AS ${column}`,
+        );
+        // Display proof must inspect every matching raw identity in every
+        // database; another spelling cannot supply a missing or conflicting header.
+        const pending = [...expected].filter((id) =>
+          displayProof ? !rejected.has(id) : !verified.has(id),
+        );
         for (let start = 0; start < pending.length; start += 500) {
           const ids = pending.slice(start, start + 500);
           const rows = sql.rows(
-            `SELECT id, rollout_path FROM threads WHERE id IN (${ids.map(() => "?").join(",")})`,
+            `SELECT ${selected.join(",")} FROM threads WHERE id${displayProof ? " COLLATE NOCASE" : ""} IN (${ids.map(() => "?").join(",")})`,
             ...ids,
           );
           for (const row of rows) {
             const id = uuid(String(row.id));
-            if (!id || !expected.has(id)) continue;
+            if (!id || !expected.has(id) || rejected.has(id)) continue;
+            if (displayProof && !nonempty(row.rollout_path)) {
+              rejected.add(id);
+              verified.delete(id);
+              continue;
+            }
             const rawPath = String(row.rollout_path);
             const transcript = path.isAbsolute(rawPath) ? rawPath : path.join(home, rawPath);
-            if (verifiedCodexControlId(transcript, id)) verified.add(id);
+            const identity = verify(row, transcript, id);
+            const previous = verified.get(id);
+            if (
+              displayProof &&
+              (identity === null ||
+                (previous !== undefined && !displayProof.consistent(previous, identity)))
+            ) {
+              rejected.add(id);
+              verified.delete(id);
+            } else if (identity !== null) verified.set(id, identity);
           }
         }
       } finally {
@@ -303,22 +396,36 @@ export class CodexSessions {
             agentPath = nonempty(row.k12) ?? m.agent_path,
             nickname = nonempty(row.k13) ?? m.agent_nickname;
           const needsOrigin = !nonempty(row.k8),
+            needsImportIdentity = m.origin === "execution",
             needsSpawned = !p && !m.spawned_by_session_id,
             needsForked = !f && !m.forked_from_session_id,
             needsDetails =
               m.origin === "auxiliary" && !agentPath && (!sessionTitle(row.k3) || !nickname);
-          if (needsOrigin || needsSpawned || needsForked || needsDetails) {
+          if (needsOrigin || needsImportIdentity || needsSpawned || needsForked || needsDetails) {
             const h = header(transcript);
             if (h) {
+              const headerMetadata = h.metadata;
               if (
                 needsOrigin &&
-                ((h.origin === "auxiliary" && !m.authoritative) || m.origin === "unknown")
+                ((headerMetadata.authoritative && !m.authoritative) || m.origin === "unknown")
               )
-                m = { ...m, origin: h.origin, authoritative: h.authoritative };
-              if (needsSpawned) m.spawned_by_session_id = h.spawned_by_session_id;
-              if (needsForked) m.forked_from_session_id = h.forked_from_session_id;
-              agentPath ??= h.agent_path;
-              nickname ??= h.agent_nickname;
+                m = {
+                  ...m,
+                  origin: headerMetadata.origin,
+                  authoritative: headerMetadata.authoritative,
+                };
+              // Historical imports used exec; the complete marker only changes display classification.
+              if (
+                m.origin === "execution" &&
+                h.legacyImportIdentity?.id === String(row.k0) &&
+                path.isAbsolute(cwd) &&
+                pathIdentity(h.legacyImportIdentity.cwd) === pathIdentity(cwd)
+              )
+                m.origin = "interactive";
+              if (needsSpawned) m.spawned_by_session_id = headerMetadata.spawned_by_session_id;
+              if (needsForked) m.forked_from_session_id = headerMetadata.forked_from_session_id;
+              agentPath ??= headerMetadata.agent_path;
+              nickname ??= headerMetadata.agent_nickname;
             }
           }
           const title =
@@ -374,24 +481,6 @@ function uuid(value: string): string | null {
 }
 
 function verifiedCodexControlId(transcript: string, expectedId: string): boolean {
-  let fd: number | undefined;
-  try {
-    fd = regularOpen(transcript);
-    const bytes = Buffer.allocUnsafe(64 * 1024);
-    const size = readSync(fd, bytes, 0, bytes.length, 0);
-    const newline = bytes.indexOf(10, 0);
-    if (newline < 0 || newline >= size) return false;
-    const firstLine = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, newline));
-    const value: unknown = JSON.parse(firstLine);
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const row = value as { type?: unknown; payload?: unknown };
-    if (row.type !== "session_meta" || !row.payload || typeof row.payload !== "object")
-      return false;
-    const id = (row.payload as { id?: unknown }).id;
-    return typeof id === "string" && uuid(id) === expectedId;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+  const id = headerPayload(transcript, 64 * 1024)?.id;
+  return typeof id === "string" && uuid(id) === expectedId;
 }

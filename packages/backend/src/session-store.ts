@@ -37,7 +37,7 @@ export interface NativeSession {
   archived: boolean;
   sidechain: boolean;
   availability: "readable" | "metadata-only";
-  origin: "interactive" | "auxiliary" | "unknown";
+  origin: "interactive" | "auxiliary" | "execution" | "unknown";
   spawned_by_session_id?: string | null;
   forked_from_session_id?: string | null;
 }
@@ -102,10 +102,19 @@ export class SessionStore {
   list(id: string) {
     return this.sql
       .rows(
-        `SELECT ${columns} FROM ${sessionTable(id)} WHERE workspace_id=? ORDER BY COALESCE(updated_at,created_at) DESC,id DESC`,
+        `SELECT ${columns} FROM ${sessionTable(id)} WHERE workspace_id=?
+         AND (agent!='codex' OR NOT EXISTS (
+           SELECT 1 FROM schema_meta WHERE key='codex_session_classification_stale:' || ${sessionTable(id)}.id
+         )) ORDER BY COALESCE(updated_at,created_at) DESC,id DESC`,
         id,
       )
       .map(sessionRow);
+  }
+  codexClassificationPending(id: string): boolean {
+    return !!this.sql.one(
+      "SELECT 1 FROM schema_meta WHERE key=?",
+      `codex_session_classification_pending:${id}`,
+    );
   }
   get(id: string) {
     const row =
@@ -141,6 +150,24 @@ export class SessionStore {
   }
   clear(workspace: string | null): void {
     this.sql.transaction(() => {
+      if (workspace === null)
+        this.sql.run(
+          "DELETE FROM schema_meta WHERE key GLOB 'codex_session_classification_pending:*' OR key GLOB 'codex_session_classification_stale:*'",
+        );
+      else
+        this.sql.run(
+          `DELETE FROM schema_meta WHERE key=? OR (
+            key GLOB 'codex_session_classification_stale:*' AND (
+              EXISTS (SELECT 1 FROM (${cachedSessionOwners}) AS session
+                WHERE schema_meta.key='codex_session_classification_stale:' || session.id AND session.workspace_id=?)
+              OR (value=? AND NOT EXISTS (SELECT 1 FROM (${cachedSessionOwners}) AS session
+                WHERE schema_meta.key='codex_session_classification_stale:' || session.id))
+            )
+          )`,
+          `codex_session_classification_pending:${workspace}`,
+          workspace,
+          workspace,
+        );
       for (const table of [
         "conversation_sessions",
         "conversation_index_status",
@@ -265,6 +292,11 @@ export class SessionStore {
           session.forked_from_session_id,
           indexed,
         );
+        if (agent === "codex")
+          this.sql.run(
+            "DELETE FROM schema_meta WHERE key=?",
+            `codex_session_classification_stale:${session.id}`,
+          );
       }
       if (owner.id !== workspace)
         this.sql.run(
@@ -289,6 +321,24 @@ export class SessionStore {
         indexed,
         indexed,
       );
+      if (agent === "codex") {
+        if (complete)
+          this.sql.run(
+            "DELETE FROM schema_meta WHERE key=? OR (key GLOB 'codex_session_classification_stale:*' AND value=?)",
+            `codex_session_classification_pending:${workspace}`,
+            workspace,
+          );
+        else
+          this.sql.run(
+            `DELETE FROM schema_meta WHERE key=? AND NOT EXISTS (
+              SELECT 1 FROM ${table} AS session JOIN schema_meta AS stale
+                ON stale.key='codex_session_classification_stale:' || session.id
+              WHERE session.workspace_id=? AND session.agent='codex'
+            )`,
+            `codex_session_classification_pending:${workspace}`,
+            workspace,
+          );
+      }
     });
   }
   failure(workspace: string, agent: Agent, detail: string): void {
@@ -302,6 +352,8 @@ export class SessionStore {
     );
   }
 }
+const cachedSessionOwners =
+  "SELECT id,workspace_id FROM conversation_sessions UNION ALL SELECT id,workspace_id FROM conversation_collection_sessions";
 function sessionTable(id: string): string {
   return sessionCollection(id) ? "conversation_collection_sessions" : "conversation_sessions";
 }
@@ -309,7 +361,7 @@ function statusTable(id: string): string {
   return sessionCollection(id) ? "conversation_collection_status" : "conversation_index_status";
 }
 function sessionRow(row: Row) {
-  const origin = z.enum(["interactive", "auxiliary", "unknown"]).safeParse(row.origin);
+  const origin = z.enum(["interactive", "auxiliary", "execution", "unknown"]).safeParse(row.origin);
   return {
     id: String(row.id),
     workspace_id: String(row.workspace_id),

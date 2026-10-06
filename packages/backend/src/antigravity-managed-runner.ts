@@ -1,8 +1,18 @@
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import type { AcpEvent, AcpId, AcpPermission, AntigravityAcp } from "./antigravity-acp";
-import { AntigravityAcp as AcpClient, verifyAcpControlIdentity } from "./antigravity-acp";
+import {
+  AcpCompactionState,
+  AcpUndispatchedError,
+  AntigravityAcp as AcpClient,
+  verifyAcpControlIdentity,
+} from "./antigravity-acp";
 import { sanitizeHandoffExport } from "./session-handoff";
+import {
+  createContextUsageGeneration,
+  projectContextUsage,
+  type ContextUsage,
+} from "./context-usage";
 
 const ATTACH_TIMEOUT_MS = 15_000;
 const POLL_MS = 100;
@@ -61,6 +71,12 @@ export class AntigravityManagedRunner {
   #cancellingAt: number | null = null;
   #closed = false;
   #pump?: Promise<void>;
+  #compactions = new AcpCompactionState();
+  #liveCompactionIds = new Set<string>();
+  #usage: ContextUsage = { available: false, state: "unavailable" };
+  #usageReportId = 0;
+  readonly #usageGeneration = createContextUsageGeneration();
+  #awaitingOrdinaryContext = false;
 
   private constructor(
     readonly client: AntigravityAcp,
@@ -139,8 +155,21 @@ export class AntigravityManagedRunner {
       revision: this.#revision,
       turnId: this.#turnId,
       completedTurnId: this.#completedTurn,
-      sendEnabled: this.#status === "idle" && this.#turnId === null && !this.#recoveringHistory,
-      stopEnabled: this.#turnId !== null && ["running", "waiting-approval"].includes(this.#status),
+      activity: this.#liveCompactionIds.size ? "compacting" : null,
+      usage: projectContextUsage(
+        { ...this.#usage, reportGeneration: this.#usageGeneration },
+        this.#revision,
+      ),
+      sendEnabled:
+        !this.#closed &&
+        this.#status === "idle" &&
+        this.#turnId === null &&
+        !this.#recoveringHistory &&
+        !this.#liveCompactionIds.size,
+      stopEnabled:
+        !this.#closed &&
+        this.#turnId !== null &&
+        ["running", "waiting-approval"].includes(this.#status),
       cancelling: this.#cancellingAt !== null,
       streamText: this.#streamText,
       approvals: [...this.#approvals.values()].map(({ id, ...permission }) => ({
@@ -156,15 +185,20 @@ export class AntigravityManagedRunner {
     if (!text.trim() || Buffer.byteLength(text) > 65_536)
       throw new Error("invalid Antigravity prompt");
     this.#checkRevision(expectedRevision);
+    if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
     if (this.#status !== "idle" || this.#turnId !== null || this.#recoveringHistory)
       throw new Error("session-busy");
     this.#turnId = DISPATCHING_TURN_ID;
     this.#status = "running";
+    this.#pendingUsage();
     this.#revision += 1;
     this.#publishSnapshot();
     try {
-      beforeDispatch?.();
-      const id = await this.client.prompt(this.sessionId, text);
+      const id = await this.client.prompt(this.sessionId, text, () => {
+        if (this.#liveCompactionIds.size) throw new AcpUndispatchedError();
+        beforeDispatch?.();
+      });
+      this.#awaitingOrdinaryContext = false;
       this.#turnId = acpIdText(id);
       this.#completedTurn = null;
       this.#streamText = "";
@@ -188,6 +222,13 @@ export class AntigravityManagedRunner {
       this.#revision += 1;
       this.#publishSnapshot();
     } catch (error) {
+      if (error instanceof AcpUndispatchedError) {
+        this.#turnId = null;
+        this.#status = "idle";
+        this.#revision += 1;
+        this.#publishSnapshot();
+        throw error;
+      }
       this.#fail(error);
       throw error;
     }
@@ -246,6 +287,11 @@ export class AntigravityManagedRunner {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#usage = {
+      ...this.#usage,
+      state: this.#usage.available ? "stale" : "unavailable",
+      reason: "connection-unavailable",
+    };
     this.client.shutdown();
   }
 
@@ -339,6 +385,67 @@ export class AntigravityManagedRunner {
   }
 
   #applyUpdate(update: JsonRecord, replay: boolean): void {
+    if (!replay && ++this.#updateCount > MAX_UPDATES)
+      throw new Error("too many Antigravity ACP updates");
+    const wasCompacting = this.#liveCompactionIds.size > 0;
+    if (this.#compactions.apply(update)) {
+      if (replay) return;
+      const id = String(update.compactionId);
+      if (update.sessionUpdate === "compaction_update") {
+        if (this.#compactions.isTerminal(id)) this.#liveCompactionIds.delete(id);
+        else this.#liveCompactionIds.add(id);
+      }
+      if (this.#liveCompactionIds.size) this.#pendingUsage();
+      else if (wasCompacting) {
+        this.#awaitingOrdinaryContext = true;
+        this.#usage = {
+          ...this.#usage,
+          state: this.#usage.available ? "stale" : "unavailable",
+          reason: "compaction-completed",
+        };
+      }
+      return;
+    }
+    if (["current_model_update", "config_option_update"].includes(String(update.sessionUpdate))) {
+      this.#awaitingOrdinaryContext = true;
+      this.#usage = {
+        ...this.#usage,
+        state: this.#usage.available ? "stale" : "unavailable",
+        reason: "model-context-changed",
+      };
+      return;
+    }
+    if (update.sessionUpdate === "usage_update") {
+      // ACP has no usage-to-call identity. A report after terminal compaction may
+      // still belong to compaction; require a normal prompt/output boundary first.
+      // A later active compaction can still replace the pending candidate without
+      // confirming ordinary context or promoting that report to ready.
+      if (this.#awaitingOrdinaryContext && !this.#liveCompactionIds.size) return;
+      const report = projectContextUsage({
+        available: true,
+        state: replay ? "stale" : this.#liveCompactionIds.size ? "pending" : "ready",
+        usedTokens: update.used,
+        contextWindow: update.size,
+        reportId: ++this.#usageReportId,
+        updatedAt: new Date().toISOString(),
+      })!;
+      this.#usage =
+        report.usedTokens === undefined || report.contextWindow === undefined
+          ? {
+              available: false,
+              state: "unavailable",
+              reason: "invalid-context-report",
+              reportId: this.#usageReportId,
+            }
+          : report;
+      return;
+    }
+    if (
+      !replay &&
+      !this.#liveCompactionIds.size &&
+      ["agent_message_chunk", "user_message_chunk"].includes(String(update.sessionUpdate))
+    )
+      this.#awaitingOrdinaryContext = false;
     if (replay) {
       const replayText = textUpdate(update);
       if (replayText !== null && Buffer.byteLength(replayText) > MAX_CONTENT_BYTES)
@@ -350,8 +457,6 @@ export class AntigravityManagedRunner {
         throw new Error("invalid ACP tool ID");
       return;
     }
-    this.#updateCount += 1;
-    if (this.#updateCount > MAX_UPDATES) throw new Error("too many Antigravity ACP updates");
     const text = textUpdate(update);
     if (text !== null) {
       if (
@@ -536,11 +641,24 @@ export class AntigravityManagedRunner {
     if (this.#revision !== revision) throw new Error("stale Antigravity revision");
   }
 
+  #pendingUsage(): void {
+    this.#usage = {
+      ...this.#usage,
+      state: this.#usage.available ? "pending" : "unavailable",
+      reason: "context-report-pending",
+    };
+  }
+
   #fail(error: unknown): void {
     this.#status = this.#turnId ? "outcome-unknown" : "failed";
     this.#approvals.clear();
     this.#cancellingAt = null;
     this.#reason = (error instanceof Error ? error.message : String(error)).slice(0, 512);
+    this.#usage = {
+      ...this.#usage,
+      state: this.#usage.available ? "stale" : "unavailable",
+      reason: "connection-unavailable",
+    };
     this.#revision += 1;
     this.#publishSnapshot();
   }

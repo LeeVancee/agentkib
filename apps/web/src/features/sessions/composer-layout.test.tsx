@@ -40,7 +40,7 @@ beforeEach(() => {
     t: dictionaries["zh-CN"],
     access: {
       experimentalEnabled: true,
-      device: { accessMode: "full", send: true, attachments: true },
+      device: { accessMode: "full", send: true, attachments: true, advancedControl: true },
     },
     live: { sessionId: "s", status: "idle", revision: 1 },
     online: true,
@@ -82,6 +82,64 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("responsive composer behavior", () => {
+  it("shows native usage before settings load and preserves it after a late settings response", async () => {
+    let finish!: (value: CodexSessionSettings) => void;
+    vi.mocked(state.client.codexSessionSettings).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    state.live = {
+      ...state.live!,
+      usage: { available: true, state: "ready", reportId: 1, usedTokens: 8, contextWindow: 100 },
+    };
+    render(<CodexComposer />);
+    const usage = screen.getByRole("button", { name: "上下文用量" });
+    expect(usage).toHaveTextContent("8%");
+    await waitFor(() => expect(finish).toBeDefined());
+    await act(async () =>
+      finish({ ...settings(), usage: { available: true, usedTokens: 95, contextWindow: 100 } }),
+    );
+    expect(usage).toHaveTextContent("8%");
+  });
+
+  it("keeps settings and goals read-only while compacting despite retained capabilities", async () => {
+    state.live = {
+      ...state.live!,
+      activity: "compacting",
+      usage: { available: false, state: "pending" },
+    };
+    state.capabilities!.features = {
+      ...state.capabilities!.features,
+      "goal-set": { available: true },
+      "goal-pause": { available: true },
+      "goal-clear": { available: true },
+    };
+    vi.mocked(state.client.codexGoals).mockResolvedValue({
+      sessionId: "s",
+      revision: 1,
+      available: true,
+      goal: { objective: "Keep working", status: "active" },
+      actions: {
+        set: { available: true },
+        pause: { available: true },
+        resume: { available: false },
+        clear: { available: true },
+      },
+    });
+    render(<CodexComposer />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test Model/ }));
+    expect(screen.getByLabelText("模型")).toBeDisabled();
+    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].apply })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复主机默认" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    fireEvent.click(screen.getByRole("button", { name: "持续目标" }));
+    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalUpdate })).toBeDisabled();
+    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalPause })).toBeDisabled();
+    expect(screen.getByRole("button", { name: codexCopy["zh-CN"].goalClear })).toBeDisabled();
+    expect(state.codexAction).not.toHaveBeenCalled();
+  });
   it("opens unknown context usage with a keyboard-focusable button", async () => {
     render(<CodexComposer />);
     await screen.findByRole("button", { name: /Test Model/ });

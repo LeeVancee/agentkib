@@ -24,6 +24,11 @@ const mocks = vi.hoisted(() => ({
   discoverSkills: vi.fn(),
   prepareSkillInstall: vi.fn(),
   prepareSkillUpdate: vi.fn(),
+  listSkillVersions: vi.fn(),
+  prepareSkillVersionChange: vi.fn(),
+  discardSkillPreview: vi.fn(),
+  prepareSkillImports: vi.fn(),
+  applySkillImports: vi.fn(),
   applySkillOperation: vi.fn(),
   checkSkillUpdates: vi.fn(),
   rollbackSkill: vi.fn(),
@@ -72,6 +77,7 @@ const preview: SkillOperationPreview = {
 describe("SkillHubPage", () => {
   beforeAll(() => initializeI18n("en-US"));
   beforeEach(() => {
+    mocks.discardSkillPreview.mockResolvedValue(undefined);
     mocks.skillInventory.mockResolvedValue({ observations: [], warnings: [] });
     mocks.skillDeployments.mockResolvedValue([]);
     mocks.skillTargets.mockResolvedValue([]);
@@ -273,6 +279,224 @@ describe("SkillHubPage", () => {
       await act(() => changeLocale("en-US"));
     }
   });
+
+  it("opens batch import from My Skills and keeps the imported package when refresh fails", async () => {
+    mocks.installedSkills
+      .mockResolvedValueOnce([])
+      .mockRejectedValue(new Error("Batch refresh failed"));
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillInventory.mockResolvedValue({
+      observations: [
+        {
+          id: "external",
+          name: "reviewer",
+          path: "/native/reviewer",
+          resolved_path: "/native/reviewer",
+          agents: ["codex"],
+          scope: "personal",
+          workspace_id: null,
+          kind: "directory",
+          owner: "external",
+          status: "observed",
+          library_id: null,
+          diagnostics: [],
+        },
+      ],
+      warnings: [],
+    });
+    mocks.prepareSkillImports.mockResolvedValue({
+      token: "batch",
+      expires_at: preview.expires_at,
+      total_size: 128,
+      items: [
+        {
+          id: "item",
+          observation_ids: ["external"],
+          paths: ["/native/reviewer"],
+          agents: ["codex"],
+          resolved_path: "/native/reviewer",
+          library_id: "reviewer",
+          display_name: "reviewer",
+          status: "ready",
+          preview,
+        },
+      ],
+    });
+    const imported = {
+      name: "reviewer",
+      display_name: "reviewer",
+      description: "Imported package",
+      path: "/library/reviewer",
+      size: 128,
+      status: "current",
+      source: null,
+      can_rollback: false,
+    };
+    mocks.applySkillImports.mockResolvedValue({
+      token: "batch",
+      items: [
+        {
+          id: "item",
+          observation_ids: ["external"],
+          status: "imported",
+          library_id: "reviewer",
+          skill: imported,
+        },
+      ],
+    });
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    const user = userEvent.setup();
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Import from local Agents" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    await user.click(screen.getByRole("button", { name: "Import from local Agents" }));
+    await user.click(screen.getByRole("button", { name: "Review selected packages" }));
+    await user.click(await screen.findByRole("button", { name: "Import ready packages" }));
+    await screen.findByText("Imported");
+    await waitFor(() =>
+      expect(screen.getAllByText(/Batch refresh failed/).length).toBeGreaterThan(0),
+    );
+    await user.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!);
+    expect(await screen.findByText("Imported package")).toBeTruthy();
+    expect(screen.getByText(/Skill library updated/)).toBeTruthy();
+    expect(mocks.applySkillImports).toHaveBeenCalledOnce();
+  });
+
+  it("uses a stable source identity when choosing another version from discovery", async () => {
+    mocks.installedSkills.mockResolvedValue([
+      {
+        name: "existing-id",
+        display_name: candidate.name,
+        description: candidate.description,
+        path: "/library/existing-id",
+        size: 128,
+        status: "current",
+        source: { ...candidate.source, ref: "v1.0" },
+        can_rollback: false,
+      },
+    ]);
+    mocks.removedSkills.mockResolvedValue([]);
+    mocks.skillCatalog.mockResolvedValue({
+      entries: [{ ...candidate, installed: false }],
+      cached_at: "2026-09-02T00:00:00Z",
+      stale: false,
+    });
+    mocks.listSkillVersions.mockResolvedValue({
+      type: "tag",
+      page: 1,
+      has_more: false,
+      entries: [{ name: "v2.0", commit: "b".repeat(40) }],
+    });
+    mocks.prepareSkillVersionChange.mockResolvedValue({
+      ...preview,
+      operation: "update",
+      previous_source: { ...candidate.source, ref: "v1.0" },
+      skill: { ...candidate, source: { ...candidate.source, ref: "v2.0" } },
+    });
+    renderWithClient(
+      <AppDialogProvider>
+        <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+      </AppDialogProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("tab", { name: "Discover" }));
+    await user.click(await screen.findByRole("button", { name: "Choose version" }));
+    await user.click(await screen.findByRole("button", { name: /v2.0/ }));
+    await user.click(screen.getByRole("button", { name: "Review version" }));
+    expect(mocks.prepareSkillVersionChange).toHaveBeenCalledWith("existing-id", {
+      type: "tag",
+      value: "v2.0",
+    });
+    expect(await screen.findByText("Current reference and commit")).toBeTruthy();
+    expect(screen.getByText(/v1.0 ·/)).toBeTruthy();
+    expect(screen.getByText(/v2.0 ·/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.discardSkillPreview).toHaveBeenCalledWith(preview.token);
+  });
+
+  it.each([
+    {
+      label: "a different ref",
+      installedRef: "v1.0",
+      installedType: "tag" as const,
+      candidateRef: "main",
+      candidateType: "branch" as const,
+    },
+    {
+      label: "a same-named tag and branch",
+      installedRef: "release",
+      installedType: "tag" as const,
+      candidateRef: "release",
+      candidateType: "branch" as const,
+    },
+    {
+      label: "an untyped legacy reference",
+      installedRef: "main",
+      installedType: undefined,
+      candidateRef: "main",
+      candidateType: "branch" as const,
+    },
+  ])(
+    "routes the primary discovery action for $label through version selection",
+    async ({ installedRef, installedType, candidateRef, candidateType }) => {
+      mocks.installedSkills.mockResolvedValue([
+        {
+          name: "installed-id",
+          display_name: candidate.name,
+          description: candidate.description,
+          path: "/library/installed-id",
+          size: 128,
+          status: "current",
+          source: { ...candidate.source!, ref: installedRef, ref_type: installedType },
+          can_rollback: false,
+        },
+      ]);
+      mocks.removedSkills.mockResolvedValue([]);
+      mocks.skillCatalog.mockResolvedValue({
+        entries: [
+          {
+            ...candidate,
+            source: { ...candidate.source!, ref: candidateRef, ref_type: candidateType },
+            installed: false,
+          },
+        ],
+        cached_at: "2026-09-02T00:00:00Z",
+        stale: false,
+      });
+      mocks.listSkillVersions.mockResolvedValue({
+        type: installedType ?? "tag",
+        page: 1,
+        has_more: false,
+        entries: [],
+      });
+      renderWithClient(
+        <AppDialogProvider>
+          <SkillHubPage workspaceAssets={[]} workspaces={[]} onOpen={vi.fn()} onReload={vi.fn()} />
+        </AppDialogProvider>,
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("tab", { name: "Discover" }));
+      await user.click(await screen.findByRole("button", { name: "Choose version" }));
+      expect(
+        await screen.findByRole("dialog", { name: `Choose a version for ${candidate.name}` }),
+      ).toBeTruthy();
+      expect(mocks.listSkillVersions).toHaveBeenCalledWith({
+        library_id: "installed-id",
+        type: installedType ?? "tag",
+        page: 1,
+      });
+      expect(mocks.prepareSkillInstall).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillUpdate).not.toHaveBeenCalled();
+      expect(mocks.prepareSkillVersionChange).not.toHaveBeenCalled();
+    },
+  );
 
   it("reviews an immutable curated package before adding it", async () => {
     mocks.installedSkills.mockResolvedValue([]);

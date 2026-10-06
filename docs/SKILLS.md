@@ -22,6 +22,42 @@ Private resource checks cover every directory component as well as the filename.
 
 Local filenames must have an unambiguous package-relative representation. For example, a literal backslash in a Unix filename is rejected so the preview cannot refer to a different file from the copied package.
 
+## Batch import from local agents
+
+In **My Skills**, use **Import from local agents** to select existing personal, project and external installations. Filter by agent, scope or name, and select or deselect all readable packages in the filtered list. The initial selection includes readable external packages. The dialog shows native restrictions, trust requirements and unverified visibility separately from whether the files can be copied; importing does not change those native settings.
+
+Several entry paths that resolve to the same physical package are one import item, with all entry paths and related agents shown. An existing library snapshot with the same resolved source and content is skipped. Changed content at the same source becomes a new snapshot, and different sources remain separate even when their names or content match. The preview shows the allocated library ID; a new collision before application fails that item rather than replacing a package.
+
+A damaged or unreadable old library snapshot is not a deduplication match. A healthy source can be copied under a new library ID, with the ignored snapshot's diagnostic shown in the preview. The old snapshot and source record stay untouched. Unsafe library-parent or destination paths still block the operation.
+
+Skipped items are checked again against the reviewed library content and source record when applying. If a matching library snapshot was removed or changed after preview, that item fails and needs a new preview; other imports can still succeed.
+
+Review the full batch before applying it. Each item shows its files, final library ID and ready, skipped or failed status. Batch previews expire after 15 minutes and retain their own snapshots, including when more than four packages are selected. Cancelling or expiring a preview clears its temporary files.
+
+Concurrent preparations share preview retention checks. Single-package previews retain at most four snapshots, while batches keep their own items; both share the 1 GiB retained snapshot limit. Failed preparation releases its reservation so later previews can proceed.
+
+Application reports each item's result independently. A failed item does not undo successful imports; use **Retry failed** to prepare a new preview for the failures. Repeating the same batch request during the current app run returns its existing result. After restarting, scan and prepare again; source and content matching prevents duplicate imports. If file installation succeeds but refreshing the catalog fails, the import remains successful and the refresh issue is reported separately.
+
+Copying a CC Switch installation never changes its original directory, link or manager metadata. Imported packages remain in the library until deployed explicitly. Local copy imports retain their local source; AgentKib does not infer a GitHub repository from a package name or grant remote update access to the copied package.
+
+## GitHub versions
+
+GitHub installation downloads a complete package snapshot through GitHub's API and file endpoints. It does not create a local Git clone or run package code. Both during installation and for an existing GitHub library package, **Choose version** offers paginated tag and branch lists, or a 7–40 character commit SHA. The dialog shows the selected reference, and the preview resolves it to a full commit SHA and displays the commit identifier. A failure to read a version list is reported; it does not select the default branch instead.
+
+Choosing another tag, branch or commit can upgrade, downgrade or switch the package's tracking branch while preserving its library ID, repository and package path. The selected version must still contain a valid Skill at that path. Each preview freezes the resolved commit and downloaded files, so later changes to a remote branch cannot change the content being reviewed. Tags belong to the repository; a new tag does not necessarily change every Skill in it.
+
+If another request installs the same repository and package path during preparation or before application, the stale installation fails and needs a new preview. It does not create a second library ID or change the installed reference. Preparing the same source again updates the existing package; selecting another reference requires **Choose version**.
+
+A failed package download stops scheduling new files and waits for in-flight downloads and file writes before clearing its temporary snapshot. The original error is reported after cleanup; remaining workers cannot recreate a discarded snapshot. An existing library package and its source record stay unchanged, and a fresh preview can retry the operation.
+
+**Check updates** and ordinary **Update** continue to use the package's recorded reference. A branch checks its latest package content; a tag or commit stays on that selected reference and does not advance to a different tag automatically. Use **Choose version** to change the selection explicitly. Existing records without a reference type retain their previous resolution behavior; reading them does not migrate the record.
+
+**Rollback** restores the previous package contents and source selection together, including the previous tracking branch or tag. The library retains only one previous version, not a complete version history. Version changes do not update deployed copies automatically; review and update each deployment explicitly. Locally copied packages have no inferred remote versions and remain local snapshots.
+
+A damaged current package can still be rolled back to a valid backup, including when local files exceed the package limits or `SKILL.md` is missing. Its directory is preserved as the previous backup without reading or following internal links. The current directory, its parents and the backup must still pass path safety checks, and the backup must pass complete package validation.
+
+After recovery, updates and version changes can replace that damaged old backup. The current and candidate packages are still verified in full. The old backup is checked as a regular directory within safe parent paths, then replaced transactionally without reading or following its internal resources. A failed commit restores it; a successful commit retains the healthy former current package as the only previous version.
+
 ## Deploy, update and withdraw
 
 Use **Deploy to…** to choose personal or project locations. The preview shows exact paths, file changes, shared visibility and conflicts. Personal writes require the existing separate Agent Home confirmation. Deployments use complete copies; they do not depend on a symlink back to the library.
@@ -130,6 +166,42 @@ CC Switch 等工具创建的目录或链接可以查看并复制入库。原始�
 私密资源检查覆盖文件名及每一级目录。例如 `secrets/config.json` 不会通过包预览或 MCP 资产读取接口暴露。
 
 本地文件名必须能无歧义地表示为包内相对路径。例如 Unix 文件名中的字面反斜杠会被拒绝，避免预览内容与实际复制的文件不一致。
+
+## 从本机 Agent 批量导入
+
+在“我的 Skills”选择“从本机 Agent 导入”，可批量选择已有的个人、项目和外部安装。支持按 Agent、作用域或名称筛选，以及全选、取消全选筛选结果中的可读包；初始默认选中可读的外部包。原生禁用、待信任或未验证状态与文件能否复制分别展示，复制不会修改这些原生设置。
+
+多个入口指向同一个真实包目录时，归并为一条导入项，并列出所有入口和关联 Agent。资源库已有实际来源与内容均相同的快照时会跳过；同一来源内容变化时保存为新快照。不同来源即使名称或内容相同，仍分别保存。预览展示分配后的资源库 ID；应用前出现新冲突时，该项失败，不覆盖已有包。
+
+损坏或不可读的旧库快照不作为去重匹配。健康来源可使用新的资源库 ID 入库，预览会展示被忽略快照的诊断；旧快照及来源记录保持不变。库父目录或目标路径不安全时，仍会阻止操作。
+
+应用时会重新核验已跳过项对应的资源库内容和来源记录。预览后对应快照被删除或发生变化时，该项失败并需要重新预览，其他导入项仍可成功。
+
+应用前统一审查整批内容。每项展示文件、最终资源库 ID，以及可导入、已跳过或失败状态。批次预览有效期为 15 分钟，独立保留快照，选择超过四个包也不会相互淘汰预览。取消或过期后会清理临时文件。
+
+并发准备共用预览保留检查。单包预览最多保留四个快照，批次独立保留其中的包；两者共用 1 GiB 的已保留快照上限。准备失败会释放占用，后续预览仍可继续。
+
+应用结果逐项报告，失败项不撤销已成功的导入；通过“重试失败项”重新准备预览。当前应用运行期间重复提交同一批次请求会返回已有结果。重启后需重新扫描和准备，通过来源及内容匹配避免重复入库。文件安装成功但目录刷新失败时，仍报告导入成功，并单独显示刷新问题。
+
+复制 CC Switch 安装不会修改原目录、链接或管理器元数据。导入后仅保存到资源库，需显式部署才能写入使用位置。本地复制包保留本地来源，不根据包名推断 GitHub 仓库，也不自动获得远程更新能力。
+
+## GitHub 版本选择
+
+GitHub 安装通过 API 和文件下载接口获取完整包快照，不创建本地 Git 克隆，也不运行包代码。安装时及已安装的 GitHub 资源库包均可通过“选择版本”使用可分页的 Tag、Branch 列表，或输入 7–40 位 Commit SHA。对话框展示所选引用，预览将其解析为完整提交 SHA，并展示提交标识；版本列表读取失败会显示错误，不改用默认分支。
+
+选择其他 tag、分支或 commit 可完成升级、降级和跟踪分支切换，同时保持资源库 ID、仓库及包路径稳定。目标版本须在原路径中仍包含有效 Skill。预览固定解析后的 commit 及已下载文件，远程分支随后变化不会改变正在审查的内容。Tag 属于整个仓库，新 tag 不一定改变其中的每个 Skill。
+
+准备期间或应用前，其他请求若已安装同一仓库及包路径，旧安装请求会失败并要求重新预览，不创建第二个资源库 ID，也不更改已安装的引用。重新准备相同来源会更新已有包；更换引用须使用“选择版本”。
+
+包下载失败后会停止领取新文件，等待已开始的下载和文件写入结束，再清理暂存快照并报告原始错误，避免其他任务重建已清理的目录。已有资源库包及来源记录保持不变，可重新预览后重试。
+
+“检查更新”和普通“更新”继续使用包已记录的引用。分支检查该分支的最新包内容；tag 或 commit 保持当前选择，不自动跳到其他 tag。更换选择须使用“选择版本”。缺少引用类型的旧来源记录沿用原有解析方式，读取不会迁移记录。
+
+“回滚”同时恢复上一版本的包内容及来源选择，包括原跟踪分支或 tag。资源库只保留上一版本，不提供完整版本历史。版本切换不会自动更新已部署副本，需显式审查并更新对应部署。本地复制包不推断远程版本，仍作为本地快照管理。
+
+当前包损坏时仍可回滚到有效备份，包括本地文件超出包限制或缺少 `SKILL.md` 的情况。当前目录会保留为上一版备份，不读取或跟随其内部链接。当前目录及父目录、备份仍须满足路径安全要求，备份须通过完整包校验。
+
+恢复后仍可更新或切换版本，替换损坏的旧备份。当前包和候选包仍须完整校验；旧备份仅核验目录类型与父路径安全，再通过事务替换，不读取或跟随其内部资源。提交失败时恢复旧备份，成功后只保留更新前的健康当前包作为上一版本。
 
 ## 部署、更新与撤销
 

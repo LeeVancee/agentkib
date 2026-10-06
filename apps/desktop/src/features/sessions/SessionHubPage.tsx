@@ -228,6 +228,7 @@ export function SessionHubPage() {
         ref={historyRef}
       >
         {catalogNotice}
+        {hub.hiddenSessionNotice && <Notice>{tr("sessions.hiddenRecord")}</Notice>}
         {hub.remoteHosts?.map(
           (host) =>
             (host.status !== "online" || hub.remoteErrors?.[host.id]) && (

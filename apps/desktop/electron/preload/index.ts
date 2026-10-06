@@ -98,6 +98,11 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:skills:apply-operation", token, allowModified),
     checkUpdates: () => ipcRenderer.invoke("agentkib:skills:check-updates"),
     prepareUpdate: (name: string) => ipcRenderer.invoke("agentkib:skills:prepare-update", name),
+    listVersions: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:list-versions", request),
+    prepareVersionChange: (libraryId: string, selector: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-version-change", libraryId, selector),
+    discardPreview: (token: string) => ipcRenderer.invoke("agentkib:skills:discard-preview", token),
     rollback: (name: string) => ipcRenderer.invoke("agentkib:skills:rollback", name),
     uninstall: (name: string) => ipcRenderer.invoke("agentkib:skills:uninstall", name),
     removed: () => ipcRenderer.invoke("agentkib:skills:removed"),
@@ -111,8 +116,11 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:skills:read-detail-file", request),
     prepareImport: (observationId: string) =>
       ipcRenderer.invoke("agentkib:skills:prepare-import", observationId),
-    readPreviewFile: (token: string, path: string, targetId?: string) =>
-      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId),
+    prepareImports: (observationIds: string[]) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-imports", observationIds),
+    applyImports: (token: string) => ipcRenderer.invoke("agentkib:skills:apply-imports", token),
+    readPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
+      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId, itemId),
     listDeployments: () => ipcRenderer.invoke("agentkib:skills:list-deployments"),
     prepareDeployment: (request: unknown) =>
       ipcRenderer.invoke("agentkib:skills:prepare-deployment", request),

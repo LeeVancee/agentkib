@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { nativeBindings } from "./native-files";
+import { versionAtLeast } from "./native-version";
 
 const CLIENT_TYPE = "agentkib-codex-bridge";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -33,7 +34,7 @@ const METHOD_VERSIONS: Readonly<Record<string, number>> = {
 // IPC method versions remain strictly checked below. App versions use minimum
 // gates so compatible future patch releases do not become read-only by default.
 const MINIMUM_DESKTOP_VERSION = "26.917.62051";
-const MINIMUM_THREAD_SETTINGS_VERSION = "26.924.22138";
+const SETTINGS_MINIMUM_DESKTOP_VERSION = "26.924.22138";
 
 type JsonRecord = Record<string, unknown>;
 type Frame = { bytes: Buffer; value: unknown };
@@ -74,7 +75,7 @@ export class CodexFollowerConnection {
         throw new Error("Codex IPC endpoint changed");
       const peerPath = await realpath(verifyPeer(socket, process.getuid()));
       const desktopVersion = await readDesktopVersion(peerPath);
-      if (!atLeastVersion(desktopVersion, MINIMUM_DESKTOP_VERSION))
+      if (!versionAtLeast(desktopVersion, MINIMUM_DESKTOP_VERSION))
         throw new Error("unverified Codex Desktop installation");
       const connection = new CodexFollowerConnection(socket, desktopVersion, endpoint);
       try {
@@ -105,7 +106,7 @@ export class CodexFollowerConnection {
   }
 
   get supportsThreadSettings(): boolean {
-    return atLeastVersion(this.desktopVersion, MINIMUM_THREAD_SETTINGS_VERSION);
+    return versionAtLeast(this.desktopVersion, SETTINGS_MINIMUM_DESKTOP_VERSION);
   }
 
   disconnect(): void {
@@ -292,24 +293,6 @@ export class CodexFollowerConnection {
     this.#queuedBytes = 0;
     for (const waiter of this.#waiters.splice(0)) waiter.resolve(null);
   }
-}
-
-function atLeastVersion(value: string, minimum: string): boolean {
-  const actualParts = versionParts(value);
-  const minimumParts = versionParts(minimum);
-  if (!actualParts || !minimumParts) return false;
-  for (let index = 0; index < actualParts.length; index += 1) {
-    const actual = actualParts[index]!;
-    const required = minimumParts[index]!;
-    if (actual.length !== required.length) return actual.length > required.length;
-    if (actual !== required) return actual > required;
-  }
-  return true;
-}
-
-function versionParts(value: string): string[] | null {
-  if (!/^\d+\.\d+\.\d+$/.test(value)) return null;
-  return value.split(".").map((part) => part.replace(/^0+(?=\d)/, ""));
 }
 
 async function inspectEndpoint(endpoint: string): Promise<{ dev: number; ino: number }> {

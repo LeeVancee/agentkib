@@ -11,12 +11,14 @@ import {
   type PendingControl,
 } from "./pending-controls";
 import { codexCopy } from "./codex-copy";
+import { catalogCopy } from "../catalog/catalog-copy";
 
 export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const {
     access,
     origin,
     sessions,
+    excludedSessionIds,
     selected,
     live,
     pendingSessions,
@@ -86,15 +88,21 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
           {!pendingIds.size && !saved.length && <p>{copy.pendingEmpty}</p>}
           {Array.from(pendingIds).map((id) => (
             <section key={id} className="space-y-2 rounded border p-3">
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setOpen(false);
-                  void navigate({ to: "/sessions/$sessionId", params: { sessionId: id } });
-                }}
-              >
-                {sessions.find((item) => item.id === id)?.title || t.untitled}
-              </Button>
+              {excludedSessionIds?.has(id) ? (
+                <p className="text-xs text-muted-foreground">
+                  {catalogCopy[locale].excludedPending}
+                </p>
+              ) : (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setOpen(false);
+                    void navigate({ to: "/sessions/$sessionId", params: { sessionId: id } });
+                  }}
+                >
+                  {sessions.find((item) => item.id === id)?.title || t.untitled}
+                </Button>
+              )}
               {saved.some((item) => item.sessionId === id) && (
                 <p className="text-xs text-muted-foreground">{copy.unknown}</p>
               )}

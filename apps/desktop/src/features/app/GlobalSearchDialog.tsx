@@ -15,7 +15,8 @@ import type { GlobalPage } from "./app-route";
 import type { SidebarEntry } from "@/components/AppSidebar";
 import { useAppStore } from "@/stores/app-store";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { filterSessions } from "@/features/sessions/session-catalog";
+import { filterSessions, projectManagedSessionAliases } from "@/features/sessions/session-catalog";
+import { useConversationCatalog } from "@/features/sessions/conversation-catalog";
 import { displaySessionTitle } from "@/features/workspace/session-title";
 import {
   isInteractiveFork,
@@ -27,7 +28,6 @@ import { AssetDetails } from "@/features/catalog/AssetDetails";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
 import { useSearchSessions } from "./useSearchSessions";
 import { useRemoteCatalogEntries } from "@/features/remote/remote-catalog-store";
-import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { SEARCH_ASSET_LIMIT, useSearchAssets } from "./useSearchAssets";
 
 type Result = {
@@ -86,9 +86,9 @@ export function GlobalSearchDialog({
   const wasOpen = useRef(false);
   const listId = useId();
   const runtime = useAppStore((state) => state.runtime);
-  const showAuxiliary = useSessionViewStore((state) => state.showAuxiliary);
   const enabled = runtime?.session_index_enabled === true;
   const sessions = useSearchSessions(workspaces, open && enabled);
+  const managedCatalog = useConversationCatalog(open && enabled);
   const remote = useRemoteCatalogEntries();
   const sessionWorkspaces = useMemo(
     () => [...workspaces, ...remote.workspaces],
@@ -99,17 +99,19 @@ export function GlobalSearchDialog({
   const matchingSessions = useMemo(
     () =>
       filterSessions(
-        [...sessions.sessions, ...remote.sessions],
+        [
+          ...projectManagedSessionAliases(sessions.sessions, managedCatalog.sessions),
+          ...remote.sessions,
+        ],
         sessionWorkspaces,
         {
           query: term,
           agent: "all",
           filter: "all",
-          showAuxiliary,
         },
         tr,
       ),
-    [sessions.sessions, remote.sessions, sessionWorkspaces, term, tr, showAuxiliary],
+    [sessions.sessions, managedCatalog.sessions, remote.sessions, sessionWorkspaces, term, tr],
   );
   const close = () => onOpenChange(false);
   useEffect(() => {

@@ -151,6 +151,7 @@ describe("remote payload validation", () => {
           forked_from_session_id: "fork",
         },
         { ...session, id: "future", origin: "future-source", forked_from_session_id: null },
+        { ...session, id: "execution", origin: "execution" },
       ],
     });
     expect(result.sessions[0]).toMatchObject({
@@ -160,6 +161,7 @@ describe("remote payload validation", () => {
     });
     expect(result.sessions[1].origin).toBe("unknown");
     expect(result.sessions[1].forked_from_session_id).toBeUndefined();
+    expect(result.sessions[2].origin).toBe("execution");
   });
   it.each([
     { workspaces: null, sessions: [] },

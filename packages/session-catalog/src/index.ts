@@ -23,7 +23,6 @@ export interface SessionCatalogFilter {
   query: string;
   agent: string;
   filter: SessionRecordFilter;
-  showAuxiliary?: boolean;
 }
 
 const internalTitlePrefixes = [
@@ -59,11 +58,8 @@ export function isAuxiliarySession(session: Pick<CatalogSession, "origin">): boo
   return session.origin === "auxiliary";
 }
 
-export function isSessionVisible(
-  session: Pick<CatalogSession, "origin">,
-  showAuxiliary = false,
-): boolean {
-  return showAuxiliary || !isAuxiliarySession(session);
+export function isSessionVisible(session: Pick<CatalogSession, "origin">): boolean {
+  return session.origin !== "auxiliary" && session.origin !== "execution";
 }
 
 function timestamp(session: Pick<CatalogSession, "updated_at" | "created_at">): number {
@@ -82,15 +78,14 @@ export function sortSessions<S extends CatalogSession>(sessions: readonly S[]): 
 export function filterSessions<S extends CatalogSession>(
   sessions: readonly S[],
   workspaces: readonly CatalogWorkspace[],
-  { query, agent, filter, showAuxiliary = false }: SessionCatalogFilter,
+  { query, agent, filter }: SessionCatalogFilter,
   untitled: string,
 ): S[] {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const search = query.trim().toLocaleLowerCase();
   return sortSessions(
     sessions.filter((session) => {
-      if (!isSessionVisible(session, showAuxiliary) || !names.has(session.workspace_id))
-        return false;
+      if (!isSessionVisible(session) || !names.has(session.workspace_id)) return false;
       if (agent !== "all" && session.agent !== agent) return false;
       if (filter === "current" && (session.archived || session.availability !== "readable"))
         return false;
@@ -137,7 +132,7 @@ export function groupSessions<S extends CatalogSession, W extends CatalogWorkspa
   workspaces: readonly W[],
 ): { workspace: W; sessions: S[]; label: string }[] {
   const buckets = new Map<string, S[]>();
-  for (const session of sortSessions(sessions)) {
+  for (const session of sortSessions(sessions.filter(isSessionVisible))) {
     const bucket = buckets.get(session.workspace_id) ?? [];
     bucket.push(session);
     buckets.set(session.workspace_id, bucket);

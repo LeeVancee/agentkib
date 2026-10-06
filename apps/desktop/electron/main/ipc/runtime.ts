@@ -10,6 +10,9 @@ import {
   skillDetailRequest,
   skillIdentity,
   skillRelativePath,
+  skillObservationIds,
+  skillVersionSelector,
+  skillVersionListRequest,
 } from "./skill-validation";
 import {
   optionalPositiveInteger,
@@ -364,6 +367,24 @@ export function registerRuntimeIpc({
     );
     forward("agentkib:skills:check-updates", RUNTIME_METHODS.checkSkillUpdates);
     forward(
+      "agentkib:skills:list-versions",
+      RUNTIME_METHODS.listSkillVersions,
+      (request: unknown) => skillVersionListRequest(request),
+    );
+    forward(
+      "agentkib:skills:prepare-version-change",
+      RUNTIME_METHODS.prepareSkillVersionChange,
+      (libraryId: unknown, selector: unknown) => ({
+        library_id: skillIdentity(libraryId, "library_id"),
+        selector: skillVersionSelector(selector),
+      }),
+    );
+    forward(
+      "agentkib:skills:discard-preview",
+      RUNTIME_METHODS.discardSkillPreview,
+      (token: unknown) => ({ token: skillIdentity(token, "token") }),
+    );
+    forward(
       "agentkib:skills:prepare-update",
       RUNTIME_METHODS.prepareSkillUpdate,
       (name: unknown) => ({
@@ -411,11 +432,26 @@ export function registerRuntimeIpc({
     forward(
       "agentkib:skills:read-preview-file",
       RUNTIME_METHODS.readSkillPreviewFile,
-      (token: unknown, filePath: unknown, targetId: unknown) => ({
-        token: skillIdentity(token, "token"),
-        path: skillRelativePath(filePath),
-        ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
-      }),
+      (token: unknown, filePath: unknown, targetId: unknown, itemId: unknown) => {
+        if (targetId !== undefined && itemId !== undefined)
+          throw new TypeError("Select a deployment target or an import item");
+        return {
+          token: skillIdentity(token, "token"),
+          path: skillRelativePath(filePath),
+          ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
+          ...(itemId === undefined ? {} : { item_id: skillIdentity(itemId, "item_id") }),
+        };
+      },
+    );
+    forward(
+      "agentkib:skills:prepare-imports",
+      RUNTIME_METHODS.prepareSkillImports,
+      (ids: unknown) => ({ observation_ids: skillObservationIds(ids) }),
+    );
+    forward(
+      "agentkib:skills:apply-imports",
+      RUNTIME_METHODS.applySkillImports,
+      (token: unknown) => ({ token: skillIdentity(token, "token"), confirmed: true }),
     );
     forward("agentkib:skills:list-deployments", RUNTIME_METHODS.listSkillDeployments);
     forward(

@@ -117,6 +117,54 @@ export function listManagedRecords(dataDir: string): Array<Record<string, unknow
   }
 }
 
+export const MANAGED_CATALOG_RECORD_LIMIT = 20_000;
+
+/** Directory ownership reads must not create, migrate or change ledger permissions. */
+export function readManagedCatalogSnapshot(dataDir: string): {
+  records: Array<Record<string, unknown>>;
+  complete: boolean;
+} {
+  const directory = path.join(dataDir, "codex-managed");
+  const file = path.join(directory, "executions.sqlite");
+  try {
+    const directoryStat = lstatSync(directory);
+    const fileStat = lstatSync(file);
+    if (!directoryStat.isDirectory() || !fileStat.isFile())
+      throw new Error("invalid-managed-ledger");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], complete: true };
+    throw error;
+  }
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("PRAGMA busy_timeout = 3000; BEGIN;");
+    // Completeness and owners share one read snapshot. A truncated ledger must
+    // not hide an older conflicting native owner and grant a display exception.
+    const incomplete = database
+      .prepare("SELECT EXISTS(SELECT 1 FROM managed_sessions LIMIT 1 OFFSET ?) AS found")
+      .get(MANAGED_CATALOG_RECORD_LIMIT) as { found: number };
+    const rows = database
+      .prepare("SELECT record FROM managed_sessions ORDER BY rowid DESC LIMIT ?")
+      .all(MANAGED_CATALOG_RECORD_LIMIT) as Array<{ record: string }>;
+    const records = rows.map(({ record: value }) => {
+      const record: unknown = JSON.parse(value);
+      if (!isObject(record)) throw new Error("invalid-managed-record");
+      return record;
+    });
+    database.exec("COMMIT");
+    return { records, complete: incomplete.found === 0 };
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Retain the original read error if SQLite already ended its transaction.
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
 export function saveManagedRecord(dataDir: string, record: Record<string, unknown>): void {
   if (typeof record.id !== "string" || record.id.length === 0)
     throw new Error("invalid-managed-record");

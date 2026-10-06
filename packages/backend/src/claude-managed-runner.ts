@@ -7,6 +7,11 @@ import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
 import { truncateUtf8 } from "./session-events";
+import {
+  createContextUsageGeneration,
+  projectContextUsage,
+  type ContextUsage,
+} from "./context-usage";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -14,6 +19,11 @@ const MAX_INTERACTIONS = 1024 * 1024;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, any>;
+export class ClaudeUndispatchedError extends Error {
+  constructor() {
+    super("session-compacting");
+  }
+}
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -21,6 +31,8 @@ export type ClaudeRunnerSnapshot = {
   lastOutcome: string | null;
   model: string | null;
   tokenUsage: unknown;
+  usage: ContextUsage;
+  activity: "compacting" | null;
   status: string;
   sendEnabled: boolean;
   stopEnabled: boolean;
@@ -59,6 +71,12 @@ export class ClaudeRunnerState {
   pendingUser: JsonObject | null = null;
   model: string | null = null;
   usage: unknown = null;
+  contextUsage: ContextUsage = { available: false, state: "unavailable" };
+  activity: "compacting" | null = null;
+  usageModel: string | null = null;
+  usageReportId = 0;
+  readonly #usageGeneration = createContextUsageGeneration();
+  modelWindows = new Map<string, number>();
   lastOutcome: string | null = null;
   partial = false;
   foregroundBashContract = false;
@@ -88,6 +106,11 @@ export class ClaudeRunnerState {
       pendingUser: this.pendingUser ? structuredClone(this.pendingUser) : null,
       model: this.model,
       usage: this.usage ? structuredClone(this.usage) : null,
+      contextUsage: structuredClone(this.contextUsage),
+      activity: this.activity,
+      usageModel: this.usageModel,
+      usageReportId: this.usageReportId,
+      modelWindows: new Map(this.modelWindows),
       lastOutcome: this.lastOutcome,
       partial: this.partial,
       foregroundBashContract: this.foregroundBashContract,
@@ -100,6 +123,23 @@ export class ClaudeRunnerState {
     Object.assign(this, checkpoint);
     this.revision = checkpoint.revision + 1;
     this.reason = reason;
+  }
+
+  restoreUndispatched(checkpoint: ReturnType<ClaudeRunnerState["checkpoint"]>): void {
+    const native = {
+      activity: this.activity,
+      contextUsage: this.contextUsage,
+      usage: this.usage,
+      usageModel: this.usageModel,
+      usageReportId: this.usageReportId,
+      model: this.model,
+      modelWindows: this.modelWindows,
+      initialized: this.initialized,
+      initId: this.initId,
+      pendingUser: null,
+      revision: Math.max(this.revision, checkpoint.revision) + 1,
+    };
+    Object.assign(this, checkpoint, native);
   }
 
   initialize(pendingUser: JsonObject): JsonObject {
@@ -125,8 +165,13 @@ export class ClaudeRunnerState {
       lastOutcome: this.lastOutcome,
       model: this.model,
       tokenUsage: this.usage,
+      usage: projectContextUsage(
+        { ...this.contextUsage, reportGeneration: this.#usageGeneration },
+        this.revision,
+      )!,
+      activity: this.activity,
       status: this.status,
-      sendEnabled: this.status === "idle",
+      sendEnabled: this.status === "idle" && this.activity !== "compacting",
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
       revision: this.revision,
       turnId: this.turnId,
@@ -141,6 +186,7 @@ export class ClaudeRunnerState {
   begin(content: unknown, turnId: string = randomUUID()): JsonObject {
     validateClaudeContent(content);
     if (!uuidPattern.test(turnId)) throw new Error("invalid Claude turn ID");
+    if (this.activity === "compacting") throw new ClaudeUndispatchedError();
     if (this.status !== "idle") throw new Error("Claude session is busy or failed");
     this.turnId = turnId;
     this.streamText = "";
@@ -156,6 +202,7 @@ export class ClaudeRunnerState {
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.status = "running";
+    this.#pendingUsage();
     this.revision++;
     return {
       type: "user",
@@ -269,11 +316,19 @@ export class ClaudeRunnerState {
     this.questions = [];
     this.pendingUser = null;
     this.reason = null;
+    this.activity = null;
+    this.#pendingUsage();
     this.revision++;
   }
 
   fail(reason: string): void {
     this.status = "outcome-unknown";
+    this.activity = null;
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "stale" : "unavailable",
+      reason: "connection-unavailable",
+    };
     if (Buffer.byteLength(reason) > 4096) {
       let end = Math.min(reason.length, 4096);
       while (Buffer.byteLength(reason.slice(0, end)) > 4096) end--;
@@ -322,6 +377,9 @@ export class ClaudeRunnerState {
       case "stream_event": {
         const event = frame.event;
         if (event?.type === "message_start") {
+          if (frame.parent_tool_use_id == null && this.activity !== "compacting")
+            this.#pendingUsage();
+          this.#observeUsage(event.message, frame.parent_tool_use_id);
           this.streamItemId = "";
           this.streamItemText = "";
           this.activeTextBlockIndex = -1;
@@ -347,6 +405,7 @@ export class ClaudeRunnerState {
         break;
       }
       case "assistant": {
+        if (frame.isUnmetered !== true) this.#observeUsage(frame.message, frame.parent_tool_use_id);
         const blocks = frame.message?.content;
         const nativeId =
           (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
@@ -383,7 +442,23 @@ export class ClaudeRunnerState {
       case "result":
         if (this.foregroundTasks.size)
           throw new Error("Claude result with unresolved foreground tasks");
-        this.usage = frame.usage ?? null;
+        // result usage is a per-turn aggregate; only the latest main-loop API input
+        // report measures context occupancy. modelUsage supplies the native limit.
+        if (object(frame.modelUsage) && this.usageModel) {
+          const window = frame.modelUsage[this.usageModel]?.contextWindow;
+          if (Number.isSafeInteger(window) && window > 0) {
+            this.modelWindows.set(this.usageModel, window);
+            const waitingForWindow =
+              this.contextUsage.state === "pending" &&
+              this.contextUsage.reason === "model-context-window-unavailable";
+            this.contextUsage = {
+              ...this.contextUsage,
+              contextWindow: window,
+              state: waitingForWindow ? "ready" : this.contextUsage.state,
+              reason: waitingForWindow ? undefined : this.contextUsage.reason,
+            };
+          }
+        }
         if (!this.initialized) throw new Error("Claude resume failed before initialization");
         if (this.approvals.length || this.questions.length)
           throw new Error("Claude result with unresolved approvals");
@@ -397,10 +472,25 @@ export class ClaudeRunnerState {
         }
         if (!this.streamText && typeof frame.result === "string") this.#append(frame.result);
         this.status = "idle";
+        if (this.activity === "compacting") this.#staleUsage();
+        this.activity = null;
         this.streamText = "";
         break;
       case "system":
         if (frame.subtype === "init" && typeof frame.model === "string") this.model = frame.model;
+        if (frame.subtype === "status") {
+          if (frame.status === "compacting") {
+            this.activity = "compacting";
+            this.#pendingUsage();
+          } else if (frame.status === null || frame.status === "requesting") {
+            if (this.activity === "compacting") this.#staleUsage();
+            this.activity = null;
+          }
+        }
+        if (frame.subtype === "compact_boundary") {
+          this.activity = null;
+          this.#staleUsage();
+        }
         if (
           ["task_started", "background_tasks_changed"].includes(frame.subtype) ||
           (this.foregroundBashContract &&
@@ -422,6 +512,75 @@ export class ClaudeRunnerState {
     }
     this.revision++;
     return null;
+  }
+
+  #pendingUsage(): void {
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "pending" : "unavailable",
+      reason: "context-report-pending",
+    };
+  }
+
+  #staleUsage(reason = "compaction-completed"): void {
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "stale" : "unavailable",
+      reason,
+    };
+  }
+
+  #observeUsage(message: unknown, parentToolUseId: unknown): void {
+    if (parentToolUseId != null || !object(message)) return;
+    if (!object(message.usage) || message.model === "<synthetic>") return;
+    if (typeof message.model !== "string" || !message.model) {
+      this.#staleUsage("model-context-window-unavailable");
+      return;
+    }
+    let usage = message.usage;
+    if (Array.isArray(usage.iterations)) {
+      const iteration = [...usage.iterations]
+        .reverse()
+        .find((item) => object(item) && !["advisor_message", "compaction"].includes(item.type));
+      if (object(iteration) && ["message", "fallback_message"].includes(iteration.type))
+        usage = iteration;
+      else if (usage.iterations.length) return;
+    }
+    const input = usage.input_tokens;
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+    if (
+      ![input, cacheRead, cacheCreation].every((value) => Number.isSafeInteger(value) && value >= 0)
+    ) {
+      this.#staleUsage("invalid-context-report");
+      return;
+    }
+    const usedTokens = input + cacheRead + cacheCreation;
+    if (!Number.isSafeInteger(usedTokens)) {
+      this.#staleUsage("invalid-context-report");
+      return;
+    }
+    this.usage = structuredClone(usage);
+    this.usageModel = message.model;
+    this.model = message.model;
+    const contextWindow = this.modelWindows.get(message.model);
+    // A report received during compaction is a candidate, not proof that the
+    // ordinary request now uses the compacted context. A later normal report
+    // must restore its current qualification, even if the native limit is known.
+    const compacting = this.activity === "compacting";
+    this.contextUsage = {
+      available: true,
+      state: compacting || contextWindow === undefined ? "pending" : "ready",
+      ...(compacting
+        ? { reason: "context-report-pending" }
+        : contextWindow === undefined
+          ? { reason: "model-context-window-unavailable" }
+          : {}),
+      usedTokens,
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      reportId: ++this.usageReportId,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   #controlRequest(frame: JsonObject): null {
@@ -669,6 +828,7 @@ export class ClaudeManagedRunnerProcess {
   #fresh: boolean;
   #intentional = new WeakSet<ChildProcess>();
   #serializedTail: Promise<void> = Promise.resolve();
+  #pendingDispatch?: () => void;
   #toolItems = new Map<string, Record<string, unknown>>();
 
   constructor(
@@ -706,7 +866,13 @@ export class ClaudeManagedRunnerProcess {
   }
 
   retireIfInactive(): Promise<boolean> | null {
-    if (!this.#child || this.#retiring || this.state.status !== "idle") return null;
+    if (
+      !this.#child ||
+      this.#retiring ||
+      this.state.status !== "idle" ||
+      this.state.activity === "compacting"
+    )
+      return null;
     this.#retiring = true;
     return (async () => {
       try {
@@ -716,7 +882,13 @@ export class ClaudeManagedRunnerProcess {
         this.state.seenRequests.clear();
         this.state.bashToolIds.clear();
         this.state.foregroundTasks.clear();
+        this.state.contextUsage = {
+          ...this.state.contextUsage,
+          state: this.state.contextUsage.available ? "stale" : "unavailable",
+          reason: "connection-unavailable",
+        };
         this.state.revision++;
+        this.#notify();
         return true;
       } finally {
         this.#retiring = false;
@@ -729,16 +901,24 @@ export class ClaudeManagedRunnerProcess {
     content: unknown,
     requestId: string,
     revision: number,
+    beforeDispatch?: () => void,
   ): Promise<void> {
     if (this.#retiring) throw new Error("Claude runner is being retired");
     const checkpoint = this.state.checkpoint();
     if (this.state.revision !== revision) throw new Error("stale Claude revision");
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
+    this.#pendingDispatch = beforeDispatch;
     if (this.#child) {
       try {
         await this.#write(user);
       } catch (error) {
+        if (error instanceof ClaudeUndispatchedError) {
+          this.#pendingDispatch = undefined;
+          this.state.restoreUndispatched(checkpoint);
+          this.#notify();
+          throw error;
+        }
         this.#fail(`Claude user write failed: ${errorMessage(error)}`);
         throw error;
       }
@@ -752,6 +932,12 @@ export class ClaudeManagedRunnerProcess {
       await this.#initializing;
       this.#fresh = false;
     } catch (error) {
+      if (error instanceof ClaudeUndispatchedError) {
+        this.#pendingDispatch = undefined;
+        this.state.restoreUndispatched(checkpoint);
+        this.#notify();
+        throw error;
+      }
       if (!started?.pid) {
         this.state.restoreStartup(checkpoint, errorMessage(error));
       } else {
@@ -1073,6 +1259,10 @@ export class ClaudeManagedRunnerProcess {
         }
       })
       .catch((error: unknown) => {
+        if (error instanceof ClaudeUndispatchedError) {
+          this.#rejectInitialization?.(error);
+          return;
+        }
         const reason = errorMessage(error);
         this.#fail(reason);
         this.#rejectInitialization?.(error instanceof Error ? error : new Error(reason));
@@ -1166,6 +1356,12 @@ export class ClaudeManagedRunnerProcess {
     this.#serializedTail = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      if (frame.type === "user" && this.state.activity === "compacting")
+        throw new ClaudeUndispatchedError();
+      if (frame.type === "user") {
+        this.#pendingDispatch?.();
+        this.#pendingDispatch = undefined;
+      }
       await new Promise<void>((resolve, reject) => {
         child.stdin!.write(data, (error) => (error ? reject(error) : resolve()));
       });

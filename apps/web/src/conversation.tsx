@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -22,7 +30,12 @@ import { webLayoutCopy } from "./features/sessions/web-layout-copy";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
+export type ConversationPanel = "files" | "actions";
+export interface EmbeddedConversationHandle {
+  openPanel: (panel: ConversationPanel) => void;
+}
 export interface EmbeddedConversationProps {
+  controlsRef?: Ref<EmbeddedConversationHandle>;
   client: WebClient;
   sessionId?: string;
   /** Changes only when the host explicitly requests a conversation refresh. */
@@ -57,6 +70,17 @@ function EmbeddedShell() {
   const session = useSession();
   const [filesOpen, setFilesOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  useImperativeHandle(
+    props.controlsRef,
+    () => ({
+      openPanel(panel) {
+        if (!session.selected) return;
+        if (panel === "files" && session.access?.device?.files) setFilesOpen(true);
+        if (panel === "actions") setActionsOpen(true);
+      },
+    }),
+    [session.selected, session.access?.device?.files],
+  );
   const copy = webLayoutCopy[session.locale];
   const previousCatalog = useRef(session.sessions);
   const hostRefresh = useRef<{
@@ -97,7 +121,10 @@ function EmbeddedShell() {
   return (
     <SessionPanelsContext value={{ filesOpen, setFilesOpen, actionsOpen, setActionsOpen }}>
       <div className="agentkib-conversation flex min-h-0 flex-1 flex-col bg-background text-foreground">
-        <div className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2">
+        <div
+          data-conversation-toolbar
+          className="flex shrink-0 items-center justify-end gap-2 border-b px-4 py-2"
+        >
           <ManagedTasks
             key={String(props.create)}
             create

@@ -1,4 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import type { EmbeddedConversationHandle } from "@agentkib/web/conversation";
+import { useConversationNotificationPosition } from "./useConversationNotificationPosition";
 import { RefreshCw } from "lucide-react";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
 import { useI18n } from "@/core/useI18n";
@@ -24,59 +26,10 @@ export function DesktopConversationPane({
   const [client] = useState(createDesktopConversationClient);
   const [catalogError, setCatalogError] = useState("");
   const navigation = useRef(0);
-  useEffect(
-    () =>
-      subscribeConversationPanel((panel) => {
-        const header = document.querySelector(
-          ".desktop-conversation .agentkib-conversation > div.flex.shrink-0.items-center.justify-end.gap-2.border-b",
-        );
-        const buttons = Array.from(header?.querySelectorAll("button") ?? []).filter(
-          (button) => !button.querySelector("svg.lucide-bell"),
-        );
-        const target =
-          panel === "actions" ? buttons.at(-1) : buttons.length > 1 ? buttons.at(-2) : undefined;
-        target?.click();
-      }),
-    [],
-  );
-  useEffect(() => {
-    const alignBell = () => {
-      const bell = document.querySelector<HTMLElement>(
-        ".desktop-conversation .agentkib-conversation > div.flex.shrink-0.items-center.justify-end.gap-2.border-b > button:has(svg.lucide-bell)",
-      );
-      const anchor = document.querySelector<HTMLElement>("[data-session-directory-options]");
-      if (!bell || !anchor) return;
-      const anchorRect = anchor.getBoundingClientRect();
-      bell.style.left = `${anchorRect.left - anchorRect.width - 8}px`;
-      bell.style.top = `${anchorRect.top}px`;
-      bell.style.width = `${anchorRect.width}px`;
-      bell.style.height = `${anchorRect.height}px`;
-    };
-    const resizeObserver = new ResizeObserver(alignBell);
-    const sync = () => {
-      alignBell();
-      const anchor = document.querySelector<HTMLElement>("[data-session-directory-options]");
-      const bell = document.querySelector<HTMLElement>(
-        ".desktop-conversation .agentkib-conversation > div.flex.shrink-0.items-center.justify-end.gap-2.border-b > button:has(svg.lucide-bell)",
-      );
-      resizeObserver.disconnect();
-      if (anchor) resizeObserver.observe(anchor);
-      const sidebar = anchor?.closest(".app-context-sidebar");
-      if (sidebar) resizeObserver.observe(sidebar);
-      if (bell) resizeObserver.observe(bell);
-    };
-    const mutationObserver = new MutationObserver(sync);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", sync);
-    sync();
-    const frame = requestAnimationFrame(sync);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", sync);
-      mutationObserver.disconnect();
-      resizeObserver.disconnect();
-    };
-  }, []);
+  const controlsRef = useRef<EmbeddedConversationHandle>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useConversationNotificationPosition(containerRef);
+  useEffect(() => subscribeConversationPanel((panel) => controlsRef.current?.openPanel(panel)), []);
   useEffect(
     () => () => {
       navigation.current += 1;
@@ -119,13 +72,14 @@ export function DesktopConversationPane({
   );
   return (
     <div
+      ref={containerRef}
       className={cn(
         "desktop-conversation flex min-h-0 flex-1 flex-col",
         "[&_.agentkib-conversation_.transcript]:w-full [&_.agentkib-conversation_.transcript]:max-w-3xl",
         "[&_.agentkib-conversation_.reader-scroll]:px-6",
-        "[&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:rounded-md [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:border [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:border-border [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:bg-background [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:hover:bg-muted",
-        "[&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b]:h-0 [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b]:gap-0 [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b]:overflow-visible [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b]:border-0 [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b]:p-0 [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:not(:has(svg.lucide-bell))]:hidden",
-        "[&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:has(svg.lucide-bell)]:fixed [&_.agentkib-conversation>div.flex.shrink-0.items-center.justify-end.gap-2.border-b>button:has(svg.lucide-bell)]:z-50",
+        "[&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:rounded-md [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:border-border [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:bg-background [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:hover:bg-muted",
+        "[&_.agentkib-conversation>[data-conversation-toolbar]]:h-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:gap-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:overflow-visible [&_.agentkib-conversation>[data-conversation-toolbar]]:border-0 [&_.agentkib-conversation>[data-conversation-toolbar]]:p-0 [&_.agentkib-conversation>[data-conversation-toolbar]>button:not([data-conversation-pending-trigger])]:hidden",
+        "[&_.agentkib-conversation>[data-conversation-toolbar]>[data-conversation-pending-trigger]]:fixed [&_.agentkib-conversation>[data-conversation-toolbar]>[data-conversation-pending-trigger]]:z-50",
         "[&_.agentkib-conversation_.turn]:mb-6 [&_.agentkib-conversation_.turn>time]:mb-2 [&_.agentkib-conversation_.turn>time]:text-[11px] [&_.agentkib-conversation_.incomplete]:mb-2 [&_.agentkib-conversation_.incomplete]:text-[11px]",
         "[&_.agentkib-conversation_.message]:my-3 [&_.agentkib-conversation_.message]:leading-[1.65] [&_.agentkib-conversation_.message:not(.user-message)]:max-w-3xl",
         "[&_.agentkib-conversation_.user-message]:mb-5 [&_.agentkib-conversation_.user-message]:max-w-[82%] [&_.agentkib-conversation_.user-message]:px-4 [&_.agentkib-conversation_.process]:my-3",
@@ -158,6 +112,7 @@ export function DesktopConversationPane({
         }
       >
         <EmbeddedConversation
+          controlsRef={controlsRef}
           client={client}
           sessionId={sessionId}
           create={create}

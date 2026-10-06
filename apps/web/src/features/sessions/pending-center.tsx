@@ -63,6 +63,7 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
   return (
     <>
       <Button
+        data-conversation-pending-trigger
         variant="ghost"
         className={compact ? "relative size-11 p-0" : "min-h-11"}
         aria-label={`${copy.pending}${pendingIds.size ? ` (${pendingIds.size})` : ""}`}

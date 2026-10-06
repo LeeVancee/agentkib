@@ -171,15 +171,7 @@ function MainLayout() {
                 {discoveryFailure.error}
               </div>
             )}
-            <section
-              className={cn(
-                isSessions
-                  ? "app-sessions-content flex h-full min-h-0 min-w-0 flex-1 !max-w-none !p-0"
-                  : isWorkspace
-                    ? "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-6 max-[640px]:px-4"
-                    : "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
-              )}
-            >
+            <section className="content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4">
               <Outlet />
             </section>
           </div>

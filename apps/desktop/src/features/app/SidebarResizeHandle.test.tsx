@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { initializeI18n } from "@/core/i18n";
+import { initializeI18n, tr } from "@/core/i18n";
 import { useAppStore } from "@/stores/app-store";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, useSidebarWidthStore } from "./sidebar-width-store";
@@ -31,6 +31,7 @@ function ResizeFixture({ settings = false, children }: { settings?: boolean; chi
       {!collapsed && windowWidth >= 1024 && (
         <SidebarResizeHandle width={visibleWidth} maxWidth={maxWidth} />
       )}
+      {width.error && <div role="alert">{tr("sidebar.resizeSaveFailed")}</div>}
       {children}
     </div>
   );

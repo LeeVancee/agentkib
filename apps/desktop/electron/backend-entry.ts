@@ -2,7 +2,13 @@ import { createInterface } from "node:readline";
 import { TypeScriptBackend } from "@agentkib/backend";
 import { RUNTIME_METHODS } from "./generated/runtime-protocol";
 
-const backend = new TypeScriptBackend();
+function sendNotification(method: string, params: unknown): void {
+  const frame = { jsonrpc: "2.0", method, params };
+  if (process.parentPort) process.parentPort.postMessage(frame);
+  else process.stdout.write(`${JSON.stringify(frame)}\n`);
+}
+
+const backend = new TypeScriptBackend(process.env, sendNotification);
 const pending = new Set<Promise<void>>();
 let closing = false;
 function shutdown(request: unknown): boolean {

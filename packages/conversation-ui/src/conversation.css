@@ -1,0 +1,115 @@
+/* Embedded conversation only; host owns global theme, fonts and resets. */
+@reference "../../../apps/desktop/src/styles.css";
+
+@layer components {
+  [data-slot="dialog-content"]:has(.session-settings-layout) {
+    max-width: 48rem;
+  }
+
+  .agentkib-conversation .info {
+    @apply flex items-start gap-3 rounded-xl border bg-muted/40 p-4 text-xs leading-6 text-muted-foreground;
+  }
+  .agentkib-conversation .info > svg {
+    @apply mt-1 shrink-0;
+  }
+  .agentkib-conversation-dialog {
+    @apply text-sm leading-7;
+  }
+  .agentkib-conversation-dialog pre {
+    @apply max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .agentkib-conversation-dialog dt {
+    @apply text-xs text-muted-foreground;
+  }
+  .agentkib-conversation-dialog dd {
+    @apply mb-3 break-all;
+  }
+  .agentkib-conversation-dialog h3 {
+    @apply font-semibold;
+  }
+}
+
+/* Shared transcript markup is owned by @agentkib/session-ui. */
+@layer components {
+  .agentkib-conversation .transcript {
+    @apply mx-auto max-w-3xl;
+  }
+  .agentkib-conversation .turn {
+    @apply mb-8 flow-root;
+  }
+  .agentkib-conversation .turn > time,
+  .agentkib-conversation .incomplete {
+    @apply mb-3 block text-right text-[10px] text-muted-foreground;
+  }
+  .agentkib-conversation .message {
+    @apply my-4 text-sm leading-8 break-words;
+    overflow-wrap: anywhere;
+  }
+  .agentkib-conversation .message p {
+    @apply mb-3;
+  }
+  .agentkib-conversation .message p:last-child {
+    @apply mb-0;
+  }
+  .agentkib-conversation .message h1 {
+    @apply mb-5 text-2xl font-semibold;
+  }
+  .agentkib-conversation .message h2 {
+    @apply mb-4 text-xl font-semibold;
+  }
+  .agentkib-conversation .message h3 {
+    @apply mb-3 text-lg font-semibold;
+  }
+  .agentkib-conversation .message ul {
+    @apply my-3 list-disc space-y-1 pl-6;
+  }
+  .agentkib-conversation .message ol {
+    @apply my-3 list-decimal space-y-1 pl-6;
+  }
+  .agentkib-conversation .message blockquote {
+    @apply my-4 border-l-2 pl-4 text-muted-foreground;
+  }
+  .agentkib-conversation .user-message {
+    @apply mb-7 ml-auto w-fit max-w-[90%] rounded-2xl bg-muted px-5 py-3 md:max-w-[85%];
+  }
+  .agentkib-conversation .message pre {
+    @apply my-4 max-w-full overflow-auto rounded-xl border bg-muted/40 p-4 text-xs leading-6;
+  }
+  .agentkib-conversation .message code {
+    @apply rounded bg-muted px-1 py-0.5 text-[0.9em];
+  }
+  .agentkib-conversation .message pre code {
+    @apply bg-transparent p-0;
+  }
+  .agentkib-conversation .message table {
+    @apply my-4 block max-w-full overflow-auto border-collapse;
+  }
+  .agentkib-conversation .message th,
+  .agentkib-conversation .message td {
+    @apply border px-3 py-2 text-left;
+  }
+  .agentkib-conversation .message a {
+    @apply text-accent-foreground underline underline-offset-4;
+  }
+  .agentkib-conversation .process {
+    @apply my-5;
+  }
+  .agentkib-conversation .process > button {
+    @apply inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
+  }
+  .agentkib-conversation .process > button span {
+    @apply text-muted-foreground;
+  }
+  .agentkib-conversation .process-body {
+    @apply mt-2 border-l pl-4;
+  }
+  .agentkib-conversation .tool {
+    @apply inline-flex max-w-full items-center justify-start gap-2 rounded-md px-2 py-2 text-left text-xs break-all hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring;
+  }
+  .agentkib-conversation .tool span {
+    @apply text-muted-foreground;
+  }
+  .agentkib-conversation .tool-summary {
+    @apply my-1;
+  }
+}

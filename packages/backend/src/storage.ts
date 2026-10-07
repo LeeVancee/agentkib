@@ -319,18 +319,29 @@ export class WorkspaceStorageOwner {
         name: string;
         path: string;
       }>;
-      const canonical = await Promise.all(
-        workspaces.map(async (w) => ({ ...w, path: await realpath(w.path) })),
-      );
+      const canonical: typeof workspaces = [];
+      for (const workspace of workspaces) {
+        if (control.cancelled) break;
+        try {
+          canonical.push({ ...workspace, path: await realpath(workspace.path) });
+        } catch (error) {
+          this.store.recordWorkspaceStorageFailure(
+            workspace.id,
+            new Date().toISOString(),
+            "storage.scanUnavailable",
+            message(error),
+          );
+        }
+      }
       canonical.sort((a, b) => compareNames(a.path, b.path));
       const roots = canonical.map((w) => w.path);
       const hardLinks = new Set<string>();
+      const home = await realpath(os.homedir()).catch(() => os.homedir());
       for (const workspace of canonical) {
         if (control.cancelled) break;
-        const home = os.homedir();
         if (
           path.dirname(workspace.path) === workspace.path ||
-          (home && equalPath(workspace.path, await realpath(home)))
+          (home && equalPath(workspace.path, home))
         ) {
           this.store.recordWorkspaceStorageFailure(
             workspace.id,

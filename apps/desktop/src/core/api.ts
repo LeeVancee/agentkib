@@ -1,5 +1,3 @@
-/** @jsxImportSource octane */
-
 import { desktopApi } from "./desktop";
 import { DEFAULT_SESSION_PAGE_SIZE } from "./session-history";
 import type { RemoteRequest } from "./remote-types";
@@ -22,6 +20,10 @@ import type {
   McpRegistryEntry,
   McpServerConfig,
   SkillSource,
+  SkillVersionListRequest,
+  SkillVersionSelector,
+  SkillDetailRequest,
+  PrepareSkillDeploymentRequest,
   MemoryStatus,
   MemoryType,
   OnboardingEvent,
@@ -43,7 +45,7 @@ export const api = {
   manifest: async (project: string) => {
     const manifest = await desktopApi().workspace.prepareManifest(project);
     // Empty legacy connections are omitted from manifest serialization.
-    // Keep the renderer model total at the IPC boundary without writing the field back to disk.
+    // Keep the React model total at the IPC boundary without writing the field back to disk.
     return { ...manifest, connections: manifest.connections ?? [] };
   },
   plan: (project: string, manifest: Manifest, includeHome: boolean) =>
@@ -93,6 +95,12 @@ export const api = {
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) =>
     desktopApi().updates.install(version, onEvent),
   mcpHubStatus: () => desktopApi().mcp.hubStatus(),
+  mcpConnectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.connectionInfo(workspaceId, targetAgent),
+  planMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.planConnection(workspaceId, targetAgent),
+  verifyMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.verifyConnection(workspaceId, targetAgent),
   updateMcpNetwork: (settings: McpNetworkSettings) => desktopApi().mcp.updateNetwork(settings),
   mcpServers: (project?: string) => desktopApi().mcp.listServers(project),
   mcpServer: (serverId: string, project?: string) => desktopApi().mcp.getServer(serverId, project),
@@ -130,11 +138,32 @@ export const api = {
     desktopApi().skills.applyOperation(token, allowModified),
   checkSkillUpdates: () => desktopApi().skills.checkUpdates(),
   prepareSkillUpdate: (name: string) => desktopApi().skills.prepareUpdate(name),
+  listSkillVersions: (request: SkillVersionListRequest) =>
+    desktopApi().skills.listVersions(request),
+  prepareSkillVersionChange: (libraryId: string, selector: SkillVersionSelector) =>
+    desktopApi().skills.prepareVersionChange(libraryId, selector),
+  discardSkillPreview: (token: string) => desktopApi().skills.discardPreview(token),
   rollbackSkill: (name: string) => desktopApi().skills.rollback(name),
   uninstallSkill: (name: string) => desktopApi().skills.uninstall(name),
   removedSkills: () => desktopApi().skills.removed(),
   restoreSkill: (id: string) => desktopApi().skills.restore(id),
   readSkillFile: (name: string, path: string) => desktopApi().skills.readFile(name, path),
+  skillInventory: () => desktopApi().skills.inventory(),
+  skillTargets: () => desktopApi().skills.targets(),
+  skillDetail: (request: SkillDetailRequest) => desktopApi().skills.getDetail(request),
+  readSkillDetailFile: (request: SkillDetailRequest & { path: string }) =>
+    desktopApi().skills.readDetailFile(request),
+  prepareSkillImport: (observationId: string) => desktopApi().skills.prepareImport(observationId),
+  prepareSkillImports: (observationIds: string[]) =>
+    desktopApi().skills.prepareImports(observationIds),
+  applySkillImports: (token: string) => desktopApi().skills.applyImports(token),
+  readSkillPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
+    desktopApi().skills.readPreviewFile(token, path, targetId, itemId),
+  skillDeployments: () => desktopApi().skills.listDeployments(),
+  prepareSkillDeployment: (request: PrepareSkillDeploymentRequest) =>
+    desktopApi().skills.prepareDeployment(request),
+  applySkillDeployment: (token: string, approveHome: boolean) =>
+    desktopApi().skills.applyDeployment(token, approveHome),
   nativeMcpCandidates: (project?: string) => desktopApi().mcp.scanNative(project),
   planMcpMigration: (project: string, candidateIds: string[]) =>
     desktopApi().mcp.planMigration(project, candidateIds),
@@ -180,6 +209,10 @@ export const api = {
     desktopApi().workspace.sourceCapability(sessionId),
   nativeImportOperations: (workspaceId: string) =>
     desktopApi().workspace.nativeImports(workspaceId),
+  cursorBridge: (request: import("./types").CursorBridgeRequest) =>
+    desktopApi().workspace.cursorBridge(request),
+  cursorBridgeBundle: () => desktopApi().workspace.bridgeBundle(),
+  revealCursorBridgeBundle: () => desktopApi().workspace.revealBridgeBundle(),
   prepareSessionHandoff: (request: SessionHandoffRequest) =>
     desktopApi().workspace.prepareHandoff(request),
   planSessionMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
@@ -199,6 +232,8 @@ export const api = {
     historyBudgetTokens: number,
     archiveId: string | undefined,
     targetFingerprint?: string,
+    targetSurface?: "cursor-ide",
+    bindingId?: string,
   ) =>
     desktopApi().workspace.planHandoff(
       sessionId,
@@ -213,6 +248,8 @@ export const api = {
       historyBudgetTokens,
       archiveId,
       targetFingerprint,
+      targetSurface,
+      bindingId,
     ),
   continueSessionHandoff: (
     changeSet: ChangeSet,

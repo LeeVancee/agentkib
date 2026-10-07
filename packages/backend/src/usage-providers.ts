@@ -383,36 +383,47 @@ const hermes: Provider = async (cursor, { home }) => {
         cacheRead = pick(["cache_read_tokens"]),
         cacheWrite = pick(["cache_write_tokens"]),
         reasoning = pick(["reasoning_tokens"]);
+      const fields = [
+        "id",
+        "cwd",
+        "timestamp",
+        "model",
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "reasoning",
+      ];
       const select = [id, cwd, timestamp, model, input, output, cacheRead, cacheWrite, reasoning]
-        .map((column) => (column ? `"${column}"` : "NULL"))
+        .map((column, index) => `${column ? `"${column}"` : "NULL"} AS "${fields[index]}"`)
         .join(",");
       const rows = db.prepare(`SELECT ${select} FROM sessions`).all() as Array<
         Record<string, unknown>
       >;
       for (const [index, row] of rows.entries()) {
-        const tokensIn = number(row[4]),
-          tokensOut = number(row[5]),
+        const tokensIn = number(row.input),
+          tokensOut = number(row.output),
           total = tokensIn + tokensOut;
         if (!total) continue;
-        const at = typeof row[2] === "string" ? row[2] : null;
+        const at = typeof row.timestamp === "string" ? row.timestamp : null;
         const parsed = at ? new Date(at) : null,
           validAt = parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
         const localDay = validAt
           ? `${validAt.getFullYear()}-${String(validAt.getMonth() + 1).padStart(2, "0")}-${String(validAt.getDate()).padStart(2, "0")}`
           : null;
-        const sessionId = typeof row[0] === "string" ? row[0] : null;
+        const sessionId = typeof row.id === "string" ? row.id : null;
         events.push({
           source_key: `hermes:${file}:${sessionId ?? index}`,
           surface_agent: "hermes",
-          workspace_path: typeof row[1] === "string" ? row[1] : null,
+          workspace_path: typeof row.cwd === "string" ? row.cwd : null,
           occurred_at: validAt?.toISOString() ?? null,
           day: localDay,
-          model: typeof row[3] === "string" ? row[3] : null,
+          model: typeof row.model === "string" ? row.model : null,
           input_tokens: tokensIn,
           output_tokens: tokensOut,
-          cache_read_tokens: number(row[6]),
-          cache_write_tokens: number(row[7]),
-          reasoning_tokens: number(row[8]),
+          cache_read_tokens: number(row.cache_read),
+          cache_write_tokens: number(row.cache_write),
+          reasoning_tokens: number(row.reasoning),
           total_tokens: total,
           session_key: sessionId,
           session_count: 1,

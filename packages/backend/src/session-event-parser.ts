@@ -75,6 +75,8 @@ export function associationBytes(state: EventState): number {
   );
 }
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const claudeMessageIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function remember(state: EventState, kind: number, key: string): void {
   state.associationOrder.push([kind, key]);
   while (state.associationOrder.length > 4096) {
@@ -143,9 +145,10 @@ function message(
   turn: string | null,
   classification: ConversationEvent["message_phase"],
   page: ConversationEvent[],
+  id = `event-${offset}`,
 ): void {
   const event: ConversationEvent = {
-    id: `event-${offset}`,
+    id,
     kind,
     timestamp,
     ...truncateUtf8(content),
@@ -227,6 +230,7 @@ function tool(
   timestamp: string | null,
   status: string | null,
   turn: string | null,
+  eventId?: string,
 ): void {
   const key = hash(id);
   if (id) {
@@ -238,7 +242,7 @@ function tool(
   state.tools.delete(key);
   const merged = mergeTurns(state, turn, result?.turn ?? null),
     event: ConversationEvent = {
-      id: `tool-${offset}-${index}`,
+      id: eventId ?? `tool-${offset}-${index}`,
       kind: "tool-summary",
       timestamp,
       content: null,
@@ -342,7 +346,10 @@ export function parseEventRecord(
   if (state.format === "claude-code") {
     if (!["user", "assistant"].includes(row?.type) || row?.isCompactSummary === true) return;
     const content = row?.message?.content;
+    const rowEvents: Array<{ index: number; event: ConversationEvent }> = [];
     if (Array.isArray(content))
+      // History is parsed newest-first and reversed before delivery, so queue
+      // this message's blocks in reverse to preserve their native order.
       for (let index = content.length - 1; index >= 0; index--) {
         const block = content[index];
         if (block?.type === "tool_result")
@@ -353,41 +360,87 @@ export function parseEventRecord(
             null,
             null,
           );
-        else if (block?.type === "tool_use")
+        else if (block?.type === "tool_use") {
+          const pendingCount = state.pending.length;
+          const id = stringValue(block.id) ?? "";
           tool(
             state,
             offset,
             index,
-            stringValue(block.id) ?? "",
+            id,
             stringValue(block.name) ?? "tool",
             timestamp,
             "started",
             null,
+            id && id.length <= 256 ? id : undefined,
           );
+          if (state.pending.length > pendingCount)
+            rowEvents.push({ index, event: state.pending.pop()! });
+        }
       }
+    const kind =
+      (stringValue(row?.message?.role) ?? row.type) === "assistant"
+        ? "agent-message"
+        : "user-message";
+    const nativeId = [row?.uuid, row?.message?.id].find(
+      (value) => typeof value === "string" && claudeMessageIdPattern.test(value),
+    );
+    const attachments = Array.isArray(content)
+      ? content.filter((block) => ["image", "document"].includes(block?.type)).length
+      : 0;
+    const hiddenCommand = (text: string) =>
+      ["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
+        text.replace(/^\p{White_Space}+/u, "").startsWith(prefix),
+      );
     const text = messageText(content);
     if (
-      hasText(text) &&
-      !["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
-        text.replace(/^\p{White_Space}+/u, "").startsWith(prefix),
-      )
-    )
-      message(
-        state,
-        offset,
-        (stringValue(row?.message?.role) ?? row.type) === "assistant"
-          ? "agent-message"
-          : "user-message",
-        timestamp,
-        text,
-        Array.isArray(content)
-          ? content.filter((block) => ["image", "document"].includes(block?.type)).length
-          : 0,
-        true,
-        null,
-        undefined,
-        page,
-      );
+      kind === "agent-message" &&
+      nativeId &&
+      Array.isArray(content) &&
+      !hiddenCommand(text ?? "")
+    ) {
+      for (let index = content.length - 1; index >= 0; index--) {
+        const block = content[index];
+        if (block?.type !== "text" || typeof block.text !== "string") continue;
+        if (!hasText(block.text) || hiddenCommand(block.text)) continue;
+        const pendingCount = state.pending.length;
+        message(
+          state,
+          offset,
+          kind,
+          timestamp,
+          block.text,
+          0,
+          true,
+          null,
+          undefined,
+          page,
+          index === 0 ? nativeId : `${nativeId}:text:${index}`,
+        );
+        if (state.pending.length > pendingCount)
+          rowEvents.push({ index, event: state.pending.pop()! });
+      }
+    } else {
+      if (hasText(text) && !hiddenCommand(text))
+        message(
+          state,
+          offset,
+          kind,
+          timestamp,
+          text,
+          attachments,
+          true,
+          null,
+          undefined,
+          page,
+          nativeId ?? `event-${offset}`,
+        );
+    }
+    // The file is read newest-first and the page is reversed before return.
+    // Queue this row in reverse block order so text and tool items retain the
+    // exact order of the native content array after that final reversal.
+    rowEvents.sort((left, right) => right.index - left.index);
+    state.pending.push(...rowEvents.map(({ event }) => event));
     return;
   }
   const payload = row?.payload,

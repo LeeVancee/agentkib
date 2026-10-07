@@ -20,6 +20,8 @@ compression: normal
 asarUnpack:
   - dist-electron/native/koffi/**
 extraResources:
+  - from: build/cursor-bridge
+    to: cursor-bridge
   - from: ../../LICENSE
     to: licenses/AgentKib-LICENSE
   - from: resources/quota/resources/licenses

@@ -15,8 +15,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonicalize, pathIdentity } from "./paths";
 import { Sql } from "./sql";
 import { Commands } from "./commands";
-import { windowsProcessTree } from "./native-process";
-import { MacOwnedProcessTree } from "./mac-owned-process-tree";
+import { resolveCommand } from "./command-resolution";
 import {
   type McpServer,
   effectiveMcp,
@@ -84,13 +83,17 @@ export class McpManager {
     { serverId: string; controller: AbortController; promise: Promise<ToolDescriptor[]> }
   >();
   #callQueues = new Map<string, Promise<void>>();
-  #connecting = new Set<{ serverId: string; controller: AbortController }>();
+  #connecting = new Set<{
+    serverId: string;
+    controller: AbortController;
+    promise: Promise<ToolDescriptor[]>;
+  }>();
   #pendingConnections = new Set<Promise<ToolDescriptor[]>>();
   #closingClients = new Set<Promise<void>>();
+  #restarting = new Map<string, Promise<void>>();
   #closed = false;
   #reaper: NodeJS.Timeout;
   #failures = new Map<string, { serverId: string; count: number; since: number }>();
-  #processTrees = new WeakMap<Transport, { terminate(): Promise<void> | void; close?(): void }>();
   #runtimeStatus = new Map<
     string,
     {
@@ -680,9 +683,39 @@ export class McpManager {
     return this.#connect(server, false);
   }
 
-  async restart(serverId: string, project?: string): Promise<ToolDescriptor[]> {
-    this.stop(serverId);
-    return this.probe(serverId, project);
+  restart(serverId: string, project?: string): Promise<ToolDescriptor[]> {
+    const previous = this.#restarting.get(serverId) ?? Promise.resolve();
+    const restart = previous.then(async () => {
+      const connecting = [...this.#connecting]
+        .filter((item) => item.serverId === serverId)
+        .map((item) => item.promise);
+      const children = [...this.#active.values()]
+        .filter((item) => item.server_id === serverId)
+        .map(
+          (item) =>
+            (item.transport as Transport & { _process?: import("node:child_process").ChildProcess })
+              ._process,
+        )
+        .filter((child) => child !== undefined);
+      this.stop(serverId);
+      await Promise.allSettled([...connecting, ...this.#closingClients]);
+      if (children.some((child) => child.exitCode === null && child.signalCode === null))
+        throw new Error("MCP server did not exit before restart");
+      const server = effectiveMcp(this.#project(project), this.environment).find(
+        (item) => item.id === serverId,
+      );
+      if (!server) throw new Error("Unknown MCP server");
+      return this.#start(server, project, true);
+    });
+    const completed = restart.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#restarting.set(serverId, completed);
+    void completed.then(() => {
+      if (this.#restarting.get(serverId) === completed) this.#restarting.delete(serverId);
+    });
+    return restart;
   }
 
   stop(serverId?: string): void {
@@ -705,7 +738,9 @@ export class McpManager {
     }
   }
 
-  #start(server: McpServer, project?: string): Promise<ToolDescriptor[]> {
+  #start(server: McpServer, project?: string, bypassRestart = false): Promise<ToolDescriptor[]> {
+    const restarting = this.#restarting.get(server.id);
+    if (restarting && !bypassRestart) return restarting.then(() => this.#start(server, project));
     const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
     this.#assertRestartAllowed(configHash);
     const active = this.#active.get(configHash);
@@ -732,25 +767,18 @@ export class McpManager {
   }
 
   async #closeClient(active: { client: Client; transport: Transport }): Promise<void> {
-    const child = (
-      active.transport as Transport & { _process?: import("node:child_process").ChildProcess }
-    )._process;
     const closing = active.client.close();
-    const forceTimer = setTimeout(() => {
-      if (child?.exitCode !== null || child?.killed) return;
-      const tree = this.#processTrees.get(active.transport);
-      try {
-        if (tree) void Promise.resolve(tree.terminate()).catch(() => child.kill("SIGKILL"));
-        else child.kill("SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
-    }, 500);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, 1_500))]);
+      await Promise.race([
+        closing,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 1_500);
+        }),
+      ]);
     } finally {
-      clearTimeout(forceTimer);
-      this.#processTrees.get(active.transport)?.close?.();
+      clearTimeout(timer);
+      await active.transport.close();
     }
   }
 
@@ -764,9 +792,9 @@ export class McpManager {
     const cancel = () => controller.abort();
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) controller.abort();
-    const attempt = { serverId: server.id, controller };
-    this.#connecting.add(attempt);
     const connection = this.#connectNow(server, retain, project, controller.signal);
+    const attempt = { serverId: server.id, controller, promise: connection };
+    this.#connecting.add(attempt);
     this.#pendingConnections.add(connection);
     try {
       return await connection;
@@ -791,15 +819,15 @@ export class McpManager {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     let transport: Transport;
     if (server.transport === "stdio") {
-      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
-      const linuxCommand = process.platform === "linux";
-      transport = new StdioClientTransport({
-        command: linuxCommand ? "setsid" : server.command,
-        args: linuxCommand ? ["--", server.command, ...server.args] : server.args,
+      const { McpStdioTransport } = await import("./mcp-stdio-transport");
+      const environment = { ...process.env, ...this.environment, ...server.env };
+      const executable = resolveCommand(server.command, environment, server.cwd ?? undefined);
+      if (!executable) throw new Error(`MCP executable is unavailable: ${server.command}`);
+      transport = new McpStdioTransport({
+        command: executable,
+        args: server.args,
         cwd: server.cwd ?? undefined,
-        env: safeEnvironment({ ...process.env, ...this.environment, ...server.env }),
-        stderr: "ignore",
-        maxBufferSize: 10 * 1024 * 1024,
+        env: safeEnvironment(environment),
       });
     } else {
       const { StreamableHTTPClientTransport } =
@@ -830,31 +858,17 @@ export class McpManager {
       checkCurrent();
       await client.connect(transport, { timeout: 15_000 });
       checkCurrent();
-      const child = (
-        transport as Transport & { _process?: import("node:child_process").ChildProcess }
-      )._process;
-      if (child?.pid) {
-        if (process.platform === "win32") {
-          const tree = windowsProcessTree(child.pid);
-          this.#processTrees.set(transport, tree);
-        } else if (process.platform === "darwin") {
-          const tree = MacOwnedProcessTree.attach(child);
-          this.#processTrees.set(transport, { terminate: () => tree.terminate(child) });
-        } else if (process.platform === "linux") {
-          this.#processTrees.set(transport, {
-            terminate: () => {
-              try {
-                process.kill(-child.pid!, "SIGKILL");
-              } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-              }
-            },
-          });
-        }
+      const allTools: Awaited<ReturnType<typeof client.listTools>>["tools"] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 100; page++) {
+        const result = await client.listTools(cursor ? { cursor } : {}, { timeout: 15_000 });
+        checkCurrent();
+        allTools.push(...result.tools);
+        cursor = result.nextCursor;
+        if (!cursor) break;
+        if (page === 99) throw new Error("MCP tool listing exceeded the pagination limit");
       }
-      const result = await client.listTools({}, { timeout: 15_000 });
-      checkCurrent();
-      const tools = result.tools
+      const tools = allTools
         .filter((tool) => server.allow_tools.length === 0 || server.allow_tools.includes(tool.name))
         .map((tool) => ({
           server_id: server.id,

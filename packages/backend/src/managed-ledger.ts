@@ -117,6 +117,54 @@ export function listManagedRecords(dataDir: string): Array<Record<string, unknow
   }
 }
 
+export const MANAGED_CATALOG_RECORD_LIMIT = 20_000;
+
+/** Directory ownership reads must not create, migrate or change ledger permissions. */
+export function readManagedCatalogSnapshot(dataDir: string): {
+  records: Array<Record<string, unknown>>;
+  complete: boolean;
+} {
+  const directory = path.join(dataDir, "codex-managed");
+  const file = path.join(directory, "executions.sqlite");
+  try {
+    const directoryStat = lstatSync(directory);
+    const fileStat = lstatSync(file);
+    if (!directoryStat.isDirectory() || !fileStat.isFile())
+      throw new Error("invalid-managed-ledger");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], complete: true };
+    throw error;
+  }
+  const database = new DatabaseSync(file, { readOnly: true });
+  try {
+    database.exec("PRAGMA busy_timeout = 3000; BEGIN;");
+    // Completeness and owners share one read snapshot. A truncated ledger must
+    // not hide an older conflicting native owner and grant a display exception.
+    const incomplete = database
+      .prepare("SELECT EXISTS(SELECT 1 FROM managed_sessions LIMIT 1 OFFSET ?) AS found")
+      .get(MANAGED_CATALOG_RECORD_LIMIT) as { found: number };
+    const rows = database
+      .prepare("SELECT record FROM managed_sessions ORDER BY rowid DESC LIMIT ?")
+      .all(MANAGED_CATALOG_RECORD_LIMIT) as Array<{ record: string }>;
+    const records = rows.map(({ record: value }) => {
+      const record: unknown = JSON.parse(value);
+      if (!isObject(record)) throw new Error("invalid-managed-record");
+      return record;
+    });
+    database.exec("COMMIT");
+    return { records, complete: incomplete.found === 0 };
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Retain the original read error if SQLite already ended its transaction.
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
 export function saveManagedRecord(dataDir: string, record: Record<string, unknown>): void {
   if (typeof record.id !== "string" || record.id.length === 0)
     throw new Error("invalid-managed-record");
@@ -322,17 +370,23 @@ export function readManagedEvents(
     }
     const pageSize = Math.min(100, Math.max(1, limit));
     const statement = database.prepare(
-      "SELECT sequence,event FROM managed_events WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
+      "SELECT sequence,event_id,event FROM managed_events WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
     );
     statement.setReadBigInts(true);
     const rows = statement.all(sessionId, before, pageSize + 1) as Array<{
       sequence: bigint;
+      event_id: string;
       event: string;
     }>;
     const more = rows.length > pageSize;
     const page = rows.slice(0, pageSize);
     return {
-      events: page.map((row) => JSON.parse(row.event) as unknown).reverse(),
+      // The ledger stores identity in its indexed event_id column and omits it
+      // from the JSON payload. Restore it at the API boundary: transcript
+      // consumers use this stable ID for pagination, deduplication, and DOM keys.
+      events: page
+        .map((row) => ({ id: row.event_id, ...(JSON.parse(row.event) as Record<string, unknown>) }))
+        .reverse(),
       next_cursor: more && page.length ? String(page.at(-1)!.sequence) : null,
       warnings: [],
     };

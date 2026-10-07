@@ -1,5 +1,3 @@
-/** @jsxImportSource octane */
-
 export type AgentKind =
   | "codex"
   | "claude-code"
@@ -193,6 +191,22 @@ export interface McpHubStatus {
   runtime_count: number;
   error_count: number;
   last_error?: string;
+}
+export interface McpConnectionInfo {
+  workspace_id: string;
+  target_agent: AgentKind;
+  url: string;
+  config: string;
+  target: string;
+  format: "json" | "toml" | "yaml";
+  scope: "project" | "agent-home";
+  hub_running: boolean;
+}
+export interface McpConnectionVerification {
+  url: string;
+  checked_at: string;
+  builtin_tools: number;
+  external_tools: string[];
 }
 export type McpRuntimeState = "stopped" | "starting" | "running" | "error";
 export interface McpRuntimeStatus {
@@ -485,10 +499,16 @@ export interface CatalogAsset {
   modified_at?: string;
 }
 export type SkillSourceKind = "openai-curated" | "github";
+export type SkillVersionType = "tag" | "branch" | "commit";
+export interface SkillVersionSelector {
+  type: SkillVersionType;
+  value: string;
+}
 export interface SkillSource {
   kind: SkillSourceKind;
   repository: string;
   ref: string;
+  ref_type?: SkillVersionType;
   path: string;
   resolved_commit: string;
   tree_sha: string;
@@ -498,7 +518,7 @@ export interface SkillCandidate {
   description: string;
   license?: string;
   compatibility?: string;
-  source: SkillSource;
+  source: SkillSource | null;
 }
 export interface SkillCatalogEntry extends SkillCandidate {
   installed: boolean;
@@ -510,6 +530,8 @@ export interface SkillCatalogSnapshot {
 }
 export type InstalledSkillStatus = "current" | "update-available" | "modified" | "unmanaged";
 export interface InstalledSkill {
+  content_sha256?: string;
+  warnings?: string[];
   name: string;
   display_name: string;
   description: string;
@@ -517,12 +539,13 @@ export interface InstalledSkill {
   size: number;
   modified_at?: string;
   status: InstalledSkillStatus;
-  source?: SkillSource;
+  source?: SkillSource | null;
   installed_at?: string;
   updated_at?: string;
   can_rollback: boolean;
 }
 export interface SkillFileEntry {
+  /** Package-relative path; a trailing `/` denotes a display-only directory entry. */
   path: string;
   size: number;
   executable: boolean;
@@ -538,8 +561,53 @@ export interface SkillOperationPreview {
   total_size: number;
   local_modified: boolean;
   expires_at: string;
+  library_id?: string;
+  previous_source?: SkillSource | null;
+}
+export type SkillVersionListRequest = (
+  | { library_id: string; source?: never }
+  | { source: SkillSource; library_id?: never }
+) & { type: "tag" | "branch"; page?: number };
+export interface SkillVersionList {
+  entries: { name: string; commit: string }[];
+  type: "tag" | "branch";
+  page: number;
+  has_more: boolean;
+}
+export interface SkillImportPreviewItem {
+  id: string;
+  observation_ids: string[];
+  paths: string[];
+  agents: AgentKind[];
+  resolved_path: string | null;
+  library_id: string | null;
+  display_name: string;
+  status: "ready" | "skipped" | "failed";
+  reason?: string;
+  preview?: SkillOperationPreview;
+}
+export interface SkillImportBatchPreview {
+  token: string;
+  expires_at: string;
+  total_size: number;
+  items: SkillImportPreviewItem[];
+}
+export interface SkillImportResult {
+  id: string;
+  observation_ids: string[];
+  status: "imported" | "skipped" | "failed";
+  library_id?: string;
+  skill?: InstalledSkill;
+  error?: string;
+  warnings?: string[];
+}
+export interface SkillImportBatchReport {
+  token: string;
+  items: SkillImportResult[];
+  warnings?: string[];
 }
 export interface RemovedSkill {
+  warnings?: string[];
   id: string;
   name: string;
   display_name: string;
@@ -549,6 +617,134 @@ export interface RemovedSkill {
 export interface SkillFilePreview {
   path: string;
   content: string;
+}
+export type SkillScope = "personal" | "workspace";
+export interface SkillTargetCapability {
+  id: string;
+  agent: AgentKind;
+  scope: SkillScope;
+  workspace_id: string | null;
+  profile: string | null;
+  root: string;
+  scope_root: string;
+  visible_to: AgentKind[];
+  writable: boolean;
+  reason: string | null;
+  conditions: string[];
+}
+export interface SkillObservation {
+  id: string;
+  name: string;
+  path: string;
+  resolved_path: string | null;
+  scope: SkillScope;
+  workspace_id: string | null;
+  agents: AgentKind[];
+  kind: string;
+  status: string;
+  owner: string;
+  library_id: string | null;
+  diagnostics: string[];
+}
+export interface SkillInventory {
+  observations: SkillObservation[];
+  warnings: string[];
+}
+export interface SkillPackageFile extends SkillFileEntry {
+  sha256: string;
+  binary: boolean;
+}
+export interface SkillDetailRequest {
+  library_id?: string;
+  observation_id?: string;
+}
+export interface SkillDetail {
+  library_id: string | null;
+  observation_id: string | null;
+  name: string;
+  description: string;
+  source: SkillSource | null;
+  local_source?: string | null;
+  local_resolved_path?: string | null;
+  files: SkillPackageFile[];
+  previous_files?: SkillPackageFile[];
+  total_size: number;
+  diagnostics: string[];
+}
+export interface SkillPreviewFile {
+  path: string;
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+  truncated: boolean;
+  before_size: number | null;
+  after_size: number | null;
+  before_sha256: string | null;
+  after_sha256: string | null;
+  before_executable: boolean | null;
+  after_executable: boolean | null;
+}
+export type SkillDeploymentOperation = "deploy" | "update" | "undeploy" | "rollback";
+export interface PrepareSkillDeploymentRequest {
+  operation: SkillDeploymentOperation;
+  library_id?: string;
+  deployment_id?: string;
+  target_ids?: string[];
+}
+export interface SkillDeployment {
+  id: string;
+  library_id: string;
+  library_root?: string | null;
+  source_is_current_library?: boolean;
+  package_name: string;
+  display_name?: string;
+  package_hash: string;
+  scope: SkillScope;
+  workspace_id: string | null;
+  scope_root: string;
+  target: string;
+  agents: AgentKind[];
+  visible_to: AgentKind[];
+  status: string;
+  diagnostics: string[];
+  previous_hash: string | null;
+  operation_id: string;
+  updated_at: string;
+}
+export interface SkillDeploymentTargetPreview {
+  target_id: string;
+  deployment_id: string | null;
+  path: string;
+  scope: SkillScope;
+  workspace_id: string | null;
+  agents: AgentKind[];
+  visible_to: AgentKind[];
+  added: string[];
+  modified: string[];
+  removed: string[];
+  conflicts: string[];
+  conditions: string[];
+}
+export interface SkillDeploymentPreview {
+  token: string;
+  operation: SkillDeploymentOperation;
+  library_id: string | null;
+  expires_at: string;
+  requires_home_approval: boolean;
+  targets: SkillDeploymentTargetPreview[];
+}
+export interface SkillDeploymentResult {
+  target_id: string;
+  deployment_id: string | null;
+  path: string;
+  success: boolean;
+  status: string;
+  error: string | null;
+}
+export interface SkillDeploymentReport {
+  operation_id: string;
+  results: SkillDeploymentResult[];
+  warnings: string[];
 }
 export interface DiscoveryReport {
   started_at: string;
@@ -1025,11 +1221,13 @@ export interface AppNavigationRequest {
 }
 
 export type SessionAvailability = "readable" | "metadata-only";
-export type SessionOrigin = "interactive" | "auxiliary" | "unknown";
+export type SessionOrigin = "interactive" | "auxiliary" | "execution" | "unknown";
 export type SessionIndexFreshness = "fresh" | "stale" | "unavailable";
 export type ConversationEventKind = "user-message" | "agent-message" | "tool-summary";
 export type MessagePhase = "commentary" | "final_answer";
 export interface ConversationSessionSummary {
+  /** Verified index identities that route to this managed session. */
+  indexedSessionIds?: string[];
   remote?: RemoteRecordSource;
   id: string;
   workspace_id: string;
@@ -1103,6 +1301,7 @@ export type ContinuationCapabilityStatus =
 export interface ContinuationCapability {
   status: ContinuationCapabilityStatus;
   reason?: string | null;
+  source_surface?: "cursor-ide" | "cursor-cli";
 }
 export interface ContinuationCapabilities {
   source_agent: AgentKind;
@@ -1136,6 +1335,31 @@ export interface SessionHandoffRequest {
   target_agent: AgentKind;
   format: HandoffFormat;
   history_budget_tokens: number;
+  target_surface?: "cursor-ide";
+  binding_id?: string;
+}
+export type CursorBridgeRequest =
+  | { action: "status"; workspaceId: string }
+  | { action: "connect"; workspaceId: string; bindingId?: string }
+  | { action: "disconnect"; workspaceId: string; bindingId: string };
+export interface CursorBridgeStatus {
+  supported: boolean;
+  supportedVersions: string[];
+  bindings: Array<{ id: string; profile: string; version: string; connected: boolean }>;
+}
+export interface CursorBridgeChallenge {
+  challenge: string;
+  expires_in_seconds: number;
+}
+export type CursorBridgeResponse =
+  | CursorBridgeStatus
+  | CursorBridgeChallenge
+  | { disconnected: boolean };
+export interface CursorBridgeBundle {
+  id: "agentkib.cursor-bridge";
+  version: "0.1.0";
+  sha256: string;
+  path: string;
 }
 export interface SessionHandoffDraft {
   filename: string;
@@ -1163,6 +1387,7 @@ export type SessionHandoffLaunchRequest =
       workspace_id: string;
       target_agent: AgentKind;
       plan_hash: string;
+      binding_id?: string;
       capabilities?: ContinuationCapabilities;
     }
   | {
@@ -1187,6 +1412,7 @@ export type SessionHandoffLaunchRequest =
 export interface NativeImportOperation {
   source_session_id: string;
   launch_request: Extract<SessionHandoffLaunchRequest, { mode: "native-import" }>;
+  binding_id?: string | null;
   target_session_id?: string;
   status: "prepared" | "outcome-unknown" | "verified" | "launched";
 }

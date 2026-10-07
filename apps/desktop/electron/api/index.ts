@@ -1,5 +1,9 @@
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
-import type { RuntimeHandshakeResult } from "../generated/runtime-protocol";
+import type {
+  RuntimeHandshakeResult,
+  SessionStreamEvent,
+  SessionSubscription,
+} from "../generated/runtime-protocol";
 import type { WebAdminRequest, WebAdminStatus } from "../main/web/service";
 import type { RemoteRequest, RemoteResponse } from "../../src/core/remote-types";
 import type {
@@ -63,6 +67,8 @@ import type {
   CloseBehavior,
   LocalePreference,
   McpHubStatus,
+  McpConnectionInfo,
+  McpConnectionVerification,
   McpInstallation,
   McpInstallResult,
   McpMigrationCandidate,
@@ -80,11 +86,41 @@ import type {
   SkillFilePreview,
   SkillOperationPreview,
   SkillSource,
+  SkillVersionSelector,
+  SkillVersionListRequest,
+  SkillVersionList,
+  SkillImportBatchPreview,
+  SkillImportBatchReport,
+  SkillInventory,
+  SkillTargetCapability,
+  SkillDetailRequest,
+  SkillDetail,
+  SkillPreviewFile,
+  SkillDeployment,
+  PrepareSkillDeploymentRequest,
+  SkillDeploymentPreview,
+  SkillDeploymentReport,
   ObsidianWorkspaceLink,
   GitIdentitySummary,
 } from "../../src/core/types";
 
 export type DesktopEventUnsubscribe = () => void;
+
+export interface DesktopConversationApi {
+  request(path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
+  upload(input: {
+    sessionId: string;
+    name: string;
+    mime: string;
+    data: ArrayBuffer;
+  }): Promise<{ status: number; body: unknown }>;
+  subscribe(sessionId: string, afterCursor?: string): Promise<SessionSubscription>;
+  acknowledge(subscriptionId: string, cursor: string): Promise<void>;
+  unsubscribe(subscriptionId: string): Promise<void>;
+  onEvent(listener: (event: SessionStreamEvent) => void): DesktopEventUnsubscribe;
+  onUnavailable(listener: () => void): DesktopEventUnsubscribe;
+  onControlChanged(listener: (sessionId: string) => void): DesktopEventUnsubscribe;
+}
 
 export interface DesktopRuntimeStatus {
   state: "starting" | "ready" | "restarting" | "failed" | "stopping";
@@ -148,14 +184,42 @@ export interface DesktopApi {
     applyOperation(token: string, allowModified?: boolean): Promise<InstalledSkill>;
     checkUpdates(): Promise<InstalledSkill[]>;
     prepareUpdate(name: string): Promise<SkillOperationPreview>;
+    listVersions(request: SkillVersionListRequest): Promise<SkillVersionList>;
+    prepareVersionChange(
+      libraryId: string,
+      selector: SkillVersionSelector,
+    ): Promise<SkillOperationPreview>;
+    discardPreview(token: string): Promise<void>;
     rollback(name: string): Promise<InstalledSkill>;
     uninstall(name: string): Promise<RemovedSkill>;
     removed(): Promise<RemovedSkill[]>;
     restore(id: string): Promise<InstalledSkill>;
     readFile(name: string, path: string): Promise<SkillFilePreview>;
+    inventory(): Promise<SkillInventory>;
+    targets(): Promise<SkillTargetCapability[]>;
+    getDetail(request: SkillDetailRequest): Promise<SkillDetail>;
+    readDetailFile(request: SkillDetailRequest & { path: string }): Promise<SkillPreviewFile>;
+    prepareImport(observationId: string): Promise<SkillOperationPreview>;
+    prepareImports(observationIds: string[]): Promise<SkillImportBatchPreview>;
+    applyImports(token: string): Promise<SkillImportBatchReport>;
+    readPreviewFile(
+      token: string,
+      path: string,
+      targetId?: string,
+      itemId?: string,
+    ): Promise<SkillPreviewFile>;
+    listDeployments(): Promise<SkillDeployment[]>;
+    prepareDeployment(request: PrepareSkillDeploymentRequest): Promise<SkillDeploymentPreview>;
+    applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;
   };
   mcp: {
     hubStatus(): Promise<McpHubStatus>;
+    connectionInfo(workspaceId: string, targetAgent: AgentKind): Promise<McpConnectionInfo>;
+    planConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
+    verifyConnection(
+      workspaceId: string,
+      targetAgent: AgentKind,
+    ): Promise<McpConnectionVerification>;
     updateNetwork(settings: unknown): Promise<McpHubStatus>;
     listServers(project?: string): Promise<McpServerConfig[]>;
     getServer(serverId: string, project?: string): Promise<McpServerConfig | undefined>;
@@ -201,6 +265,11 @@ export interface DesktopApi {
     setGitIdentityEnabled(id: string, enabled: boolean): Promise<void>;
   };
   workspace: {
+    cursorBridge(
+      request: import("../../src/core/types").CursorBridgeRequest,
+    ): Promise<import("../../src/core/types").CursorBridgeResponse>;
+    bridgeBundle(): Promise<import("../../src/core/types").CursorBridgeBundle>;
+    revealBridgeBundle(): Promise<void>;
     scan(project: string): Promise<WorkspaceScan>;
     prepareManifest(project: string): Promise<Manifest>;
     resolveContext(project: string, cwd: string, agent: AgentKind): Promise<ContextPreview>;
@@ -239,6 +308,8 @@ export interface DesktopApi {
       historyBudgetTokens: number,
       archiveId: string | undefined,
       targetFingerprint?: string,
+      targetSurface?: "cursor-ide",
+      bindingId?: string,
     ): Promise<PlannedSessionHandoff>;
     continueHandoff(
       changeSet: ChangeSet,

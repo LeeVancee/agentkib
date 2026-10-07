@@ -109,6 +109,9 @@ export class AntigravitySessions {
     }
     return null;
   }
+  controlExecutable(): string {
+    return this.#executable();
+  }
   #verifiedExecutable(value: string): string {
     if (!path.isAbsolute(value))
       throw new Error("Antigravity ACP executable path must be absolute");

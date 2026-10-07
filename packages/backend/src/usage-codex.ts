@@ -233,6 +233,14 @@ function parseCodexLine(
 
 async function collectFile(filename: string, id: string, old: FileState | undefined, salt: string) {
   const stamp = await stampFile(filename);
+  if (
+    old?.parser_version === PARSER_VERSION &&
+    old.stamp.identity === stamp.identity &&
+    old.stamp.size === stamp.size &&
+    old.stamp.modified_ns_exact !== undefined &&
+    old.stamp.modified_ns_exact === stamp.modified_ns_exact
+  )
+    return old;
   let append = Boolean(
     old &&
     old.parser_version === PARSER_VERSION &&

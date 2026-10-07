@@ -84,11 +84,13 @@ function safeRecord(file: string): Buffer {
 
 function targetIdentityValid(target: string, id: string): boolean {
   if (target === "opencode") return /^ses_[0-9a-f]{32}$/i.test(id);
+  if (target === "cursor") return /^[0-9a-f-]{36}$/i.test(id);
   return UUID.test(id);
 }
 
 function receiptIdentityValid(target: string, plannedId: string, receiptId: string): boolean {
   if (target === "hermes") return /^\d{8}_\d{6}_[0-9a-f]{6}$/i.test(receiptId);
+  if (target === "cursor") return /^cursor-ide-v1-[0-9a-f]{64}$/.test(receiptId);
   return receiptId === plannedId && targetIdentityValid(target, receiptId);
 }
 
@@ -127,7 +129,7 @@ export function listNativeImports(
         plan.workspace_id !== workspaceId ||
         typeof plan.source_session_id !== "string" ||
         !plan.source_session_id ||
-        !["opencode", "open-claw", "hermes"].includes(String(target)) ||
+        !["opencode", "open-claw", "hermes", "cursor"].includes(String(target)) ||
         !targetIdentityValid(String(target), String(plan.target_session_id ?? ""))
       )
         continue;
@@ -170,6 +172,10 @@ export function listNativeImports(
         workspace_id: workspaceId,
         target_agent: plan.target_agent,
         plan_hash: planHash,
+        ...(plan.target_agent === "cursor" &&
+        typeof (plan.context as Record<string, unknown> | undefined)?.binding_id === "string"
+          ? { binding_id: (plan.context as Record<string, unknown>).binding_id }
+          : {}),
       },
       source_session_id: plan.source_session_id,
       ...(receipt ? { target_session_id: receipt.target_session_id } : {}),

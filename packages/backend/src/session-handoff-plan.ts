@@ -20,6 +20,8 @@ import { Commands } from "./commands";
 import { continuationMcpAvailable, nativeImportCapability } from "./session-continuation";
 import { isReparseOrSymlink } from "./native-files";
 import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
+import { CursorIdeSessions, prepareCursorIdePayload } from "./cursor-ide-sessions";
+import type { CursorBridge } from "./cursor-bridge";
 
 const requestSchema = z.object({
   sessionId: z.string(),
@@ -31,6 +33,8 @@ const requestSchema = z.object({
   mode: z.enum(["native-session", "handoff-file"]),
   sourceFingerprint: z.string(),
   targetFingerprint: z.string().optional(),
+  targetSurface: z.enum(["cursor-ide"]).optional(),
+  bindingId: z.string().uuid().optional(),
   acceptLosses: z.boolean(),
   historyBudgetTokens: z.number().int().positive(),
   archiveId: z.string().nullable().optional(),
@@ -243,6 +247,7 @@ export async function planSessionHandoff(
   dataDir: string,
   environment: NodeJS.ProcessEnv,
   commands: Commands,
+  cursorBridge?: CursorBridge,
 ) {
   const { mcpHubStatus, ...request } = planEnvelopeSchema.parse(value);
   const source = sessionStore.get(request.sessionId);
@@ -265,6 +270,73 @@ export async function planSessionHandoff(
   if (effectiveArchiveId !== (request.archiveId ?? undefined))
     throw new Error("Continuation window changed after the preview was prepared");
   const project = canonicalProject(store.workspacePath(request.workspaceId));
+  if (request.targetAgent === "cursor" && request.targetSurface === "cursor-ide") {
+    if (request.mode !== "native-session" || !request.bindingId || !cursorBridge)
+      throw new Error("Cursor IDE import requires a connected window");
+    if (window.strategy !== "full") throw new Error("Cursor IDE import requires full history");
+    const context = cursorBridge.context(request.bindingId, project);
+    const contextFingerprint = hash(JSON.stringify(context));
+    if (request.targetFingerprint !== contextFingerprint)
+      throw new Error("Cursor binding changed after preview");
+    const operationId = randomUUID();
+    const prepared = prepareCursorIdePayload(document, operationId, project);
+    const before = new CursorIdeSessions(cursorBridge).list(project);
+    if (before.incomplete) throw new Error("Cursor IDE identity list is incomplete");
+    const plan = {
+      schema_version: 1,
+      operation_id: operationId,
+      workspace_id: continuationWorkspaceId,
+      workspace: project,
+      source_session_id: request.sessionId,
+      source_fingerprint: request.sourceFingerprint,
+      target_agent: "cursor",
+      target_session_id: operationId,
+      context,
+      before_native_refs: before.sessions.map((session) => session.native_ref),
+      document,
+      expected: prepared.expected,
+      payload: prepared.payload,
+      marker: prepared.marker,
+    };
+    const content = JSON.stringify(plan, null, 2);
+    const planHash = hash(content);
+    const directory = path.join(
+      dataDir,
+      "continuations",
+      hash(continuationWorkspaceId).slice(0, 32),
+      operationId,
+      "import",
+    );
+    const target = path.join(directory, "plan.json");
+    const changeSet: ChangeSet = {
+      id: operationId,
+      project_root: project,
+      created_at: new Date().toISOString(),
+      requires_home_approval: true,
+      changes: [
+        {
+          target,
+          scope: "application-data",
+          original_hash: null,
+          before: "",
+          after: content,
+          risk: "high",
+          validator: "json",
+        },
+      ],
+    };
+    return {
+      change_set: changeSet,
+      launch_request: {
+        mode: "native-import",
+        operation_id: operationId,
+        workspace_id: continuationWorkspaceId,
+        target_agent: "cursor",
+        plan_hash: planHash,
+        binding_id: request.bindingId,
+      },
+    };
+  }
   const targetSupportsContinuation =
     request.targetAgent === "codex" || request.targetAgent === "claude-code";
   if (effectiveArchiveId) {

@@ -499,11 +499,11 @@ function createPrivateFile(directory: string, target: string, content: Buffer): 
 }
 
 function restoredEnvironment(env: NodeJS.ProcessEnv, plan: NativeImportPlan): NodeJS.ProcessEnv {
-  const restored = {
-    ...env,
-    ...Object.fromEntries(plan.environment.filter(([, value]) => value !== null)),
-  } as NodeJS.ProcessEnv;
-  delete restored.OPENCODE_CONFIG_CONTENT;
+  const restored = { ...env };
+  for (const [key, value] of plan.environment) {
+    if (value === null) delete restored[key];
+    else restored[key] = value;
+  }
   return restored;
 }
 
@@ -697,6 +697,9 @@ async function executeNativeImport(
     receipt.target_session_id = id;
     receipt.verified = true;
     atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
+  } else {
+    const id = await verifyNativeImport(plan, directory, commands, env, false);
+    if (id !== receipt.target_session_id) throw new Error("Native import target identity changed");
   }
   return { target_session_id: receipt.target_session_id, receipt };
 }
@@ -1042,16 +1045,18 @@ export async function reconcileNativeImport(
   return { targetSessionId: result.target_session_id, verified: result.receipt.verified };
 }
 
-export function nativeImportLaunchInfo(
+export async function nativeImportLaunchInfo(
   dataDir: string,
   value: unknown,
-): {
+  commands: Commands,
+  env: NodeJS.ProcessEnv,
+): Promise<{
   request: NativeImportRequest;
   plan: NativeImportPlan;
   targetSessionId: string;
-  environment: NodeJS.ProcessEnv;
+  environment: Record<string, string | null>;
   alreadyLaunched: boolean;
-} {
+}> {
   const loaded = loadNativeImportPlan(dataDir, value);
   const receiptPath = path.join(loaded.directory, "receipt.json");
   const receipt = JSON.parse(
@@ -1068,15 +1073,17 @@ export function nativeImportLaunchInfo(
     !validTargetId
   )
     throw new Error("Native import receipt is not verified");
+  const verifiedId = await verifyNativeImport(loaded.plan, loaded.directory, commands, env, false);
+  if (verifiedId !== receipt.target_session_id)
+    throw new Error("Native import target identity changed");
   return {
     request: loaded.request,
     plan: loaded.plan,
     targetSessionId: receipt.target_session_id,
-    environment: Object.fromEntries(
-      [...loaded.plan.environment, ...(loaded.plan.openclaw?.environment ?? [])].filter(
-        ([, value]) => value !== null,
-      ),
-    ) as NodeJS.ProcessEnv,
+    environment: Object.fromEntries([
+      ...loaded.plan.environment,
+      ...(loaded.plan.openclaw?.environment ?? []),
+    ]),
     alreadyLaunched: receipt.launched,
   };
 }

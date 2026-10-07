@@ -94,6 +94,7 @@ export function commandDirectories(env: NodeJS.ProcessEnv = process.env): string
 export function resolveCommand(
   command: string,
   env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
 ): string | null {
   const extensions: string[] = [];
   if (process.platform === "win32") {
@@ -117,8 +118,8 @@ export function resolveCommand(
     path.isAbsolute(command) ||
     command.includes(path.sep) ||
     (process.platform === "win32" && command.includes("/"))
-      ? [path.resolve(command)]
-      : commandDirectories(env).map((directory) => path.resolve(directory, command));
+      ? [path.resolve(cwd, command)]
+      : commandDirectories(env).map((directory) => path.resolve(cwd, directory, command));
   for (const root of roots)
     for (const candidate of candidates(root)) {
       try {
@@ -128,4 +129,30 @@ export function resolveCommand(
       } catch {}
     }
   return null;
+}
+
+/** Enumerate installations without changing the default runtime lookup order. */
+export function resolveCommands(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  additionalDirectories: string[] = [],
+): string[] {
+  const primary = resolveCommand(command, env);
+  const candidates =
+    path.isAbsolute(command) || command.includes(path.sep)
+      ? [primary]
+      : [
+          primary,
+          ...[...commandDirectories(env), ...additionalDirectories].map((directory) =>
+            resolveCommand(path.resolve(directory, command), env),
+          ),
+        ];
+  const seen = new Set<string>();
+  return candidates.filter((candidate): candidate is string => {
+    if (!candidate) return false;
+    const identity = pathIdentity(candidate);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
 }

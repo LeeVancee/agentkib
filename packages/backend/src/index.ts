@@ -1,5 +1,11 @@
 import { Context } from "./context";
 import { SessionReaders } from "./session-readers";
+import {
+  continueCursorNativeImport,
+  CursorImportOutcomeUnknownError,
+  reconcileCursorNativeImport,
+} from "./cursor-native-import";
+import { CursorBridge } from "./cursor-bridge";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
@@ -20,6 +26,7 @@ import { McpBuiltins } from "./mcp-builtin";
 import { McpHub, type McpNetworkSettings } from "./mcp-hub";
 import { McpOAuth } from "./mcp-oauth";
 import { planSessionMcpConnection } from "./mcp-continuation";
+import { mcpConnectionInfo, planMcpConnection, verifyMcpConnection } from "./mcp-connection";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
@@ -52,11 +59,14 @@ import { Commands } from "./commands";
 import { Git } from "./git";
 import { TYPESCRIPT_GIT_METHODS, TYPESCRIPT_CATALOG_METHODS } from "./migration";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   PROTOCOL_VERSION,
   RUNTIME_METHODS,
+  SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
 } from "@agentkib/runtime-protocol";
+import { SessionStreamHub } from "./session-stream";
 import { BackendStore } from "./store";
 import {
   preferenceSnapshot,
@@ -97,6 +107,8 @@ export class TypeScriptBackend {
   #context?: Context;
   #doctor?: Doctor;
   #sessions?: SessionReaders;
+  #sessionStream?: SessionStreamHub;
+  #cursorBridge?: CursorBridge;
   #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
   #insightRefresh?: InsightRefresh;
@@ -114,7 +126,10 @@ export class TypeScriptBackend {
   #workspaceApplications?: WorkspaceApplications;
   #closing?: Promise<void>;
 
-  constructor(readonly environment: NodeJS.ProcessEnv = process.env) {}
+  constructor(
+    readonly environment: NodeJS.ProcessEnv = process.env,
+    readonly notify: (method: string, params: unknown) => void = () => {},
+  ) {}
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
   cancelPendingOperations(): void {
@@ -124,7 +139,13 @@ export class TypeScriptBackend {
     this.#mcp?.close();
   }
 
-  close(): void {
+  close(): Promise<void> {
+    return this.closeAsync();
+  }
+
+  #reset(): void {
+    this.#sessionStream?.close();
+    this.#sessionStream = undefined;
     this.#storage?.cancel();
     this.#storage = undefined;
     this.#quota = undefined;
@@ -138,15 +159,15 @@ export class TypeScriptBackend {
     this.#agentTools = undefined;
     this.#mcp?.close();
     this.#mcp = undefined;
-    void this.#mcpHub?.close();
     this.#mcpHub = undefined;
     this.#mcpOAuth = undefined;
     this.#remoteGateways = undefined;
-    this.#remoteAgent?.close();
     this.#remoteAgent = undefined;
     this.#webRead?.close();
     this.#sessions?.close();
     this.#sessions = undefined;
+    this.#cursorBridge?.close();
+    this.#cursorBridge = undefined;
     this.#webRead = undefined;
     this.#commands.close();
     this.#git = undefined;
@@ -162,16 +183,21 @@ export class TypeScriptBackend {
     this.cancelPendingOperations();
     const claudeManaged = this.#claudeManaged;
     const mcp = this.#mcp;
+    const mcpHub = this.#mcpHub;
+    const remoteAgent = this.#remoteAgent;
     this.#claudeManaged = undefined;
+    this.#mcpHub = undefined;
+    this.#remoteAgent = undefined;
     const closing = (async () => {
-      try {
-        await mcp?.closeAsync();
-        await claudeManaged?.shutdown();
-      } catch (error) {
-        if (!this.#claudeManaged) this.#claudeManaged = claudeManaged;
-        throw error;
-      }
-      this.close();
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => mcp?.closeAsync()),
+        Promise.resolve().then(() => claudeManaged?.shutdown()),
+        Promise.resolve().then(() => mcpHub?.close()),
+        Promise.resolve().then(() => remoteAgent?.close()),
+      ]);
+      this.#reset();
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     })();
     this.#closing = closing;
     void closing
@@ -296,101 +322,177 @@ export class TypeScriptBackend {
       if (typeof params.dataDir !== "string" || !path.isAbsolute(params.dataDir))
         invalid("Backend data directory must be absolute");
       const dataDir = params.dataDir as string;
-      const store = new BackendStore(path.join(dataDir, "agentkib.db"));
-      this.close();
-      this.#commands = new Commands();
-      this.#store = store;
-      this.#dataDir = dataDir;
-      this.#storage = new WorkspaceStorageOwner({
-        listWorkspaces: () => store.listWorkspaces(),
-        workspaceStorageOverview: () => store.workspaceStorageOverview(),
-        saveWorkspaceStorage: (value) => store.saveWorkspaceStorage(value),
-        recordWorkspaceStorageFailure: (id, at, key, detail) =>
-          store.recordWorkspaceStorageFailure(id, at, key, detail),
-        getWorkspace: (id) => store.getWorkspace(id),
+      return this.closeAsync().then(() => {
+        const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+        this.#commands = new Commands();
+        this.#store = store;
+        this.#dataDir = dataDir;
+        this.#cursorBridge = new CursorBridge(dataDir, store);
+        this.#cursorBridge.initialize();
+        this.#storage = new WorkspaceStorageOwner({
+          listWorkspaces: () => store.listWorkspaces(),
+          workspaceStorageOverview: () => store.workspaceStorageOverview(),
+          saveWorkspaceStorage: (value) => store.saveWorkspaceStorage(value),
+          recordWorkspaceStorageFailure: (id, at, key, detail) =>
+            store.recordWorkspaceStorageFailure(id, at, key, detail),
+          getWorkspace: (id) => store.getWorkspace(id),
+        });
+        this.#quota = new QuotaOwner(store, this.#commands, dataDir, {
+          ...process.env,
+          ...this.environment,
+        });
+        this.#git = new Git(this.#commands, (id) => store.workspacePath(id), {
+          ...process.env,
+          ...this.environment,
+        });
+        this.#insightRefresh = new InsightRefresh(
+          store.sql,
+          this.#commands,
+          this.#git,
+          { ...process.env, ...this.environment },
+          () => store.insights.achievements(),
+        );
+        this.#obsidian = new ObsidianIntegration(dataDir);
+        this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir, () =>
+          store.listWorkspaces(),
+        );
+        this.#agentTools = new AgentTools(dataDir);
+        this.#mcp = new McpManager(
+          store.sql,
+          { ...process.env, ...this.environment },
+          dataDir,
+          this.#commands,
+        );
+        this.#context = new Context(store.catalog, this.#commands, {
+          ...process.env,
+          ...this.environment,
+        });
+        const storedNetwork = readPreferences(dataDir).mcp_network;
+        const validNetwork = z
+          .object({
+            port: z.number().int().min(1).max(65535),
+            lan_enabled: z.boolean(),
+            lan_risk_accepted: z.boolean(),
+          })
+          .safeParse(storedNetwork);
+        const network: McpNetworkSettings = validNetwork.success
+          ? validNetwork.data
+          : {
+              port: this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? 47654 : 47653,
+              lan_enabled: false,
+              lan_risk_accepted: false,
+            };
+        this.#mcp.setNetwork(network);
+        this.#mcpOAuth = new McpOAuth(this.#mcp, () => this.#mcpHub?.status().port ?? network.port);
+        this.#mcpHub = new McpHub(
+          this.#mcp,
+          store,
+          new McpBuiltins(store, this.#context, dataDir),
+          this.#mcpOAuth,
+          network,
+        );
+        this.#remoteGateways = new RemoteGateways(dataDir);
+        this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
+        this.#workspaceApplications = new WorkspaceApplications(
+          dataDir,
+          this.#commands,
+          { ...process.env, ...this.environment },
+          (id) => store.workspacePath(id),
+        );
+        this.#sessions = new SessionReaders(
+          store.sessions,
+          this.#commands,
+          {
+            ...process.env,
+            ...this.environment,
+          },
+          this.#cursorBridge,
+        );
+        this.#claudeManaged = new ClaudeManagedReadOwner(
+          store,
+          this.#sessions,
+          this.#commands,
+          dataDir,
+          { ...process.env, ...this.environment },
+          undefined,
+          {
+            publish: (sessionId, type, payload, live) =>
+              this.#sessionStream?.publish(sessionId, type, payload, live),
+            alias: (sessionId, previousId, itemId, live) =>
+              this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
+          },
+        );
+        this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
+          const value = readPreferences(dataDir).session_index_enabled;
+          return typeof value === "boolean" ? value : true;
+        });
+        const runtimeBootId = randomUUID();
+        this.#sessionStream = new SessionStreamHub(
+          runtimeBootId,
+          async (sessionId) => {
+            if (sessionId === "") {
+              const catalog = await this.#request(RUNTIME_METHODS.webRequest, {
+                operation: "catalog",
+              });
+              return {
+                live:
+                  catalog && typeof catalog === "object" && !Array.isArray(catalog)
+                    ? (catalog as Record<string, unknown>)
+                    : {},
+                items: [],
+                completeItems: true,
+              };
+            }
+            // Claude's live and history reads share an ownership lock. Keep them
+            // sequential so this runtime does not contend with itself on restart.
+            const liveValue = await this.#request(RUNTIME_METHODS.webRequest, {
+              operation: "live",
+              sessionId,
+              experimentalEnabled: true,
+            });
+            const pageValue = await this.#request(RUNTIME_METHODS.webRequest, {
+              operation: "events",
+              sessionId,
+              cursor: null,
+              limit: 100,
+            });
+            const live =
+              liveValue && typeof liveValue === "object" && !Array.isArray(liveValue)
+                ? (liveValue as Record<string, unknown>)
+                : { sessionId, status: "unsupported" };
+            const page =
+              pageValue && typeof pageValue === "object" && !Array.isArray(pageValue)
+                ? (pageValue as Record<string, unknown>)
+                : {};
+            const items = Array.isArray(page.events)
+              ? page.events.filter(
+                  (item): item is Record<string, unknown> =>
+                    !!item && typeof item === "object" && !Array.isArray(item),
+                )
+              : [];
+            return { live, items, completeItems: page.next_cursor === null };
+          },
+          (event) => this.notify(SESSION_EVENT_NOTIFICATION, event),
+        );
+        this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
+        return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
       });
-      this.#quota = new QuotaOwner(store, this.#commands, dataDir, {
-        ...process.env,
-        ...this.environment,
-      });
-      this.#git = new Git(this.#commands, (id) => store.workspacePath(id), {
-        ...process.env,
-        ...this.environment,
-      });
-      this.#insightRefresh = new InsightRefresh(
-        store.sql,
-        this.#commands,
-        this.#git,
-        { ...process.env, ...this.environment },
-        () => store.insights.achievements(),
-      );
-      this.#obsidian = new ObsidianIntegration(dataDir);
-      this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir);
-      this.#agentTools = new AgentTools(dataDir);
-      this.#mcp = new McpManager(
-        store.sql,
-        { ...process.env, ...this.environment },
-        dataDir,
-        this.#commands,
-      );
-      this.#context = new Context(store.catalog, this.#commands, {
-        ...process.env,
-        ...this.environment,
-      });
-      const storedNetwork = readPreferences(dataDir).mcp_network;
-      const validNetwork = z
-        .object({
-          port: z.number().int().min(1).max(65535),
-          lan_enabled: z.boolean(),
-          lan_risk_accepted: z.boolean(),
-        })
-        .safeParse(storedNetwork);
-      const network: McpNetworkSettings = validNetwork.success
-        ? validNetwork.data
-        : {
-            port: this.environment.AGENTKIB_APP_FLAVOR === "ai.agentkib.dev" ? 47654 : 47653,
-            lan_enabled: false,
-            lan_risk_accepted: false,
-          };
-      this.#mcp.setNetwork(network);
-      this.#mcpOAuth = new McpOAuth(this.#mcp, () => this.#mcpHub?.status().port ?? network.port);
-      this.#mcpHub = new McpHub(
-        this.#mcp,
-        store,
-        new McpBuiltins(store, this.#context, dataDir),
-        this.#mcpOAuth,
-        network,
-      );
-      this.#remoteGateways = new RemoteGateways(dataDir);
-      this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
-      this.#workspaceApplications = new WorkspaceApplications(
-        dataDir,
-        this.#commands,
-        { ...process.env, ...this.environment },
-        (id) => store.workspacePath(id),
-      );
-      this.#sessions = new SessionReaders(store.sessions, this.#commands, {
-        ...process.env,
-        ...this.environment,
-      });
-      this.#claudeManaged = new ClaudeManagedReadOwner(
-        store,
-        this.#sessions,
-        this.#commands,
-        dataDir,
-        { ...process.env, ...this.environment },
-      );
-      this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
-        const value = readPreferences(dataDir).session_index_enabled;
-        return typeof value === "boolean" ? value : true;
-      });
-      this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
-      return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
     }
     if (!this.#store || !this.#dataDir)
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
       });
+    if (method === RUNTIME_METHODS.sessionsSubscribe) {
+      const request = parameters(
+        z.object({ sessionId: z.string().max(256), afterCursor: z.string().max(1024).optional() }),
+        params,
+      );
+      return this.#sessionStream!.subscribe(request.sessionId, request.afterCursor);
+    }
+    if (method === RUNTIME_METHODS.sessionsUnsubscribe) {
+      const request = parameters(z.object({ subscriptionId: z.string().uuid() }), params);
+      return this.#sessionStream!.unsubscribe(request.subscriptionId);
+    }
     if (method === RUNTIME_METHODS.controlReceipt) {
       const receipt = readControlReceipt(this.#dataDir, params);
       return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
@@ -453,7 +555,26 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (params.operation === "live") return this.#withWebRead((owner) => owner.request(params));
+      if (
+        params.operation === "live" ||
+        params.operation === "events" ||
+        params.operation === "usage"
+      ) {
+        const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+        const claudeSession =
+          this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
+          this.#claudeManaged!.hasManagedSession(sessionId);
+        if (claudeSession) {
+          if (
+            params.operation === "events" &&
+            this.#store!.sessions.get(sessionId)?.agent === "claude-code" &&
+            !this.#claudeManaged!.hasManagedSession(sessionId)
+          )
+            return this.#readIndexedClaudeEvents(params, sessionId);
+          return this.#claudeManaged!.request(params);
+        }
+        return this.#withWebRead((owner) => owner.request(params));
+      }
       if (params.operation === "settings-state")
         return this.#withWebRead((owner) => owner.managedSettingsState(params));
       if (params.operation === "queue-list")
@@ -562,19 +683,34 @@ export class TypeScriptBackend {
       return this.#obsidian!.openWorkspace(request.id);
     }
     if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
+    if (method === RUNTIME_METHODS.cursorBridge) return this.#cursorBridge!.request(params);
     if (method === RUNTIME_METHODS.sessionDocument) {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
       return this.#sessions!.document(sessionId);
     }
     if (method === RUNTIME_METHODS.sessionSourceCapability) {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
-      return this.#sessions!.document(sessionId).then(
-        () => ({ status: "supported" }),
-        (error: unknown) => ({
-          status: "unavailable",
-          reason: error instanceof Error ? error.message : String(error),
-        }),
-      );
+      return this.#sessions!
+        .resolve(sessionId)
+        .then(({ native }) =>
+          this.#sessions!.document(sessionId).then(() => ({
+            status: "supported",
+            ...(native.agent === "cursor"
+              ? {
+                  source_surface: native.native_ref.startsWith("cursor-ide-v1-")
+                    ? "cursor-ide"
+                    : "cursor-cli",
+                }
+              : {}),
+          })),
+        )
+        .then(
+          (result) => result,
+          (error: unknown) => ({
+            status: "unavailable",
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        );
     }
     if (method === RUNTIME_METHODS.listNativeImports) {
       const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
@@ -588,6 +724,7 @@ export class TypeScriptBackend {
         this.#store,
         this.#commands!,
         { ...process.env, ...this.environment },
+        this.#cursorBridge,
       );
     if (method === RUNTIME_METHODS.planSessionHandoff)
       return planSessionHandoff(
@@ -598,11 +735,26 @@ export class TypeScriptBackend {
         this.#dataDir,
         { ...process.env, ...this.environment },
         this.#commands,
+        this.#cursorBridge,
       );
     if (method === RUNTIME_METHODS.planSessionMcpConnection)
       return planSessionMcpConnection(params, this.#store);
     if (method === RUNTIME_METHODS.continueSessionHandoff)
       return this.#continueSessionHandoff(params);
+    if (
+      method === RUNTIME_METHODS.launchSessionHandoff &&
+      params.mode === "native-import" &&
+      params.target_agent === "cursor"
+    )
+      return reconcileCursorNativeImport(
+        params,
+        this.#sessions!,
+        this.#store!.sessions,
+        this.#store!,
+        this.#dataDir!,
+        this.#cursorBridge!,
+        { ...process.env, ...this.environment },
+      );
     if (method === RUNTIME_METHODS.launchSessionHandoff)
       return prepareHandoffLaunch(
         params,
@@ -622,6 +774,10 @@ export class TypeScriptBackend {
         params,
       );
       return sanitizeHandoffExport(request.editedContent, request.format);
+    }
+    if (method === RUNTIME_METHODS.workspaceSessions) {
+      const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
+      return this.#sessionIndex!.read(workspaceId);
     }
     if (TYPESCRIPT_SESSION_READ_METHODS.has(method))
       return this.#store.sessions.request(method, params);
@@ -971,6 +1127,21 @@ export class TypeScriptBackend {
         );
         return this.#mcpOAuth!.start(request.serverId, request.project ?? undefined);
       }
+      case RUNTIME_METHODS.mcpConnectionInfo:
+        return mcpConnectionInfo(params, this.#store!, this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.planMcpConnection:
+        return planMcpConnection(params, this.#store!, this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.verifyMcpConnection:
+        return verifyMcpConnection(params, this.#store!, () => this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
       case RUNTIME_METHODS.getMcpServer: {
         const request = parameters(
           z.object({ serverId: z.string(), project: z.string().nullable().optional() }),
@@ -1103,6 +1274,29 @@ export class TypeScriptBackend {
     const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
     const launchRequest = request.launchRequest as { mode?: unknown };
     if (launchRequest?.mode === "native-import") {
+      if ((launchRequest as { target_agent?: unknown }).target_agent === "cursor") {
+        try {
+          return await continueCursorNativeImport(
+            value,
+            this.#sessions!,
+            this.#store!.sessions,
+            this.#store!,
+            this.#dataDir!,
+            this.#cursorBridge!,
+            environment,
+          );
+        } catch (error) {
+          if (!(error instanceof CursorImportOutcomeUnknownError)) throw error;
+          return {
+            status: "import-outcome-unknown",
+            error: {
+              key: "errors.handoff.importOutcomeUnknown",
+              params: {},
+              detail: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
+      }
       try {
         await continueNativeImport(
           value,
@@ -1185,9 +1379,37 @@ export class TypeScriptBackend {
         dataDir,
         () => this.#sessionIndex?.generation() ?? -1n,
         { ...process.env, ...this.environment },
+        (sessionId, type, payload, live) =>
+          this.#sessionStream?.publish(sessionId, type, payload, live),
+        (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
+        this.#sessionIndex,
       );
     }
     return await operation(this.#webRead);
+  }
+
+  async #readIndexedClaudeEvents(params: Record<string, unknown>, sessionId: string) {
+    const store = this.#store;
+    const index = this.#sessionIndex;
+    const claude = this.#claudeManaged;
+    const before = store?.sessions.get(sessionId);
+    if (!store || !index || !claude || before?.agent !== "claude-code" || !index.enabled())
+      throw new Error("session-unavailable");
+    const generation = index.generation();
+    const result = await claude.request(params);
+    const after = store.sessions.get(sessionId);
+    if (
+      this.#store !== store ||
+      this.#sessionIndex !== index ||
+      index.generation() !== generation ||
+      !index.enabled() ||
+      after?.agent !== "claude-code" ||
+      after.workspace_id !== before.workspace_id ||
+      after.created_at !== before.created_at ||
+      after.updated_at !== before.updated_at
+    )
+      throw new Error("session-unavailable");
+    return result;
   }
 
   #setChoice(params: Record<string, unknown>, key: string, values: string[]): unknown {

@@ -32,6 +32,8 @@ import {
 import { useSessionHistory } from "./useSessionHistory";
 import { ConversationTranscript } from "./ConversationTranscript.tsrx";
 import { HistoryError, HistoryWarning } from "./HistoryFeedback.tsrx";
+import { hasDesktopConversation } from "@/core/conversation-bridge";
+import { DesktopConversationPane } from "./DesktopConversationPane.tsrx";
 import type { Renderable } from "@/lib/octane-types";
 
 function Notice({ children, error = false }: { children: Renderable; error?: boolean }) {
@@ -49,7 +51,18 @@ function Notice({ children, error = false }: { children: Renderable; error?: boo
 export function SessionHubPage() {
   const { localizeMessage, tr, formatDateTime } = useI18n();
   const hub = useSessionHub();
-  const history = useSessionHistory(hub.selected, hub.enabled, hub.historyRevision);
+  const creating = useSessionViewStore((state) => state.creatingConversation);
+  const interactive =
+    hasDesktopConversation() &&
+    !hub.selected?.remote &&
+    (creating ||
+      (hub.selected?.availability === "readable" &&
+        ["codex", "claude-code", "antigravity"].includes(hub.selected.agent)));
+  const history = useSessionHistory(
+    hub.selected,
+    hub.enabled && !interactive,
+    hub.historyRevision,
+  );
   const resetFilters = useSessionViewStore((state) => state.resetFilters);
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState("");
@@ -154,6 +167,16 @@ export function SessionHubPage() {
       <div className="session-state">
         <Notice error>{hub.workspacesError}</Notice>
         <Button onClick={hub.retryWorkspaces}>{tr("sessions.retry")}</Button>
+      </div>
+    );
+
+  if (interactive)
+    return (
+      <div className="session-hub-page flex min-w-0 min-h-0 flex-1 flex-col text-sm">
+        <DesktopConversationPane
+          sessionId={creating ? undefined : hub.selected?.id}
+          create={creating}
+        />
       </div>
     );
 

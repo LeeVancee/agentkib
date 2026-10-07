@@ -1,7 +1,19 @@
 import type { IpcMainInvokeEvent } from "electron";
+import { app, shell } from "electron";
+import path from "node:path";
 import { RUNTIME_METHODS } from "../../generated/runtime-protocol";
 import type { RuntimeHost } from "../runtime-host";
 import { createIpcRegistrar } from "./registrar";
+import { verifiedCursorBridgeBundle } from "../cursor-bridge-bundle";
+import {
+  skillDeploymentRequest,
+  skillDetailRequest,
+  skillIdentity,
+  skillRelativePath,
+  skillObservationIds,
+  skillVersionSelector,
+  skillVersionListRequest,
+} from "./skill-validation";
 import {
   optionalPositiveInteger,
   optionalString,
@@ -27,6 +39,41 @@ export function registerRuntimeIpc({
   const { handle, forward } = createIpcRegistrar({ assertTrustedRenderer, runtime });
 
   function registerWorkspaceIpc(): void {
+    const bridgeBundle = () =>
+      verifiedCursorBridgeBundle(
+        app.isPackaged
+          ? path.join(process.resourcesPath, "cursor-bridge")
+          : path.join(app.getAppPath(), "build", "cursor-bridge"),
+      );
+    handle("agentkib:cursor:bridge-bundle", () => bridgeBundle());
+    handle("agentkib:cursor:reveal-bridge-bundle", async () => {
+      const bundle = await bridgeBundle();
+      shell.showItemInFolder(bundle.path);
+    });
+    forward(
+      "agentkib:workspace:cursor-bridge",
+      RUNTIME_METHODS.cursorBridge,
+      (request: unknown) => {
+        const input = requireObject(request, "Cursor bridge request");
+        const action = requireString(input.action, "action");
+        if (
+          !["status", "connect", "disconnect"].includes(action) ||
+          Object.keys(input).some((key) => !["action", "workspaceId", "bindingId"].includes(key))
+        )
+          throw new TypeError("Unsupported Cursor bridge request");
+        if (action === "status" && input.bindingId !== undefined)
+          throw new TypeError("Unexpected Cursor binding identity");
+        return {
+          action,
+          workspaceId: requireString(input.workspaceId, "workspaceId"),
+          ...(action === "disconnect"
+            ? { bindingId: requireString(input.bindingId, "bindingId") }
+            : input.bindingId !== undefined
+              ? { bindingId: optionalString(input.bindingId, "bindingId") }
+              : {}),
+        };
+      },
+    );
     forward("agentkib:workspace:scan", RUNTIME_METHODS.scanWorkspace, (project: unknown) => ({
       project: requireString(project, "project"),
     }));
@@ -176,6 +223,8 @@ export function registerRuntimeIpc({
         historyBudgetTokens: unknown,
         archiveId: unknown,
         targetFingerprint: unknown,
+        targetSurface: unknown,
+        bindingId: unknown,
       ) => ({
         sessionId: requireString(sessionId, "sessionId"),
         workspaceId: requireString(workspaceId, "workspaceId"),
@@ -190,6 +239,8 @@ export function registerRuntimeIpc({
         historyBudgetTokens: requirePositiveInteger(historyBudgetTokens, "historyBudgetTokens"),
         archiveId: optionalString(archiveId, "archiveId"),
         targetFingerprint: optionalString(targetFingerprint, "targetFingerprint"),
+        targetSurface: optionalString(targetSurface, "targetSurface"),
+        bindingId: optionalString(bindingId, "bindingId"),
       }),
     );
     forward(
@@ -316,6 +367,24 @@ export function registerRuntimeIpc({
     );
     forward("agentkib:skills:check-updates", RUNTIME_METHODS.checkSkillUpdates);
     forward(
+      "agentkib:skills:list-versions",
+      RUNTIME_METHODS.listSkillVersions,
+      (request: unknown) => skillVersionListRequest(request),
+    );
+    forward(
+      "agentkib:skills:prepare-version-change",
+      RUNTIME_METHODS.prepareSkillVersionChange,
+      (libraryId: unknown, selector: unknown) => ({
+        library_id: skillIdentity(libraryId, "library_id"),
+        selector: skillVersionSelector(selector),
+      }),
+    );
+    forward(
+      "agentkib:skills:discard-preview",
+      RUNTIME_METHODS.discardSkillPreview,
+      (token: unknown) => ({ token: skillIdentity(token, "token") }),
+    );
+    forward(
       "agentkib:skills:prepare-update",
       RUNTIME_METHODS.prepareSkillUpdate,
       (name: unknown) => ({
@@ -343,8 +412,88 @@ export function registerRuntimeIpc({
         path: requireString(filePath, "path"),
       }),
     );
+    forward("agentkib:skills:inventory", RUNTIME_METHODS.skillInventory);
+    forward("agentkib:skills:targets", RUNTIME_METHODS.skillTargets);
+    forward("agentkib:skills:get-detail", RUNTIME_METHODS.skillDetail, (request: unknown) =>
+      skillDetailRequest(request),
+    );
+    forward(
+      "agentkib:skills:read-detail-file",
+      RUNTIME_METHODS.readSkillDetailFile,
+      (request: unknown) => skillDetailRequest(request, true),
+    );
+    forward(
+      "agentkib:skills:prepare-import",
+      RUNTIME_METHODS.prepareSkillImport,
+      (observationId: unknown) => ({
+        observation_id: skillIdentity(observationId, "observation_id"),
+      }),
+    );
+    forward(
+      "agentkib:skills:read-preview-file",
+      RUNTIME_METHODS.readSkillPreviewFile,
+      (token: unknown, filePath: unknown, targetId: unknown, itemId: unknown) => {
+        if (targetId !== undefined && itemId !== undefined)
+          throw new TypeError("Select a deployment target or an import item");
+        return {
+          token: skillIdentity(token, "token"),
+          path: skillRelativePath(filePath),
+          ...(targetId === undefined ? {} : { target_id: skillIdentity(targetId, "target_id") }),
+          ...(itemId === undefined ? {} : { item_id: skillIdentity(itemId, "item_id") }),
+        };
+      },
+    );
+    forward(
+      "agentkib:skills:prepare-imports",
+      RUNTIME_METHODS.prepareSkillImports,
+      (ids: unknown) => ({ observation_ids: skillObservationIds(ids) }),
+    );
+    forward(
+      "agentkib:skills:apply-imports",
+      RUNTIME_METHODS.applySkillImports,
+      (token: unknown) => ({ token: skillIdentity(token, "token"), confirmed: true }),
+    );
+    forward("agentkib:skills:list-deployments", RUNTIME_METHODS.listSkillDeployments);
+    forward(
+      "agentkib:skills:prepare-deployment",
+      RUNTIME_METHODS.prepareSkillDeployment,
+      (request: unknown) => skillDeploymentRequest(request),
+    );
+    forward(
+      "agentkib:skills:apply-deployment",
+      RUNTIME_METHODS.applySkillDeployment,
+      (token: unknown, approveHome: unknown) => ({
+        token: skillIdentity(token, "token"),
+        confirmed: true,
+        approve_home: requireBoolean(approveHome, "approve_home"),
+      }),
+    );
 
     forward("agentkib:mcp:hub-status", RUNTIME_METHODS.mcpHubStatus);
+    forward(
+      "agentkib:mcp:connection-info",
+      RUNTIME_METHODS.mcpConnectionInfo,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
+    forward(
+      "agentkib:mcp:plan-connection",
+      RUNTIME_METHODS.planMcpConnection,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
+    forward(
+      "agentkib:mcp:verify-connection",
+      RUNTIME_METHODS.verifyMcpConnection,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
     forward(
       "agentkib:mcp:update-network",
       RUNTIME_METHODS.updateMcpNetwork,

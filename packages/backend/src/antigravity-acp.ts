@@ -5,9 +5,15 @@ import { performance } from "node:perf_hooks";
 import { acpObject, parseAcpJson, stringifyAcpJson } from "./acp-json";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 import { hasText } from "./session-events";
+import { versionAtLeast } from "./native-version";
 
 export const MAX_ACP_FRAME_BYTES = 1024 * 1024;
 export type AcpId = bigint | string;
+export class AcpUndispatchedError extends Error {
+  constructor() {
+    super("session-compacting");
+  }
+}
 export interface AcpCompatibility {
   loadSession: boolean;
   listSessions: boolean;
@@ -63,8 +69,116 @@ export function acpCompatibility(value: unknown): AcpCompatibility {
 }
 export function verifyAcpControlIdentity(value: unknown): void {
   const agent = acpObject(acpObject(value).agentInfo);
-  if (agent.name !== "antigravity-acp" || agent.version !== "agy_acp_server_1.1.1")
+  const version =
+    typeof agent.version === "string"
+      ? /^agy_acp_server_(\d+\.\d+\.\d+)$/.exec(agent.version)?.[1]
+      : undefined;
+  if (agent.name !== "antigravity-acp" || !version || !versionAtLeast(version, "1.1.1"))
     throw new Error("Unverified Antigravity ACP server identity or version");
+}
+
+type CompactionRecord = {
+  compactionId: string;
+  position: number;
+  status: string;
+  terminal: boolean;
+  summary?: Record<string, unknown>[] | null;
+  chunks: Record<string, unknown>[];
+  error?: string | null;
+  _meta?: Record<string, unknown> | null;
+};
+const compactionTerminal = new Set(["completed", "failed", "cancelled"]);
+
+/** Preview v1 extension: omitted fields are patches; first receipt fixes timeline position. */
+export class AcpCompactionState {
+  #records = new Map<string, CompactionRecord>();
+  #nextPosition = 0;
+  get active(): boolean {
+    return [...this.#records.values()].some((record) => !record.terminal);
+  }
+  snapshot(): CompactionRecord[] {
+    return structuredClone([...this.#records.values()]);
+  }
+  isTerminal(id: string): boolean {
+    return this.#records.get(id)?.terminal === true;
+  }
+  apply(update: Record<string, unknown>): boolean {
+    const position = this.#nextPosition++;
+    const kind = update.sessionUpdate;
+    if (kind !== "compaction_update" && kind !== "compaction_summary_chunk") return false;
+    const id = update.compactionId;
+    if (typeof id !== "string" || !id.trim() || Buffer.byteLength(id) > 256)
+      throw new Error("Invalid ACP compaction ID");
+    const previous = this.#records.get(id);
+    if (kind === "compaction_summary_chunk") {
+      if (!previous || previous.terminal || previous.status !== "in_progress")
+        throw new Error("ACP compaction summary chunk outside active compaction");
+      const chunk = {
+        content: this.#content(update.content),
+        ...(Object.hasOwn(update, "_meta") ? { _meta: this.#meta(update._meta) } : {}),
+      };
+      const next = { ...previous, chunks: [...previous.chunks, chunk] };
+      this.#save(id, next);
+      return true;
+    }
+    if (typeof update.status !== "string" || !update.status || update.status.length > 128)
+      throw new Error("Invalid ACP compaction status");
+    if (previous?.terminal && update.status === "in_progress")
+      throw new Error("ACP compaction ID reused after completion");
+    const next: CompactionRecord = previous
+      ? structuredClone(previous)
+      : { compactionId: id, position, status: update.status, terminal: false, chunks: [] };
+    next.status = update.status;
+    // Unknown future statuses cannot terminate an active compaction.
+    next.terminal = next.terminal || compactionTerminal.has(update.status);
+    if (Object.hasOwn(update, "summary")) {
+      if (update.summary !== null && !Array.isArray(update.summary))
+        throw new Error("Invalid ACP compaction summary");
+      if (Array.isArray(update.summary) && update.summary.length && update.status !== "completed")
+        throw new Error("ACP compaction summary is only valid on completion");
+      next.summary =
+        update.summary === null
+          ? null
+          : (update.summary as unknown[]).map((block) => this.#content(block));
+      next.chunks = [];
+    }
+    if (Object.hasOwn(update, "error")) {
+      if (update.error !== null && typeof update.error !== "string")
+        throw new Error("Invalid ACP compaction error");
+      if (typeof update.error === "string" && update.status !== "failed")
+        throw new Error("ACP compaction error is only valid on failure");
+      next.error = update.error as string | null;
+    }
+    if (Object.hasOwn(update, "_meta")) {
+      next._meta = this.#meta(update._meta);
+    }
+    this.#save(id, next);
+    return true;
+  }
+  #meta(value: unknown): Record<string, unknown> | null {
+    if (value !== null && (typeof value !== "object" || Array.isArray(value)))
+      throw new Error("Invalid ACP compaction metadata");
+    return value === null ? null : (structuredClone(value) as Record<string, unknown>);
+  }
+  #content(value: unknown): Record<string, unknown> {
+    const block = acpObject(value);
+    if (
+      typeof block.type !== "string" ||
+      !block.type ||
+      (block.type === "text" && typeof block.text !== "string")
+    )
+      throw new Error("Invalid ACP compaction content block");
+    return structuredClone(block);
+  }
+  #save(id: string, record: CompactionRecord): void {
+    if (!this.#records.has(id) && this.#records.size >= 1024)
+      throw new Error("ACP compaction history limit exceeded");
+    const records = [...this.#records.values()].filter((entry) => entry.compactionId !== id);
+    records.push(record);
+    if (record.chunks.length > 4096 || Buffer.byteLength(stringifyAcpJson(records)) > 1024 * 1024)
+      throw new Error("ACP compaction content limit exceeded");
+    this.#records.set(id, record);
+  }
 }
 /** Pull-based framed I/O applies stream backpressure while commands remain independently writable. */
 export class AntigravityAcp {
@@ -147,7 +261,7 @@ export class AntigravityAcp {
         "initialize",
         {
           protocolVersion: 1n,
-          clientCapabilities: {},
+          clientCapabilities: { session: { compaction: {} } },
           clientInfo: { name: "agentkib", version: this.options.version ?? "0.13.0" },
         },
         null,
@@ -187,13 +301,14 @@ export class AntigravityAcp {
       return this.#request(method, { sessionId: value, cwd: absolute(cwd), mcpServers: [] }, value);
     });
   }
-  prompt(value: string, text: string): Promise<AcpId> {
+  prompt(value: string, text: string, beforeDispatch?: () => void): Promise<AcpId> {
     return this.#serialize(async () => {
       this.#ready();
       if (!this.#sessions.has(value)) throw new Error("ACP session is not attached");
       if (this.#active.has(value)) throw new Error("ACP session has an active turn");
       if (!hasText(text) || Buffer.byteLength(text) > 65536)
         throw new Error("ACP prompt must be 1–65536 bytes");
+      beforeDispatch?.();
       const request = await this.#request(
         "session/prompt",
         { sessionId: value, prompt: [{ type: "text", text }] },
@@ -287,7 +402,8 @@ export class AntigravityAcp {
           !this.#sessions.has(fields.sessionId) &&
           ![...this.#pending.values()].some(
             (pending) =>
-              pending.method === "session/load" && pending.sessionId === fields.sessionId,
+              ["session/load", "session/resume"].includes(pending.method) &&
+              pending.sessionId === fields.sessionId,
           )
         )
           throw new Error("ACP protocol error: update for unattached session");

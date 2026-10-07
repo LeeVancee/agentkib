@@ -1,18 +1,45 @@
 import { defineConfig } from "vite";
+import type { Plugin } from "vite";
 import { octane } from "@octanejs/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import { octaneRouteGenerator } from "./route-generator.ts";
 
+function tsrxMimeType(): Plugin {
+  return {
+    name: "agentkib-tsrx-mime-type",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const pathname = request.url?.split(/[?#]/, 1)[0] ?? "";
+        if (pathname.endsWith(".tsrx")) {
+          response.setHeader("Content-Type", "text/javascript");
+        }
+        next();
+      });
+    },
+  };
+}
+
 const config = {
   plugins: [
+    tsrxMimeType(),
     octaneRouteGenerator(),
     octane({ requireDirective: true, strong: false }),
     tailwindcss(),
   ],
   optimizeDeps: {
     // Pre-bundle dependencies that Vite's initial TSRX scan does not discover.
-    include: ["i18next", "class-variance-authority", "cn", "zod", "d3-hierarchy", "qrcode"],
+    include: [
+      "i18next",
+      "class-variance-authority",
+      "cn",
+      "zod",
+      "d3-hierarchy",
+      "qrcode",
+      "react",
+      "react-dom",
+      "react-dom/client",
+    ],
   },
   resolve: {
     conditions: ["module", "browser", "default"],

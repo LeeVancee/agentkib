@@ -6,6 +6,12 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { MacOwnedProcessTree } from "./mac-owned-process-tree";
 import { acquirePortableFileLease } from "./managed-session-lock";
+import { truncateUtf8 } from "./session-events";
+import {
+  createContextUsageGeneration,
+  projectContextUsage,
+  type ContextUsage,
+} from "./context-usage";
 
 const MAX_TEXT = 4 * 1024 * 1024;
 const MAX_LINE = 6 * MAX_TEXT + 1024 * 1024;
@@ -13,6 +19,11 @@ const MAX_INTERACTIONS = 1024 * 1024;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, any>;
+export class ClaudeUndispatchedError extends Error {
+  constructor() {
+    super("session-compacting");
+  }
+}
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -20,6 +31,8 @@ export type ClaudeRunnerSnapshot = {
   lastOutcome: string | null;
   model: string | null;
   tokenUsage: unknown;
+  usage: ContextUsage;
+  activity: "compacting" | null;
   status: string;
   sendEnabled: boolean;
   stopEnabled: boolean;
@@ -41,12 +54,29 @@ export class ClaudeRunnerState {
   questions: JsonObject[] = [];
   seenRequests = new Set<string>();
   streamText = "";
+  streamItemId = "";
+  streamItemText = "";
+  textBlockSerial = 0;
+  activeTextBlockIndex = -1;
+  textBlocks = new Map<number, { id: string; text: string }>();
+  finalizedTextBlocks: Array<{
+    index: number;
+    temporaryId: string;
+    id: string;
+    text: string;
+  }> = [];
   reason: string | null = null;
   initialized = false;
   initId = "";
   pendingUser: JsonObject | null = null;
   model: string | null = null;
   usage: unknown = null;
+  contextUsage: ContextUsage = { available: false, state: "unavailable" };
+  activity: "compacting" | null = null;
+  usageModel: string | null = null;
+  usageReportId = 0;
+  readonly #usageGeneration = createContextUsageGeneration();
+  modelWindows = new Map<string, number>();
   lastOutcome: string | null = null;
   partial = false;
   foregroundBashContract = false;
@@ -64,12 +94,23 @@ export class ClaudeRunnerState {
       questions: structuredClone(this.questions),
       seenRequests: new Set(this.seenRequests),
       streamText: this.streamText,
+      streamItemId: this.streamItemId,
+      streamItemText: this.streamItemText,
+      textBlockSerial: this.textBlockSerial,
+      activeTextBlockIndex: this.activeTextBlockIndex,
+      textBlocks: structuredClone(this.textBlocks),
+      finalizedTextBlocks: structuredClone(this.finalizedTextBlocks),
       reason: this.reason,
       initialized: this.initialized,
       initId: this.initId,
       pendingUser: this.pendingUser ? structuredClone(this.pendingUser) : null,
       model: this.model,
       usage: this.usage ? structuredClone(this.usage) : null,
+      contextUsage: structuredClone(this.contextUsage),
+      activity: this.activity,
+      usageModel: this.usageModel,
+      usageReportId: this.usageReportId,
+      modelWindows: new Map(this.modelWindows),
       lastOutcome: this.lastOutcome,
       partial: this.partial,
       foregroundBashContract: this.foregroundBashContract,
@@ -82,6 +123,23 @@ export class ClaudeRunnerState {
     Object.assign(this, checkpoint);
     this.revision = checkpoint.revision + 1;
     this.reason = reason;
+  }
+
+  restoreUndispatched(checkpoint: ReturnType<ClaudeRunnerState["checkpoint"]>): void {
+    const native = {
+      activity: this.activity,
+      contextUsage: this.contextUsage,
+      usage: this.usage,
+      usageModel: this.usageModel,
+      usageReportId: this.usageReportId,
+      model: this.model,
+      modelWindows: this.modelWindows,
+      initialized: this.initialized,
+      initId: this.initId,
+      pendingUser: null,
+      revision: Math.max(this.revision, checkpoint.revision) + 1,
+    };
+    Object.assign(this, checkpoint, native);
   }
 
   initialize(pendingUser: JsonObject): JsonObject {
@@ -107,8 +165,13 @@ export class ClaudeRunnerState {
       lastOutcome: this.lastOutcome,
       model: this.model,
       tokenUsage: this.usage,
+      usage: projectContextUsage(
+        { ...this.contextUsage, reportGeneration: this.#usageGeneration },
+        this.revision,
+      )!,
+      activity: this.activity,
       status: this.status,
-      sendEnabled: this.status === "idle",
+      sendEnabled: this.status === "idle" && this.activity !== "compacting",
       stopEnabled: this.status !== "idle" && this.turnId.length > 0 && this.reason === null,
       revision: this.revision,
       turnId: this.turnId,
@@ -123,15 +186,23 @@ export class ClaudeRunnerState {
   begin(content: unknown, turnId: string = randomUUID()): JsonObject {
     validateClaudeContent(content);
     if (!uuidPattern.test(turnId)) throw new Error("invalid Claude turn ID");
+    if (this.activity === "compacting") throw new ClaudeUndispatchedError();
     if (this.status !== "idle") throw new Error("Claude session is busy or failed");
     this.turnId = turnId;
     this.streamText = "";
+    this.streamItemId = "";
+    this.streamItemText = "";
+    this.textBlockSerial = 0;
+    this.activeTextBlockIndex = -1;
+    this.textBlocks.clear();
+    this.finalizedTextBlocks = [];
     this.partial = false;
     this.reason = null;
     this.lastOutcome = null;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.status = "running";
+    this.#pendingUsage();
     this.revision++;
     return {
       type: "user",
@@ -245,11 +316,19 @@ export class ClaudeRunnerState {
     this.questions = [];
     this.pendingUser = null;
     this.reason = null;
+    this.activity = null;
+    this.#pendingUsage();
     this.revision++;
   }
 
   fail(reason: string): void {
     this.status = "outcome-unknown";
+    this.activity = null;
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "stale" : "unavailable",
+      reason: "connection-unavailable",
+    };
     if (Buffer.byteLength(reason) > 4096) {
       let end = Math.min(reason.length, 4096);
       while (Buffer.byteLength(reason.slice(0, end)) > 4096) end--;
@@ -266,6 +345,7 @@ export class ClaudeRunnerState {
   frame(frame: unknown): JsonObject | null {
     if (!object(frame) || typeof frame.type !== "string")
       throw new Error("Claude frame missing type");
+    this.finalizedTextBlocks = [];
     if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
       throw new Error("Claude session ID changed unexpectedly");
     switch (frame.type) {
@@ -296,32 +376,89 @@ export class ClaudeRunnerState {
         break;
       case "stream_event": {
         const event = frame.event;
+        if (event?.type === "message_start") {
+          if (frame.parent_tool_use_id == null && this.activity !== "compacting")
+            this.#pendingUsage();
+          this.#observeUsage(event.message, frame.parent_tool_use_id);
+          this.streamItemId = "";
+          this.streamItemText = "";
+          this.activeTextBlockIndex = -1;
+          this.textBlocks.clear();
+          this.partial = false;
+        }
+        if (event?.type === "content_block_start" && event.content_block?.type === "text") {
+          const index = Number.isSafeInteger(event.index) ? event.index : this.textBlockSerial;
+          this.#startTextBlock(index);
+          if (typeof event.content_block.text === "string") this.#append(event.content_block.text);
+          this.partial = true;
+        }
         if (event?.type === "content_block_start")
           this.#observeBash(event.content_block, frame.parent_tool_use_id);
         if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
           if (typeof event.delta.text !== "string") throw new Error("invalid Claude text delta");
+          const index = Number.isSafeInteger(event.index) ? event.index : this.activeTextBlockIndex;
+          if (!this.textBlocks.has(index)) this.#startTextBlock(index);
+          else this.activeTextBlockIndex = index;
           this.#append(event.delta.text);
           this.partial = true;
         }
         break;
       }
       case "assistant": {
+        if (frame.isUnmetered !== true) this.#observeUsage(frame.message, frame.parent_tool_use_id);
         const blocks = frame.message?.content;
+        const nativeId =
+          (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
+          (typeof frame.message?.id === "string" &&
+            uuidPattern.test(frame.message.id) &&
+            frame.message.id) ||
+          "";
+        const hasText =
+          Array.isArray(blocks) && blocks.some((block: JsonObject) => block?.type === "text");
         if (Array.isArray(blocks))
           for (const block of blocks) this.#observeBash(block, frame.parent_tool_use_id);
-        if (!this.partial && Array.isArray(blocks))
-          for (const block of blocks)
-            if (block?.type === "text") {
-              if (typeof block.text !== "string") throw new Error("invalid Claude text");
-              this.#append(block.text);
-            }
+        if (hasText && nativeId && Array.isArray(blocks)) {
+          const textBlocks = blocks.flatMap((block: JsonObject, index: number) => {
+            if (block?.type !== "text") return [];
+            if (typeof block.text !== "string") throw new Error("invalid Claude text");
+            const streamed = this.textBlocks.get(index);
+            return [
+              {
+                index,
+                temporaryId: streamed?.id ?? "",
+                id: index === 0 ? nativeId : `${nativeId}:text:${index}`,
+                text: block.text,
+              },
+            ];
+          });
+          this.finalizedTextBlocks = textBlocks;
+          this.streamItemId = textBlocks[0]?.id ?? nativeId;
+          this.streamItemText = textBlocks[0]?.text ?? "";
+          if (!this.partial) for (const block of textBlocks) this.#append(block.text);
+        }
         this.partial = false;
         break;
       }
       case "result":
         if (this.foregroundTasks.size)
           throw new Error("Claude result with unresolved foreground tasks");
-        this.usage = frame.usage ?? null;
+        // result usage is a per-turn aggregate; only the latest main-loop API input
+        // report measures context occupancy. modelUsage supplies the native limit.
+        if (object(frame.modelUsage) && this.usageModel) {
+          const window = frame.modelUsage[this.usageModel]?.contextWindow;
+          if (Number.isSafeInteger(window) && window > 0) {
+            this.modelWindows.set(this.usageModel, window);
+            const waitingForWindow =
+              this.contextUsage.state === "pending" &&
+              this.contextUsage.reason === "model-context-window-unavailable";
+            this.contextUsage = {
+              ...this.contextUsage,
+              contextWindow: window,
+              state: waitingForWindow ? "ready" : this.contextUsage.state,
+              reason: waitingForWindow ? undefined : this.contextUsage.reason,
+            };
+          }
+        }
         if (!this.initialized) throw new Error("Claude resume failed before initialization");
         if (this.approvals.length || this.questions.length)
           throw new Error("Claude result with unresolved approvals");
@@ -335,10 +472,25 @@ export class ClaudeRunnerState {
         }
         if (!this.streamText && typeof frame.result === "string") this.#append(frame.result);
         this.status = "idle";
+        if (this.activity === "compacting") this.#staleUsage();
+        this.activity = null;
         this.streamText = "";
         break;
       case "system":
         if (frame.subtype === "init" && typeof frame.model === "string") this.model = frame.model;
+        if (frame.subtype === "status") {
+          if (frame.status === "compacting") {
+            this.activity = "compacting";
+            this.#pendingUsage();
+          } else if (frame.status === null || frame.status === "requesting") {
+            if (this.activity === "compacting") this.#staleUsage();
+            this.activity = null;
+          }
+        }
+        if (frame.subtype === "compact_boundary") {
+          this.activity = null;
+          this.#staleUsage();
+        }
         if (
           ["task_started", "background_tasks_changed"].includes(frame.subtype) ||
           (this.foregroundBashContract &&
@@ -360,6 +512,75 @@ export class ClaudeRunnerState {
     }
     this.revision++;
     return null;
+  }
+
+  #pendingUsage(): void {
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "pending" : "unavailable",
+      reason: "context-report-pending",
+    };
+  }
+
+  #staleUsage(reason = "compaction-completed"): void {
+    this.contextUsage = {
+      ...this.contextUsage,
+      state: this.contextUsage.available ? "stale" : "unavailable",
+      reason,
+    };
+  }
+
+  #observeUsage(message: unknown, parentToolUseId: unknown): void {
+    if (parentToolUseId != null || !object(message)) return;
+    if (!object(message.usage) || message.model === "<synthetic>") return;
+    if (typeof message.model !== "string" || !message.model) {
+      this.#staleUsage("model-context-window-unavailable");
+      return;
+    }
+    let usage = message.usage;
+    if (Array.isArray(usage.iterations)) {
+      const iteration = [...usage.iterations]
+        .reverse()
+        .find((item) => object(item) && !["advisor_message", "compaction"].includes(item.type));
+      if (object(iteration) && ["message", "fallback_message"].includes(iteration.type))
+        usage = iteration;
+      else if (usage.iterations.length) return;
+    }
+    const input = usage.input_tokens;
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+    if (
+      ![input, cacheRead, cacheCreation].every((value) => Number.isSafeInteger(value) && value >= 0)
+    ) {
+      this.#staleUsage("invalid-context-report");
+      return;
+    }
+    const usedTokens = input + cacheRead + cacheCreation;
+    if (!Number.isSafeInteger(usedTokens)) {
+      this.#staleUsage("invalid-context-report");
+      return;
+    }
+    this.usage = structuredClone(usage);
+    this.usageModel = message.model;
+    this.model = message.model;
+    const contextWindow = this.modelWindows.get(message.model);
+    // A report received during compaction is a candidate, not proof that the
+    // ordinary request now uses the compacted context. A later normal report
+    // must restore its current qualification, even if the native limit is known.
+    const compacting = this.activity === "compacting";
+    this.contextUsage = {
+      available: true,
+      state: compacting || contextWindow === undefined ? "pending" : "ready",
+      ...(compacting
+        ? { reason: "context-report-pending" }
+        : contextWindow === undefined
+          ? { reason: "model-context-window-unavailable" }
+          : {}),
+      usedTokens,
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      reportId: ++this.usageReportId,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   #controlRequest(frame: JsonObject): null {
@@ -456,10 +677,21 @@ export class ClaudeRunnerState {
       throw new Error("Claude pending interaction exceeds Web delivery budget; process stopped");
   }
 
+  #startTextBlock(index: number): void {
+    this.textBlockSerial++;
+    this.activeTextBlockIndex = index;
+    this.streamItemId = `live:${this.turnId}:assistant:${this.textBlockSerial}`;
+    this.streamItemText = "";
+    this.textBlocks.set(index, { id: this.streamItemId, text: "" });
+  }
+
   #append(value: string): void {
     if (Buffer.byteLength(this.streamText) + Buffer.byteLength(value) > MAX_TEXT)
       throw new Error("Claude output exceeds 4 MiB");
     this.streamText += value;
+    this.streamItemText += value;
+    const block = this.textBlocks.get(this.activeTextBlockIndex);
+    if (block) block.text += value;
   }
 
   #observeBash(block: JsonObject, parent: unknown): void {
@@ -596,6 +828,8 @@ export class ClaudeManagedRunnerProcess {
   #fresh: boolean;
   #intentional = new WeakSet<ChildProcess>();
   #serializedTail: Promise<void> = Promise.resolve();
+  #pendingDispatch?: () => void;
+  #toolItems = new Map<string, Record<string, unknown>>();
 
   constructor(
     readonly workspace: string,
@@ -605,6 +839,11 @@ export class ClaudeManagedRunnerProcess {
     readonly environment: NodeJS.ProcessEnv,
     readonly onSnapshot: (snapshot: ClaudeRunnerSnapshot) => void,
     foregroundBashContract = false,
+    readonly onConversationEvent?: (
+      type: "text-delta" | "item-upsert" | "item-alias" | "snapshot",
+      payload: Record<string, unknown>,
+      live: ClaudeRunnerSnapshot,
+    ) => void,
   ) {
     if (process.platform !== "darwin" && process.platform !== "linux")
       throw new Error("managed Claude process groups require Unix");
@@ -627,7 +866,13 @@ export class ClaudeManagedRunnerProcess {
   }
 
   retireIfInactive(): Promise<boolean> | null {
-    if (!this.#child || this.#retiring || this.state.status !== "idle") return null;
+    if (
+      !this.#child ||
+      this.#retiring ||
+      this.state.status !== "idle" ||
+      this.state.activity === "compacting"
+    )
+      return null;
     this.#retiring = true;
     return (async () => {
       try {
@@ -637,7 +882,13 @@ export class ClaudeManagedRunnerProcess {
         this.state.seenRequests.clear();
         this.state.bashToolIds.clear();
         this.state.foregroundTasks.clear();
+        this.state.contextUsage = {
+          ...this.state.contextUsage,
+          state: this.state.contextUsage.available ? "stale" : "unavailable",
+          reason: "connection-unavailable",
+        };
         this.state.revision++;
+        this.#notify();
         return true;
       } finally {
         this.#retiring = false;
@@ -650,16 +901,24 @@ export class ClaudeManagedRunnerProcess {
     content: unknown,
     requestId: string,
     revision: number,
+    beforeDispatch?: () => void,
   ): Promise<void> {
     if (this.#retiring) throw new Error("Claude runner is being retired");
     const checkpoint = this.state.checkpoint();
     if (this.state.revision !== revision) throw new Error("stale Claude revision");
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
+    this.#pendingDispatch = beforeDispatch;
     if (this.#child) {
       try {
         await this.#write(user);
       } catch (error) {
+        if (error instanceof ClaudeUndispatchedError) {
+          this.#pendingDispatch = undefined;
+          this.state.restoreUndispatched(checkpoint);
+          this.#notify();
+          throw error;
+        }
         this.#fail(`Claude user write failed: ${errorMessage(error)}`);
         throw error;
       }
@@ -673,6 +932,12 @@ export class ClaudeManagedRunnerProcess {
       await this.#initializing;
       this.#fresh = false;
     } catch (error) {
+      if (error instanceof ClaudeUndispatchedError) {
+        this.#pendingDispatch = undefined;
+        this.state.restoreUndispatched(checkpoint);
+        this.#notify();
+        throw error;
+      }
       if (!started?.pid) {
         this.state.restoreStartup(checkpoint, errorMessage(error));
       } else {
@@ -878,7 +1143,111 @@ export class ClaudeManagedRunnerProcess {
       .then(async () => {
         const frame = parseClaudeFrame(line);
         const wasInitialized = this.state.initialized;
+        const previousItemId = this.state.streamItemId;
+        const previousItemText = this.state.streamItemText;
         const response = this.state.frame(frame);
+        const live = this.state.snapshot();
+        const itemId = this.state.streamItemId;
+        const itemText = this.state.streamItemText;
+        const conversationItems = this.#conversationItems(frame);
+        const hasFinalizedText = this.state.finalizedTextBlocks.length > 0;
+        if (frame.type === "assistant" && hasFinalizedText) {
+          const ordered = [
+            ...this.state.finalizedTextBlocks.map((block) => {
+              const clipped = truncateUtf8(block.text);
+              return {
+                index: block.index,
+                previousId: block.temporaryId,
+                item: {
+                  id: block.id,
+                  kind: "agent-message",
+                  turn_id: this.state.turnId,
+                  content: clipped.content,
+                  attachment_count: 0,
+                  truncated: clipped.truncated,
+                  ephemeral: false,
+                } satisfies Record<string, unknown>,
+              };
+            }),
+            ...conversationItems.map(({ index, item }) => ({ index, previousId: "", item })),
+          ].sort((left, right) => left.index - right.index);
+          this.onConversationEvent?.(
+            "snapshot",
+            {
+              items: ordered.map(({ item }) => item),
+              replaceItemIds: [
+                ...ordered.flatMap(({ previousId, item }) =>
+                  previousId ? [previousId, String(item.id)] : [String(item.id)],
+                ),
+              ],
+              completeItems: false,
+            },
+            live,
+          );
+        } else {
+          for (const block of this.state.finalizedTextBlocks) {
+            const clipped = truncateUtf8(block.text);
+            if (block.temporaryId && block.temporaryId !== block.id)
+              this.onConversationEvent?.(
+                "item-alias",
+                { previousId: block.temporaryId, itemId: block.id },
+                live,
+              );
+            this.onConversationEvent?.(
+              "item-upsert",
+              {
+                id: block.id,
+                kind: "agent-message",
+                turn_id: this.state.turnId,
+                content: clipped.content,
+                attachment_count: 0,
+                truncated: clipped.truncated,
+                ephemeral: false,
+              },
+              live,
+            );
+          }
+          for (const item of conversationItems)
+            this.onConversationEvent?.("item-upsert", item.item, live);
+        }
+        if (
+          itemId &&
+          itemId === previousItemId &&
+          itemText.startsWith(previousItemText) &&
+          itemText.length > previousItemText.length
+        ) {
+          this.onConversationEvent?.(
+            "text-delta",
+            {
+              itemId,
+              turnId: this.state.turnId,
+              text: itemText.slice(previousItemText.length),
+              offset: previousItemText.length,
+              ephemeral: itemId.startsWith("live:"),
+            },
+            live,
+          );
+        }
+        if (
+          frame.type === "assistant" &&
+          !this.state.finalizedTextBlocks.length &&
+          itemId &&
+          itemText
+        ) {
+          this.onConversationEvent?.(
+            "item-upsert",
+            {
+              id: itemId,
+              kind: "agent-message",
+              turn_id: this.state.turnId,
+              content: itemText,
+              attachment_count: 0,
+              truncated: false,
+              ephemeral: itemId.startsWith("live:"),
+            },
+            live,
+          );
+        }
         this.#notify();
         if (!wasInitialized && this.state.initialized) {
           if (response) await this.#write(response);
@@ -890,6 +1259,10 @@ export class ClaudeManagedRunnerProcess {
         }
       })
       .catch((error: unknown) => {
+        if (error instanceof ClaudeUndispatchedError) {
+          this.#rejectInitialization?.(error);
+          return;
+        }
         const reason = errorMessage(error);
         this.#fail(reason);
         this.#rejectInitialization?.(error instanceof Error ? error : new Error(reason));
@@ -898,6 +1271,72 @@ export class ClaudeManagedRunnerProcess {
         this.#queuedFrames--;
         if (this.#queuedFrames < 16) this.#child?.stdout?.resume();
       });
+  }
+
+  #conversationItems(frame: JsonObject): Array<{ index: number; item: Record<string, unknown> }> {
+    const items: Array<{ index: number; item: Record<string, unknown> }> = [];
+    const blocks = Array.isArray(frame.message?.content) ? frame.message.content : [];
+    if (frame.type === "user") {
+      const id =
+        (typeof frame.uuid === "string" && uuidPattern.test(frame.uuid) && frame.uuid) ||
+        (typeof frame.message?.id === "string" &&
+          uuidPattern.test(frame.message.id) &&
+          frame.message.id) ||
+        "";
+      if (id && frame.isCompactSummary !== true) {
+        const content = frame.message?.content;
+        const text =
+          typeof content === "string"
+            ? content
+            : blocks
+                .filter((block: JsonObject) =>
+                  ["text", "input_text", "output_text"].includes(String(block?.type)),
+                )
+                .map((block: JsonObject) => (typeof block.text === "string" ? block.text : ""))
+                .filter(Boolean)
+                .join("\n");
+        const attachmentCount = blocks.filter((block: JsonObject) =>
+          ["image", "document"].includes(String(block?.type)),
+        ).length;
+        if (text || attachmentCount)
+          items.push({
+            index: -1,
+            item: {
+              id,
+              kind: "user-message",
+              content: text,
+              attachment_count: attachmentCount,
+              truncated: false,
+            },
+          });
+      }
+      for (const block of blocks) {
+        const toolId = typeof block?.tool_use_id === "string" ? block.tool_use_id : "";
+        const item = toolId ? this.#toolItems.get(toolId) : undefined;
+        if (block?.type === "tool_result" && item) {
+          item.tool_status = block.is_error === true ? "failed" : "completed";
+          items.push({ index: blocks.indexOf(block), item: { ...item } });
+        }
+      }
+    } else if (frame.type === "assistant") {
+      for (const block of blocks) {
+        const id = typeof block?.id === "string" ? block.id : "";
+        if (block?.type !== "tool_use" || !id || id.length > 256) continue;
+        if (this.#toolItems.size >= 1024 && !this.#toolItems.has(id)) continue;
+        const item = {
+          id,
+          kind: "tool-summary",
+          turn_id: this.state.turnId,
+          tool_name: block.name,
+          tool_status: "running",
+          attachment_count: 0,
+          truncated: false,
+        };
+        this.#toolItems.set(id, item);
+        items.push({ index: blocks.indexOf(block), item });
+      }
+    }
+    return items;
   }
 
   async #write(frame: JsonObject): Promise<void> {
@@ -917,6 +1356,12 @@ export class ClaudeManagedRunnerProcess {
     this.#serializedTail = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      if (frame.type === "user" && this.state.activity === "compacting")
+        throw new ClaudeUndispatchedError();
+      if (frame.type === "user") {
+        this.#pendingDispatch?.();
+        this.#pendingDispatch = undefined;
+      }
       await new Promise<void>((resolve, reject) => {
         child.stdin!.write(data, (error) => (error ? reject(error) : resolve()));
       });

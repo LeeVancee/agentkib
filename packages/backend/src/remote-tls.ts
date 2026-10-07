@@ -403,10 +403,10 @@ export function restrictRemotePath(file: string, directory = false): void {
     "int",
     ["str16", "uint", ffi.out(ffi.pointer("void", 2)), "void *"],
   );
-  const set = advapi.func("__stdcall", "SetFileSecurityW", "int", ["str16", "uint", "intptr_t"]);
-  const free = kernel.func("__stdcall", "LocalFree", "intptr_t", ["intptr_t"]);
+  const set = advapi.func("__stdcall", "SetFileSecurityW", "int", ["str16", "uint", "void *"]);
+  const free = kernel.func("__stdcall", "LocalFree", "void *", ["void *"]);
   const error = kernel.func("__stdcall", "GetLastError", "uint", []);
-  const descriptor: [number | bigint | null] = [null];
+  const descriptor: [unknown] = [null];
   const security = directory ? "D:P(A;OICI;FA;;;OW)" : "D:P(A;;FA;;;OW)";
   if (!convert(security, 1, descriptor, null) || !descriptor[0])
     throw new Error(`Cannot create private remote ACL (${error()})`);

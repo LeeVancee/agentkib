@@ -63,7 +63,9 @@ export function isSessionVisible(
   session: Pick<CatalogSession, "origin">,
   showAuxiliary = false,
 ): boolean {
-  return showAuxiliary || !isAuxiliarySession(session);
+  return showAuxiliary
+    ? session.origin !== "execution"
+    : session.origin !== "auxiliary" && session.origin !== "execution";
 }
 
 function timestamp(session: Pick<CatalogSession, "updated_at" | "created_at">): number {
@@ -89,8 +91,7 @@ export function filterSessions<S extends CatalogSession>(
   const search = query.trim().toLocaleLowerCase();
   return sortSessions(
     sessions.filter((session) => {
-      if (!isSessionVisible(session, showAuxiliary) || !names.has(session.workspace_id))
-        return false;
+      if (!isSessionVisible(session, showAuxiliary) || !names.has(session.workspace_id)) return false;
       if (agent !== "all" && session.agent !== agent) return false;
       if (filter === "current" && (session.archived || session.availability !== "readable"))
         return false;
@@ -137,7 +138,7 @@ export function groupSessions<S extends CatalogSession, W extends CatalogWorkspa
   workspaces: readonly W[],
 ): { workspace: W; sessions: S[]; label: string }[] {
   const buckets = new Map<string, S[]>();
-  for (const session of sortSessions(sessions)) {
+  for (const session of sortSessions(sessions.filter((session) => isSessionVisible(session)))) {
     const bucket = buckets.get(session.workspace_id) ?? [];
     bucket.push(session);
     buckets.set(session.workspace_id, bucket);

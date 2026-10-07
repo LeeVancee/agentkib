@@ -141,7 +141,7 @@ try {
               "-NoProfile",
               "-NonInteractive",
               "-Command",
-              "Expand-Archive -LiteralPath $env:AGENTKIB_QUOTA_ARCHIVE -DestinationPath $env:AGENTKIB_QUOTA_DESTINATION -Force",
+              "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:AGENTKIB_QUOTA_ARCHIVE, $env:AGENTKIB_QUOTA_DESTINATION)",
             ],
             {
               env: {

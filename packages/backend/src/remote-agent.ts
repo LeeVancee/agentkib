@@ -26,6 +26,7 @@ import {
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
+import { projectPairedManagedSessions } from "./managed-session-catalog";
 
 type Device = {
   id: string;
@@ -178,7 +179,9 @@ export class RemoteAgent {
   #discovered = new Map<string, { id: string; name: string; address: string }>();
   #mdns: { instance: Bonjour; browser: Browser; service: Service | null } | null = null;
   #listener: RemoteTlsListener | null = null;
+  #closing?: Promise<void>;
   #generation = 0;
+  #pairAttempts = new Map<string, symbol>();
   #stopped = false;
   #heartbeat = new Map<string, ReturnType<typeof setInterval>>();
 
@@ -209,10 +212,11 @@ export class RemoteAgent {
     }
   }
 
-  close(): void {
-    if (this.#stopped) return;
+  close(): Promise<void> {
+    if (this.#stopped) return this.#closing ?? Promise.resolve();
     this.#stopped = true;
     this.#generation++;
+    this.#pairAttempts.clear();
     for (const timer of this.#heartbeat.values()) clearInterval(timer);
     this.#heartbeat.clear();
     this.#mdns?.browser.stop();
@@ -220,8 +224,9 @@ export class RemoteAgent {
     this.#mdns?.instance.destroy();
     this.#mdns = null;
     this.#discovered.clear();
-    void this.#listener?.close();
+    const listener = this.#listener;
     this.#listener = null;
+    return (this.#closing = listener?.close() ?? Promise.resolve());
   }
 
   async request(value: unknown): Promise<unknown> {
@@ -487,7 +492,17 @@ export class RemoteAgent {
     };
     this.#persist(next);
     this.#config = next;
-    void this.#pollPair(result.peerId, pendingId, expires).catch(() => undefined);
+    const heartbeat = this.#heartbeat.get(result.peerId);
+    if (heartbeat) clearInterval(heartbeat);
+    this.#heartbeat.delete(result.peerId);
+    const attempt = Symbol();
+    this.#pairAttempts.set(result.peerId, attempt);
+    void this.#pollPair(result.peerId, pendingId, expires, attempt)
+      .finally(() => {
+        if (this.#pairAttempts.get(result.peerId) === attempt)
+          this.#pairAttempts.delete(result.peerId);
+      })
+      .catch(() => undefined);
     return {
       id: result.peerId,
       verification: result.verification,
@@ -495,8 +510,12 @@ export class RemoteAgent {
       expires_at: expires,
     };
   }
-  async #pollPair(peerId: string, pendingId: string, expires: number) {
-    while (!this.#stopped && this.#now() < expires) {
+  async #pollPair(peerId: string, pendingId: string, expires: number, attempt: symbol) {
+    const current = () =>
+      !this.#stopped &&
+      this.#pairAttempts.get(peerId) === attempt &&
+      this.#config.connections[peerId]?.status === "pending";
+    while (current() && this.#now() < expires) {
       const connection = this.#config.connections[peerId];
       if (!connection || connection.status === "disconnected") return;
       try {
@@ -504,6 +523,7 @@ export class RemoteAgent {
           op: "pair-status",
           id: pendingId,
         });
+        if (!current()) return;
         if (
           record(response.result) &&
           ["approved", "rejected"].includes(String(response.result.status))
@@ -519,6 +539,7 @@ export class RemoteAgent {
           return;
         }
       } catch (error) {
+        if (!current()) return;
         if (error instanceof Error && error.message.includes("IDENTITY_CHANGED")) {
           const next = structuredClone(this.#config);
           if (next.connections[peerId]) {
@@ -539,6 +560,7 @@ export class RemoteAgent {
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
+    if (!current()) return;
     const next = structuredClone(this.#config);
     if (next.connections[peerId]?.status === "pending") {
       next.connections[peerId]!.status = "expired";
@@ -547,26 +569,35 @@ export class RemoteAgent {
     }
   }
   #startHeartbeat(peerId: string) {
-    if (this.#heartbeat.has(peerId)) return;
+    if (this.#stopped || this.#heartbeat.has(peerId)) return;
     const timer = setInterval(() => {
-      void this.#heartbeatPeer(peerId);
+      void this.#heartbeatPeer(peerId, timer);
     }, 10_000);
     timer.unref();
     this.#heartbeat.set(peerId, timer);
-    void this.#heartbeatPeer(peerId);
+    void this.#heartbeatPeer(peerId, timer);
   }
-  async #heartbeatPeer(peerId: string) {
+  async #heartbeatPeer(peerId: string, timer: ReturnType<typeof setInterval>) {
     const connection = this.#config.connections[peerId];
-    if (!connection || connection.status === "disconnected") return;
+    const generation = this.#generation;
+    const current = () =>
+      !this.#stopped &&
+      generation === this.#generation &&
+      this.#heartbeat.get(peerId) === timer &&
+      ["online", "offline"].includes(this.#config.connections[peerId]?.status ?? "");
+    if (!connection || !current()) return;
     try {
       await exchangeRemotePeer(this.#identity, connection.address, peerId, { op: "heartbeat" });
+      if (!current()) return;
       this.#updateConnection(peerId, "online", null);
     } catch (error) {
-      this.#updateConnection(
-        peerId,
-        "offline",
-        error instanceof Error ? error.message : "REMOTE_OFFLINE",
-      );
+      if (!current()) return;
+      const status = this.#errorStatus(error);
+      this.#updateConnection(peerId, status, status);
+      if (status !== "offline") {
+        clearInterval(timer);
+        this.#heartbeat.delete(peerId);
+      }
     }
   }
   #updateConnection(id: string, status: string, error: string | null) {
@@ -576,24 +607,25 @@ export class RemoteAgent {
     next.connections[id]!.status = status;
     next.connections[id]!.error = error;
     if (status === "online") next.connections[id]!.last_seen = this.#now();
+    this.#config = next;
     try {
       this.#persist(next);
-      this.#config = next;
     } catch {}
   }
   #disconnect(id: string, operation: "disconnect" | "remove") {
     const next = structuredClone(this.#config);
     if (operation === "remove") {
       delete next.connections[id];
-      const timer = this.#heartbeat.get(id);
-      if (timer) clearInterval(timer);
-      this.#heartbeat.delete(id);
     } else if (next.connections[id]) {
       next.connections[id]!.status = "disconnected";
       next.connections[id]!.error = null;
     }
     this.#persist(next);
     this.#config = next;
+    const timer = this.#heartbeat.get(id);
+    if (timer) clearInterval(timer);
+    this.#heartbeat.delete(id);
+    this.#pairAttempts.delete(id);
     this.#generation++;
     return this.#status();
   }
@@ -620,23 +652,32 @@ export class RemoteAgent {
     try {
       result = await exchangeRemotePeer(this.#identity, connection.address, id, body);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "REMOTE_OFFLINE";
-      const status = code.includes("REMOTE_REVOKED")
-        ? "revoked"
-        : code.includes("REMOTE_SHARING_DISABLED")
-          ? "sharing-disabled"
-          : code.includes("REMOTE_INDEX_DISABLED")
-            ? "index-disabled"
-            : code.includes("IDENTITY_CHANGED")
-              ? "identity-changed"
-              : "offline";
+      if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
+      const status = this.#errorStatus(error);
       this.#updateConnection(id, status, status);
+      if (status !== "offline") {
+        const timer = this.#heartbeat.get(id);
+        if (timer) clearInterval(timer);
+        this.#heartbeat.delete(id);
+      }
       throw error;
     }
-    if (generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
+    if (this.#stopped || generation !== this.#generation) throw new Error("REMOTE_DISCONNECTED");
     this.#updateConnection(id, "online", null);
     this.#startHeartbeat(id);
     return value.operation === "connect" ? this.#status() : result.result;
+  }
+  #errorStatus(error: unknown) {
+    const code = error instanceof Error ? error.message : "REMOTE_OFFLINE";
+    return code.includes("REMOTE_REVOKED")
+      ? "revoked"
+      : code.includes("REMOTE_SHARING_DISABLED")
+        ? "sharing-disabled"
+        : code.includes("REMOTE_INDEX_DISABLED")
+          ? "index-disabled"
+          : code.includes("IDENTITY_CHANGED")
+            ? "identity-changed"
+            : "offline";
   }
   async #serveRequest(
     peerId: string,
@@ -707,7 +748,7 @@ export class RemoteAgent {
     if (op !== "catalog" && op !== "events") throw new Error("unsupported operation");
     this.#ensureIndex();
     const epoch = this.index.generation();
-    const output = op === "catalog" ? this.#catalog() : await this.#events(request);
+    const output = op === "catalog" ? await this.#catalog() : await this.#events(request);
     if (signal.aborted) throw new Error("REMOTE_DISCONNECTED");
     this.#ensureIndex();
     if (this.index.generation() !== epoch) throw new Error("index-disabled");
@@ -734,19 +775,36 @@ export class RemoteAgent {
       return (error as NodeJS.ErrnoException).code === "ENOENT";
     }
   }
-  #catalog() {
+  async #catalog() {
     const workspaces = this.store.listWorkspaces() as Array<Record<string, unknown>>;
-    const registered = new Set(workspaces.map((workspace) => workspace.id));
-    const sessions = workspaces.flatMap((workspace) =>
-      this.store.sessions.list(String(workspace.id)),
+    let sessions: ReturnType<BackendStore["sessions"]["list"]> = [];
+    for (const workspace of workspaces) {
+      sessions.push(...(await this.index.read(String(workspace.id))));
+      if (sessions.length > 20_000) throw new Error("response-too-large");
+    }
+    try {
+      sessions = await projectPairedManagedSessions(
+        this.store,
+        this.readers,
+        path.dirname(path.dirname(this.#file)),
+        sessions,
+      );
+    } catch {
+      // Ownership enrichment is optional. Never log native/ledger paths or IDs,
+      // and retain the untouched native catalog when ownership cannot be proved.
+      console.warn("Managed session catalog projection unavailable");
+    }
+    const registered = new Set(
+      (this.store.listWorkspaces() as Array<Record<string, unknown>>).map(
+        (workspace) => workspace.id,
+      ),
     );
-    if (sessions.length > 20_000) throw new Error("response-too-large");
     return {
       workspaces: workspaces
         .filter((workspace) => registered.has(workspace.id))
         .map((workspace) => ({
           id: workspace.id,
-          path: workspace.canonical_path,
+          path: workspace.path,
           name: workspace.name,
           status: workspace.status,
           asset_count: workspace.asset_count,

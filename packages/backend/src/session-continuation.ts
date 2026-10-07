@@ -327,6 +327,7 @@ export async function prepareSessionHandoff(
   store: BackendStore,
   commands: Commands,
   env: NodeJS.ProcessEnv,
+  cursorBridge?: import("./cursor-bridge").CursorBridge,
 ): Promise<unknown> {
   const { request, mcpHubStatus } = z
     .object({
@@ -335,6 +336,8 @@ export async function prepareSessionHandoff(
         target_agent: targetSchema,
         format: z.enum(["markdown", "json"]),
         history_budget_tokens: z.number().int().positive(),
+        target_surface: z.enum(["cursor-ide"]).optional(),
+        binding_id: z.string().uuid().optional(),
       }),
       mcpHubStatus: hubSchema,
     })
@@ -377,10 +380,41 @@ export async function prepareSessionHandoff(
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+  } else if (request.target_agent === "cursor" && request.target_surface === "cursor-ide") {
+    try {
+      if (!request.binding_id || !cursorBridge) throw new Error("cursor-binding-required");
+      const context = cursorBridge.context(
+        request.binding_id,
+        store.workspacePath(source.workspace_id),
+      );
+      nativeCapability = {
+        supported: true,
+        beta: true,
+        target_fingerprint: createHash("sha256").update(JSON.stringify(context)).digest("hex"),
+      };
+    } catch (error) {
+      nativeCapability = {
+        supported: false,
+        beta: true,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
   } else {
     nativeCapability = await nativeImportCapability(request.target_agent, commands, env);
   }
   const window = planSessionWindow(document, request.history_budget_tokens, candidateArchiveId);
+  if (
+    nativeCapability.supported &&
+    request.target_agent === "cursor" &&
+    request.target_surface === "cursor-ide" &&
+    window.strategy !== "full"
+  ) {
+    nativeCapability = {
+      supported: false,
+      beta: true,
+      reason: "cursor-ide-full-history-required",
+    };
+  }
   const mode = nativeCapability.supported ? "native-session" : "handoff-file";
   const archiveId = window.strategy === "windowed" ? candidateArchiveId : undefined;
   const mcpAvailable =

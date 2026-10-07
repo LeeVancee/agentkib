@@ -16,12 +16,22 @@ export class CodexFollowerBridge {
   #lastFullRefresh = 0;
   #resyncAfterMutation = false;
   #closed = false;
+  #operations: Promise<void> = Promise.resolve();
 
-  private constructor(readonly connection: CodexFollowerConnection) {}
+  private constructor(
+    readonly connection: CodexFollowerConnection,
+    private readonly onSnapshot?: (
+      snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>,
+    ) => void,
+  ) {}
 
-  static async connect(endpoint: string, conversationId: string): Promise<CodexFollowerBridge> {
+  static async connect(
+    endpoint: string,
+    conversationId: string,
+    onSnapshot?: (snapshot: ReturnType<CodexFollowerState["streamSnapshot"]>) => void,
+  ): Promise<CodexFollowerBridge> {
     const connection = await CodexFollowerConnection.connectInstalled(endpoint);
-    const bridge = new CodexFollowerBridge(connection);
+    const bridge = new CodexFollowerBridge(connection, onSnapshot);
     try {
       await bridge.select(conversationId);
       return bridge;
@@ -44,8 +54,14 @@ export class CodexFollowerBridge {
   }
 
   async select(conversationId: string): Promise<void> {
+    return this.#enqueue(() => this.#select(conversationId));
+  }
+
+  async #select(conversationId: string): Promise<void> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(conversationId))
       throw new Error("select an explicit Codex conversation UUID");
+    const usageRecovery =
+      this.#state?.conversationId === conversationId ? this.#state.usageRecovery() : undefined;
     this.#unfollow();
     const response = await this.connection.request("thread-owner-discovery", {
       hostId: "local",
@@ -55,13 +71,14 @@ export class CodexFollowerBridge {
     if (typeof ownerClientId !== "string" || !ownerClientId)
       throw new Error("no Codex session owner found");
     if (ownerClientId === this.connection.clientId) throw new Error("cannot follow this client");
-    const state = new CodexFollowerState(conversationId, ownerClientId);
+    const state = new CodexFollowerState(conversationId, ownerClientId, usageRecovery);
     this.#state = state;
     try {
       await this.#followAndAwaitSnapshot(0);
       this.#lastOwnerCheck = Date.now();
       this.#lastFullRefresh = this.#lastOwnerCheck;
       this.#resyncAfterMutation = false;
+      this.#publishSnapshot(state);
     } catch (error) {
       state.invalidate("unsupported");
       throw error;
@@ -69,16 +86,20 @@ export class CodexFollowerBridge {
   }
 
   async observeLive(): Promise<CodexFollowerState> {
+    return this.#enqueue(() => this.#observeLive());
+  }
+
+  async #observeLive(): Promise<CodexFollowerState> {
     const state = this.#requireState();
     if (state.revision === null) {
-      await this.select(state.conversationId);
+      await this.#select(state.conversationId);
       return this.#requireState();
     }
     if (
       this.#resyncAfterMutation ||
       Date.now() - this.#lastFullRefresh >= FULL_REFRESH_INTERVAL_MS
     ) {
-      await this.refresh();
+      await this.#refresh();
       return this.#requireState();
     }
     const before = state.snapshotCount;
@@ -91,7 +112,10 @@ export class CodexFollowerBridge {
           undefined,
           (message) => {
             if (isFollowingStatusRequest(message, state)) resubscribe = true;
-            else state.notification(message);
+            else {
+              state.notification(message);
+              this.#publishSnapshot(state);
+            }
           },
         );
         if (!isRecord(response) || response.handledByClientId !== state.ownerClientId)
@@ -113,6 +137,7 @@ export class CodexFollowerBridge {
           break;
         }
         state.notification(message);
+        this.#publishSnapshot(state);
       }
       if (state.revision === null) throw new Error("Codex follower state was invalidated");
       if (state.snapshotCount > before) this.#lastFullRefresh = Date.now();
@@ -124,9 +149,13 @@ export class CodexFollowerBridge {
   }
 
   async refresh(): Promise<CodexFollowerState> {
+    return this.#enqueue(() => this.#refresh());
+  }
+
+  async #refresh(): Promise<CodexFollowerState> {
     const state = this.#requireState();
     if (state.revision === null) {
-      await this.select(state.conversationId);
+      await this.#select(state.conversationId);
       return this.#requireState();
     }
     try {
@@ -135,7 +164,10 @@ export class CodexFollowerBridge {
         { hostId: "local", conversationId: state.conversationId },
         undefined,
         (message) => {
-          if (!isFollowingStatusRequest(message, state)) state.notification(message);
+          if (!isFollowingStatusRequest(message, state)) {
+            state.notification(message);
+            this.#publishSnapshot(state);
+          }
         },
       );
       if (!isRecord(response) || response.handledByClientId !== state.ownerClientId)
@@ -144,6 +176,7 @@ export class CodexFollowerBridge {
       this.#lastOwnerCheck = Date.now();
       this.#lastFullRefresh = this.#lastOwnerCheck;
       this.#resyncAfterMutation = false;
+      this.#publishSnapshot(state);
       return state;
     } catch (error) {
       state.invalidate("unsupported");
@@ -157,8 +190,17 @@ export class CodexFollowerBridge {
     expectedRevision: number,
     onDispatch: () => void,
   ): Promise<unknown> {
-    const state = await this.observeLive();
-    if (state.revision !== expectedRevision) throw new Error("stale-or-disabled-control");
+    return this.#enqueue(() => this.#mutate(method, params, expectedRevision, onDispatch));
+  }
+
+  async #mutate(
+    method: string,
+    params: JsonRecord,
+    expectedRevision: number,
+    onDispatch: () => void,
+  ): Promise<unknown> {
+    const state = await this.#observeLive();
+    state.assertMutationAllowed(method, params, expectedRevision);
     let dispatched = false;
     let followingRequested = false;
     try {
@@ -168,9 +210,13 @@ export class CodexFollowerBridge {
         state.ownerClientId,
         (message) => {
           if (isFollowingStatusRequest(message, state)) followingRequested = true;
-          else state.notification(message);
+          else {
+            state.notification(message);
+            this.#publishSnapshot(state);
+          }
         },
         () => {
+          state.assertMutationAllowed(method, params, expectedRevision);
           dispatched = true;
           state.markMutationDispatched();
           onDispatch();
@@ -202,10 +248,26 @@ export class CodexFollowerBridge {
     this.connection.disconnect();
   }
 
+  // Requests and notification drains share a single-consumer connection. Keep
+  // each whole operation together, including the read before a mutation.
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#operations.then(operation);
+    this.#operations = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
   #requireState(): CodexFollowerState {
     if (!this.connected) throw new Error("Codex IPC disconnected");
     if (!this.#state) throw new Error("no Codex session selected");
     return this.#state;
+  }
+
+  #publishSnapshot(state: CodexFollowerState): void {
+    if (state.revision === null) return;
+    this.onSnapshot?.(state.streamSnapshot());
   }
 
   async #followAndAwaitSnapshot(baseline: number): Promise<void> {
@@ -226,6 +288,7 @@ export class CodexFollowerBridge {
       if (message === null) break;
       if (await this.#resubscribeIfRequested(message, state)) continue;
       state.notification(message);
+      this.#publishSnapshot(state);
       if (state.revision !== null && state.snapshotCount > baseline) return;
     }
     throw new Error("no compatible Codex owner snapshot received");

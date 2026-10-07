@@ -1,13 +1,21 @@
 import { createConnection, type Socket } from "node:net";
-import { open, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
+import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { nativeBindings } from "./native-files";
+import { versionAtLeast } from "./native-version";
 
 const CLIENT_TYPE = "agentkib-codex-bridge";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const READ_TIMEOUT_MS = 3_000;
+// Electron's fs treats .asar paths as virtual directories. Package identity
+// verification needs the archive's physical bytes and canonical file path.
+const archiveFs: typeof fs = process.versions.electron
+  ? createRequire(import.meta.url)("original-fs")
+  : fs;
 const METHOD_VERSIONS: Readonly<Record<string, number>> = {
   initialize: 0,
   "thread-owner-discovery": 1,
@@ -23,8 +31,10 @@ const METHOD_VERSIONS: Readonly<Record<string, number>> = {
   "thread-follower-interrupt-turn": 4,
   "thread-stream-state-changed": 11,
 };
-const SUPPORTED_DESKTOP_VERSIONS = new Set(["26.917.62051", "26.924.22138"]);
-const SETTINGS_DESKTOP_VERSION = "26.924.22138";
+// IPC method versions remain strictly checked below. App versions use minimum
+// gates so compatible future patch releases do not become read-only by default.
+const MINIMUM_DESKTOP_VERSION = "26.917.62051";
+const SETTINGS_MINIMUM_DESKTOP_VERSION = "26.924.22138";
 
 type JsonRecord = Record<string, unknown>;
 type Frame = { bytes: Buffer; value: unknown };
@@ -65,7 +75,7 @@ export class CodexFollowerConnection {
         throw new Error("Codex IPC endpoint changed");
       const peerPath = await realpath(verifyPeer(socket, process.getuid()));
       const desktopVersion = await readDesktopVersion(peerPath);
-      if (!SUPPORTED_DESKTOP_VERSIONS.has(desktopVersion))
+      if (!versionAtLeast(desktopVersion, MINIMUM_DESKTOP_VERSION))
         throw new Error("unverified Codex Desktop installation");
       const connection = new CodexFollowerConnection(socket, desktopVersion, endpoint);
       try {
@@ -96,7 +106,7 @@ export class CodexFollowerConnection {
   }
 
   get supportsThreadSettings(): boolean {
-    return this.desktopVersion === SETTINGS_DESKTOP_VERSION;
+    return versionAtLeast(this.desktopVersion, SETTINGS_MINIMUM_DESKTOP_VERSION);
   }
 
   disconnect(): void {
@@ -359,7 +369,7 @@ async function readDesktopVersion(executable: string): Promise<string> {
   if (!appDirectory.endsWith(".app") || path.basename(root) !== "Contents")
     throw new Error("Codex IPC peer is not inside a Desktop app bundle");
   const asarPath = path.join(root, "Resources/app.asar");
-  if ((await realpath(asarPath)) !== asarPath)
+  if ((await archiveFs.promises.realpath(asarPath)) !== asarPath)
     throw new Error("Codex Desktop ASAR is not canonical");
   const packageData = await readAsarPackage(asarPath);
   if (packageData.name !== "openai-codex-electron" || typeof packageData.version !== "string")
@@ -368,7 +378,7 @@ async function readDesktopVersion(executable: string): Promise<string> {
 }
 
 async function readAsarPackage(filePath: string): Promise<JsonRecord> {
-  const file = await open(filePath, "r");
+  const file = await archiveFs.promises.open(filePath, "r");
   try {
     const { size: fileSize } = await file.stat();
     const prefix = Buffer.alloc(16);

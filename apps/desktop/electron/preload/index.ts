@@ -1,7 +1,8 @@
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopApi, DesktopRuntimeStatus } from "../api";
+import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi } from "../api";
 import type {
+  AgentKind,
   AppMenuCommandRequest,
   AppNavigationRequest,
   AppUpdateProgress,
@@ -98,15 +99,43 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:skills:apply-operation", token, allowModified),
     checkUpdates: () => ipcRenderer.invoke("agentkib:skills:check-updates"),
     prepareUpdate: (name: string) => ipcRenderer.invoke("agentkib:skills:prepare-update", name),
+    listVersions: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:list-versions", request),
+    prepareVersionChange: (libraryId: string, selector: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-version-change", libraryId, selector),
+    discardPreview: (token: string) => ipcRenderer.invoke("agentkib:skills:discard-preview", token),
     rollback: (name: string) => ipcRenderer.invoke("agentkib:skills:rollback", name),
     uninstall: (name: string) => ipcRenderer.invoke("agentkib:skills:uninstall", name),
     removed: () => ipcRenderer.invoke("agentkib:skills:removed"),
     restore: (id: string) => ipcRenderer.invoke("agentkib:skills:restore", id),
     readFile: (name: string, path: string) =>
       ipcRenderer.invoke("agentkib:skills:read-file", name, path),
+    inventory: () => ipcRenderer.invoke("agentkib:skills:inventory"),
+    targets: () => ipcRenderer.invoke("agentkib:skills:targets"),
+    getDetail: (request: unknown) => ipcRenderer.invoke("agentkib:skills:get-detail", request),
+    readDetailFile: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:read-detail-file", request),
+    prepareImport: (observationId: string) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-import", observationId),
+    prepareImports: (observationIds: string[]) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-imports", observationIds),
+    applyImports: (token: string) => ipcRenderer.invoke("agentkib:skills:apply-imports", token),
+    readPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
+      ipcRenderer.invoke("agentkib:skills:read-preview-file", token, path, targetId, itemId),
+    listDeployments: () => ipcRenderer.invoke("agentkib:skills:list-deployments"),
+    prepareDeployment: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:skills:prepare-deployment", request),
+    applyDeployment: (token: string, approveHome: boolean) =>
+      ipcRenderer.invoke("agentkib:skills:apply-deployment", token, approveHome),
   }),
   mcp: Object.freeze({
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
+    connectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:connection-info", workspaceId, targetAgent),
+    planConnection: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:plan-connection", workspaceId, targetAgent),
+    verifyConnection: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:verify-connection", workspaceId, targetAgent),
     updateNetwork: (settings: unknown) =>
       ipcRenderer.invoke("agentkib:mcp:update-network", settings),
     listServers: (project?: string) => ipcRenderer.invoke("agentkib:mcp:list-servers", project),
@@ -159,6 +188,10 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:insights:set-git-identity-enabled", id, enabled),
   }),
   workspace: Object.freeze({
+    cursorBridge: (request: import("../../src/core/types").CursorBridgeRequest) =>
+      ipcRenderer.invoke("agentkib:workspace:cursor-bridge", request),
+    bridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:bridge-bundle"),
+    revealBridgeBundle: () => ipcRenderer.invoke("agentkib:cursor:reveal-bridge-bundle"),
     scan: (project: string) => ipcRenderer.invoke("agentkib:workspace:scan", project),
     prepareManifest: (project: string) =>
       ipcRenderer.invoke("agentkib:workspace:prepare-manifest", project),
@@ -206,6 +239,8 @@ const desktopApi = Object.freeze({
       historyBudgetTokens: number,
       archiveId: string | undefined,
       targetFingerprint?: string,
+      targetSurface?: "cursor-ide",
+      bindingId?: string,
     ) =>
       ipcRenderer.invoke(
         "agentkib:session:plan-handoff",
@@ -221,6 +256,8 @@ const desktopApi = Object.freeze({
         historyBudgetTokens,
         archiveId,
         targetFingerprint,
+        targetSurface,
+        bindingId,
       ),
     continueHandoff: (changeSet: unknown, launchRequest: unknown, approveHome: boolean) =>
       ipcRenderer.invoke(
@@ -345,3 +382,30 @@ const desktopApi = Object.freeze({
 }) satisfies DesktopApi;
 
 contextBridge.exposeInMainWorld("agentkibDesktop", desktopApi);
+contextBridge.exposeInMainWorld(
+  "desktopConversation",
+  Object.freeze({
+    request: (path, body) => ipcRenderer.invoke("agentkib:conversation:request", path, body),
+    upload: (input) => ipcRenderer.invoke("agentkib:conversation:upload", input),
+    subscribe: (sessionId, cursor) =>
+      ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor),
+    acknowledge: (id, cursor) =>
+      ipcRenderer.invoke("agentkib:conversation:acknowledge", id, cursor),
+    unsubscribe: (id) => ipcRenderer.invoke("agentkib:conversation:unsubscribe", id),
+    onEvent: (listener) => subscribe("agentkib:conversation:event", listener),
+    onUnavailable: (listener) => subscribe("agentkib:conversation:unavailable", listener),
+    onControlChanged: (listener) =>
+      subscribe<{ sessionId: string; notificationId: string }>(
+        "agentkib:conversation:control-changed",
+        ({ sessionId, notificationId }) => {
+          try {
+            listener(sessionId);
+          } finally {
+            void ipcRenderer
+              .invoke("agentkib:conversation:acknowledge-control", notificationId)
+              .catch(() => {});
+          }
+        },
+      ),
+  } satisfies DesktopConversationApi),
+);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { SessionStore } from "./session-store";
 import { SESSION_AGENTS, type NativeListing, type SessionReaders } from "./session-readers";
 import { parameters } from "./rpc";
@@ -7,6 +8,7 @@ import { parameters } from "./rpc";
 export class SessionIndex {
   #epoch = 0n;
   #closed = false;
+  #refreshes = new Map<string, Promise<void>>();
   constructor(
     readonly store: SessionStore,
     readonly readers: Pick<SessionReaders, "list">,
@@ -31,7 +33,14 @@ export class SessionIndex {
     this.store.clear(workspaceId ?? null);
     return null;
   }
-  async refresh(value: unknown) {
+  read(workspaceId: string) {
+    // A directory read only rescans the pending Codex classification, leaving
+    // other providers and the normal refresh schedule unchanged.
+    return this.store.codexClassificationPending(workspaceId)
+      ? this.#queue(workspaceId, false, true)
+      : Promise.resolve(this.store.list(workspaceId));
+  }
+  refresh(value: unknown) {
     const { workspaceId, force } = parameters(
       z.object({
         workspaceId: z.string(),
@@ -39,20 +48,42 @@ export class SessionIndex {
       }),
       value,
     );
-    if (this.#closed || !this.enabled()) return [];
+    return this.#queue(workspaceId, force, false);
+  }
+  #queue(workspaceId: string, force: boolean, codexOnly: boolean) {
     const epoch = this.#epoch;
-    if (!force) {
+    const previous = this.#refreshes.get(workspaceId);
+    const refresh = (previous ?? Promise.resolve()).then(() =>
+      this.#scan(workspaceId, force || previous !== undefined, epoch, codexOnly),
+    );
+    const completed = refresh.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#refreshes.set(workspaceId, completed);
+    void completed.then(() => {
+      if (this.#refreshes.get(workspaceId) === completed) this.#refreshes.delete(workspaceId);
+    });
+    return refresh;
+  }
+  async #scan(workspaceId: string, force: boolean, epoch: bigint, codexOnly: boolean) {
+    if (this.#closed || epoch !== this.#epoch || !this.enabled()) return [];
+    const collection = sessionCollection(workspaceId);
+    const pendingClassification = this.store.codexClassificationPending(workspaceId);
+    if (codexOnly && !pendingClassification) return this.store.list(workspaceId);
+    const agents = collection || codexOnly ? (["codex"] as const) : SESSION_AGENTS;
+    if (!force && !pendingClassification) {
       const statuses = this.store.status(workspaceId);
       if (
-        statuses.length === SESSION_AGENTS.length &&
+        statuses.length === agents.length &&
         statuses.every((status) => status.freshness === "fresh")
       )
         return this.store.list(workspaceId);
     }
-    const workspace = this.store.workspacePath(workspaceId);
+    const workspace = collection ? workspaceId : this.store.workspacePath(workspaceId);
     const current = () => !this.#closed && epoch === this.#epoch && this.enabled();
     let normalizedOwner: ReturnType<SessionStore["owner"]> | undefined;
-    for (const agent of SESSION_AGENTS) {
+    for (const agent of agents) {
       let listing: NativeListing;
       try {
         listing = await this.readers.list(agent, workspace);

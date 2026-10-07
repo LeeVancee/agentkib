@@ -56,6 +56,7 @@ export const TYPESCRIPT_WORKSPACE_METHODS = new Set<string>([
   RUNTIME_METHODS.removeScanRoot,
   RUNTIME_METHODS.refreshDiscovery,
   RUNTIME_METHODS.openWorkspaceWithApp,
+  RUNTIME_METHODS.cursorBridge,
 ]);
 
 export const TYPESCRIPT_WORKSPACE_OPENER_METHODS = new Set<string>([
@@ -168,6 +169,11 @@ export const TYPESCRIPT_SKILL_METHODS = new Set<string>([
   RUNTIME_METHODS.applySkillOperation,
   RUNTIME_METHODS.checkSkillUpdates,
   RUNTIME_METHODS.prepareSkillUpdate,
+  RUNTIME_METHODS.listSkillVersions,
+  RUNTIME_METHODS.prepareSkillVersionChange,
+  RUNTIME_METHODS.discardSkillPreview,
+  RUNTIME_METHODS.prepareSkillImports,
+  RUNTIME_METHODS.applySkillImports,
   RUNTIME_METHODS.rollbackSkill,
   RUNTIME_METHODS.uninstallSkill,
   RUNTIME_METHODS.listRemovedSkills,
@@ -181,6 +187,9 @@ export const TYPESCRIPT_AGENT_TOOL_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_MCP_METHODS = new Set<string>([
+  RUNTIME_METHODS.mcpConnectionInfo,
+  RUNTIME_METHODS.planMcpConnection,
+  RUNTIME_METHODS.verifyMcpConnection,
   RUNTIME_METHODS.mcpHubStatus,
   RUNTIME_METHODS.updateMcpNetwork,
   RUNTIME_METHODS.startMcpOAuth,

@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { compareUtf8 } from "./workspaces";
+import { SkillManager } from "./skill-manager";
+import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
 
 const MAX_TREE_ENTRIES = 20_000;
 const MAX_CANDIDATES = 200;
@@ -13,6 +16,11 @@ const MAX_ENTRY_BYTES = 1024 * 1024;
 const MAX_PREVIEW_BYTES = 256 * 1024;
 const MAX_PACKAGE_ENTRIES = 4_096;
 const PREVIEW_TTL_MS = 15 * 60_000;
+const MAX_STAGED_BYTES = 1024 * 1024 * 1024;
+const PREVIEW_METADATA_FILE = ".agentkib-preview.json";
+// Preparation and application may outlive a preview's TTL, including across
+// Skills instances sharing the same Home in this process.
+const activePreviewDirectories = new Set<string>();
 const CURATED = "https://github.com/openai/skills/tree/main/skills/.curated";
 
 function portableSkillPath(value: string): string {
@@ -47,14 +55,21 @@ async function mapConcurrent<T, R>(
 ): Promise<R[]> {
   const output = new Array<R>(items.length);
   let cursor = 0;
+  let failure: { reason: unknown } | undefined;
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (cursor < items.length) {
+      while (!failure && cursor < items.length) {
         const index = cursor++;
-        output[index] = await mapper(items[index]!);
+        try {
+          output[index] = await mapper(items[index]!);
+        } catch (reason) {
+          failure ??= { reason };
+        }
       }
     }),
   );
+  // Callers can clean up only after in-flight mappers have stopped writing.
+  if (failure) throw failure.reason;
   return output;
 }
 
@@ -65,7 +80,9 @@ type Source = {
   path: string;
   resolved_commit: string;
   tree_sha: string;
+  ref_type?: "tag" | "branch" | "commit";
 };
+type VersionSelector = { type: "tag" | "branch" | "commit"; value: string };
 type Candidate = {
   name: string;
   description: string;
@@ -79,6 +96,9 @@ type LockEntry = {
   content_sha256: string;
   installed_at: string;
   updated_at: string;
+  display_name?: string;
+  local_source?: string | null;
+  local_resolved_path?: string | null;
 };
 type LockFile = {
   schema_version: number;
@@ -93,7 +113,45 @@ type Prepared = {
   tempPath: string;
   lock: LockEntry;
   expectedHash: string | null;
+  expectedLock: string;
+  beforePath: string | null;
+  stagedBytes: number;
 };
+type ImportItem = {
+  id: string;
+  observation_ids: string[];
+  paths: string[];
+  agents: string[];
+  resolved_path: string | null;
+  library_id: string | null;
+  display_name: string;
+  status: "ready" | "skipped" | "failed";
+  reason?: string;
+  preview?: Record<string, unknown>;
+};
+type ImportBatch = {
+  token: string;
+  expires_at: string;
+  total_size: number;
+  items: ImportItem[];
+  prepared: Map<string, Prepared>;
+  skipped: Map<string, { name: string; expectedHash: string; expectedLock: string }>;
+};
+type Installed = Awaited<ReturnType<Skills["installed"]>>[number] & { warnings?: string[] };
+type ImportReport = {
+  token: string;
+  items: Array<{
+    id: string;
+    observation_ids: string[];
+    status: "imported" | "skipped" | "failed";
+    library_id?: string;
+    skill?: Installed;
+    error?: string;
+    warnings?: string[];
+  }>;
+  warnings?: string[];
+};
+type Observation = Awaited<ReturnType<SkillManager["inventory"]>>["observations"][number];
 type SkillMetadata = {
   name: string;
   description: string;
@@ -118,11 +176,20 @@ export class Skills {
   readonly root: string;
   readonly cache: string;
   #previews = new Map<string, Prepared>();
+  #imports = new Map<string, ImportBatch>();
+  #importResults = new Map<string, ImportReport>();
+  #previewRetention: Promise<void> = Promise.resolve();
   #busy = false;
+  readonly manager: SkillManager;
 
-  constructor(environment: NodeJS.ProcessEnv, dataDir: string) {
+  constructor(
+    environment: NodeJS.ProcessEnv,
+    dataDir: string,
+    listWorkspaces: () => unknown[] = () => [],
+  ) {
     this.root = skillRoot(environment);
     this.cache = path.join(dataDir, "skill-cache");
+    this.manager = new SkillManager(this.root, environment, listWorkspaces);
   }
 
   async request(method: string, params: Record<string, unknown>) {
@@ -141,6 +208,10 @@ export class Skills {
         return this.checkUpdates();
       case "skills.prepareUpdate":
         return this.prepareUpdate(this.#string(params.name, "name"));
+      case "skills.listVersions":
+        return this.listVersions(params);
+      case "skills.prepareVersionChange":
+        return this.prepareVersionChange(params);
       case "skills.rollback":
         return this.#lifecycle(() => this.rollback(params));
       case "skills.uninstall":
@@ -151,6 +222,34 @@ export class Skills {
         return this.#lifecycle(() => this.restore(params));
       case "skills.readFile":
         return this.readFile(params);
+      case "skills.inventory":
+        return this.manager.inventory();
+      case "skills.targets":
+        return this.manager.targets();
+      case "skills.getDetail":
+        return this.manager.detail(params);
+      case "skills.readDetailFile":
+        return this.manager.readDetailFile(params);
+      case "skills.prepareImport":
+        return this.prepareImport(this.#string(params.observation_id, "observation_id"));
+      case "skills.prepareImports":
+        return this.#lifecycle(() => this.prepareImports(params));
+      case "skills.applyImports":
+        return this.#lifecycle(() => this.applyImports(params));
+      case "skills.discardPreview":
+        return this.#lifecycle(() => this.discardPreview(this.#string(params.token, "token")));
+      case "skills.readPreviewFile":
+        if (params.target_id !== undefined && params.item_id !== undefined)
+          throw new Error("Choose exactly one preview target or import item");
+        return params.target_id === undefined
+          ? this.readPreviewFile(params)
+          : this.manager.readPreviewFile(params);
+      case "skills.listDeployments":
+        return this.manager.listDeployments();
+      case "skills.prepareDeployment":
+        return this.manager.prepareDeployment(params);
+      case "skills.applyDeployment":
+        return this.#lifecycle(() => this.manager.applyDeployment(params));
       default:
         throw new Error(`Unknown Skill method: ${method}`);
     }
@@ -227,7 +326,8 @@ export class Skills {
         const tree = selected.entries.find(
           (value) => value.type === "tree" && value.path === directory,
         );
-        if (!tree) throw new Error(`Could not resolve tree for Skill directory ${directory}`);
+        const treeSha = tree?.sha ?? (directory === "" ? selected.rootTree : undefined);
+        if (!treeSha) throw new Error(`Could not resolve tree for Skill directory ${directory}`);
         return {
           ...metadata,
           source: {
@@ -239,9 +339,10 @@ export class Skills {
                 : "github",
             repository: `${selected.owner}/${selected.repository}`,
             ref: selected.reference,
+            ...(selected.referenceType ? { ref_type: selected.referenceType } : {}),
             path: directory,
             resolved_commit: selected.commit,
-            tree_sha: tree.sha,
+            tree_sha: treeSha,
           },
         } as Candidate;
       } catch (error) {
@@ -270,7 +371,10 @@ export class Skills {
       const record = lock.skills[name];
       let metadata: SkillMetadata | null = null;
       try {
-        metadata = this.#frontmatter(await fs.readFile(path.join(folder, "SKILL.md"), "utf8"));
+        metadata = this.#frontmatter(
+          await fs.readFile(path.join(folder, "SKILL.md"), "utf8"),
+          record?.display_name ?? name,
+        );
       } catch {
         if (!record) continue;
       }
@@ -319,13 +423,14 @@ export class Skills {
       installed.map(async (skill) => {
         if (!skill.source) return skill;
         try {
-          const key = `${skill.source.repository.toLowerCase()}#${skill.source.ref}`;
+          const key = `${skill.source.repository.toLowerCase()}#${skill.source.ref_type ?? ""}:${skill.source.ref}`;
           let commit = cache.get(key);
           if (!commit) {
             commit = this.#commit(
               skill.source.repository.split("/")[0]!,
               skill.source.repository.split("/")[1]!,
               skill.source.ref,
+              skill.source.ref_type,
             );
             cache.set(key, commit);
           }
@@ -338,10 +443,11 @@ export class Skills {
           const tree = selected.entries.find(
             (entry) => entry.type === "tree" && entry.path === skill.source!.path,
           );
+          const treeSha = skill.source.path === "" ? selected.rootTree : tree?.sha;
           return {
             ...skill,
             status:
-              tree?.sha && tree.sha !== skill.source.tree_sha ? "update-available" : skill.status,
+              treeSha && treeSha !== skill.source.tree_sha ? "update-available" : skill.status,
           };
         } catch {
           return skill;
@@ -353,6 +459,647 @@ export class Skills {
   async prepareInstall(source: Source) {
     return this.#prepare(source, "install");
   }
+  async #managedDirectory(directory: string, create = false) {
+    const relative = path.relative(this.root, directory);
+    if (relative.startsWith("..") || path.isAbsolute(relative))
+      throw new Error("Skill operation directory must remain inside AgentKib Home");
+    let current = this.root;
+    for (const part of ["", ...relative.split(path.sep).filter(Boolean)]) {
+      current = part ? path.join(current, part) : current;
+      let info = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!info && create) {
+        await fs
+          .mkdir(current, { recursive: current === this.root })
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "EEXIST") throw error;
+          });
+        info = await fs.lstat(current);
+      }
+      if (info && (!info.isDirectory() || info.isSymbolicLink()))
+        throw new Error("Skill operation directory contains a link or non-directory entry");
+    }
+  }
+
+  async #targetHash(target: string) {
+    await this.#managedDirectory(path.dirname(target));
+    return this.#directoryPackageHash(target);
+  }
+
+  async #directoryPackageHash(target: string) {
+    if (!(await this.#regularDirectory(target))) return null;
+    return (await this.#packageHash(target)).hash;
+  }
+
+  async #regularDirectory(target: string) {
+    const info = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info) return null;
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error("Skill target must be a regular directory");
+    return info;
+  }
+
+  #lockFingerprint(entry: LockEntry | undefined) {
+    const ordered = (value: unknown): unknown => {
+      if (!value || typeof value !== "object") return value;
+      if (Array.isArray(value)) return value.map(ordered);
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([a], [b]) => compareUtf8(a, b))
+          .map(([key, item]) => [key, ordered(item)]),
+      );
+    };
+    return JSON.stringify(ordered(entry ?? null));
+  }
+
+  async #staging() {
+    const directory = path.join(this.root, ".staging", "skills");
+    await this.#managedDirectory(directory, true);
+    await this.#managedDirectory(path.join(this.root, "skills"), true);
+    const [staging, target] = await Promise.all([
+      fs.stat(directory),
+      fs.stat(path.join(this.root, "skills")),
+    ]);
+    if (staging.dev !== target.dev)
+      throw new Error("Skill staging and library must be on the same volume");
+    const tempPath = await fs.mkdtemp(path.join(directory, `preview-${randomUUID()}-`));
+    activePreviewDirectories.add(tempPath);
+    try {
+      await this.#writePreviewMetadata(
+        tempPath,
+        new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
+      );
+      return tempPath;
+    } catch (error) {
+      activePreviewDirectories.delete(tempPath);
+      await fs.rm(tempPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async #writePreviewMetadata(tempPath: string, expiresAt: string) {
+    await this.#managedDirectory(tempPath);
+    const directory = path.basename(tempPath);
+    const marker = path.join(tempPath, PREVIEW_METADATA_FILE);
+    const temporary = `${marker}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(
+        temporary,
+        JSON.stringify({
+          schema_version: 1,
+          kind: "agentkib-skill-preview",
+          id: directory.slice(8, 44),
+          root: path.resolve(this.root),
+          directory,
+          expires_at: expiresAt,
+        }),
+        { flag: "wx", mode: 0o600 },
+      );
+      await fs.rename(temporary, marker);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+
+  async #expireOrphanPreviews(now: number) {
+    const staging = path.join(this.root, ".staging", "skills");
+    await this.#managedDirectory(staging);
+    const directories = await fs.readdir(staging).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const directory of directories) {
+      const tempPath = path.join(staging, directory);
+      if (activePreviewDirectories.has(tempPath)) continue;
+      const info = await fs.lstat(tempPath).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) continue;
+      const marker = path.join(tempPath, PREVIEW_METADATA_FILE);
+      const markerInfo = await fs.lstat(marker).catch(() => null);
+      if (!markerInfo?.isFile() || markerInfo.isSymbolicLink() || markerInfo.size > 4096) continue;
+      const handle = await fs
+        .open(marker, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+        .catch(() => null);
+      if (!handle) continue;
+      let owned = false;
+      try {
+        const opened = await handle.stat();
+        if (
+          !opened.isFile() ||
+          opened.size > 4096 ||
+          opened.dev !== markerInfo.dev ||
+          opened.ino !== markerInfo.ino
+        )
+          continue;
+        const value = JSON.parse(await handle.readFile("utf8")) as Record<string, unknown>;
+        const expires = typeof value.expires_at === "string" ? Date.parse(value.expires_at) : NaN;
+        owned =
+          value.schema_version === 1 &&
+          value.kind === "agentkib-skill-preview" &&
+          typeof value.id === "string" &&
+          /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.id) &&
+          directory.startsWith(`preview-${value.id}-`) &&
+          /^[a-zA-Z0-9]{6}$/.test(directory.slice(45)) &&
+          value.directory === directory &&
+          value.root === path.resolve(this.root) &&
+          Number.isFinite(expires) &&
+          new Date(expires).toISOString() === value.expires_at &&
+          expires <= now;
+      } catch {
+        // Unknown or invalid receipts never authorize removing a directory.
+      } finally {
+        await handle.close();
+      }
+      if (!owned || activePreviewDirectories.has(tempPath)) continue;
+      await this.#managedDirectory(staging);
+      const current = await fs.lstat(tempPath).catch(() => null);
+      if (
+        !current?.isDirectory() ||
+        current.isSymbolicLink() ||
+        current.dev !== info.dev ||
+        current.ino !== info.ino ||
+        activePreviewDirectories.has(tempPath)
+      )
+        continue;
+      await fs.rm(tempPath, { recursive: true, force: true });
+    }
+  }
+
+  async #expirePreviews() {
+    const now = Date.now();
+    await this.#managedDirectory(path.join(this.root, ".staging", "skills"));
+    for (const [token, prepared] of this.#previews) {
+      if (
+        Date.parse(String(prepared.preview.expires_at)) > now ||
+        activePreviewDirectories.has(prepared.tempPath)
+      )
+        continue;
+      this.#previews.delete(token);
+      await fs.rm(prepared.tempPath, { recursive: true, force: true });
+    }
+    for (const [token, batch] of this.#imports) {
+      if (
+        Date.parse(batch.expires_at) > now ||
+        [...batch.prepared.values()].some((item) => activePreviewDirectories.has(item.tempPath))
+      )
+        continue;
+      this.#imports.delete(token);
+      await Promise.all(
+        [...batch.prepared.values()].map((item) =>
+          fs.rm(item.tempPath, { recursive: true, force: true }),
+        ),
+      );
+    }
+    await this.#expireOrphanPreviews(now);
+  }
+
+  async discardPreview(token: string) {
+    await this.#expirePreviews();
+    const prepared = this.#previews.get(token);
+    const batch = this.#imports.get(token);
+    this.#previews.delete(token);
+    this.#imports.delete(token);
+    const paths = [
+      ...(prepared ? [prepared.tempPath] : []),
+      ...[...(batch?.prepared.values() ?? [])].map((item) => item.tempPath),
+    ];
+    await Promise.all(paths.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+    return { discarded: Boolean(prepared || batch) };
+  }
+
+  async #withPreviewRetention<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#previewRetention;
+    let release!: () => void;
+    this.#previewRetention = new Promise<void>((resolve) => (release = resolve));
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  async #remember(prepared: Prepared) {
+    return this.#withPreviewRetention(async () => {
+      try {
+        while (this.#previews.size >= 4) {
+          const oldest = [...this.#previews].find(
+            ([, item]) => !activePreviewDirectories.has(item.tempPath),
+          );
+          if (!oldest) throw new Error("Skill previews are being applied; retry preparation later");
+          const [token, previous] = oldest;
+          this.#previews.delete(token);
+          await fs.rm(previous.tempPath, { recursive: true, force: true });
+        }
+        if (this.#retainedBytes() + prepared.stagedBytes > MAX_STAGED_BYTES)
+          throw new Error(
+            "Skill previews exceed the 1 GiB staging limit; close an existing preview",
+          );
+        await this.#writePreviewMetadata(prepared.tempPath, String(prepared.preview.expires_at));
+        this.#previews.set(String(prepared.preview.token), prepared);
+      } catch (error) {
+        await fs.rm(prepared.tempPath, { recursive: true, force: true });
+        throw error;
+      } finally {
+        activePreviewDirectories.delete(prepared.tempPath);
+      }
+    });
+  }
+
+  #retainedBytes() {
+    return (
+      [...this.#previews.values()].reduce((sum, item) => sum + item.stagedBytes, 0) +
+      [...this.#imports.values()].reduce((sum, item) => sum + item.total_size, 0)
+    );
+  }
+
+  async #reservedNames(lock: LockFile) {
+    await this.#managedDirectory(path.join(this.root, "skills"));
+    const names = await fs
+      .readdir(path.join(this.root, "skills"))
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+    return new Set(
+      [...names, ...Object.keys(lock.skills)].map((name) => name.normalize("NFC").toLowerCase()),
+    );
+  }
+
+  #allocateName(name: string, identity: string, reserved: Set<string>) {
+    let candidate = name;
+    const base = `${name}--${createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
+    for (let suffix = 1; reserved.has(candidate.normalize("NFC").toLowerCase()); suffix++)
+      candidate = suffix === 1 ? base : `${base}-${suffix}`;
+    reserved.add(candidate.normalize("NFC").toLowerCase());
+    return candidate;
+  }
+
+  async #prepareLocal(observation: Observation, reserved: Set<string>, lock: LockFile) {
+    if (!observation.resolved_path) throw new Error("Observed Skill location cannot be resolved");
+    const source = await fs.realpath(observation.resolved_path);
+    const initial = await skillPackage(source);
+    if (initial.diagnostics.length) throw new Error(initial.diagnostics.join("; "));
+    const tempPath = await this.#staging();
+    const packagePath = path.join(tempPath, "package");
+    try {
+      await copySkillPackage(source, packagePath);
+      if ((await skillPackage(source)).hash !== initial.hash)
+        throw new Error("Observed Skill changed while preparing the import");
+      const metadata = this.#frontmatter(
+        await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
+        path.basename(observation.path),
+      );
+      this.#validateSkillName(metadata.name);
+      const name = this.#allocateName(metadata.name, source, reserved);
+      const packageHash = await this.#packageHash(packagePath);
+      const files = (await skillPackage(packagePath)).files.map(({ path, size, executable }) => ({
+        path,
+        size,
+        executable,
+      }));
+      const now = new Date().toISOString();
+      return {
+        preview: {
+          token: randomUUID(),
+          operation: "install",
+          library_id: name,
+          skill: { ...metadata, source: null },
+          files,
+          added: files.map((file) => file.path),
+          modified: [],
+          removed: [],
+          total_size: packageHash.size,
+          local_modified: false,
+          expires_at: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
+        },
+        name,
+        packagePath,
+        tempPath,
+        beforePath: null,
+        stagedBytes: packageHash.size,
+        lock: {
+          source: null,
+          content_sha256: packageHash.hash,
+          installed_at: now,
+          updated_at: now,
+          display_name: metadata.name,
+          local_source: observation.path,
+          local_resolved_path: source,
+        },
+        expectedHash: null,
+        expectedLock: this.#lockFingerprint(lock.skills[name]),
+      } satisfies Prepared;
+    } catch (error) {
+      activePreviewDirectories.delete(tempPath);
+      await fs.rm(tempPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async prepareImport(observationId: string) {
+    await this.#expirePreviews();
+    const observation = (await this.manager.inventory()).observations.find(
+      (item) => item.id === observationId,
+    );
+    if (!observation) throw new Error("Skill observation no longer exists; refresh the inventory");
+    const lock = await this.#lock();
+    const prepared = await this.#prepareLocal(observation, await this.#reservedNames(lock), lock);
+    await this.#remember(prepared);
+    return prepared.preview;
+  }
+
+  async prepareImports(params: Record<string, unknown>) {
+    const ids = params.observation_ids;
+    if (
+      !Array.isArray(ids) ||
+      !ids.length ||
+      ids.length > 4096 ||
+      ids.some((id) => typeof id !== "string" || !id) ||
+      new Set(ids).size !== ids.length
+    )
+      throw new Error("Choose 1 to 4096 unique Skill observation IDs");
+    await this.#expirePreviews();
+    if (this.#imports.size >= 4)
+      throw new Error("Close an existing import preview before preparing another batch");
+    const inventory = await this.manager.inventory();
+    const lock = await this.#lock();
+    const reserved = await this.#reservedNames(lock);
+    const batch: ImportBatch = {
+      token: randomUUID(),
+      expires_at: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
+      total_size: 0,
+      items: [],
+      prepared: new Map(),
+      skipped: new Map(),
+    };
+    const discardPrepared = async (id: string) => {
+      const prepared = batch.prepared.get(id);
+      if (!prepared) return;
+      activePreviewDirectories.delete(prepared.tempPath);
+      await fs.rm(prepared.tempPath, { recursive: true, force: true });
+      batch.total_size -= prepared.stagedBytes;
+      batch.prepared.delete(id);
+    };
+    const groups = new Map<string, { item: ImportItem; hash?: string }>();
+    try {
+      for (const id of ids as string[]) {
+        const observation = inventory.observations.find((item) => item.id === id);
+        let item: ImportItem = {
+          id: randomUUID(),
+          observation_ids: [id],
+          paths: observation ? [observation.path] : [],
+          agents: observation?.agents ?? [],
+          resolved_path: observation?.resolved_path ?? null,
+          library_id: null,
+          display_name: observation?.name ?? id,
+          status: "failed",
+        };
+        let merged = false;
+        try {
+          if (!observation?.resolved_path)
+            throw new Error("Observed Skill location cannot be resolved; refresh the inventory");
+          const source = await fs.realpath(observation.resolved_path);
+          const sourceKey = process.platform === "win32" ? source.toLowerCase() : source;
+          const previousGroup = groups.get(sourceKey);
+          if (previousGroup) {
+            item = previousGroup.item;
+            merged = true;
+            item.observation_ids.push(id);
+            item.paths = [...new Set([...item.paths, observation.path])];
+            item.agents = [...new Set([...item.agents, ...observation.agents])];
+            if (item.status === "failed") continue;
+          } else {
+            item.resolved_path = source;
+            // Establish physical identity even if complete-package validation fails.
+            groups.set(sourceKey, { item });
+          }
+          const pkg = await skillPackage(source);
+          if (pkg.diagnostics.length) throw new Error(pkg.diagnostics.join("; "));
+          if (previousGroup) {
+            if (previousGroup.hash !== pkg.hash)
+              throw new Error("Observed Skill changed between linked locations; refresh and retry");
+            continue;
+          }
+          groups.set(sourceKey, { item, hash: pkg.hash });
+          let existingName: string | undefined;
+          const existingDiagnostics: string[] = [];
+          for (const [name, record] of Object.entries(lock.skills)) {
+            const origin = record.local_resolved_path ?? record.local_source;
+            if (!origin) continue;
+            // A recorded real path is frozen provenance, even if that path now
+            // points somewhere else. Only legacy entry paths need resolving.
+            const real = record.local_resolved_path
+              ? path.resolve(record.local_resolved_path)
+              : await fs.realpath(origin).catch(() => path.resolve(origin));
+            if (
+              (process.platform === "win32" ? real.toLowerCase() : real) !== sourceKey ||
+              record.content_sha256 !== pkg.hash
+            )
+              continue;
+            this.#validateId(name);
+            const target = path.join(this.root, "skills", name);
+            // Management-path failures still block the operation; only a damaged
+            // candidate package is excluded from deduplication and preserved.
+            await this.#managedDirectory(path.dirname(target));
+            try {
+              if ((await this.#directoryPackageHash(target)) === pkg.hash) {
+                existingName = name;
+                break;
+              }
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              existingDiagnostics.push(
+                `Existing library snapshot "${name}" could not be verified and was not used for deduplication: ${reason}`,
+              );
+            }
+          }
+          if (existingName) {
+            item.status = "skipped";
+            item.library_id = existingName;
+            item.reason = [
+              "This source and its complete contents are already in the library",
+              ...existingDiagnostics,
+            ].join("; ");
+            batch.skipped.set(item.id, {
+              name: existingName,
+              expectedHash: pkg.hash,
+              expectedLock: this.#lockFingerprint(lock.skills[existingName]),
+            });
+          } else if (this.#retainedBytes() + batch.total_size + pkg.totalSize > MAX_STAGED_BYTES) {
+            throw new Error(
+              "Import previews exceed the 1 GiB staging limit; import a smaller selection",
+            );
+          } else {
+            const prepared = await this.#prepareLocal(observation, reserved, lock);
+            // Require the exact source version used to group this batch's aliases.
+            if (prepared.lock.content_sha256 !== pkg.hash) {
+              activePreviewDirectories.delete(prepared.tempPath);
+              await fs.rm(prepared.tempPath, { recursive: true, force: true });
+              throw new Error(
+                "Observed Skill changed while preparing the batch; refresh and retry",
+              );
+            }
+            item.status = "ready";
+            item.library_id = prepared.name;
+            item.preview = prepared.preview;
+            item.display_name = prepared.lock.display_name!;
+            const notes = [
+              ...inventory.warnings,
+              ...observation.diagnostics,
+              ...existingDiagnostics,
+            ];
+            if (observation.status !== "observed")
+              notes.unshift(
+                `Native status: ${observation.status}; copying does not change native configuration`,
+              );
+            if (notes.length) item.reason = [...new Set(notes)].join("; ");
+            batch.total_size += Number(prepared.preview.total_size);
+            batch.prepared.set(item.id, prepared);
+          }
+        } catch (error) {
+          item.status = "failed";
+          item.reason = error instanceof Error ? error.message : String(error);
+          item.library_id = null;
+          delete item.preview;
+          batch.skipped.delete(item.id);
+          await discardPrepared(item.id);
+        }
+        if (!merged) batch.items.push(item);
+      }
+      // Recheck and register the batch alongside single previews so metadata
+      // writes cannot let another preparation consume the same remaining budget.
+      await this.#withPreviewRetention(async () => {
+        for (const item of [...batch.items].reverse()) {
+          if (this.#retainedBytes() + batch.total_size <= MAX_STAGED_BYTES) break;
+          if (!batch.prepared.has(item.id)) continue;
+          await discardPrepared(item.id);
+          item.status = "failed";
+          item.reason = "Skill previews exceed the 1 GiB staging limit; import a smaller selection";
+          item.library_id = null;
+          delete item.preview;
+        }
+        batch.expires_at = new Date(Date.now() + PREVIEW_TTL_MS).toISOString();
+        for (const prepared of batch.prepared.values()) {
+          prepared.preview.expires_at = batch.expires_at;
+          await this.#writePreviewMetadata(prepared.tempPath, batch.expires_at);
+        }
+        this.#imports.set(batch.token, batch);
+        for (const prepared of batch.prepared.values())
+          activePreviewDirectories.delete(prepared.tempPath);
+      });
+      const { prepared: _, skipped: _skipped, ...preview } = batch;
+      return preview;
+    } catch (error) {
+      await Promise.all(
+        [...batch.prepared.values()].map(async (item) => {
+          activePreviewDirectories.delete(item.tempPath);
+          await fs.rm(item.tempPath, { recursive: true, force: true });
+        }),
+      );
+      throw error;
+    }
+  }
+
+  async applyImports(params: Record<string, unknown>) {
+    if (params.confirmed !== true) throw new Error("Skill import requires explicit confirmation");
+    const token = this.#string(params.token, "token");
+    const completed = this.#importResults.get(token);
+    if (completed) return structuredClone(completed);
+    const batch = this.#imports.get(token);
+    const valid = batch !== undefined && Date.parse(batch.expires_at) > Date.now();
+    const directories = valid ? [...batch.prepared.values()].map((item) => item.tempPath) : [];
+    // Reserve snapshots before the first await: another instance can expire
+    // orphaned previews while this request is checking its own preview maps.
+    for (const directory of directories) activePreviewDirectories.add(directory);
+    try {
+      await this.#expirePreviews();
+      if (!batch || !valid) throw new Error("Skill import preview expired or does not exist");
+      this.#imports.delete(token);
+      const report: ImportReport = { token, items: [] };
+      try {
+        for (const item of batch.items) {
+          if (item.status === "failed") {
+            report.items.push({
+              id: item.id,
+              observation_ids: item.observation_ids,
+              status: item.status,
+              ...(item.library_id ? { library_id: item.library_id } : {}),
+              ...(item.status === "failed" ? { error: item.reason } : {}),
+            });
+            continue;
+          }
+          try {
+            if (item.status === "skipped") {
+              const skipped = batch.skipped.get(item.id)!;
+              const actual = await this.#targetHash(path.join(this.root, "skills", skipped.name));
+              if (actual !== skipped.expectedHash)
+                throw new Error(
+                  "Installed Skill changed after preview; prepare the operation again",
+                );
+              const lock = await this.#lock();
+              if (this.#lockFingerprint(lock.skills[skipped.name]) !== skipped.expectedLock)
+                throw new Error(
+                  "Installed Skill source record changed after preview; prepare the operation again",
+                );
+              report.items.push({
+                id: item.id,
+                observation_ids: item.observation_ids,
+                status: "skipped",
+                library_id: skipped.name,
+              });
+              continue;
+            }
+            const skill = await this.#applyPrepared(batch.prepared.get(item.id)!);
+            report.items.push({
+              id: item.id,
+              observation_ids: item.observation_ids,
+              status: "imported",
+              library_id: skill.name,
+              skill,
+              ...(skill.warnings?.length ? { warnings: skill.warnings } : {}),
+            });
+          } catch (error) {
+            report.items.push({
+              id: item.id,
+              observation_ids: item.observation_ids,
+              status: "failed",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      } finally {
+        const cleanup = await Promise.allSettled(
+          [...batch.prepared.values()].map(async (item) => {
+            await fs.rm(item.tempPath, { recursive: true, force: true });
+          }),
+        );
+        if (cleanup.some((result) => result.status === "rejected"))
+          report.warnings = ["Imports finished, but temporary files could not all be removed"];
+      }
+      // Reports hold no staged files and retain token idempotency for this process.
+      this.#importResults.set(token, structuredClone(report));
+      return report;
+    } finally {
+      for (const directory of directories) activePreviewDirectories.delete(directory);
+    }
+  }
+
+  async readPreviewFile(params: Record<string, unknown>) {
+    await this.#expirePreviews();
+    const token = this.#string(params.token, "token");
+    const relative = this.#string(params.path, "path");
+    const prepared =
+      params.item_id === undefined
+        ? this.#previews.get(token)
+        : this.#imports.get(token)?.prepared.get(this.#string(params.item_id, "item_id"));
+    if (!prepared) throw new Error("Skill preview expired or does not exist");
+    return skillPreviewFile(prepared.beforePath, prepared.packagePath, relative);
+  }
   async prepareUpdate(name: string) {
     this.#validateId(name);
     const lock = await this.#lock();
@@ -361,81 +1108,213 @@ export class Skills {
     return this.#prepare(source, "update", name);
   }
 
+  #selector(value: unknown): VersionSelector {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Choose a tag, branch, or commit");
+    const selector = value as Record<string, unknown>;
+    if (
+      !["tag", "branch", "commit"].includes(String(selector.type)) ||
+      typeof selector.value !== "string"
+    )
+      throw new Error("Choose a tag, branch, or commit");
+    const ref = selector.value.trim();
+    if (selector.type === "commit") {
+      if (!/^[a-f0-9]{7,40}$/i.test(ref))
+        throw new Error("Commit must be a 7 to 40 character hexadecimal SHA");
+    } else if (
+      !ref ||
+      ref.length > 255 ||
+      /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(ref) ||
+      ref.includes("..") ||
+      ref.includes("@{") ||
+      ref.startsWith("-") ||
+      ref
+        .split("/")
+        .some(
+          (part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"),
+        )
+    ) {
+      throw new Error("Git reference is invalid");
+    }
+    return { type: selector.type as VersionSelector["type"], value: ref };
+  }
+
+  async listVersions(params: Record<string, unknown>) {
+    if ((params.library_id !== undefined) === (params.source !== undefined))
+      throw new Error("Choose exactly one installed Skill or source");
+    if (params.type !== "tag" && params.type !== "branch")
+      throw new Error("Version type must be tag or branch");
+    const page = params.page ?? 1;
+    if (!Number.isInteger(page) || Number(page) < 1 || Number(page) > 10_000)
+      throw new Error("Version page must be an integer from 1 to 10000");
+    let source: Source | null | undefined;
+    if (params.library_id !== undefined) {
+      const name = this.#string(params.library_id, "library_id");
+      this.#validateId(name);
+      source = (await this.#lock()).skills[name]?.source;
+    } else source = params.source as Source;
+    if (!source || typeof source.repository !== "string")
+      throw new Error("Skill has no GitHub source");
+    const [owner, repository, extra] = source.repository.split("/");
+    if (!owner || !repository || extra !== undefined) throw new Error("Invalid Skill repository");
+    this.#validateRepoSegment(owner);
+    this.#validateRepoSegment(repository);
+    const values = await this.#json(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/${params.type === "tag" ? "tags" : "branches"}?per_page=50&page=${page}`,
+    );
+    if (!Array.isArray(values)) throw new Error("GitHub returned an invalid version list");
+    const entries = values.map((entry: unknown) => {
+      const item = entry as { name?: unknown; commit?: { sha?: unknown } };
+      if (
+        typeof item?.name !== "string" ||
+        typeof item.commit?.sha !== "string" ||
+        !/^[a-f0-9]{40}$/i.test(item.commit.sha)
+      )
+        throw new Error("GitHub returned an invalid version entry");
+      return { name: item.name, commit: item.commit.sha };
+    });
+    return { entries, type: params.type, page: Number(page), has_more: entries.length === 50 };
+  }
+
+  async prepareVersionChange(params: Record<string, unknown>) {
+    const name = this.#string(params.library_id, "library_id");
+    this.#validateId(name);
+    const selector = this.#selector(params.selector);
+    const source = (await this.#lock()).skills[name]?.source;
+    if (!source)
+      throw new Error("Skill has no GitHub source; local imports cannot switch remote versions");
+    return this.#prepare(
+      { ...source, ref: selector.value, ref_type: selector.type },
+      "update",
+      name,
+      true,
+    );
+  }
+
   async apply(params: Record<string, unknown>) {
     if (params.confirmed !== true)
       throw new Error("Skill installation requires explicit confirmation");
     const token = this.#string(params.token, "token");
     const prepared = this.#previews.get(token);
-    this.#previews.delete(token);
-    if (!prepared || Date.parse(String(prepared.preview.expires_at)) <= Date.now())
-      throw new Error("Skill preview expired or does not exist");
-    if (prepared.preview.local_modified === true && params.allowModified !== true)
-      throw new Error(
-        "The installed Skill was modified locally; replacement requires confirmation",
-      );
+    const valid =
+      prepared !== undefined && Date.parse(String(prepared.preview.expires_at)) > Date.now();
+    if (valid) activePreviewDirectories.add(prepared.tempPath);
+    try {
+      await this.#expirePreviews();
+      if (!prepared || !valid) throw new Error("Skill preview expired or does not exist");
+      if (prepared.preview.local_modified === true && params.allowModified !== true)
+        throw new Error(
+          "The installed Skill was modified locally; replacement requires confirmation",
+        );
+      this.#previews.delete(token);
+      return await this.#applyPrepared(prepared);
+    } finally {
+      if (valid) activePreviewDirectories.delete(prepared.tempPath);
+    }
+  }
+
+  async #applyPrepared(prepared: Prepared): Promise<Installed> {
+    let committed = false;
+    const warnings: string[] = [];
     try {
       const target = path.join(this.root, "skills", prepared.name);
-      const actual = await fs.stat(target).then(
-        (value) =>
-          value.isDirectory() ? this.#packageHash(target).then((item) => item.hash) : null,
-        () => null,
-      );
+      const actual = await this.#targetHash(target);
       if (actual !== prepared.expectedHash)
         throw new Error("Installed Skill changed after preview; prepare the operation again");
       const lock = await this.#lock();
       const old = lock.skills[prepared.name];
+      if (this.#lockFingerprint(old) !== prepared.expectedLock)
+        throw new Error(
+          "Installed Skill source record changed after preview; prepare the operation again",
+        );
+      if (
+        prepared.preview.operation === "install" &&
+        prepared.lock.source &&
+        this.#findRemotePackage(lock, prepared.lock.source)
+      )
+        throw new Error("Skill source was installed after preview; prepare the operation again");
+      if ((await this.#targetHash(prepared.packagePath)) !== prepared.lock.content_sha256)
+        throw new Error("Prepared Skill contents changed; prepare the operation again");
+      const metadata = this.#frontmatter(
+        await fs.readFile(path.join(prepared.packagePath, "SKILL.md"), "utf8"),
+        prepared.lock.display_name ?? prepared.name,
+      );
+      const packageInfo = await this.#packageHash(prepared.packagePath);
+      const result: Installed = {
+        name: prepared.name,
+        display_name: metadata.name,
+        description: metadata.description,
+        path: target,
+        size: packageInfo.size,
+        modified_at: packageInfo.modifiedAt,
+        status: "current",
+        source: prepared.lock.source,
+        installed_at: prepared.lock.installed_at,
+        updated_at: prepared.lock.updated_at,
+        can_rollback: Boolean(old),
+      };
       const backup = path.join(this.root, "backups/skills", prepared.name);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.mkdir(path.dirname(backup), { recursive: true });
+      await this.#managedDirectory(path.dirname(target), true);
+      await this.#managedDirectory(path.dirname(backup), true);
+      // Rollback may have preserved damaged contents in this old backup.
+      // Validate its directory before replacement without reading those contents.
+      const hasExistingBackup = (await this.#regularDirectory(backup)) !== null;
+      const volumes = await Promise.all(
+        [prepared.tempPath, path.dirname(target), path.dirname(backup)].map((directory) =>
+          fs.stat(directory),
+        ),
+      );
+      if (volumes.some((info) => info.dev !== volumes[0]!.dev))
+        throw new Error("Skill staging, backup and library must be on the same volume");
       const stagedBackup = `${backup}.staging-${randomUUID()}`;
       let hasBackup = false;
+      let targetMoved = false;
+      let packageInstalled = false;
       try {
-        if (
-          old &&
-          (await fs.stat(target).then(
-            () => true,
-            () => false,
-          ))
-        ) {
-          if (
-            await fs.stat(backup).then(
-              () => true,
-              () => false,
-            )
-          ) {
+        if (old && actual !== null) {
+          if (hasExistingBackup) {
             await fs.rename(backup, stagedBackup);
             hasBackup = true;
           }
           await fs.rename(target, backup);
+          targetMoved = true;
         }
         await fs.rename(prepared.packagePath, target);
+        packageInstalled = true;
         lock.skills[prepared.name] = prepared.lock;
         if (old) lock.previous[prepared.name] = old;
         await this.#writeLock(lock);
-        if (hasBackup) await fs.rm(stagedBackup, { recursive: true, force: true });
+        committed = true;
       } catch (error) {
-        await fs.rm(target, { recursive: true, force: true });
-        if (
-          old &&
-          (await fs.stat(backup).then(
-            () => true,
-            () => false,
-          ))
-        )
-          await fs.rename(backup, target);
-        if (
-          hasBackup &&
-          (await fs.stat(stagedBackup).then(
-            () => true,
-            () => false,
-          ))
-        )
-          await fs.rename(stagedBackup, backup);
+        if (packageInstalled) await fs.rm(target, { recursive: true, force: true });
+        if (targetMoved && old) await fs.rename(backup, target);
+        if (hasBackup) await fs.rename(stagedBackup, backup);
         throw error;
       }
-      return (await this.installed()).find((item) => item.name === prepared.name);
+      if (hasBackup) {
+        try {
+          await fs.rm(stagedBackup, { recursive: true, force: true });
+        } catch {
+          warnings.push("Skill was saved, but the older backup could not be removed");
+        }
+      }
+      let refreshed = result;
+      try {
+        const current = (await this.installed()).find((item) => item.name === prepared.name);
+        if (current) refreshed = current;
+        else warnings.push("Skill was saved, but the library refresh did not return its record");
+      } catch {
+        warnings.push("Skill was saved, but refreshing the library failed");
+      }
+      try {
+        await fs.rm(prepared.tempPath, { recursive: true, force: true });
+      } catch {
+        warnings.push("Skill was saved, but temporary files could not be removed");
+      }
+      return warnings.length ? { ...refreshed, warnings } : refreshed;
     } finally {
-      await fs.rm(prepared.tempPath, { recursive: true, force: true });
+      if (!committed)
+        await fs.rm(prepared.tempPath, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -445,29 +1324,85 @@ export class Skills {
     this.#validateId(name);
     const target = path.join(this.root, "skills", name);
     const backup = path.join(this.root, "backups/skills", name);
-    if (
-      !(await fs.stat(target).then(
-        (s) => s.isDirectory(),
-        () => false,
-      )) ||
-      !(await fs.stat(backup).then(
-        (s) => s.isDirectory(),
-        () => false,
-      ))
-    )
+    await this.#managedDirectory(path.dirname(target));
+    // Recovery only moves the current directory; damaged contents must not
+    // prevent restoring a valid backup or require following internal links.
+    const [currentDirectory, backupHash] = await Promise.all([
+      this.#regularDirectory(target),
+      this.#targetHash(backup),
+    ]);
+    if (currentDirectory === null || backupHash === null)
       throw new Error("No rollback version is available");
     const lock = await this.#lock();
     const current = lock.skills[name];
     const previous = lock.previous[name];
     if (!current || !previous) throw new Error("Rollback metadata is missing");
+    const metadata = this.#frontmatter(
+      await fs.readFile(path.join(backup, "SKILL.md"), "utf8"),
+      previous.display_name ?? name,
+    );
+    const packageInfo = await this.#packageHash(backup);
+    const result: Installed = {
+      name,
+      display_name: metadata.name,
+      description: metadata.description,
+      path: target,
+      size: packageInfo.size,
+      modified_at: packageInfo.modifiedAt,
+      status: backupHash === previous.content_sha256 ? "current" : "modified",
+      source: previous.source,
+      installed_at: previous.installed_at,
+      updated_at: previous.updated_at,
+      can_rollback: true,
+    };
     const staging = `${target}.rollback-${randomUUID()}`;
     await fs.rename(target, staging);
-    await fs.rename(backup, target);
-    await fs.rename(staging, backup);
-    lock.skills[name] = previous;
-    lock.previous[name] = current;
-    await this.#writeLock(lock);
-    return (await this.installed()).find((item) => item.name === name);
+    try {
+      await fs.rename(backup, target);
+      try {
+        await fs.rename(staging, backup);
+      } catch (error) {
+        await fs.rename(target, backup);
+        await fs.rename(staging, target);
+        throw error;
+      }
+      lock.skills[name] = previous;
+      lock.previous[name] = current;
+      try {
+        await this.#writeLock(lock);
+      } catch (error) {
+        await fs.rename(target, staging);
+        await fs.rename(backup, target);
+        await fs.rename(staging, backup);
+        throw error;
+      }
+    } catch (error) {
+      if (
+        (await fs.stat(staging).then(
+          () => true,
+          () => false,
+        )) &&
+        !(await fs.stat(target).then(
+          () => true,
+          () => false,
+        ))
+      )
+        await fs.rename(staging, target);
+      throw error;
+    }
+    try {
+      return (
+        (await this.installed()).find((item) => item.name === name) ?? {
+          ...result,
+          warnings: ["Skill rollback succeeded, but the library refresh did not return its record"],
+        }
+      );
+    } catch {
+      return {
+        ...result,
+        warnings: ["Skill rollback succeeded, but refreshing the library failed"],
+      };
+    }
   }
 
   async uninstall(params: Record<string, unknown>) {
@@ -475,6 +1410,15 @@ export class Skills {
       throw new Error("Skill uninstall requires explicit confirmation");
     const name = this.#string(params.name, "name");
     this.#validateId(name);
+    if (
+      (await this.manager.listDeployments()).some(
+        (deployment) =>
+          deployment.source_is_current_library &&
+          deployment.library_id === name &&
+          deployment.status !== "inactive",
+      )
+    )
+      throw new Error("Withdraw active Skill deployments before removing the library package");
     const target = path.join(this.root, "skills", name);
     const id = `skill-${randomUUID()}`;
     const root = path.join(this.root, "trash/skills", id);
@@ -482,7 +1426,9 @@ export class Skills {
     const record = {
       id,
       name,
-      display_name: await this.#displayName(target, name),
+      display_name:
+        (typeof lock.skills[name]?.display_name === "string" && lock.skills[name]?.display_name) ||
+        (await this.#displayName(target, name)),
       removed_at: new Date().toISOString(),
       lock: lock.skills[name] ?? null,
       previous: lock.previous[name] ?? null,
@@ -626,7 +1572,13 @@ export class Skills {
     return { path: relative.replaceAll("\\", "/"), content: await fs.readFile(file, "utf8") };
   }
 
-  async #prepare(source: Source, operation: "install" | "update", existingName?: string) {
+  async #prepare(
+    source: Source,
+    operation: "install" | "update",
+    existingName?: string,
+    changeRef = false,
+  ) {
+    await this.#expirePreviews();
     if (
       !source ||
       typeof source.repository !== "string" ||
@@ -634,15 +1586,30 @@ export class Skills {
       typeof source.path !== "string"
     )
       throw new Error("Invalid Skill source");
-    const [owner, repository] = source.repository.split("/");
-    if (!owner || !repository)
+    const [owner, repository, extra] = source.repository.split("/");
+    if (!owner || !repository || extra !== undefined)
       throw new Error("Skill repository must include an owner and repository");
+    this.#validateRepoSegment(owner);
+    this.#validateRepoSegment(repository);
+    if (source.ref_type) this.#selector({ type: source.ref_type, value: source.ref });
     this.#validateRepoPath(source.path);
+    if (operation === "install") {
+      const existing = this.#findRemotePackage(await this.#lock(), source);
+      if (existing) {
+        if (!this.#sameSource(existing[1].source!, source))
+          throw new Error(
+            "This Skill is already installed from another ref; use Change version to switch its tag, branch, or commit",
+          );
+        operation = "update";
+        existingName = existing[0];
+      }
+    }
     const selected = await this.#resolve({
       owner,
       repository,
       selectorPath: source.path,
       reference: source.ref,
+      referenceType: source.ref_type,
     });
     const prefix = source.path ? `${source.path.replace(/\/$/, "")}/` : "";
     const files = selected.entries.filter(
@@ -673,10 +1640,10 @@ export class Skills {
       total += size;
       if (total > MAX_TOTAL_BYTES) throw new Error("Skill package exceeds the 32 MiB limit");
     }
-    const tempPath = await fs.mkdtemp(path.join(os.tmpdir(), "agentkib-skill-"));
+    const tempPath = await this.#staging();
     const packagePath = path.join(tempPath, "package");
-    await fs.mkdir(packagePath);
     try {
+      await fs.mkdir(packagePath);
       const downloaded = await mapConcurrent(files, 8, async (entry) => {
         const relative = entry.path.slice(prefix.length);
         this.#validateRelative(relative);
@@ -701,22 +1668,21 @@ export class Skills {
       const metadata = this.#frontmatter(
         await fs.readFile(path.join(packagePath, "SKILL.md"), "utf8"),
       );
-      if (existingName && metadata.name !== existingName)
-        throw new Error("Skill update changed the package name");
       this.#validateSkillName(metadata.name);
       const lock = await this.#lock();
-      const name = existingName ?? metadata.name;
-      if (
-        operation === "install" &&
-        (await this.installed()).some((skill) => skill.display_name === metadata.name)
-      )
-        throw new Error("A Skill with this name already exists");
+      if (operation === "install" && this.#findRemotePackage(lock, source))
+        throw new Error(
+          "Skill source was installed while preparing the preview; prepare the operation again",
+        );
+      const name =
+        existingName ??
+        this.#allocateName(
+          metadata.name,
+          `${source.repository.toLowerCase()}:${source.path}:${source.ref_type ?? ""}:${source.ref}`,
+          await this.#reservedNames(lock),
+        );
       const target = path.join(this.root, "skills", name);
-      const previousHash = await fs.stat(target).then(
-        (value) =>
-          value.isDirectory() ? this.#packageHash(target).then((result) => result.hash) : null,
-        () => null,
-      );
+      const previousHash = await this.#targetHash(target);
       if (operation === "install" && previousHash)
         throw new Error("A Skill with this name already exists");
       if (operation === "update" && !previousHash)
@@ -726,10 +1692,31 @@ export class Skills {
         throw new Error("Unmanaged Skills cannot be updated");
       if (
         operation === "update" &&
-        (!currentLock?.source || !this.#sameSource(currentLock.source, source))
+        (!currentLock?.source ||
+          (changeRef
+            ? currentLock.source.repository.toLowerCase() !== source.repository.toLowerCase() ||
+              currentLock.source.path !== source.path
+            : !this.#sameSource(currentLock.source, source)))
       )
         throw new Error("Skill update source changed");
-      const [added, modified, removed] = await this.#fileDelta(target, packagePath);
+      if (
+        existingName &&
+        metadata.name !== (currentLock?.display_name ?? existingName.split("--")[0])
+      )
+        throw new Error("Skill update changed the package name");
+      const beforePath = previousHash === null ? null : path.join(tempPath, "before");
+      if (beforePath) {
+        await copySkillPackage(target, beforePath);
+        if (
+          (await this.#packageHash(beforePath)).hash !== previousHash ||
+          (await this.#targetHash(target)) !== previousHash
+        )
+          throw new Error("Installed Skill changed while preparing the preview");
+      }
+      const [added, modified, removed] = await this.#fileDelta(
+        beforePath ?? path.join(tempPath, "before"),
+        packagePath,
+      );
       const packageResult = await this.#packageHash(packagePath);
       const resolvedSource: Source = {
         kind:
@@ -739,7 +1726,8 @@ export class Skills {
             ? "openai-curated"
             : "github",
         repository: `${owner}/${repository}`,
-        ref: selected.reference,
+        ref: source.ref_type === "commit" ? selected.commit : selected.reference,
+        ...(selected.referenceType ? { ref_type: selected.referenceType } : {}),
         path: source.path,
         resolved_commit: selected.commit,
         tree_sha:
@@ -751,6 +1739,8 @@ export class Skills {
       const preview = {
         token,
         operation,
+        library_id: name,
+        ...(operation === "update" ? { previous_source: currentLock?.source ?? null } : {}),
         skill: { ...metadata, source: resolvedSource },
         files: downloaded.sort((a, b) => a.path.localeCompare(b.path)),
         added,
@@ -761,28 +1751,28 @@ export class Skills {
         expires_at: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
       };
       const entry: LockEntry = {
+        ...currentLock,
         source: resolvedSource,
         content_sha256: packageResult.hash,
         installed_at: currentLock?.installed_at ?? now,
         updated_at: now,
+        display_name: metadata.name,
       };
-      this.#previews.set(token, {
+      await this.#remember({
         preview,
         name,
         packagePath,
         tempPath,
         lock: entry,
         expectedHash: previousHash,
+        expectedLock: this.#lockFingerprint(currentLock),
+        beforePath,
+        stagedBytes:
+          packageResult.size + (beforePath ? (await this.#packageHash(beforePath)).size : 0),
       });
-      while (this.#previews.size > 4) {
-        const oldest = this.#previews.keys().next().value as string | undefined;
-        if (!oldest) break;
-        const stale = this.#previews.get(oldest);
-        this.#previews.delete(oldest);
-        if (stale) await fs.rm(stale.tempPath, { recursive: true, force: true });
-      }
       return preview;
     } catch (error) {
+      activePreviewDirectories.delete(tempPath);
       await fs.rm(tempPath, { recursive: true, force: true });
       throw error;
     }
@@ -853,13 +1843,16 @@ export class Skills {
     repository: string;
     selectorPath: string;
     reference?: string;
+    referenceType?: VersionSelector["type"];
   }) {
     const repo = (await this.#json(
       `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}`,
     )) as { default_branch?: string };
     const reference = input.reference ?? repo.default_branch;
+    const referenceType =
+      input.referenceType ?? (input.reference === undefined ? "branch" : undefined);
     if (!reference) throw new Error("Could not determine the GitHub default branch");
-    const commit = await this.#commit(input.owner, input.repository, reference);
+    const commit = await this.#commit(input.owner, input.repository, reference, referenceType);
     const commitResponse = (await this.#json(
       `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repository)}/commits/${encodeURIComponent(commit)}`,
     )) as { commit?: { tree?: { sha?: string } } };
@@ -889,6 +1882,7 @@ export class Skills {
       owner: input.owner,
       repository: input.repository,
       reference,
+      referenceType,
       commit,
       rootTree,
       selectorPath: input.selectorPath,
@@ -896,11 +1890,19 @@ export class Skills {
     };
   }
 
-  async #commit(owner: string, repository: string, reference: string) {
+  async #commit(
+    owner: string,
+    repository: string,
+    reference: string,
+    type?: VersionSelector["type"],
+  ) {
+    const selector =
+      type === "tag" ? `tags/${reference}` : type === "branch" ? `heads/${reference}` : reference;
     const response = (await this.#json(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(reference)}`,
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(selector)}`,
     )) as { sha?: string };
-    if (!response.sha) throw new Error("GitHub reference did not resolve to a commit");
+    if (!response.sha || !/^[a-f0-9]{40}$/i.test(response.sha))
+      throw new Error("GitHub reference did not resolve to a commit");
     return response.sha;
   }
 
@@ -930,14 +1932,14 @@ export class Skills {
     return JSON.parse(data.toString("utf8")) as unknown;
   }
 
-  #frontmatter(content: string): SkillMetadata {
+  #frontmatter(content: string, fallbackName?: string): SkillMetadata {
     if (Buffer.byteLength(content) > MAX_ENTRY_BYTES)
       throw new Error("SKILL.md exceeds the 1 MiB limit");
     const match = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     if (!match) throw new Error("SKILL.md must start with YAML frontmatter");
     const value = parseYaml(match[1]!);
     if (!value || typeof value !== "object") throw new Error("Skill frontmatter must be a mapping");
-    const name = value.name;
+    const name = value.name ?? fallbackName;
     const description = value.description;
     if (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 64)
       throw new Error("Skill name is invalid");
@@ -963,8 +1965,12 @@ export class Skills {
     }> = [];
     let count = 0;
     let size = 0;
+    const emptyDirectories: string[] = [];
     const walk = async (directory: string) => {
-      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const children = await fs.readdir(directory, { withFileTypes: true });
+      if (directory !== root && children.length === 0)
+        emptyDirectories.push(path.relative(root, directory).replaceAll("\\", "/"));
+      for (const entry of children) {
         count++;
         if (count > MAX_PACKAGE_ENTRIES)
           throw new Error("Skill package contains more than 4096 entries");
@@ -988,7 +1994,7 @@ export class Skills {
       }
     };
     await walk(root);
-    entries.sort((a, b) => a.relative.localeCompare(b.relative));
+    entries.sort((a, b) => compareUtf8(a.relative, b.relative));
     const hash = createHash("sha256");
     let modifiedAt: string | null = null;
     for (const entry of entries) {
@@ -1005,6 +2011,17 @@ export class Skills {
       const mtime = entry.info.mtime.toISOString();
       if (!modifiedAt || mtime > modifiedAt) modifiedAt = mtime;
     }
+    if (emptyDirectories.length) {
+      hash.update(Buffer.alloc(8, 0xff));
+      hash.update(Buffer.from("agentkib-empty-directories-v1\0"));
+      for (const directory of emptyDirectories.sort(compareUtf8)) {
+        const value = Buffer.from(directory);
+        const length = Buffer.alloc(8);
+        length.writeBigUInt64LE(BigInt(value.length));
+        hash.update(length);
+        hash.update(value);
+      }
+    }
     return { hash: hash.digest("hex"), size, modifiedAt };
   }
 
@@ -1018,21 +2035,10 @@ export class Skills {
         ))
       )
         return files;
-      const walk = async (directory: string) => {
-        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-          const file = path.join(directory, entry.name);
-          if (entry.isSymbolicLink()) throw new Error("Skill package contains an unsupported file");
-          if (entry.isDirectory()) await walk(file);
-          else if (entry.isFile())
-            files.set(
-              path.relative(root, file).replaceAll("\\", "/"),
-              createHash("sha256")
-                .update(await fs.readFile(file))
-                .digest("hex"),
-            );
-        }
-      };
-      await walk(root);
+      const packageInfo = await skillPackage(root);
+      if (packageInfo.diagnostics.length) throw new Error(packageInfo.diagnostics.join("; "));
+      for (const entry of packageInfo.files)
+        files.set(entry.path, `${entry.sha256}:${entry.executable}`);
       return files;
     };
     const [before, after] = await Promise.all([collect(existing), collect(incoming)]);
@@ -1147,10 +2153,19 @@ export class Skills {
     )
       throw new Error("GitHub repository path is unsafe");
   }
+  #findRemotePackage(lock: LockFile, source: Source) {
+    return Object.entries(lock.skills).find(
+      ([, record]) =>
+        record.source &&
+        record.source.repository.toLowerCase() === source.repository.toLowerCase() &&
+        record.source.path === source.path,
+    );
+  }
   #sameSource(a: Source, b: Source) {
     return (
       a.repository.toLowerCase() === b.repository.toLowerCase() &&
       a.ref === b.ref &&
+      a.ref_type === b.ref_type &&
       a.path === b.path
     );
   }

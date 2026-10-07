@@ -96,9 +96,7 @@ function homes(environment: NodeJS.ProcessEnv): [string, string][] {
         ? environment.XDG_CONFIG_HOME
         : process.platform === "win32"
           ? (environment.APPDATA ?? path.join(home, "AppData/Roaming"))
-          : process.platform === "darwin"
-            ? path.join(home, "Library/Application Support")
-            : path.join(home, ".config"),
+          : path.join(home, ".config"),
     entries: [string, string][] = [
       ["codex", environment.CODEX_HOME ?? path.join(home, ".codex")],
       ["claude-code", environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude")],

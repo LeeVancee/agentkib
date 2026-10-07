@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { timestamp } from "./timestamps";
 
+// The TypeScript classifier also covers conversation-only collections. Advance
+// once from the prior Rust revision so both caches use the same source rules.
+export const CODEX_SESSION_CLASSIFICATION_REVISION = "3";
+
 /** Keep the shared on-disk schema readable by both prior and current AgentKib releases. */
 export function migrateSharedSchema(database: DatabaseSync): void {
   database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;");
@@ -48,6 +52,37 @@ export function migrateSharedSchema(database: DatabaseSync): void {
     }
     if (version === undefined || version < 14) database.exec(schema14);
     if (version === undefined || version < 15) database.exec(schema15);
+    // Additive caches keep schema 15 compatible with previous releases. Collection IDs
+    // are not workspaces and must not be inserted into the filesystem catalog.
+    database.exec(sessionCollections);
+    const classification = database
+      .prepare("SELECT value FROM schema_meta WHERE key='codex_session_classification_revision'")
+      .get()?.value;
+    if (classification !== CODEX_SESSION_CLASSIFICATION_REVISION) {
+      for (const table of ["conversation_sessions", "conversation_collection_sessions"]) {
+        database
+          .prepare(
+            `INSERT INTO schema_meta(key,value)
+           SELECT 'codex_session_classification_pending:' || workspace_id, ?
+           FROM ${table} WHERE agent='codex' GROUP BY workspace_id
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+          )
+          .run(CODEX_SESSION_CLASSIFICATION_REVISION);
+        database.exec(
+          `INSERT INTO schema_meta(key,value)
+           SELECT 'codex_session_classification_stale:' || id, workspace_id
+           FROM ${table} WHERE agent='codex'
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+        );
+      }
+      for (const table of ["conversation_index_status", "conversation_collection_status"])
+        database.exec(`UPDATE ${table} SET last_success_at=NULL WHERE agent='codex'`);
+      database
+        .prepare(
+          "INSERT INTO schema_meta(key,value) VALUES ('codex_session_classification_revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(CODEX_SESSION_CLASSIFICATION_REVISION);
+    }
     if (tableExists(database, "usage_events"))
       database.exec(
         "CREATE INDEX IF NOT EXISTS idx_usage_events_session_precision ON usage_events(session_hash, date_precision)",
@@ -289,3 +324,18 @@ CREATE TABLE IF NOT EXISTS codex_source_checkpoints (
  source_id TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(source_kind, source_id)
 );
 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '15');`;
+
+const sessionCollections = `
+CREATE TABLE IF NOT EXISTS conversation_collection_sessions (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+ agent TEXT NOT NULL, title TEXT, created_at TEXT, updated_at TEXT, message_count INTEGER,
+ git_branch TEXT, archived INTEGER NOT NULL DEFAULT 0, sidechain INTEGER NOT NULL DEFAULT 0,
+ availability TEXT NOT NULL, origin TEXT NOT NULL, spawned_by_session_id TEXT,
+ forked_from_session_id TEXT, last_indexed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_collection ON conversation_collection_sessions(workspace_id);
+CREATE TABLE IF NOT EXISTS conversation_collection_status (
+ workspace_id TEXT NOT NULL, agent TEXT NOT NULL, session_count INTEGER NOT NULL DEFAULT 0,
+ last_attempt_at TEXT NOT NULL, last_success_at TEXT, error_key TEXT, error_detail TEXT,
+ PRIMARY KEY(workspace_id,agent)
+);`;

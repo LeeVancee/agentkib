@@ -1,5 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
+import { sessionCollection } from "@agentkib/runtime-protocol";
 import { CodexSessions } from "./codex-sessions";
 import { ClaudeSessions } from "./claude-sessions";
 import { GrokSessions } from "./grok-sessions";
@@ -8,6 +10,8 @@ import { HermesSessions } from "./hermes-sessions";
 import { OpenCodeSessions } from "./opencode-sessions";
 import { AntigravitySessions } from "./antigravity-sessions";
 import { CursorSessions } from "./cursor-sessions";
+import { CursorIdeSessions } from "./cursor-ide-sessions";
+import type { CursorBridge } from "./cursor-bridge";
 import { readOpenClawSqliteDocument, readOpenClawSqliteEvents } from "./openclaw-sqlite-sessions";
 import { SessionPaging } from "./session-paging";
 import { readHermesEvents } from "./hermes-events";
@@ -50,11 +54,13 @@ export class SessionReaders {
   #opencode: OpenCodeSessions;
   #antigravity: AntigravitySessions;
   #cursor: CursorSessions;
+  #cursorIde: CursorIdeSessions;
   #paging = new SessionPaging();
   constructor(
     readonly store: SessionStore,
     commands: Commands,
     env: NodeJS.ProcessEnv,
+    cursorBridge: CursorBridge,
   ) {
     this.#codex = new CodexSessions(env);
     this.#claude = new ClaudeSessions(env);
@@ -64,6 +70,7 @@ export class SessionReaders {
     this.#opencode = new OpenCodeSessions(commands, env);
     this.#antigravity = new AntigravitySessions(env);
     this.#cursor = new CursorSessions(env);
+    this.#cursorIde = new CursorIdeSessions(cursorBridge);
   }
   close(): void {
     this.#antigravity.close();
@@ -71,6 +78,12 @@ export class SessionReaders {
   }
   verifiedCodexControlIds(nativeRefs: Iterable<string>): Set<string> {
     return this.#codex.verifiedControlIds(nativeRefs);
+  }
+  antigravityControlExecutable(): string {
+    return this.#antigravity.controlExecutable();
+  }
+  antigravityReadHandoff(nativeRef: string) {
+    return this.#antigravity.readHandoff(nativeRef);
   }
   verifiedClaudeControlTarget(nativeRef: string, workspace: string): string {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
@@ -123,17 +136,52 @@ export class SessionReaders {
     verifyHeader();
     return transcript;
   }
+  claudeControlWorkspace(nativeRef: string, workspaceRoot: string): string {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeRef))
+      throw new Error("unverified-session-identity");
+    const root = canonicalize(workspaceRoot);
+    const source = this.#claude
+      .list(null)
+      .sessions.find(
+        (candidate) => candidate.session.native_ref.toLowerCase() === nativeRef.toLowerCase(),
+      );
+    if (!source || source.session.sidechain) throw new Error("unverified-session-identity");
+    const cwd = canonicalize(source.cwd);
+    const relative = path.relative(root, cwd);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      throw new Error("session-workspace-mismatch");
+    return cwd;
+  }
   codexHome(): string {
     return this.#codex.home();
   }
   async list(agent: SessionAgent, workspace: string): Promise<NativeListing> {
+    const collection = sessionCollection(workspace);
+    if (collection) {
+      if (agent !== "codex") return { sessions: [], incomplete: false };
+      const listing = this.#codex.list(null, { collection });
+      return {
+        sessions: listing.sessions.map((source) => source.session),
+        incomplete: listing.incomplete,
+      };
+    }
     switch (agent) {
       case "opencode":
         return { sessions: await this.#opencode.list(workspace), incomplete: false };
       case "antigravity":
         return this.#antigravity.list(workspace);
-      case "cursor":
-        return this.#cursor.list(workspace);
+      case "cursor": {
+        const cli = this.#cursor.list(workspace);
+        try {
+          const ide = this.#cursorIde.list(workspace);
+          return {
+            sessions: [...cli.sessions, ...ide.sessions],
+            incomplete: cli.incomplete || ide.incomplete,
+          };
+        } catch {
+          return { ...cli, incomplete: true };
+        }
+      }
       default: {
         const provider =
           agent === "codex"
@@ -159,6 +207,27 @@ export class SessionReaders {
     const agent = summary.agent;
     if (!(SESSION_AGENTS as readonly string[]).includes(agent))
       throw new Error("Conversation provider is unavailable");
+    const collection = sessionCollection(summary.workspace_id);
+    if (collection) {
+      if (agent !== "codex") throw new Error("Conversation provider is unavailable");
+      const source = this.#codex
+        .list(null, {
+          collection,
+          matches: (nativeRef) => this.store.id(agent, nativeRef) === id,
+        })
+        .sessions.find(
+          (candidate) =>
+            candidate.collection === collection &&
+            this.store.id(agent, candidate.session.native_ref) === id,
+        );
+      if (!source) throw new Error("Conversation transcript is no longer available");
+      return {
+        summary,
+        native: source.session,
+        workspace: source.cwd,
+        transcript: source.transcript,
+      };
+    }
     const workspace = this.store.workspacePath(summary.workspace_id);
     if (agent === "codex" || agent === "claude-code") {
       // Resolve ownership and the transcript together for this request. Readers
@@ -249,7 +318,9 @@ export class SessionReaders {
       case "antigravity":
         return this.#antigravity.readEvents(ref, offset, count);
       case "cursor":
-        return this.#cursor.events(ref, offset, count);
+        return ref.startsWith("cursor-ide-v1-")
+          ? this.#cursorIde.events(ref, workspace, offset, count)
+          : this.#cursor.events(ref, offset, count);
       default:
         throw new Error("Conversation provider is unavailable");
     }
@@ -282,7 +353,9 @@ export class SessionReaders {
     if (native.agent === "antigravity")
       return this.#antigravity.readDocument(native.native_ref, { ...summary, agent: native.agent });
     if (native.agent === "cursor")
-      return this.#cursor.document(native, summary.workspace_id, workspace);
+      return native.native_ref.startsWith("cursor-ide-v1-")
+        ? this.#cursorIde.document(native, summary.workspace_id, workspace)
+        : this.#cursor.document(native, summary.workspace_id, workspace);
     if (native.agent === "open-claw") {
       const source = this.#openclaw.resolve(native.native_ref);
       if (source.sqlite) return readOpenClawSqliteDocument(source.sqlite, summary.workspace_id);

@@ -11,14 +11,19 @@ import {
   renameSync,
   fstatSync,
   lstatSync,
-  realpathSync,
-  rmSync,
   writeFileSync,
   unlinkSync,
 } from "node:fs";
 import path from "node:path";
 import { resolveCommand } from "./command-resolution";
 import { Commands } from "./commands";
+import {
+  readHandoff,
+  handoffCheckpoint,
+  handoffCommit,
+  fingerprintHandoff,
+  serializeHandoff,
+} from "./handoff-work";
 import { isReparseOrSymlink } from "./native-files";
 import type { SessionDocument } from "./session-model";
 import {
@@ -31,7 +36,8 @@ import { applyRequest } from "./changes";
 import { fingerprintSessionDocument } from "./session-handoff";
 import type { BackendStore } from "./store";
 import type { SessionStore } from "./session-store";
-import { userHome } from "./mcp-config-read";
+import { hermesTargetHome } from "./agent-home";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 import {
   inspectOpenClawContext,
   openClawBridge,
@@ -42,6 +48,12 @@ import {
   type OpenClawContext,
 } from "./openclaw-native-import";
 
+export class NativeImportOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NativeImportOutcomeUnknownError";
+  }
+}
 export type ImportTarget = "opencode" | "open-claw" | "hermes";
 const STORAGE_ENVIRONMENT = [
   "HOME",
@@ -134,43 +146,6 @@ function safeNativePath(value: string): string {
   return value;
 }
 
-function hermesTargetHome(env: NodeJS.ProcessEnv): { home: string; profile: string } {
-  const base = path.resolve(env.HERMES_HOME ?? path.join(userHome(env), ".hermes"));
-  if (!path.isAbsolute(base)) throw new Error("Hermes home unavailable");
-  const parentName = path.basename(path.dirname(base));
-  let selected: string;
-  let profile: string;
-  if (parentName === "profiles") {
-    profile = path.basename(base);
-    selected = base;
-  } else {
-    const activeFile = path.join(base, "active_profile");
-    let active = "default";
-    if (existsSync(activeFile)) {
-      const fd = openSync(activeFile, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        const metadata = fstatSync(fd);
-        if (!metadata.isFile() || metadata.size > 256)
-          throw new Error("Invalid Hermes active profile");
-        active = readFileSync(fd, "utf8").trim() || "default";
-      } finally {
-        closeSync(fd);
-      }
-    }
-    profile = active;
-    selected = active === "default" ? base : path.join(base, "profiles", active);
-  }
-  if (!profile || profile.length > 64 || !/^[A-Za-z0-9_-]+$/.test(profile))
-    throw new Error("Invalid Hermes profile name");
-  selected = safeNativePath(selected);
-  try {
-    selected = realpathSync(selected);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  return { home: selected, profile };
-}
-
 function readOpenCodeModel(output: Buffer): NativeTargetModel {
   const config = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output)) as {
     model?: unknown;
@@ -244,27 +219,22 @@ export async function inspectNativeImportTarget(
     profile = targetState.profile;
   }
   const environment = captureEnvironment(env);
-  const prepared = prepareNativeImportPayload(
-    target,
-    document,
+  const id =
     target === "opencode"
       ? "ses_00000000000000000000000000000000"
-      : "00000000-0000-4000-8000-000000000000",
-    workspace,
-    model ?? undefined,
+      : "00000000-0000-4000-8000-000000000000";
+  const prepared = await readHandoff(
+    "native-projection",
+    [target, document, id, workspace, model ?? undefined],
+    () => prepareNativeImportPayload(target, document, id, workspace, model ?? undefined),
   );
-  const fingerprint = sha256(
-    JSON.stringify([
-      executable,
-      version,
-      model,
-      targetHome,
-      profile,
-      environment,
-      prepared,
-      openclaw,
-    ]),
-  );
+  const fingerprint = (
+    await serializeHandoff(
+      [executable, version, model, targetHome, profile, environment, prepared, openclaw],
+      false,
+      false,
+    )
+  ).hash;
   return {
     target,
     executable,
@@ -309,6 +279,12 @@ function ensureInside(root: string, candidate: string): void {
 }
 
 export async function planNativeImport(
+  ...args: Parameters<typeof buildNativeImportPlan>
+): ReturnType<typeof buildNativeImportPlan> {
+  return readHandoff("native-import-plan", args, () => buildNativeImportPlan(...args));
+}
+
+export async function buildNativeImportPlan(
   dataDir: string,
   workspace: string,
   workspaceId: string,
@@ -392,7 +368,7 @@ export async function planNativeImport(
   };
 }
 
-interface NativeImportPlan extends Record<string, unknown> {
+export interface NativeImportPlan extends Record<string, unknown> {
   schema_version: 1;
   operation_id: string;
   workspace_id: string;
@@ -525,7 +501,7 @@ function validateImportRequest(value: unknown): NativeImportRequest {
   return request as NativeImportRequest;
 }
 
-function loadNativeImportPlan(
+export function loadNativeImportPlan(
   dataDir: string,
   value: unknown,
 ): { request: NativeImportRequest; directory: string; plan: NativeImportPlan; content: Buffer } {
@@ -592,6 +568,13 @@ function loadNativeImportPlan(
   return { request, directory, plan, content };
 }
 
+async function readNativeImportPlan(dataDir: string, value: unknown) {
+  const loaded = await readHandoff("native-plan", [dataDir, value], () =>
+    loadNativeImportPlan(dataDir, value),
+  );
+  return { ...loaded, content: Buffer.from(loaded.content) };
+}
+
 async function executeNativeImport(
   payload: {
     request: NativeImportRequest;
@@ -603,8 +586,10 @@ async function executeNativeImport(
   env: NodeJS.ProcessEnv,
   approveHome: boolean,
   reopen: boolean,
+  validateOwnership: () => void,
 ): Promise<{ target_session_id: string; receipt: NativeImportReceipt }> {
-  const { request, directory, plan, content } = payload;
+  const { request, directory, plan } = payload;
+  validateOwnership();
   const currentEnvironment = captureEnvironment(env);
   if (JSON.stringify(currentEnvironment) !== JSON.stringify(plan.environment))
     throw new Error("Target storage environment changed after preview");
@@ -626,6 +611,7 @@ async function executeNativeImport(
   )
     throw new Error("Target installation or configuration changed after preview");
 
+  validateOwnership();
   const receiptPath = path.join(directory, "receipt.json");
   let receipt: NativeImportReceipt;
   if (existsSync(receiptPath)) {
@@ -663,10 +649,17 @@ async function executeNativeImport(
         if (!safeRegularFile(payloadPath, MAX_OUTPUT).equals(Buffer.from(plan.payload)))
           throw new Error("Import payload changed");
       } else {
-        createPrivateFile(directory, payloadPath, Buffer.from(plan.payload));
+        await handoffCommit(() =>
+          createPrivateFile(directory, payloadPath, Buffer.from(plan.payload)),
+        );
       }
       if (plan.target_agent === "open-claw") await openClawReady(plan, payloadPath, commands);
-      createPrivateFile(directory, attemptedPath, Buffer.from(request.plan_hash));
+      handoffCheckpoint();
+      validateOwnership();
+      await handoffCommit(() =>
+        createPrivateFile(directory, attemptedPath, Buffer.from(request.plan_hash)),
+      );
+      handoffCheckpoint();
       if (plan.target_agent === "open-claw") {
         await openClawBridge(plan, payloadPath, commands, true);
       } else {
@@ -694,9 +687,12 @@ async function executeNativeImport(
       }
     }
     const id = await verifyNativeImport(plan, directory, commands, env, !attempted);
+    validateOwnership();
     receipt.target_session_id = id;
     receipt.verified = true;
-    atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
+    await handoffCommit(() =>
+      atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`)),
+    );
   } else {
     const id = await verifyNativeImport(plan, directory, commands, env, false);
     if (id !== receipt.target_session_id) throw new Error("Native import target identity changed");
@@ -723,72 +719,93 @@ async function verifyNativeImport(
       terminateDescendantsOnExit: true,
     });
     if (!exported.success) throw new Error("Native import export could not be verified");
-    const value = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(exported.bytes),
-    ) as Record<string, any>;
-    if (value.info?.directory !== plan.workspace || value.info?.id !== plan.target_session_id)
-      throw new Error("Imported OpenCode workspace or identity mismatch");
-    if (value.info?.permission != null || value.info?.revert != null)
-      throw new Error("Imported OpenCode session has changed execution state");
-    const messages = value.messages;
-    if (
-      !Array.isArray(messages) ||
-      (exact
-        ? messages.length !== plan.expected.turns.length
-        : messages.length < plan.expected.turns.length)
-    )
-      throw new Error("Imported OpenCode turn count differs from preview");
-    const identity = plan.target_session_id.slice(4);
-    let parent = "";
-    for (const [index, expected] of plan.expected.turns.entries()) {
-      const message = messages[index];
-      const info = message?.info;
-      const role = expected.role === "user" ? "user" : "assistant";
-      if (
-        !info ||
-        info.sessionID !== plan.target_session_id ||
-        info.role !== role ||
-        info.agent !== "build" ||
-        info.id !== `msg_${identity}_${index.toString(16).padStart(8, "0")}`
-      )
-        throw new Error(`Imported OpenCode identity mismatch at turn ${index + 1}`);
-      if (role === "user") {
-        parent = info.id;
-        if (
-          info.model?.providerID !== plan.model?.provider_id ||
-          info.model?.modelID !== plan.model?.model_id
-        )
-          throw new Error("Imported OpenCode model differs from preview");
-      } else if (
-        info.parentID !== parent ||
-        info.finish !== "stop" ||
-        info.mode !== "build" ||
-        info.error != null ||
-        info.summary === true
-      ) {
-        throw new Error(`Imported OpenCode execution state differs at turn ${index + 1}`);
-      }
-      const parts = message.parts;
-      if (!Array.isArray(parts) || parts.length !== expected.blocks.length)
-        throw new Error("Imported OpenCode parts differ from preview");
-      for (const [partIndex, block] of expected.blocks.entries()) {
-        const part = parts[partIndex];
-        if (
-          block.type !== "text" ||
-          part?.type !== "text" ||
-          part.text !== block.text ||
-          part.sessionID !== plan.target_session_id ||
-          part.messageID !== info.id ||
-          part.id !==
-            `prt_${identity}_${index.toString(16).padStart(8, "0")}_${partIndex.toString(16).padStart(8, "0")}` ||
-          part.ignored === true ||
-          part.synthetic === true
-        )
-          throw new Error(`Imported OpenCode text differs at turn ${index + 1}`);
-      }
-    }
-    return plan.target_session_id;
+    return readHandoff("opencode-verify", [plan, exported.bytes, exact], () =>
+      verifyOpenCodeExport(plan, exported.bytes, exact),
+    );
   }
+  return readHandoff("hermes-verify", [plan, directory, exact], () =>
+    verifyHermesImport(plan, directory, exact),
+  );
+}
+
+export function verifyOpenCodeExport(
+  plan: NativeImportPlan,
+  bytes: Buffer,
+  exact: boolean,
+): string {
+  const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<
+    string,
+    any
+  >;
+  if (value.info?.directory !== plan.workspace || value.info?.id !== plan.target_session_id)
+    throw new Error("Imported OpenCode workspace or identity mismatch");
+  if (value.info?.permission != null || value.info?.revert != null)
+    throw new Error("Imported OpenCode session has changed execution state");
+  const messages = value.messages;
+  if (
+    !Array.isArray(messages) ||
+    (exact
+      ? messages.length !== plan.expected.turns.length
+      : messages.length < plan.expected.turns.length)
+  )
+    throw new Error("Imported OpenCode turn count differs from preview");
+  const identity = plan.target_session_id.slice(4);
+  let parent = "";
+  for (const [index, expected] of plan.expected.turns.entries()) {
+    const message = messages[index];
+    const info = message?.info;
+    const role = expected.role === "user" ? "user" : "assistant";
+    if (
+      !info ||
+      info.sessionID !== plan.target_session_id ||
+      info.role !== role ||
+      info.agent !== "build" ||
+      info.id !== `msg_${identity}_${index.toString(16).padStart(8, "0")}`
+    )
+      throw new Error(`Imported OpenCode identity mismatch at turn ${index + 1}`);
+    if (role === "user") {
+      parent = info.id;
+      if (
+        info.model?.providerID !== plan.model?.provider_id ||
+        info.model?.modelID !== plan.model?.model_id
+      )
+        throw new Error("Imported OpenCode model differs from preview");
+    } else if (
+      info.parentID !== parent ||
+      info.finish !== "stop" ||
+      info.mode !== "build" ||
+      info.error != null ||
+      info.summary === true
+    ) {
+      throw new Error(`Imported OpenCode execution state differs at turn ${index + 1}`);
+    }
+    const parts = message.parts;
+    if (!Array.isArray(parts) || parts.length !== expected.blocks.length)
+      throw new Error("Imported OpenCode parts differ from preview");
+    for (const [partIndex, block] of expected.blocks.entries()) {
+      const part = parts[partIndex];
+      if (
+        block.type !== "text" ||
+        part?.type !== "text" ||
+        part.text !== block.text ||
+        part.sessionID !== plan.target_session_id ||
+        part.messageID !== info.id ||
+        part.id !==
+          `prt_${identity}_${index.toString(16).padStart(8, "0")}_${partIndex.toString(16).padStart(8, "0")}` ||
+        part.ignored === true ||
+        part.synthetic === true
+      )
+        throw new Error(`Imported OpenCode text differs at turn ${index + 1}`);
+    }
+  }
+  return plan.target_session_id;
+}
+
+export async function verifyHermesImport(
+  plan: NativeImportPlan,
+  directory: string,
+  exact: boolean,
+): Promise<string> {
   // Hermes identity and messages are verified from its authoritative database.
   const targetHome = plan.target_home;
   if (!targetHome) throw new Error("Hermes home missing");
@@ -874,13 +891,21 @@ export async function continueNativeImport(
     throw new Error("Invalid native import continuation");
   const request = validateImportRequest(envelope.launchRequest);
   if (envelope.approveHome !== true) throw new Error("Native import requires Agent Home approval");
-  const { changes, directory, plan, content } = validateNativeImportApplicationData(
-    envelope.changeSet,
-    envelope.launchRequest,
-    request.workspace_id,
-    dataDir,
+  const validated = await readHandoff(
+    "native-change",
+    [envelope.changeSet, envelope.launchRequest, request.workspace_id, dataDir],
+    () =>
+      validateNativeImportApplicationData(
+        envelope.changeSet,
+        envelope.launchRequest,
+        request.workspace_id,
+        dataDir,
+      ),
   );
-  const root = realpathSync(store.workspacePath(request.workspace_id));
+  const content = Buffer.from(validated.content);
+  const { changes, directory, plan } = validated;
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
+  const root = identity.project;
   if (root !== plan.workspace) throw new Error("Import workspace changed");
   const session = sessionStore.get(plan.source_session_id);
   const sessionWorkspace =
@@ -891,49 +916,71 @@ export async function continueNativeImport(
   const effectiveWorkspaceId = sessionWorkspace
     ? String(sessionWorkspace.manifest_workspace_id ?? sessionWorkspace.id)
     : null;
-  if (!session || effectiveWorkspaceId !== request.workspace_id)
+  if (
+    !session ||
+    session.workspace_id !== identity.registeredId ||
+    effectiveWorkspaceId !== request.workspace_id
+  )
     throw new Error("Import source workspace changed");
   const source = await sessions.document(plan.source_session_id);
   source.source.workspace_id = request.workspace_id;
-  if (fingerprintSessionDocument(source) !== plan.source_fingerprint)
+  if ((await fingerprintHandoff(source)) !== plan.source_fingerprint)
     throw new Error("Source changed after import preview");
   const persistedPath = path.join(directory, "plan.json");
   if (existsSync(persistedPath)) {
     if (!safeRegularFile(persistedPath, MAX_OUTPUT).equals(content))
       throw new Error("Persisted import plan differs from the reviewed plan");
   } else {
-    applyRequest(
-      { changeSet: changes, approveHome: true },
-      store,
-      dataDir,
-      env,
-      (reviewed, applicationId, currentDataDir) => {
-        if (
-          applicationId !== request.workspace_id ||
-          currentDataDir !== dataDir ||
-          reviewed.id !== request.operation_id ||
-          reviewed.changes.length !== 1 ||
-          !reviewed.requires_home_approval
-        )
-          throw new Error("Native import application data does not match its operation");
-        const candidate = reviewed.changes[0]!;
-        const expectedPath = path.join(directory, "plan.json");
-        if (
-          candidate.scope !== "application-data" ||
-          candidate.validator !== "json" ||
-          candidate.target !== expectedPath ||
-          candidate.original_hash !== null ||
-          candidate.before !== "" ||
-          candidate.after !== content.toString("utf8")
-        )
-          throw new Error("Unexpected native import plan destination");
-        return [expectedPath];
-      },
+    await handoffCommit(() =>
+      applyRequest(
+        { changeSet: changes, approveHome: true },
+        store,
+        dataDir,
+        env,
+        (reviewed, applicationId, currentDataDir) => {
+          if (
+            applicationId !== request.workspace_id ||
+            currentDataDir !== dataDir ||
+            reviewed.id !== request.operation_id ||
+            reviewed.changes.length !== 1 ||
+            !reviewed.requires_home_approval
+          )
+            throw new Error("Native import application data does not match its operation");
+          const candidate = reviewed.changes[0]!;
+          const expectedPath = path.join(directory, "plan.json");
+          if (
+            candidate.scope !== "application-data" ||
+            candidate.validator !== "json" ||
+            candidate.target !== expectedPath ||
+            candidate.original_hash !== null ||
+            candidate.before !== "" ||
+            candidate.after !== content.toString("utf8")
+          )
+            throw new Error("Unexpected native import plan destination");
+          return [expectedPath];
+        },
+      ),
     );
   }
-  const persisted = loadNativeImportPlan(dataDir, request);
-  const result = await executeNativeImport(persisted, commands, env, true, false);
-  return { status: "verified", targetSessionId: result.target_session_id };
+  const persisted = await readNativeImportPlan(dataDir, request);
+  const currentIdentity = requireUniqueContinuationWorkspace(
+    store,
+    request.workspace_id,
+    plan.workspace,
+  );
+  if (currentIdentity.registeredId !== identity.registeredId)
+    throw new Error("Import workspace identity changed before execution");
+  try {
+    const result = await executeNativeImport(persisted, commands, env, true, false, () => {
+      requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
+    });
+    return { status: "verified", targetSessionId: result.target_session_id };
+  } catch (error) {
+    if (!existsSync(path.join(directory, "attempted.json"))) throw error;
+    throw new NativeImportOutcomeUnknownError(
+      `Native import outcome needs reconciliation: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 export function validateNativeImportApplicationData(
@@ -1039,9 +1086,16 @@ export async function reconcileNativeImport(
   value: unknown,
   commands: Commands,
   env: NodeJS.ProcessEnv,
+  store: BackendStore,
 ): Promise<{ targetSessionId: string; verified: boolean }> {
-  const loaded = loadNativeImportPlan(dataDir, value);
-  const result = await executeNativeImport(loaded, commands, env, true, true);
+  const request = validateImportRequest(value);
+  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const loaded = await readNativeImportPlan(dataDir, value);
+  const validateOwnership = () => {
+    requireUniqueContinuationWorkspace(store, request.workspace_id, loaded.plan.workspace);
+  };
+  validateOwnership();
+  const result = await executeNativeImport(loaded, commands, env, true, true, validateOwnership);
   return { targetSessionId: result.target_session_id, verified: result.receipt.verified };
 }
 
@@ -1050,6 +1104,7 @@ export async function nativeImportLaunchInfo(
   value: unknown,
   commands: Commands,
   env: NodeJS.ProcessEnv,
+  validateOwnership: () => void,
 ): Promise<{
   request: NativeImportRequest;
   plan: NativeImportPlan;
@@ -1057,7 +1112,9 @@ export async function nativeImportLaunchInfo(
   environment: Record<string, string | null>;
   alreadyLaunched: boolean;
 }> {
-  const loaded = loadNativeImportPlan(dataDir, value);
+  validateOwnership();
+  const loaded = await readNativeImportPlan(dataDir, value);
+  validateOwnership();
   const receiptPath = path.join(loaded.directory, "receipt.json");
   const receipt = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(safeRegularFile(receiptPath, 1024 * 1024)),
@@ -1074,6 +1131,7 @@ export async function nativeImportLaunchInfo(
   )
     throw new Error("Native import receipt is not verified");
   const verifiedId = await verifyNativeImport(loaded.plan, loaded.directory, commands, env, false);
+  validateOwnership();
   if (verifiedId !== receipt.target_session_id)
     throw new Error("Native import target identity changed");
   return {
@@ -1088,19 +1146,24 @@ export async function nativeImportLaunchInfo(
   };
 }
 
-export function markNativeImportLaunched(dataDir: string, value: unknown, terminal: string): void {
-  const loaded = loadNativeImportPlan(dataDir, value);
-  const receiptPath = path.join(loaded.directory, "receipt.json");
+export async function markNativeImportLaunched(
+  dataDir: string,
+  value: unknown,
+  terminal: string,
+  validateOwnership: () => void,
+): Promise<void> {
+  validateOwnership();
+  const request = validateImportRequest(value);
+  const directory = importDirectory(dataDir, request.workspace_id, request.operation_id);
+  ensureInside(path.resolve(dataDir), path.join(directory, "receipt.json"));
+  const receiptPath = path.join(directory, "receipt.json");
   const receipt = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(safeRegularFile(receiptPath, 1024 * 1024)),
   ) as NativeImportReceipt;
-  if (
-    receipt.schema_version !== 1 ||
-    receipt.plan_hash !== loaded.request.plan_hash ||
-    !receipt.verified
-  )
+  if (receipt.schema_version !== 1 || receipt.plan_hash !== request.plan_hash || !receipt.verified)
     throw new Error("Native import receipt is not verified");
+  validateOwnership();
   receipt.launched = true;
   receipt.terminal = terminal;
-  atomicPrivateWrite(loaded.directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
+  atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
 }

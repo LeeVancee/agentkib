@@ -17,6 +17,7 @@ import {
   type YAMLMap,
 } from "yaml";
 import { z } from "zod";
+import { agentMcpHome } from "./agent-home";
 import { pushChange, type ChangeSet } from "./change-plan";
 import {
   connectionJson,
@@ -27,8 +28,8 @@ import {
 } from "./config-merge";
 import { hash, safeTarget } from "./doctor-files";
 import { canonicalProject, readText } from "./files";
+import { lexicalPathIdentity } from "./paths";
 import { BUILTIN_MCP_TOOLS } from "./mcp-builtin";
-import { userHome } from "./mcp-config-read";
 import { manifestPath, parseManifest } from "./manifest";
 import type { BackendStore } from "./store";
 import { utcNow } from "./workspaces";
@@ -112,18 +113,21 @@ function connectionContext(
     throw new Error("Workspace does not exist");
   // Manifest aliases can be shared by clones; use the exact registered workspace and its path.
   const project = canonicalProject(workspace.path);
+  if (lexicalPathIdentity(project) !== lexicalPathIdentity(workspace.path))
+    throw new Error("Registered workspace path changed; refresh the workspace before connecting");
   const workspaceId = request.workspaceId;
   if (!Number.isInteger(hub.port) || hub.port < 1 || hub.port > 65535)
     throw new Error("MCP Hub settings are unavailable");
   const agent = request.targetAgent;
-  const home = userHome(environment);
+  const agentHome =
+    agent === "open-claw" || agent === "hermes" ? agentMcpHome(agent, environment) : undefined;
   const targets = {
     codex: [path.join(project, ".codex/config.toml"), "toml", "project"],
     "claude-code": [path.join(project, ".mcp.json"), "json", "project"],
     cursor: [path.join(project, ".cursor/mcp.json"), "json", "project"],
     opencode: [managedConfigPath(project), "json", "project"],
-    "open-claw": [path.join(home, ".openclaw/openclaw.json"), "json", "agent-home"],
-    hermes: [path.join(home, ".hermes/config.yaml"), "yaml", "agent-home"],
+    "open-claw": [agentHome?.config ?? "", "json", "agent-home"],
+    hermes: [agentHome?.config ?? "", "yaml", "agent-home"],
     "grok-build": [path.join(project, ".grok/config.toml"), "toml", "project"],
     antigravity: [path.join(project, ".agents/mcp_config.json"), "json", "project"],
   } as const;
@@ -160,7 +164,7 @@ function connectionContext(
     scope,
     hub_running: hub.running,
   };
-  return { info, project, home, entry };
+  return { info, project, entry };
 }
 
 export function mcpConnectionInfo(
@@ -572,8 +576,8 @@ export function planMcpConnection(
   hub: HubStatus,
   environment: NodeJS.ProcessEnv,
 ): ChangeSet {
-  const { info, project, home, entry } = connectionContext(value, store, hub, environment);
-  if (!safeTarget(info.scope === "project" ? project : canonicalProject(home), info.target))
+  const { info, project, entry } = connectionContext(value, store, hub, environment);
+  if (info.scope === "project" && !safeTarget(project, info.target))
     throw new Error(`Unsafe MCP configuration path: ${info.target}`);
   const before = readOptional(info.target);
   const after =

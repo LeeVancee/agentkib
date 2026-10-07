@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isReparseOrSymlink } from "./native-files";
+import { currentTask } from "./task-executor";
 
 const MAX_ENTRIES = 4_096;
 const MAX_FILES = 512;
@@ -94,6 +95,7 @@ export async function skillPackage(root: string): Promise<{
     const children = await fs.readdir(directory, { withFileTypes: true });
     children.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
     for (const child of children) {
+      currentTask()?.checkpoint();
       if (++entries > MAX_ENTRIES) throw new Error("Skill package contains too many entries");
       const relative = skillRelativePath(prefix ? `${prefix}/${child.name}` : child.name);
       const portable = relative.normalize("NFC").toLowerCase();

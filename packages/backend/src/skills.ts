@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { compareUtf8 } from "./workspaces";
 import { SkillManager } from "./skill-manager";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
+import { commitTask, currentTask, isTaskCancellation } from "./task-executor";
 
 const MAX_TREE_ENTRIES = 20_000;
 const MAX_CANDIDATES = 200;
@@ -193,6 +194,11 @@ export class Skills {
   }
 
   async request(method: string, params: Record<string, unknown>) {
+    currentTask()?.checkpoint();
+    return this.#request(method, params);
+  }
+
+  async #request(method: string, params: Record<string, unknown>) {
     switch (method) {
       case "skills.listCatalog":
         return this.catalog(params.force === true);
@@ -276,12 +282,27 @@ export class Skills {
       await this.#writeJson(file, snapshot);
       return this.#annotate(snapshot);
     } catch (error) {
+      if (
+        currentTask()?.signal.aborted &&
+        currentTask()?.signal.reason?.reason === "backend-closing"
+      )
+        throw error;
       const cached = (await this.#readJson(file).catch(() => null)) as {
         cached_at?: string;
         entries?: Array<{ candidate: Candidate; installed?: boolean }>;
         stale?: boolean;
       } | null;
       if (!cached) throw error;
+      // A deadline fallback must not restart directory hashing after its budget expired.
+      if (currentTask()?.signal.aborted)
+        return {
+          entries: (cached.entries ?? []).map((entry) => ({
+            ...entry.candidate,
+            installed: entry.installed === true,
+          })),
+          cached_at: cached.cached_at ?? new Date().toISOString(),
+          stale: true,
+        };
       return this.#annotate({ ...cached, stale: true });
     }
   }
@@ -349,6 +370,7 @@ export class Skills {
         return error instanceof Error ? error : new Error(String(error));
       }
     });
+    currentTask()?.checkpoint();
     const output = results.filter((entry): entry is Candidate => !(entry instanceof Error));
     if (!output.length && results[0] instanceof Error) throw results[0];
     return output.sort((a, b) => a.name.localeCompare(b.name));
@@ -419,7 +441,7 @@ export class Skills {
   async checkUpdates() {
     const installed = await this.installed();
     const cache = new Map<string, Promise<string>>();
-    return Promise.all(
+    const results = await Promise.allSettled(
       installed.map(async (skill) => {
         if (!skill.source) return skill;
         try {
@@ -449,11 +471,23 @@ export class Skills {
             status:
               treeSha && treeSha !== skill.source.tree_sha ? "update-available" : skill.status,
           };
-        } catch {
+        } catch (error) {
+          if (
+            isTaskCancellation(error) ||
+            (error instanceof Error && error.name === "TimeoutError")
+          )
+            throw error;
+          currentTask()?.checkpoint();
           return skill;
         }
       }),
     );
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    return results.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
   }
 
   async prepareInstall(source: Source) {
@@ -471,6 +505,7 @@ export class Skills {
         throw error;
       });
       if (!info && create) {
+        currentTask()?.checkpoint();
         await fs
           .mkdir(current, { recursive: current === this.root })
           .catch((error: NodeJS.ErrnoException) => {
@@ -1034,6 +1069,7 @@ export class Skills {
             continue;
           }
           try {
+            currentTask()?.checkpoint();
             if (item.status === "skipped") {
               const skipped = batch.skipped.get(item.id)!;
               const actual = await this.#targetHash(path.join(this.root, "skills", skipped.name));
@@ -1266,52 +1302,54 @@ export class Skills {
       );
       if (volumes.some((info) => info.dev !== volumes[0]!.dev))
         throw new Error("Skill staging, backup and library must be on the same volume");
-      const stagedBackup = `${backup}.staging-${randomUUID()}`;
-      let hasBackup = false;
-      let targetMoved = false;
-      let packageInstalled = false;
-      try {
-        if (old && actual !== null) {
-          if (hasExistingBackup) {
-            await fs.rename(backup, stagedBackup);
-            hasBackup = true;
-          }
-          await fs.rename(target, backup);
-          targetMoved = true;
-        }
-        await fs.rename(prepared.packagePath, target);
-        packageInstalled = true;
-        lock.skills[prepared.name] = prepared.lock;
-        if (old) lock.previous[prepared.name] = old;
-        await this.#writeLock(lock);
-        committed = true;
-      } catch (error) {
-        if (packageInstalled) await fs.rm(target, { recursive: true, force: true });
-        if (targetMoved && old) await fs.rename(backup, target);
-        if (hasBackup) await fs.rename(stagedBackup, backup);
-        throw error;
-      }
-      if (hasBackup) {
+      return await commitTask(async () => {
+        const stagedBackup = `${backup}.staging-${randomUUID()}`;
+        let hasBackup = false;
+        let targetMoved = false;
+        let packageInstalled = false;
         try {
-          await fs.rm(stagedBackup, { recursive: true, force: true });
-        } catch {
-          warnings.push("Skill was saved, but the older backup could not be removed");
+          if (old && actual !== null) {
+            if (hasExistingBackup) {
+              await fs.rename(backup, stagedBackup);
+              hasBackup = true;
+            }
+            await fs.rename(target, backup);
+            targetMoved = true;
+          }
+          await fs.rename(prepared.packagePath, target);
+          packageInstalled = true;
+          lock.skills[prepared.name] = prepared.lock;
+          if (old) lock.previous[prepared.name] = old;
+          await this.#writeLock(lock);
+          committed = true;
+        } catch (error) {
+          if (packageInstalled) await fs.rm(target, { recursive: true, force: true });
+          if (targetMoved && old) await fs.rename(backup, target);
+          if (hasBackup) await fs.rename(stagedBackup, backup);
+          throw error;
         }
-      }
-      let refreshed = result;
-      try {
-        const current = (await this.installed()).find((item) => item.name === prepared.name);
-        if (current) refreshed = current;
-        else warnings.push("Skill was saved, but the library refresh did not return its record");
-      } catch {
-        warnings.push("Skill was saved, but refreshing the library failed");
-      }
-      try {
-        await fs.rm(prepared.tempPath, { recursive: true, force: true });
-      } catch {
-        warnings.push("Skill was saved, but temporary files could not be removed");
-      }
-      return warnings.length ? { ...refreshed, warnings } : refreshed;
+        if (hasBackup) {
+          try {
+            await fs.rm(stagedBackup, { recursive: true, force: true });
+          } catch {
+            warnings.push("Skill was saved, but the older backup could not be removed");
+          }
+        }
+        let refreshed = result;
+        try {
+          const current = (await this.installed()).find((item) => item.name === prepared.name);
+          if (current) refreshed = current;
+          else warnings.push("Skill was saved, but the library refresh did not return its record");
+        } catch {
+          warnings.push("Skill was saved, but refreshing the library failed");
+        }
+        try {
+          await fs.rm(prepared.tempPath, { recursive: true, force: true });
+        } catch {
+          warnings.push("Skill was saved, but temporary files could not be removed");
+        }
+        return warnings.length ? { ...refreshed, warnings } : refreshed;
+      });
     } finally {
       if (!committed)
         await fs.rm(prepared.tempPath, { recursive: true, force: true }).catch(() => undefined);
@@ -1355,54 +1393,58 @@ export class Skills {
       updated_at: previous.updated_at,
       can_rollback: true,
     };
-    const staging = `${target}.rollback-${randomUUID()}`;
-    await fs.rename(target, staging);
-    try {
-      await fs.rename(backup, target);
+    return commitTask(async () => {
+      const staging = `${target}.rollback-${randomUUID()}`;
+      await fs.rename(target, staging);
       try {
-        await fs.rename(staging, backup);
-      } catch (error) {
-        await fs.rename(target, backup);
-        await fs.rename(staging, target);
-        throw error;
-      }
-      lock.skills[name] = previous;
-      lock.previous[name] = current;
-      try {
-        await this.#writeLock(lock);
-      } catch (error) {
-        await fs.rename(target, staging);
         await fs.rename(backup, target);
-        await fs.rename(staging, backup);
+        try {
+          await fs.rename(staging, backup);
+        } catch (error) {
+          await fs.rename(target, backup);
+          await fs.rename(staging, target);
+          throw error;
+        }
+        lock.skills[name] = previous;
+        lock.previous[name] = current;
+        try {
+          await this.#writeLock(lock);
+        } catch (error) {
+          await fs.rename(target, staging);
+          await fs.rename(backup, target);
+          await fs.rename(staging, backup);
+          throw error;
+        }
+      } catch (error) {
+        if (
+          (await fs.stat(staging).then(
+            () => true,
+            () => false,
+          )) &&
+          !(await fs.stat(target).then(
+            () => true,
+            () => false,
+          ))
+        )
+          await fs.rename(staging, target);
         throw error;
       }
-    } catch (error) {
-      if (
-        (await fs.stat(staging).then(
-          () => true,
-          () => false,
-        )) &&
-        !(await fs.stat(target).then(
-          () => true,
-          () => false,
-        ))
-      )
-        await fs.rename(staging, target);
-      throw error;
-    }
-    try {
-      return (
-        (await this.installed()).find((item) => item.name === name) ?? {
+      try {
+        return (
+          (await this.installed()).find((item) => item.name === name) ?? {
+            ...result,
+            warnings: [
+              "Skill rollback succeeded, but the library refresh did not return its record",
+            ],
+          }
+        );
+      } catch {
+        return {
           ...result,
-          warnings: ["Skill rollback succeeded, but the library refresh did not return its record"],
-        }
-      );
-    } catch {
-      return {
-        ...result,
-        warnings: ["Skill rollback succeeded, but refreshing the library failed"],
-      };
-    }
+          warnings: ["Skill rollback succeeded, but refreshing the library failed"],
+        };
+      }
+    });
   }
 
   async uninstall(params: Record<string, unknown>) {
@@ -1433,27 +1475,29 @@ export class Skills {
       lock: lock.skills[name] ?? null,
       previous: lock.previous[name] ?? null,
     };
-    await fs.mkdir(root, { recursive: true });
-    await this.#writeJson(path.join(root, "record.json"), record);
-    await fs.rename(target, path.join(root, "package"));
-    const backup = path.join(this.root, "backups/skills", name);
-    if (
-      await fs.stat(backup).then(
-        () => true,
-        () => false,
+    return commitTask(async () => {
+      await fs.mkdir(root, { recursive: true });
+      await this.#writeJson(path.join(root, "record.json"), record);
+      await fs.rename(target, path.join(root, "package"));
+      const backup = path.join(this.root, "backups/skills", name);
+      if (
+        await fs.stat(backup).then(
+          () => true,
+          () => false,
+        )
       )
-    )
-      await fs.rename(backup, path.join(root, "backup"));
-    delete lock.skills[name];
-    delete lock.previous[name];
-    await this.#writeLock(lock);
-    return {
-      id,
-      name,
-      display_name: record.display_name,
-      removed_at: record.removed_at,
-      path: path.join(root, "package"),
-    };
+        await fs.rename(backup, path.join(root, "backup"));
+      delete lock.skills[name];
+      delete lock.previous[name];
+      await this.#writeLock(lock);
+      return {
+        id,
+        name,
+        display_name: record.display_name,
+        removed_at: record.removed_at,
+        path: path.join(root, "package"),
+      };
+    });
   }
 
   async removed() {
@@ -1509,23 +1553,25 @@ export class Skills {
       )
     )
       throw new Error("A Skill with this name already exists");
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.rename(path.join(root, "package"), target);
-    const backup = path.join(this.root, "backups/skills", name);
-    await fs.mkdir(path.dirname(backup), { recursive: true });
-    if (
-      await fs.stat(path.join(root, "backup")).then(
-        () => true,
-        () => false,
+    return commitTask(async () => {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.rename(path.join(root, "package"), target);
+      const backup = path.join(this.root, "backups/skills", name);
+      await fs.mkdir(path.dirname(backup), { recursive: true });
+      if (
+        await fs.stat(path.join(root, "backup")).then(
+          () => true,
+          () => false,
+        )
       )
-    )
-      await fs.rename(path.join(root, "backup"), backup);
-    const lock = await this.#lock();
-    if (record.lock) lock.skills[name] = record.lock as LockEntry;
-    if (record.previous) lock.previous[name] = record.previous as LockEntry;
-    await this.#writeLock(lock);
-    await fs.rm(root, { recursive: true, force: true });
-    return (await this.installed()).find((item) => item.name === name);
+        await fs.rename(path.join(root, "backup"), backup);
+      const lock = await this.#lock();
+      if (record.lock) lock.skills[name] = record.lock as LockEntry;
+      if (record.previous) lock.previous[name] = record.previous as LockEntry;
+      await this.#writeLock(lock);
+      await fs.rm(root, { recursive: true, force: true });
+      return (await this.installed()).find((item) => item.name === name);
+    });
   }
 
   async readFile(params: Record<string, unknown>) {
@@ -1907,9 +1953,13 @@ export class Skills {
   }
 
   async #raw(owner: string, repository: string, commit: string, file: string, maxBytes: number) {
+    const task = currentTask();
+    task?.checkpoint();
     const url = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/${encodeURIComponent(commit)}/${file.split("/").map(encodeURIComponent).join("/")}`;
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(30_000),
+      signal: task
+        ? AbortSignal.any([task.signal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000),
       headers: { "User-Agent": "agentkib-skill-hub" },
     });
     if (!response.ok) throw new Error(`GitHub download failed (${response.status})`);
@@ -1921,8 +1971,12 @@ export class Skills {
   }
 
   async #json(url: string) {
+    const task = currentTask();
+    task?.checkpoint();
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(30_000),
+      signal: task
+        ? AbortSignal.any([task.signal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000),
       headers: { Accept: "application/vnd.github+json", "User-Agent": "agentkib-skill-hub" },
     });
     if (!response.ok) throw new Error(`GitHub request failed (${response.status})`);
@@ -1998,6 +2052,7 @@ export class Skills {
     const hash = createHash("sha256");
     let modifiedAt: string | null = null;
     for (const entry of entries) {
+      currentTask()?.checkpoint();
       const relative = Buffer.from(entry.relative);
       const sizeBytes = Buffer.alloc(8);
       sizeBytes.writeBigUInt64LE(BigInt(entry.info.size));

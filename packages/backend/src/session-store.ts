@@ -10,6 +10,11 @@ import { exists, withinLexical } from "./files";
 import { timestamp } from "./timestamps";
 import { compareUtf8, storedTime, utcNow } from "./workspaces";
 type Agent = (typeof AGENTS)[number];
+export function sessionIdentity(salt: string, agent: Agent, nativeRef: string): string {
+  return createHmac("sha256", salt)
+    .update(`conversation:${agent === "open-claw" ? "openclaw" : agent}:${nativeRef}`)
+    .digest("hex");
+}
 export interface SessionOwner {
   id: string;
   aliases: string[];
@@ -181,6 +186,9 @@ export class SessionStore {
     });
   }
   id(agent: Agent, nativeRef: string): string {
+    return sessionIdentity(this.identitySalt(), agent, nativeRef);
+  }
+  identitySalt(): string {
     let salt = this.sql.one("SELECT value FROM schema_meta WHERE key='conversation_salt'")?.value;
     if (!salt) {
       this.sql.run(
@@ -189,9 +197,7 @@ export class SessionStore {
       );
       salt = this.sql.one("SELECT value FROM schema_meta WHERE key='conversation_salt'")!.value;
     }
-    return createHmac("sha256", String(salt))
-      .update(`conversation:${agent === "open-claw" ? "openclaw" : agent}:${nativeRef}`)
-      .digest("hex");
+    return String(salt);
   }
   owner(workspace: string): SessionOwner {
     const root = sessionWorkspaceRoot(this.workspacePath(workspace));

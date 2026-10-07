@@ -30,6 +30,10 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Build backend and stage native bindings
+        run: pnpm --filter @agentkib/desktop backend:build
+      - name: Test backend workers, native bindings and MCP ownership
+        run: pnpm test:backend:stability
 
   typecheck:
     name: Typecheck on Windows x64
@@ -47,3 +51,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - name: Build backend and stage native bindings
+        run: pnpm --filter @agentkib/desktop backend:build
+      - name: Test backend workers, native bindings and MCP ownership
+        run: pnpm test:backend:stability

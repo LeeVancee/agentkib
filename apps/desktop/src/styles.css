@@ -633,7 +633,7 @@ button {
   -ms-overflow-style: none;
 }
 
-.content:has(> .session-hub-page) {
+.app-sessions-content {
   display: flex;
   flex-direction: column;
   height: 100%;

@@ -167,7 +167,12 @@ function MainLayout() {
                 {discoveryFailure.error}
               </div>
             )}
-            <section className="content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4">
+            <section
+              className={cn(
+                "content mx-auto w-full max-w-[1500px] px-6 pb-10 pt-5 max-[640px]:px-4",
+                isSessions && "app-sessions-content",
+              )}
+            >
               <Outlet />
             </section>
           </div>

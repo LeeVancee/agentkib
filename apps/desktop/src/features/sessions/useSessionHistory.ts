@@ -28,6 +28,7 @@ export function useSessionHistory(
   const query = useInfiniteQuery(
     {
       ...queryDefaults,
+      networkMode: session?.remote ? "online" : "always",
       queryKey,
       queryFn: async ({ pageParam, signal }) => {
         const page = session?.remote

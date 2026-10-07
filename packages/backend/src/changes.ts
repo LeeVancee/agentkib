@@ -79,7 +79,9 @@ export function applyRequest(
       path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions"),
       path.join(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects"),
     ],
-    protectedHome: string[] = [];
+    // Recheck these connection targets at apply time: their directories may have
+    // been replaced after the MCP connection diff was reviewed.
+    protectedHome: string[] = [path.join(home, ".openclaw"), path.join(home, ".hermes")];
   for (const change of plan.changes)
     if (change.scope === "agent-home" && change.validator === "jsonl") {
       const root = roots.find(

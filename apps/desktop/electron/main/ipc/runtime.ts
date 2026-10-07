@@ -435,6 +435,30 @@ export function registerRuntimeIpc({
 
     forward("agentkib:mcp:hub-status", RUNTIME_METHODS.mcpHubStatus);
     forward(
+      "agentkib:mcp:connection-info",
+      RUNTIME_METHODS.mcpConnectionInfo,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
+    forward(
+      "agentkib:mcp:plan-connection",
+      RUNTIME_METHODS.planMcpConnection,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
+    forward(
+      "agentkib:mcp:verify-connection",
+      RUNTIME_METHODS.verifyMcpConnection,
+      (workspaceId: unknown, targetAgent: unknown) => ({
+        workspaceId: requireString(workspaceId, "workspaceId"),
+        targetAgent: requireAgentKind(targetAgent),
+      }),
+    );
+    forward(
       "agentkib:mcp:update-network",
       RUNTIME_METHODS.updateMcpNetwork,
       (settings: unknown) => ({

@@ -192,6 +192,22 @@ export interface McpHubStatus {
   error_count: number;
   last_error?: string;
 }
+export interface McpConnectionInfo {
+  workspace_id: string;
+  target_agent: AgentKind;
+  url: string;
+  config: string;
+  target: string;
+  format: "json" | "toml" | "yaml";
+  scope: "project" | "agent-home";
+  hub_running: boolean;
+}
+export interface McpConnectionVerification {
+  url: string;
+  checked_at: string;
+  builtin_tools: number;
+  external_tools: string[];
+}
 export type McpRuntimeState = "stopped" | "starting" | "running" | "error";
 export interface McpRuntimeStatus {
   server_id: string;

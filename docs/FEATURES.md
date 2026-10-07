@@ -57,6 +57,16 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - Damaged or oversized log records produce a warning. Very distant message/tool associations or ambiguous legacy metadata may be shown conservatively with a warning instead of requiring a full-file scan.
 - History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor is limited to verified CLI stores, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Their offline native storage checks have passed; OpenCode/Hermes terminal history and restart checks also pass. New-target real replies remain unverified; one OpenClaw-to-Claude production-rendered history has a correct real reply, with full per-direction acceptance still pending. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
 
+### MCP Hub and client connections
+
+- The MCP page separates upstream services managed by AgentKib from the client connection used by another agent. A `mcpServers` client configuration belongs in the target agent's configuration; the service editor expects one AgentKib server definition.
+- “Connect an Agent to the Hub” lets you choose a registered workspace and one of the eight writable agents, inspect the complete local Hub URL and native configuration path, copy the URL or configuration, or review a connection-only ChangeSet before writing it. A workspace does not need an existing manifest.
+- New connections use the workspace's unique registered ID. Legacy manifest URLs remain valid when they identify one workspace; ambiguous aliases are rejected. Review and write the connection again if cloned repositories or worktrees share a manifest ID.
+- Codex and Grok Build use TOML; Claude Code, Cursor, OpenCode, Antigravity and OpenClaw use their native JSON structures; Hermes uses YAML. Existing OpenCode configuration selection and JSONC/JSON5 compatibility are preserved. OpenClaw and Hermes write to Agent Home and require separate approval; their connection points to the selected workspace.
+- A connection-only ChangeSet preserves other servers and client settings. It refuses conflicting same-name entries and unsafe paths, uses the normal hash/backup protections, and updates an existing tracked configuration hash when necessary. It does not generate Instructions or Skills.
+- After copying or writing, reload the target agent's MCP configuration and confirm that its tools are visible. AgentKib and the client must run on the same machine for the displayed loopback URL to work. Enabled global services are defaults; workspace services can override them, and each service's allowed-agent list controls publication.
+- “Verify Hub” performs an HTTP MCP handshake and reads the tool catalog without calling tools or probing upstream services. It distinguishes AgentKib built-in tools from external tools, whose directory comes from the most recent service probe. “Configuration written,” “Hub reachable,” and a successful service probe do not confirm that another agent has loaded the connection. An empty external directory suggests checking enabled services, allowed agents, and service probing.
+
 ### Skill Hub
 
 - A Skill is represented as one directory-level package rooted at `SKILL.md`; supporting files remain inside that package.
@@ -168,6 +178,16 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。Antigravity ACP 历史通过官方 ACP server 有界回放。OpenCode 通过有界导出命令读取；OpenClaw、Hermes 和 Grok Build 使用各自经过校验的本机历史来源。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
 - 损坏或超大的日志记录会显示提示；距离过远的消息/工具关联，以及无法明确判断的旧格式元数据，会保守展示并提示，而非要求扫描完整文件。
 - 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 限已验证 CLI 格式，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。离线原生存储检查已通过，OpenCode/Hermes 终端历史与重启检查也已通过；新目标真实回复仍未验收。新版 OpenClaw 到 Claude 的生产转换载荷已有一轮正确真实回复，全部方向的完整交接验收尚未完成，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
+
+### MCP Hub 与客户端接入
+
+- MCP 页区分由 AgentKib 管理的上游服务，以及其他 Agent 使用的客户端连接。`mcpServers` 客户端配置应放入目标 Agent 的配置文件；服务编辑器接收单个 AgentKib 服务定义。
+- “连接 Agent 到 Hub”可选择已注册工作区和八个可写 Agent 之一，查看完整本机 Hub URL 与原生配置路径、复制地址或配置，或先审查仅包含连接变更的 ChangeSet 再写入。工作区无需已有 manifest。
+- 新连接使用工作区的唯一注册 ID。旧 manifest 地址只有在能唯一定位工作区时才兼容；存在歧义时拒绝连接。克隆仓库或 worktree 共享 manifest ID 时，可重新审查并写入连接配置。
+- Codex、Grok Build 使用 TOML；Claude Code、Cursor、OpenCode、Antigravity、OpenClaw 使用各自原生 JSON 结构；Hermes 使用 YAML。沿用已有 OpenCode 配置选择规则与 JSONC/JSON5 兼容行为。OpenClaw、Hermes 写入 Agent Home，需单独确认，连接会指向所选工作区。
+- 接入 ChangeSet 保留其他服务及客户端设置，拒绝同名冲突和不安全路径，并复用哈希检查与备份保护；必要时同步已跟踪配置的哈希，不生成 Instructions 或 Skills。
+- 复制或写入后，在目标 Agent 重新加载 MCP 配置并确认工具可见。页面显示的 loopback URL 要求 AgentKib 与客户端运行在同一台机器。已启用的全局服务作为默认配置，工作区服务可覆盖它们，各服务的允许 Agent 范围控制工具发布。
+- “验证 Hub”通过 HTTP 完成 MCP 握手并读取工具目录，不调用工具、不探测上游。结果区分 AgentKib 内置工具与外部工具，外部目录来自最近一次服务探测。“配置已写入”“Hub 可达”及服务探测成功均不代表其他 Agent 已加载连接。外部目录为空时，可检查服务启用状态、允许 Agent 范围并执行服务探测。
 
 ### Skill Hub
 

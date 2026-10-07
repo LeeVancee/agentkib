@@ -67,6 +67,8 @@ import type {
   CloseBehavior,
   LocalePreference,
   McpHubStatus,
+  McpConnectionInfo,
+  McpConnectionVerification,
   McpInstallation,
   McpInstallResult,
   McpMigrationCandidate,
@@ -194,6 +196,12 @@ export interface DesktopApi {
   };
   mcp: {
     hubStatus(): Promise<McpHubStatus>;
+    connectionInfo(workspaceId: string, targetAgent: AgentKind): Promise<McpConnectionInfo>;
+    planConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;
+    verifyConnection(
+      workspaceId: string,
+      targetAgent: AgentKind,
+    ): Promise<McpConnectionVerification>;
     updateNetwork(settings: unknown): Promise<McpHubStatus>;
     listServers(project?: string): Promise<McpServerConfig[]>;
     getServer(serverId: string, project?: string): Promise<McpServerConfig | undefined>;

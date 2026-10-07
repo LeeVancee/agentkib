@@ -86,6 +86,11 @@ import type {
   SkillFilePreview,
   SkillOperationPreview,
   SkillSource,
+  SkillVersionSelector,
+  SkillVersionListRequest,
+  SkillVersionList,
+  SkillImportBatchPreview,
+  SkillImportBatchReport,
   SkillInventory,
   SkillTargetCapability,
   SkillDetailRequest,
@@ -179,6 +184,12 @@ export interface DesktopApi {
     applyOperation(token: string, allowModified?: boolean): Promise<InstalledSkill>;
     checkUpdates(): Promise<InstalledSkill[]>;
     prepareUpdate(name: string): Promise<SkillOperationPreview>;
+    listVersions(request: SkillVersionListRequest): Promise<SkillVersionList>;
+    prepareVersionChange(
+      libraryId: string,
+      selector: SkillVersionSelector,
+    ): Promise<SkillOperationPreview>;
+    discardPreview(token: string): Promise<void>;
     rollback(name: string): Promise<InstalledSkill>;
     uninstall(name: string): Promise<RemovedSkill>;
     removed(): Promise<RemovedSkill[]>;
@@ -189,7 +200,14 @@ export interface DesktopApi {
     getDetail(request: SkillDetailRequest): Promise<SkillDetail>;
     readDetailFile(request: SkillDetailRequest & { path: string }): Promise<SkillPreviewFile>;
     prepareImport(observationId: string): Promise<SkillOperationPreview>;
-    readPreviewFile(token: string, path: string, targetId?: string): Promise<SkillPreviewFile>;
+    prepareImports(observationIds: string[]): Promise<SkillImportBatchPreview>;
+    applyImports(token: string): Promise<SkillImportBatchReport>;
+    readPreviewFile(
+      token: string,
+      path: string,
+      targetId?: string,
+      itemId?: string,
+    ): Promise<SkillPreviewFile>;
     listDeployments(): Promise<SkillDeployment[]>;
     prepareDeployment(request: PrepareSkillDeploymentRequest): Promise<SkillDeploymentPreview>;
     applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;

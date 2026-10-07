@@ -499,10 +499,16 @@ export interface CatalogAsset {
   modified_at?: string;
 }
 export type SkillSourceKind = "openai-curated" | "github";
+export type SkillVersionType = "tag" | "branch" | "commit";
+export interface SkillVersionSelector {
+  type: SkillVersionType;
+  value: string;
+}
 export interface SkillSource {
   kind: SkillSourceKind;
   repository: string;
   ref: string;
+  ref_type?: SkillVersionType;
   path: string;
   resolved_commit: string;
   tree_sha: string;
@@ -555,6 +561,50 @@ export interface SkillOperationPreview {
   total_size: number;
   local_modified: boolean;
   expires_at: string;
+  library_id?: string;
+  previous_source?: SkillSource | null;
+}
+export type SkillVersionListRequest = (
+  | { library_id: string; source?: never }
+  | { source: SkillSource; library_id?: never }
+) & { type: "tag" | "branch"; page?: number };
+export interface SkillVersionList {
+  entries: { name: string; commit: string }[];
+  type: "tag" | "branch";
+  page: number;
+  has_more: boolean;
+}
+export interface SkillImportPreviewItem {
+  id: string;
+  observation_ids: string[];
+  paths: string[];
+  agents: AgentKind[];
+  resolved_path: string | null;
+  library_id: string | null;
+  display_name: string;
+  status: "ready" | "skipped" | "failed";
+  reason?: string;
+  preview?: SkillOperationPreview;
+}
+export interface SkillImportBatchPreview {
+  token: string;
+  expires_at: string;
+  total_size: number;
+  items: SkillImportPreviewItem[];
+}
+export interface SkillImportResult {
+  id: string;
+  observation_ids: string[];
+  status: "imported" | "skipped" | "failed";
+  library_id?: string;
+  skill?: InstalledSkill;
+  error?: string;
+  warnings?: string[];
+}
+export interface SkillImportBatchReport {
+  token: string;
+  items: SkillImportResult[];
+  warnings?: string[];
 }
 export interface RemovedSkill {
   warnings?: string[];

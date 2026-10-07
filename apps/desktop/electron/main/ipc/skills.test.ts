@@ -33,6 +33,110 @@ afterEach(() => {
 });
 
 describe("Skill manager IPC", () => {
+  it("forwards version choices and paginated sources without accepting arbitrary roots", () => {
+    handler("list-versions")(event, { library_id: "reviewer", type: "tag", page: 2 });
+    expect(request).toHaveBeenLastCalledWith("skills.listVersions", {
+      library_id: "reviewer",
+      type: "tag",
+      page: 2,
+    });
+    handler("prepare-version-change")(event, "reviewer", {
+      type: "branch",
+      value: "feature/review",
+    });
+    expect(request).toHaveBeenLastCalledWith("skills.prepareVersionChange", {
+      library_id: "reviewer",
+      selector: { type: "branch", value: "feature/review" },
+    });
+    handler("prepare-version-change")(event, "reviewer", { type: "commit", value: "a1b2c3d" });
+    expect(request).toHaveBeenLastCalledWith("skills.prepareVersionChange", {
+      library_id: "reviewer",
+      selector: { type: "commit", value: "a1b2c3d" },
+    });
+  });
+  it("lists versions for a discovered public source with an explicit reference type", () => {
+    const source = {
+      kind: "github",
+      repository: "owner/repo",
+      ref: "release/v1",
+      ref_type: "tag",
+      path: "skills/reviewer",
+      resolved_commit: "a".repeat(40),
+      tree_sha: "b".repeat(40),
+    };
+    handler("list-versions")(event, { source, type: "branch" });
+    expect(request).toHaveBeenLastCalledWith("skills.listVersions", {
+      source,
+      type: "branch",
+      page: 1,
+    });
+    expect(() =>
+      handler("list-versions")(event, {
+        source: { ...source, path: "../secret" },
+        type: "branch",
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      handler("list-versions")(event, {
+        source: { ...source, root: "/secret" },
+        type: "branch",
+      }),
+    ).toThrow(TypeError);
+  });
+  it.each([
+    {},
+    { library_id: "reviewer", source: {}, type: "tag" },
+    { library_id: "reviewer", type: "commit" },
+    { library_id: "reviewer", type: "tag", page: 0 },
+    { library_id: "reviewer", type: "tag", page: 1.5 },
+    { library_id: "reviewer", type: "tag", root: "/private" },
+  ])("rejects invalid version listings %j", (input) => {
+    expect(() => handler("list-versions")(event, input)).toThrow(TypeError);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([
+    { type: "release", value: "v1" },
+    { type: "commit", value: "main" },
+    { type: "branch", value: "main\0" },
+    { type: "tag", value: "" },
+    { type: "tag", value: "v1", repository: "other/repo" },
+  ])("rejects invalid version selectors %j", (selector) => {
+    expect(() => handler("prepare-version-change")(event, "reviewer", selector)).toThrow(TypeError);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("prepares selected observations and reads frozen batch items by identity", () => {
+    handler("prepare-imports")(event, ["observation-a", "observation-b"]);
+    expect(request).toHaveBeenLastCalledWith("skills.prepareImports", {
+      observation_ids: ["observation-a", "observation-b"],
+    });
+    handler("read-preview-file")(event, "batch", "SKILL.md", undefined, "item-a");
+    expect(request).toHaveBeenLastCalledWith("skills.readPreviewFile", {
+      token: "batch",
+      path: "SKILL.md",
+      item_id: "item-a",
+    });
+    handler("apply-imports")(event, "batch");
+    expect(request).toHaveBeenLastCalledWith("skills.applyImports", {
+      token: "batch",
+      confirmed: true,
+    });
+    handler("discard-preview")(event, "batch");
+    expect(request).toHaveBeenLastCalledWith("skills.discardPreview", { token: "batch" });
+  });
+  it.each(
+    [[], ["a", "a"], ["a", null], [""], Array.from({ length: 4097 }, (_, i) => String(i))].map(
+      (ids) => [ids],
+    ),
+  )("rejects invalid observation selections %#", (ids) => {
+    expect(() => handler("prepare-imports")(event, ids)).toThrow(TypeError);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("rejects mixed deployment and import preview identities", () => {
+    expect(() =>
+      handler("read-preview-file")(event, "preview", "SKILL.md", "target", "item"),
+    ).toThrow(TypeError);
+    expect(request).not.toHaveBeenCalled();
+  });
   it.each([
     ["inventory", "skills.inventory"],
     ["targets", "skills.targets"],

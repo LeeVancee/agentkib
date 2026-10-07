@@ -1,4 +1,10 @@
-import type { PrepareSkillDeploymentRequest, SkillDetailRequest } from "../../../src/core/types";
+import type {
+  PrepareSkillDeploymentRequest,
+  SkillDetailRequest,
+  SkillSource,
+  SkillVersionSelector,
+  SkillVersionListRequest,
+} from "../../../src/core/types";
 import { requireObject, requireString } from "./validation";
 
 function fields(value: unknown, allowed: string[]) {
@@ -45,6 +51,78 @@ export function skillDetailRequest(
       ? { library_id: skillIdentity(input.library_id, "library_id") }
       : { observation_id: skillIdentity(input.observation_id, "observation_id") }),
     ...(withFile ? { path: skillRelativePath(input.path) } : {}),
+  };
+}
+
+export function skillObservationIds(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.length > 4096)
+    throw new TypeError("Select between 1 and 4096 Skill observations");
+  const ids = value.map((id) => skillIdentity(id, "observation_id"));
+  if (new Set(ids).size !== ids.length) throw new TypeError("Duplicate Skill observation");
+  return ids;
+}
+
+export function skillVersionSelector(value: unknown): SkillVersionSelector {
+  const input = fields(value, ["type", "value"]);
+  if (input.type !== "tag" && input.type !== "branch" && input.type !== "commit")
+    throw new TypeError("Unsupported Skill version type");
+  const reference = skillIdentity(input.value, "version reference");
+  if (
+    [...reference].some(
+      (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127,
+    ) ||
+    (input.type === "commit" && !/^[a-f0-9]{7,40}$/i.test(reference))
+  )
+    throw new TypeError("Invalid Skill version reference");
+  return { type: input.type, value: reference };
+}
+
+export function skillSource(value: unknown): SkillSource {
+  const input = fields(value, [
+    "kind",
+    "repository",
+    "ref",
+    "ref_type",
+    "path",
+    "resolved_commit",
+    "tree_sha",
+  ]);
+  if (input.kind !== "github" && input.kind !== "openai-curated")
+    throw new TypeError("Unsupported Skill source");
+  const repository = skillIdentity(input.repository, "repository");
+  if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repository))
+    throw new TypeError("Skill repository must include an owner and repository");
+  const ref = skillIdentity(input.ref, "ref");
+  const selector =
+    input.ref_type === undefined
+      ? undefined
+      : skillVersionSelector({ type: input.ref_type, value: ref });
+  return {
+    kind: input.kind,
+    repository,
+    ref,
+    ...(selector ? { ref_type: selector.type } : {}),
+    path: input.path === "" ? "" : skillRelativePath(input.path),
+    resolved_commit: skillIdentity(input.resolved_commit, "resolved_commit"),
+    tree_sha: skillIdentity(input.tree_sha, "tree_sha"),
+  };
+}
+
+export function skillVersionListRequest(value: unknown): SkillVersionListRequest {
+  const input = fields(value, ["library_id", "source", "type", "page"]);
+  if (input.type !== "tag" && input.type !== "branch")
+    throw new TypeError("Select tag or branch versions");
+  if ((input.library_id !== undefined) === (input.source !== undefined))
+    throw new TypeError("Select exactly one Skill source");
+  const page = input.page ?? 1;
+  if (typeof page !== "number" || !Number.isSafeInteger(page) || page < 1 || page > 10_000)
+    throw new TypeError("Invalid Skill version page");
+  return {
+    ...(input.library_id === undefined
+      ? { source: skillSource(input.source) }
+      : { library_id: skillIdentity(input.library_id, "library_id") }),
+    type: input.type,
+    page,
   };
 }
 

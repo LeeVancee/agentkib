@@ -88,6 +88,24 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     await router.stop();
   });
 
+  it("routes Skill version and batch operations to the TypeScript backend once", async () => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    ts.handler = (method) => ({ method });
+    for (const method of [
+      RUNTIME_METHODS.listSkillVersions,
+      RUNTIME_METHODS.prepareSkillVersionChange,
+      RUNTIME_METHODS.prepareSkillImports,
+      RUNTIME_METHODS.applySkillImports,
+      RUNTIME_METHODS.discardSkillPreview,
+    ]) {
+      expect(await router.request(method, {})).toEqual({ method });
+      expect(ts.calls.filter((called) => called === method)).toHaveLength(1);
+    }
+    await router.stop();
+  });
+
   it("waits for shared database initialization before serving migrated requests", async () => {
     const ts = new Host();
     const initialized = gate();

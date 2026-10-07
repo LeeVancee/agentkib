@@ -20,6 +20,8 @@ import type {
   McpRegistryEntry,
   McpServerConfig,
   SkillSource,
+  SkillVersionListRequest,
+  SkillVersionSelector,
   SkillDetailRequest,
   PrepareSkillDeploymentRequest,
   MemoryStatus,
@@ -136,6 +138,11 @@ export const api = {
     desktopApi().skills.applyOperation(token, allowModified),
   checkSkillUpdates: () => desktopApi().skills.checkUpdates(),
   prepareSkillUpdate: (name: string) => desktopApi().skills.prepareUpdate(name),
+  listSkillVersions: (request: SkillVersionListRequest) =>
+    desktopApi().skills.listVersions(request),
+  prepareSkillVersionChange: (libraryId: string, selector: SkillVersionSelector) =>
+    desktopApi().skills.prepareVersionChange(libraryId, selector),
+  discardSkillPreview: (token: string) => desktopApi().skills.discardPreview(token),
   rollbackSkill: (name: string) => desktopApi().skills.rollback(name),
   uninstallSkill: (name: string) => desktopApi().skills.uninstall(name),
   removedSkills: () => desktopApi().skills.removed(),
@@ -147,8 +154,11 @@ export const api = {
   readSkillDetailFile: (request: SkillDetailRequest & { path: string }) =>
     desktopApi().skills.readDetailFile(request),
   prepareSkillImport: (observationId: string) => desktopApi().skills.prepareImport(observationId),
-  readSkillPreviewFile: (token: string, path: string, targetId?: string) =>
-    desktopApi().skills.readPreviewFile(token, path, targetId),
+  prepareSkillImports: (observationIds: string[]) =>
+    desktopApi().skills.prepareImports(observationIds),
+  applySkillImports: (token: string) => desktopApi().skills.applyImports(token),
+  readSkillPreviewFile: (token: string, path: string, targetId?: string, itemId?: string) =>
+    desktopApi().skills.readPreviewFile(token, path, targetId, itemId),
   skillDeployments: () => desktopApi().skills.listDeployments(),
   prepareSkillDeployment: (request: PrepareSkillDeploymentRequest) =>
     desktopApi().skills.prepareDeployment(request),

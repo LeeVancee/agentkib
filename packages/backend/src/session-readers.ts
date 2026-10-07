@@ -27,6 +27,7 @@ import {
   readEventDocument,
 } from "./session-document-providers";
 import { canonicalize, pathIdentity } from "./paths";
+import { handoffActive, handoffCheckpoint, readHandoff } from "./handoff-work";
 
 export const SESSION_AGENTS = [
   "codex",
@@ -57,10 +58,10 @@ export class SessionReaders {
   #cursorIde: CursorIdeSessions;
   #paging = new SessionPaging();
   constructor(
-    readonly store: SessionStore,
+    readonly store: Pick<SessionStore, "get" | "id" | "workspacePath" | "identitySalt">,
     commands: Commands,
-    env: NodeJS.ProcessEnv,
-    cursorBridge: CursorBridge,
+    readonly env: NodeJS.ProcessEnv,
+    readonly cursorBridge: Pick<CursorBridge, "profiles">,
   ) {
     this.#codex = new CodexSessions(env);
     this.#claude = new ClaudeSessions(env);
@@ -328,6 +329,36 @@ export class SessionReaders {
   async document(sessionId: string): Promise<SessionDocument> {
     const summary = this.store.get(sessionId);
     if (!summary) throw new Error("Conversation metadata is no longer available");
+    if (handoffActive()) {
+      const workspace = sessionCollection(summary.workspace_id)
+        ? summary.workspace_id
+        : this.store.workspacePath(summary.workspace_id);
+      const profiles = summary.agent === "cursor" ? this.cursorBridge.profiles(workspace) : [];
+      const document = await readHandoff(
+        "source-document",
+        {
+          sessionId,
+          summary,
+          workspace,
+          profiles,
+          environment: this.env,
+          identitySalt: this.store.identitySalt(),
+        },
+        () => {
+          throw new Error("Handoff read worker is unavailable");
+        },
+      );
+      handoffCheckpoint();
+      if (
+        JSON.stringify(this.store.get(sessionId)) !== JSON.stringify(summary) ||
+        (!sessionCollection(summary.workspace_id) &&
+          this.store.workspacePath(summary.workspace_id) !== workspace) ||
+        (summary.agent === "cursor" &&
+          JSON.stringify(this.cursorBridge.profiles(workspace)) !== JSON.stringify(profiles))
+      )
+        throw new Error("Conversation ownership changed while reading history");
+      return document;
+    }
     if (summary.availability !== "readable")
       throw new Error("Conversation transcript is no longer available");
     if (!(SESSION_AGENTS as readonly string[]).includes(summary.agent))

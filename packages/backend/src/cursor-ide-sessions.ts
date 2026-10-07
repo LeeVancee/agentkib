@@ -508,7 +508,7 @@ class Database {
 }
 
 export class CursorIdeSessions {
-  constructor(readonly bridge: CursorBridge) {}
+  constructor(readonly bridge: Pick<CursorBridge, "profiles">) {}
   #locate(nativeRef: string, workspace: string): { db: Database; header: Header } {
     for (const profile of this.bridge.profiles(workspace)) {
       const db = new Database(profile);

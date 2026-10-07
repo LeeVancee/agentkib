@@ -47,10 +47,10 @@ jobs:
       - name: Diagnose Linux build environment
         run: apps/desktop/scripts/diagnose-linux.sh --strict
 
-      - name: Check frontend formatting
+      - name: Check formatting
         run: pnpm format:check
 
-      - name: Lint frontend
+      - name: Lint desktop and backend
         run: pnpm lint
 
       - name: Test frontend
@@ -61,3 +61,6 @@ jobs:
 
       - name: Build frontend
         run: pnpm build
+
+      - name: Build hosted Web
+        run: pnpm build:web:hosted

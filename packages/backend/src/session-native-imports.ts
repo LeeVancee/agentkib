@@ -12,20 +12,13 @@ import {
 import path from "node:path";
 import { isReparseOrSymlink } from "./native-files";
 import type { BackendStore } from "./store";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 
 const MAX_RECORD_BYTES = 256 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function workspaceIdentity(store: BackendStore, workspaceId: string): string {
-  const workspace = (store.listWorkspaces() as Array<Record<string, unknown>>).find(
-    (item) =>
-      typeof item.id === "string" &&
-      (item.id === workspaceId || item.manifest_workspace_id === workspaceId),
-  );
-  if (!workspace) throw new Error("Workspace does not exist");
-  return typeof workspace.manifest_workspace_id === "string" && workspace.manifest_workspace_id
-    ? workspace.manifest_workspace_id
-    : String(workspace.id);
+  return requireUniqueContinuationWorkspace(store, workspaceId).archiveWorkspaceId;
 }
 
 function safeDirectory(directory: string): void {

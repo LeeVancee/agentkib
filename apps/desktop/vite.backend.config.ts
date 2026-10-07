@@ -27,12 +27,22 @@ export default defineConfig({
     outDir: "dist-electron",
     emptyOutDir: false,
     lib: {
-      entry: path.resolve(import.meta.dirname, "electron/backend-entry.ts"),
+      entry: {
+        backend: path.resolve(import.meta.dirname, "electron/backend-entry.ts"),
+        "backend-skills": path.resolve(
+          import.meta.dirname,
+          "../../packages/backend/src/skills-worker-entry.ts",
+        ),
+        "backend-handoff-read": path.resolve(
+          import.meta.dirname,
+          "../../packages/backend/src/handoff-read-worker.ts",
+        ),
+      },
       formats: ["cjs"],
-      fileName: () => "backend.cjs",
+      fileName: (_format, name) => `${name}.cjs`,
     },
     rollupOptions: {
-      external: ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      external: (id) => id === "electron" || id.startsWith("node:") || builtinModules.includes(id),
       output: { chunkFileNames: "backend-[name]-[hash].cjs" },
     },
   },

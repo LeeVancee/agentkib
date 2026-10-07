@@ -5,6 +5,16 @@ export function canonicalize(value: string): string {
   return stripVerbatim(realpathSync.native(value));
 }
 
+/** Compare a captured path without following a link that appeared after capture. */
+export function lexicalPathIdentity(value: string): string {
+  let normalized = path.normalize(stripVerbatim(value));
+  if (process.platform === "win32") normalized = normalized.toLowerCase();
+  const root = path.parse(normalized).root;
+  while (normalized.length > root.length && normalized.endsWith(path.sep))
+    normalized = normalized.slice(0, -1);
+  return normalized;
+}
+
 export function pathIdentity(value: string): string {
   let resolved = stripVerbatim(value);
   try {

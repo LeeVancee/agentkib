@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import spawn from "cross-spawn";
 import { windowsProcessTree, type NativeProcessTree } from "./native-process";
 import { resolveCommand } from "./command-resolution";
+import { currentTask } from "./task-executor";
 export interface CommandOutput {
   bytes: Buffer;
   error: string;
@@ -30,9 +31,18 @@ export class Commands {
       input?: Buffer;
       strictOutput?: boolean;
       terminateDescendantsOnExit?: boolean;
+      signal?: AbortSignal;
     } = {},
   ): Promise<CommandOutput> {
     if (this.#closed) throw new Error("Backend command supervisor is closed");
+    const task = currentTask();
+    task?.checkpoint();
+    const signal = options.signal ?? (task?.committing ? undefined : task?.signal);
+    if (signal?.aborted) throw signal.reason;
+    const timeout =
+      task && !task.committing
+        ? task.remainingMs(options.timeout ?? 15000)
+        : (options.timeout ?? 15000);
     const limit = options.limit ?? 2 * 1024 * 1024;
     const environment = options.env ?? process.env;
     const executable =
@@ -86,12 +96,16 @@ export class Commands {
         if (room) errors.push(chunk.subarray(0, room));
         errorCount += Math.min(room, chunk.length);
       });
+      const abort = () => this.#kill(child);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       const timer = setTimeout(() => {
         expired = true;
         this.#kill(child);
-      }, options.timeout ?? 15000);
+      }, timeout);
       const finish = () => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
         this.#running.delete(child);
         this.#trees.get(child)?.close();
         this.#trees.delete(child);
@@ -105,6 +119,10 @@ export class Commands {
       });
       child.once("close", (code) => {
         finish();
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
         if (supervisionError !== undefined) {
           reject(supervisionError);
           return;

@@ -2,6 +2,7 @@ import { isReparseOrSymlink } from "./native-files";
 import path from "node:path";
 import { lstatSync } from "node:fs";
 import { z } from "zod";
+import JSON5 from "json5";
 import { parameters } from "./rpc";
 import {
   applyChanges,
@@ -10,10 +11,12 @@ import {
   type ApplyOptions,
 } from "./change-apply";
 import { canonicalProject, withinLexical } from "./files";
-import { pathIdentity } from "./paths";
+import { lexicalPathIdentity, pathIdentity } from "./paths";
 import { loadManifest, manifestPath } from "./manifest";
 import { userHome } from "./mcp-config-read";
 import type { BackendStore } from "./store";
+import { agentMcpHome } from "./agent-home";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 export function applyRequest(
   value: unknown,
   store: BackendStore,
@@ -35,8 +38,6 @@ export function applyRequest(
         ? environment.XDG_CONFIG_HOME
         : path.join(home, ".config");
   const approvedHome = [
-    path.join(home, ".openclaw/openclaw.json"),
-    path.join(home, ".hermes/config.yaml"),
     path.join(home, ".codex/config.toml"),
     path.join(home, ".claude.json"),
     path.join(home, ".gemini/config/mcp_config.json"),
@@ -44,6 +45,38 @@ export function applyRequest(
     path.join(xdg, "opencode/opencode.jsonc"),
     path.join(environment.GROK_HOME ?? path.join(home, ".grok"), "config.toml"),
   ];
+  const protectedHome: string[] = [];
+  const selectedConfigs = new Map<"open-claw" | "hermes", string[]>();
+  for (const change of plan.changes) {
+    if (change.scope !== "agent-home") continue;
+    let agent: "open-claw" | "hermes" | undefined;
+    if (change.validator === "yaml") agent = "hermes";
+    else if (change.validator === "json" || change.validator === "jsonc") {
+      const openClawMcp = z
+        .object({ mcp: z.object({ servers: z.object({ agentkib: z.object({}).passthrough() }) }) })
+        .safeParse(JSON5.parse(change.after));
+      if (
+        openClawMcp.success ||
+        !approvedHome.some(
+          (target) => lexicalPathIdentity(target) === lexicalPathIdentity(change.target),
+        )
+      )
+        agent = "open-claw";
+    }
+    if (agent) selectedConfigs.set(agent, [...(selectedConfigs.get(agent) ?? []), change.target]);
+  }
+  for (const [agent, targets] of selectedConfigs) {
+    // Resolve only the involved adapter. A broken unrelated profile cannot block
+    // this write, and a configured path overlapping another allowlist stays bound
+    // to the OpenClaw config represented by the reviewed payload.
+    const selected = agentMcpHome(agent, environment);
+    if (
+      targets.some((target) => lexicalPathIdentity(target) !== lexicalPathIdentity(selected.config))
+    )
+      throw new Error("Agent Home target is no longer approved by the current configuration");
+    approvedHome.push(selected.config);
+    protectedHome.push(path.dirname(selected.config));
+  }
   let projectId: string | null = null;
   try {
     projectId = loadManifest(plan.project_root).workspace.id;
@@ -52,6 +85,12 @@ export function applyRequest(
     approvedApplication: string[] = [];
   if (plan.changes.some((change) => change.scope === "application-data")) {
     const root = canonicalProject(plan.project_root);
+    const rows = store.sql
+      .rows("SELECT id,canonical_path,manifest_workspace_id FROM workspaces")
+      .filter((row) => pathIdentity(String(row.canonical_path)) === pathIdentity(root));
+    if (rows.length !== 1)
+      throw new Error("Application data changes require a registered workspace");
+    const identity = requireUniqueContinuationWorkspace(store, String(rows[0]!.id), root);
     try {
       applicationId = loadManifest(root).workspace.id;
     } catch (error) {
@@ -61,13 +100,10 @@ export function applyRequest(
       } catch (metadata) {
         if ((metadata as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      const rows = store.sql
-        .rows("SELECT id,canonical_path,manifest_workspace_id FROM workspaces")
-        .filter((row) => pathIdentity(String(row.canonical_path)) === pathIdentity(root));
-      if (rows.length !== 1)
-        throw new Error("Application data changes require a registered workspace");
-      applicationId = String(rows[0]!.manifest_workspace_id ?? rows[0]!.id);
+      applicationId = identity.archiveWorkspaceId;
     }
+    if (applicationId !== identity.archiveWorkspaceId)
+      throw new Error("Continuation workspace manifest changed; refresh the workspace");
     try {
       approvedApplication = validateApplicationArchive(plan, applicationId, dataDir);
     } catch (archiveError) {
@@ -76,12 +112,9 @@ export function applyRequest(
     }
   }
   const roots = [
-      path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions"),
-      path.join(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects"),
-    ],
-    // Recheck these connection targets at apply time: their directories may have
-    // been replaced after the MCP connection diff was reviewed.
-    protectedHome: string[] = [path.join(home, ".openclaw"), path.join(home, ".hermes")];
+    path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "sessions"),
+    path.join(environment.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude"), "projects"),
+  ];
   for (const change of plan.changes)
     if (change.scope === "agent-home" && change.validator === "jsonl") {
       const root = roots.find(
@@ -109,6 +142,14 @@ export function applyRequest(
         protectedHome.push(root);
       }
     }
+  for (const change of plan.changes)
+    if (
+      change.scope === "agent-home" &&
+      !approvedHome.some(
+        (target) => lexicalPathIdentity(target) === lexicalPathIdentity(change.target),
+      )
+    )
+      throw new Error("Agent Home target is no longer approved by the current configuration");
   const options: ApplyOptions = {
     approvedHome,
     protectedHome,

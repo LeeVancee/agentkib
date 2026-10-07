@@ -1,3 +1,4 @@
+import { currentTask } from "./task-executor";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import {
@@ -452,16 +453,46 @@ export class CursorBridge {
     action: "status" | "import" | "open" | "selected",
     args: unknown,
   ): Promise<unknown> {
+    const task = currentTask();
+    task?.checkpoint();
+    const signal = task?.committing ? undefined : task?.signal;
     this.context(context.binding_id, context.profile.workspace);
     const window = this.#windows.get(context.binding_id)!;
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        clearTimeout(timer);
+        cleanup();
         window.pending.delete(requestId);
         window.socket.destroy();
-        reject(new Error("Cursor bridge request timed out"));
-      }, 60_000);
-      window.pending.set(requestId, { resolve, reject, timer });
+        reject(signal?.reason);
+      };
+      const timer = setTimeout(
+        () => {
+          cleanup();
+          window.pending.delete(requestId);
+          window.socket.destroy();
+          reject(new Error("Cursor bridge request timed out"));
+        },
+        task && !task.committing ? task.remainingMs(60_000) : 60_000,
+      );
+      window.pending.set(requestId, {
+        resolve: (value) => {
+          cleanup();
+          resolve(value);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+        timer,
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
       window.socket.write(
         JSON.stringify({
           protocol: 1,

@@ -7,6 +7,7 @@ import type { BackendStore } from "./store";
 import type { Context } from "./context";
 import { canonicalize, pathIdentity } from "./paths";
 import { isFile, within } from "./files";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 
 export const BUILTIN_MCP_TOOLS = [
   {
@@ -159,12 +160,14 @@ export class McpBuiltins {
         });
       }
       case "session_search": {
+        requireUniqueContinuationWorkspace(this.store, workspaceId, project);
         const archiveId = requiredText(arguments_.archive_id, "archive ID");
         const query = typeof arguments_.query === "string" ? arguments_.query : "";
         const limit = Number.isInteger(arguments_.limit) ? (arguments_.limit as number) : 10;
         return searchSessionArchive(this.dataDir, workspaceId, archiveId, query, limit);
       }
       case "session_read_chunk":
+        requireUniqueContinuationWorkspace(this.store, workspaceId, project);
         return readSessionArchiveChunk(
           this.dataDir,
           workspaceId,

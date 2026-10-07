@@ -26,7 +26,7 @@ vi.mock("./session-view-store", () => ({
     getState: () => ({ revealSession: mocks.reveal, setCreatingConversation: mocks.creating }),
   },
 }));
-vi.mock("@agentkib/web/conversation", () => ({
+vi.mock("@agentkib/conversation-ui/conversation", () => ({
   EmbeddedConversation: ({
     onSessionChange,
     onCreateClosed,

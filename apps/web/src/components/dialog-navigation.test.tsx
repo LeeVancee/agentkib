@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { useState } from "react";
-import { Dialog } from "./dialog";
+import { Dialog } from "@agentkib/conversation-ui/components/dialog";
 afterEach(cleanup);
 it("returns to the stable session action trigger after replacing a dialog", async () => {
   function View() {

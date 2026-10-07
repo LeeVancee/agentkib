@@ -17,10 +17,14 @@ import {
   type ConversationSessionSummary,
   type SessionStreamHandlers,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "./conversation";
-import { useSessionController } from "./features/sessions/use-session-controller";
-import { pendingScope, readPending, rememberPending } from "./features/sessions/pending-controls";
-import { catalogCopy } from "./features/catalog/catalog-copy";
+import { EmbeddedConversation } from "@agentkib/conversation-ui/conversation";
+import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+} from "@agentkib/conversation-ui/features/sessions/pending-controls";
+import { catalogCopy } from "@agentkib/conversation-ui/features/catalog/catalog-copy";
 
 afterEach(cleanup);
 beforeEach(() => {

@@ -1,5 +1,5 @@
 import { MessagesSquare } from "lucide-react";
-import { useSession } from "./session-context";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
 
 export function SessionEmpty() {
   const { t } = useSession();

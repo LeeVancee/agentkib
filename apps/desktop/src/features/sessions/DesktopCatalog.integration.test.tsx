@@ -7,7 +7,7 @@ import {
   createDesktopConversationAdapter,
   type DesktopConversationBridge,
 } from "@/core/conversation-bridge";
-import { useSessionController } from "../../../../web/src/features/sessions/use-session-controller";
+import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
 
 beforeEach(() => sessionStorage.clear());
 afterEach(() => {

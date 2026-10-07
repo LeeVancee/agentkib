@@ -9,15 +9,15 @@ import {
   LogOut,
   Monitor,
 } from "lucide-react";
-import { SessionCatalog } from "@/features/catalog/session-catalog";
-import { Button } from "@/components/ui/button";
-import { useSession } from "./session-context";
-import { ManagedTasks } from "./managed-tasks";
-import { PendingCenter } from "./pending-center";
-import { SessionPanelsContext } from "./session-panels";
-import { sessionDisplayState } from "./session-display-state";
-import { webLayoutCopy } from "./web-layout-copy";
-import { cn } from "@/lib/utils";
+import { SessionCatalog } from "@agentkib/conversation-ui/features/catalog/session-catalog";
+import { Button } from "@agentkib/conversation-ui/components/ui/button";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
+import { ManagedTasks } from "@agentkib/conversation-ui/features/sessions/managed-tasks";
+import { PendingCenter } from "@agentkib/conversation-ui/features/sessions/pending-center";
+import { SessionPanelsContext } from "@agentkib/conversation-ui/features/sessions/session-panels";
+import { sessionDisplayState } from "@agentkib/conversation-ui/features/sessions/session-display-state";
+import { webLayoutCopy } from "@agentkib/conversation-ui/features/sessions/web-layout-copy";
+import { cn } from "@agentkib/conversation-ui/lib/utils";
 
 export function SessionWorkspace() {
   const session = useSession();

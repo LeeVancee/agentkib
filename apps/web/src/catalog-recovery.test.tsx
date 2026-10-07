@@ -11,8 +11,12 @@ import {
   type SessionStreamHandlers,
 } from "@agentkib/web-client";
 import { WebAccessService } from "../../desktop/electron/main/web/service";
-import { useSessionController } from "./features/sessions/use-session-controller";
-import { pendingScope, readPending, rememberPending } from "./features/sessions/pending-controls";
+import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+} from "@agentkib/conversation-ui/features/sessions/pending-controls";
 
 beforeEach(() => {
   sessionStorage.clear();

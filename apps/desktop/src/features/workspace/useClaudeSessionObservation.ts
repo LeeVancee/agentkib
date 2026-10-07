@@ -20,9 +20,9 @@ import {
   createDesktopConversationAdapter,
   hasDesktopConversation,
 } from "@/core/conversation-bridge";
-import { useSessionLive } from "../../../../web/src/features/sessions/use-session-live";
-import { subscribeSessionInvalidation } from "../../../../web/src/features/sessions/session-events";
-import type { NativeCoverage } from "../../../../web/src/features/sessions/session-model";
+import { useSessionLive } from "@agentkib/conversation-ui/features/sessions/use-session-live";
+import { subscribeSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
+import type { NativeCoverage } from "@agentkib/conversation-ui/features/sessions/session-model";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
 

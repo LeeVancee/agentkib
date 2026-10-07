@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { SessionReader } from "@/features/sessions/session-reader";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { useSession } from "@/features/sessions/session-context";
+import { SessionReader } from "@agentkib/conversation-ui/features/sessions/session-reader";
+import { buttonVariants } from "@agentkib/conversation-ui/components/ui/button";
+import { cn } from "@agentkib/conversation-ui/lib/utils";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
 export const Route = createFileRoute("/_session/sessions/$sessionId")({ component: Session });
 function Session() {
   const { sessionId } = Route.useParams();

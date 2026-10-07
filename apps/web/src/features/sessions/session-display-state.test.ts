@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dictionaries } from "@/i18n";
-import { sessionDisplayState } from "./session-display-state";
-import type { SessionController } from "./use-session-controller";
+import { dictionaries } from "@agentkib/conversation-ui/i18n";
+import { sessionDisplayState } from "@agentkib/conversation-ui/features/sessions/session-display-state";
+import type { SessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
 const state = {
   locale: "zh-CN",
   online: true,

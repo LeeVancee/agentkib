@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EmbeddedConversation } from "@agentkib/web/conversation";
+import { EmbeddedConversation } from "@agentkib/conversation-ui/conversation";
 import { WebClient, type Access, type Live } from "@agentkib/web-client";
 import type { ConversationSubscription, SessionStreamEvent } from "@agentkib/conversation-state";
 import {

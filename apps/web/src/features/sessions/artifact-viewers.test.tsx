@@ -1,7 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactEntry, ArtifactPreviewKind, ArtifactTicket } from "@agentkib/web-client";
-import { ArtifactPreview, createArtifactViewerRegistry } from "./artifact-viewers";
+import {
+  ArtifactPreview,
+  createArtifactViewerRegistry,
+} from "@agentkib/conversation-ui/features/sessions/artifact-viewers";
 
 const entry = (
   kind: ArtifactPreviewKind,

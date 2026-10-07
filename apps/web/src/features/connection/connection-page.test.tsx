@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConnectionScreen } from "./connection-page";
 import { connectionCopy } from "./connection-copy";
-import { dictionaries, type Locale } from "@/i18n";
+import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
 
 afterEach(cleanup);
 

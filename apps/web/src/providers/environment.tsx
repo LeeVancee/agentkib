@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { legacyConnectionLink } from "@/features/connection/legacy-link";
 import { resolveWebConnection, type WebConnection } from "@agentkib/web-client";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { Locale } from "@/i18n";
+import type { Locale } from "@agentkib/conversation-ui/i18n";
 
 export interface EnvironmentOptions {
   hosted?: boolean;

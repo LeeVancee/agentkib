@@ -2,8 +2,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
-@import "@agentkib/web/conversation.css";
-@source "../../web/src";
+@import "@agentkib/conversation-ui/conversation.css";
+@source "../../../packages/conversation-ui/src";
 @source "../../../packages/session-ui/src";
 
 @custom-variant dark (&:is([data-theme="dark"] *));

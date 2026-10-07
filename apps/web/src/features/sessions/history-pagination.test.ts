@@ -6,7 +6,7 @@ import {
   createHistoryPagination,
   historyPaginationCursor,
   recordLatestHistoryPage,
-} from "./history-pagination";
+} from "@agentkib/conversation-ui/features/sessions/history-pagination";
 
 const page = (ids: string[], next_cursor?: string): ConversationEventPage => ({
   events: ids.map((id) => ({

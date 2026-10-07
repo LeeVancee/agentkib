@@ -95,7 +95,7 @@ server {
 
 ## 开发与构建
 
-仓库使用 pnpm workspace：`apps/desktop`、`apps/web`、`packages/web-client`、`packages/session-ui`。
+仓库使用 pnpm workspace：`apps/desktop`、`apps/web`、`packages/web-client`、`packages/session-ui`、`packages/conversation-ui`。
 
 ```sh
 pnpm install --frozen-lockfile

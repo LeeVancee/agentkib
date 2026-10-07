@@ -2,9 +2,13 @@ import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@agentkib/web-client";
-import { pendingScope, rememberPending, readPending } from "./pending-controls";
-import { ManagedTasks } from "./managed-tasks";
-import { publishSessionInvalidation } from "./session-events";
+import {
+  pendingScope,
+  rememberPending,
+  readPending,
+} from "@agentkib/conversation-ui/features/sessions/pending-controls";
+import { ManagedTasks } from "@agentkib/conversation-ui/features/sessions/managed-tasks";
+import { publishSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
 import type { WebClient } from "@agentkib/web-client";
 
 const navigate = vi.fn();
@@ -28,9 +32,11 @@ let session: {
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
 };
-vi.mock("./session-context", () => ({ useSession: () => session }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: () => session,
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
-vi.mock("@/components/ui/dialog", () => ({
+vi.mock("@agentkib/conversation-ui/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: ReactNode }) =>
     open ? <div role="dialog">{children}</div> : null,
   DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,

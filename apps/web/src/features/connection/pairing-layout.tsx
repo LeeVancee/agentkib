@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { MonitorSmartphone, ShieldCheck, MessagesSquare } from "lucide-react";
-import type { Words } from "@/i18n";
+import type { Words } from "@agentkib/conversation-ui/i18n";
 
 export function PairingLayout({
   words: t,

@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { Settings2 } from "lucide-react";
-import { NativeSelect } from "@/components/ui/native-select";
-import { dictionaries, type Locale } from "@/i18n";
+import { NativeSelect } from "@agentkib/conversation-ui/components/ui/native-select";
+import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
 
 /** One set of controls: collapsed on phones and always visible on desktop. */
 export function ConnectionPreferences({

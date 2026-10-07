@@ -8,7 +8,10 @@ import {
   handoffSignal,
 } from "./handoff-work";
 import { readCursorSnapshot } from "./handoff-read-tasks";
-import { requireUniqueContinuationWorkspace } from "./workspace-identity";
+import {
+  assertContinuationWorkspaceIdentity,
+  requireUniqueContinuationWorkspace,
+} from "./workspace-identity";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -147,7 +150,9 @@ export async function continueCursorNativeImport(
 ): Promise<{ status: "launched"; receipt: { target_agent: "cursor"; terminal: string } }> {
   const input = envelopeSchema.parse(value);
   const request = input.launchRequest;
-  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const assertWorkspace = () =>
+    assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
   const changeSet = changeSetSchema.parse(input.changeSet);
   if (
     changeSet.id !== request.operation_id ||
@@ -161,7 +166,7 @@ export async function continueCursorNativeImport(
     [dataDir, request, change],
     () => validateCursorPlan(dataDir, request, change),
   );
-  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  assertWorkspace();
   const sourceSummary = persisted ? null : sessionStore.get(plan.source_session_id);
   if (!persisted && !sourceSummary) throw new Error("Cursor import source is unavailable");
   const workspaceRecord = (
@@ -199,14 +204,19 @@ export async function continueCursorNativeImport(
     plan.document.source.workspace_id !== effectiveWorkspace
   )
     throw new Error("Cursor import plan identity mismatch");
-  requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
+  assertWorkspace();
   bridge.validateContext(plan.context);
-  if ((await fingerprintHandoff(plan.document)) !== plan.source_fingerprint)
+  const sourceFingerprint = await fingerprintHandoff(plan.document);
+  assertWorkspace();
+  if (sourceFingerprint !== plan.source_fingerprint)
     throw new Error("Persisted Cursor source snapshot changed");
   if (!persisted) {
     const current = await sessions.document(plan.source_session_id);
+    assertWorkspace();
     current.source.workspace_id = effectiveWorkspace;
-    if ((await fingerprintHandoff(current)) !== plan.source_fingerprint)
+    const currentFingerprint = await fingerprintHandoff(current);
+    assertWorkspace();
+    if (currentFingerprint !== plan.source_fingerprint)
       throw new Error("Source changed after Cursor import preview");
   }
   const currentBinding = bridge.context(request.binding_id, workspace);
@@ -217,6 +227,7 @@ export async function continueCursorNativeImport(
     [plan.document, plan.operation_id, plan.workspace],
     () => prepareCursorIdePayload(plan.document, plan.operation_id, plan.workspace),
   );
+  assertWorkspace();
   if (
     prepared.payload !== plan.payload ||
     prepared.marker !== plan.marker ||
@@ -225,13 +236,15 @@ export async function continueCursorNativeImport(
     throw new Error("Cursor import payload differs from the reviewed source");
 
   if (!persisted) {
-    await handoffCommit(() =>
-      applyRequest(
+    await handoffCommit(() => {
+      assertWorkspace();
+      return applyRequest(
         { changeSet, approveHome: true },
         store,
         dataDir,
         environment,
         (reviewed, applicationId, currentDataDir) => {
+          assertWorkspace();
           if (
             applicationId !== request.workspace_id ||
             currentDataDir !== dataDir ||
@@ -244,9 +257,10 @@ export async function continueCursorNativeImport(
             throw new Error("Cursor import plan changed before approval");
           return [planFile];
         },
-      ),
-    );
+      );
+    });
   }
+  assertWorkspace();
 
   const receiptFile = path.join(directory, "receipt.json");
   let receipt: {
@@ -277,16 +291,19 @@ export async function continueCursorNativeImport(
       throw new Error("Cursor import receipt mismatch");
   }
   const profiles = () => {
-    requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
+    assertWorkspace();
     const current = bridge.context(request.binding_id, workspace);
     if (JSON.stringify(current) !== JSON.stringify(plan.context))
       throw new Error("Cursor binding changed during import verification");
     return [current.profile];
   };
-  const listing = async () =>
-    readHandoff("cursor-list", { profiles: profiles(), workspace }, () =>
+  const listing = async () => {
+    const result = await readHandoff("cursor-list", { profiles: profiles(), workspace }, () =>
       new CursorIdeSessions(bridge).list(workspace),
     );
+    profiles();
+    return result;
+  };
   const verify = async (native: import("./session-store").NativeSession, exact: boolean) => {
     const input = {
       profiles: profiles(),
@@ -309,19 +326,22 @@ export async function continueCursorNativeImport(
       if (!attempted) {
         handoffCheckpoint();
         profiles();
-        await handoffCommit(() =>
+        await handoffCommit(() => {
+          profiles();
           writeFileSync(attemptFile, JSON.stringify({ plan_hash: request.plan_hash }), {
             flag: "wx",
             mode: 0o600,
-          }),
-        );
+          });
+        });
         handoffCheckpoint();
+        profiles();
         const importer = await bridge.call(plan.context, "import", {
           operation_id: plan.operation_id,
           plan_hash: request.plan_hash,
           payload: plan.payload,
           payload_hash: hash(plan.payload),
         });
+        profiles();
         if (
           !importer ||
           typeof importer !== "object" ||
@@ -351,7 +371,10 @@ export async function continueCursorNativeImport(
       if (!found) throw new Error("Cursor history readback is not yet available");
       receipt.target_session_id = found;
       receipt.verified = true;
-      await handoffCommit(() => saveReceipt(receiptFile, receipt));
+      await handoffCommit(() => {
+        profiles();
+        saveReceipt(receiptFile, receipt);
+      });
     } catch (error) {
       if (!existsSync(attemptFile)) throw error;
       throw new CursorImportOutcomeUnknownError(
@@ -386,6 +409,7 @@ export async function continueCursorNativeImport(
     profiles();
     saveReceipt(receiptFile, receipt);
   });
+  profiles();
   return { status: "launched", receipt: { target_agent: "cursor", terminal: "Cursor IDE" } };
 }
 
@@ -447,11 +471,11 @@ export async function reconcileCursorNativeImport(
     })
     .strict()
     .parse(requestValue);
-  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
   const changeSet = await readHandoff("cursor-recovery", [dataDir, request], () =>
     loadCursorRecoveryPlan(dataDir, request),
   );
-  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
   return continueCursorNativeImport(
     { changeSet, launchRequest: request, approveHome: true },
     sessions,

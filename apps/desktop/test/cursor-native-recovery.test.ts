@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection, type Socket } from "node:net";
 import os from "node:os";
@@ -22,6 +30,14 @@ import {
   CursorImportOutcomeUnknownError,
 } from "../../../packages/backend/src/cursor-native-import";
 import { fingerprintSessionDocument } from "../../../packages/backend/src/session-handoff";
+import { HandoffWork } from "../../../packages/backend/src/handoff-work";
+import {
+  executeHandoffRead,
+  type HandoffReadInput,
+  type HandoffReadKind,
+  type HandoffReadOutput,
+} from "../../../packages/backend/src/handoff-read-tasks";
+import { TaskContext, type TaskWorkspace } from "../../../packages/backend/src/task-executor";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
 
 const roots: string[] = [];
@@ -387,6 +403,9 @@ describe("Cursor SQLite prefix recovery", () => {
 class ImportWindow extends CursorBridge {
   imports = 0;
   opened: string[] = [];
+  loseImportReply = true;
+  onImport?: () => void;
+  onOpen?: () => void;
   readonly nativeId = randomUUID();
   constructor(
     dataDir: string,
@@ -414,16 +433,311 @@ class ImportWindow extends CursorBridge {
       this.imports++;
       const payload = (args as { payload: string }).payload;
       writeConversation(this.binding, this.nativeId, payload);
-      throw new Error("Synthetic lost import response after native persistence");
+      this.onImport?.();
+      if (this.loseImportReply)
+        throw new Error("Synthetic lost import response after native persistence");
+      return { consumed: true };
     }
     if (action === "open") {
       const id = (args as { native_id: string }).native_id;
       this.opened.push(id);
+      this.onOpen?.();
       return { selected: [id] };
     }
     throw new Error("Unexpected extension action");
   }
 }
+
+function importFixture(persisted = true) {
+  const directory = root();
+  const store = storeAt(directory);
+  const project = workspace(store, directory, "registered");
+  store.sql.run("UPDATE workspaces SET manifest_workspace_id=? WHERE id=?", "legacy", "registered");
+  store.sessions.sync("registered", "claude-code", [
+    {
+      native_ref: "source",
+      agent: "claude-code",
+      title: "Synthetic history",
+      created_at: timestamp,
+      updated_at: timestamp,
+      message_count: 2,
+      git_branch: null,
+      archived: false,
+      sidechain: false,
+      availability: "readable",
+      origin: "interactive",
+    },
+  ]);
+  const context = profileAt(directory, project, "profile");
+  const dataDir = path.join(directory, "data"),
+    operation = randomUUID(),
+    source = document("legacy");
+  const prepared = prepareCursorIdePayload(source, operation, project);
+  const plan = {
+    schema_version: 1,
+    operation_id: operation,
+    workspace_id: "legacy",
+    workspace: project,
+    source_session_id: store.sessions.id("claude-code", "source"),
+    source_fingerprint: fingerprintSessionDocument(source),
+    target_agent: "cursor",
+    target_session_id: operation,
+    context,
+    before_native_refs: [],
+    document: source,
+    expected: prepared.expected,
+    payload: prepared.payload,
+    marker: prepared.marker,
+  };
+  const content = JSON.stringify(plan, null, 2) + "\n";
+  const location = path.join(
+    dataDir,
+    "continuations",
+    hash("legacy").slice(0, 32),
+    operation,
+    "import",
+  );
+  mkdirSync(location, { recursive: true });
+  const planFile = path.join(location, "plan.json");
+  if (persisted) writeFileSync(planFile, content);
+  const request = {
+    mode: "native-import",
+    operation_id: operation,
+    workspace_id: "legacy",
+    target_agent: "cursor",
+    plan_hash: hash(content),
+    binding_id: context.binding_id,
+  };
+  const value = {
+    approveHome: true,
+    launchRequest: request,
+    changeSet: {
+      id: operation,
+      project_root: project,
+      created_at: timestamp,
+      requires_home_approval: true,
+      changes: [
+        {
+          target: planFile,
+          scope: "application-data",
+          original_hash: null,
+          before: "",
+          after: content,
+          risk: "high",
+          validator: "json",
+        },
+      ],
+    },
+  };
+  const bridge = new ImportWindow(dataDir, store, context);
+  bridge.loseImportReply = false;
+  bridges.push(bridge);
+  let beforeSourceRead: (() => void) | undefined;
+  const sessions = {
+    document: async () => {
+      beforeSourceRead?.();
+      return structuredClone(source);
+    },
+  };
+  const environment = { HOME: directory, USERPROFILE: directory };
+  return {
+    store,
+    bridge,
+    planFile,
+    receiptFile: path.join(location, "receipt.json"),
+    attemptFile: path.join(location, "attempted.json"),
+    proceed: () =>
+      continueCursorNativeImport(
+        value,
+        sessions,
+        store.sessions,
+        store,
+        dataDir,
+        bridge,
+        environment,
+      ),
+    recover: () =>
+      reconcileCursorNativeImport(
+        request,
+        sessions,
+        store.sessions,
+        store,
+        dataDir,
+        bridge,
+        environment,
+      ),
+    onSourceRead: (action: () => void) => {
+      beforeSourceRead = action;
+    },
+    replaceOwner: () => {
+      const otherProject = path.join(directory, "other-project");
+      mkdirSync(otherProject);
+      store.sql.run(
+        "UPDATE workspaces SET canonical_path=?, manifest_workspace_id=? WHERE id=?",
+        otherProject,
+        "other-legacy",
+        "registered",
+      );
+      store.sql.run(
+        "INSERT INTO workspaces(id,canonical_path,name,manifest_workspace_id,status,last_discovered_at) VALUES(?,?,?,?,?,?)",
+        "replacement",
+        project,
+        "Replacement",
+        "legacy",
+        "healthy",
+        timestamp,
+      );
+    },
+  };
+}
+
+// Execute the actual read task, then change the owner before its result reaches the caller.
+class RebindingReadWork extends HandoffWork {
+  replaced = false;
+  constructor(
+    readonly stage: HandoffReadKind,
+    readonly replaceOwner: () => void,
+  ) {
+    super();
+  }
+  override async read<K extends HandoffReadKind>(
+    kind: K,
+    input: HandoffReadInput<K>,
+    task: TaskContext,
+  ): Promise<HandoffReadOutput<K>> {
+    task.checkpoint();
+    const result = await executeHandoffRead(kind, input, this.commands);
+    if (kind === this.stage && !this.replaced) {
+      this.replaced = true;
+      this.replaceOwner();
+    }
+    return result;
+  }
+}
+async function duringRead<T>(
+  stage: HandoffReadKind,
+  replaceOwner: () => void,
+  action: () => Promise<T>,
+) {
+  const work = new RebindingReadWork(stage, replaceOwner);
+  const task = new TaskContext({ id: randomUUID(), deadlineAt: Date.now() + 5000 });
+  try {
+    return await work.run(task, action);
+  } finally {
+    task.dispose();
+    await work.close();
+  }
+}
+
+describe("Cursor continuation registered owner stability", () => {
+  it.each(["cursor-plan", "serialize", "cursor-projection"] as const)(
+    "rejects owner replacement during %s before changing reviewed files or importing",
+    async (stage) => {
+      const f = importFixture(stage === "cursor-plan");
+      const reviewed = existsSync(f.planFile) ? readFileSync(f.planFile, "utf8") : null;
+      await expect(duringRead(stage, f.replaceOwner, f.proceed)).rejects.toThrow(
+        /workspace identity changed/,
+      );
+      expect(f.bridge.imports).toBe(0);
+      expect(f.bridge.opened).toEqual([]);
+      if (reviewed === null) expect(existsSync(f.planFile)).toBe(false);
+      else expect(readFileSync(f.planFile, "utf8")).toBe(reviewed);
+      expect(existsSync(f.attemptFile)).toBe(false);
+      expect(existsSync(f.receiptFile)).toBe(false);
+    },
+  );
+
+  it("rejects owner replacement during source parsing before persisting or importing", async () => {
+    const f = importFixture(false);
+    f.onSourceRead(f.replaceOwner);
+    await expect(f.proceed()).rejects.toThrow(/workspace identity changed/);
+    expect(f.bridge.imports).toBe(0);
+    expect(existsSync(f.planFile)).toBe(false);
+    expect(existsSync(f.attemptFile)).toBe(false);
+    expect(existsSync(f.receiptFile)).toBe(false);
+  });
+
+  it("keeps a consumed import unresolved when its registered owner changes before the reply", async () => {
+    const f = importFixture();
+    f.bridge.onImport = f.replaceOwner;
+    await expect(f.proceed()).rejects.toBeInstanceOf(CursorImportOutcomeUnknownError);
+    expect(f.bridge.imports).toBe(1);
+    expect(f.bridge.opened).toEqual([]);
+    expect(existsSync(f.attemptFile)).toBe(true);
+    expect(existsSync(f.receiptFile)).toBe(false);
+    expect(
+      new CursorIdeSessions(f.bridge).list(f.bridge.binding.profile.workspace).sessions,
+    ).toHaveLength(1);
+  });
+
+  it.each(["cursor-list", "cursor-read"] as const)(
+    "keeps an imported target unresolved when its owner changes during %s",
+    async (stage) => {
+      const f = importFixture();
+      await expect(duringRead(stage, f.replaceOwner, f.proceed)).rejects.toBeInstanceOf(
+        CursorImportOutcomeUnknownError,
+      );
+      expect(f.bridge.imports).toBe(1);
+      expect(f.bridge.opened).toEqual([]);
+      expect(existsSync(f.receiptFile)).toBe(false);
+    },
+  );
+
+  it("rejects a changed recovery owner before reopening or importing again", async () => {
+    const f = importFixture();
+    f.bridge.loseImportReply = true;
+    await expect(f.proceed()).rejects.toBeInstanceOf(CursorImportOutcomeUnknownError);
+    await expect(duringRead("cursor-recovery", f.replaceOwner, f.recover)).rejects.toThrow(
+      /workspace identity changed/,
+    );
+    expect(f.bridge.imports).toBe(1);
+    expect(f.bridge.opened).toEqual([]);
+    expect(existsSync(f.receiptFile)).toBe(false);
+  });
+
+  it("does not mark a verified receipt launched after its registered owner changes during open", async () => {
+    const f = importFixture();
+    f.bridge.onOpen = f.replaceOwner;
+    await expect(f.proceed()).rejects.toThrow(/workspace identity changed/);
+    expect(f.bridge.imports).toBe(1);
+    expect(f.bridge.opened).toEqual([f.bridge.nativeId]);
+    expect(JSON.parse(readFileSync(f.receiptFile, "utf8"))).toMatchObject({
+      verified: true,
+      launched: false,
+    });
+  });
+
+  it("rejects an owner replaced while the launched receipt commit settles, preserving the receipt", async () => {
+    const f = importFixture();
+    const work = new HandoffWork({
+      filename: path.resolve("dist-electron/backend-handoff-read.cjs"),
+    });
+    let committedReceipt: Buffer | undefined;
+    const task = new (class extends TaskContext {
+      override async commit<T>(operation: () => Promise<T> | T, scope?: TaskWorkspace) {
+        const result = await super.commit(operation, scope);
+        if (!committedReceipt && existsSync(f.receiptFile)) {
+          const content = readFileSync(f.receiptFile);
+          if (JSON.parse(content.toString("utf8")).launched === true) {
+            committedReceipt = content;
+            f.replaceOwner();
+          }
+        }
+        return result;
+      }
+    })({ id: randomUUID(), deadlineAt: Date.now() + 10_000 });
+    try {
+      await expect(work.run(task, f.proceed)).rejects.toThrow(/workspace identity changed/);
+      expect(f.bridge.imports).toBe(1);
+      expect(f.bridge.opened).toEqual([f.bridge.nativeId]);
+      expect(committedReceipt).toBeDefined();
+      expect(readFileSync(f.receiptFile)).toEqual(committedReceipt);
+    } finally {
+      task.dispose();
+      await work.close();
+    }
+  });
+});
 
 describe("Cursor persisted import recovery", () => {
   it("reconciles a lost reply and a deleted receipt without importing twice, retaining the original native UUID", async () => {

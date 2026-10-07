@@ -4,11 +4,13 @@
 
 本文件是本轮验收的独立记录。自动化与打包结果按固定提交记录；原生或窗口流程未执行的部分单列，不计入通过。后续结果追加在此文件，不覆盖旧 QA 的失败或版本边界。
 
+本文用环境占位符表示本机目录：`$AGENTKIB_CHECKOUT` 为本轮 AgentKib 工作树根目录，`$NODE22_BIN` 为独立 Node 22.23.3 darwin-arm64 的可执行文件目录，`$EVIDENCE_DIR` 为本轮权限受限的证据根目录，`$TEMP_DIR` 为原始运行日志所在的系统临时目录。相对文件名、版本、哈希与证据归属均保留。
+
 - 源码基线：`bdd05c9def7b6cad325d166e33f4014e723bd724`。首轮生产实现固定于 `5a7a5ba8d4b3368b79b618b5a28b9189f4710d4b`；测试修复 `6147e87d4`，Windows 诊断 `1bcd04467` / `c83684b67` 不改生产实现。后续提交与验证见收尾记录。
 - 分支：`codex/typescript-stability-20261007`。
-- 工作树：`/Users/kouzen/.codex/worktrees/typescript-stability-20261007/agentkib`。
+- 工作树：`$AGENTKIB_CHECKOUT`。
 - 本轮开始时新工作树干净；本机整合检查在提交前 dirty 源码上运行，随后固定为 `5a7a5ba8d`。原始 dirty patch、status、构建哈希已封存到本轮证据目录；不能把该次检查误记为基线通过。
-- 本地命令使用独立 Node `22.23.3`、pnpm `10.8.1`。Node 路径为 `/Users/kouzen/.codex/tmp/node-v22.23.3-darwin-arm64/bin`，通过命令前置 `PATH` 选择；未替换用户的 Agent 安装或凭据。
+- 本地命令使用独立 Node `22.23.3`、pnpm `10.8.1`。Node 路径为 `$NODE22_BIN`，通过命令前置 `PATH` 选择；未替换用户的 Agent 安装或凭据。
 - AgentKib 已创建 [PR #100](https://github.com/starroyhq/agentkib/pull/100)。独立 backend 已提交、推送并创建 PR，见下文。没有合并、部署、发布、覆盖已安装的 AgentKib、新增生产依赖或数据库结构。
 
 ## 证据分层
@@ -50,14 +52,14 @@
 
 ## 已实际执行的命令
 
-以下命令均在本轮工作树使用 Node 22.23.3 运行；Electron 烟测由脚本启动锁文件固定的 Electron，其内置 Node 版本单独记录。最终原始命令日志与本地 bundle SHA256 已封存于 `/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence`（目录权限 0700）；候选安装包和远端 CI 身份见后文固定提交记录。
+以下命令均在本轮工作树使用 Node 22.23.3 运行；Electron 烟测由脚本启动锁文件固定的 Electron，其内置 Node 版本单独记录。最终原始命令日志与本地 bundle SHA256 已封存于 `$EVIDENCE_DIR`（目录权限 0700）；候选安装包和远端 CI 身份见后文固定提交记录。
 
 | 命令                                                                                                                                                                    | 结果与边界                                                                                                                                                                                                                                          |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `git rev-parse HEAD` / `git status --porcelain=v1`                                                                                                                      | 本机整合测试时基线为 `bdd05c9de…` 且 dirty；生产实现后固定为 `5a7a5ba8d`                                                                                                                                                                            |
 | `node --version` / `pnpm --version`                                                                                                                                     | `v22.23.3` / `10.8.1`                                                                                                                                                                                                                               |
 | `pnpm --filter @agentkib/desktop exec vitest run test/mcp-agent-home.test.ts test/mcp-continuation.test.ts test/mcp-connection.test.ts test/mcp-connection-hub.test.ts` | **4 文件、166 项通过**；其中新增 21 项，原有 145 项继续通过                                                                                                                                                                                         |
-| `pnpm test:backend:stability`                                                                                                                                           | 初版 **4 文件、35 项通过**；纳入 handoff、原生导入和 Cursor 恢复后，最终 **7 文件、52 项通过**，staged Koffi smoke 同时通过。原始运行日志 `/tmp/agentkib-stability-ci-local.log` 已纳入上述证据目录；与其他测试命令有重叠，不能相加作为独立覆盖数量 |
+| `pnpm test:backend:stability`                                                                                                                                           | 初版 **4 文件、35 项通过**；纳入 handoff、原生导入和 Cursor 恢复后，最终 **7 文件、52 项通过**，staged Koffi smoke 同时通过。原始运行日志 `$TEMP_DIR/agentkib-stability-ci-local.log` 已纳入上述证据目录；与其他测试命令有重叠，不能相加作为独立覆盖数量 |
 | `pnpm --filter @agentkib/desktop exec vitest run test/handoff-executor.test.ts`                                                                                         | 主代理实测 **5/5 通过**                                                                                                                                                                                                                             |
 | `pnpm --filter @agentkib/desktop exec vitest run test/native-import-recovery.test.ts`                                                                                   | 主代理实测 **3/3 通过**                                                                                                                                                                                                                             |
 | `pnpm --filter @agentkib/desktop exec vitest run test/cursor-native-recovery.test.ts`                                                                                   | Runtime 子代理实测 **6/6 通过**                                                                                                                                                                                                                     |
@@ -135,7 +137,7 @@ DB 回归使用 loopback 临时 PostgreSQL 17 容器（结束已删除），覆�
 
 - ZIP `44e543a29d7aac77ac58323473f650dd3c474e1e4939fc934105719452488ce5`，139,316,671 bytes。
 - DMG `6f06eb208fbd8564ac5a5ff6a2d1d2063e4dd22b9c0753b5e83cd107068418e9`，144,827,383 bytes。
-- 隔离解压位置：`/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence/candidate-5a7a5ba8d/AgentKib.app`；不是 `/Applications`。
+- 隔离解压位置：`$EVIDENCE_DIR/candidate-5a7a5ba8d/AgentKib.app`；与系统应用目录隔离。
 - `codesign --verify --deep --strict` 返回 `code has no resources but signature indicates they must be present`；display 为 Electron linker-signed adhoc、无 TeamIdentifier/Sealed Resources。artifact-only 未注入正式签名和公证配置；本轮未重签或将其计作签名通过。
 
 Codex `0.155.1` 在隔离 CODEX_HOME/项目中执行 `mcp list --json` 与 `mcp get agentkib --json`：原生未信任项目时忽略项目配置；只在临时 Home 信任该 fixture 后，精确发现本轮 Backend 生成的 streamable_http URL 且 enabled=true。sandbox 拒绝全部网络，模型请求 0；因此仅证明原生配置发现，**不是 MCP 连接或工具调用通过**。证据 `native-codex-mcp/audit-result.json`；不能由此提升当前交接门限。
@@ -172,7 +174,7 @@ Codex `0.155.1` 在隔离 CODEX_HOME/项目中执行 `mcp list --json` 与 `mcp 
 
 ### 最终 macOS 候选内部验收
 
-最终固定 `80f6a2209` 的完整 DMG 条目已校验外层 entry CRC/长度及 CI 内附 SHA256：`64e216fc4f8f011cff4637d7895420b62381abd37ef9dae80aa70e7bda3934ab`，144,827,466 bytes。以只读方式挂载且所有磁盘 CRC 通过，复制到独立目录后卸载；候选路径为 `/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence/candidate-80f6a2209/AgentKib.app`。未替换安装版、重签或改 fuse。
+最终固定 `80f6a2209` 的完整 DMG 条目已校验外层 entry CRC/长度及 CI 内附 SHA256：`64e216fc4f8f011cff4637d7895420b62381abd37ef9dae80aa70e7bda3934ab`，144,827,466 bytes。以只读方式挂载且所有磁盘 CRC 通过，复制到独立目录后卸载；候选路径为 `$EVIDENCE_DIR/candidate-80f6a2209/AgentKib.app`。未替换安装版、重签或改 fuse。
 
 - 可执行文件 SHA256：`7c975b5464a642611b2ca8ca2891e8e44308e5de83370fd623d2b555d14a25ad`。
 - `app.asar` SHA256：`62dd96562010a5ccc4eab06d65811ba26c6333949cc0300beb1166720f7a7e71`。
@@ -185,3 +187,55 @@ Codex `0.155.1` 在隔离 CODEX_HOME/项目中执行 `mcp list --json` 与 `mcp 
 离线 MCP 新验收脚本亦经独立复核。首例只直接确认 CLI/Backend 父进程退出；后续 review 发现原 stop_owned 未覆盖 setsid 后代，已改为持续记录自有 PID 与启动身份、确认整个已记录进程树退出，无法确认则失败并保留证据。三项纯合成回归及独立原始负例复测通过，无关 sentinel 进程保持运行。未重发 Claude 或模型请求，也不将新清理逻辑回填为首个原生例已执行的证据。
 
 交付为两份开放 PR：AgentKib #100、私有 backend #1；生产实现固定在上述提交，收尾提交仅新增 QA helper 和记录。两仓库均未合并、部署或发布，PR #97/#99 与原安装版保留不动。
+
+## 审查修复 — 2026-10-08
+
+本节记录上一轮审查之后的本机修复，不回填历史候选或 CI。源码为 `4bf9aa63449dfcb061ed8d069a9b32bc236a3d43` 加本轮 **dirty** 改动；没有新提交、推送、合并、部署或发布。代码与测试补丁（不含本 QA）SHA256 为 `8cb3c25c05422b6065ed3dad74c5e7ff2f773875797506d4ab983cd403390f19`，保存在 `$EVIDENCE_DIR/review-fixes/code-and-tests.patch`；构建身份见同目录 `source-build-identity.json`。
+
+- 原生 CLI 与 Cursor 导入、恢复在首次异步读取前绑定注册身份，并在读取、写入、派发及返回边界复核注册 ID、规范路径和归档 namespace。同路径、同唯一别名改绑也拒绝执行。已经派发的导入保留 attempt 和待核对结果；改绑前已合法落盘的回执保留原字节，不回滚或重新导入。没有增加跨进程排他保证或修改持久回执格式。
+- 新增 **19 条归属行为回归**（CLI 9、Cursor 10），在各自修复前均已验证失败，修复后 CLI **12/12**、Cursor **16/16** 通过。覆盖首次读取期间来源重新索引、探测、回读、attempt 提交后派发和最终 launched 回执提交后的改绑。使用真实 Store、实际读任务、TaskContext 与读 Worker；CLI/扩展边界为合成 fixture，不计原生客户端或真实模型通过。
+- Worker 烟测和真实 Backend 子进程 fixture 改为系统环境白名单，所有 Agent、应用与临时目录指向隔离根；注册的测试工作区设置 Git 搜索边界。真实 Worker 的外部 Home/config/env 插值 sentinel 与父级 Skill 正反控制通过：有工作区边界时不能读取父级，移除边界后必须检出合成 sentinel，且仍止于合成父目录。新增环境回归已纳入 Windows/Linux 共用的 `test:backend:stability` 入口。
+- 本 QA 的个人目录、Node、证据及候选路径均改为环境占位符；原有版本、哈希、历史失败和未验收结论保留。
+
+本轮最终命令均使用 Node `22.23.3` / pnpm `10.8.1`，原始输出位于 `$EVIDENCE_DIR/review-fixes/`：
+
+| 实际命令 | 最终结果 | 日志 |
+| --- | --- | --- |
+| `pnpm test:backend:stability` | 9 文件，**76 通过、1 Windows 平台项跳过**；原生绑定 smoke 通过 | `final-stability.log` |
+| `pnpm test` | 桌面 166 文件，**2019 通过、1 平台项跳过**；Web 34 文件，**610 通过** | `final-test.log` |
+| `pnpm format:check`；新增及修改脚本/测试的 `oxfmt --check` | 通过 | `final-format.log` |
+| `pnpm lint` | 退出 0；保留既有 78 条 warning，本轮修改的生产文件无新增 warning | `final-lint.log` |
+| `pnpm typecheck` | Backend、桌面、Web 均通过 | `final-typecheck.log` |
+| `pnpm build`；`pnpm build:web:hosted` | 桌面 Renderer/Electron/Backend 及普通、hosted Web 构建通过 | `final-build.log`、`final-build-hosted.log` |
+| `pnpm --filter @agentkib/desktop exec node scripts/run-backend-worker-smoke.mjs` | 实际 Electron `44.0.0` / Node `24.18.1` 的 utilityProcess、Skills 导入及退出、Handoff Worker/SQLite/Koffi 路径通过 | `final-electron-smoke.log` |
+| `git diff --check`；QA 真实本机路径与用户名检查 | 通过 | 本机只读检查 |
+
+Standards 与 Spec 由两个独立上下文子代理复核；复核发现的首次读取、attempt 提交、父级搜索及 Cursor 最终提交边界均补修并独立复验，未发现剩余确定缺陷。测试 fixture 的少量重复结构属于非阻塞维护建议。
+
+本节验证平台为 macOS arm64。Windows 环境变量大小写保留已做自动化，Windows/Linux 远端 CI、本轮修复的新候选包与原生 Agent 窗口/模型/手机验收未执行；前述 `80f6a2209` 候选和 CI 仅保留为历史证据，不宣称覆盖本节 dirty 修复。
+
+### OpenClaw 归属写入边界补修 — 2026-10-08
+
+随后新的独立 Spec 审查复现了一项遗漏：OpenClaw 原生回读期间把同路径、唯一 manifest 别名改绑给另一注册工作区后，调用方虽返回待核对、未生成成功回执，验证函数仍先写入 `openclaw-generation`。因此，上节“未发现剩余确定缺陷”仅记录当时复核结果，不能作为本次补修前已覆盖此边界的结论。
+
+本次将捕获的原工作区身份校验传入全部原生验证调用，包括初导入、pending/verified 恢复和启动前核对；OpenClaw 在回读返回后复核，将 generation 落盘纳入既有 `handoffCommit`，在提交回调内及提交返回后再次复核。改绑前合法写入的 marker/receipt 保留原字节；已派发的未知结果保留 attempt，不重复导入、不启动目标。没有改变 RPC、数据库或持久记录格式，也没有新增依赖或跨进程原子排他保证。
+
+新增独立 `openclaw-native-recovery.test.ts`：修复前 12 例中 4 个预期负例失败，证明初回读、pending 恢复、提交入口和提交返回边界的 marker/receipt 写入问题；修复后连同启动前核对正反例 **14/14 通过**。使用真实 Store、临时合成 SQLite、实际 HandoffWork/TaskContext，仅替代外部 CLI，不计真实 OpenClaw 客户端或模型验收。原审查的独立合成负例亦由主代理复测，修复前失败、修复后通过。新增测试已加入 Windows/Linux 共用的后端稳定性入口。
+
+源码仍为 `4bf9aa63449dfcb061ed8d069a9b32bc236a3d43` 加 **dirty** 改动；本次没有提交、推送、合并、部署、发布或替换已安装应用。合并当前代码及测试的补丁（不含本 QA）SHA256 为 `19a72a0d355bc61567d3bf4c810a9cd322e7552186adf7a006f93d1e1864d18f`，保存在 `$EVIDENCE_DIR/openclaw-owner-fix/code-and-tests.patch`；源码、三个 Backend 构建入口的 SHA256 见同目录 `source-build-identity.json`，上节补丁与日志保持原样。
+
+以下命令实际使用 Node `22.23.3` / pnpm `10.8.1`，原始输出位于 `$EVIDENCE_DIR/openclaw-owner-fix/`：
+
+| 实际命令 | 结果 | 日志 |
+| --- | --- | --- |
+| `pnpm --filter @agentkib/desktop exec vitest run test/openclaw-native-recovery.test.ts` | **14/14 通过** | `openclaw-regression.log` |
+| `pnpm --filter @agentkib/desktop exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --esModuleInterop --module ESNext --moduleResolution Bundler --target ES2022 --types node test/openclaw-native-recovery.test.ts` | 新测试及关联源码严格类型检查通过 | `regression-typecheck.log` |
+| `pnpm test:backend:stability` | 10 文件，**90 通过、1 Windows 平台项跳过**；原生绑定 smoke 通过 | `stability.log` |
+| `pnpm test` | 桌面 167 文件，**2033 通过、1 平台项跳过**；Web 34 文件，**610 通过** | `test.log` |
+| `pnpm format:check`；本次源码/测试/入口的 `oxfmt --check` | 通过 | `format.log` 及本机局部检查 |
+| `pnpm lint` | 退出 0，保留既有 **78 条 warning**，本次生产文件无新增 warning | `lint.log` |
+| `pnpm typecheck` | Backend、桌面、Web 均通过；首次检查发现遗漏的启动核对调用方，补齐后重新通过 | `typecheck.log`、`typecheck-final.log` |
+| `pnpm --filter @agentkib/desktop backend:build`；`pnpm build`；`pnpm build:web:hosted` | Backend、桌面及普通、hosted Web 构建通过 | `backend-build.log`、`build.log`、`build-hosted.log` |
+| `pnpm --filter @agentkib/desktop exec node scripts/run-backend-worker-smoke.mjs` | 实际 Electron `44.0.0` / Node `24.18.1` 的 utilityProcess、Skills、Handoff/SQLite/Koffi smoke 通过 | `electron-smoke.log` |
+
+本次由两个新的独立上下文子代理分别复核 Standards 与 Spec；两者独立执行新增 14 例均通过，未发现剩余确定缺陷。`git diff --check` 和 QA 本机路径检查通过。所有结果仅覆盖 macOS arm64 本机；本次 Windows/Linux 远端 CI、原生 OpenClaw/其他 Agent、真实模型、新候选包及手机验收未执行，原有未验收状态保留。

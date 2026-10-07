@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Skills } from "../../../packages/backend/src/skills";
 import {
@@ -18,6 +19,11 @@ const homes: string[] = [];
 const workers: SkillsWorker[] = [];
 const children: Array<{ child: ChildProcessWithoutNullStreams; closed: Promise<void> }> = [];
 const built = path.resolve("dist-electron/backend-skills.cjs");
+const { createIsolatedWorkerEnvironment } = createRequire(import.meta.url)(
+  "../scripts/backend-worker-smoke-environment.cjs",
+) as {
+  createIsolatedWorkerEnvironment(root: string, source?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+};
 const environment = (home: string) => ({
   HOME: home,
   USERPROFILE: home,
@@ -198,7 +204,7 @@ describe("persistent Skills worker", () => {
   it("rechecks workspace ownership after staging and preserves the target when registration is revoked", async () => {
     const directory = await home();
     const workspace = path.join(directory, "project");
-    await fs.mkdir(workspace);
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
     let registered = true;
     const filename = await wrapper(
       directory,
@@ -278,6 +284,8 @@ fs.promises.rename=async(from,to)=>{if(String(to).includes(path.join('skills','r
 
 type Frame = { id: number; result?: unknown; error?: { message: string; data?: unknown } };
 async function backend(directory: string, workerPatch: string) {
+  // OpenCode compatibility scans stop at the nearest Git root, independently of HOME.
+  await fs.mkdir(path.join(directory, ".git"), { recursive: true });
   const dist = path.join(directory, "dist");
   await fs.mkdir(dist);
   for (const entry of await fs.readdir(path.dirname(built)))
@@ -292,13 +300,10 @@ async function backend(directory: string, workerPatch: string) {
     path.join(dist, "backend-skills.cjs"),
     `${workerPatch}\nrequire('./skills-real.cjs');`,
   );
+  const isolatedEnvironment = createIsolatedWorkerEnvironment(directory);
+  await fs.mkdir(isolatedEnvironment.TMPDIR!, { recursive: true });
   const child = spawn(process.execPath, [path.join(dist, "backend.cjs")], {
-    env: {
-      ...process.env,
-      ...environment(directory),
-      CLAUDE_CONFIG_DIR: path.join(directory, ".claude"),
-      CODEX_HOME: path.join(directory, ".codex"),
-    },
+    env: isolatedEnvironment,
     stdio: "pipe",
   });
   children.push({
@@ -333,6 +338,52 @@ async function backend(directory: string, workerPatch: string) {
 }
 
 describe("built backend Skills isolation", () => {
+  it("finds the workspace fixture without scanning its synthetic parent skills", async () => {
+    const parent = await home();
+    await fs.mkdir(path.join(parent, ".git"));
+    const sentinel = path.join(parent, ".opencode/skills/ancestor-sentinel");
+    await fs.mkdir(sentinel, { recursive: true });
+    await fs.writeFile(
+      path.join(sentinel, "SKILL.md"),
+      "---\nname: ancestor-sentinel\ndescription: Synthetic parent fixture\n---\nFixture text.\n",
+    );
+    const directory = path.join(parent, "workspace");
+    await local(directory);
+    const dataDir = path.join(directory, "data");
+    const store = new BackendStore(path.join(dataDir, "agentkib.db"));
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,manifest_workspace_id,status,last_discovered_at) VALUES(?,?,?,?,?,?)",
+      "fixture",
+      directory,
+      "Fixture",
+      "fixture",
+      "healthy",
+      "2026-10-07T00:00:00.000Z",
+    );
+    store.close();
+    const listener = createServer();
+    await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
+    const port = (listener.address() as { port: number }).port;
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve())),
+    );
+    await fs.writeFile(
+      path.join(dataDir, "preferences.json"),
+      JSON.stringify({
+        mcp_network: { port, lan_enabled: false, lan_risk_accepted: false },
+        session_index_enabled: false,
+      }),
+    );
+    const rpc = await backend(directory, "");
+    expect((await rpc.request("backend.initialize", { dataDir })).error).toBeUndefined();
+    const inventory = await rpc.request("skills.inventory");
+    expect(inventory.error).toBeUndefined();
+    const observations = (inventory.result as { observations: Array<{ name: string }> })
+      .observations;
+    expect([...new Set(observations.map((item) => item.name))]).toEqual(["reviewer"]);
+    expect((await rpc.request("agentkib.shutdown")).error).toBeUndefined();
+  }, 15_000);
+
   it.each(["network", "synchronous-hash"])(
     "answers workspace/session/runtime requests within one second during %s work",
     async (mode) => {

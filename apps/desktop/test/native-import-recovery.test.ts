@@ -1,4 +1,12 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  unlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +16,15 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { canonicalize } from "../../../packages/backend/src/paths";
 import { fingerprintSessionDocument } from "../../../packages/backend/src/session-handoff";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
+import type { NativeSession } from "../../../packages/backend/src/session-store";
+import { HandoffWork } from "../../../packages/backend/src/handoff-work";
+import {
+  executeHandoffRead,
+  type HandoffReadKind,
+  type HandoffReadInput,
+  type HandoffReadOutput,
+} from "../../../packages/backend/src/handoff-read-tasks";
+import { TaskContext, type TaskWorkspace } from "../../../packages/backend/src/task-executor";
 import {
   inspectNativeImportTarget,
   planNativeImport,
@@ -42,21 +59,20 @@ async function fixture() {
     "healthy",
     "2026-10-07T00:00:00Z",
   );
-  store.sessions.sync("registered", "claude-code", [
-    {
-      native_ref: "source",
-      agent: "claude-code",
-      title: null,
-      created_at: null,
-      updated_at: null,
-      message_count: 2,
-      git_branch: null,
-      archived: false,
-      sidechain: false,
-      availability: "readable",
-      origin: "interactive",
-    },
-  ]);
+  const nativeSource: NativeSession = {
+    native_ref: "source",
+    agent: "claude-code",
+    title: null,
+    created_at: null,
+    updated_at: null,
+    message_count: 2,
+    git_branch: null,
+    archived: false,
+    sidechain: false,
+    availability: "readable",
+    origin: "interactive",
+  };
+  store.sessions.sync("registered", "claude-code", [nativeSource]);
   const document: SessionDocument = {
     schema_version: 1,
     source: { agent: "claude-code", workspace_id: "legacy" },
@@ -71,7 +87,13 @@ async function fixture() {
     losses: [],
     redaction_count: 0,
   };
-  const sessions = { document: async () => structuredClone(document) };
+  let beforeSourceRead: (() => void) | undefined;
+  const sessions = {
+    document: async () => {
+      beforeSourceRead?.();
+      return structuredClone(document);
+    },
+  };
   const executable = path.join(root, "opencode");
   writeFileSync(executable, "fixture", { mode: 0o755 });
   vi.spyOn(resolution, "resolveCommand").mockReturnValue(executable);
@@ -79,8 +101,10 @@ async function fixture() {
   cleanup.push(() => commands.close());
   let attempts = 0,
     lost = false;
+  let beforeCommand: ((args: string[]) => void) | undefined;
   const exported = path.join(root, "export.json");
   vi.spyOn(commands, "run").mockImplementation(async (_program, args) => {
+    beforeCommand?.(args);
     let text = "";
     if (args[0] === "--version") text = "1.18.32";
     else if (args[0] === "debug") text = JSON.stringify({ model: "fixture/model" });
@@ -120,6 +144,32 @@ async function fixture() {
     receipt,
     proceed,
     recover,
+    reindexSource: () => store.sessions.sync("replacement", "claude-code", [nativeSource]),
+    onSourceRead: (action: () => void) => {
+      beforeSourceRead = action;
+    },
+    onCommand: (action: (args: string[]) => void) => {
+      beforeCommand = action;
+    },
+    replaceOwner: () => {
+      const otherProject = path.join(root, "other-project");
+      mkdirSync(otherProject);
+      store.sql.run(
+        "UPDATE workspaces SET canonical_path=?, manifest_workspace_id=? WHERE id=?",
+        otherProject,
+        "other-legacy",
+        "registered",
+      );
+      store.sql.run(
+        "INSERT INTO workspaces(id,canonical_path,name,manifest_workspace_id,status,last_discovered_at) VALUES(?,?,?,?,?,?)",
+        "replacement",
+        project,
+        "Replacement",
+        "legacy",
+        "healthy",
+        "2026-10-07T00:00:00Z",
+      );
+    },
     attempts: () => attempts,
     loseReply: () => {
       lost = true;
@@ -128,7 +178,114 @@ async function fixture() {
   };
 }
 
+function localReadWork(onRead?: (kind: HandoffReadKind) => void) {
+  return new (class extends HandoffWork {
+    override async read<K extends HandoffReadKind>(
+      kind: K,
+      input: HandoffReadInput<K>,
+      _task: TaskContext,
+    ): Promise<HandoffReadOutput<K>> {
+      const result = await executeHandoffRead(kind, input, this.commands);
+      onRead?.(kind);
+      return result;
+    }
+  })();
+}
+
 describe("native import durable reconciliation", () => {
+  it("binds the owner before the first read even when the source is reindexed to its replacement", async () => {
+    const f = await fixture();
+    const work = localReadWork((kind) => {
+      if (kind === "native-change") {
+        f.replaceOwner();
+        f.reindexSource();
+      }
+    });
+    const task = new TaskContext({ id: "first-read", deadlineAt: Date.now() + 10_000 });
+    try {
+      await expect(work.run(task, f.proceed)).rejects.toThrow(/workspace identity changed/);
+      expect(f.attempts()).toBe(0);
+      expect(() => readFileSync(f.plan.change_set.changes[0]!.target)).toThrow();
+      expect(() => readFileSync(f.receipt)).toThrow();
+    } finally {
+      task.dispose();
+      await work.close();
+    }
+  });
+  it("does not dispatch after the attempt marker commits under a replaced owner", async () => {
+    const f = await fixture();
+    const attempted = path.join(path.dirname(f.receipt), "attempted.json");
+    const work = localReadWork();
+    const task = new (class extends TaskContext {
+      replaced = false;
+      override async commit<T>(operation: () => Promise<T> | T, scope?: TaskWorkspace) {
+        const result = await super.commit(operation, scope);
+        if (!this.replaced && existsSync(attempted)) {
+          this.replaced = true;
+          f.replaceOwner();
+        }
+        return result;
+      }
+    })({ id: "attempt-commit", deadlineAt: Date.now() + 10_000 });
+    try {
+      await expect(work.run(task, f.proceed)).rejects.toBeInstanceOf(
+        NativeImportOutcomeUnknownError,
+      );
+      expect(f.attempts()).toBe(0);
+      expect(readFileSync(attempted, "utf8")).toBe(f.plan.launch_request.plan_hash);
+      expect(() => readFileSync(f.exported)).toThrow();
+      expect(() => readFileSync(f.receipt)).toThrow();
+    } finally {
+      task.dispose();
+      await work.close();
+    }
+  });
+  it.each(["source read", "version probe", "configuration probe"])(
+    "rejects a replaced registered owner during %s before importing",
+    async (stage) => {
+      const f = await fixture();
+      if (stage === "source read") f.onSourceRead(f.replaceOwner);
+      else
+        f.onCommand((args) => {
+          if (args[0] === (stage === "version probe" ? "--version" : "debug")) f.replaceOwner();
+        });
+      await expect(f.proceed()).rejects.toThrow(/workspace identity changed/);
+      expect(f.attempts()).toBe(0);
+      expect(() => readFileSync(f.receipt)).toThrow();
+      expect(() =>
+        readFileSync(f.plan.change_set.changes[0]!.target.replace("plan.json", "attempted.json")),
+      ).toThrow();
+      if (stage === "source read")
+        expect(() => readFileSync(f.plan.change_set.changes[0]!.target)).toThrow();
+    },
+  );
+  it("keeps an imported target unresolved when its registered owner changes during readback", async () => {
+    const f = await fixture();
+    f.onCommand((args) => {
+      if (args[0] === "export") f.replaceOwner();
+    });
+    await expect(f.proceed()).rejects.toBeInstanceOf(NativeImportOutcomeUnknownError);
+    expect(f.attempts()).toBe(1);
+    expect(readFileSync(f.exported, "utf8")).toContain("Unique source marker 83eac8");
+    expect(() => readFileSync(f.receipt)).toThrow();
+  });
+  it.each(["version probe", "verified readback", "pending readback"])(
+    "rejects owner replacement during recovery %s without importing again",
+    async (stage) => {
+      const f = await fixture();
+      await f.proceed();
+      let previousReceipt: Buffer | undefined;
+      if (stage === "pending readback") unlinkSync(f.receipt);
+      else previousReceipt = readFileSync(f.receipt);
+      f.onCommand((args) => {
+        if (args[0] === (stage === "version probe" ? "--version" : "export")) f.replaceOwner();
+      });
+      await expect(f.recover()).rejects.toThrow(/workspace identity changed/);
+      expect(f.attempts()).toBe(1);
+      if (previousReceipt) expect(readFileSync(f.receipt)).toEqual(previousReceipt);
+      else expect(() => readFileSync(f.receipt)).toThrow();
+    },
+  );
   it("reconciles a lost reply and lost receipt without repeating the import", async () => {
     const f = await fixture();
     f.loseReply();

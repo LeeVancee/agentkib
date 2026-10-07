@@ -37,7 +37,10 @@ import { fingerprintSessionDocument } from "./session-handoff";
 import type { BackendStore } from "./store";
 import type { SessionStore } from "./session-store";
 import { hermesTargetHome } from "./agent-home";
-import { requireUniqueContinuationWorkspace } from "./workspace-identity";
+import {
+  assertContinuationWorkspaceIdentity,
+  requireUniqueContinuationWorkspace,
+} from "./workspace-identity";
 import {
   inspectOpenClawContext,
   openClawBridge,
@@ -649,17 +652,21 @@ async function executeNativeImport(
         if (!safeRegularFile(payloadPath, MAX_OUTPUT).equals(Buffer.from(plan.payload)))
           throw new Error("Import payload changed");
       } else {
-        await handoffCommit(() =>
-          createPrivateFile(directory, payloadPath, Buffer.from(plan.payload)),
-        );
+        await handoffCommit(() => {
+          validateOwnership();
+          createPrivateFile(directory, payloadPath, Buffer.from(plan.payload));
+        });
       }
+      validateOwnership();
       if (plan.target_agent === "open-claw") await openClawReady(plan, payloadPath, commands);
       handoffCheckpoint();
       validateOwnership();
-      await handoffCommit(() =>
-        createPrivateFile(directory, attemptedPath, Buffer.from(request.plan_hash)),
-      );
+      await handoffCommit(() => {
+        validateOwnership();
+        createPrivateFile(directory, attemptedPath, Buffer.from(request.plan_hash));
+      });
       handoffCheckpoint();
+      validateOwnership();
       if (plan.target_agent === "open-claw") {
         await openClawBridge(plan, payloadPath, commands, true);
       } else {
@@ -686,17 +693,26 @@ async function executeNativeImport(
         });
       }
     }
-    const id = await verifyNativeImport(plan, directory, commands, env, !attempted);
+    const id = await verifyNativeImport(
+      plan,
+      directory,
+      commands,
+      env,
+      !attempted,
+      validateOwnership,
+    );
     validateOwnership();
     receipt.target_session_id = id;
     receipt.verified = true;
-    await handoffCommit(() =>
-      atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`)),
-    );
+    await handoffCommit(() => {
+      validateOwnership();
+      atomicPrivateWrite(directory, receiptPath, Buffer.from(`${JSON.stringify(receipt)}\n`));
+    });
   } else {
-    const id = await verifyNativeImport(plan, directory, commands, env, false);
+    const id = await verifyNativeImport(plan, directory, commands, env, false, validateOwnership);
     if (id !== receipt.target_session_id) throw new Error("Native import target identity changed");
   }
+  validateOwnership();
   return { target_session_id: receipt.target_session_id, receipt };
 }
 
@@ -706,9 +722,12 @@ async function verifyNativeImport(
   commands: Commands,
   env: NodeJS.ProcessEnv,
   exact: boolean,
+  validateOwnership: () => void,
 ): Promise<string> {
+  validateOwnership();
   env = restoredEnvironment(env, plan);
-  if (plan.target_agent === "open-claw") return openClawVerify(plan, directory, commands, exact);
+  if (plan.target_agent === "open-claw")
+    return openClawVerify(plan, directory, commands, exact, validateOwnership);
   if (plan.target_agent === "opencode") {
     const exported = await commands.run(plan.executable, ["export", plan.target_session_id], {
       cwd: plan.workspace,
@@ -891,6 +910,9 @@ export async function continueNativeImport(
     throw new Error("Invalid native import continuation");
   const request = validateImportRequest(envelope.launchRequest);
   if (envelope.approveHome !== true) throw new Error("Native import requires Agent Home approval");
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const validateOwnership = () =>
+    assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
   const validated = await readHandoff(
     "native-change",
     [envelope.changeSet, envelope.launchRequest, request.workspace_id, dataDir],
@@ -902,9 +924,9 @@ export async function continueNativeImport(
         dataDir,
       ),
   );
+  validateOwnership();
   const content = Buffer.from(validated.content);
   const { changes, directory, plan } = validated;
-  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
   const root = identity.project;
   if (root !== plan.workspace) throw new Error("Import workspace changed");
   const session = sessionStore.get(plan.source_session_id);
@@ -923,21 +945,26 @@ export async function continueNativeImport(
   )
     throw new Error("Import source workspace changed");
   const source = await sessions.document(plan.source_session_id);
+  validateOwnership();
   source.source.workspace_id = request.workspace_id;
-  if ((await fingerprintHandoff(source)) !== plan.source_fingerprint)
+  const sourceFingerprint = await fingerprintHandoff(source);
+  validateOwnership();
+  if (sourceFingerprint !== plan.source_fingerprint)
     throw new Error("Source changed after import preview");
   const persistedPath = path.join(directory, "plan.json");
   if (existsSync(persistedPath)) {
     if (!safeRegularFile(persistedPath, MAX_OUTPUT).equals(content))
       throw new Error("Persisted import plan differs from the reviewed plan");
   } else {
-    await handoffCommit(() =>
-      applyRequest(
+    await handoffCommit(() => {
+      validateOwnership();
+      return applyRequest(
         { changeSet: changes, approveHome: true },
         store,
         dataDir,
         env,
         (reviewed, applicationId, currentDataDir) => {
+          validateOwnership();
           if (
             applicationId !== request.workspace_id ||
             currentDataDir !== dataDir ||
@@ -959,21 +986,22 @@ export async function continueNativeImport(
             throw new Error("Unexpected native import plan destination");
           return [expectedPath];
         },
-      ),
-    );
-  }
-  const persisted = await readNativeImportPlan(dataDir, request);
-  const currentIdentity = requireUniqueContinuationWorkspace(
-    store,
-    request.workspace_id,
-    plan.workspace,
-  );
-  if (currentIdentity.registeredId !== identity.registeredId)
-    throw new Error("Import workspace identity changed before execution");
-  try {
-    const result = await executeNativeImport(persisted, commands, env, true, false, () => {
-      requireUniqueContinuationWorkspace(store, request.workspace_id, plan.workspace);
+      );
     });
+  }
+  validateOwnership();
+  const persisted = await readNativeImportPlan(dataDir, request);
+  validateOwnership();
+  try {
+    const result = await executeNativeImport(
+      persisted,
+      commands,
+      env,
+      true,
+      false,
+      validateOwnership,
+    );
+    validateOwnership();
     return { status: "verified", targetSessionId: result.target_session_id };
   } catch (error) {
     if (!existsSync(path.join(directory, "attempted.json"))) throw error;
@@ -1089,13 +1117,15 @@ export async function reconcileNativeImport(
   store: BackendStore,
 ): Promise<{ targetSessionId: string; verified: boolean }> {
   const request = validateImportRequest(value);
-  requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
   const loaded = await readNativeImportPlan(dataDir, value);
   const validateOwnership = () => {
+    assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
     requireUniqueContinuationWorkspace(store, request.workspace_id, loaded.plan.workspace);
   };
   validateOwnership();
   const result = await executeNativeImport(loaded, commands, env, true, true, validateOwnership);
+  validateOwnership();
   return { targetSessionId: result.target_session_id, verified: result.receipt.verified };
 }
 
@@ -1130,7 +1160,14 @@ export async function nativeImportLaunchInfo(
     !validTargetId
   )
     throw new Error("Native import receipt is not verified");
-  const verifiedId = await verifyNativeImport(loaded.plan, loaded.directory, commands, env, false);
+  const verifiedId = await verifyNativeImport(
+    loaded.plan,
+    loaded.directory,
+    commands,
+    env,
+    false,
+    validateOwnership,
+  );
   validateOwnership();
   if (verifiedId !== receipt.target_session_id)
     throw new Error("Native import target identity changed");

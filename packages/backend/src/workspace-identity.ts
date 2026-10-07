@@ -60,3 +60,17 @@ export function requireUniqueContinuationWorkspace(
     throw new Error("Continuation workspace path changed");
   return workspace;
 }
+
+/** A unique alias may be reassigned while an external probe or read is pending. */
+export function assertContinuationWorkspaceIdentity(
+  store: WorkspaceStore,
+  id: string,
+  expected: WorkspaceIdentity,
+): void {
+  const current = requireUniqueContinuationWorkspace(store, id, expected.project);
+  if (
+    current.registeredId !== expected.registeredId ||
+    current.archiveWorkspaceId !== expected.archiveWorkspaceId
+  )
+    throw new Error("Continuation workspace identity changed");
+}

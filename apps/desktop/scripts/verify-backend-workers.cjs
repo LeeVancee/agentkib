@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const { createServer } = require("node:net");
+const { createIsolatedWorkerEnvironment } = require("./backend-worker-smoke-environment.cjs");
 const root = require("node:fs").mkdtempSync(path.join(os.tmpdir(), "agentkib-worker-smoke-"));
 const dist = path.resolve(__dirname, "../dist-electron");
 app.setPath("userData", path.join(root, "electron"));
@@ -59,15 +60,8 @@ app
         mcp_network: { port, lan_enabled: false, lan_risk_accepted: false },
       }),
     );
-    const environment = {
-      ...process.env,
-      HOME: root,
-      USERPROFILE: root,
-      AGENTKIB_HOME: path.join(root, "library"),
-      CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
-      CODEX_HOME: path.join(root, ".codex"),
-      AGENTKIB_DATA_DIR: dataDir,
-    };
+    const environment = createIsolatedWorkerEnvironment(root);
+    await fs.mkdir(environment.TMPDIR, { recursive: true });
     const backend = fork(path.join(dist, "backend.cjs"), environment);
     const pending = new Map();
     let sequence = 0;
@@ -93,6 +87,15 @@ app
       );
     await rpc("backend.initialize", { dataDir });
     const inventory = await rpc("skills.inventory");
+    assert.ok(
+      inventory.observations.every((item) => {
+        const relative = path.relative(root, item.path);
+        return (
+          !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)
+        );
+      }),
+      "Skills worker read a package outside the isolated directory",
+    );
     const observation = inventory.observations.find((item) => item.name === "smoke");
     assert.ok(observation, "Skills worker did not read the isolated package");
     const preview = await rpc("skills.prepareImport", { observation_id: observation.id });

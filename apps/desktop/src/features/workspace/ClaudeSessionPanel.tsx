@@ -400,8 +400,7 @@ export function ClaudeSessionPanel({
             forgetPending(workspaceId, entry.requestId);
             if (generation === epoch.current) setPending(undefined);
           }
-          if (generation === epoch.current)
-            setError(result.error || "control_outcome_unconfirmed");
+          if (generation === epoch.current) setError(result.error || "control_outcome_unconfirmed");
         } else {
           forgetPending(workspaceId, entry.requestId);
           if (generation === epoch.current) {

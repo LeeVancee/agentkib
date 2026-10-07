@@ -11,7 +11,9 @@ import { cn } from "@/lib/utils";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
 
 const EmbeddedConversation = lazy(() =>
-  import("@agentkib/web/conversation").then((module) => ({ default: module.EmbeddedConversation })),
+  import("@agentkib/web/conversation").then((module) => ({
+    default: module.EmbeddedConversation,
+  })),
 );
 
 export function DesktopConversationPane({

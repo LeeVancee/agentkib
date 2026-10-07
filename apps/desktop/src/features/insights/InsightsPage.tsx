@@ -123,11 +123,6 @@ export function InsightsPage({
   const repositories = view?.repositories ?? [];
   const achievements = view?.achievements ?? [];
   const status = view?.status;
-  const refreshJob = refreshJobQuery.data;
-  const busy =
-    view?.status.running === true ||
-    refreshJob?.state === "queued" ||
-    refreshJob?.state === "running";
   // 换了筛选条件、新数据还没到时，显示的是上一组条件的数据（keepPreviousData）。
   // 必须标出来，否则旧的总数会顶着新的筛选标签显示。
   const stale = viewQuery.isPlaceholderData === true;
@@ -205,28 +200,24 @@ export function InsightsPage({
       aria-busy={stale || undefined}
     >
       <section className="grid gap-3">
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {busy ? (
-            <Badge variant="secondary" role="status">
-              {tr("tray.refreshInsights")}
-            </Badge>
-          ) : (
-            stale && (
+        {(stale || error) && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {stale && (
               <Badge variant="secondary" role="status">
                 {tr("insights.refreshing")}
               </Badge>
-            )
-          )}
-          {error && (
-            <div
-              role="alert"
-              className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            >
-              <CircleAlert size={16} />
-              {error}
-            </div>
-          )}
-        </div>
+            )}
+            {error && (
+              <div
+                role="alert"
+                className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                <CircleAlert size={16} />
+                {error}
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex min-w-0 items-center gap-3 overflow-x-auto pb-1">
           {showMetricTabs && (
             <Tabs

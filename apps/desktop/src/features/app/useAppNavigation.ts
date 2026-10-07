@@ -206,8 +206,13 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     }
   }, [route.kind, setBusy]);
   useEffect(() => {
+    // The URL updates before the committed route matches during navigation.
+    // Do not restore the previous workspace while its matches are still rendered.
+    const locationRoute = parseHistoryRoute(location.pathname);
     if (
       route.kind !== "workspace" ||
+      locationRoute.kind !== "workspace" ||
+      locationRoute.workspaceId !== workspaceRouteId ||
       selectedWorkspace?.id === workspaceRouteId ||
       workspacesPending ||
       !workspaceRouteId
@@ -221,6 +226,7 @@ export function useAppNavigation(activeRoute?: ParsedRoute) {
     }
   }, [
     route.kind,
+    location.pathname,
     workspaceRouteId,
     workspaceRoutePage,
     selectedWorkspace?.id,

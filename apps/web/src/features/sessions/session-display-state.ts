@@ -25,6 +25,7 @@ export function sessionDisplayState(state: State) {
       label: live ? c.offline : c.connecting,
       reason: live ? c.offline : c.connecting,
       tone: "warning",
+      loading: !live,
     };
   if (live?.questions?.length) return { label: c.question, reason: c.question, tone: "warning" };
   if (
@@ -40,7 +41,7 @@ export function sessionDisplayState(state: State) {
       tone: "active",
     };
   if (live?.status === "running") return { label: c.running, reason: c.running, tone: "active" };
-  if (busy) return { label: c.busy, reason: c.busy, tone: "active" };
+  if (busy) return { label: c.busy, reason: c.busy, tone: "active", loading: true };
   if (!access?.experimentalEnabled || !access.device?.send)
     return { label: c.readonly, reason: c.readonly, tone: "muted" };
   if (controlReady && live?.status === "idle" && live.lastOutcome === "cancelled")
@@ -48,6 +49,7 @@ export function sessionDisplayState(state: State) {
   if (canSend) return { label: c.ready, reason: "", tone: "active" };
   const reason = live?.reason || capabilities?.features.send?.reason || capabilities?.reason;
   if (reason) return { label: c.readonly, reason: codexReason(locale, reason).text, tone: "muted" };
-  if (!controlReady || !live) return { label: c.verifying, reason: c.verifying, tone: "muted" };
+  if (!controlReady || !live)
+    return { label: c.verifying, reason: c.verifying, tone: "muted", loading: true };
   return { label: c.readonly, reason: c.readonly, tone: "muted" };
 }

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ArrowUp, Square, X } from "lucide-react";
 import { type UploadedAttachment } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
@@ -9,7 +10,7 @@ import { ContextUsageGauge } from "./context-usage";
 import { contextUsageCopy } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy } from "./codex-copy";
+import { codexCopy, codexReason } from "./codex-copy";
 import { isValidMessage, MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 
@@ -226,6 +227,19 @@ export function CodexComposer() {
   const preview = uploads.find((item) => item.key === previewKey && item.previewUrl);
   const compacting = live?.activity === "compacting";
   const running = live?.status === "running";
+  const connectionToastId = useId();
+  const connectionFailure =
+    !canSend &&
+    !running &&
+    !compacting &&
+    display.reason === codexReason(locale, "codex-connection-failed").text;
+  useEffect(() => {
+    if (!connectionFailure) return;
+    toast.error(display.reason, { id: connectionToastId });
+    return () => {
+      toast.dismiss(connectionToastId);
+    };
+  }, [connectionFailure, connectionToastId, display.reason, selected]);
   const canAdvanced = !!(access?.device?.advancedControl && controlReady && online && !busy);
   const primaryAction = canStop ? (
     <Button
@@ -437,7 +451,7 @@ export function CodexComposer() {
           {contextUsageCopy[locale].compactingDetail}
         </p>
       )}
-      {!canSend && !running && !compacting && (
+      {!canSend && !running && !compacting && !connectionFailure && !display.loading && (
         <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
           {display.reason}
         </p>

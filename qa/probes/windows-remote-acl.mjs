@@ -40,7 +40,11 @@ function Principal-Kind($sid) {
 }
 function Inspect-Target {
   try {
-    $acl = Get-Acl -LiteralPath $env:AGENTKIB_ACL_TARGET
+    $acl = if ([System.IO.Directory]::Exists($env:AGENTKIB_ACL_TARGET)) {
+      [System.IO.Directory]::GetAccessControl($env:AGENTKIB_ACL_TARGET)
+    } else {
+      [System.IO.File]::GetAccessControl($env:AGENTKIB_ACL_TARGET)
+    }
     $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
     return @{
       ok = $true
@@ -117,7 +121,7 @@ function inspect(file, environment, sddl) {
     return { probeFailed: true, reason: "non-json-output" };
   }
 }
-function apply(file, directory) {
+function apply(file, directory, information) {
   const descriptor = [null];
   const converted = convert(
     directory ? "D:P(A;OICI;FA;;;OW)" : "D:P(A;;FA;;;OW)",
@@ -127,10 +131,10 @@ function apply(file, directory) {
   );
   const conversionError = converted ? 0 : lastError();
   if (!converted || !descriptor[0]) return { converted, conversionError };
-  const applied = set(file, 0x00000004 | 0x80000000, descriptor[0]);
+  const applied = set(file, information, descriptor[0]);
   const setError = applied ? 0 : lastError();
   free(descriptor[0]);
-  return { converted, applied, setError, errorAfterFree: applied ? 0 : lastError() };
+  return { information, converted, applied, setError, errorAfterFree: applied ? 0 : lastError() };
 }
 const results = [];
 try {
@@ -139,19 +143,19 @@ try {
       environmentName === "original"
         ? process.env
         : { ...process.env, HOME: root, USERPROFILE: root };
-    for (const api of ["koffi", "pinvoke"]) {
+    for (const api of ["koffi", "koffi-unsigned", "pinvoke"]) {
+      const isKoffi = api.startsWith("koffi");
+      const information = api === "koffi-unsigned" ? 0x80000004 : 0x00000004 | 0x80000000;
       const directory = path.join(root, `${environmentName}-${api}`);
       fs.mkdirSync(directory, { mode: 0o700 });
       const before = inspect(directory, environment);
-      const first =
-        api === "koffi"
-          ? apply(directory, true)
-          : inspect(directory, environment, "D:P(A;OICI;FA;;;OW)");
+      const first = isKoffi
+        ? apply(directory, true, information)
+        : inspect(directory, environment, "D:P(A;OICI;FA;;;OW)");
       const after = inspect(directory, environment);
-      const second =
-        api === "koffi"
-          ? apply(directory, true)
-          : inspect(directory, environment, "D:P(A;OICI;FA;;;OW)");
+      const second = isKoffi
+        ? apply(directory, true, information)
+        : inspect(directory, environment, "D:P(A;OICI;FA;;;OW)");
       const file = path.join(directory, "synthetic.txt");
       let descriptor;
       let opened, closed, fileBefore;
@@ -159,12 +163,14 @@ try {
         descriptor = fs.openSync(file, "wx", 0o600);
         fs.writeSync(descriptor, "synthetic");
         fileBefore = inspect(file, environment);
-        opened =
-          api === "koffi" ? apply(file, false) : inspect(file, environment, "D:P(A;;FA;;;OW)");
+        opened = isKoffi
+          ? apply(file, false, information)
+          : inspect(file, environment, "D:P(A;;FA;;;OW)");
         fs.closeSync(descriptor);
         descriptor = undefined;
-        closed =
-          api === "koffi" ? apply(file, false) : inspect(file, environment, "D:P(A;;FA;;;OW)");
+        closed = isKoffi
+          ? apply(file, false, information)
+          : inspect(file, environment, "D:P(A;;FA;;;OW)");
       } catch (error) {
         opened = { fsError: error.code };
       } finally {

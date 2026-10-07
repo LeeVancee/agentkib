@@ -2,25 +2,25 @@
 
 ## 记录状态与源码
 
-本文件是本轮验收的独立记录。最终整合检查仍在进行，标记为 **待完成** 的项目不能计入通过；后续结果追加在此文件，不覆盖旧 QA 的失败或版本边界。
+本文件是本轮验收的独立记录。自动化与打包结果按固定提交记录；原生或窗口流程未执行的部分单列，不计入通过。后续结果追加在此文件，不覆盖旧 QA 的失败或版本边界。
 
-- 源码基线及当前 HEAD：`bdd05c9def7b6cad325d166e33f4014e723bd724`。
+- 源码基线：`bdd05c9def7b6cad325d166e33f4014e723bd724`。首轮生产实现固定于 `5a7a5ba8d4b3368b79b618b5a28b9189f4710d4b`；测试修复 `6147e87d4`，Windows 诊断 `1bcd04467` / `c83684b67` 不改生产实现。后续提交与验证见收尾记录。
 - 分支：`codex/typescript-stability-20261007`。
 - 工作树：`/Users/kouzen/.codex/worktrees/typescript-stability-20261007/agentkib`。
-- 本轮开始时新工作树干净；当前为 **dirty**，包含后端执行器、MCP/交接身份校验、测试与 CI 的未提交变更。最终文件清单、diff 指纹及候选包身份：**待完成**。
+- 本轮开始时新工作树干净；本机整合检查在提交前 dirty 源码上运行，随后固定为 `5a7a5ba8d`。原始 dirty patch、status、构建哈希已封存到本轮证据目录；不能把该次检查误记为基线通过。
 - 本地命令使用独立 Node `22.23.3`、pnpm `10.8.1`。Node 路径为 `/Users/kouzen/.codex/tmp/node-v22.23.3-darwin-arm64/bin`，通过命令前置 `PATH` 选择；未替换用户的 Agent 安装或凭据。
-- AgentKib 正在整理固定提交与 PR；最终提交身份和后续 CI 结果另行追加。独立 backend 已提交、推送并创建 PR，见下文。没有覆盖已安装的 AgentKib、新增生产依赖或数据库结构。
+- AgentKib 已创建 [PR #100](https://github.com/starroyhq/agentkib/pull/100)。独立 backend 已提交、推送并创建 PR，见下文。没有合并、部署、发布、覆盖已安装的 AgentKib、新增生产依赖或数据库结构。
 
 ## 证据分层
 
 | 证据层级                            | 本轮状态                 | 能证明的范围                                                                             |
 | ----------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------- |
 | 历史 Rust / 原生 Agent QA           | 保留原结论，不重新计通过 | 仅适用于各记录注明的源码、二进制、Agent 版本与方向                                       |
-| 当前 TypeScript 定向自动化          | 以下已运行项目通过       | 当前 dirty 源码的可观察行为、真实 Store/Hub、后台进程与 Worker 隔离                      |
+| 当前 TypeScript 定向自动化          | 以下已运行项目通过       | 本轮生产实现的可观察行为、真实 Store/Hub、后台进程与 Worker 隔离                         |
 | Node 22 构建产物原生绑定            | 通过                     | 当前 `dist-electron` 三个后端入口存在，Worker 能直接加载 staged Koffi 并调用本机原生 API |
 | Electron utilityProcess 与 Worker   | 主代理本机烟测通过       | Electron `44.0.0` / 内置 Node `24.18.1` 下的两个 Worker 通道；不等同安装包验收           |
-| 新 TypeScript 候选安装目录 / 安装包 | 待完成                   | 尚不能据此声称打包、重启、升级或原生 Agent 续接已通过                                    |
-| Windows / Linux 当前变更的 CI       | 已增加检查，尚未远端执行 | macOS 结果不外推 Windows/Linux；原生界面与手机仍分别验收                                 |
+| 新 TypeScript 候选安装目录 / 安装包 | 分层结果见收尾记录       | 七平台打包通过；候选内部后端/Worker另列，完整GUI、升级及原生续接未通过                   |
+| Windows / Linux 当前变更的 CI       | 远端已执行，见收尾记录   | macOS 结果不外推 Windows/Linux；原生界面与手机仍分别验收                                 |
 
 例如 [9 月 30 日主线验收](main-acceptance-2026-09-30.md)、[历史互通方向矩阵](interop-matrix-2026-09-28.md)、[Codex 真实回复](codex-deepseek-completion-2026-10-01.md) 均保留原始意义。旧记录中的 Rust Runtime 检查、历史工具数量或真实回复不能替代本轮 TypeScript 执行器、恢复流程及候选包的新验收。
 
@@ -50,11 +50,11 @@
 
 ## 已实际执行的命令
 
-以下命令均在本轮工作树使用 Node 22.23.3 运行；Electron 烟测由脚本启动锁文件固定的 Electron，其内置 Node 版本单独记录。最终原始命令日志与本地 bundle SHA256 已封存于 `/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence`（目录权限 0700）；候选安装包和远端 CI 身份仍待追加。
+以下命令均在本轮工作树使用 Node 22.23.3 运行；Electron 烟测由脚本启动锁文件固定的 Electron，其内置 Node 版本单独记录。最终原始命令日志与本地 bundle SHA256 已封存于 `/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence`（目录权限 0700）；候选安装包和远端 CI 身份见后文固定提交记录。
 
 | 命令                                                                                                                                                                    | 结果与边界                                                                                                                                                                                                                                          |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `git rev-parse HEAD` / `git status --porcelain=v1`                                                                                                                      | HEAD 为上述 `bdd05c9de…`；dirty，不描述为已提交 revision                                                                                                                                                                                            |
+| `git rev-parse HEAD` / `git status --porcelain=v1`                                                                                                                      | 本机整合测试时基线为 `bdd05c9de…` 且 dirty；生产实现后固定为 `5a7a5ba8d`                                                                                                                                                                            |
 | `node --version` / `pnpm --version`                                                                                                                                     | `v22.23.3` / `10.8.1`                                                                                                                                                                                                                               |
 | `pnpm --filter @agentkib/desktop exec vitest run test/mcp-agent-home.test.ts test/mcp-continuation.test.ts test/mcp-connection.test.ts test/mcp-connection-hub.test.ts` | **4 文件、166 项通过**；其中新增 21 项，原有 145 项继续通过                                                                                                                                                                                         |
 | `pnpm test:backend:stability`                                                                                                                                           | 初版 **4 文件、35 项通过**；纳入 handoff、原生导入和 Cursor 恢复后，最终 **7 文件、52 项通过**，staged Koffi smoke 同时通过。原始运行日志 `/tmp/agentkib-stability-ci-local.log` 已纳入上述证据目录；与其他测试命令有重叠，不能相加作为独立覆盖数量 |
@@ -81,7 +81,7 @@
 
 MCP 独立审查发现并修复：无关 profile 阻断、项目内 Home 白名单绕过、目录链接导致旧路径快照被重新解析。目录链接的独立最小复现修复前失败、修复后 **1/1 通过**；上述正式回归同时覆盖。Runtime 独立审查的三项问题亦已修复并复核，当前未发现剩余确定缺陷；原生候选包及 Windows/Linux 验收仍须单列。
 
-根 lint 已加入 `packages/backend/src`；主 CI 新增 hosted Web 构建。Ubuntu ARM64、Fedora x64、Windows x64 / ARM64 的现有 job 名保持不变，新增后端构建、staged Koffi Worker 烟测与精确回归列表。handoff-executor、native-import-recovery 和 cursor-native-recovery 三份新回归已在文件落盘后纳入精确列表。CI 代码已落地，但本记录尚无本轮远端运行成功证据。
+根 lint 已加入 `packages/backend/src`；主 CI 新增 hosted Web 构建。Ubuntu ARM64、Fedora x64、Windows x64 / ARM64 的现有 job 名保持不变，新增后端构建、staged Koffi Worker 烟测与精确回归列表。handoff-executor、native-import-recovery 和 cursor-native-recovery 三份新回归已在文件落盘后纳入精确列表。首轮远端 Linux 两任务通过；Windows x64 经路径 fixture 与 DLL 清理修正后通过，ARM64 暴露既有私有身份 ACL 的 FFI 参数问题，诊断与后续修复单列。
 
 现有 `release-desktop.yml` 的空 `release_tag` artifact-only 构建、Linux 包检查与 Windows 安装器 smoke 保持原样；本轮没有放宽签名、发布或安装包验收门槛。
 
@@ -108,10 +108,80 @@ DB 回归使用 loopback 临时 PostgreSQL 17 容器（结束已删除），覆�
 
 因此可说明注册页面为已部署的开放注册版本、公开 API 可达；不称账号生产全验收。成功生产注册、安装版 Electron/系统浏览器/钥匙串闭环、真实手机公网配对及控制、生产故障与备份恢复仍未验收。完整 backend 命令与证据见该提交的 `docs/acceptance/2026-10-07-open-registration.md`。
 
-仍待逐项落证：
+剩余原生门槛与证据边界见下文；固定提交、原始 dirty 指纹、候选包身份和当前 Windows/Linux CI 已分别保留。不将真实手机、真实 Agent 新单轮回复、完整 GUI 或真实模型驱动的 Skill/MCP 流程计作通过；后文原生离线检查使用本机模型模拟边界，分开报告。本轮不签名、公证、发布或部署。
 
-- 最终固定提交及 dirty 指纹、候选包哈希；本地 bundle SHA256 和完整命令日志已封存。
-- 收尾后 hosted 构建的完整结果；七文件稳定性脚本、桌面/Web 全量、typecheck、format、lint 与 build 已有本轮通过证据。
-- 当前源码的候选安装目录、隔离启动与恢复，以及实际目标 Agent 加载 MCP/Skills 的原生验收。
-- 本轮 Windows/Linux CI 和 artifact-only 包 smoke；真实 Windows/Linux 客户端行为不能由 macOS 测试推断。
-- 真实手机、真实 Agent 新单轮回复、签名/发布及新生产部署未在本轮定向测试中执行，不计通过。
+## 固定提交打包与原生边界补充
+
+- artifact-only [运行 37571379230](https://github.com/starroyhq/agentkib/actions/runs/37571379230) 固定 `5a7a5ba8d`，`release_tag` 为空：校验、macOS arm64/x64、Windows x64/arm64-preview、Ubuntu x64/arm64-preview、Fedora RPM 全部成功；Publish GitHub Release 跳过。未创建发布。
+- `6147e87d4` 修正 Windows fixture 的路径快照（native realpath）及子进程结束后再删除加载中的 Koffi DLL；生产路径身份检查保持不变。`c83684b67` 的 Linux ARM64/Fedora 已通过，Windows 诊断不代替测试。
+- Windows ARM64 的原 `SetFileSecurityW` 通过 Koffi 调用返回错误 5；相同机器、SDDL、管理员 token、原 Home/隔离 Home 的独立 C# P/Invoke 全部成功。即时错误与 LocalFree 后错误均为 5。x64 两种实现均成功。原日志保留在 `agentkib-windows-acl-{x64,arm64}-1bcd044.*`，不能归因为测试 Home 或跳过 ACL。
+- 当前 Claude `2.1.286` 的原生 `mcp list` / `mcp get agentkib`，在隔离 HOME/配置及本轮 Backend 实际 plan/apply 生成的项目配置上均返回 **Connected**。网络 sandbox 只允许该临时 Hub 的 loopback 端口，真实模型请求为 0。命令、CLI SHA256、输出和隔离规则保存于证据目录 `native-claude-mcp/evidence-manifest.json`。此项证明原生发现和握手，不证明真实模型执行了工具。
+- **真实模型驱动**的 MCP/Skills 用例未执行：当前代理链重试配置不满足单次要求，已有 live 验收器也拒绝 tools 且 safe-mode 禁 MCP/Skills。后者是验收器合同缺口，不是环境缺少功能。后续已独立完成真实 CLI/Hub、Skills 加载的本机 mock 边界检查，详见下文；这些检查不接真实 provider，不能替代完整代理链或真实模型结论。
+- 源码 Electron 完整窗口首次启动在 45 秒内未到 `home-data-ready`；栈为 `SecItemAdd_osx → KeychainCore::ItemImpl::doAdd → StorageManager::makeLoginAuthUI → AuthorizationCopyRights`。栈显示停在系统钥匙串授权路径，推断正在等待授权；未验证完成授权后的启动，也未绕过钥匙串或报告首页通过。无模型调用；系统中原安装版进程保持运行。
+- 隔离 schema-15 合成数据库经当前后端两次启动，工作区与 memory 保留、源快照不变；只证明合成旧结构兼容，不冒充真实个人数据副本或 GUI 验收。证据 `source-backend-legacy.json`。
+
+### Windows ARM64 定位与修复
+
+`c83684b67` 的同机对照确认：负数 `-2147483644` 经 Koffi 的 8 次调用全部失败（错误 5），正整数 `2147483652` 的 8 次调用全部成功；独立 P/Invoke 也全部成功。原 Home 与隔离 Home 一致，目录/打开中的文件/已关闭文件一致。成功后的独立 .NET ACL 读取确认仅 OWNER_RIGHTS 的 FullControl，DACL protected，未增加用户或组。
+
+生产修复固定在 `80f6a2209f2f1146c6bb08957122a69d4844424c`：保留同一 `0x80000004` 位模式，以正整数传入 SECURITY_INFORMATION；失败错误在 LocalFree 前读取。SDDL、路径限制、权限范围及失败拒绝不变。新增实际 identity 创建/回读/重载、目录/文件权限、缺失路径拒绝与错误码污染回归，已纳入永久后端 CI；临时诊断 step 已移除，复现 probe 保留。
+
+- 独立子代理审查通过；本机定向 8 文件 **54 通过、1 项 Windows 专属跳过**，backend build、全仓 typecheck、局部 format/diff 检查通过。
+- 此提交新的 [artifact-only 运行 37573042394](https://github.com/starroyhq/agentkib/actions/runs/37573042394) 未填写发布 tag；产品修复后的 Windows 原生 CI 已通过，详见下文；artifact-only 最终结果另列，诊断 probe 的成功不代替产品 CI。
+
+### 首轮候选与原生配置发现
+
+`5a7a5ba8d` 的 macOS arm64 artifact ID `11461016472`，名称 `agentkib-desktop-macos-arm64`。保留仓库已有版本 `0.15.1`，本轮未调整版本。下载后全部四份 SHA256 文件核对成功：
+
+- ZIP `44e543a29d7aac77ac58323473f650dd3c474e1e4939fc934105719452488ce5`，139,316,671 bytes。
+- DMG `6f06eb208fbd8564ac5a5ff6a2d1d2063e4dd22b9c0753b5e83cd107068418e9`，144,827,383 bytes。
+- 隔离解压位置：`/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence/candidate-5a7a5ba8d/AgentKib.app`；不是 `/Applications`。
+- `codesign --verify --deep --strict` 返回 `code has no resources but signature indicates they must be present`；display 为 Electron linker-signed adhoc、无 TeamIdentifier/Sealed Resources。artifact-only 未注入正式签名和公证配置；本轮未重签或将其计作签名通过。
+
+Codex `0.155.1` 在隔离 CODEX_HOME/项目中执行 `mcp list --json` 与 `mcp get agentkib --json`：原生未信任项目时忽略项目配置；只在临时 Home 信任该 fixture 后，精确发现本轮 Backend 生成的 streamable_http URL 且 enabled=true。sandbox 拒绝全部网络，模型请求 0；因此仅证明原生配置发现，**不是 MCP 连接或工具调用通过**。证据 `native-codex-mcp/audit-result.json`；不能由此提升当前交接门限。
+
+### 修复后 CI、候选和旧库验证
+
+生产提交 `80f6a2209` 的 [主 CI](https://github.com/starroyhq/agentkib/actions/runs/37573037730)、[Linux](https://github.com/starroyhq/agentkib/actions/runs/37573037635)、[Windows](https://github.com/starroyhq/agentkib/actions/runs/37573037622) 共五项检查通过：
+
+- 主 CI：桌面 **165 文件、1987 通过、11 平台跳过**（总 1998，不能把总数写为全部通过）；Web **34 文件、610 通过**；format/typecheck/build/hosted build 通过，lint **78 warnings / 0 errors**。
+- Windows x64 与 ARM64 各实际执行 staged Koffi Worker smoke、private identity 原生 ACL **3/3**、八文件后端稳定性 **49 通过、6 平台跳过**。独立 .NET 读取核对 protected OWNER_RIGHTS ACL；并非 mock 绕过修复。
+- Ubuntu ARM64、Fedora x64 均通过后端构建、native smoke 与相关回归。对应原始 CI 日志保存到本轮证据目录，以 `80f6a2209` 命名。
+
+**实际已安装旧库的只读副本：**通过 SQLite read-only + query_only online backup 取得独立快照，原快照为 0400；当前 `BackendStore` 只在单独工作副本运行，没有启动扫描、MCP、Electron 或 Agent CLI。子进程使用隔离 HOME，macOS sandbox 禁网、拒绝副本工作目录外写入，并先以真实越界写负例验证拒绝。
+
+旧库 **34 张原表、44 个工作区**经当前 Store 两次读取通过，原快照哈希不变。原表的所有字段和行均按规范化内容哈希核对；仅在旧 `codex_session_classification_revision != 3` 时，允许既有迁移明确执行的逐行 `agent=codex` 的 `last_success_at→NULL`。metadata 不是按前缀放行，而是根据原生 Codex 行精确推导 pending/stale 的 key/value，以及 revision=3；1337 个变化均符合预期。新增的两张 collection 缓存表行数均为 0。已迁移副本另一次重开亦通过（36 表、44 工作区），不会强制再次置空缓存。
+
+结果与 Store 源码/构建 hash、revision/dirty 记录保存在 `installed-database-read-final/report.json`；真实数据库备份仅留权限受限的本地证据目录，不提交仓库。本项只验收 Store 的读取和迁移，不代替完整窗口或真实路径扫描。
+
+**首轮实际 CI 候选 `5a7a5ba8d`：**通过 `qa/probes/smoke-typescript-source.mjs --app ... --mode backend` 两次恢复合成 schema-15 的工作区和 memory，原快照未变，证据 `candidate-5a-backend.json`。完整 GUI 第一次在 45 秒启动期限内超时，保留原结果；另一次专门诊断在启动后 10 秒对该候选精确 PID 采样，确认 `SecItemAdd → StorageManager::makeLoginAuthUI → AuthorizationCopyRights`，证据 `candidate-5a-gui-diagnostic.stack.txt`。候选没有因上述未签名状态立即退出，而是停在系统钥匙串授权路径，推断正在等待授权；尚未验证授权完成后的行为。未绕过安全存储，完整首页、GUI 控制和重启流程仍不计通过。
+
+验收脚本也经过独立审查：修复超时后未等子进程退出就删除临时目录的问题，以及非法 JSON/null frame 绕过清理、独立进程组子孙残留。忽略 TERM 的父/同组子两例，加非法 JSON、独立进程组子孙、null frame 三例均独立复验通过；失败有记录，确认所有自有进程退出后清理。原安装版及其他任务进程不动。
+
+`80f6a2209` 的新版 [artifact-only 运行 37573042394](https://github.com/starroyhq/agentkib/actions/runs/37573042394) 最终也全部成功：前置校验、七个平台构建及现有安装包 smoke 完成，Publish GitHub Release 明确跳过。macOS arm64 artifact ID `11461503650`、大小 281,707,793 bytes，GitHub artifact archive digest 为 `sha256:3e194dbe917768609e3ac07dd5a86df20bf449d0f1cefabf1c065091d91ad994`。此 archive digest 不与内部 ZIP/DMG 的 SHA256 混淆。
+
+### 原生 CLI 的离线 MCP 与 Skills 检查
+
+这些用例使用真正的 Claude `2.1.286` 和本轮 TypeScript Backend，模型网络边界由本机 HTTP 服务模拟。隔离 HOME/CLAUDE_CONFIG_DIR、dummy key、系统网络 sandbox 只允许明确的 loopback 端口；没有读取、复制或更改真实 provider 凭据/配置。**真实 provider/模型请求均为 0**。
+
+1. MCP：实际 Backend RPC 注册工作区、生成并应用 `.mcp.json`、propose/review 一条 approved 合成记忆。Claude 原生加载唯一允许的 `mcp__agentkib__memory_search`；本机 SSE 模拟端指示一次只读工具调用，后续原生请求必须包含真实 Hub 返回的随机标记与记忆 ID。观察到 **1 条 CLI tool_use 及匹配 tool_result、2 次本地模拟 messages 请求**，CLI exit 0（报告 num_turns=2，为工具往返），源 manifest、MCP 配置、approved memory 均不变，CLI/Backend 退出确认。证据 `claude-mcp-offline-01/result.json`，复现入口 `qa/probes/claude-mcp-offline.py`。CLI 输出的 usage/cost 来自 stub，不记真实用量。工具次数按 CLI 原生记录核对，未独立抓包统计 Hub 传输层重试；此用例只覆盖 memory_search，不外推归档工具。
+2. Skills：实际 Backend inventory/import/deploy 后，目标 `SKILL.md` 与来源字节相等。Claude 第一次本地请求的原生 system-reminder 包含唯一 Skill 名与随机描述；Backend undeploy 后目标消失，重新启动 CLI 的新请求中二者消失。部署后/撤销后 **各 1 次本地 messages 请求**，均返回约定的合成 500 并 exit 1（预期终点，不是模型成功），无工具执行或额外 HTTP 请求。来源和本地导入库字节不变，两个 CLI 与 Backend 均退出。证据 `native-claude-skills-offline-user-source/evidence-manifest.json`。
+3. Skills 首个验收器配置曾使用 `--setting-sources ''`，主动禁用了 user Skill loader，导致名称未出现；该失败原样保留在 `native-claude-skills-offline/`。静态核对当前 CLI 后，使用只读取隔离 user settings 的独立新 case 验证通过，不覆盖失败，也没有重试任何真实模型请求。
+
+可据此说明当前原生 CLI 已完成 MCP 工具的离线管道和 Skills 部署发现/撤销重载；**Skill 实际执行、真实模型回复、完整桌面/Web 控制及原生互通仍不计通过**。
+
+### 最终 macOS 候选内部验收
+
+最终固定 `80f6a2209` 的完整 DMG 条目已校验外层 entry CRC/长度及 CI 内附 SHA256：`64e216fc4f8f011cff4637d7895420b62381abd37ef9dae80aa70e7bda3934ab`，144,827,466 bytes。以只读方式挂载且所有磁盘 CRC 通过，复制到独立目录后卸载；候选路径为 `/Users/kouzen/.codex/tmp/typescript-stability-20261007-evidence/candidate-80f6a2209/AgentKib.app`。未替换安装版、重签或改 fuse。
+
+- 可执行文件 SHA256：`7c975b5464a642611b2ca8ca2891e8e44308e5de83370fd623d2b555d14a25ad`。
+- `app.asar` SHA256：`62dd96562010a5ccc4eab06d65811ba26c6333949cc0300beb1166720f7a7e71`。
+- `python3 qa/probes/smoke-candidate-workers.py <candidate.app> <candidate-80f-workers.json>` **通过**：使用候选自身的 Electron `44.0.0` / Node `24.18.1`，直接加载 asar 内生产 backend，实际 inventory/preview/import 经持久 Skills Worker 完成；Handoff Worker 真实文件校验、node:sqlite、包内 Koffi Worker 原生 `getpid` 均通过，退出清理确认。
+- Node 22 执行 `qa/probes/smoke-typescript-source.mjs --app <candidate.app> --mode backend --output <candidate-80f-backend.json>` **通过**：合成 schema-15 工作区与 memory 两次隔离重开后保留，源快照不变。
+- 上述内部检查没有启动完整 UI、发模型请求或绕过钥匙串；`ELECTRON_RUN_AS_NODE` 仅用于明确的内部后端检查，不算 GUI 通过。完整 GUI 保留首轮实际候选的授权路径超时记录，新候选未反复尝试 GUI。
+
+最终原生/设备剩余项：系统钥匙串授权完成后的完整首页、桌面/Web Claude/Codex 控制与原生双向交接、Cursor 隔离 profile 原生导入/恢复、真实模型回复和真实手机仍未验收。当前本机 Codex `0.155.1` 不满足 TS 目标导入的精确 `0.159.2` 门限，未改门限或升级用户安装。当前 TS 控制链的六文件 119 项自动化通过，不替代这些原生结果。CLI/Hub 和 Skills 的上述离线检查是独立事实，不提升其他方向。
+
+离线 MCP 新验收脚本亦经独立复核。首例只直接确认 CLI/Backend 父进程退出；后续 review 发现原 stop_owned 未覆盖 setsid 后代，已改为持续记录自有 PID 与启动身份、确认整个已记录进程树退出，无法确认则失败并保留证据。三项纯合成回归及独立原始负例复测通过，无关 sentinel 进程保持运行。未重发 Claude 或模型请求，也不将新清理逻辑回填为首个原生例已执行的证据。
+
+交付为两份开放 PR：AgentKib #100、私有 backend #1；生产实现固定在上述提交，收尾提交仅新增 QA helper 和记录。两仓库均未合并、部署或发布，PR #97/#99 与原安装版保留不动。

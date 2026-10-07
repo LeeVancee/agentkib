@@ -3,7 +3,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -15,6 +14,7 @@ import { agentMcpHome, hermesTargetHome } from "../../../packages/backend/src/ag
 import { applyRequest } from "../../../packages/backend/src/changes";
 import { mcpConnectionInfo, planMcpConnection } from "../../../packages/backend/src/mcp-connection";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-home-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-home-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const project = path.join(root, "project"),
     home = path.join(root, "home"),

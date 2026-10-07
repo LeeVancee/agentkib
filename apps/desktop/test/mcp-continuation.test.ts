@@ -5,7 +5,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -34,6 +33,7 @@ import { prepareHandoffLaunch } from "../../../packages/backend/src/session-hand
 import { listNativeImports } from "../../../packages/backend/src/session-native-imports";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { requireUniqueContinuationWorkspace } from "../../../packages/backend/src/workspace-identity";
 
 const requireBackend = createRequire(
@@ -50,7 +50,7 @@ afterEach(async () => {
 });
 
 async function fixture(target: "codex" | "claude-code" = "codex", legacy = "manifest-workspace") {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-continuation-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-continuation-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const project = path.join(root, "project"),
     home = path.join(root, "home"),

@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection, type Socket } from "node:net";
 import os from "node:os";
@@ -15,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import {
   CursorBridge,
   type CursorBridgeContext,
@@ -38,7 +31,7 @@ const sockets: Socket[] = [];
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const timestamp = "2026-10-07T00:00:00.000Z";
 function root() {
-  const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "cursor-recovery-")));
+  const directory = canonicalize(mkdtempSync(path.join(os.tmpdir(), "cursor-recovery-")));
   roots.push(directory);
   return directory;
 }

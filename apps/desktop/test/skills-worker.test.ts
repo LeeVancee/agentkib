@@ -16,7 +16,7 @@ import { BackendStore } from "../../../packages/backend/src/store";
 
 const homes: string[] = [];
 const workers: SkillsWorker[] = [];
-const children: ChildProcessWithoutNullStreams[] = [];
+const children: Array<{ child: ChildProcessWithoutNullStreams; closed: Promise<void> }> = [];
 const built = path.resolve("dist-electron/backend-skills.cjs");
 const environment = (home: string) => ({
   HOME: home,
@@ -80,7 +80,13 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   await Promise.all(workers.splice(0).map((worker) => worker.close()));
-  for (const child of children.splice(0)) child.kill();
+  // Windows keeps native DLLs locked until the owning process has actually closed.
+  await Promise.all(
+    children.splice(0).map(async ({ child, closed }) => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+    }),
+  );
   await Promise.all(
     homes.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })),
   );
@@ -295,7 +301,10 @@ async function backend(directory: string, workerPatch: string) {
     },
     stdio: "pipe",
   });
-  children.push(child);
+  children.push({
+    child,
+    closed: new Promise<void>((resolve) => child.once("close", () => resolve())),
+  });
   let sequence = 0;
   const pending = new Map<number, { resolve(value: Frame): void; reject(error: Error): void }>();
   const counts = new Map<number, number>();

@@ -1,18 +1,11 @@
-import {
-  mkdtempSync,
-  realpathSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  rmSync,
-  unlinkSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Commands } from "../../../packages/backend/src/commands";
 import * as resolution from "../../../packages/backend/src/command-resolution";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { fingerprintSessionDocument } from "../../../packages/backend/src/session-handoff";
 import type { SessionDocument } from "../../../packages/backend/src/session-model";
 import {
@@ -30,7 +23,7 @@ afterEach(() => {
   for (const action of cleanup.splice(0).reverse()) action();
 });
 async function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "native-recovery-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "native-recovery-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const project = path.join(root, "project"),
     data = path.join(root, "data"),

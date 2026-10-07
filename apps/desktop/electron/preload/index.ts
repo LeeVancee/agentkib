@@ -2,6 +2,7 @@ import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/accoun
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopApi, DesktopRuntimeStatus, DesktopConversationApi } from "../api";
 import type {
+  AgentKind,
   AppMenuCommandRequest,
   AppNavigationRequest,
   AppUpdateProgress,
@@ -129,6 +130,12 @@ const desktopApi = Object.freeze({
   }),
   mcp: Object.freeze({
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
+    connectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:connection-info", workspaceId, targetAgent),
+    planConnection: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:plan-connection", workspaceId, targetAgent),
+    verifyConnection: (workspaceId: string, targetAgent: AgentKind) =>
+      ipcRenderer.invoke("agentkib:mcp:verify-connection", workspaceId, targetAgent),
     updateNetwork: (settings: unknown) =>
       ipcRenderer.invoke("agentkib:mcp:update-network", settings),
     listServers: (project?: string) => ipcRenderer.invoke("agentkib:mcp:list-servers", project),

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DesktopConversationApi } from "../api";
+import type { DesktopApi, DesktopConversationApi } from "../api";
 
 const electron = vi.hoisted(() => ({
   exposeInMainWorld: vi.fn(),
-  invoke: vi.fn(async (..._args: unknown[]) => undefined),
+  invoke: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
   on: vi.fn(),
   removeListener: vi.fn(),
 }));
@@ -19,11 +19,28 @@ await import("./index");
 const conversation = electron.exposeInMainWorld.mock.calls.find(
   ([name]) => name === "desktopConversation",
 )![1] as DesktopConversationApi;
+const desktop = electron.exposeInMainWorld.mock.calls.find(
+  ([name]) => name === "agentkibDesktop",
+)![1] as DesktopApi;
 
 beforeEach(() => {
   electron.invoke.mockReset().mockResolvedValue(undefined);
   electron.on.mockClear();
   electron.removeListener.mockClear();
+});
+
+describe("MCP connection preload", () => {
+  it.each([
+    ["connectionInfo", "agentkib:mcp:connection-info"],
+    ["planConnection", "agentkib:mcp:plan-connection"],
+    ["verifyConnection", "agentkib:mcp:verify-connection"],
+  ] as const)("forwards %s with the selected workspace and Agent", async (method, channel) => {
+    const result = { marker: method };
+    electron.invoke.mockResolvedValueOnce(result);
+
+    expect(await desktop.mcp[method]("workspace", "cursor")).toBe(result);
+    expect(electron.invoke).toHaveBeenCalledExactlyOnceWith(channel, "workspace", "cursor");
+  });
 });
 
 describe("desktop conversation preload", () => {

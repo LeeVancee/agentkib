@@ -187,6 +187,9 @@ export const TYPESCRIPT_AGENT_TOOL_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_MCP_METHODS = new Set<string>([
+  RUNTIME_METHODS.mcpConnectionInfo,
+  RUNTIME_METHODS.planMcpConnection,
+  RUNTIME_METHODS.verifyMcpConnection,
   RUNTIME_METHODS.mcpHubStatus,
   RUNTIME_METHODS.updateMcpNetwork,
   RUNTIME_METHODS.startMcpOAuth,

@@ -26,6 +26,7 @@ import { McpBuiltins } from "./mcp-builtin";
 import { McpHub, type McpNetworkSettings } from "./mcp-hub";
 import { McpOAuth } from "./mcp-oauth";
 import { planSessionMcpConnection } from "./mcp-continuation";
+import { mcpConnectionInfo, planMcpConnection, verifyMcpConnection } from "./mcp-connection";
 import { scanNativeMcp } from "./mcp-native-scan";
 import { planNativeMcpMigration } from "./mcp-migration-plan";
 import { webDiff } from "./web-diff";
@@ -1126,6 +1127,21 @@ export class TypeScriptBackend {
         );
         return this.#mcpOAuth!.start(request.serverId, request.project ?? undefined);
       }
+      case RUNTIME_METHODS.mcpConnectionInfo:
+        return mcpConnectionInfo(params, this.#store!, this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.planMcpConnection:
+        return planMcpConnection(params, this.#store!, this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
+      case RUNTIME_METHODS.verifyMcpConnection:
+        return verifyMcpConnection(params, this.#store!, () => this.#mcpHub!.status(), {
+          ...process.env,
+          ...this.environment,
+        });
       case RUNTIME_METHODS.getMcpServer: {
         const request = parameters(
           z.object({ serverId: z.string(), project: z.string().nullable().optional() }),

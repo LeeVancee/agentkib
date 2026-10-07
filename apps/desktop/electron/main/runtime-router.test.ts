@@ -71,6 +71,23 @@ function gate() {
 }
 
 describe("RuntimeRouter migration ownership and recovery", () => {
+  it.each([
+    RUNTIME_METHODS.mcpConnectionInfo,
+    RUNTIME_METHODS.planMcpConnection,
+    RUNTIME_METHODS.verifyMcpConnection,
+  ])("routes %s directly to the backend which owns the current Hub status", async (method) => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    const received = vi.fn((_method: string, _params: unknown) => ({ marker: method }));
+    ts.handler = (requested, params) => received(requested, params);
+    const request = { workspaceId: "workspace", targetAgent: "cursor" };
+
+    expect(await router.request(method, request)).toEqual({ marker: method });
+    expect(received).toHaveBeenCalledExactlyOnceWith(method, request);
+    await router.stop();
+  });
+
   it("routes Skill version and batch operations to the TypeScript backend once", async () => {
     const ts = new Host();
     const router = new RuntimeRouter(ts);
@@ -88,6 +105,7 @@ describe("RuntimeRouter migration ownership and recovery", () => {
     }
     await router.stop();
   });
+
   it("waits for shared database initialization before serving migrated requests", async () => {
     const ts = new Host();
     const initialized = gate();

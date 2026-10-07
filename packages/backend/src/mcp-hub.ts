@@ -21,7 +21,12 @@ export interface McpNetworkSettings {
   lan_risk_accepted: boolean;
 }
 
-type Scope = { workspaceId: string; agent: string; remote: boolean };
+type Scope = {
+  workspaceId: string;
+  registeredWorkspaceId: string;
+  agent: string;
+  remote: boolean;
+};
 type HubSession = { transport: StreamableHTTPServerTransport; server: Server; scope: Scope };
 
 export class McpHub {
@@ -110,7 +115,9 @@ export class McpHub {
       bind_address: bindHost(settings),
       port: settings.port,
       lan_enabled: settings.lan_enabled,
-      accessible_addresses: settings.lan_enabled ? accessibleAddresses(settings.port) : [],
+      accessible_addresses: settings.lan_enabled
+        ? accessibleAddresses(settings.port)
+        : [`127.0.0.1:${settings.port}`],
       runtime_count: statuses.filter((status) => status.state === "running").length,
       error_count: statuses.filter((status) => status.state === "error").length,
       ...(this.#lastError ? { last_error: this.#lastError } : {}),
@@ -136,6 +143,31 @@ export class McpHub {
       });
     });
     return server;
+  }
+
+  #resolveWorkspace(id: string): { id: string; project: string; archiveWorkspaceId: string } {
+    const rows = this.store.sql.rows(
+      `SELECT id, canonical_path, manifest_workspace_id FROM workspaces
+       WHERE id = ? OR manifest_workspace_id = ?
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END LIMIT 2`,
+      id,
+      id,
+      id,
+    );
+    const workspace = rows[0];
+    if (!workspace) throw new Error("Workspace does not exist");
+    // Registered IDs are unique; legacy manifest aliases may be shared by worktrees.
+    if (workspace.id !== id && rows.length > 1)
+      throw new Error("Ambiguous MCP workspace alias; reconnect using its registered ID");
+    return {
+      id: String(workspace.id),
+      project: String(workspace.canonical_path),
+      // Continuation archives retain their manifest identity when clients use registered routes.
+      archiveWorkspaceId:
+        typeof workspace.manifest_workspace_id === "string" && workspace.manifest_workspace_id
+          ? workspace.manifest_workspace_id
+          : String(workspace.id),
+    };
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -172,13 +204,19 @@ export class McpHub {
       return;
     }
     let scope: Scope;
+    let project: string;
+    let archiveWorkspaceId: string;
     try {
+      const workspaceId = decodeURIComponent(match[1]!);
+      const workspace = this.#resolveWorkspace(workspaceId);
       scope = {
-        workspaceId: decodeURIComponent(match[1]!),
+        workspaceId,
+        registeredWorkspaceId: workspace.id,
         agent: parseAgent(decodeURIComponent(match[2]!)),
         remote: !isLoopback(request.socket.remoteAddress),
       };
-      this.store.workspacePath(scope.workspaceId);
+      project = workspace.project;
+      archiveWorkspaceId = workspace.archiveWorkspaceId;
     } catch {
       response.writeHead(400).end();
       return;
@@ -210,6 +248,7 @@ export class McpHub {
       if (
         !existing ||
         existing.scope.workspaceId !== scope.workspaceId ||
+        existing.scope.registeredWorkspaceId !== scope.registeredWorkspaceId ||
         existing.scope.agent !== scope.agent ||
         existing.scope.remote !== scope.remote
       ) {
@@ -221,13 +260,6 @@ export class McpHub {
     }
     if (request.method !== "POST") {
       response.writeHead(400).end();
-      return;
-    }
-    let project: string;
-    try {
-      project = this.store.workspacePath(scope.workspaceId);
-    } catch {
-      response.writeHead(404).end();
       return;
     }
     const [
@@ -258,6 +290,9 @@ export class McpHub {
         sessionIdCreated = id;
         this.#sessions.set(id, { transport, server: mcpServer, scope });
       },
+      onsessionclosed: (id) => {
+        this.#sessions.delete(id);
+      },
     });
     const mcpServer = new Server(
       { name: "agentkib", version: "0.13.0" },
@@ -277,7 +312,7 @@ export class McpHub {
                   "Built-in AgentKib tools are not exposed over unauthenticated LAN mode",
                 );
               })()
-            : await this.builtins.call(project, scope.workspaceId, scope.agent, name, args)
+            : await this.builtins.call(project, archiveWorkspaceId, scope.agent, name, args)
           : await this.manager.callHubTool(project, scope.agent, name, args, scope.remote);
         if (isMcpToolResult(payload)) return payload;
         return {

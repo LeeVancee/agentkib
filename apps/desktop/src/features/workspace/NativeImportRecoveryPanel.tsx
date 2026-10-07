@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { useRef, useState } from "react";
 import { api } from "@/core/api";
 import type { NativeImportOperation, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
-import { withAsyncCleanup } from "@/lib/utils";
 import { sessionHandoffTargets } from "./session-handoff-targets";
 import { CursorBridgePanel } from "./CursorBridgePanel";
 
@@ -20,63 +21,56 @@ export function NativeImportRecoveryPanel({
   workspace?: WorkspaceSummary;
 }) {
   const { tr, localizeMessage } = useI18n();
-  const [result, setResult] = useState<{
-    workspaceId: string;
-    operations: NativeImportOperation[];
-  }>();
-  const [error, setError] = useState("");
-  const [busyId, setBusyId] = useState<string>();
-  const [revision, setRevision] = useState(0);
+  const queryClient = useOptionalQueryClient();
+  const queryKey = ["native-import-operations", workspaceId];
+  const operationsQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey,
+      queryFn: () => api.nativeImportOperations(workspaceId),
+      staleTime: 0,
+    },
+    queryClient,
+  );
   const [connectionOperationId, setConnectionOperationId] = useState<string>();
-  const generation = useRef(0);
-  const busy = useRef(false);
-  useEffect(() => {
-    const current = ++generation.current;
-    setResult(undefined);
-    setError("");
-    setBusyId(undefined);
-    busy.current = false;
-    void Promise.resolve()
-      .then(() => api.nativeImportOperations(workspaceId))
-      .then(
-        (operations) => {
-          if (current === generation.current) setResult({ workspaceId, operations });
-        },
-        (reason: unknown) => {
-          if (current === generation.current) setError(localizeMessage(reason));
-        },
-      );
-    return () => {
-      generation.current += 1;
-    };
-  }, [workspaceId, revision, localizeMessage]);
+  const locked = useRef(false);
+  const recovery = useMutation(
+    {
+      mutationFn: ({
+        request,
+      }: {
+        operation: NativeImportOperation;
+        workspaceId: string;
+        request: ReturnType<typeof api.launchSessionHandoff>;
+      }) => request,
+      onSuccess: (_result, variables) =>
+        queryClient.invalidateQueries({
+          queryKey: ["native-import-operations", variables.workspaceId],
+        }),
+    },
+    queryClient,
+  );
+  const busyId = recovery.isPending
+    ? recovery.variables?.operation.launch_request.operation_id
+    : undefined;
+  const rawError =
+    recovery.variables?.workspaceId === workspaceId && recovery.error
+      ? recovery.error
+      : operationsQuery.error;
+  const error = rawError ? localizeMessage(rawError) : "";
   const recover = async (operation: NativeImportOperation) => {
-    if (busy.current) return;
-    busy.current = true;
-    const current = generation.current;
-    setBusyId(operation.launch_request.operation_id);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          await api.launchSessionHandoff(operation.launch_request);
-          if (current === generation.current) setRevision((value) => value + 1);
-        } catch (reason) {
-          if (current === generation.current) setError(localizeMessage(reason));
-        }
-      },
-      () => {
-        if (current === generation.current) {
-          busy.current = false;
-          setBusyId(undefined);
-        }
-      },
-    );
+    if (locked.current) return;
+    locked.current = true;
+    try {
+      const request = api.launchSessionHandoff(operation.launch_request);
+      await recovery.mutateAsync({ operation, workspaceId, request });
+    } catch {
+      /* Display mutation.error. */
+    } finally {
+      locked.current = false;
+    }
   };
-  const operations =
-    result?.workspaceId === workspaceId
-      ? result.operations.filter((item) => item.status !== "launched")
-      : [];
+  const operations = (operationsQuery.data ?? []).filter((item) => item.status !== "launched");
   if (!operations.length && !error) return null;
   const connectionOperation = operations.find(
     (operation) =>
@@ -168,7 +162,7 @@ export function NativeImportRecoveryPanel({
         />
       )}
       {!operations.length && error && (
-        <Button variant="outline" onClick={() => setRevision((value) => value + 1)}>
+        <Button variant="outline" onClick={() => void operationsQuery.refetch()}>
           {tr("handoff.recovery.reload")}
         </Button>
       )}

@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { skillKeys } from "./skills-query";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { Check, CircleAlert, Copy, Eye, LoaderCircle, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,7 +32,6 @@ import type {
   SkillDeploymentOperation,
   SkillDeploymentPreview,
   SkillDeploymentReport,
-  SkillDetail,
   SkillDetailRequest,
   SkillInventory,
   SkillObservation,
@@ -122,27 +124,20 @@ export function SkillDetailDialog({
   inventory?: SkillInventory;
 }) {
   const { tr, localizeMessage } = useI18n();
-  const [result, setResult] = useState<{
-    request: SkillDetailRequest;
-    detail?: SkillDetail;
-    error?: unknown;
-  }>();
-  const detail = result?.request === request ? result.detail : undefined;
-  const error = result?.request === request ? result.error : undefined;
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .skillDetail(request)
-      .then((value) => {
-        if (!cancelled) setResult({ request, detail: value });
-      })
-      .catch((next) => {
-        if (!cancelled) setResult({ request, error: next });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [request]);
+  const queryClient = useOptionalQueryClient();
+  const observerId = useId();
+  const detailQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: [...skillKeys.detail(request), observerId],
+      queryFn: () => api.skillDetail(request),
+      staleTime: 0,
+      gcTime: 0,
+    },
+    queryClient,
+  );
+  const detail = detailQuery.data;
+  const error = detailQuery.error ?? undefined;
   const readFile = useCallback(
     async (path: string) => readableSkillFile(await api.readSkillDetailFile({ ...request, path })),
     [request],
@@ -350,15 +345,30 @@ export function SkillDeploymentDialog({
   onChanged: () => Promise<unknown[]>;
 }) {
   const { tr, localizeMessage, formatDateTime } = useI18n();
-  const [targets, setTargets] = useState<SkillTargetCapability[]>([]);
+  const queryClient = useOptionalQueryClient();
+  const targetsQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: skillKeys.targets(),
+      queryFn: () => api.skillTargets(),
+      enabled: action.operation === "deploy",
+      staleTime: 0,
+    },
+    queryClient,
+  );
+  const targets = useMemo(() => targetsQuery.data ?? [], [targetsQuery.data]);
   const [scope, setScope] = useState("personal");
   const [selected, setSelected] = useState<string[]>([]);
   const [preview, setPreview] = useState<SkillDeploymentPreview>();
   const [report, setReport] = useState<SkillDeploymentReport>();
   const [selectedTarget, setSelectedTarget] = useState<string>();
   const [approveHome, setApproveHome] = useState(false);
-  const [busy, setBusy] = useState(action.operation !== "recover");
-  const [errors, setErrors] = useState<unknown[]>([]);
+  const [actionBusy, setBusy] = useState(
+    action.operation !== "recover" && action.operation !== "deploy",
+  );
+  const busy = actionBusy || (action.operation === "deploy" && targetsQuery.isPending);
+  const [actionErrors, setErrors] = useState<unknown[]>([]);
+  const errors = targetsQuery.error ? [...actionErrors, targetsQuery.error] : actionErrors;
   const [refreshErrors, setRefreshErrors] = useState<unknown[]>([]);
   const [pendingRecovery, setPendingRecovery] = useState<DeploymentRecovery>();
   const [recoveryLookupError, setRecoveryLookupError] = useState<unknown>();
@@ -382,24 +392,19 @@ export function SkillDeploymentDialog({
       group.targets.filter((target) => target.writable).map((target) => target.id),
     );
   useEffect(() => {
-    if (action.operation === "recover") return;
+    if (action.operation === "recover" || action.operation === "deploy") return;
     let cancelled = false;
-    const task =
-      action.operation === "deploy"
-        ? api.skillTargets().then((value) => {
-            if (!cancelled) setTargets(value);
-          })
-        : api
-            .prepareSkillDeployment({
-              operation: action.operation,
-              deployment_id: action.deployment?.id,
-            })
-            .then((value) => {
-              if (!cancelled) {
-                setPreview(value);
-                setSelectedTarget(value.targets[0]?.target_id);
-              }
-            });
+    const task = api
+      .prepareSkillDeployment({
+        operation: action.operation,
+        deployment_id: action.deployment?.id,
+      })
+      .then((value) => {
+        if (!cancelled) {
+          setPreview(value);
+          setSelectedTarget(value.targets[0]?.target_id);
+        }
+      });
     task
       .catch((error) => {
         if (!cancelled) setErrors([error]);

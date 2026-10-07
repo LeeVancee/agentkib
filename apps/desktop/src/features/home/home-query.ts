@@ -1,9 +1,12 @@
 import { useEffect } from "react";
 import { useContext } from "react";
-import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientContext, notifyManager, useQuery } from "@tanstack/react-query";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 import type { RefreshJobStatus } from "@/core/types";
+
+// React batches subscription updates; publish Query state without an extra timer.
+notifyManager.setScheduler((callback) => callback());
 
 export const queryDefaults = {
   retry: false,

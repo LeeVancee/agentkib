@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { useEffect, useRef, useState } from "react";
 import type {
   ArtifactEntry,
   ArtifactListing,
@@ -12,77 +14,117 @@ import { Button } from "@/components/ui/button";
 export function ClaudeFilesPanel({ sessionId }: { sessionId: string }) {
   const { locale } = useI18n();
   const text = (zh: string, en: string) => (locale === "en-US" ? en : zh);
-  const [listing, setListing] = useState<ArtifactListing>();
-  const [preview, setPreview] = useState<{ name: string; text: string }>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const epoch = useRef(0);
-  const load = useCallback(
-    async (directoryId?: string) => {
-      const generation = ++epoch.current;
-      setBusy(true);
-      setPreview(undefined);
-      setError("");
-      try {
-        const value = (await api.claudeRequest({
+  const queryClient = useOptionalQueryClient();
+  const [directory, setDirectory] = useState<{ sessionId: string; id?: string }>();
+  const [selection, setSelection] = useState<{ sessionId: string; item: ArtifactEntry }>();
+  const directoryId = directory?.sessionId === sessionId ? directory.id : undefined;
+  const item = selection?.sessionId === sessionId ? selection.item : undefined;
+  const listingQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: ["claude-files", sessionId, directoryId],
+      queryFn: async ({ signal }) => {
+        const result = (await api.claudeRequest({
           operation: "files",
           sessionId,
           ...(directoryId ? { directoryId } : {}),
         })) as ArtifactListing;
-        if (generation === epoch.current) setListing(value);
-      } catch (e) {
-        if (generation === epoch.current)
-          setError(e instanceof Error ? e.message : "files_unavailable");
-      }
-      if (generation === epoch.current) setBusy(false);
+        signal.throwIfAborted();
+        return result;
+      },
+      staleTime: 0,
+      gcTime: 0,
     },
-    [sessionId],
+    queryClient,
   );
-  useEffect(() => {
-    setListing(undefined);
-    void load();
-    return () => {
-      epoch.current++;
-    };
-  }, [load]);
-  async function open(item: ArtifactEntry) {
-    if (item.kind === "directory") {
-      await load(item.id);
-      return;
-    }
-    const generation = ++epoch.current;
-    setBusy(true);
-    setPreview(undefined);
-    setError("");
-    try {
-      if (item.previewKind === "text") {
-        const value = (await api.claudeRequest({
+  const textQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: ["claude-file-text", sessionId, item?.id, item?.revision],
+      queryFn: async ({ signal }) => {
+        const result = (await api.claudeRequest({
           operation: "file-text",
           sessionId,
-          artifactId: item.id,
-          revision: item.revision,
+          artifactId: item!.id,
+          revision: item!.revision,
         })) as { id: string; name: string; text: string; revision: string };
-        if (
-          generation === epoch.current &&
-          value.id === item.id &&
-          value.revision === item.revision
-        )
-          setPreview(value);
-      } else {
+        signal.throwIfAborted();
+        if (result.id !== item!.id || result.revision !== item!.revision)
+          throw new Error("artifact_revision_mismatch");
+        return result;
+      },
+      enabled: item?.previewKind === "text",
+      staleTime: Infinity,
+      gcTime: 0,
+    },
+    queryClient,
+  );
+  // Preview tickets are an operation, not reusable file data.
+  const epoch = useRef(0);
+  useEffect(() => {
+    epoch.current += 1;
+    return () => {
+      epoch.current += 1;
+    };
+  }, [sessionId]);
+  const previewMutation = useMutation(
+    {
+      mutationFn: async ({
+        entry,
+        owner,
+        generation,
+      }: {
+        entry: ArtifactEntry;
+        owner: string;
+        generation: number;
+      }) => {
         const ticket = (await api.claudeRequest({
           operation: "file-preview",
-          sessionId,
-          artifactId: item.id,
-          revision: item.revision,
-          download: item.previewKind === "download",
+          sessionId: owner,
+          artifactId: entry.id,
+          revision: entry.revision,
+          download: entry.previewKind === "download",
         })) as ArtifactTicket;
         if (generation === epoch.current) await api.openExternal(ticket.url);
-      }
-    } catch (e) {
-      if (generation === epoch.current)
-        setError(e instanceof Error ? e.message : "preview_unavailable");
+      },
+    },
+    queryClient,
+  );
+  const listing = listingQuery.data;
+  const preview = item?.previewKind === "text" ? textQuery.data : undefined;
+  const busy =
+    listingQuery.isFetching ||
+    (item?.previewKind === "text" && textQuery.isFetching) ||
+    previewMutation.isPending;
+  const rawError =
+    listingQuery.error ??
+    (item?.previewKind === "text" ? textQuery.error : null) ??
+    (previewMutation.variables?.owner === sessionId ? previewMutation.error : null);
+  const error = rawError
+    ? rawError instanceof Error
+      ? rawError.message
+      : "files_unavailable"
+    : "";
+  const load = async (nextId?: string) => {
+    setSelection(undefined);
+    previewMutation.reset();
+    if (nextId === directoryId) await listingQuery.refetch({ cancelRefetch: false });
+    else setDirectory({ sessionId, id: nextId });
+  };
+  async function open(entry: ArtifactEntry) {
+    previewMutation.reset();
+    if (entry.kind === "directory") {
+      await load(entry.id);
+      return;
     }
-    if (generation === epoch.current) setBusy(false);
+    setSelection({ sessionId, item: entry });
+    if (entry.previewKind !== "text") {
+      try {
+        await previewMutation.mutateAsync({ entry, owner: sessionId, generation: epoch.current });
+      } catch {
+        /* Display mutation.error. */
+      }
+    }
   }
   return (
     <section

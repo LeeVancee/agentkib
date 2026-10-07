@@ -208,7 +208,9 @@ function useHub(active: boolean) {
     navigate,
   ]);
   return {
-    ...catalog,
+    statuses: catalog.statuses,
+    errors: catalog.errors,
+    refreshing: catalog.refreshing,
     ready: catalog.ready && controlledCatalog.ready,
     loading: catalog.loading || (controlled && !controlledCatalog.ready),
     catalogError,

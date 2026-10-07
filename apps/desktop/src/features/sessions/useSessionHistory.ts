@@ -1,32 +1,11 @@
+import { useId } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "@/core/api";
 import { readRemoteHistory } from "@/features/remote/remote-catalog-store";
-import { withAsyncCleanup } from "@/lib/utils";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import type { ConversationEvent, ConversationSessionSummary } from "@/core/types";
-
-interface HistoryState {
-  key: string;
-  events: ConversationEvent[];
-  warnings: string[];
-  loading: boolean;
-  error: unknown;
-  loadingEarlier: boolean;
-  nextCursor?: string;
-}
-
-function emptyHistory(key: string, loading = false): HistoryState {
-  return { key, events: [], warnings: [], loading, error: "", loadingEarlier: false };
-}
-
-function uniqueEvents(events: ConversationEvent[]) {
-  const seen = new Set<string>();
-  return events.filter((event) => {
-    if (seen.has(event.id)) return false;
-    seen.add(event.id);
-    return true;
-  });
-}
+import { sessionKeys } from "./session-query";
 
 export function useSessionHistory(
   session: ConversationSessionSummary | undefined,
@@ -34,132 +13,88 @@ export function useSessionHistory(
   revision = 0,
 ) {
   const { localizeMessage } = useI18n();
-  const sessionRef = useRef(session);
-  useLayoutEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
+  const client = useOptionalQueryClient();
+  const observerId = useId();
   const sessionId = enabled && session?.availability === "readable" ? session.id : "";
-  const key = sessionId ? JSON.stringify([session?.workspace_id, sessionId, revision]) : "";
-  const [state, setState] = useState<HistoryState>(() => emptyHistory(key, !!key));
-  const activeKey = useRef("");
-  const sequence = useRef(0);
-  const availableCursor = useRef<string | undefined>(undefined);
-  const pending = useRef({ initial: false, earlier: false });
-
-  // Invalidate at commit, before passive effects, so an old page cannot refill a new selection.
-  useLayoutEffect(() => {
-    activeKey.current = key;
-    sequence.current += 1;
-    availableCursor.current = undefined;
-    pending.current = { initial: false, earlier: false };
-    return () => {
-      activeKey.current = "";
-      sequence.current += 1;
-    };
-  }, [key]);
-
-  const read = useCallback(async () => {
-    if (!sessionId || activeKey.current !== key || pending.current.initial) return;
-    const request = ++sequence.current;
-    pending.current = { initial: true, earlier: false };
-    availableCursor.current = undefined;
-    setState(emptyHistory(key, true));
-    const isCurrent = () => activeKey.current === key && sequence.current === request;
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const currentSession = sessionRef.current;
-          const page = currentSession?.remote
-            ? await readRemoteHistory(currentSession)
-            : await api.sessionEvents(sessionId);
-          if (!isCurrent()) return;
-          availableCursor.current = page.next_cursor;
-          setState({
-            ...emptyHistory(key),
-            events: uniqueEvents(page.events),
-            warnings: [...new Set(page.warnings)],
-            nextCursor: page.next_cursor,
-          });
-        } catch (reason) {
-          if (isCurrent()) setState({ ...emptyHistory(key), error: reason });
-        }
+  const queryKey = [
+    ...sessionKeys.history(
+      session?.workspace_id ?? "",
+      sessionId,
+      session?.remote ? [session.remote.host_id, session.remote.original_id] : null,
+      revision,
+    ),
+    observerId,
+  ];
+  const query = useInfiniteQuery(
+    {
+      ...queryDefaults,
+      queryKey,
+      queryFn: async ({ pageParam, signal }) => {
+        const page = session?.remote
+          ? await (pageParam ? readRemoteHistory(session, pageParam) : readRemoteHistory(session))
+          : await (pageParam
+              ? api.sessionEvents(sessionId, pageParam)
+              : api.sessionEvents(sessionId));
+        signal.throwIfAborted();
+        return page;
       },
-      () => {
-        if (isCurrent()) pending.current.initial = false;
-      },
-    );
-  }, [key, sessionId]);
-
-  useEffect(() => {
-    if (!key) {
-      setState(emptyHistory(""));
-      return;
-    }
-    void read();
-  }, [key, read]);
-
-  const loadEarlier = useCallback(async () => {
-    if (
-      !sessionId ||
-      activeKey.current !== key ||
-      state.key !== key ||
-      !state.nextCursor ||
-      state.nextCursor !== availableCursor.current ||
-      pending.current.initial ||
-      pending.current.earlier
-    ) {
-      return;
-    }
-    const request = sequence.current;
-    const cursor = state.nextCursor;
-    pending.current.earlier = true;
-    setState((current) => ({ ...current, loadingEarlier: true, error: "" }));
-    const isCurrent = () => activeKey.current === key && sequence.current === request;
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const currentSession = sessionRef.current;
-          const page = currentSession?.remote
-            ? await readRemoteHistory(currentSession, cursor)
-            : await api.sessionEvents(sessionId, cursor);
-          if (!isCurrent()) return;
-          availableCursor.current = page.next_cursor;
-          setState((current) => ({
-            ...current,
-            events: uniqueEvents([...page.events, ...current.events]),
-            // A scan-budget notice describes the current cursor window, not permanent damage.
-            warnings: [
-              ...new Set([
-                ...page.warnings,
-                ...current.warnings.filter((warning) => warning !== "TRANSCRIPT_SCAN_BUDGET"),
-              ]),
-            ],
-            nextCursor: page.next_cursor,
-            loadingEarlier: false,
-          }));
-        } catch (reason) {
-          if (isCurrent()) {
-            setState((current) => ({
-              ...current,
-              loadingEarlier: false,
-              error: reason,
-            }));
-          }
-        }
-      },
-      () => {
-        if (isCurrent()) pending.current.earlier = false;
-      },
-    );
-  }, [key, sessionId, state.key, state.nextCursor]);
-
-  // Render-time gating also prevents one frame of the previous conversation before effects run.
-  const visible = state.key === key ? state : emptyHistory(key, !!key);
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (page) => page.next_cursor ?? undefined,
+      enabled: !!sessionId,
+      staleTime: Infinity,
+      gcTime: 0,
+    },
+    client,
+  );
+  const pages = sessionId ? (query.data?.pages ?? []) : [];
+  const seen = new Set<string>();
+  const events: ConversationEvent[] = [...pages]
+    .reverse()
+    .flatMap((page) => page.events)
+    .filter((event) => {
+      if (seen.has(event.id)) return false;
+      seen.add(event.id);
+      return true;
+    });
+  const warnings = [
+    ...new Set(
+      pages.flatMap((page, index) =>
+        page.warnings.filter(
+          (warning) => warning !== "TRANSCRIPT_SCAN_BUDGET" || index === pages.length - 1,
+        ),
+      ),
+    ),
+  ];
+  const rawError = sessionId && !query.isFetching ? query.error : null;
   return {
-    ...visible,
-    rawError: visible.error,
-    error: visible.error ? localizeMessage(visible.error) : "",
-    loadEarlier,
-    retry: read,
+    key: sessionId ? JSON.stringify([session?.workspace_id, sessionId, revision]) : "",
+    events,
+    warnings,
+    loading: !!sessionId && query.isPending,
+    loadingEarlier: !!sessionId && query.isFetchingNextPage,
+    nextCursor: pages.at(-1)?.next_cursor,
+    rawError: rawError ?? "",
+    error: rawError ? localizeMessage(rawError) : "",
+    loadEarlier: async () => {
+      const state = client.getQueryState(queryKey);
+      if (
+        !sessionId ||
+        !state ||
+        state.fetchStatus !== "idle" ||
+        !query.hasNextPage ||
+        client.getQueryCache().find({ queryKey, exact: true })?.getObserversCount() === 0
+      )
+        return;
+      await query.fetchNextPage({ cancelRefetch: false });
+    },
+    retry: async () => {
+      if (
+        !sessionId ||
+        client.getQueryState(queryKey)?.fetchStatus !== "idle" ||
+        client.getQueryCache().find({ queryKey, exact: true })?.getObserversCount() === 0
+      )
+        return;
+      await client.resetQueries({ queryKey, exact: true });
+    },
   };
 }

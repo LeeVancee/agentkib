@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api } from "@/core/api";
 import type { CursorBridgeStatus, WorkspaceSummary } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
@@ -30,10 +32,9 @@ export function CursorBridgePanel({
   fixedBinding?: boolean;
 }) {
   const { tr, localizeMessage } = useI18n();
-  const [status, setStatus] = useState<CursorBridgeStatus>();
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<unknown>("");
-  const [challenge, setChallenge] = useState<{
+  const [actionError, setError] = useState<unknown>("");
+  const [challengeState, setChallenge] = useState<{
     value: string;
     expires: number;
     before: string[];
@@ -43,58 +44,70 @@ export function CursorBridgePanel({
   const [bundleVersion, setBundleVersion] = useState("");
   const active = useRef(true);
   const pendingRef = useRef(false);
-  const requestId = useRef(0);
   const statusChange = useRef(onStatusChange);
   useEffect(() => {
     statusChange.current = onStatusChange;
   }, [onStatusChange]);
+  const queryClient = useOptionalQueryClient();
+  const observerId = useId();
+  const statusQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: ["cursor-bridge-status", workspace.id, observerId],
+      queryFn: async ({ signal }) => {
+        const next = await api.cursorBridge({ action: "status", workspaceId: workspace.id });
+        if (!("bindings" in next)) throw new Error("Invalid Cursor bridge status");
+        signal.throwIfAborted();
+        return next;
+      },
+      enabled: !workspace.remote,
+      staleTime: 0,
+      gcTime: 0,
+      refetchInterval: challengeState ? 2000 : false,
+    },
+    queryClient,
+  );
+  const status = workspace.remote ? undefined : statusQuery.data;
+  const challenge =
+    challengeState &&
+    !status?.bindings.some(
+      (binding) => binding.connected && !challengeState.before.includes(binding.id),
+    )
+      ? challengeState
+      : undefined;
+  const error = actionError || statusQuery.error || "";
+  const refetch = statusQuery.refetch;
   const refresh = useCallback(async () => {
-    const generation = ++requestId.current;
-    const next = await api.cursorBridge({ action: "status", workspaceId: workspace.id });
-    if (!active.current || requestId.current !== generation) return;
-    if (!("bindings" in next)) throw new Error("Invalid Cursor bridge status");
-    setStatus(next);
-    statusChange.current(next);
-    setChallenge((current) =>
-      current &&
-      next.bindings.some((binding) => binding.connected && !current.before.includes(binding.id))
-        ? undefined
-        : current,
-    );
-  }, [workspace.id]);
-
+    if (!workspace.remote) await refetch({ throwOnError: true, cancelRefetch: false });
+  }, [refetch, workspace.remote]);
   useEffect(() => {
     active.current = true;
     statusChange.current(undefined);
-    if (!workspace.remote)
-      void refresh().catch((reason) => {
-        if (active.current) setError(reason);
-      });
     return () => {
       active.current = false;
-      requestId.current += 1;
     };
-  }, [refresh, workspace.remote]);
-
+  }, [workspace.id, workspace.remote]);
+  useEffect(() => {
+    statusChange.current(status);
+    if (status)
+      setChallenge((current) =>
+        current &&
+        status.bindings.some((binding) => binding.connected && !current.before.includes(binding.id))
+          ? undefined
+          : current,
+      );
+  }, [status]);
   useEffect(() => {
     if (!challenge) return;
     const tick = () => {
       const remaining = Math.max(0, Math.ceil((challenge.expires - Date.now()) / 1000));
       setSeconds(remaining);
-      if (remaining === 0) setChallenge(undefined);
+      if (!remaining) setChallenge(undefined);
     };
     tick();
     const timer = window.setInterval(tick, 1000);
-    const poll = window.setInterval(() => {
-      void refresh().catch((reason) => {
-        if (active.current) setError(reason);
-      });
-    }, 2000);
-    return () => {
-      window.clearInterval(timer);
-      window.clearInterval(poll);
-    };
-  }, [challenge, refresh]);
+    return () => window.clearInterval(timer);
+  }, [challenge]);
 
   const act = async (action: () => Promise<void>) => {
     if (pendingRef.current || disabled || workspace.remote) return;

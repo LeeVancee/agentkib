@@ -10,7 +10,13 @@ import { MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, useSidebarWidthStore } from "./si
 
 const { saveWidth } = vi.hoisted(() => ({ saveWidth: vi.fn() }));
 vi.mock("@/core/api", () => ({ api: { setSidebarWidthPreference: saveWidth } }));
-function ResizeFixture({ settings = false, children }: { settings?: boolean; children: ReactNode }) {
+function ResizeFixture({
+  settings = false,
+  children,
+}: {
+  settings?: boolean;
+  children: ReactNode;
+}) {
   const width = useSidebarWidthStore();
   const storedCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const collapsed = !settings && storedCollapsed;

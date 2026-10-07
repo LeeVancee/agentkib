@@ -95,6 +95,12 @@ export const api = {
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) =>
     desktopApi().updates.install(version, onEvent),
   mcpHubStatus: () => desktopApi().mcp.hubStatus(),
+  mcpConnectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.connectionInfo(workspaceId, targetAgent),
+  planMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.planConnection(workspaceId, targetAgent),
+  verifyMcpConnection: (workspaceId: string, targetAgent: AgentKind) =>
+    desktopApi().mcp.verifyConnection(workspaceId, targetAgent),
   updateMcpNetwork: (settings: McpNetworkSettings) => desktopApi().mcp.updateNetwork(settings),
   mcpServers: (project?: string) => desktopApi().mcp.listServers(project),
   mcpServer: (serverId: string, project?: string) => desktopApi().mcp.getServer(serverId, project),

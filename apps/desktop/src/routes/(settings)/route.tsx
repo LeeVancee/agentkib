@@ -10,7 +10,11 @@ import { CircleAlert } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Button } from "@/components/ui/button";
-import { SettingsSidebar, type SettingsSection, type SettingsTarget } from "@/features/settings/SettingsSidebar";
+import {
+  SettingsSidebar,
+  type SettingsSection,
+  type SettingsTarget,
+} from "@/features/settings/SettingsSidebar";
 import { useAppNavigationContext } from "@/features/app/AppNavigationContext";
 import { SidebarResizeHandle } from "@/features/app/SidebarResizeHandle";
 import { useRetainedScroll } from "@/features/app/useRetainedScroll";
@@ -66,7 +70,9 @@ function SettingsLayout() {
       workspacesPending={app.workspacesPending}
       workspacesError={app.workspacesError}
       onRetryWorkspaces={() => void app.retryWorkspaces()}
-      changeCount={workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0)}
+      changeCount={
+        workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0)
+      }
       onWorkspaceNavigate={() => undefined}
       onOpenWorkspace={(workspace, page) => void app.openWorkspace(workspace, page)}
       onNavigate={app.navigateGlobal}
@@ -111,7 +117,12 @@ function SettingsLayout() {
           </Button>
         </div>
       )}
-      <main className={cn("app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm", `settings-section-${section}`)}>
+      <main
+        className={cn(
+          "app-shell-main !flex !min-h-0 !min-w-0 !h-full !flex-col !overflow-hidden !text-sm",
+          `settings-section-${section}`,
+        )}
+      >
         <div ref={scrollRef} className="page-scroll-container min-h-0 flex-1">
           {app.message && (
             <div className="mx-7 mt-10 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

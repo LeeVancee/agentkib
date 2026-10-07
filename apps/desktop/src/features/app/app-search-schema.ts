@@ -20,7 +20,10 @@ const gitSubviewSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const appSearchSchema = z.object({
-  assetSection: z.enum(["instructions", "skills", "mcp", "memory", "other"]).optional().catch(undefined),
+  assetSection: z
+    .enum(["instructions", "skills", "mcp", "memory", "other"])
+    .optional()
+    .catch(undefined),
   workspaceAssetSection: z
     .enum(["instructions", "skills", "mcp", "native"])
     .optional()
@@ -55,7 +58,10 @@ export const appSearchSchema = z.object({
   sessionId: z.string().optional().catch(undefined),
   handoffSession: z.string().optional().catch(undefined),
   handoffTarget: z.custom<AgentKind>().optional().catch(undefined),
-  handoffBudget: z.union([z.literal(64_000), z.literal(120_000), z.literal(180_000)]).optional().catch(undefined),
+  handoffBudget: z
+    .union([z.literal(64_000), z.literal(120_000), z.literal(180_000)])
+    .optional()
+    .catch(undefined),
   handoffFormat: z.enum(["markdown", "json"]).optional().catch(undefined),
   handoffSurface: z.literal("cursor-ide").optional().catch(undefined),
   handoffBinding: z.string().max(128).optional().catch(undefined),

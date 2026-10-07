@@ -55,4 +55,3 @@ describe("WindowNavigationControls", () => {
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeTruthy();
   });
 });
-

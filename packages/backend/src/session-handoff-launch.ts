@@ -1,3 +1,4 @@
+import { readHandoff, handoffCheckpoint, handoffCommit } from "./handoff-work";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -25,6 +26,7 @@ import type { BackendStore } from "./store";
 import { withinLexical } from "./files";
 import { markNativeImportLaunched, nativeImportLaunchInfo } from "./session-native-import-owner";
 import { openClawInteractive } from "./openclaw-native-import";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 
 const agentSchema = z.enum([
   "codex",
@@ -85,6 +87,7 @@ export interface PreparedHandoffLaunch {
   terminal: Terminal;
   command: InteractiveCommand;
   workspace: string;
+  validateOwnership: () => void;
 }
 
 function readRegularFile(file: string, maxBytes: number): string {
@@ -103,7 +106,7 @@ function readRegularFile(file: string, maxBytes: number): string {
   }
 }
 
-function verifyNativeSession(file: string, agent: string): void {
+export function verifyNativeSession(file: string, agent: string): void {
   const records = readRegularFile(file, 256 * 1024 * 1024)
     .split(/\r?\n/)
     .filter(Boolean)
@@ -164,7 +167,7 @@ function validateNativePath(file: string, root: string): void {
   }
 }
 
-function validateHandoffFile(workspace: string, filename: string): string {
+export function validateHandoffFile(workspace: string, filename: string): string {
   if (
     !filename ||
     filename.includes("/") ||
@@ -189,12 +192,16 @@ function validateHandoffFile(workspace: string, filename: string): string {
   return resolvedTarget;
 }
 
-function validateArchive(request: LaunchRequest, dataDir: string): void {
+async function validateArchive(request: LaunchRequest, dataDir: string): Promise<void> {
   if (request.mode === "native-import") return;
   if (Boolean(request.archive_id) !== Boolean(request.archive_hash))
     throw new Error("Session archive launch metadata is incomplete");
   if (!request.archive_id || !request.archive_hash) return;
-  const manifest = validateSessionArchive(dataDir, request.workspace_id, request.archive_id);
+  const manifest = await readHandoff(
+    "validate-archive",
+    [dataDir, request.workspace_id, request.archive_id],
+    () => validateSessionArchive(dataDir, request.workspace_id, request.archive_id!),
+  );
   if (manifest.document_sha256 !== request.archive_hash)
     throw new Error("Session archive hash does not match its launch request");
 }
@@ -269,11 +276,30 @@ export async function prepareHandoffLaunch(
   dataDir?: string,
 ): Promise<PreparedHandoffLaunch> {
   const request = sessionHandoffLaunchRequest.parse(value);
-  const workspace = canonicalize(store.workspacePath(request.workspace_id));
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
+  if (identity.archiveWorkspaceId !== request.workspace_id)
+    throw new Error("Handoff operation workspace identity changed");
+  const workspace = identity.project;
+  const validateOwnership = () => {
+    handoffCheckpoint();
+    const current = requireUniqueContinuationWorkspace(store, request.workspace_id, workspace);
+    if (
+      current.registeredId !== identity.registeredId ||
+      current.archiveWorkspaceId !== request.workspace_id
+    )
+      throw new Error("Handoff workspace changed before launch");
+  };
   const terminal = await resolveTerminal(commands, environment);
+  validateOwnership();
   if (request.mode === "native-import") {
     if (!dataDir) throw new Error("Native import data directory is unavailable");
-    const imported = await nativeImportLaunchInfo(dataDir, request, commands, environment);
+    const imported = await nativeImportLaunchInfo(
+      dataDir,
+      request,
+      commands,
+      environment,
+      validateOwnership,
+    );
     if (
       imported.plan.workspace !== workspace ||
       imported.plan.target_agent !== request.target_agent
@@ -315,6 +341,7 @@ export async function prepareHandoffLaunch(
       terminal,
       command: { ...command, environment: imported.environment },
       workspace,
+      validateOwnership,
     };
   }
   if (request.target_agent !== "codex" && request.target_agent !== "claude-code")
@@ -347,7 +374,8 @@ export async function prepareHandoffLaunch(
   for (const value of [command.executable, ...command.arguments, command.cwd])
     if (/[\0\r\n]/.test(value))
       throw new Error("interactive command contains an unsafe control character");
-  return { request, terminal, command, workspace };
+  validateOwnership();
+  return { request, terminal, command, workspace, validateOwnership };
 }
 
 export async function launchPreparedHandoff(
@@ -355,65 +383,76 @@ export async function launchPreparedHandoff(
   dataDir: string,
   env: NodeJS.ProcessEnv,
 ): Promise<{ target_agent: string; terminal: string }> {
-  const { request, workspace, command, terminal } = prepared;
-  if (request.mode === "handoff-file") validateHandoffFile(workspace, request.filename);
+  const { request, workspace, command, terminal, validateOwnership } = prepared;
+  validateOwnership();
+  if (request.mode === "handoff-file")
+    await readHandoff("validate-handoff-file", [workspace, request.filename], () =>
+      validateHandoffFile(workspace, request.filename),
+    );
   else if (request.mode === "native-session") {
     const root = nativeRoot(request, env);
     validateNativePath(request.target_path, root);
     if (!path.basename(request.target_path).includes(request.target_session_id))
       throw new Error("Native session ID does not match its file");
-    verifyNativeSession(request.target_path, request.target_agent);
+    await readHandoff("validate-native-session", [request.target_path, request.target_agent], () =>
+      verifyNativeSession(request.target_path, request.target_agent),
+    );
   }
-  validateArchive(request, dataDir);
-  const folder = mkdtempSync(path.join(os.tmpdir(), "agentkib-handoff-"));
-  const script = path.join(
-    folder,
-    process.platform === "win32" ? `${randomUUID()}.cmd` : `${randomUUID()}.command`,
-  );
-  try {
-    writeFileSync(script, launcherScript(command, folder), { flag: "wx", mode: 0o700 });
-    if (process.platform !== "win32") chmodSync(script, 0o700);
-    let args: string[];
-    if (terminal.kind === "macos") args = ["-a", "Terminal.app", script];
-    else if (terminal.kind === "windows") args = ["/d", "/k", script];
-    else if (terminal.kind === "linux-xdg") args = [script];
-    else args = ["-e", script];
-    const child = spawn(terminal.executable, args, {
-      detached: process.platform !== "win32",
-      stdio: "ignore",
-      windowsHide: true,
-      env: command.env ?? env,
-    });
-    await new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("spawn", resolve);
-    });
-    child.unref();
-    if (request.mode === "native-import")
-      markNativeImportLaunched(
-        dataDir,
-        request,
-        terminal.kind === "macos"
-          ? "Terminal.app"
-          : terminal.kind === "windows"
-            ? "Windows Terminal"
-            : terminal.kind === "linux-xdg"
-              ? "xdg-terminal-exec"
-              : "x-terminal-emulator",
-      );
-    return {
-      target_agent: request.target_agent,
-      terminal:
-        terminal.kind === "macos"
-          ? "Terminal.app"
-          : terminal.kind === "windows"
-            ? "Windows Terminal"
-            : terminal.kind === "linux-xdg"
-              ? "xdg-terminal-exec"
-              : "x-terminal-emulator",
-    };
-  } catch (error) {
-    rmSync(folder, { recursive: true, force: true });
-    throw error;
-  }
+  await validateArchive(request, dataDir);
+  validateOwnership();
+  return handoffCommit(async () => {
+    validateOwnership();
+    const folder = mkdtempSync(path.join(os.tmpdir(), "agentkib-handoff-"));
+    const script = path.join(
+      folder,
+      process.platform === "win32" ? `${randomUUID()}.cmd` : `${randomUUID()}.command`,
+    );
+    try {
+      writeFileSync(script, launcherScript(command, folder), { flag: "wx", mode: 0o700 });
+      if (process.platform !== "win32") chmodSync(script, 0o700);
+      let args: string[];
+      if (terminal.kind === "macos") args = ["-a", "Terminal.app", script];
+      else if (terminal.kind === "windows") args = ["/d", "/k", script];
+      else if (terminal.kind === "linux-xdg") args = [script];
+      else args = ["-e", script];
+      const child = spawn(terminal.executable, args, {
+        detached: process.platform !== "win32",
+        stdio: "ignore",
+        windowsHide: true,
+        env: command.env ?? env,
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("spawn", resolve);
+      });
+      child.unref();
+      if (request.mode === "native-import")
+        await markNativeImportLaunched(
+          dataDir,
+          request,
+          terminal.kind === "macos"
+            ? "Terminal.app"
+            : terminal.kind === "windows"
+              ? "Windows Terminal"
+              : terminal.kind === "linux-xdg"
+                ? "xdg-terminal-exec"
+                : "x-terminal-emulator",
+          validateOwnership,
+        );
+      return {
+        target_agent: request.target_agent,
+        terminal:
+          terminal.kind === "macos"
+            ? "Terminal.app"
+            : terminal.kind === "windows"
+              ? "Windows Terminal"
+              : terminal.kind === "linux-xdg"
+                ? "xdg-terminal-exec"
+                : "x-terminal-emulator",
+      };
+    } catch (error) {
+      rmSync(folder, { recursive: true, force: true });
+      throw error;
+    }
+  });
 }

@@ -7,6 +7,7 @@ import { pathIdentity } from "./paths";
 import { userHome } from "./mcp-config-read";
 import { archiveManifest } from "./session-model";
 import type { BackendStore } from "./store";
+import { requireUniqueContinuationWorkspace } from "./workspace-identity";
 
 const targetAgent = z.enum([
   "codex",
@@ -72,7 +73,10 @@ export function applySessionHandoff(
   environment: NodeJS.ProcessEnv,
 ): null {
   const request = z.object({ changeSet, launchRequest, approveHome: z.boolean() }).parse(value);
-  const workspacePath = canonicalProject(store.workspacePath(request.launchRequest.workspace_id));
+  const identity = requireUniqueContinuationWorkspace(store, request.launchRequest.workspace_id);
+  if (identity.archiveWorkspaceId !== request.launchRequest.workspace_id)
+    throw new Error("Handoff operation workspace identity changed");
+  const workspacePath = identity.project;
   const changeRoot = canonicalProject(request.changeSet.project_root);
   if (pathIdentity(changeRoot) !== pathIdentity(workspacePath))
     throw new Error("handoff workspace does not match ChangeSet");

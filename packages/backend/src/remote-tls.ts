@@ -410,9 +410,12 @@ export function restrictRemotePath(file: string, directory = false): void {
   const security = directory ? "D:P(A;OICI;FA;;;OW)" : "D:P(A;;FA;;;OW)";
   if (!convert(security, 1, descriptor, null) || !descriptor[0])
     throw new Error(`Cannot create private remote ACL (${error()})`);
-  const result = set(file, 0x00000004 | 0x80000000, descriptor[0]);
+  // Keep SECURITY_INFORMATION unsigned: bitwise OR produces a negative JS number,
+  // which Koffi passes differently on Windows ARM64. These are the same DACL flags.
+  const result = set(file, 0x80000004, descriptor[0]);
+  const code = result ? 0 : error();
   free(descriptor[0]);
-  if (!result) throw new Error(`Cannot protect remote identity (${error()})`);
+  if (!result) throw new Error(`Cannot protect remote identity (${code})`);
 }
 
 function pem(label: string, value: Buffer): string {

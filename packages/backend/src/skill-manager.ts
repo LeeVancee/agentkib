@@ -8,6 +8,7 @@ import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { isReparseOrSymlink } from "./native-files";
 import { copySkillPackage, skillPackage, skillPreviewFile } from "./skill-package";
+import { commitTask, currentTask } from "./task-executor";
 
 type Agent =
   | "codex"
@@ -1562,26 +1563,28 @@ export class SkillManager {
       throw new Error(`Associated Skill library is unavailable or unsafe: ${libraryRoot}`);
   }
 
-  async #registerLibrary(scope: Scope, scopeRoot: string) {
+  async #prepareLibraryRegistration(scope: Scope, scopeRoot: string) {
     const roots = await this.#readLibraries(scope, scopeRoot);
     if (roots.some((root) => samePath(root, this.#root))) return;
     roots.push(await fs.realpath(this.#root));
     const file = this.#libraryIndexFile(scope, scopeRoot);
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    const parent = await fs.lstat(path.dirname(file));
-    if (!parent.isDirectory() || isReparseOrSymlink(path.dirname(file), parent))
-      throw new Error("Skill ownership index directory is unsafe");
-    const bytes = JSON.stringify({ schema_version: 1, libraries: roots }, null, 2);
-    if (roots.length > 128 || Buffer.byteLength(bytes) > 1024 * 1024)
-      throw new Error("Skill ownership index is full");
-    const temp = `${file}.tmp-${randomUUID()}`;
-    await fs.writeFile(temp, bytes, { mode: 0o600 });
-    try {
-      await fs.rename(temp, file);
-    } catch (error) {
-      await fs.rm(temp, { force: true });
-      throw error;
-    }
+    return async () => {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      const parent = await fs.lstat(path.dirname(file));
+      if (!parent.isDirectory() || isReparseOrSymlink(path.dirname(file), parent))
+        throw new Error("Skill ownership index directory is unsafe");
+      const bytes = JSON.stringify({ schema_version: 1, libraries: roots }, null, 2);
+      if (roots.length > 128 || Buffer.byteLength(bytes) > 1024 * 1024)
+        throw new Error("Skill ownership index is full");
+      const temp = `${file}.tmp-${randomUUID()}`;
+      await fs.writeFile(temp, bytes, { mode: 0o600 });
+      try {
+        await fs.rename(temp, file);
+      } catch (error) {
+        await fs.rm(temp, { force: true });
+        throw error;
+      }
+    };
   }
 
   async #reserve(record: Deployment) {
@@ -2119,6 +2122,7 @@ export class SkillManager {
       const results = [];
       for (const target of preview.targets) {
         try {
+          currentTask()?.checkpoint();
           const deployment = await this.#applyTarget(preview, target, operationId);
           results.push({
             target_id: target.target.id,
@@ -2149,6 +2153,23 @@ export class SkillManager {
   }
 
   async #applyTarget(preview: PreparedDeployment, plan: PlannedTarget, operationId: string) {
+    const workspaceId = plan.target.workspace_id;
+    const workspacePath = workspaceId
+      ? this.#workspaceList().find((item) => item.id === workspaceId)?.path
+      : undefined;
+    if (workspaceId && !workspacePath) throw new Error("Skill workspace is no longer registered");
+    currentTask()?.checkpoint();
+    if (workspaceId && workspacePath)
+      await currentTask()?.verifyWorkspace?.({ workspaceId, workspacePath });
+    currentTask()?.checkpoint();
+    return this.#applyVerifiedTarget(preview, plan, operationId);
+  }
+
+  async #applyVerifiedTarget(
+    preview: PreparedDeployment,
+    plan: PlannedTarget,
+    operationId: string,
+  ) {
     if (plan.conflicts.length) throw new Error(plan.conflicts.join("; "));
     const current = (await this.targets()).find((item) => item.id === plan.target.id);
     if (!current || !current.writable || !samePath(current.root, plan.target.root))
@@ -2230,32 +2251,50 @@ export class SkillManager {
       incoming_hash: plan.incomingHash,
       state: "prepared",
     };
+    currentTask()?.checkpoint();
     await fs.mkdir(directory, { recursive: true });
     try {
       if (plan.source) await copySkillPackage(plan.source, stage);
       if (plan.source && (await this.#currentHash(stage)) !== plan.sourceHash)
         throw new Error("Staged Skill package changed");
-      await this.#registerLibrary(plan.target.scope, plan.target.scope_root);
-      if (backup && (await exists(backup))) await fs.rename(backup, previousBackup);
-      await this.#writeJournal(directory, journal);
-      await this.#reserve(next);
-      await fs.mkdir(plan.target.root, { recursive: true });
-      if (plan.expectedHash) await fs.rename(plan.destination, old);
-      if (preview.operation !== "undeploy") await fs.rename(stage, plan.destination);
-      journal.state = "activated";
-      await this.#writeJournal(directory, journal);
-      const updated = receipts.filter((item) => item.id !== next.id);
-      updated.push(next);
-      await this.#writeReceipts(plan.receiptFile, updated);
-      journal.state = "receipt-written";
-      await this.#writeJournal(directory, journal);
-      if (backup && (await exists(old)) && preview.operation !== "undeploy") {
-        await fs.mkdir(path.dirname(backup), { recursive: true });
-        await fs.rename(old, backup);
-      }
-      await this.#releaseReservation(next);
-      await fs.rm(directory, { recursive: true, force: true });
-      return next;
+      if (plan.target.workspace_id)
+        await currentTask()?.verifyWorkspace?.({
+          workspaceId: plan.target.workspace_id,
+          workspacePath: plan.target.scope_root,
+        });
+      const registerLibrary = await this.#prepareLibraryRegistration(
+        plan.target.scope,
+        plan.target.scope_root,
+      );
+      const hasBackup = backup && (await exists(backup));
+      return await commitTask(
+        async () => {
+          await registerLibrary?.();
+          if (hasBackup) await fs.rename(backup!, previousBackup);
+          await this.#writeJournal(directory, journal);
+          await this.#reserve(next);
+          await fs.mkdir(plan.target.root, { recursive: true });
+          if (plan.expectedHash) await fs.rename(plan.destination, old);
+          if (preview.operation !== "undeploy") await fs.rename(stage, plan.destination);
+          journal.state = "activated";
+          await this.#writeJournal(directory, journal);
+          const updated = receipts.filter((item) => item.id !== next.id);
+          updated.push(next);
+          await this.#writeReceipts(plan.receiptFile, updated);
+          journal.state = "receipt-written";
+          await this.#writeJournal(directory, journal);
+          if (backup && (await exists(old)) && preview.operation !== "undeploy") {
+            await fs.mkdir(path.dirname(backup), { recursive: true });
+            await fs.rename(old, backup);
+          }
+          await this.#releaseReservation(next);
+          await fs.rm(directory, { recursive: true, force: true });
+          return next;
+        },
+        plan.target.workspace_id
+          ? { workspaceId: plan.target.workspace_id, workspacePath: plan.target.scope_root }
+          : undefined,
+      );
     } catch (error) {
       if (!(await exists(path.join(directory, "journal.json")))) {
         if (backup && (await exists(previousBackup))) await fs.rename(previousBackup, backup);
@@ -2284,40 +2323,58 @@ export class SkillManager {
         continue;
       }
       try {
+        currentTask()?.checkpoint();
+        const workspaceId = journal.next_receipt.workspace_id;
+        if (workspaceId) {
+          const workspacePath = journal.next_receipt.scope_root;
+          if (
+            !this.#workspaceList().some(
+              (item) => item.id === workspaceId && item.path === workspacePath,
+            )
+          )
+            throw new Error("Skill workspace is no longer registered");
+          await currentTask()?.verifyWorkspace?.({ workspaceId, workspacePath });
+        }
         const receipts = await this.#readReceipts(journal.receipt_file);
         const active = receipts.find((item) => item.id === journal.next_receipt.id) ?? null;
         const committed = active?.operation_id === operationId;
         const actual = await this.#currentHash(journal.destination);
         const old = path.join(directory, "old");
         const priorBackup = path.join(directory, "previous-backup");
-        if (committed && actual === journal.incoming_hash) {
-          if (journal.backup && (await exists(old))) {
-            await fs.mkdir(path.dirname(journal.backup), { recursive: true });
-            await fs.rename(old, journal.backup);
-          }
-        } else if (
-          !committed &&
-          journal.state === "prepared" &&
-          actual !== null &&
-          actual === journal.incoming_hash &&
-          actual !== journal.expected_hash &&
-          (await exists(path.join(directory, "new")))
-        ) {
-          throw new Error("Skill destination changed externally; recovery preserved the files");
-        } else if (!committed && actual === journal.expected_hash) {
-          if (journal.backup && (await exists(priorBackup)))
-            await fs.rename(priorBackup, journal.backup);
-        } else if (!committed && (actual === journal.incoming_hash || actual === null)) {
-          if (actual !== null)
-            await fs.rename(journal.destination, path.join(directory, "abandoned"));
-          if (await exists(old)) await fs.rename(old, journal.destination);
-          if (journal.backup && (await exists(priorBackup)))
-            await fs.rename(priorBackup, journal.backup);
-        } else {
-          throw new Error("Skill destination changed externally; recovery preserved the files");
-        }
-        await this.#releaseReservation(journal.next_receipt);
-        await fs.rm(directory, { recursive: true, force: true });
+        const oldExists = await exists(old);
+        const priorBackupExists = await exists(priorBackup);
+        const newExists = await exists(path.join(directory, "new"));
+        await commitTask(
+          async () => {
+            if (committed && actual === journal.incoming_hash) {
+              if (journal.backup && oldExists) {
+                await fs.mkdir(path.dirname(journal.backup), { recursive: true });
+                await fs.rename(old, journal.backup);
+              }
+            } else if (
+              !committed &&
+              journal.state === "prepared" &&
+              actual !== null &&
+              actual === journal.incoming_hash &&
+              actual !== journal.expected_hash &&
+              newExists
+            ) {
+              throw new Error("Skill destination changed externally; recovery preserved the files");
+            } else if (!committed && actual === journal.expected_hash) {
+              if (journal.backup && priorBackupExists) await fs.rename(priorBackup, journal.backup);
+            } else if (!committed && (actual === journal.incoming_hash || actual === null)) {
+              if (actual !== null)
+                await fs.rename(journal.destination, path.join(directory, "abandoned"));
+              if (oldExists) await fs.rename(old, journal.destination);
+              if (journal.backup && priorBackupExists) await fs.rename(priorBackup, journal.backup);
+            } else {
+              throw new Error("Skill destination changed externally; recovery preserved the files");
+            }
+            await this.#releaseReservation(journal.next_receipt);
+            await fs.rm(directory, { recursive: true, force: true });
+          },
+          workspaceId ? { workspaceId, workspacePath: journal.next_receipt.scope_root } : undefined,
+        );
         results.push({
           target_id: journal.target_id,
           deployment_id: journal.next_receipt.id,

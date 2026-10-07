@@ -7,6 +7,8 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage } from "@/features/skills/SkillHubPage";
+import { McpConnectionCard } from "@/features/mcp/McpConnectionCard";
+import { McpRuntimeProbe } from "@/features/mcp/McpRuntimeProbe";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
@@ -428,7 +430,7 @@ function GlobalMemoryInbox({
   );
 }
 
-function McpHubPage({
+export function McpHubPage({
   runtime,
   workspaces,
   onRuntimeChanged,
@@ -441,6 +443,7 @@ function McpHubPage({
 }) {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [registryRequest, setRegistryRequest] = useState<string>();
   const [query, setQuery] = useState("");
@@ -601,6 +604,12 @@ function McpHubPage({
   };
   return (
     <div className="grid gap-5">
+      <McpConnectionCard
+        workspaces={workspaces}
+        runtime={runtime}
+        servicesRevision={JSON.stringify([project, servers, serversQuery.dataUpdatedAt])}
+        onManageWorkspaces={() => void navigate({ to: "/workspaces" })}
+      />
       {error && (
         <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <CircleAlert size={16} />
@@ -662,7 +671,9 @@ function McpHubPage({
             onValueChange={(value) => {
               if (value !== null) {
                 const nextScope = String(value);
-                setScope(nextScope === "__global_scope__" ? "" : nextScope);
+                const nextProject = nextScope === "__global_scope__" ? undefined : nextScope;
+                setError("");
+                setScope(nextProject ?? "");
               }
             }}
           >
@@ -683,7 +694,7 @@ function McpHubPage({
           </Select>
         </div>
       </div>
-      <McpServerEditor project={project} onSaved={load} />
+      <McpServerEditor key={`editor:${project ?? "global"}`} project={project} onSaved={load} />
       <McpMigrationInventory
         key={project ?? "global"}
         project={project}
@@ -754,7 +765,7 @@ function McpHubPage({
             {servers.map((server) => (
               <article
                 className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                key={server.id}
+                key={`${project ?? "global"}:${server.id}`}
               >
                 <div className="grid gap-1">
                   <strong>{server.name}</strong>
@@ -774,19 +785,12 @@ function McpHubPage({
                       {tr("mcp.authorize")}
                     </Button>
                   )}
-                  <Button
-                    className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                    onClick={async () => {
-                      try {
-                        await api.probeMcpRuntime(server.id, project);
-                        await load();
-                      } catch (reason) {
-                        setError(localizeMessage(reason));
-                      }
-                    }}
-                  >
-                    {tr("mcp.probe")}
-                  </Button>
+                  <McpRuntimeProbe
+                    key={JSON.stringify([project, server])}
+                    serverId={server.id}
+                    project={project}
+                    onProbed={load}
+                  />
                   <Button
                     className="text-destructive hover:bg-destructive/10"
                     onClick={async () => {
@@ -976,7 +980,12 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
     await withAsyncCleanup(
       async () => {
         try {
-          const server = JSON.parse(config) as McpServerConfig;
+          const parsed = JSON.parse(config) as unknown;
+          if (typeof parsed === "object" && parsed !== null && "mcpServers" in parsed) {
+            setError(tr("mcp.wrapperUnsupported"));
+            return;
+          }
+          const server = parsed as McpServerConfig;
           if (!server.id || !server.name || !server.transport) {
             setError(tr("mcp.configRequired"));
             return;
@@ -1007,6 +1016,7 @@ function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () =
       <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
         <div className="grid gap-1.5">
           <h2>{tr("mcp.editor")}</h2>
+          <p className="text-sm text-muted-foreground">{tr("mcp.editorDescription")}</p>
         </div>
         <Button
           className="bg-primary text-primary-foreground hover:bg-primary/90"

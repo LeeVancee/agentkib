@@ -1,7 +1,7 @@
 /** @jsxImportSource octane */
 
 import { useI18n } from "@/core/useI18n";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "octane";
 import { useRetainedScroll } from "./useRetainedScroll";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
 import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, useSidebarWidthStore } from "./sidebar-width-store";

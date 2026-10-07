@@ -1,5 +1,7 @@
-import { Bell } from "lucide-react";
-import { useEffect, useState } from "react";
+/** @jsxImportSource octane */
+
+import { Bell } from "@octanejs/lucide";
+import { useEffect, useState } from "octane";
 import { useSessionNavigate } from "./session-navigation";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";

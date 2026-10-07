@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { useEffect } from "octane";
-import type { ReactNode } from "react";
+import type { ReactNode } from "octane";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
 import type { RefreshJobStatus } from "@/core/types";

@@ -1,7 +1,9 @@
-import * as React from "react";
+/** @jsxImportSource octane */
+
+import type { ComponentProps } from "octane";
 import { cn } from "../../lib/utils";
 
-function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
+function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return (
     <textarea
       data-slot="textarea"

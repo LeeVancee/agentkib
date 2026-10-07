@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { CodexTools } from "./codex-tools";

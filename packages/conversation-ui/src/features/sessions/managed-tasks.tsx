@@ -1,8 +1,10 @@
+/** @jsxImportSource octane */
+
 import { managedText } from "./managed-copy";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "octane";
 import { useSessionNavigate } from "./session-navigation";
 import { subscribeSessionInvalidation } from "./session-events";
-import { Plus } from "lucide-react";
+import { Plus } from "@octanejs/lucide";
 import {
   ApiError,
   isLegacyPreparedReceipt,
@@ -374,7 +376,7 @@ export function ManagedTasks({
             className="mt-2 w-full rounded border bg-background p-2"
             value={agent}
             disabled={busy || uncertain}
-            onChange={(event) => setCreateAgent(event.target.value as ManagedAgent)}
+            onChange={(event) => setCreateAgent((event.currentTarget as unknown as HTMLInputElement).value as ManagedAgent)}
           >
             <option value="codex">Codex</option>
             <option value="claude-code">Claude Code</option>
@@ -420,7 +422,7 @@ export function ManagedTasks({
                 <select
                   className="mt-2 w-full rounded border bg-background p-2"
                   value={workspaceId}
-                  onChange={(e) => setWorkspaceId(e.target.value)}
+                  onChange={(e) => setWorkspaceId((e.currentTarget as unknown as HTMLInputElement).value)}
                 >
                   {options.workspaces.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -449,7 +451,7 @@ export function ManagedTasks({
                       className="mt-2 w-full rounded border bg-background p-2"
                       value={model}
                       onChange={(e) => {
-                        setModel(e.target.value);
+                        setModel((e.currentTarget as unknown as HTMLInputElement).value);
                         setEffort("");
                       }}
                     >
@@ -467,7 +469,7 @@ export function ManagedTasks({
                       <select
                         className="mt-2 w-full rounded border bg-background p-2"
                         value={effort}
-                        onChange={(e) => setEffort(e.target.value)}
+                        onChange={(e) => setEffort((e.currentTarget as unknown as HTMLInputElement).value)}
                       >
                         <option value="">{managedText(locale, "Default", "默认")}</option>
                         {options.models
@@ -512,7 +514,7 @@ export function ManagedTasks({
                   <input
                     type="checkbox"
                     checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
+                    onChange={(e) => setConfirmed((e.currentTarget as unknown as HTMLInputElement).checked)}
                   />
                   {managedText(
                     locale,

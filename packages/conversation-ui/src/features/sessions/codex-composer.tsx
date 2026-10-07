@@ -1,6 +1,8 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { toast } from "sonner";
-import { ArrowUp, Square, X } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useEffect, useId, useRef, useState } from "octane";
+import { toast } from "../../components/toast";
+import { ArrowUp, Square, X } from "@octanejs/lucide";
 import { type UploadedAttachment } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
@@ -48,7 +50,7 @@ export function CodexComposer() {
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!textarea.current) return;
     textarea.current.style.height = "auto";
@@ -61,7 +63,7 @@ export function CodexComposer() {
   const [previewKey, setPreviewKey] = useState<string>();
   const previewUrls = useRef(new Map<string, string>());
   const active = useRef(new Map<string, AbortController>());
-  const fileInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const count = useRef(0);
   const generation = useRef(0);
   const uploadPermission = !!(
@@ -284,11 +286,11 @@ export function CodexComposer() {
         className="min-h-16 max-h-40 resize-none overflow-y-auto border-0 shadow-none"
         value={message}
         maxLength={MAX_MESSAGE_LENGTH}
-        onChange={(event) => setMessage(event.target.value)}
+        onChange={(event) => setMessage((event.currentTarget as unknown as HTMLInputElement).value)}
         placeholder={t.message}
         disabled={!online || busy || submitted}
         onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files);
+          const files = Array.from(event.clipboardData?.files ?? []);
           if (files.length && uploadPermission) {
             event.preventDefault();
             void add(files);
@@ -371,8 +373,8 @@ export function CodexComposer() {
           aria-label={copy.attachment}
           disabled={!uploadPermission || busy || submitted}
           onChange={(event) => {
-            void add(Array.from(event.target.files ?? []));
-            event.target.value = "";
+            void add(Array.from((event.currentTarget as unknown as HTMLInputElement).files ?? []));
+            (event.currentTarget as unknown as HTMLInputElement).value = "";
           }}
         />
         {!isClaude && (

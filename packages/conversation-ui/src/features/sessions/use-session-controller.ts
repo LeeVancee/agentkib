@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   createConversationStore,
   mergeConversationItems,
@@ -20,7 +22,7 @@ import {
   useState,
   type FormEvent,
   type SetStateAction,
-} from "react";
+} from "octane";
 import {
   ApiError,
   isLegacyPreparedReceipt,
@@ -165,7 +167,7 @@ export function useSessionController({
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
-    scroll = useRef<HTMLElement>(null),
+    scroll = useRef<HTMLElement | null>(null),
     mutating = useRef(false);
   const durableScope = useRef<string | undefined>(undefined);
   const durablePending = useRef<PendingControl[]>([]);
@@ -262,7 +264,7 @@ export function useSessionController({
       const excluded = new Set(
         records.filter((record) => !isSessionVisible(record)).map((s) => s.id),
       );
-      const visible = records.filter(isSessionVisible);
+      const visible = records.filter((record) => isSessionVisible(record));
       // Update the dispatch guard before publishing React state. A callback from
       // the previous render must not reopen a record the new catalog excludes.
       excludedIds.current = excluded;
@@ -692,12 +694,12 @@ export function useSessionController({
       refreshRequired.current = true;
       setControlReady(false);
       const pending = deferredRefresh.current;
-      if (pending?.generation === g && pending.readiness === readinessEpoch.current) {
+      if (pending && pending.generation === g && pending.readiness === readinessEpoch.current) {
         if (wake !== refreshWake.current) resumeDeferredRefresh();
         return;
       }
       const flight = refreshFlight.current;
-      if (flight?.generation === g && flight.readiness === readinessEpoch.current) return;
+      if (flight && flight.generation === g && flight.readiness === readinessEpoch.current) return;
       // A late busy response may arrive after settlement and a newer complete
       // read. Recover with a fresh read; repeated contention waits for an event.
       void refresh(false, true);

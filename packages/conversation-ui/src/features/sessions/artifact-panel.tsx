@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef, useState, type ReactNode } from "octane";
 
 /** One responsive DOM tree preserves native media when the viewport changes. */
 export function ArtifactPanel({
@@ -10,7 +12,7 @@ export function ArtifactPanel({
   labelledBy: string;
   onClose: () => void;
 }) {
-  const panel = useRef<HTMLElement>(null);
+  const panel = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const [modal, setModal] = useState(() => !window.matchMedia("(min-width: 1280px)").matches);

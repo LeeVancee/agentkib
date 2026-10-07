@@ -5,7 +5,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@octanejs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@octanejs/tanstack-query";
-import type { ReactElement } from "react";
+import type { ReactElement } from "octane";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { AppDialogProvider } from "@/components/AppDialogProvider";

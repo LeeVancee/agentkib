@@ -6,14 +6,7 @@
   "exports": "./src/index.tsx",
   "dependencies": {
     "@agentkib/web-client": "workspace:*",
-    "react-markdown": "^10.1.0",
-    "rehype-sanitize": "^6.0.0",
-    "remark-gfm": "^4.0.1"
-  },
-  "devDependencies": {
-    "@types/react": "^19.0.0"
-  },
-  "peerDependencies": {
-    "react": "^19.1.0"
+    "@tanstack/markdown": "0.0.15",
+    "octane": "0.7.1"
   }
 }

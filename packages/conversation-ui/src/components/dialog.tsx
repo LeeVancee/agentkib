@@ -1,4 +1,6 @@
-import { useEffect, useRef, type ReactNode } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect, useRef, type ReactNode } from "octane";
 import { cn } from "../lib/utils";
 import {
   Dialog as DialogRoot,
@@ -39,7 +41,7 @@ export function Dialog({
     };
   }, []);
   return (
-    <DialogRoot open onOpenChange={(open) => !open && onClose()}>
+    <DialogRoot open onOpenChange={(open: boolean) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
         className={cn(

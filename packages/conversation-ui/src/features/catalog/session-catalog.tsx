@@ -1,7 +1,9 @@
+/** @jsxImportSource octane */
+
 import { NativeSelect } from "../../components/ui/native-select";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
-import { useState } from "react";
+import { useState } from "octane";
 import {
   ChevronDown,
   ChevronRight,
@@ -10,8 +12,8 @@ import {
   GitBranch,
   Info,
   Search,
-} from "lucide-react";
-import { AgentMark, agentName } from "@agentkib/agent-identity/react";
+} from "@octanejs/lucide";
+import { AgentMark, agentName } from "@agentkib/agent-identity";
 import {
   displaySessionTitle,
   filterSessions,
@@ -51,7 +53,7 @@ export function SessionCatalog({
   const [agent, setAgent] = useState("all");
   const [filter, setFilter] = useState<"current" | "archived" | "metadata" | "all">("current");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const visibleSessions = sessions.filter(isSessionVisible);
+  const visibleSessions = sessions.filter((session) => isSessionVisible(session));
   const filtered = filterSessions(sessions, workspaces ?? [], { query, agent, filter }, t.untitled);
   const groups = groupSessions(filtered, workspaces ?? []);
   const agents = [
@@ -65,14 +67,14 @@ export function SessionCatalog({
           aria-label={t.search}
           placeholder={t.search}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => setQuery((e.currentTarget as unknown as HTMLInputElement).value)}
         />
       </label>
       <details className="mx-4 mb-4 rounded-lg border bg-background/50 px-3 py-1 text-xs text-muted-foreground [&>summary]:cursor-pointer [&>summary]:py-2 [&>label]:my-3 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&_select]:max-w-40 [&_select]:text-xs">
         <summary>{c.options}</summary>
         <label>
           {c.agent}
-          <NativeSelect value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <NativeSelect value={agent} onChange={(e) => setAgent((e.currentTarget as unknown as HTMLInputElement).value)}>
             <option value="all">{c.allAgents}</option>
             {agents.map((a) => (
               <option key={a} value={a}>
@@ -83,7 +85,7 @@ export function SessionCatalog({
         </label>
         <label>
           {c.records}
-          <NativeSelect value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
+          <NativeSelect value={filter} onChange={(e) => setFilter((e.currentTarget as unknown as HTMLInputElement).value as typeof filter)}>
             {(["current", "archived", "metadata", "all"] as const).map((f) => (
               <option key={f} value={f}>
                 {c[f]}

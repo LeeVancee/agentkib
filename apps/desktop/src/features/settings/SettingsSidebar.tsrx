@@ -2,7 +2,7 @@ import { navigationStyles } from "@/components/navigationStyles";
 import { useTranslation } from "@octanejs/i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { ComponentType } from "react";
+import type { ComponentType } from "octane";
 import {
   Database,
   FolderSearch,

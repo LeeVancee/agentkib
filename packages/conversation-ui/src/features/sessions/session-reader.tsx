@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
@@ -5,13 +7,13 @@ import { contextUsageCopy } from "./context-usage-copy";
 import { CodexComposer } from "./codex-composer";
 import { Textarea } from "../../components/ui/textarea";
 import { Button } from "../../components/ui/button";
-import { ArrowDown, ArrowUp, ChevronRight, LoaderCircle, ShieldCheck, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, LoaderCircle, ShieldCheck, Square } from "@octanejs/lucide";
 import { SafeMarkdown, Transcript } from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/question-form";
 import { MAX_MESSAGE_LENGTH, isValidMessage } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "octane";
 import { webLayoutCopy } from "./web-layout-copy";
 export function SessionReader() {
   const {
@@ -218,7 +220,7 @@ export function SessionReader() {
                   id="message"
                   value={message}
                   maxLength={MAX_MESSAGE_LENGTH}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => setMessage((e.currentTarget as unknown as HTMLInputElement).value)}
                   placeholder={t.message}
                   disabled={!online || busy}
                 />

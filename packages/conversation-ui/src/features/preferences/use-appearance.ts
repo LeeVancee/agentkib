@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect } from "octane";
 import type { Locale } from "../../i18n";
 
 export function useAppearance(locale: Locale, theme: string, accent = "blue", enabled = true) {

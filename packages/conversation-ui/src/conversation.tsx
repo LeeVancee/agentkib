@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import {
   createContext,
   useContext,
@@ -6,7 +8,7 @@ import {
   useRef,
   useState,
   type Ref,
-} from "react";
+} from "octane";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -15,8 +17,8 @@ import {
   Outlet,
   RouterProvider,
   useParams,
-} from "@tanstack/react-router";
-import { LoaderCircle } from "lucide-react";
+} from "@octanejs/tanstack-router";
+import { LoaderCircle } from "@octanejs/lucide";
 import type { WebClient } from "@agentkib/web-client";
 import type { Locale } from "./i18n";
 import { SessionProvider, useSession } from "./features/sessions/session-context";

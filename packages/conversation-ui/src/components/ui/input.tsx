@@ -1,7 +1,9 @@
-import * as React from "react";
+/** @jsxImportSource octane */
+
+import type { ComponentProps } from "octane";
 import { cn } from "../../lib/utils";
 
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+function Input({ className, type, ...props }: ComponentProps<"input">) {
   return (
     <input
       type={type}

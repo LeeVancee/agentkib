@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
-import { Gauge } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useRef, useState } from "octane";
+import { Gauge } from "@octanejs/lucide";
 import type { ContextUsage, Live } from "@agentkib/web-client";
 import type { Locale } from "../../i18n";
 import { Button } from "../../components/ui/button";

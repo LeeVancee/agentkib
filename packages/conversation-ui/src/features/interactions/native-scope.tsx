@@ -1,3 +1,5 @@
+/** @jsxImportSource octane */
+
 import type { Locale } from "../../i18n";
 const copy = {
   "zh-CN": {

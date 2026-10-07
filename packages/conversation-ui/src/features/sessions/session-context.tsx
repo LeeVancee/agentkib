@@ -1,5 +1,7 @@
-import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
-import { Toaster } from "sonner";
+/** @jsxImportSource octane */
+
+import { createContext, useContext, type ReactNode } from "octane";
+import { ToastViewport } from "../../components/toast";
 import { codexCopy } from "./codex-copy";
 import {
   useSessionController,
@@ -16,20 +18,7 @@ export function SessionProvider({
   return (
     <SessionContext value={value}>
       {children}
-      <Toaster
-        position="top-right"
-        offset={{ top: "calc(var(--window-toolbar-height, 0px) + 16px)" }}
-        closeButton
-        duration={5000}
-        style={
-          {
-            "--normal-bg": "var(--card)",
-            "--normal-text": "var(--card-foreground)",
-            "--normal-border": "var(--border)",
-          } as CSSProperties
-        }
-        toastOptions={{ closeButtonAriaLabel: codexCopy[value.locale].close }}
-      />
+      <ToastViewport closeLabel={codexCopy[value.locale].close} />
     </SessionContext>
   );
 }

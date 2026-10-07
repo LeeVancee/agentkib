@@ -1,4 +1,6 @@
-import { createElement, type ComponentType } from "react";
+/** @jsxImportSource octane */
+
+import { createElement, type ComponentType } from "octane";
 import type { ArtifactEntry, ArtifactPreviewKind, ArtifactTicket } from "@agentkib/web-client";
 import { SafeMarkdown } from "@agentkib/session-ui";
 

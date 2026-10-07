@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@octanejs/tanstack-router";
 
 /** Both the Web router and the embedded desktop router expose these routes. */
 export function useSessionNavigate() {

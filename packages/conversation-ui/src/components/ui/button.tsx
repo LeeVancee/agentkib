@@ -1,4 +1,6 @@
-import * as React from "react";
+/** @jsxImportSource octane */
+
+import type { ComponentProps } from "octane";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
 
@@ -39,7 +41,7 @@ function Button({
   variant = "default",
   size = "default",
   ...props
-}: React.ComponentProps<"button"> & VariantProps<typeof buttonVariants>) {
+}: ComponentProps<"button"> & VariantProps<typeof buttonVariants>) {
   const Comp = "button";
 
   return (

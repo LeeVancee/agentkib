@@ -1,5 +1,7 @@
+/** @jsxImportSource octane */
+
 import { useSessionNavigate } from "./session-navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "octane";
 import {
   ApiError,
   type CodexAction,
@@ -238,7 +240,7 @@ export function CodexTools({
             <h3 className="font-medium">{layout.management}</h3>
             <label className="block text-sm">
               {copy.name}
-              <Input value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />
+              <Input value={name} maxLength={200} onChange={(e) => setName((e.currentTarget as unknown as HTMLInputElement).value)} />
             </label>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -266,7 +268,7 @@ export function CodexTools({
                   <input
                     type="checkbox"
                     checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
+                    onChange={(e) => setConfirmed((e.currentTarget as unknown as HTMLInputElement).checked)}
                   />
                   {copy.handoff}
                 </label>
@@ -293,7 +295,7 @@ export function CodexTools({
                   className="block w-full rounded border bg-background p-2"
                   value={model}
                   onChange={(e) => {
-                    setModel(e.target.value);
+                    setModel((e.currentTarget as unknown as HTMLInputElement).value);
                     setEffort("");
                   }}
                 >
@@ -310,7 +312,7 @@ export function CodexTools({
                 <select
                   className="block w-full rounded border bg-background p-2"
                   value={effort}
-                  onChange={(e) => setEffort(e.target.value)}
+                  onChange={(e) => setEffort((e.currentTarget as unknown as HTMLInputElement).value)}
                 >
                   <option value="">{copy.keep}</option>
                   {options?.models
@@ -325,7 +327,7 @@ export function CodexTools({
                 <select
                   className="block w-full rounded border bg-background p-2"
                   value={mode}
-                  onChange={(e) => setMode(e.target.value as "" | "default" | "plan")}
+                  onChange={(e) => setMode((e.currentTarget as unknown as HTMLInputElement).value as "" | "default" | "plan")}
                 >
                   <option value="">{copy.keep}</option>
                   <option value="default">{copy.normal}</option>
@@ -353,7 +355,7 @@ export function CodexTools({
                   <Input
                     aria-label={copy.text}
                     value={text}
-                    onChange={(e) => setText(e.target.value)}
+                    onChange={(e) => setText((e.currentTarget as unknown as HTMLInputElement).value)}
                   />
                 )}
                 <div className="flex flex-wrap gap-2">

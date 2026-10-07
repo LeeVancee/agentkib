@@ -1,7 +1,9 @@
-import { agentName } from "@agentkib/agent-identity/react";
+/** @jsxImportSource octane */
+
+import { agentName } from "@agentkib/agent-identity";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "../sessions/session-context";
-import { useEffect, useState } from "react";
+import { useEffect, useState } from "octane";
 
 type NativeContext = {
   available: boolean;

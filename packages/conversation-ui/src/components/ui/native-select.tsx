@@ -1,12 +1,14 @@
-import * as React from "react";
+/** @jsxImportSource octane */
+
+import type { ComponentProps } from "octane";
 import { cn } from "../../lib/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon } from "@octanejs/lucide";
 
 function NativeSelect({
   className,
   size = "default",
   ...props
-}: Omit<React.ComponentProps<"select">, "size"> & { size?: "sm" | "default" }) {
+}: Omit<ComponentProps<"select">, "size"> & { size?: "sm" | "default" }) {
   return (
     <div
       className="group/native-select relative w-fit has-[select:disabled]:opacity-50"
@@ -32,7 +34,7 @@ function NativeSelect({
   );
 }
 
-function NativeSelectOption({ className, ...props }: React.ComponentProps<"option">) {
+function NativeSelectOption({ className, ...props }: ComponentProps<"option">) {
   return (
     <option
       data-slot="native-select-option"
@@ -42,7 +44,7 @@ function NativeSelectOption({ className, ...props }: React.ComponentProps<"optio
   );
 }
 
-function NativeSelectOptGroup({ className, ...props }: React.ComponentProps<"optgroup">) {
+function NativeSelectOptGroup({ className, ...props }: ComponentProps<"optgroup">) {
   return (
     <optgroup
       data-slot="native-select-optgroup"

@@ -36,9 +36,6 @@ const config = {
       "zod",
       "d3-hierarchy",
       "qrcode",
-      "react",
-      "react-dom",
-      "react-dom/client",
     ],
   },
   resolve: {

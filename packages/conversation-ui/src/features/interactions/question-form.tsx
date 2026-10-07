@@ -1,8 +1,10 @@
+/** @jsxImportSource octane */
+
 import { codexCopy } from "../sessions/codex-copy";
 import { Textarea } from "../../components/ui/textarea";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
-import { useState } from "react";
+import { useState } from "octane";
 import type { UserQuestionRequest } from "@agentkib/web-client";
 import type { Locale } from "../../i18n";
 
@@ -216,7 +218,7 @@ export function QuestionForm({
                   setChoices((previous) => ({
                     ...previous,
                     [q.id]: q.multiSelect
-                      ? event.target.checked
+                      ? (event.currentTarget as unknown as HTMLInputElement).checked
                         ? [...(own(previous, q.id) ?? []), option.label]
                         : (own(previous, q.id) ?? []).filter((v) => v !== option.label)
                       : [option.label],
@@ -238,7 +240,7 @@ export function QuestionForm({
                   name={q.id}
                   checked={!!own(useCustom, q.id)}
                   onChange={(event) => {
-                    setUseCustom((previous) => ({ ...previous, [q.id]: event.target.checked }));
+                    setUseCustom((previous) => ({ ...previous, [q.id]: (event.currentTarget as unknown as HTMLInputElement).checked }));
                     if (!q.multiSelect) setChoices((previous) => ({ ...previous, [q.id]: [] }));
                   }}
                 />
@@ -255,7 +257,7 @@ export function QuestionForm({
                       maxLength={MAX_ANSWER_LENGTH}
                       value={own(custom, q.id) ?? ""}
                       onChange={(event) =>
-                        setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
+                        setCustom((previous) => ({ ...previous, [q.id]: (event.currentTarget as unknown as HTMLInputElement).value }))
                       }
                     />
                     <p className="text-xs text-muted-foreground">{codexCopy[locale].secret}</p>
@@ -266,7 +268,7 @@ export function QuestionForm({
                     maxLength={MAX_ANSWER_LENGTH}
                     value={own(custom, q.id) ?? ""}
                     onChange={(event) =>
-                      setCustom((previous) => ({ ...previous, [q.id]: event.target.value }))
+                      setCustom((previous) => ({ ...previous, [q.id]: (event.currentTarget as unknown as HTMLInputElement).value }))
                     }
                   />
                 ))}

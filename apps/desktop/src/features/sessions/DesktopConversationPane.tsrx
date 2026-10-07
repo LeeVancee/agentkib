@@ -1,6 +1,5 @@
 /** @jsxImportSource octane */
 
-import { ReactCompat } from "octane/react";
 import { useCallback, useEffect, useRef, useState } from "octane";
 import {
   EmbeddedConversation,
@@ -76,19 +75,16 @@ export function DesktopConversationPane({
           {tr("sessions.conversationCatalogError")} {catalogError}
         </p>
       )}
-      <ReactCompat
-        component={EmbeddedConversation}
-        props={{
-          controlsRef,
-          client,
-          sessionId: create ? undefined : sessionId,
-          create,
-          refreshRevision: historyRevision,
-          locale,
-          onSessionChange,
-          onCatalogChange,
-          onCreateClosed,
-        }}
+      <EmbeddedConversation
+        controlsRef={controlsRef}
+        client={client}
+        sessionId={create ? undefined : sessionId}
+        create={create}
+        refreshRevision={historyRevision}
+        locale={locale}
+        onSessionChange={onSessionChange}
+        onCatalogChange={onCatalogChange}
+        onCreateClosed={onCreateClosed}
       />
     </div>
   );

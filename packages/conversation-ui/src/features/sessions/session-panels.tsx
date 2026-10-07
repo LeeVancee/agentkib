@@ -1,4 +1,6 @@
-import { createContext, useContext } from "react";
+/** @jsxImportSource octane */
+
+import { createContext, useContext } from "octane";
 export type SessionPanels = {
   filesOpen: boolean;
   setFilesOpen: (open: boolean) => void;

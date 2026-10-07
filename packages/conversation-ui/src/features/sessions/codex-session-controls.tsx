@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { useCallback, useEffect, useState, useRef, type ReactNode } from "octane";
+import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "@octanejs/lucide";
 import {
   ApiError,
   type CodexAction,
@@ -594,7 +596,7 @@ export function CodexComposerControls({
                   title={reasonTitle(settings.writable.model?.reason)}
                   onChange={(event) => {
                     editSettings();
-                    const next = event.target.value;
+                    const next = (event.currentTarget as unknown as HTMLInputElement).value;
                     const option = settings.options.models?.find((item) => item.id === next);
                     setModel(next);
                     if (!option?.efforts?.includes(effort)) setEffort(option?.defaultEffort ?? "");
@@ -627,7 +629,7 @@ export function CodexComposerControls({
                     title={reasonTitle(settings.writable.effort?.reason)}
                     onChange={(event) => {
                       editSettings();
-                      setEffort(event.target.value);
+                      setEffort((event.currentTarget as unknown as HTMLInputElement).value);
                     }}
                   >
                     <option value="">{copy.defaultOption}</option>
@@ -649,7 +651,7 @@ export function CodexComposerControls({
                     title={reasonTitle(settings.writable.mode?.reason)}
                     onChange={(event) => {
                       editSettings();
-                      setMode(event.target.value as "" | "default" | "plan");
+                      setMode((event.currentTarget as unknown as HTMLInputElement).value as "" | "default" | "plan");
                     }}
                   >
                     <option value="" disabled>
@@ -675,7 +677,7 @@ export function CodexComposerControls({
                     title={reasonTitle(settings.writable.serviceTier?.reason)}
                     onChange={(event) => {
                       editSettings();
-                      setServiceTier(event.target.value);
+                      setServiceTier((event.currentTarget as unknown as HTMLInputElement).value);
                     }}
                   >
                     <option value="">{copy.defaultOption}</option>
@@ -712,7 +714,7 @@ export function CodexComposerControls({
                     title={reasonTitle(settings.writable.policy?.reason)}
                     onChange={(event) => {
                       editSettings();
-                      setPolicy(event.target.value);
+                      setPolicy((event.currentTarget as unknown as HTMLInputElement).value);
                     }}
                   >
                     {settings.options.policies?.map((item) => (
@@ -932,7 +934,7 @@ export function CodexComposerControls({
                   disabled={busy || saving || compacting}
                   onChange={(event) => {
                     editGoal();
-                    setObjective(event.target.value);
+                    setObjective((event.currentTarget as unknown as HTMLInputElement).value);
                   }}
                 />
               </label>
@@ -945,7 +947,7 @@ export function CodexComposerControls({
                   disabled={busy || saving || compacting}
                   onChange={(event) => {
                     editGoal();
-                    setTokenBudget(event.target.value);
+                    setTokenBudget((event.currentTarget as unknown as HTMLInputElement).value);
                   }}
                 />
               </label>
@@ -1042,7 +1044,7 @@ export function CodexComposerControls({
                   aria-label={copy.resourceSearch}
                   placeholder={copy.resourceSearch}
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => setQuery((event.currentTarget as unknown as HTMLInputElement).value)}
                 />
                 <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
                 <div className="space-y-2">
@@ -1077,7 +1079,7 @@ export function CodexComposerControls({
                                     title={reasonTitle(item.reason || feature("context")?.reason)}
                                     onChange={(event) =>
                                       setResources(
-                                        event.target.checked
+                                        (event.currentTarget as unknown as HTMLInputElement).checked
                                           ? [...resources, item]
                                           : resources.filter((selected) => selected.id !== item.id),
                                       )

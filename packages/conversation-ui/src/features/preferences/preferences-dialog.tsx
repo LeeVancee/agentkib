@@ -1,4 +1,6 @@
-import { Languages } from "lucide-react";
+/** @jsxImportSource octane */
+
+import { Languages } from "@octanejs/lucide";
 import { NativeSelect } from "../../components/ui/native-select";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "../sessions/session-context";
@@ -11,7 +13,7 @@ export function PreferencesDialog() {
         <label>
           <Languages size={16} />
           {t.language}
-          <NativeSelect value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
+          <NativeSelect value={locale} onChange={(e) => setLocale((e.currentTarget as unknown as HTMLInputElement).value as Locale)}>
             <option value="zh-CN">简体中文</option>
             <option value="zh-TW">繁體中文</option>
             <option value="en-US">English</option>
@@ -20,7 +22,7 @@ export function PreferencesDialog() {
         </label>
         <label>
           {t.theme}
-          <NativeSelect value={theme} onChange={(e) => setTheme(e.target.value)}>
+          <NativeSelect value={theme} onChange={(e) => setTheme((e.currentTarget as unknown as HTMLInputElement).value)}>
             <option value="system">{t.system}</option>
             <option value="light">{t.light}</option>
             <option value="dark">{t.dark}</option>
@@ -28,7 +30,7 @@ export function PreferencesDialog() {
         </label>
         <label>
           {t.accent}
-          <NativeSelect value={accent} onChange={(e) => setAccent(e.target.value)}>
+          <NativeSelect value={accent} onChange={(e) => setAccent((e.currentTarget as unknown as HTMLInputElement).value)}>
             <option value="blue">{t.blue}</option>
             <option value="violet">{t.violet}</option>
             <option value="green">{t.green}</option>

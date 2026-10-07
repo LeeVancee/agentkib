@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+/** @jsxImportSource octane */
+
+import { useEffect } from "octane";
 import { create } from "@octanejs/zustand";
 import type { ConversationCatalog } from "@agentkib/web-client";
 import { createConversationStore, type SessionStreamEvent } from "@agentkib/conversation-state";

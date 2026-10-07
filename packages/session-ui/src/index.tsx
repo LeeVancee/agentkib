@@ -1,7 +1,7 @@
-import { useId, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeSanitize from "rehype-sanitize";
+/** @jsxImportSource octane */
+
+import { useId, useState } from "octane";
+import { Markdown } from "@tanstack/markdown/octane";
 import type { ConversationEvent } from "@agentkib/web-client";
 export interface ReaderLabels {
   process: string;
@@ -118,10 +118,7 @@ function projectTranscript(
 
 export function SafeMarkdown({ text }: { text: string }) {
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize]}
-      components={{
+    <Markdown components={{
         img: () => null,
         a: ({ href, children }) =>
           href && /^https?:\/\//i.test(href) ? (
@@ -131,8 +128,7 @@ export function SafeMarkdown({ text }: { text: string }) {
           ) : (
             <span>{children}</span>
           ),
-      }}
-    >
+      }}>
       {text}
     </Markdown>
   );

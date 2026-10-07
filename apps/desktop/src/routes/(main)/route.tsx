@@ -48,7 +48,8 @@ function MainLayout() {
   const agentFilter = search.agentFilter ?? "all";
   const { maxWidth, visibleWidth, canResize } = useSidebarLayout();
   const scrollRef = useRetainedScroll(locationKey, retainedScrollOffsets);
-  const hasSidebarPanel = isWorkspace || ["workspaces", "agents", "sessions", "catalog"].includes(active);
+  const hasSidebarPanel =
+    isWorkspace || ["workspaces", "agents", "sessions", "catalog"].includes(active);
 
   const setAgentFilter = (filter: AgentFilter) => {
     void navigate({
@@ -95,7 +96,9 @@ function MainLayout() {
       onRetryWorkspaces={() => void app.retryWorkspaces()}
       activeWorkspaceId={route.kind === "workspace" ? route.workspaceId : undefined}
       workspacePage={route.kind === "workspace" ? route.page : undefined}
-      changeCount={workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0)}
+      changeCount={
+        workspaceState.changeSet?.changes.length ?? (workspaceState.handoffLaunchRequest ? 1 : 0)
+      }
       onWorkspaceNavigate={navigateWorkspace}
       onOpenWorkspace={(workspace, page) => void app.openWorkspace(workspace, page)}
       onNavigate={app.navigateGlobal}
@@ -111,18 +114,11 @@ function MainLayout() {
     />
   );
   const breadcrumb = isWorkspace
-    ? [
-        workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"),
-        tr(`nav.${route.page}`),
-      ]
+    ? [workspaceState.selectedWorkspace?.name ?? tr("nav.workspaces"), tr(`nav.${route.page}`)]
     : active === "home"
       ? [tr("nav.workspaces"), tr("nav.home")]
       : [tr(entries.find((entry) => entry.id === active)?.label ?? "nav.home")];
-  const toolbar = isSessions ? (
-    <SessionWindowToolbar />
-  ) : (
-    <AppToolbar breadcrumb={breadcrumb} />
-  );
+  const toolbar = isSessions ? <SessionWindowToolbar /> : <AppToolbar breadcrumb={breadcrumb} />;
   const shellClassName = cn(
     "group app-shell !grid !h-full !w-full !min-h-0 !overflow-hidden",
     sidebarCollapsed && "app-shell-sidebar-collapsed",

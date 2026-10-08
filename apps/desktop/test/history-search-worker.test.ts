@@ -472,6 +472,8 @@ describe("history worker lifecycle and bounded admission", () => {
         limitations: [],
       });
     },
+    // Includes repeated native CLI reads, a Worker restart and full recovery on ARM64.
+    15_000,
   );
   it("retains unchanged content generations and marks a failed snapshot check stale", async () => {
     const root = await fs.realpath(

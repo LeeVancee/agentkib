@@ -548,3 +548,12 @@ HEAD 仍为 `4cdb33407d12142ada72ac054d7687a89859100d`，分支 `codex/session-c
 修复验证使用 Node `22.23.3`、pnpm `10.8.1`，macOS arm64。Backend 构建、format、lint、typecheck 均通过；三个失败相关测试文件 77/77 通过；新增锁回归 4/4 通过；`pnpm test:backend:stability --maxWorkers=1` 的 19 文件通过，368 项通过、1 项既有跳过，包含 staged Koffi/SQLite Worker smoke。保留既有 75 条 lint 告警及 Node SQLite experimental 提示。Windows/Fedora 修后结果须以新提交 CI 为准。
 
 本轮原始 CI 日志、本地检查与子代理报告位于权限受限的 `$CODEX_HOME/tmp/session-content-search-ci-20261008/`，初次失败日志保持原样。无真实模型调用、部署或版本调整。
+
+
+### Windows ARM64 后续验证（2026-10-09）
+
+修复提交 `876ca6599ba7373185b8880b0894f7eb49a2b7a9` 的全量 CI（`37805243921`）、Fedora x64、Ubuntu ARM64（`37805243955`）和 Windows x64（`37805244021`）全部通过。全量 CI 为桌面 2327 通过 / 11 既有跳过、Web 656 通过；Windows x64 为 359 通过 / 10 既有跳过。
+
+Windows ARM64 剩余 2 项失败、357 项通过、10 项既有跳过：仅 OpenCode damaged cached/forced 的完整快照恢复流程触及默认 5 秒测试预算（5038ms、5257ms）。相邻 bounded cached/forced 用例分别 4723ms、4408ms；该组流程包含多次真实 CLI 读取、Worker 重启及完整恢复索引。仅这六种参数化场景设置 15 秒测试预算，不改读取期限、断言或其他用例。两种 Windows 架构的四项 Codex 原生引用发送和四项真实文件锁回归均通过，原生崩溃已消除；ARM64 的生命周期及 Runtime 清理回归也全部通过。
+
+第二轮原始证据为 `ci-after.log`、`fedora-after.log`、`windows-x64-after.log`、`windows-arm64-after.log`；最后的预算调整本机专项见 `arm64-budget-focused.log`。最终平台结果以该调整后的 PR CI 为准，未将两个超时用例记录为通过。

@@ -1,13 +1,16 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { Button } from "@/components/ui/button";
-import { Tooltip } from "@base-ui/react/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   useEffect,
   useId,
   useRef,
   useState,
   type ComponentType,
-  type ReactElement,
   type ReactNode,
 } from "react";
 import {
@@ -69,21 +72,6 @@ const agentFilters: Array<[AgentFilter, string]> = [
   ["enabled", "agents.filter.enabled"],
   ["available", "agents.filter.available"],
 ];
-
-function ActivityBarTooltip({ label, children }: { label: string; children: ReactElement }) {
-  return (
-    <Tooltip.Root>
-      <Tooltip.Trigger render={children} aria-label={label} />
-      <Tooltip.Portal>
-        <Tooltip.Positioner side="right" sideOffset={8} className="z-[9999]">
-          <Tooltip.Popup className="rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-lg">
-            {label}
-          </Tooltip.Popup>
-        </Tooltip.Positioner>
-      </Tooltip.Portal>
-    </Tooltip.Root>
-  );
-}
 
 export function AppSidebar(props: {
   active: GlobalPage | "settings";
@@ -288,90 +276,134 @@ export function AppSidebar(props: {
             className="activity-bar-navigation flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto [scrollbar-width:none]"
             aria-label={tr("common.primaryNavigation")}
           >
-            {props.entries.map(({ id, label, icon: Icon, badge, shortcut }) => (
-              <ActivityBarTooltip key={id} label={tr(label)}>
-                <Button
-                  variant="bare"
-                  size="content"
-                  className={cn("activity-bar-item", active === id && "activity-bar-item-active")}
-                  aria-current={active === id ? "page" : undefined}
-                  aria-keyshortcuts={
-                    shortcut ? ariaShortcut(getShortcutDefinition(shortcut), platform) : undefined
-                  }
-                  aria-controls={
-                    ["workspaces", "sessions", "agents", "catalog"].includes(id)
-                      ? panelId
-                      : undefined
-                  }
-                  onClick={() => navigate(id)}
-                >
-                  <Icon size={20} />
-                  <span className="sr-only">{tr(label)}</span>
-                  {!!badge && (
-                    <em className="activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] bg-sidebar-primary text-sidebar-primary-foreground text-[9px] leading-[15px] not-italic">
-                      {badge}
-                    </em>
-                  )}
-                </Button>
-              </ActivityBarTooltip>
-            ))}
+            {props.entries.map(({ id, label, icon: Icon, badge, shortcut }) => {
+              const translatedLabel = tr(label);
+
+              return (
+                <Tooltip key={id}>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="bare"
+                        size="content"
+                        className={cn(
+                          "activity-bar-item",
+                          active === id && "activity-bar-item-active",
+                        )}
+                        aria-label={translatedLabel}
+                        aria-current={active === id ? "page" : undefined}
+                        aria-keyshortcuts={
+                          shortcut
+                            ? ariaShortcut(getShortcutDefinition(shortcut), platform)
+                            : undefined
+                        }
+                        aria-controls={
+                          ["workspaces", "sessions", "agents", "catalog"].includes(id)
+                            ? panelId
+                            : undefined
+                        }
+                        onClick={() => navigate(id)}
+                      >
+                        <Icon size={20} />
+                        <span className="sr-only">{translatedLabel}</span>
+                        {!!badge && (
+                          <em className="activity-bar-badge absolute top-px right-0 min-w-[15px] h-[15px] px-[3px] rounded-[8px] bg-sidebar-primary text-sidebar-primary-foreground text-[9px] leading-[15px] not-italic">
+                            {badge}
+                          </em>
+                        )}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent side="right" >
+                    {translatedLabel}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
           </nav>
           <div className="activity-bar-footer flex flex-col gap-1.5">
             {props.onRefresh && (
-              <ActivityBarTooltip label={tr("menu.refreshCurrent")}>
-                <Button
-                  variant="bare"
-                  size="content"
-                  className="activity-bar-item"
-                  type="button"
-                  aria-keyshortcuts={ariaShortcut(
-                    getShortcutDefinition("refresh-current"),
-                    platform,
-                  )}
-                  title={`${tr("menu.refreshCurrent")} (${formatShortcut(getShortcutDefinition("refresh-current"), platform)})`}
-                  onClick={() => {
-                    setMobileOpen(false);
-                    props.onRefresh?.();
-                  }}
-                >
-                  <RefreshCw size={19} />
-                  <span className="sr-only">{tr("menu.refreshCurrent")}</span>
-                </Button>
-              </ActivityBarTooltip>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="bare"
+                      size="content"
+                      className="activity-bar-item"
+                      type="button"
+                      aria-label={tr("menu.refreshCurrent")}
+                      aria-keyshortcuts={ariaShortcut(
+                        getShortcutDefinition("refresh-current"),
+                        platform,
+                      )}
+                      title={`${tr("menu.refreshCurrent")} (${formatShortcut(getShortcutDefinition("refresh-current"), platform)})`}
+                      onClick={() => {
+                        setMobileOpen(false);
+                        props.onRefresh?.();
+                      }}
+                    >
+                      <RefreshCw size={19} />
+                      <span className="sr-only">{tr("menu.refreshCurrent")}</span>
+                    </Button>
+                  }
+                />
+                <TooltipContent side="right">
+                  {tr("menu.refreshCurrent")}
+                </TooltipContent>
+              </Tooltip>
             )}
-            <ActivityBarTooltip label={tr("sessions.remote")}>
-              <Button
-                variant="bare"
-                size="content"
-                className="activity-bar-item"
-                onClick={() => {
-                  setMobileOpen(false);
-                  setRemoteOpen(true);
-                }}
-              >
-                <MonitorSmartphone size={19} />
-                <span className="sr-only">{tr("sessions.remote")}</span>
-              </Button>
-            </ActivityBarTooltip>
-            <ActivityBarTooltip label={tr("nav.settings")}>
-              <Button
-                variant="bare"
-                size="content"
-                className={cn(
-                  "activity-bar-item",
-                  active === "settings" && "activity-bar-item-active",
-                )}
-                aria-current={active === "settings" ? "page" : undefined}
-                aria-keyshortcuts={ariaShortcut(getShortcutDefinition("open-settings"), platform)}
-                onClick={() => {
-                  setMobileOpen(false);
-                  props.onSettings();
-                }}
-              >
-                <Settings size={20} />
-                <span className="sr-only">{tr("nav.settings")}</span>
-              </Button>
-            </ActivityBarTooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="bare"
+                    size="content"
+                    className="activity-bar-item"
+                    aria-label={tr("sessions.remote")}
+                    onClick={() => {
+                      setMobileOpen(false);
+                      setRemoteOpen(true);
+                    }}
+                  >
+                    <MonitorSmartphone size={19} />
+                    <span className="sr-only">{tr("sessions.remote")}</span>
+                  </Button>
+                }
+              />
+              <TooltipContent side="right">
+                {tr("sessions.remote")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="bare"
+                    size="content"
+                    className={cn(
+                      "activity-bar-item",
+                      active === "settings" && "activity-bar-item-active",
+                    )}
+                    aria-label={tr("nav.settings")}
+                    aria-current={active === "settings" ? "page" : undefined}
+                    aria-keyshortcuts={ariaShortcut(
+                      getShortcutDefinition("open-settings"),
+                      platform,
+                    )}
+                    onClick={() => {
+                      setMobileOpen(false);
+                      props.onSettings();
+                    }}
+                  >
+                    <Settings size={20} />
+                    <span className="sr-only">{tr("nav.settings")}</span>
+                  </Button>
+                }
+              />
+              <TooltipContent side="right">
+                {tr("nav.settings")}
+              </TooltipContent>
+            </Tooltip>
             <Button
               variant="bare"
               size="content"

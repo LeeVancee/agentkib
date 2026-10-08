@@ -339,6 +339,10 @@ export class CursorSessions {
     return { sessions: found, incomplete };
   }
   resolve(nativeRef: string): { file: string; store: CursorStore } {
+    return this.resolveByIdentity((ref) => ref === nativeRef);
+  }
+  /** Find one verified store without filtering away evidence of a changed workspace. */
+  resolveByIdentity(matches: (nativeRef: string) => boolean): { file: string; store: CursorStore } {
     const config = this.root();
     const chats = path.join(config, "chats");
     for (const directory of [config, chats]) {
@@ -366,7 +370,7 @@ export class CursorSessions {
           else if (
             entry.name === "store.db" &&
             stat.isFile() &&
-            stableNativeRef("cursor-cli", [config, path.relative(chats, file)]) === nativeRef
+            matches(stableNativeRef("cursor-cli", [config, path.relative(chats, file)]))
           ) {
             const store = new CursorStore(file);
             return { file, store };

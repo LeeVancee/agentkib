@@ -93,6 +93,10 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       runtimeBootId: evidenceRecord.runtimeBootId ?? null,
       expectedRevision: evidenceRecord.expectedRevision ?? null,
       turnId: evidenceRecord.turnId ?? null,
+      ...(typeof evidenceRecord.historyInputHash === "string" &&
+      /^[a-f0-9]{64}$/.test(evidenceRecord.historyInputHash)
+        ? { historyInputHash: evidenceRecord.historyInputHash }
+        : {}),
       status,
       ack,
       completionObserved: false,

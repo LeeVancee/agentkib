@@ -60,6 +60,10 @@ export class OpenCodeSessions {
   async readHandoff(workspace: string, nativeRef: string) {
     return parseOpenCodeHandoff(await this.#export(workspace, nativeRef));
   }
+  /** One immutable export, rather than repeating export for each display page. */
+  async searchSnapshot(workspace: string, nativeRef: string) {
+    return exportSession(await this.#export(workspace, nativeRef));
+  }
   async readDocument(
     workspace: string,
     nativeRef: string,

@@ -1,3 +1,5 @@
+import { HistoryReferenceChips, HistorySearchTrigger } from "../history/history-search-controls";
+import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
 import { ContextUsageGauge } from "./context-usage";
@@ -8,13 +10,14 @@ import { Button } from "../../components/ui/button";
 import { ArrowDown, ArrowUp, ChevronRight, LoaderCircle, ShieldCheck, Square } from "lucide-react";
 import { SafeMarkdown, Transcript } from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/question-form";
-import { MAX_MESSAGE_LENGTH, isValidMessage } from "./session-model";
+import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { useSession } from "./session-context";
 import { ArtifactBrowser } from "./artifact-browser";
 import { useLayoutEffect, useRef, useState } from "react";
 import { webLayoutCopy } from "./web-layout-copy";
 export function SessionReader() {
   const {
+    historyReferences = [],
     t,
     access,
     selected,
@@ -76,7 +79,7 @@ export function SessionReader() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <SessionOperations
-            key={selected}
+            key={`operations-${selected}`}
             open={panels?.actionsOpen ?? false}
             onOpenChange={(open) => panels?.setActionsOpen(open)}
           />
@@ -201,16 +204,22 @@ export function SessionReader() {
           access.protocolVersion === 2 &&
           access.device?.send ? (
             current?.agent === "codex" || current?.agent === "claude-code" ? (
-              <CodexComposer key={selected} />
+              <CodexComposer key={`composer-${selected}`} />
             ) : (
               <form
                 className="mx-4 mb-4 mt-3 w-[calc(100%-2rem)] max-w-3xl shrink-0 self-center rounded-2xl border bg-card p-3 shadow-sm focus-within:ring-2 focus-within:ring-ring/20 md:mb-6 [&>textarea]:min-h-16 [&>textarea]:max-h-40 [&>textarea]:resize-y [&>textarea]:border-0 [&>textarea]:shadow-none [&>textarea]:focus-visible:ring-0 [&>div]:flex [&>div]:items-end [&>div]:justify-between [&>div]:gap-4 [&_small]:max-w-lg [&_small]:text-xs [&_small]:leading-5 [&_small]:text-muted-foreground"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (canSend && live?.activity !== "compacting" && isValidMessage(message))
+                  if (
+                    canSend &&
+                    live?.activity !== "compacting" &&
+                    validHistoryMessage(message, historyReferences)
+                  )
                     void control("send");
                 }}
               >
+                <HistoryReferenceChips />
+                <HistorySearchTrigger />
                 <label className="sr-only" htmlFor="message">
                   {t.message}
                 </label>
@@ -244,7 +253,9 @@ export function SessionReader() {
                         className="size-11 shrink-0 rounded-xl"
                         aria-label={t.send}
                         disabled={
-                          !canSend || live?.activity === "compacting" || !isValidMessage(message)
+                          !canSend ||
+                          live?.activity === "compacting" ||
+                          !validHistoryMessage(message, historyReferences)
                         }
                       >
                         <ArrowUp size={20} />

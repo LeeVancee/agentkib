@@ -114,7 +114,8 @@ export class BoundedTaskQueue {
   #stopped = false;
   #drainers: Array<() => void> = [];
   constructor(readonly options: { name: string; capacity?: number; timeoutMs?: number }) {}
-  run<T>(operation: (task: TaskContext) => Promise<T> | T): Promise<T> {
+  run<T>(operation: (task: TaskContext) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.#stopped)
       return Promise.reject(
         new BackendTaskError("backend-closing", `${this.options.name} is closing`),
@@ -127,6 +128,9 @@ export class BoundedTaskQueue {
       id: randomUUID(),
       deadlineAt: Date.now() + (this.options.timeoutMs ?? 180_000),
     });
+    const cancelExternal = () =>
+      context.cancel(new BackendTaskError("backend-closing", "Read request cancelled"));
+    signal?.addEventListener("abort", cancelExternal, { once: true });
     return new Promise<T>((resolve, reject) => {
       const entry: QueuedTask = {
         context,
@@ -136,6 +140,7 @@ export class BoundedTaskQueue {
           if (index < 0) return;
           this.#waiting.splice(index, 1);
           context.dispose();
+          signal?.removeEventListener("abort", cancelExternal);
           context.signal.removeEventListener("abort", entry.onAbort);
           reject(context.signal.reason);
           this.#drained();
@@ -148,6 +153,7 @@ export class BoundedTaskQueue {
             reject(error);
           } finally {
             context.dispose();
+            signal?.removeEventListener("abort", cancelExternal);
             context.signal.removeEventListener("abort", entry.onAbort);
             this.#active = undefined;
             this.#next();

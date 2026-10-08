@@ -15,6 +15,9 @@ const MAX_ROWS = 100_000;
 const MAX_EVENT_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 
+/** Confirmed ownership changes must withdraw cached text; read failures may retain it. */
+export class OpenClawSourceOwnershipError extends Error {}
+
 export interface OpenClawSqliteSession {
   file: string;
   agentId: string;
@@ -23,7 +26,11 @@ export interface OpenClawSqliteSession {
   session: NativeSession;
 }
 
-function open(file: string, agentId: string): DatabaseSync {
+function open(
+  file: string,
+  agentId: string,
+  metadataOnly = false,
+): { db: DatabaseSync; ownershipChanged: boolean } {
   let entry = file;
   for (let depth = 0; depth < 5; depth++) {
     const stat = lstatSync(entry);
@@ -55,25 +62,26 @@ function open(file: string, agentId: string): DatabaseSync {
         "SELECT role,schema_version,agent_id,app_version FROM schema_meta WHERE meta_key='primary'",
       )
       .get() as Record<string, unknown> | undefined;
-    if (
-      !meta ||
-      meta.role !== "agent" ||
-      meta.schema_version !== 23 ||
-      meta.agent_id !== agentId ||
-      meta.app_version !== "2026.9.6"
-    )
+    if (!meta || meta.schema_version !== 23 || meta.app_version !== "2026.9.6")
       throw new Error("Unsupported OpenClaw database version or agent ownership");
-    return db;
+    const ownershipChanged = meta.role !== "agent" || meta.agent_id !== agentId;
+    if (ownershipChanged && !metadataOnly)
+      throw new OpenClawSourceOwnershipError(
+        "Unsupported OpenClaw database version or agent ownership",
+      );
+    return { db, ownershipChanged };
   } catch (error) {
     db.close();
     throw error;
   }
 }
 
-function header(db: DatabaseSync, id: string): Record<string, any> {
+function header(db: DatabaseSync, id: string, metadataOnly = false): Record<string, any> {
   const row = db
     .prepare(
-      "SELECT event_json,event_utf8_bytes FROM transcript_events WHERE session_id=? ORDER BY seq LIMIT 1",
+      metadataOnly
+        ? `SELECT CASE WHEN length(CAST(event_json AS BLOB))<=${MAX_EVENT_BYTES} AND json_valid(event_json) THEN CASE WHEN json_extract(event_json,'$.type')='session' THEN event_json END END AS event_json FROM transcript_events WHERE session_id=? ORDER BY seq LIMIT 1`
+        : "SELECT event_json,event_utf8_bytes FROM transcript_events WHERE session_id=? ORDER BY seq LIMIT 1",
     )
     .get(id) as Record<string, unknown> | undefined;
   if (
@@ -101,7 +109,7 @@ export function listOpenClawSqlite(
   agentId: string,
   workspace: string | null,
 ): { sessions: OpenClawSqliteSession[]; incomplete: boolean } {
-  const db = open(file, agentId);
+  const { db } = open(file, agentId);
   try {
     const rows = db
       .prepare(
@@ -159,35 +167,59 @@ export function listOpenClawSqlite(
   }
 }
 
+/** Verify one previously bound session using metadata only, even after database ownership changes. */
+export function verifyOpenClawSqliteOwnership(
+  source: Pick<OpenClawSqliteSession, "file" | "agentId" | "id" | "cwd">,
+): void {
+  const { db, ownershipChanged } = open(source.file, source.agentId, true);
+  try {
+    // Require the original native session header before attributing a foreign database to it.
+    const first = header(db, source.id, true);
+    if (ownershipChanged)
+      throw new OpenClawSourceOwnershipError(
+        "Unsupported OpenClaw database version or agent ownership",
+      );
+    if (first.cwd !== source.cwd)
+      throw new OpenClawSourceOwnershipError("OpenClaw workspace changed while reading history");
+  } finally {
+    db.close();
+  }
+}
+
 function snapshot(source: OpenClawSqliteSession): {
   events: Array<{ seq: number; event: Record<string, any>; eligible: boolean }>;
   fingerprint: string;
 } {
-  const db = open(source.file, source.agentId);
+  const { db } = open(source.file, source.agentId);
   try {
     const first = header(db, source.id);
     if (first.cwd !== source.cwd)
-      throw new Error("OpenClaw workspace changed while reading history");
+      throw new OpenClawSourceOwnershipError("OpenClaw workspace changed while reading history");
     const owner = db
       .prepare(
         "SELECT n.entry_json,w.acp_owned,w.plugin_owner_id,w.agent_harness_id,w.session_scope FROM session_windows w JOIN session_nodes n ON n.session_key=w.session_key WHERE w.session_id=? AND n.entry_valid=1 AND length(CAST(n.entry_json AS BLOB))<=4194304",
       )
       .get(source.id) as Record<string, any> | undefined;
+    if (!owner)
+      throw new Error("OpenClaw externally owned/shared transcript is not a complete local source");
     if (
-      !owner ||
       owner.acp_owned !== 0 ||
       owner.plugin_owner_id != null ||
       (owner.agent_harness_id != null && owner.agent_harness_id !== "pi") ||
       owner.session_scope !== "conversation"
     )
-      throw new Error("OpenClaw externally owned/shared transcript is not a complete local source");
+      throw new OpenClawSourceOwnershipError(
+        "OpenClaw externally owned/shared transcript is not a complete local source",
+      );
     const entry = JSON.parse(String(owner.entry_json)) as Record<string, unknown>;
     if (
       ["acp", "cliSessionIds", "claudeCliSessionId", "codexCliSessionId"].some(
         (key) => entry[key] != null,
       )
     )
-      throw new Error("OpenClaw external CLI history is not a complete local source");
+      throw new OpenClawSourceOwnershipError(
+        "OpenClaw external CLI history is not a complete local source",
+      );
     if (
       (
         db
@@ -324,6 +356,12 @@ function activeMessages(events: ReturnType<typeof snapshot>["events"]): typeof e
   )
     throw new Error("OpenClaw reset retained tool history needs pairing verification");
   return [...prefix, ...events.slice(reset + 1)];
+}
+
+/** Original active records for read-only search, before display truncation or handoff redaction. */
+export function readOpenClawSearchSnapshot(source: OpenClawSqliteSession) {
+  const value = snapshot(source);
+  return { events: activeMessages(value.events), fingerprint: value.fingerprint };
 }
 
 function contentBlocks(

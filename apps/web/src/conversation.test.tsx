@@ -16,8 +16,11 @@ import {
   type ConversationEvent,
   type ConversationSessionSummary,
   type SessionStreamHandlers,
+  type HistorySearchStatus,
+  type ResolvedHistoryReference,
 } from "@agentkib/web-client";
 import { EmbeddedConversation } from "@agentkib/conversation-ui/conversation";
+import { HistoryCoverageStatus } from "@agentkib/conversation-ui/features/history/history-search";
 import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
 import {
   pendingScope,
@@ -2236,6 +2239,51 @@ describe("shared embedded conversation", () => {
     await screen.findByText("second history");
     expect(onSessionChange).not.toHaveBeenCalled();
   });
+  it("keeps one action panel and the composer draft through a host refresh", async ({
+    onTestFinished,
+  }) => {
+    const { client, sessions } = fixture();
+    sessions[0].agent = "codex";
+    const errors = vi.spyOn(console, "error");
+    onTestFinished(() => errors.mockRestore());
+    const events = vi.spyOn(client, "events");
+    const props = {
+      client,
+      sessionId: "first",
+      locale: "en-US" as const,
+      onSessionChange: vi.fn(),
+    };
+    const view = render(<EmbeddedConversation {...props} refreshRevision={0} />);
+    await screen.findByText("first history");
+    const input = screen.getByRole("textbox", { name: "Send a message" });
+    fireEvent.change(input, { target: { value: "Keep this unsent draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const panel = await screen.findByRole("dialog", { name: "Session actions" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Archive" })).toBeEnabled());
+    events.mockResolvedValue({
+      events: [
+        {
+          id: "refreshed",
+          kind: "agent-message",
+          content: "Refreshed while actions are open",
+          attachment_count: 0,
+          truncated: false,
+        },
+      ],
+      warnings: [],
+    });
+    view.rerender(<EmbeddedConversation {...props} refreshRevision={1} />);
+    await screen.findByText("Refreshed while actions are open");
+    expect(screen.getAllByRole("dialog")).toEqual([panel]);
+    expect(screen.getAllByRole("textbox", { name: "Send a message", hidden: true })).toEqual([
+      input,
+    ]);
+    expect(input).toHaveValue("Keep this unsent draft");
+    expect(screen.getByRole("button", { name: "Archive" })).toBeEnabled();
+    expect(errors.mock.calls.filter(([message]) => String(message).includes("same key"))).toEqual(
+      [],
+    );
+  });
   it("refreshes from an explicit host revision without rereading on mount or losing the draft", async () => {
     const { client } = fixture();
     const events = vi.spyOn(client, "events");
@@ -3101,5 +3149,764 @@ describe("history read error ownership", () => {
       await choosing;
     });
     expect(view.result.current.error).toBe(false);
+  });
+});
+
+const historyStatus: HistorySearchStatus = {
+  enabled: true,
+  generation: "generation",
+  bytes: 100,
+  limitBytes: 10000,
+  budgetExceeded: false,
+  sources: [
+    {
+      agent: "cursor",
+      body: "supported",
+      tools: "unsupported",
+      coverage: {
+        total: 1,
+        ready: 0,
+        building: 0,
+        partial: 1,
+        stale: 0,
+        unavailable: 0,
+        limitations: ["cursor-tools-unsupported"],
+      },
+    },
+  ],
+  coverage: {
+    total: 2,
+    ready: 1,
+    building: 0,
+    partial: 1,
+    stale: 0,
+    unavailable: 0,
+    limitations: ["cursor-tools-unsupported"],
+  },
+};
+describe("history coverage status", () => {
+  it("separates complete Cursor messages from unsupported tools and overall coverage", () => {
+    render(<HistoryCoverageStatus status={historyStatus} locale="en-US" />);
+
+    const sources = screen.getByRole("list", { name: "Source coverage" });
+    expect(sources.textContent).toBe("cursor: Messages Supported · Tool records Not supported");
+    expect(sources).not.toHaveTextContent("0/1");
+    expect(
+      screen.getByText(
+        "Index coverage: Ready 1/2 · Building 0 · Partial 1 · Stale 0 · Unavailable 0",
+      ),
+    ).toBeVisible();
+  });
+
+  it.each(["damaged-record", "source-record-limit", "source-byte-limit"])(
+    "preserves partial Cursor messages and overall counts for %s",
+    (limitation) => {
+      const coverage = {
+        ...historyStatus.coverage,
+        total: 1,
+        ready: 0,
+        limitations: ["cursor-tools-unsupported", limitation],
+      };
+      render(
+        <HistoryCoverageStatus
+          status={{
+            ...historyStatus,
+            coverage,
+            sources: [{ agent: "cursor", body: "partial", tools: "unsupported", coverage }],
+          }}
+          locale="en-US"
+        />,
+      );
+
+      const sources = screen.getByRole("list", { name: "Source coverage" });
+      expect(sources.textContent).toBe("cursor: Messages Partial · Tool records Not supported");
+      expect(sources).not.toHaveTextContent("0/1");
+      expect(
+        screen.getByText(
+          "Index coverage: Ready 0/1 · Building 0 · Partial 1 · Stale 0 · Unavailable 0",
+        ),
+      ).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent(limitation);
+    },
+  );
+});
+const historyReference: ResolvedHistoryReference = {
+  reference: {
+    sessionId: "readonly-source",
+    recordId: "record",
+    chunkId: "chunk",
+    sourceRevision: "revision",
+    start: 0,
+    end: 15,
+    contentHash: "hash",
+  },
+  title: "Read-only history",
+  agent: "openclaw",
+  kind: "tool-output",
+  toolName: "read",
+  content: "private excerpt",
+};
+function historyFixture(
+  options: {
+    references?: Array<ResolvedHistoryReference & { workspaceId?: string }>;
+    workspaces?: Array<{ id: string; name: string }>;
+  } = {},
+) {
+  const f = fixture();
+  const references: Array<ResolvedHistoryReference & { workspaceId?: string }> =
+    options.references ?? [historyReference];
+  const grant = { scope: "allowed", send: true, search: true };
+  const original = f.bridge.request.bind(f.bridge);
+  const request = vi
+    .spyOn(f.bridge, "request")
+    .mockImplementation(
+      async <T,>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> => {
+        if (path === "access")
+          return {
+            ...(await original<Record<string, unknown>>(path, body, signal)),
+            ...(grant.search ? { historySearch: true, historySearchScope: grant.scope } : {}),
+            device: { id: "local", name: "Desktop", send: grant.send, approve: true, manage: true },
+          } as T;
+        if (path === "catalog")
+          return {
+            ...(await original<Awaited<ReturnType<WebClient["catalog"]>>>(path, body, signal)),
+            workspaces: options.workspaces ?? [{ id: "workspace", name: "Project" }],
+          } as T;
+        if (path === "history/status") return historyStatus as T;
+        if (path === "history/search")
+          return {
+            status: historyStatus,
+            nextCursor: null,
+            limited: false,
+            hits: references.map((item) => ({
+              location: item.reference,
+              workspaceId: item.workspaceId ?? "workspace",
+              agent: item.agent,
+              title: item.title,
+              timestamp: null,
+              kind: item.kind,
+              toolName: item.toolName,
+              indexedAt: "2026-10-08T00:00:00.000Z",
+              snippet: item.content,
+              matchRanges: [[0, 7]],
+              stale: false,
+            })),
+          } as T;
+        if (path === "history/locate") {
+          const item =
+            references.find(
+              (reference) =>
+                reference.reference.recordId === (body as { recordId: string }).recordId,
+            ) ?? references[0];
+          return {
+            ...item,
+            location: item.reference,
+            workspaceId: item.workspaceId ?? "workspace",
+            timestamp: null,
+            contentHash: item.reference.contentHash,
+            before: null,
+            after: null,
+          } as T;
+        }
+        if (path === "history/references") {
+          const requested = (body as { references: ResolvedHistoryReference["reference"][] })
+            .references;
+          const resolved = requested.map((reference) => {
+            const item = references.find((item) => item.reference.recordId === reference.recordId);
+            if (!item) throw new Error("history_reference_unavailable");
+            return {
+              ...item,
+              reference,
+              content: item.content.slice(reference.start, reference.end),
+            };
+          });
+          return {
+            references: resolved,
+            text: resolved.map((item) => item.content).join("\n\n"),
+          } as T;
+        }
+        if (path === "send") return { accepted: true } as T;
+        return original<T>(path, body, signal);
+      },
+    );
+  return { ...f, grant, request };
+}
+async function openHistorySearch() {
+  fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+  fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+    target: { value: "private" },
+  });
+  await screen.findByRole("button", { name: /Read-only history/ });
+}
+async function quoteHistoryResult(title = "Read-only history") {
+  fireEvent.click(await screen.findByRole("button", { name: new RegExp(title) }));
+  await screen.findByRole("region", { name: "Source" });
+  fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
+  await screen.findByText("Reference added to the current draft");
+}
+describe("history references through the shared conversation provider", () => {
+  it.each([
+    {
+      name: "CRLF before the selected line",
+      content: "first\r\nsecond\r\nthird",
+      selected: "second",
+      expected: "second",
+    },
+    {
+      name: "multiple selected CRLF lines",
+      content: "first\r\nsecond\r\nthird\r\nlast",
+      selected: "second\nthird",
+      expected: "second\r\nthird",
+    },
+    {
+      name: "standalone CR lines",
+      content: "first\rsecond\rthird",
+      selected: "second\nthird",
+      expected: "second\rthird",
+    },
+    {
+      name: "Unicode after mixed line endings",
+      content: "🙂头\r\nprivate🙂\r尾\nend",
+      selected: "private🙂\n尾",
+      expected: "private🙂\r尾",
+    },
+    {
+      name: "a trailing CRLF",
+      content: "first\r\nsecond\r\n",
+      selected: "second\n",
+      expected: "second\r\n",
+    },
+  ])("quotes and sends the exact source selection with $name", async (example) => {
+    const { client, request } = historyFixture({
+      references: [{ ...historyReference, content: example.content }],
+    });
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    await openHistorySearch();
+    fireEvent.click(await screen.findByRole("button", { name: /Read-only history/ }));
+    await screen.findByRole("region", { name: "Source" });
+    const excerpt = screen.getByRole("textbox", {
+      name: "Reference excerpt",
+    }) as HTMLTextAreaElement;
+    const displayed = example.content.replace(/\r\n?/g, "\n");
+    expect(excerpt.value).toBe(displayed);
+    const start = displayed.indexOf(example.selected);
+    expect(start).toBeGreaterThanOrEqual(0);
+    act(() => {
+      excerpt.focus();
+      excerpt.setSelectionRange(start, start + example.selected.length);
+      fireEvent.select(excerpt);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
+    await screen.findByText("Reference added to the current draft");
+    const sourceStart = example.content.indexOf(example.expected);
+    const expectedReference = {
+      ...historyReference.reference,
+      start: sourceStart,
+      end: sourceStart + example.expected.length,
+    };
+    expect(request).toHaveBeenCalledWith(
+      "history/references",
+      { references: [expectedReference] },
+      expect.any(AbortSignal),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue("");
+    expect(screen.getByLabelText("Message preview").textContent).toBe(
+      `[History reference: Read-only history · openclaw · tool-output · read]\n${example.expected}\n[/History reference]`,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path === "send")).toBe(true));
+    expect(request.mock.calls.filter(([path]) => path === "send")).toHaveLength(1);
+    expect(request.mock.calls.find(([path]) => path === "send")?.[1]).toMatchObject({
+      sessionId: "first",
+      text: "",
+      historyReferences: [expectedReference],
+    });
+  });
+  it.each([
+    { content: "İstanbul", query: "i", highlighted: ["İ"] },
+    { content: "ſcript s", query: "s", highlighted: ["s"] },
+    { content: "UPPER upper", query: "UpPeR", highlighted: ["UPPER", "upper"] },
+    { content: "x[a.*] [A.*]", query: "[a.*]", highlighted: ["[a.*]", "[A.*]"] },
+    { content: "😀İx😀i", query: "i", highlighted: ["İ", "i"] },
+    { content: "𐐀 x 𐐨", query: "𐐨", highlighted: ["𐐀", "𐐨"] },
+    { content: "ΟΣΑ", query: "ΟΣ", highlighted: ["ΟΣ"] },
+    { content: "ΚΟΣΜΟΣ", query: "κος", highlighted: ["ΚΟΣ"] },
+    { content: "Σςσ İ🙂Σ", query: "σ", highlighted: ["Σ", "ς", "σ", "Σ"] },
+    { content: "x".repeat(120), query: "x", highlighted: Array<string>(100).fill("x") },
+  ])("uses literal lowercase matching in the source window for $content", async (example) => {
+    const { client } = historyFixture({
+      references: [{ ...historyReference, content: example.content }],
+    });
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+      target: { value: example.query },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Read-only history/ }));
+    const source = await screen.findByRole("region", { name: "Source" });
+    expect(source.querySelector("pre")?.textContent).toBe(example.content);
+    expect(Array.from(source.querySelectorAll("mark"), (mark) => mark.textContent)).toEqual(
+      example.highlighted,
+    );
+  });
+  it("opens a read-only tool hit without changing the target or draft, then sends descriptors only", async () => {
+    const { client, request } = historyFixture();
+    const changed = vi.fn();
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={changed}
+      />,
+    );
+    await screen.findByText("first history");
+    const draft = screen.getByRole("textbox", { name: "Send a message" });
+    fireEvent.change(draft, { target: { value: "Keep my draft" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+      target: { value: "private" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Messages and tools" }), {
+      target: { value: "tools" },
+    });
+    expect(await screen.findByRole("list", { name: "Source coverage" })).toHaveTextContent(
+      "cursor: Messages Supported · Tool records Not supported",
+    );
+    expect(await screen.findByText("Indexed: 2026-10-08T00:00:00.000Z")).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: /Read-only history/ }));
+    expect(await screen.findByRole("region", { name: "Source" })).toBeVisible();
+    expect(document.querySelector("mark")?.textContent).toBe("private");
+    fireEvent.click(screen.getByRole("button", { name: "Reference in current conversation" }));
+    await screen.findByText("Reference added to the current draft");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(draft).toHaveValue("Keep my draft");
+    expect(changed).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "History references" })).toHaveTextContent(
+      "Read-only history",
+    );
+    const preview = screen.getByLabelText("Message preview");
+    const referenceText =
+      "[History reference: Read-only history · openclaw · tool-output · read]\nprivate excerpt\n[/History reference]";
+    expect(preview.textContent).toBe(`Keep my draft\n\n${referenceText}`);
+    expect(preview.closest("details")).toHaveAttribute("open");
+    expect(request).toHaveBeenCalledWith(
+      "history/search",
+      expect.objectContaining({ query: "private", kinds: ["tool-input", "tool-output"] }),
+      expect.any(AbortSignal),
+    );
+    fireEvent.change(draft, { target: { value: "" } });
+    expect(preview.textContent).toBe(referenceText);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(request.mock.calls.some(([path]) => path === "send")).toBe(true));
+    const body = request.mock.calls.find(([path]) => path === "send")?.[1];
+    expect(body).toMatchObject({
+      sessionId: "first",
+      text: "",
+      historyReferences: [historyReference.reference],
+    });
+    expect(JSON.stringify(body)).not.toContain("private excerpt");
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "History references" })).not.toBeInTheDocument(),
+    );
+  });
+  it("previews the draft and every source label, and updates immediately after editing or removing references", async () => {
+    const reply: ResolvedHistoryReference = {
+      ...historyReference,
+      reference: { ...historyReference.reference, recordId: "reply", contentHash: "reply-hash" },
+      title: "Earlier reply",
+      agent: "claude-code",
+      kind: "assistant",
+      toolName: null,
+      content: "another excerpt",
+    };
+    const { client } = historyFixture({ references: [historyReference, reply] });
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    const draft = screen.getByRole("textbox", { name: "Send a message" });
+    fireEvent.change(draft, { target: { value: "  Review both sources  " } });
+    expect(screen.queryByLabelText("Message preview")).not.toBeInTheDocument();
+    await openHistorySearch();
+    await quoteHistoryResult();
+    fireEvent.click(screen.getByRole("button", { name: "Back to results" }));
+    await quoteHistoryResult("Earlier reply");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    const referenceText =
+      "[History reference: Read-only history · openclaw · tool-output · read]\nprivate excerpt\n[/History reference]";
+    const replyText =
+      "[History reference: Earlier reply · claude-code · assistant]\nanother excerpt\n[/History reference]";
+    const preview = screen.getByLabelText("Message preview");
+    expect(preview.textContent).toBe(`Review both sources\n\n${referenceText}\n\n${replyText}`);
+    expect(preview.closest("details")).toHaveAttribute("open");
+    fireEvent.change(draft, { target: { value: "Changed draft" } });
+    expect(preview.textContent).toBe(`Changed draft\n\n${referenceText}\n\n${replyText}`);
+    fireEvent.click(screen.getByRole("button", { name: "Remove reference: Read-only history" }));
+    expect(preview.textContent).toBe(`Changed draft\n\n${replyText}`);
+    fireEvent.click(screen.getByRole("button", { name: "Remove reference: Earlier reply" }));
+    expect(screen.queryByLabelText("Message preview")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "History references" })).not.toBeInTheDocument();
+    expect(draft).toHaveValue("Changed draft");
+  });
+  it("identifies same-title results and their source windows by authorized workspace names or IDs", async () => {
+    const { client } = historyFixture({
+      references: [
+        { ...historyReference, workspaceId: "workspace" },
+        {
+          ...historyReference,
+          reference: { ...historyReference.reference, recordId: "other-record" },
+          workspaceId: "workspace-other",
+        },
+        {
+          ...historyReference,
+          reference: { ...historyReference.reference, recordId: "unnamed-record" },
+          workspaceId: "workspace-unnamed",
+        },
+        {
+          ...historyReference,
+          reference: { ...historyReference.reference, recordId: "unmapped-record" },
+          workspaceId: "workspace-unmapped",
+        },
+      ],
+      workspaces: [
+        { id: "workspace", name: "Project Alpha" },
+        { id: "workspace-other", name: "Project Beta" },
+        { id: "workspace-unnamed", name: " " },
+      ],
+    });
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+      target: { value: "private" },
+    });
+    const results = await screen.findAllByRole("button", { name: /Read-only history/ });
+    expect(results).toHaveLength(4);
+    const workspaceLabels = [
+      "Project Alpha",
+      "Project Beta",
+      "workspace-unnamed",
+      "workspace-unmapped",
+    ];
+    for (const [index, label] of workspaceLabels.entries()) {
+      expect(results[index]).toHaveTextContent(`Workspace: ${label}`);
+      fireEvent.click(screen.getAllByRole("button", { name: /Read-only history/ })[index]);
+      expect(await screen.findByRole("region", { name: "Source" })).toHaveTextContent(
+        `Workspace: ${label}`,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Back to results" }));
+    }
+  });
+  it.each(["scope", "send", "search", "session"] as const)(
+    "clears the sensitive preview after %s changes",
+    async (change) => {
+      const { client, grant } = historyFixture();
+      const props = {
+        client,
+        sessionId: "first",
+        locale: "en-US" as const,
+        onSessionChange: vi.fn(),
+      };
+      const view = render(<EmbeddedConversation {...props} />);
+      await screen.findByText("first history");
+      fireEvent.change(screen.getByRole("textbox", { name: "Send a message" }), {
+        target: { value: "Keep my draft" },
+      });
+      await openHistorySearch();
+      await quoteHistoryResult();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.getByLabelText("Message preview")).toHaveTextContent("private excerpt");
+      if (change === "scope") grant.scope = "narrowed";
+      if (change === "send") grant.send = false;
+      if (change === "search") grant.search = false;
+      view.rerender(
+        <EmbeddedConversation
+          {...props}
+          sessionId={change === "session" ? "second" : "first"}
+          refreshRevision={1}
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.queryByLabelText("Message preview")).not.toBeInTheDocument(),
+      );
+      expect(screen.queryByText("private excerpt")).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "History references" })).not.toBeInTheDocument();
+      if (change === "session") await screen.findByText("second history");
+      else if (change !== "send")
+        expect(screen.getByRole("textbox", { name: "Send a message" })).toHaveValue(
+          "Keep my draft",
+        );
+    },
+  );
+  it.each(["results", "source"] as const)(
+    "clears workspace attribution and private %s on a grant change",
+    async (visible) => {
+      const { client, grant } = historyFixture();
+      const props = {
+        client,
+        sessionId: "first",
+        locale: "en-US" as const,
+        onSessionChange: vi.fn(),
+      };
+      const view = render(<EmbeddedConversation {...props} />);
+      await screen.findByText("first history");
+      await openHistorySearch();
+      const hit = screen.getByRole("button", { name: /Read-only history/ });
+      expect(hit).toHaveTextContent("Workspace: Project");
+      if (visible === "source") {
+        fireEvent.click(hit);
+        expect(await screen.findByRole("region", { name: "Source" })).toHaveTextContent(
+          "Workspace: Project",
+        );
+      }
+      grant.scope = "narrowed";
+      view.rerender(<EmbeddedConversation {...props} refreshRevision={1} />);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("textbox", { name: "Search messages and tool records" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(screen.queryByText("Workspace: Project")).not.toBeInTheDocument();
+      expect(screen.queryByText("private excerpt")).not.toBeInTheDocument();
+    },
+  );
+  it("counts query Unicode code points and never silently truncates longer input", async () => {
+    const { client } = historyFixture();
+    const search = vi.spyOn(client, "historySearch");
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    const input = screen.getByRole("textbox", { name: "Search messages and tool records" });
+    fireEvent.change(input, { target: { value: "🙂".repeat(256) } });
+    await screen.findByRole("button", { name: /Read-only history/ });
+    expect(search.mock.calls.at(-1)?.[0].query).toBe("🙂".repeat(256));
+    fireEvent.change(input, { target: { value: " OR " } });
+    await waitFor(() => expect(search.mock.calls.at(-1)?.[0].query).toBe(" OR "));
+    const count = search.mock.calls.length;
+    fireEvent.change(input, { target: { value: "🙂".repeat(257) } });
+    expect(input).toHaveValue("🙂".repeat(257));
+    expect(screen.getByRole("alert")).toHaveTextContent("Use at most 256 Unicode characters.");
+    expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(search).toHaveBeenCalledTimes(count);
+    fireEvent.change(input, { target: { value: " ".repeat(256) + "a" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Use at most 256 Unicode characters.");
+    expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
+  });
+  it("includes active and archived histories together when requested", async () => {
+    const { client } = historyFixture();
+    const original = client.historySearch.bind(client);
+    const search = vi.spyOn(client, "historySearch").mockImplementation(async (query, signal) => {
+      const result = await original(query, signal);
+      const active = result.hits[0];
+      return {
+        ...result,
+        hits:
+          query.archived === true
+            ? [{ ...active, title: "Archived history" }]
+            : query.archived === false
+              ? [active]
+              : [active, { ...active, title: "Archived history" }],
+      };
+    });
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+      target: { value: "private" },
+    });
+    await screen.findByRole("button", { name: /Read-only history/ });
+    expect(screen.queryByRole("button", { name: /Archived history/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include archived conversations" }));
+    await screen.findByRole("button", { name: /Archived history/ });
+    expect(screen.getByRole("button", { name: /Read-only history/ })).toBeVisible();
+    expect(search.mock.calls.at(-1)?.[0]).not.toHaveProperty("archived");
+  });
+  it("discards search content that arrives after the grant scope changed", async () => {
+    const { client, grant } = historyFixture();
+    const oldSearch = client.historySearch.bind(client);
+    const pending = deferred<Awaited<ReturnType<WebClient["historySearch"]>>>();
+    const search = vi.spyOn(client, "historySearch").mockReturnValueOnce(pending.promise);
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="first"
+        locale="en-US"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("first history");
+    const draft = screen.getByRole("textbox", { name: "Send a message" });
+    fireEvent.change(draft, { target: { value: "Keep my draft" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Search conversation content" })[0]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search messages and tool records" }), {
+      target: { value: "private" },
+    });
+    await waitFor(() => expect(search).toHaveBeenCalledOnce());
+    grant.scope = "narrowed";
+    await act(async () => pending.resolve(await oldSearch({ query: "private" })));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("textbox", { name: "Search messages and tool records" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("private excerpt")).not.toBeInTheDocument();
+    expect(draft).toHaveValue("Keep my draft");
+  });
+  it("drops references on grant narrowing while retaining text and rejects a reference for the old target", async () => {
+    const { client, grant } = historyFixture();
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    act(() => {
+      view.result.current.setMessage("Keep my draft");
+      view.result.current.addHistoryReference(historyReference, "first");
+    });
+    expect(view.result.current.historyReferences).toHaveLength(1);
+    grant.scope = "narrowed";
+    await act(async () => view.result.current.refresh());
+    expect(view.result.current.historyReferences).toHaveLength(0);
+    expect(view.result.current.message).toBe("Keep my draft");
+    await act(async () => view.result.current.choose("second"));
+    expect(() => view.result.current.addHistoryReference(historyReference, "first")).toThrow(
+      "history_reference_unavailable",
+    );
+  });
+  it.each([
+    { status: 409, code: "history-source-owner-changed", retained: 0 },
+    { status: 500, code: "request_failed", retained: 1 },
+  ])(
+    "revalidates reference ownership over HTTP and retains $retained quotes after $status",
+    async ({ status, code, retained }) => {
+      const { bridge } = historyFixture();
+      let sourceFailure = false;
+      const transport = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(url).replace("/api/web/v1/", "");
+        if (sourceFailure && path === "history/references")
+          return new Response(JSON.stringify({ error: code }), { status });
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+        return new Response(
+          JSON.stringify(await bridge.request(path, body, init?.signal ?? undefined)),
+          {
+            status: 200,
+          },
+        );
+      });
+      vi.stubGlobal(
+        "EventSource",
+        class {
+          onopen: (() => void) | null = null;
+          onerror: (() => void) | null = null;
+          constructor() {
+            queueMicrotask(() => this.onopen?.());
+          }
+          addEventListener() {}
+          close() {}
+        },
+      );
+      const client = new WebClient(transport);
+      const view = renderHook(() => useSessionController({ client, embedded: true }));
+      try {
+        await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+        await act(async () => view.result.current.choose("first"));
+        const preview = await client.historyReferences([historyReference.reference]);
+        vi.useFakeTimers();
+        act(() => {
+          view.result.current.setMessage("Keep my draft");
+          view.result.current.addHistoryReference(preview.references[0], "first");
+        });
+        expect(view.result.current.historyReferences).toHaveLength(1);
+        sourceFailure = true;
+        transport.mockClear();
+
+        await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+        expect(
+          transport.mock.calls.filter(([url]) => String(url).endsWith("/history/references")),
+        ).toHaveLength(1);
+        expect(view.result.current.historyReferences).toHaveLength(retained);
+        expect(view.result.current.message).toBe("Keep my draft");
+        expect(transport.mock.calls.some(([url]) => String(url).endsWith("/send"))).toBe(false);
+      } finally {
+        view.unmount();
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+  it("rejects reference byte and count overflow, and does not send an oversized expanded message", async () => {
+    const { client, request } = historyFixture();
+    const view = renderHook(() => useSessionController({ client, embedded: true }));
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    await act(async () => view.result.current.choose("first"));
+    expect(() =>
+      view.result.current.addHistoryReference(
+        { ...historyReference, content: "界".repeat(2731) },
+        "first",
+      ),
+    ).toThrow("history_reference_limit");
+    act(() => {
+      for (let i = 0; i < 5; i++)
+        view.result.current.addHistoryReference(
+          {
+            ...historyReference,
+            reference: { ...historyReference.reference, recordId: String(i) },
+          },
+          "first",
+        );
+    });
+    expect(() => view.result.current.addHistoryReference(historyReference, "first")).toThrow(
+      "history_reference_limit",
+    );
+    act(() => view.result.current.setMessage("a".repeat(15990)));
+    await act(async () => view.result.current.control("send"));
+    expect(request.mock.calls.some(([path]) => path === "send")).toBe(false);
   });
 });

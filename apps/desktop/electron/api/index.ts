@@ -107,7 +107,12 @@ import type {
 export type DesktopEventUnsubscribe = () => void;
 
 export interface DesktopConversationApi {
-  request(path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
+  request(
+    path: string,
+    body?: unknown,
+    requestId?: string,
+  ): Promise<{ status: number; body: unknown }>;
+  cancelRead(requestId: string): Promise<void>;
   upload(input: {
     sessionId: string;
     name: string;

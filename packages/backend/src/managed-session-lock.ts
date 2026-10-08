@@ -10,7 +10,17 @@ let lockApi:
   | undefined;
 let windowsLockApi:
   | {
-      fileHandle: (fd: number) => number | bigint;
+      open: (
+        file: string,
+        access: number,
+        share: number,
+        security: null,
+        disposition: number,
+        flags: number,
+        template: number,
+      ) => number | bigint;
+      query: (handle: number | bigint, information: Buffer) => number;
+      close: (handle: number | bigint) => number;
       lock: (
         handle: number | bigint,
         flags: number,
@@ -42,10 +52,19 @@ function flockApi() {
 function win32Api() {
   if (windowsLockApi) return windowsLockApi;
   const bindings = nativeBindings();
-  const crt = bindings.load("ucrtbase.dll");
   const kernel = bindings.load("kernel32.dll");
   windowsLockApi = {
-    fileHandle: crt.func("intptr_t _get_osfhandle(int fd)"),
+    open: kernel.func("__stdcall", "CreateFileW", "intptr_t", [
+      "str16",
+      "uint32_t",
+      "uint32_t",
+      "void *",
+      "uint32_t",
+      "uint32_t",
+      "intptr_t",
+    ]),
+    query: kernel.func("__stdcall", "GetFileInformationByHandle", "int", ["intptr_t", "void *"]),
+    close: kernel.func("__stdcall", "CloseHandle", "int", ["intptr_t"]),
     lock: kernel.func("__stdcall", "LockFileEx", "int", [
       "intptr_t",
       "uint32_t",
@@ -66,25 +85,50 @@ function win32Api() {
   return windowsLockApi;
 }
 
-function acquireWindowsLock(fd: number): () => void {
+function acquireWindowsLock(lockPath: string, fd: number): () => void {
   const api = win32Api();
-  const handle = api.fileHandle(fd);
-  if (handle === -1 || handle === -1n) throw new Error("invalid-managed-ledger-lock");
+  // Node/Electron may use a private CRT descriptor table. Passing its fd to
+  // ucrtbase._get_osfhandle can terminate the process via invalid-parameter handling.
+  // Open a native handle and prove it still identifies the checked Node file.
+  const handle = api.open(lockPath, 0xc0000000, 7, null, 3, 0x00200000, 0);
+  if (handle === -1 || handle === -1n)
+    throw new Error(`Cannot open managed session lock (${api.error()})`);
   // OVERLAPPED is two pointer-sized fields followed by the 8-byte offset union
   // and event handle; supported Windows targets are x64 and ARM64.
   const overlapped = Buffer.alloc(32);
-  const locked = api.lock(handle, 0x3, 0, 0xffffffff, 0xffffffff, overlapped);
-  if (!locked) {
-    const code = api.error();
-    if (code === 33) throw new Error("session-managed-by-another-runtime");
-    throw new Error(`Cannot acquire managed session lock (${code})`);
+  try {
+    const information = Buffer.alloc(52);
+    if (!api.query(handle, information))
+      throw new Error(`Cannot inspect managed session lock (${api.error()})`);
+    const expected = fstatSync(fd, { bigint: true });
+    const volume = BigInt(information.readUInt32LE(28));
+    const fileId =
+      (BigInt(information.readUInt32LE(44)) << 32n) | BigInt(information.readUInt32LE(48));
+    if (
+      (information.readUInt32LE(0) & (0x10 | 0x400)) !== 0 ||
+      volume !== expected.dev ||
+      fileId !== expected.ino
+    )
+      throw new Error("invalid-managed-lock-file");
+    if (!api.lock(handle, 0x3, 0, 0xffffffff, 0xffffffff, overlapped)) {
+      const code = api.error();
+      if (code === 33) throw new Error("session-managed-by-another-runtime");
+      throw new Error(`Cannot acquire managed session lock (${code})`);
+    }
+  } catch (error) {
+    api.close(handle);
+    throw error;
   }
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    if (!api.unlock(handle, 0, 0xffffffff, 0xffffffff, overlapped))
-      throw new Error(`Cannot release managed session lock (${api.error()})`);
+    try {
+      if (!api.unlock(handle, 0, 0xffffffff, 0xffffffff, overlapped))
+        throw new Error(`Cannot release managed session lock (${api.error()})`);
+    } finally {
+      api.close(handle);
+    }
   };
 }
 
@@ -109,7 +153,7 @@ export function acquirePortableFileLease(lockPath: string): () => void {
       throw new Error("invalid-managed-lock-file");
     restrictRemotePath(lockPath);
     if (process.platform === "win32") {
-      const releaseLock = acquireWindowsLock(fd);
+      const releaseLock = acquireWindowsLock(lockPath, fd);
       let released = false;
       return () => {
         if (released) return;

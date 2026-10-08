@@ -29,6 +29,10 @@ export default defineConfig({
     lib: {
       entry: {
         backend: path.resolve(import.meta.dirname, "electron/backend-entry.ts"),
+        "backend-history-search": path.resolve(
+          import.meta.dirname,
+          "../../packages/backend/src/history-search-worker-entry.ts",
+        ),
         "backend-skills": path.resolve(
           import.meta.dirname,
           "../../packages/backend/src/skills-worker-entry.ts",

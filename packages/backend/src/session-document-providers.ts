@@ -145,7 +145,10 @@ function loss(losses: Map<LossCode, number>, code: LossCode, count = 1): void {
   if (count > 0) losses.set(code, (losses.get(code) ?? 0) + count);
 }
 
-function claudeActiveChain(rows: RecordLine[], includeSidechain: boolean): Set<string> | null {
+export function claudeActiveChain(
+  rows: RecordLine[],
+  includeSidechain: boolean,
+): Set<string> | null {
   const parents = new Map<string, string | null>();
   const sidechains = new Map<string, boolean>();
   const leaves: string[] = [];
@@ -332,7 +335,7 @@ export function readClaudeDocument(
   return finishDocument(source, turns, losses);
 }
 
-function looksLikeInternalContext(text: string): boolean {
+export function looksLikeInternalContext(text: string): boolean {
   const trimmed = text.replace(/^\p{White_Space}+/u, "");
   return [
     "<path>",
@@ -434,7 +437,7 @@ function codexAttachmentBlocks(
   return output;
 }
 
-function matchedFallbackOccurrences(
+export function matchedFallbackOccurrences(
   primary: Map<string, number[]>,
   fallback: Array<{ key: string; line: number; index: [number, number] }>,
 ): Set<string> {
@@ -617,7 +620,7 @@ export function readCodexDocument(source: DocumentSource, file: string): Session
   return finishDocument(source, turns, losses);
 }
 
-function isClaudeEcho(value: string): boolean {
+export function isClaudeEcho(value: string): boolean {
   const text = value.trimStart();
   return ["<local-command-", "<command-name>", "<command-message>"].some((prefix) =>
     text.startsWith(prefix),

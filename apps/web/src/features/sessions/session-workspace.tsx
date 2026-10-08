@@ -1,3 +1,4 @@
+import { HistorySearchTrigger } from "@agentkib/conversation-ui/features/history/history-search-controls";
 import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
@@ -200,6 +201,7 @@ export function SessionWorkspace() {
               </Button>
             </header>
             <ManagedTasks create />
+            <HistorySearchTrigger />
             <SessionCatalog
               pendingSessions={pendingSessions}
               sessions={sessions}

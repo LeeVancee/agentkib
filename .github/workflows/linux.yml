@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install required system tools
-        run: dnf install -y git curl tar gzip xz gcc gcc-c++ make python3
+        run: dnf install -y git curl tar gzip xz gcc gcc-c++ make python3 procps-ng
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:

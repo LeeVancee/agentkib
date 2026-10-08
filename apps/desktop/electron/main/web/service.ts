@@ -1,4 +1,15 @@
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
+import {
+  HISTORY_SEARCH_METHODS,
+  type HistoryReference,
+  type ResolvedHistoryReference,
+} from "@agentkib/runtime-protocol";
+import {
+  historyInputHash,
+  historyLocation,
+  historyReferences,
+  historyText,
+} from "./history-references";
 import { EventEmitter } from "node:events";
 import { projectContextUsage } from "@agentkib/backend/context-usage";
 import { createServer, type Server } from "node:http";
@@ -14,10 +25,12 @@ import { markdownLinkTargets } from "./markdown-links";
 import {
   LocalConversationResponse,
   isConversationPath,
+  isHistoryReadConversationPath,
   type ConversationRequest,
   type ConversationResponse,
 } from "./conversation-transport";
 import type { ConversationHub } from "../conversation-hub";
+import { RuntimeRequestError } from "../runtime-host";
 import type { SessionStreamEvent, SessionSubscription } from "../../generated/runtime-protocol";
 import {
   DEFAULT_RELAY_BROKER,
@@ -236,6 +249,7 @@ const CODE_ACCESS_PERMISSIONS: Record<WebAccessLevel, DevicePermissions> = {
 type RouteSpec = { lan?: true; control?: true };
 const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
   GET: {
+    "/history/status": { lan: true },
     "/access": { lan: true },
     "/info": { lan: true },
     "/catalog": { lan: true },
@@ -259,6 +273,12 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/diff": { lan: true },
   },
   POST: {
+    "/history/search": { lan: true },
+    "/history/locate": { lan: true },
+    "/history/references": { lan: true },
+    "/history/configure": {},
+    "/history/clear": {},
+    "/history/rebuild": {},
     "/pair": { lan: true },
     "/pair/cancel": { lan: true },
     "/logout": { lan: true },
@@ -409,6 +429,7 @@ export class WebAccessService {
       dataDir: string;
       staticDir: string;
       runtimeRequest: (params: unknown) => Promise<unknown>;
+      historyRequest?: (method: string, params: unknown) => Promise<unknown>;
       managedRequest?: (params: unknown) => Promise<unknown>;
       claudeManagedRequest?: (params: unknown) => Promise<unknown>;
       receiptRequest?: (params: { requestId: string; deviceId: string }) => Promise<unknown>;
@@ -518,6 +539,28 @@ export class WebAccessService {
     ].includes(operation);
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
     const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+    if (operation === "send" && requestId) {
+      const control = { priorUncertain: false };
+      try {
+        const prior = await this.controlReceipt(requestId, CLAUDE_LOCAL_OWNER, control);
+        if (
+          prior?.found === true &&
+          (body.historyReferences !== undefined || prior.historyInputHash)
+        ) {
+          await this.codexScope(this.field(body.sessionId), "desktop-local", true, false);
+          const replay = this.historyReplay(prior, body, operation, control);
+          if (replay !== undefined) return replay;
+        }
+      } catch (error) {
+        return {
+          accepted: false,
+          completed: false,
+          requestId,
+          controlOutcome: control.priorUncertain ? "unknown" : "not-dispatched",
+          error: error instanceof Error ? error.message : "invalid_request",
+        };
+      }
+    }
     if (
       mutation &&
       (this.admission ||
@@ -571,6 +614,13 @@ export class WebAccessService {
           runtime: (params) => invoke(this.options.runtimeRequest, params),
           receipt: this.options.receiptRequest,
           attachments: this.attachmentStore,
+          history: async (body) => {
+            const history = await this.resolveHistoryInput(body, "desktop-local", "send", true);
+            return {
+              ...history,
+              validate: () => this.assertHistoryScope("desktop-local", history.scopeKey, true),
+            };
+          },
         },
         input,
       );
@@ -728,13 +778,18 @@ export class WebAccessService {
   }
 
   /** Called only after the Electron sender check; shares all command admission and receipts. */
-  async localRequest(path: string, body?: unknown, upload?: Uint8Array) {
+  async localRequest(path: string, body?: unknown, upload?: Uint8Array, readSignal?: AbortSignal) {
     if (!path.startsWith("/")) path = `/${path}`;
     if (this.options.mode === "lan" || !isConversationPath(path, body !== undefined || !!upload))
       return { status: 404, body: { error: "not_found", controlOutcome: "not-dispatched" } };
     const control = { request: false, dispatched: false, priorUncertain: false };
     const res = new LocalConversationResponse();
+    const cancelRead = () => res.destroy();
     try {
+      if (readSignal && (upload || !isHistoryReadConversationPath(path)))
+        throw new HttpError(400, "history_read_route_required");
+      if (readSignal?.aborted) throw new HttpError(408, "history_request_cancelled");
+      readSignal?.addEventListener("abort", cancelRead, { once: true });
       if (
         path.includes("/files/") ||
         path.includes("/artifacts") ||
@@ -761,6 +816,7 @@ export class WebAccessService {
         },
       };
       await this.handle(req, res, control, true);
+      if (readSignal?.aborted) throw new HttpError(408, "history_request_cancelled");
       return { status: res.statusCode, body: res.body };
     } catch (error) {
       return {
@@ -771,7 +827,14 @@ export class WebAccessService {
             ? error.status
             : 500,
         body: {
-          error: error instanceof Error ? error.message : "request_failed",
+          error:
+            error instanceof HttpError ||
+            error instanceof ArtifactError ||
+            error instanceof AttachmentError
+              ? error.message
+              : error instanceof Error && !isHistoryReadConversationPath(path)
+                ? error.message
+                : "request_failed",
           ...(control.request
             ? {
                 controlOutcome:
@@ -780,6 +843,8 @@ export class WebAccessService {
             : {}),
         },
       };
+    } finally {
+      readSignal?.removeEventListener("abort", cancelRead);
     }
   }
 
@@ -2345,9 +2410,17 @@ export class WebAccessService {
           : {}),
       });
     }
-    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     const requestId = this.field(body.requestId, 128);
     if (!/^[a-f0-9-]{36}$/i.test(requestId)) throw new HttpError(400, "invalid_request_id");
+    if (body.historyReferences !== undefined && !["steer", "queue-add"].includes(operation))
+      throw new HttpError(400, "history_references_not_supported");
+    const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
+    this.grant(hash, permission);
+    if (body.historyReferences !== undefined || prior?.historyInputHash)
+      await this.codexScope(sessionId, hash);
+    const replay = this.historyReplay(prior, body, operation, control);
+    if (replay !== undefined) return this.json(res, 200, replay);
+    if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
     if (
       operation !== "resume" &&
       (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 0)
@@ -2364,6 +2437,7 @@ export class WebAccessService {
     this.admission = true;
     this.active.add(sessionId);
     let dispatched = false;
+    let historyScopeKey: string | undefined;
     try {
       const capabilities = (await this.runtime(
         { operation: "capabilities", sessionId, experimentalEnabled: true },
@@ -2409,17 +2483,26 @@ export class WebAccessService {
       };
       // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
       if (["steer", "queue-add", "queue-update"].includes(operation)) {
-        const text = body.text === undefined ? "" : body.text;
+        const rawText = body.text === undefined ? "" : body.text;
         if (body.attachmentIds !== undefined && !Array.isArray(body.attachmentIds))
           throw new HttpError(400, "invalid_attachments");
         const hasAttachments = Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0;
         if (
-          typeof text !== "string" ||
-          text.length > 16000 ||
-          Buffer.byteLength(text) > 16384 ||
-          (!text.trim() && !hasAttachments)
+          typeof rawText !== "string" ||
+          rawText.length > 16000 ||
+          Buffer.byteLength(rawText) > 16384 ||
+          (!rawText.trim() && !hasAttachments && body.historyReferences === undefined)
         )
           throw new HttpError(400, "invalid_text");
+        let text: string = rawText;
+        if (body.historyReferences !== undefined) {
+          const history = await this.resolveHistoryInput(body, hash, operation, true);
+          text = history.text;
+          historyScopeKey = history.scopeKey;
+          params.historyReferences = history.references;
+          params.historyInputHash = history.inputHash;
+          if (!text.trim() && !hasAttachments) throw new HttpError(400, "invalid_text");
+        }
         params.text = text;
         if (hasAttachments) {
           this.grant(hash, "attachments");
@@ -2619,6 +2702,8 @@ export class WebAccessService {
         throw new HttpError(403, "workspace_not_authorized");
       this.grant(hash, permission);
       if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
+      if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
+      this.grant(hash, permission);
       this.rate(`control:${hash}`, 30);
       this.requests.add(requestId);
       this.unconfirmed.add(sessionId);
@@ -2679,6 +2764,243 @@ export class WebAccessService {
     if (prior?.found === false && prior.requestId === requestId)
       control.priorUncertain = alreadyUncertain;
     return prior;
+  }
+  private historyFields<T>(read: () => T): T {
+    try {
+      return read();
+    } catch (error) {
+      throw new HttpError(
+        400,
+        error instanceof Error ? error.message : "invalid_history_reference",
+      );
+    }
+  }
+  private async historyAccessScope(hash: string, reserved = false) {
+    const device = this.grant(hash);
+    const identity = JSON.stringify(device);
+    const boot = this.bootId;
+    // Registration can change while a catalog snapshot awaits aliases, without changing device grants.
+    // LAN already grants reads over registered workspaces; its config has no workspace list.
+    const workspaces = (await this.registeredWorkspaces(reserved))
+      .filter(
+        (item) =>
+          this.isFullAccess(device) ||
+          this.options.mode === "lan" ||
+          this.config.allowedWorkspaceIds?.includes(item.id),
+      )
+      .map((item) => item.id)
+      .sort();
+    const current = this.grant(hash);
+    if (boot !== this.bootId || JSON.stringify(current) !== identity)
+      throw new HttpError(403, "access_changed");
+    return { workspaces, token: digest(JSON.stringify([boot, current, workspaces])) };
+  }
+  private async historyScope(hash: string, reserved = false) {
+    const access = await this.historyAccessScope(hash, reserved);
+    const catalog = (await this.runtime({ operation: "catalog" }, undefined, reserved)) as {
+      sessions?: { id: string; workspace_id: string; indexedSessionIds?: string[] }[];
+    };
+    if ((await this.historyAccessScope(hash, reserved)).token !== access.token)
+      throw new HttpError(403, "access_changed");
+    const allowedSessionIds = [
+      ...new Set(
+        (catalog.sessions ?? [])
+          .filter((item) => access.workspaces.includes(item.workspace_id))
+          .flatMap((item) => item.indexedSessionIds ?? [item.id]),
+      ),
+    ].sort();
+    const targetSessionIds = (catalog.sessions ?? [])
+      .filter((item) => access.workspaces.includes(item.workspace_id))
+      .map((item) => item.id)
+      .sort();
+    return {
+      ...access,
+      allowedSessionIds,
+      targetSessionIds,
+      key: digest(JSON.stringify([access.token, allowedSessionIds, targetSessionIds])),
+    };
+  }
+  private async historyTargetScope(sessionId: string, hash: string, reserved = false) {
+    if (this.options.mode !== "lan") return this.codexScope(sessionId, hash, reserved, false);
+    const scope = await this.historyScope(hash, reserved);
+    if (!scope.targetSessionIds.includes(sessionId))
+      throw new HttpError(403, "workspace_not_authorized");
+  }
+  private async historyCall(
+    method: string,
+    params: Record<string, unknown>,
+    res?: ConversationResponse,
+  ): Promise<unknown> {
+    if (!this.options.historyRequest) throw new HttpError(404, "capability_unavailable");
+    if (res?.destroyed) throw new HttpError(408, "history_request_cancelled");
+    const requestId = randomUUID();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    let dispatched = false;
+    let rejectCancelled: ((error: Error) => void) | undefined;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      rejectCancelled = reject;
+    });
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      if (dispatched)
+        void this.options.historyRequest!(HISTORY_SEARCH_METHODS.cancel, { requestId }).catch(
+          () => {},
+        );
+      rejectCancelled?.(new HttpError(408, "history_request_cancelled"));
+    };
+    res?.once("close", cancel);
+    try {
+      timer = setTimeout(cancel, 20_000);
+      dispatched = true;
+      return await Promise.race([
+        this.options.historyRequest(method, { ...params, requestId }),
+        cancellation,
+      ]);
+    } catch (error) {
+      const code =
+        error instanceof RuntimeRequestError &&
+        error.data &&
+        typeof error.data === "object" &&
+        "detail" in error.data
+          ? error.data.detail
+          : error instanceof Error
+            ? error.message
+            : undefined;
+      if (
+        [
+          "history-source-stale",
+          "history-search-cursor-stale",
+          "history-source-changed",
+          "history-source-owner-changed",
+          "history-owner-changed",
+        ].includes(String(code))
+      )
+        throw new HttpError(409, String(code));
+      if (
+        code === "history-source-unavailable" ||
+        code === "history-search-disabled" ||
+        code === "history-search-cache-unavailable"
+      )
+        throw new HttpError(410, String(code));
+      if (
+        [
+          "history-search-cursor-invalid",
+          "history-reference-range-invalid",
+          "history-references-too-large",
+          "history-search-input-invalid",
+        ].includes(String(code))
+      )
+        throw new HttpError(400, String(code));
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      res?.removeListener("close", cancel);
+    }
+  }
+  private async assertHistoryScope(hash: string, key: string, reserved = false) {
+    if ((await this.historyScope(hash, reserved)).key !== key)
+      throw new HttpError(403, "access_changed");
+  }
+  private async resolveHistoryInput(
+    body: Record<string, unknown>,
+    hash: string,
+    operation: string,
+    reserved = false,
+  ) {
+    const references = this.historyFields(() => historyReferences(body.historyReferences));
+    const inputHash = this.historyFields(() => historyInputHash(body, operation));
+    const scope = await this.historyScope(hash, reserved);
+    if (references.some((item) => !scope.allowedSessionIds.includes(item.sessionId)))
+      throw new HttpError(403, "workspace_not_authorized");
+    const resolved = (await this.historyCall(HISTORY_SEARCH_METHODS.references, {
+      references,
+      allowedSessionIds: scope.allowedSessionIds,
+    })) as { references: ResolvedHistoryReference[] };
+    await this.assertHistoryScope(hash, scope.key, reserved);
+    const text = this.historyFields(() =>
+      historyText(String(body.text ?? ""), references, resolved.references),
+    );
+    return { text, references, inputHash, scopeKey: scope.key };
+  }
+  /** A receipt freezes the accepted text. Replays compare reviewed input without re-reading sources. */
+  private historyReplay(
+    prior: Record<string, unknown> | undefined,
+    body: Record<string, unknown>,
+    operation: string,
+    control: { priorUncertain: boolean },
+  ): unknown | undefined {
+    if (prior?.found !== true || (body.historyReferences === undefined && !prior.historyInputHash))
+      return undefined;
+    if (
+      prior.sessionId !== body.sessionId ||
+      prior.operation !== operation ||
+      prior.historyInputHash !== this.historyFields(() => historyInputHash(body, operation))
+    )
+      throw new HttpError(409, "request_id_conflict");
+    if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
+      control.priorUncertain = false;
+      return prior.ack;
+    }
+    control.priorUncertain = prior.status !== "not-dispatched";
+    throw new HttpError(
+      409,
+      control.priorUncertain ? "outcome_unknown" : "control_preflight_rejected",
+    );
+  }
+  private async historyRead(
+    res: ConversationResponse,
+    hash: string,
+    kind: string,
+    body: Record<string, unknown>,
+  ) {
+    const scope = await this.historyScope(hash, true);
+    let params: Record<string, unknown>;
+    let method: string;
+    if (kind === "search") {
+      const fields = ["query", "workspaceIds", "agents", "kinds", "archived", "cursor", "limit"];
+      if (Object.keys(body).some((key) => !fields.includes(key)) || typeof body.query !== "string")
+        throw new HttpError(400, "invalid_history_query");
+      if (
+        body.workspaceIds !== undefined &&
+        (!Array.isArray(body.workspaceIds) ||
+          body.workspaceIds.some((id) => typeof id !== "string" || !scope.workspaces.includes(id)))
+      )
+        throw new HttpError(403, "workspace_not_authorized");
+      params = { ...body };
+      method = HISTORY_SEARCH_METHODS.query;
+    } else if (kind === "locate") {
+      params = this.historyFields(() => historyLocation(body)) as unknown as Record<
+        string,
+        unknown
+      >;
+      if (!scope.allowedSessionIds.includes(String(params.sessionId)))
+        throw new HttpError(403, "workspace_not_authorized");
+      method = HISTORY_SEARCH_METHODS.locate;
+    } else {
+      if (Object.keys(body).some((key) => key !== "references"))
+        throw new HttpError(400, "invalid_history_references");
+      const references = this.historyFields(() => historyReferences(body.references));
+      if (references.some((item) => !scope.allowedSessionIds.includes(item.sessionId)))
+        throw new HttpError(403, "workspace_not_authorized");
+      params = { references };
+      method = HISTORY_SEARCH_METHODS.references;
+    }
+    const result = await this.historyCall(
+      method,
+      { ...params, allowedSessionIds: scope.allowedSessionIds },
+      res,
+    );
+    await this.assertHistoryScope(hash, scope.key, true);
+    if (kind === "references") {
+      const resolved = result as { references: ResolvedHistoryReference[] };
+      const text = this.historyFields(() =>
+        historyText("", params.references as HistoryReference[], resolved.references),
+      );
+      return this.json(res, 200, { references: resolved.references, text });
+    }
+    return this.json(res, 200, result);
   }
   private async manage(
     _req: ConversationRequest,
@@ -3157,6 +3479,10 @@ export class WebAccessService {
       const device = trustedLocal
         ? this.localDevice
         : this.credentials.find((c) => c.hash === hash)?.device;
+      const historyAccess =
+        device && !browser.ended && this.options.historyRequest
+          ? await this.historyAccessScope(hash)
+          : undefined;
       return this.json(res, 200, {
         status: browser.ended
           ? "ended"
@@ -3172,6 +3498,7 @@ export class WebAccessService {
         pending: browser.pending,
         pairingMode: lan ? "confirmation" : "code",
         experimentalEnabled: this.controlsEnabled(undefined, device),
+        ...(historyAccess ? { historySearch: true, historySearchScope: historyAccess.token } : {}),
         ...(bearerToken ? { bearerToken } : {}),
       });
     }
@@ -3212,6 +3539,28 @@ export class WebAccessService {
         return this.json(res, 201, result);
       }
       const body = await this.body(req);
+      if (path.startsWith("/history/")) {
+        if (url.search) throw new HttpError(400, "invalid_history_request");
+        const kind = path.slice(9);
+        if (["search", "locate", "references"].includes(kind))
+          return this.historyRead(res, hash, kind, body);
+        if (!trustedLocal || lan) throw new HttpError(403, "owner_required");
+        if (!this.options.historyRequest) throw new HttpError(404, "capability_unavailable");
+        let method: string;
+        if (kind === "configure") {
+          if (
+            Object.keys(body).some((key) => key !== "enabled") ||
+            typeof body.enabled !== "boolean"
+          )
+            throw new HttpError(400, "invalid_history_configuration");
+          method = HISTORY_SEARCH_METHODS.configure;
+        } else {
+          if (Object.keys(body).length) throw new HttpError(400, "invalid_history_request");
+          if (kind !== "clear" && kind !== "rebuild") throw new HttpError(404, "not_found");
+          method = kind === "clear" ? HISTORY_SEARCH_METHODS.clear : HISTORY_SEARCH_METHODS.refresh;
+        }
+        return this.json(res, 200, await this.options.historyRequest(method, body));
+      }
       if (path.startsWith("/codex/"))
         return this.codexAction(res, hash, path.slice(7), body, control);
       if (path === "/attachments/delete") {
@@ -3334,12 +3683,19 @@ export class WebAccessService {
       this.grant(hash, permission);
       const requestId = this.field(body.requestId, 128);
       const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
-      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       const sessionId = this.field(body.sessionId);
       if (this.isFullAccess(this.grant(hash)))
         await this.codexScope(sessionId, hash, path === "/stream", false);
+      if (body.historyReferences !== undefined || prior?.historyInputHash)
+        await this.historyTargetScope(sessionId, hash);
       if (!this.controlsEnabled(sessionId, this.grant(hash)))
         throw new HttpError(403, "session_control_not_allowed");
+      if (body.historyReferences !== undefined && operation !== "send")
+        throw new HttpError(400, "history_references_not_supported");
+      this.grant(hash, permission);
+      const historyReplay = this.historyReplay(prior, body, operation, control);
+      if (historyReplay !== undefined) return this.json(res, 200, historyReplay);
+      if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
       const claudeReplay =
         prior?.found === true &&
         prior.sessionId === sessionId &&
@@ -3365,16 +3721,20 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         experimentalEnabled: true,
       };
+      let frozenText =
+        body.text === undefined && body.historyReferences !== undefined ? "" : body.text;
+      let historyScopeKey: string | undefined;
       if (operation === "send") {
         if (
-          typeof body.text !== "string" ||
-          (!body.text.trim() &&
+          typeof frozenText !== "string" ||
+          (!frozenText.trim() &&
+            body.historyReferences === undefined &&
             !(Array.isArray(body.attachmentIds) && body.attachmentIds.length)) ||
-          body.text.length > 16_000 ||
-          Buffer.byteLength(body.text, "utf8") > 16_384
+          frozenText.length > 16_000 ||
+          Buffer.byteLength(frozenText, "utf8") > 16_384
         )
           throw new HttpError(400, "invalid_text");
-        params.text = body.text;
+        params.text = frozenText;
       } else if (operation === "stop") {
         params.turnId = this.field(body.turnId);
       } else if (operation === "answer") {
@@ -3542,6 +3902,19 @@ export class WebAccessService {
         ) {
           throw new HttpError(409, "approval_unavailable");
         }
+        if (operation === "send" && body.historyReferences !== undefined) {
+          const history = await this.resolveHistoryInput(body, hash, operation, true);
+          frozenText = history.text;
+          historyScopeKey = history.scopeKey;
+          params.text = frozenText;
+          params.historyReferences = history.references;
+          params.historyInputHash = history.inputHash;
+          if (
+            !history.text.trim() &&
+            !(Array.isArray(body.attachmentIds) && body.attachmentIds.length)
+          )
+            throw new HttpError(400, "invalid_text");
+        }
         if (operation === "send" && body.attachmentIds !== undefined) {
           const device = this.grant(hash, "attachments");
           await this.codexScope(sessionId, hash, true, false);
@@ -3560,7 +3933,7 @@ export class WebAccessService {
               requestId,
               expectedRevision: body.expectedRevision,
               attachmentIds: body.attachmentIds,
-              text: String(body.text ?? ""),
+              text: String(frozenText ?? ""),
             });
             this.grant(hash, permission);
             this.grant(hash, "attachments");
@@ -3586,7 +3959,7 @@ export class WebAccessService {
                   device.id,
                   sessionId,
                   body.attachmentIds,
-                  String(body.text ?? ""),
+                  String(frozenText ?? ""),
                   "claude",
                   requestId,
                 )
@@ -3594,7 +3967,7 @@ export class WebAccessService {
                   device.id,
                   sessionId,
                   body.attachmentIds,
-                  String(body.text ?? ""),
+                  String(frozenText ?? ""),
                 );
           if (mode === "claude-managed" && !alreadyPinned) newlyPinnedDevice = device.id;
           delete params.text;
@@ -3627,23 +4000,23 @@ export class WebAccessService {
         }
         this.grant(hash, permission);
         if (boot !== this.bootId) throw new HttpError(409, "stale_boot");
+        if (historyScopeKey) await this.assertHistoryScope(hash, historyScopeKey, true);
+        this.grant(hash, permission);
         params.runtimeBootId = snapshot.runtimeBootId;
         dispatched = true;
         control.dispatched = true;
         this.unconfirmed.add(sessionId);
         this.unconfirmedRequests.set(sessionId, requestId);
-        const pending = Promise.resolve()
-          .then(() =>
-            (snapshot as { executionMode?: string }).executionMode === "claude-managed" &&
-            this.options.receiptRequest
-              ? dispatchClaude(this.options.runtimeRequest, this.options.receiptRequest, params)
-              : this.options.runtimeRequest(params),
-          )
-          .finally(() => {
-            this.active.delete(sessionId);
-            this.admission = false;
-            this.notifyControlChanged(sessionId);
-          });
+        const pending = (
+          (snapshot as { executionMode?: string }).executionMode === "claude-managed" &&
+          this.options.receiptRequest
+            ? dispatchClaude(this.options.runtimeRequest, this.options.receiptRequest, params)
+            : this.options.runtimeRequest(params)
+        ).finally(() => {
+          this.active.delete(sessionId);
+          this.admission = false;
+          this.notifyControlChanged(sessionId);
+        });
         const result = await this.runtime(params, pending);
         // Runtime admission is not owner dispatch: the bridge rechecks state
         // under its operation lock. Only a correlated definitive rejection can
@@ -3712,6 +4085,19 @@ export class WebAccessService {
     }
     if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
     this.grant(hash);
+    if (path === "/history/status") {
+      if (url.search) throw new HttpError(400, "invalid_history_request");
+      const scope = await this.historyScope(hash, true);
+      const result = await this.historyCall(
+        HISTORY_SEARCH_METHODS.status,
+        {
+          allowedSessionIds: scope.allowedSessionIds,
+        },
+        res,
+      );
+      await this.assertHistoryScope(hash, scope.key, true);
+      return this.json(res, 200, result);
+    }
     if (path === "/attachments") {
       if (lan) throw new HttpError(403, "attachments_require_same_origin");
       const device = this.grant(hash, "attachments");

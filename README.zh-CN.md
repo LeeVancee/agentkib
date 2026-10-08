@@ -43,6 +43,8 @@ AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。�
 
 ### 跨 Agent 继续工作
 
+桌面与 Web 支持由主机所有者显式开启的本机正文搜索：查找消息或可读取的工具文字，定位并选择片段，加入当前草稿且保持目标会话不变，只有用户明确发送时才带入引用。其他已配对主机仍只搜索标题。参见[正文搜索与来源覆盖](docs/SESSION-CONTENT-SEARCH.md)。
+
 浏览 Codex、Claude Code、Antigravity ACP、OpenCode、OpenClaw、Hermes 和 Grok Build 的本地会话。Codex、Claude Code、Antigravity ACP 与 OpenCode 会话可以生成经过审查的跨 Agent 交接；其余来源保持只读。AgentKib 会保留有用的时间线上下文、遮盖常见敏感值，并在写入或导入交接产物前请求确认。Antigravity 的原生导入与 Desktop/CLI 互操作限制见[Antigravity 接入边界](docs/ANTIGRAVITY.md)。
 
 ### 维护本地工具链

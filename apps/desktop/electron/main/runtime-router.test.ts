@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { HISTORY_SEARCH_METHODS } from "@agentkib/runtime-protocol";
 import {
   BACKEND_INITIALIZE,
   BACKEND_PREFERENCES,
@@ -69,6 +70,248 @@ function gate() {
   });
   return { promise, resolve };
 }
+
+const historyLocation = {
+  sessionId: "source-session",
+  recordId: "source-record",
+  chunkId: "source-chunk",
+  sourceRevision: "source-revision",
+};
+const historyRequests = [
+  {
+    method: HISTORY_SEARCH_METHODS.query,
+    params: {
+      query: "fixture needle",
+      workspaceIds: ["workspace"],
+      agents: ["codex"],
+      kinds: ["assistant"],
+      archived: false,
+      limit: 7,
+      allowedSessionIds: ["source-session"],
+    },
+  },
+  { method: HISTORY_SEARCH_METHODS.locate, params: { location: historyLocation } },
+  {
+    method: HISTORY_SEARCH_METHODS.references,
+    params: {
+      references: [{ ...historyLocation, start: 0, end: 7, contentHash: "a".repeat(64) }],
+    },
+  },
+  { method: HISTORY_SEARCH_METHODS.status, params: { allowedSessionIds: ["source-session"] } },
+  { method: HISTORY_SEARCH_METHODS.configure, params: { enabled: true } },
+  { method: HISTORY_SEARCH_METHODS.clear, params: {} },
+  { method: HISTORY_SEARCH_METHODS.refresh, params: {} },
+  {
+    method: HISTORY_SEARCH_METHODS.cancel,
+    params: { requestId: "00000000-0000-4000-8000-000000000001" },
+  },
+];
+
+describe("RuntimeRouter history search ownership", () => {
+  it.each(historyRequests)(
+    "forwards $method and its exact parameters once",
+    async ({ method, params }) => {
+      const ts = new Host();
+      const router = new RuntimeRouter(ts);
+      await router.start();
+      const result = { marker: method };
+      const received = vi.fn((_method: string, _params: unknown) => result);
+      ts.handler = received;
+
+      expect(await router.request(method, params)).toBe(result);
+      expect(received).toHaveBeenCalledExactlyOnceWith(method, params);
+      expect(received.mock.calls[0]?.[1]).toBe(params);
+      await router.stop();
+    },
+  );
+
+  it.each(historyRequests)(
+    "returns the original $method error without replay",
+    async ({ method, params }) => {
+      const ts = new Host();
+      const router = new RuntimeRouter(ts);
+      await router.start();
+      const failure = new Error(`fixture ${method} failed`);
+      const received = vi.fn(() => {
+        throw failure;
+      });
+      ts.handler = received;
+
+      await expect(router.request(method, params)).rejects.toBe(failure);
+      expect(received).toHaveBeenCalledExactlyOnceWith(method, params);
+      expect(router.status.state).toBe("ready");
+      await router.stop();
+    },
+  );
+
+  it("rejects an unregistered history method before calling the backend", async () => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    const received = vi.fn();
+    ts.handler = received;
+
+    await expect(router.request("sessions.searchContentUnknown", {})).rejects.toThrow(
+      "No backend owner is registered for runtime method sessions.searchContentUnknown",
+    );
+    expect(received).not.toHaveBeenCalled();
+    await router.stop();
+  });
+
+  it.each([false, true])(
+    "serializes configure with preference writers and snapshots after errors (configure fails: %s)",
+    async (configureFails) => {
+      const ts = new Host();
+      const router = new RuntimeRouter(ts);
+      await router.start();
+      ts.calls.length = 0;
+      const writing = gate();
+      const configuring = gate();
+      const writeFailure = new Error("fixture preference write failed");
+      const configureFailure = new Error("fixture history configuration failed");
+      ts.handler = async (method) => {
+        if (method === RUNTIME_METHODS.updateMcpNetwork) {
+          await writing.promise;
+          throw writeFailure;
+        }
+        if (method === HISTORY_SEARCH_METHODS.configure) {
+          await configuring.promise;
+          if (configureFails) throw configureFailure;
+          return { enabled: true };
+        }
+        if (method === RUNTIME_METHODS.runtimeInfo)
+          return { data_dir: "/fixture", session_content_search_enabled: !configureFails };
+        return { locale_preference: "zh-TW" };
+      };
+      const first = router.request(RUNTIME_METHODS.updateMcpNetwork, { settings: {} });
+      const configured = router.request(HISTORY_SEARCH_METHODS.configure, { enabled: true });
+      const snapshot = router.request(RUNTIME_METHODS.runtimeInfo, {});
+      const following = router.request(RUNTIME_METHODS.setLocale, { preference: "zh-TW" });
+      const requests = [first, configured, snapshot, following];
+      for (const request of requests) void request.catch(() => undefined);
+      try {
+        await vi.waitFor(() => expect(ts.calls).toEqual([RUNTIME_METHODS.updateMcpNetwork]));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(ts.calls).toEqual([RUNTIME_METHODS.updateMcpNetwork]);
+
+        writing.resolve();
+        await expect(first).rejects.toBe(writeFailure);
+        await vi.waitFor(() =>
+          expect(ts.calls).toEqual([
+            RUNTIME_METHODS.updateMcpNetwork,
+            HISTORY_SEARCH_METHODS.configure,
+          ]),
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(ts.calls).toEqual([
+          RUNTIME_METHODS.updateMcpNetwork,
+          HISTORY_SEARCH_METHODS.configure,
+        ]);
+
+        configuring.resolve();
+        if (configureFails) await expect(configured).rejects.toBe(configureFailure);
+        else await expect(configured).resolves.toEqual({ enabled: true });
+        await expect(snapshot).resolves.toMatchObject({
+          session_content_search_enabled: !configureFails,
+        });
+        await expect(following).resolves.toEqual({ locale_preference: "zh-TW" });
+        expect(ts.calls).toEqual([
+          RUNTIME_METHODS.updateMcpNetwork,
+          HISTORY_SEARCH_METHODS.configure,
+          RUNTIME_METHODS.runtimeInfo,
+          RUNTIME_METHODS.setLocale,
+        ]);
+      } finally {
+        writing.resolve();
+        configuring.resolve();
+        await Promise.allSettled(requests);
+        await router.stop();
+      }
+    },
+  );
+
+  it("dispatches another query and cancellation while a search read is pending", async () => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    ts.calls.length = 0;
+    const searching = gate();
+    const pendingParams = {
+      query: "slow fixture",
+      requestId: "00000000-0000-4000-8000-000000000001",
+    };
+    const quickParams = {
+      query: "quick fixture",
+      requestId: "00000000-0000-4000-8000-000000000002",
+    };
+    const received = vi.fn((method: string, params: unknown) => {
+      if (params === pendingParams) return searching.promise.then(() => ({ hits: ["slow"] }));
+      if (method === HISTORY_SEARCH_METHODS.query) return { hits: ["quick"] };
+      return null;
+    });
+    ts.handler = received;
+    const pending = router.request(HISTORY_SEARCH_METHODS.query, pendingParams);
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() =>
+        expect(received).toHaveBeenCalledExactlyOnceWith(
+          HISTORY_SEARCH_METHODS.query,
+          pendingParams,
+        ),
+      );
+      await expect(router.request(HISTORY_SEARCH_METHODS.query, quickParams)).resolves.toEqual({
+        hits: ["quick"],
+      });
+      const cancelParams = { requestId: pendingParams.requestId };
+      await expect(router.request(HISTORY_SEARCH_METHODS.cancel, cancelParams)).resolves.toBeNull();
+      expect(received.mock.calls).toEqual([
+        [HISTORY_SEARCH_METHODS.query, pendingParams],
+        [HISTORY_SEARCH_METHODS.query, quickParams],
+        [HISTORY_SEARCH_METHODS.cancel, cancelParams],
+      ]);
+    } finally {
+      searching.resolve();
+      await Promise.allSettled([pending]);
+      await router.stop();
+    }
+  });
+
+  it("dispatches query and cancellation while history configuration is pending", async () => {
+    const ts = new Host();
+    const router = new RuntimeRouter(ts);
+    await router.start();
+    ts.calls.length = 0;
+    const configuring = gate();
+    ts.handler = (method) => {
+      if (method === HISTORY_SEARCH_METHODS.configure)
+        return configuring.promise.then(() => ({ enabled: true }));
+      if (method === HISTORY_SEARCH_METHODS.query) return { hits: [] };
+      return null;
+    };
+    const pending = router.request(HISTORY_SEARCH_METHODS.configure, { enabled: true });
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(ts.calls).toContain(HISTORY_SEARCH_METHODS.configure));
+      await expect(
+        router.request(HISTORY_SEARCH_METHODS.query, { query: "fixture" }),
+      ).resolves.toEqual({ hits: [] });
+      await expect(
+        router.request(HISTORY_SEARCH_METHODS.cancel, {
+          requestId: "00000000-0000-4000-8000-000000000001",
+        }),
+      ).resolves.toBeNull();
+      expect(ts.calls).toEqual([
+        HISTORY_SEARCH_METHODS.configure,
+        HISTORY_SEARCH_METHODS.query,
+        HISTORY_SEARCH_METHODS.cancel,
+      ]);
+    } finally {
+      configuring.resolve();
+      await Promise.allSettled([pending]);
+      await router.stop();
+    }
+  });
+});
 
 describe("RuntimeRouter migration ownership and recovery", () => {
   it.each([

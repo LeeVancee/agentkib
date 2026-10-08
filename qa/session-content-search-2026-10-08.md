@@ -569,3 +569,15 @@ Windows ARM64 剩余 2 项失败、357 项通过、10 项既有跳过：仅 Open
 本地 Node `22.23.3` / pnpm `10.8.1` 验证：`pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000` 为 19 文件、368 通过、1 既有跳过，耗时 46 秒；包含 staged Koffi/SQLite smoke。独立权限测试在 macOS 为 2 通过、1 Windows 专属跳过。本轮工作流和测试文件的 `oxfmt --check`、`git diff --check` 通过。生产代码没有再次变更，Windows 分支必须以本次提交后的 CI 为准。
 
 第三轮失败原始证据保留为 `windows-x64-final.log`、`windows-arm64-final.log`（文件名不表示通过），本轮本地结果为 `windows-budget-stability.log`，均位于前述私有 CI 证据目录。前三轮失败结论保持原样。
+
+
+### Windows 通过及 Web 归档回归排查（2026-10-09）
+
+提交 `9dbcd3efe0d65884b2fc5a512b35b22575222a6a` 的 Linux 两个平台（`37808617520`）通过，Windows x64/ARM64（`37808617587`）均为 19 文件、359 通过、10 既有跳过。ARM64 的六项完整快照恢复、四项真实文件锁与 Koffi smoke 全部通过，独立 .NET ACL 核验耗时 5899ms。前三轮 Windows 失败证据未覆盖；本轮日志为 `windows-x64-9dbcd3efe.log`、`windows-arm64-9dbcd3efe.log`，哈希及摘要见 `run-9dbcd3efe-evidence.json`。
+
+全量 CI（`37808617519`）桌面 2327 通过、11 既有跳过；Web 为 655 通过、1 失败：嵌入会话归档用例在看到正文后点击 Session actions，却未找到 Archive。原始 DOM 与错误位于 `ci-9dbcd3efe.log`。同一用例连续报告重复 React key `first`；相邻用例也报告该告警。
+
+独立子代理核对出 `SessionOperations` 和 `CodexComposer` 是同级组件，却共用 `selected` 作为 key，属于主线已有的确定缺陷。现分别使用 `operations-` 与 `composer-` 前缀；会话变化时仍重置相应组件，不改变归档、执行或权限语义。本地原版整文件及全 Web 均通过，因此不将重复 key 宣称为该 CI 失败唯一且已完整复现的原因。只修复确认的身份冲突，并保留原归档与重新打开断言继续验证。
+
+
+新增真实 EmbeddedConversation 回归：打开操作面板并保留草稿，再由 host refresh 更新历史，检查原面板及原输入框仍各一个、草稿不变、归档可用且无重复 key 告警。没有测试重试、固定睡眠、放宽超时或修改原归档断言。完整 Web 35 文件、657/657 通过，最终 console spy 清理后两项专项仍通过；日志为 `independent/web-all-panel-keys-after.log`、`independent/web-panel-keys-final.log`。全量类型检查、新测试的 Web 类型检查、两文件格式检查及 hosted 构建通过，日志为 `web-key-typecheck.log`、`web-panel-key-test-typecheck.log`、`web-key-hosted-build.log`。局部 lint 仅保留原有 `scroll.current` immutability 告警。独立实现后由主代理核对同级 key、会话切换重置和新增行为断言。

@@ -2239,6 +2239,51 @@ describe("shared embedded conversation", () => {
     await screen.findByText("second history");
     expect(onSessionChange).not.toHaveBeenCalled();
   });
+  it("keeps one action panel and the composer draft through a host refresh", async ({
+    onTestFinished,
+  }) => {
+    const { client, sessions } = fixture();
+    sessions[0].agent = "codex";
+    const errors = vi.spyOn(console, "error");
+    onTestFinished(() => errors.mockRestore());
+    const events = vi.spyOn(client, "events");
+    const props = {
+      client,
+      sessionId: "first",
+      locale: "en-US" as const,
+      onSessionChange: vi.fn(),
+    };
+    const view = render(<EmbeddedConversation {...props} refreshRevision={0} />);
+    await screen.findByText("first history");
+    const input = screen.getByRole("textbox", { name: "Send a message" });
+    fireEvent.change(input, { target: { value: "Keep this unsent draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+    const panel = await screen.findByRole("dialog", { name: "Session actions" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Archive" })).toBeEnabled());
+    events.mockResolvedValue({
+      events: [
+        {
+          id: "refreshed",
+          kind: "agent-message",
+          content: "Refreshed while actions are open",
+          attachment_count: 0,
+          truncated: false,
+        },
+      ],
+      warnings: [],
+    });
+    view.rerender(<EmbeddedConversation {...props} refreshRevision={1} />);
+    await screen.findByText("Refreshed while actions are open");
+    expect(screen.getAllByRole("dialog")).toEqual([panel]);
+    expect(screen.getAllByRole("textbox", { name: "Send a message", hidden: true })).toEqual([
+      input,
+    ]);
+    expect(input).toHaveValue("Keep this unsent draft");
+    expect(screen.getByRole("button", { name: "Archive" })).toBeEnabled();
+    expect(errors.mock.calls.filter(([message]) => String(message).includes("same key"))).toEqual(
+      [],
+    );
+  });
   it("refreshes from an explicit host revision without rereading on mount or losing the draft", async () => {
     const { client } = fixture();
     const events = vi.spyOn(client, "events");

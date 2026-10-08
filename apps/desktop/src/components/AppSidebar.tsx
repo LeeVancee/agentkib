@@ -1,18 +1,7 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ComponentType,
-  type ReactNode,
-} from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
 import {
   Bot,
   ChevronRight,
@@ -314,9 +303,7 @@ export function AppSidebar(props: {
                       </Button>
                     }
                   />
-                  <TooltipContent side="right" >
-                    {translatedLabel}
-                  </TooltipContent>
+                  <TooltipContent side="right">{translatedLabel}</TooltipContent>
                 </Tooltip>
               );
             })}
@@ -347,9 +334,7 @@ export function AppSidebar(props: {
                     </Button>
                   }
                 />
-                <TooltipContent side="right">
-                  {tr("menu.refreshCurrent")}
-                </TooltipContent>
+                <TooltipContent side="right">{tr("menu.refreshCurrent")}</TooltipContent>
               </Tooltip>
             )}
             <Tooltip>
@@ -370,9 +355,7 @@ export function AppSidebar(props: {
                   </Button>
                 }
               />
-              <TooltipContent side="right">
-                {tr("sessions.remote")}
-              </TooltipContent>
+              <TooltipContent side="right">{tr("sessions.remote")}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger
@@ -400,9 +383,7 @@ export function AppSidebar(props: {
                   </Button>
                 }
               />
-              <TooltipContent side="right">
-                {tr("nav.settings")}
-              </TooltipContent>
+              <TooltipContent side="right">{tr("nav.settings")}</TooltipContent>
             </Tooltip>
             <Button
               variant="bare"

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const desktopRoot = path.resolve(import.meta.dirname, "../..");
 describe("desktop startup flow", () => {
   it("renders from cached appearance without awaiting runtimeInfo", () => {
-    const source = readFileSync(path.join(desktopRoot, "src/main.tsrx"), "utf8");
+    const source = readFileSync(path.join(desktopRoot, "src/start-client.tsrx"), "utf8");
 
     expect(source).toContain("cachedEffectiveLocale");
     expect(source).toContain("cachedEffectiveTheme");
@@ -66,10 +66,13 @@ describe("desktop startup flow", () => {
   });
 
   it("only reports the first commit from the main Renderer surface", () => {
-    const rendererSource = readFileSync(path.join(desktopRoot, "src/main.tsrx"), "utf8");
+    const rendererSource = readFileSync(path.join(desktopRoot, "src/start-client.tsrx"), "utf8");
+    const rootSource = readFileSync(path.join(desktopRoot, "src/routes/__root.tsrx"), "utf8");
     const mainSource = readFileSync(path.join(desktopRoot, "electron/main/index.ts"), "utf8");
 
-    expect(rendererSource).toContain('surface !== "quota-popover" && <BenchmarkCommitMarker />');
+    expect(rendererSource).toContain('surface === "quota-popover"');
+    expect(rendererSource).toContain("StartClient router={router}");
+    expect(rootSource).toContain("<BenchmarkCommitMarker />");
     expect(mainSource).toContain("event.sender !== mainWindow.webContents");
   });
 

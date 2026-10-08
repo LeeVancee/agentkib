@@ -106,7 +106,7 @@ export interface RootRouteChildren {
   ConnectRoute: typeof ConnectRoute
 }
 
-declare module '@tanstack/react-router' {
+declare module '@octanejs/tanstack-router' {
   interface FileRoutesByPath {
     '/': {
       id: '/'
@@ -195,3 +195,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@octanejs/tanstack-start'
+declare module '@octanejs/tanstack-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

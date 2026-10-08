@@ -10,7 +10,9 @@ export function normalizePlatform(platform?: string): AppPlatform {
 }
 
 export function applyPlatformAttribute(platform?: string): void {
-  document.documentElement.dataset.platform = normalizePlatform(platform);
+  const resolvedPlatform =
+    platform ?? globalThis.window?.agentkibDesktop?.platform ?? "darwin";
+  document.documentElement.dataset.platform = normalizePlatform(resolvedPlatform);
 }
 
 export function primaryShortcutModifier(platform?: string): "Command" | "Ctrl" {

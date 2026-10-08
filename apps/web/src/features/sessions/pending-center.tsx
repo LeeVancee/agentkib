@@ -1,6 +1,6 @@
-import { Bell } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { Bell } from "@octanejs/lucide";
+import { useEffect, useState } from "octane";
+import { useNavigate } from "@octanejs/tanstack-router";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/dialog";
 import { useSession } from "./session-context";

@@ -6,7 +6,7 @@ import {
   type PendingControl,
 } from "./pending-controls";
 import { useSessionLive } from "./use-session-live";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "octane";
 import {
   ApiError,
   isLegacyPreparedReceipt,
@@ -84,7 +84,7 @@ export function useSessionController({
   const generation = useRef(0),
     selection = useRef(""),
     accessRef = useRef<Access | undefined>(undefined),
-    scroll = useRef<HTMLElement>(null),
+    scroll = useRef<HTMLElement | null>(null),
     mutating = useRef(false);
   const durableScope = useRef<string | undefined>(undefined);
   const durablePending = useRef<PendingControl[]>([]);

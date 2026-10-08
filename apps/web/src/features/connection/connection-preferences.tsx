@@ -1,5 +1,5 @@
-import { useId, useState } from "react";
-import { Settings2 } from "lucide-react";
+import { useId, useState } from "octane";
+import { Settings2 } from "@octanejs/lucide";
 import { NativeSelect } from "@/components/ui/native-select";
 import { dictionaries, type Locale } from "@/i18n";
 
@@ -37,7 +37,7 @@ export function ConnectionPreferences({
           <NativeSelect
             className="h-11"
             value={locale}
-            onChange={(event) => onChange(event.target.value as Locale, theme)}
+            onChange={(event) => onChange(event.currentTarget.value as Locale, theme)}
           >
             <option value="zh-CN">简体中文</option>
             <option value="zh-TW">繁體中文</option>
@@ -50,7 +50,7 @@ export function ConnectionPreferences({
           <NativeSelect
             className="h-11"
             value={theme}
-            onChange={(event) => onChange(locale, event.target.value)}
+            onChange={(event) => onChange(locale, event.currentTarget.value)}
           >
             <option value="system">{t.system}</option>
             <option value="light">{t.light}</option>

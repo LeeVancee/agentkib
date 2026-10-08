@@ -1,13 +1,13 @@
 import { ConnectionPreferences } from "./connection-preferences";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "octane";
 import { useAppearance } from "@/features/preferences/use-appearance";
 import { parseLanOrigin } from "@agentkib/web-client";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@octanejs/tanstack-router";
 import { useEnvironment } from "@/providers/environment";
 import { dictionaries, type Locale } from "@/i18n";
-import { Monitor, ArrowRight, ShieldAlert, ChevronDown } from "lucide-react";
+import { Monitor, ArrowRight, ShieldAlert, ChevronDown } from "@octanejs/lucide";
 import { connectionCopy } from "@/features/connection/connection-copy";
 
 export function ConnectionPage() {
@@ -98,7 +98,7 @@ export function ConnectionScreen({
               <Input
                 className="h-11"
                 value={address}
-                onChange={(e) => setAddress(e.target.value)}
+                onChange={(e) => setAddress(e.currentTarget.value)}
                 placeholder="http://192.168.1.10:1422"
                 autoComplete="off"
                 spellCheck={false}
@@ -119,7 +119,7 @@ export function ConnectionScreen({
               <input
                 type="checkbox"
                 checked={acknowledged}
-                onChange={(e) => setAcknowledged(e.target.checked)}
+                onChange={(e) => setAcknowledged(e.currentTarget.checked)}
               />
               {t.lanAcknowledge}
             </label>

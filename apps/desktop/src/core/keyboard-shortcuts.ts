@@ -216,8 +216,10 @@ function displayKey(key: string): string {
 }
 
 export function currentAppPlatform(): AppPlatform {
-  const rootPlatform = document.documentElement.dataset.platform;
-  return normalizePlatform(rootPlatform);
+  const rootPlatform =
+    typeof document !== "undefined" ? document.documentElement.dataset.platform : undefined;
+  const bridgePlatform = globalThis.window?.agentkibDesktop?.platform;
+  return normalizePlatform(rootPlatform ?? bridgePlatform ?? "darwin");
 }
 
 export function shouldHandleInFrontend(

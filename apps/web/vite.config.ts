@@ -1,25 +1,21 @@
 import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
-import { tanstackRouter } from "@tanstack/router-plugin/vite";
+import { tanstackStart } from "@octanejs/tanstack-start/plugin/vite";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-const require = createRequire(import.meta.url);
 export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
-      "octane/jsx-runtime": require.resolve("react/jsx-runtime"),
-      "@octanejs/lucide": require.resolve("lucide-react"),
     },
   },
   build: { outDir: mode === "hosted" ? "dist-hosted" : "dist" },
   plugins: [
-    tanstackRouter({ target: "react", autoCodeSplitting: mode !== "test" }),
+    ...tanstackStart({
+      octane: { requireDirective: false, strong: false },
+    }),
     tailwindcss(),
-    react(),
     {
       name: "agentkib-build-info",
       generateBundle() {

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ArrowLeft, FolderOpen, X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "octane";
+import { ArrowLeft, FolderOpen, X } from "@octanejs/lucide";
 import {
   ApiError,
   type ArtifactEntry,
@@ -346,7 +346,7 @@ export function ArtifactBrowser({
               <select
                 className="block min-h-11 w-full min-w-0 rounded border bg-background p-2"
                 value={workspaceId}
-                onChange={(e) => setWorkspaceId(e.target.value)}
+                onChange={(e) => setWorkspaceId(e.currentTarget.value)}
               >
                 {roots.map((w) => (
                   <option key={w.id} value={w.id}>
@@ -386,7 +386,7 @@ export function ArtifactBrowser({
                   aria-label={copy.diffKind}
                   className="min-h-11 w-full rounded border bg-background p-2"
                   value={kind}
-                  onChange={(e) => setKind(e.target.value)}
+                  onChange={(e) => setKind(e.currentTarget.value)}
                 >
                   <option value="worktree">{copy.worktree}</option>
                   <option value="staged">{copy.staged}</option>
@@ -398,7 +398,7 @@ export function ArtifactBrowser({
                     <input
                       className="block min-h-11 w-full rounded border bg-background p-2"
                       value={oid}
-                      onChange={(e) => setOid(e.target.value)}
+                      onInput={(e) => setOid(e.currentTarget.value)}
                     />
                     <Button
                       className="min-h-11"

@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext } from "octane";
 export type SessionPanels = {
   filesOpen: boolean;
   setFilesOpen: (open: boolean) => void;

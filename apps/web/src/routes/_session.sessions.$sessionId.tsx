@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useRef } from "octane";
+import { createFileRoute, Link } from "@octanejs/tanstack-router";
 import { SessionReader } from "@/features/sessions/session-reader";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";

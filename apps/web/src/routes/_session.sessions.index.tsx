@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { useEffect } from "octane";
+import { createFileRoute } from "@octanejs/tanstack-router";
 import { SessionEmpty } from "@/features/sessions/session-empty";
 import { useSession } from "@/features/sessions/session-context";
 export const Route = createFileRoute("/_session/sessions/")({ component: Index });

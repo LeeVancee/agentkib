@@ -4,7 +4,7 @@ import { codexCopy } from "./codex-copy";
 import { PreferencesDialog } from "@/features/preferences/preferences-dialog";
 import { SessionDetailsDialog } from "@/features/catalog/session-details-dialog";
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
+import { Check } from "@octanejs/lucide";
 import { toolStatusLabel } from "@agentkib/session-ui";
 import { QuestionForm, interactionCopy } from "@/features/interactions/question-form";
 import { Dialog } from "@/components/dialog";

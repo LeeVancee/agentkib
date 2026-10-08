@@ -1,7 +1,7 @@
 import { NativeSelect } from "@/components/ui/native-select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useState } from "octane";
 import {
   ChevronDown,
   ChevronRight,
@@ -10,7 +10,7 @@ import {
   GitBranch,
   Info,
   Search,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { AgentMark, agentName } from "@agentkib/agent-identity";
 import { displaySessionTitle, filterSessions, groupSessions } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
@@ -65,14 +65,14 @@ export function SessionCatalog({
           aria-label={t.search}
           placeholder={t.search}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => setQuery(e.currentTarget.value)}
         />
       </label>
       <details className="mx-4 mb-4 rounded-lg border bg-background/50 px-3 py-1 text-xs text-muted-foreground [&>summary]:cursor-pointer [&>summary]:py-2 [&>label]:my-3 [&>label]:flex [&>label]:items-center [&>label]:justify-between [&>label]:gap-2 [&_select]:max-w-40 [&_select]:text-xs">
         <summary>{c.options}</summary>
         <label>
           {c.agent}
-          <NativeSelect value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <NativeSelect value={agent} onChange={(e) => setAgent(e.currentTarget.value)}>
             <option value="all">{c.allAgents}</option>
             {agents.map((a) => (
               <option key={a} value={a}>
@@ -83,7 +83,7 @@ export function SessionCatalog({
         </label>
         <label>
           {c.records}
-          <NativeSelect value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
+          <NativeSelect value={filter} onChange={(e) => setFilter(e.currentTarget.value as typeof filter)}>
             {(["current", "archived", "metadata", "all"] as const).map((f) => (
               <option key={f} value={f}>
                 {c[f]}
@@ -95,7 +95,7 @@ export function SessionCatalog({
           <input
             type="checkbox"
             checked={showAuxiliary}
-            onChange={(e) => setShowAuxiliary(e.target.checked)}
+            onChange={(e) => setShowAuxiliary(e.currentTarget.checked)}
           />
           {c.auxiliary}
         </label>

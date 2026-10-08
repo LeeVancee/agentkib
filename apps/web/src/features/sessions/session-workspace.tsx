@@ -1,5 +1,5 @@
-import { Outlet, useLocation, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { Outlet, useLocation, useNavigate } from "@octanejs/tanstack-router";
+import { useEffect, useState } from "octane";
 import {
   ArrowLeft,
   FolderOpen,
@@ -8,7 +8,7 @@ import {
   RefreshCw,
   LogOut,
   Monitor,
-} from "lucide-react";
+} from "@octanejs/lucide";
 import { SessionCatalog } from "@/features/catalog/session-catalog";
 import { Button } from "@/components/ui/button";
 import { useSession } from "./session-context";

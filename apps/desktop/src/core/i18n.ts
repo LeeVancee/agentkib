@@ -14,6 +14,15 @@ export const supportedLocales: SupportedLocale[] = ["zh-CN", "zh-TW", "ja-JP", "
 const EFFECTIVE_LOCALE_STORAGE_KEY = "agentkib.effective-locale";
 const LOCALE_PREFERENCE_STORAGE_KEY = "agentkib.cached-locale-preference";
 
+const resources = {
+  "en-US": { translation: enUS },
+  "zh-CN": { translation: zhCN },
+  "zh-TW": { translation: zhTW },
+  "ja-JP": { translation: jaJP },
+};
+
+let initialization: Promise<void> | undefined;
+
 export function normalizeLocale(locale?: string | null): SupportedLocale {
   if (!locale) return "en-US";
   const normalized = locale.replaceAll("_", "-").toLowerCase();
@@ -47,28 +56,31 @@ export function cacheEffectiveLocale(locale: SupportedLocale, preference?: Local
 }
 
 export async function initializeI18n(locale: SupportedLocale) {
-  if (!i18n.isInitialized) {
-    await i18n.use(initOctaneI18next as never).init({
-      lng: locale,
-      fallbackLng: "en-US",
-      supportedLngs: supportedLocales,
-      resources: {
-        "en-US": { translation: enUS },
-        "zh-CN": { translation: zhCN },
-        "zh-TW": { translation: zhTW },
-        "ja-JP": { translation: jaJP },
-      },
-      interpolation: { escapeValue: false },
-      returnNull: false,
-      showSupportNotice: false,
-    } as never);
-  } else {
+  if (!i18n.isInitialized || !i18n.store) {
+    initialization ??= i18n
+      .use(initOctaneI18next as never)
+      .init({
+        lng: locale,
+        fallbackLng: "en-US",
+        supportedLngs: supportedLocales,
+        resources,
+        interpolation: { escapeValue: false },
+        returnNull: false,
+        showSupportNotice: false,
+      } as never)
+      .then(() => undefined);
+    await initialization;
+  } else if (i18n.language !== locale) {
     await i18n.changeLanguage(locale);
   }
-  document.documentElement.lang = locale;
+  if (typeof document !== "undefined") document.documentElement.lang = locale;
 }
 
 export async function changeLocale(locale: SupportedLocale) {
+  if (!i18n.isInitialized || !i18n.store) {
+    await initializeI18n(locale);
+    return;
+  }
   await i18n.changeLanguage(locale);
   document.documentElement.lang = locale;
 }

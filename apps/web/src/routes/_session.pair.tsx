@@ -1,4 +1,4 @@
-import { createFileRoute, Navigate } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@octanejs/tanstack-router";
 export const Route = createFileRoute("/_session/pair")({
   validateSearch: (search: Record<string, unknown>): { session?: string } => ({
     session: typeof search.session === "string" ? search.session : undefined,

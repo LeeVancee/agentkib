@@ -1,4 +1,4 @@
-import { MessagesSquare } from "lucide-react";
+import { MessagesSquare } from "@octanejs/lucide";
 import { useSession } from "./session-context";
 
 export function SessionEmpty() {

@@ -1,5 +1,5 @@
-import { Link } from "@tanstack/react-router";
-import { Monitor, Smartphone, ShieldCheck, ArrowRight } from "lucide-react";
+import { Link } from "@octanejs/tanstack-router";
+import { Monitor, Smartphone, ShieldCheck, ArrowRight } from "@octanejs/lucide";
 import { ConnectionPreferences } from "./connection-preferences";
 import { useAppearance } from "@/features/preferences/use-appearance";
 import { useEnvironment } from "@/providers/environment";

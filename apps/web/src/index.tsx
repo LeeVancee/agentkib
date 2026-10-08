@@ -1,10 +1,10 @@
-import React from "react";
-import { createRoot } from "react-dom/client";
+
+import { StrictMode, createRoot } from "octane";
 import "@fontsource-variable/geist";
 import "./style.css";
 import { WebApplication } from "./router";
 createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
+  <StrictMode>
     <WebApplication hosted={import.meta.env.MODE === "hosted"} />
-  </React.StrictMode>,
+  </StrictMode>,
 );

@@ -1,5 +1,5 @@
 import { NativeScope } from "./native-scope";
-import { useState } from "react";
+import { useState } from "octane";
 import type { Approval } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { codexCopy } from "@/features/sessions/codex-copy";
@@ -90,7 +90,7 @@ export function NativeDecisions({
                   type="checkbox"
                   checked={confirmed === option.id}
                   disabled={!enabled || busy || !label}
-                  onChange={(event) => setConfirmed(event.target.checked ? option.id : undefined)}
+                  onChange={(event) => setConfirmed(event.currentTarget.checked ? option.id : undefined)}
                 />
                 {copy.confirmation}
               </label>

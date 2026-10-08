@@ -1,4 +1,4 @@
-import * as React from "react";
+import * as React from "octane";
 import { cn } from "@/lib/utils";
 
 function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {

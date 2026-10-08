@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "octane";
 import { cn } from "@/lib/utils";
 import {
   Dialog as DialogRoot,

@@ -1,7 +1,7 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@octanejs/tanstack-router";
 import { legacyConnectionLink } from "@/features/connection/legacy-link";
 import { resolveWebConnection, type WebConnection } from "@agentkib/web-client";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "octane";
 import type { Locale } from "@/i18n";
 
 export interface EnvironmentOptions {

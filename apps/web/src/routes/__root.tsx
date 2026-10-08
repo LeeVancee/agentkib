@@ -1,4 +1,11 @@
-import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
+
+import {
+  createRootRouteWithContext,
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+} from "@octanejs/tanstack-router";
 import { EnvironmentProvider, type EnvironmentOptions } from "@/providers/environment";
 
 export const Route = createRootRouteWithContext<EnvironmentOptions>()({
@@ -15,8 +22,18 @@ export const Route = createRootRouteWithContext<EnvironmentOptions>()({
 function Root() {
   const initial = Route.useRouteContext();
   return (
-    <EnvironmentProvider initial={initial}>
-      <Outlet />
-    </EnvironmentProvider>
+    <html lang="zh-CN">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <div id="__app">
+          <EnvironmentProvider initial={initial}>
+            <Outlet />
+          </EnvironmentProvider>
+        </div>
+        <Scripts />
+      </body>
+    </html>
   );
 }

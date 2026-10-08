@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { MonitorSmartphone, ShieldCheck, MessagesSquare } from "lucide-react";
+import type { ReactNode } from "octane";
+import { MonitorSmartphone, ShieldCheck, MessagesSquare } from "@octanejs/lucide";
 import type { Words } from "@/i18n";
 
 export function PairingLayout({

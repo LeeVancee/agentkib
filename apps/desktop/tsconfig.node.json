@@ -13,7 +13,6 @@
   },
   "include": [
     "vite*.config.ts",
-    "route-generator.ts",
     "electron/**/*.ts",
     "src/core/types.ts",
     "src/core/remote-types.ts"

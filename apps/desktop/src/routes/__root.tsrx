@@ -1,7 +1,14 @@
 /** @jsxImportSource octane */
 
 import { useI18n } from "@/core/useI18n";
-import { createRootRoute, Outlet, useNavigate, useSearch } from "@octanejs/tanstack-router";
+import {
+  createRootRoute,
+  HeadContent,
+  Outlet,
+  Scripts,
+  useNavigate,
+  useSearch,
+} from "@octanejs/tanstack-router";
 import { CircleAlert } from "@octanejs/lucide";
 import { z } from "zod";
 import { SidebarPanelProvider } from "@/features/app/SidebarPanel";
@@ -40,8 +47,35 @@ import type { WorkspaceSummary } from "@/core/types";
 import { SessionHubProvider } from "@/features/sessions/SessionHubContext";
 import { useSessionViewStore } from "@/features/sessions/session-view-store";
 import { SessionWindowToolbar } from "@/features/sessions/SessionWindowToolbar.tsrx";
+import { WebPairingPrompt } from "@/features/remote/WebPairingPrompt.tsrx";
+import { BenchmarkCommitMarker, RendererProviders } from "@/renderer-providers.tsrx";
 
 function RootLayout() {
+  if (typeof window === "undefined") {
+    return (
+      <html lang="en-US">
+        <head>
+          <HeadContent />
+        </head>
+        <body>
+          <div id="__app" />
+          <Scripts />
+        </body>
+      </html>
+    );
+  }
+  return <ClientRootLayout />;
+}
+
+function ClientRootLayout() {
+  return (
+    <RendererProviders>
+      <ClientRootDocument />
+    </RendererProviders>
+  );
+}
+
+function ClientRootDocument() {
   const {
     route,
     globalPage,
@@ -88,45 +122,57 @@ function RootLayout() {
   });
 
   return (
-    <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
-      <AppRuntimeBridge />
-      <RemoteCatalogBridge />
-      <AppShellRouter
-        searchOpen={searchOpen}
-        route={route}
-        active={globalPage}
-        entries={navigation}
-        workspaces={workspaces}
-        workspacesPending={workspacesPending}
-        workspacesError={workspacesError}
-        onRetryWorkspaces={() => void retryWorkspaces()}
-        message={message}
-        refreshJobs={refreshJobs}
-        onNavigate={navigateGlobal}
-        onOpenWorkspace={(workspace, page) => void openWorkspace(workspace, page)}
-        onSettings={openSettings}
-        onRefresh={() => void refreshCurrentView()}
-        onOpenSearch={() => setSearchOpen(true)}
-        canGoBack={appHistory.canGoBack}
-        canGoForward={appHistory.canGoForward}
-        onBack={appHistory.goBack}
-        onForward={appHistory.goForward}
-      />
-      <GlobalSearchDialog
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        entries={navigation}
-        workspaces={workspaces}
-        onNavigate={navigateGlobal}
-        onOpenWorkspace={(workspace) => void openWorkspace(workspace)}
-        onOpenSession={(session) => {
-          useSessionViewStore.getState().revealSession(session);
-          navigateGlobal("sessions", false, { sessionId: session.id });
-        }}
-        onSessionSettings={() => openSettings("privacy")}
-      />
-      <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
-    </ShortcutHelpProvider>
+    <html lang="en-US">
+      <head>
+        <HeadContent />
+        </head>
+        <body>
+          <div id="__app">
+            <BenchmarkCommitMarker />
+            <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
+              <AppRuntimeBridge />
+              <RemoteCatalogBridge />
+              <AppShellRouter
+                searchOpen={searchOpen}
+                route={route}
+                active={globalPage}
+                entries={navigation}
+                workspaces={workspaces}
+                workspacesPending={workspacesPending}
+                workspacesError={workspacesError}
+                onRetryWorkspaces={() => void retryWorkspaces()}
+                message={message}
+                refreshJobs={refreshJobs}
+                onNavigate={navigateGlobal}
+                onOpenWorkspace={(workspace, page) => void openWorkspace(workspace, page)}
+                onSettings={openSettings}
+                onRefresh={() => void refreshCurrentView()}
+                onOpenSearch={() => setSearchOpen(true)}
+                canGoBack={appHistory.canGoBack}
+                canGoForward={appHistory.canGoForward}
+                onBack={appHistory.goBack}
+                onForward={appHistory.goForward}
+              />
+              <GlobalSearchDialog
+                open={searchOpen}
+                onOpenChange={setSearchOpen}
+                entries={navigation}
+                workspaces={workspaces}
+                onNavigate={navigateGlobal}
+                onOpenWorkspace={(workspace) => void openWorkspace(workspace)}
+                onOpenSession={(session) => {
+                  useSessionViewStore.getState().revealSession(session);
+                  navigateGlobal("sessions", false, { sessionId: session.id });
+                }}
+                onSessionSettings={() => openSettings("privacy")}
+              />
+              <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+              <WebPairingPrompt />
+            </ShortcutHelpProvider>
+          </div>
+        <Scripts />
+      </body>
+    </html>
   );
 }
 

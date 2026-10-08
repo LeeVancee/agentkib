@@ -3,7 +3,7 @@ import { useSessionPanels } from "./session-panels";
 import { CodexComposer } from "./codex-composer";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { ArrowUp, ChevronRight, ShieldCheck, Square } from "lucide-react";
+import { ArrowUp, ChevronRight, ShieldCheck, Square } from "@octanejs/lucide";
 import { SafeMarkdown, Transcript } from "@agentkib/session-ui";
 import { interactionCopy } from "@/features/interactions/question-form";
 import { MAX_MESSAGE_LENGTH, isValidMessage } from "./session-model";
@@ -138,7 +138,7 @@ export function SessionReader() {
                   id="message"
                   value={message}
                   maxLength={MAX_MESSAGE_LENGTH}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => setMessage(e.currentTarget.value)}
                   placeholder={t.message}
                   disabled={!online || busy}
                 />

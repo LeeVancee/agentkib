@@ -1,5 +1,5 @@
-import { Navigate, Outlet, useLocation } from "@tanstack/react-router";
-import { Settings2 } from "lucide-react";
+import { Navigate, Outlet, useLocation } from "@octanejs/tanstack-router";
+import { Settings2 } from "@octanejs/lucide";
 import { useEnvironment } from "@/providers/environment";
 import { SessionProvider, useSession } from "@/features/sessions/session-context";
 import { SessionDialogs } from "@/features/sessions/session-dialogs";

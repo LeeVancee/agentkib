@@ -1137,7 +1137,7 @@ function rendererUrl(surface?: "quota-popover"): string {
 }
 
 async function registerRendererProtocol(): Promise<void> {
-  const rendererRoot = path.resolve(app.getAppPath(), "dist");
+  const rendererRoot = path.resolve(app.getAppPath(), "dist/client");
   await protocol.handle("app", async (request) => {
     const url = new URL(request.url);
     if (url.host !== "bundle") return new Response("Not found", { status: 404 });
@@ -1150,7 +1150,7 @@ async function registerRendererProtocol(): Promise<void> {
     try {
       contents = await readFile(assetPath);
     } catch {
-      // 路由走 hash history，只有无扩展名的路径才可能是页面入口。缺失的脚本、样式等
+      // 路由使用浏览器 history，只有无扩展名的路径才可能是页面入口。缺失的脚本、样式等
       // 资源直接 404，否则会以 200 + HTML 返回，报错变成难以排查的语法错误。
       if (path.extname(relativePath)) return new Response("Not found", { status: 404 });
       assetPath = path.join(rendererRoot, "index.html");

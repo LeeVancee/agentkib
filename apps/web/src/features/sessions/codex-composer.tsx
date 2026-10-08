@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, X } from "lucide-react";
+import { useEffect, useRef, useState } from "octane";
+import { ArrowUp, Square, X } from "@octanejs/lucide";
 import { type UploadedAttachment } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,7 +43,7 @@ export function CodexComposer() {
   const copy = codexCopy[locale];
   const layout = composerLayoutCopy[locale];
   const display = sessionDisplayState(session);
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const textarea = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!textarea.current) return;
     textarea.current.style.height = "auto";
@@ -54,7 +54,7 @@ export function CodexComposer() {
   const [error, setError] = useState("");
   const [resources, setResources] = useState<CodexResource[]>([]);
   const active = useRef(new Map<string, AbortController>());
-  const fileInput = useRef<HTMLInputElement>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const count = useRef(0);
   const uploadPermission = !!(
     access?.device?.attachments &&
@@ -220,11 +220,11 @@ export function CodexComposer() {
         className="min-h-16 max-h-40 resize-none overflow-y-auto border-0 shadow-none"
         value={message}
         maxLength={MAX_MESSAGE_LENGTH}
-        onChange={(event) => setMessage(event.target.value)}
+        onChange={(event) => setMessage(event.currentTarget.value)}
         placeholder={t.message}
         disabled={!online || busy || submitted}
         onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files);
+          const files = Array.from(event.clipboardData?.files ?? []);
           if (files.length && uploadPermission) {
             event.preventDefault();
             void add(files);
@@ -277,8 +277,8 @@ export function CodexComposer() {
           aria-label={copy.attachment}
           disabled={!uploadPermission || busy || submitted}
           onChange={(event) => {
-            void add(Array.from(event.target.files ?? []));
-            event.target.value = "";
+            void add(Array.from(event.currentTarget.files ?? []));
+            event.currentTarget.value = "";
           }}
         />
         {!isClaude && (

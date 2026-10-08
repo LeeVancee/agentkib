@@ -1,30 +1,30 @@
 import { defineConfig } from "vite";
-import type { Plugin } from "vite";
-import { octane } from "@octanejs/vite-plugin";
+import { tanstackStart } from "@octanejs/tanstack-start/plugin/vite";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
-import { octaneRouteGenerator } from "./route-generator.ts";
-
-function tsrxMimeType(): Plugin {
-  return {
-    name: "agentkib-tsrx-mime-type",
-    configureServer(server) {
-      server.middlewares.use((request, response, next) => {
-        const pathname = request.url?.split(/[?#]/, 1)[0] ?? "";
-        if (pathname.endsWith(".tsrx")) {
-          response.setHeader("Content-Type", "text/javascript");
-        }
-        next();
-      });
-    },
-  };
-}
 
 const config = {
   plugins: [
-    tsrxMimeType(),
-    octaneRouteGenerator(),
-    octane({ requireDirective: true, strong: false }),
+    ...tanstackStart({
+      srcDirectory: "src",
+      router: {
+        routeFileIgnorePrefix: "-",
+      },
+      client: {
+        entry: "start-client",
+      },
+      server: {
+        entry: "start-server",
+      },
+      spa: {
+        enabled: true,
+        maskPath: "/",
+        prerender: {
+          outputPath: "index",
+        },
+      },
+      octane: { requireDirective: false, strong: false },
+    }),
     tailwindcss(),
   ],
   optimizeDeps: {

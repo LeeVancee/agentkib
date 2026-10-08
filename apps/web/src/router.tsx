@@ -1,11 +1,11 @@
 import { legacyConnectionLink } from "@/features/connection/legacy-link";
-import { useState } from "react";
+
+import { useState } from "octane";
 import {
-  createHashHistory,
   createMemoryHistory,
   createRouter,
   RouterProvider,
-} from "@tanstack/react-router";
+} from "@octanejs/tanstack-router";
 import { routeTree } from "@/routeTree.gen";
 import type { EnvironmentOptions } from "@/providers/environment";
 export { Dialog } from "@/components/dialog";
@@ -27,23 +27,30 @@ export function makeRouter(options: EnvironmentOptions = {}, memory = false) {
   }
   return createRouter({
     routeTree,
-    history: memory
-      ? createMemoryHistory({
-          initialEntries: [
-            address
-              ? "/connect"
-              : options.hosted && !options.origin && !options.connection
-                ? "/"
-                : "/sessions",
-          ],
-        })
-      : createHashHistory(),
+    ...(memory
+      ? {
+          history: createMemoryHistory({
+            initialEntries: [
+              address
+                ? "/connect"
+                : options.hosted && !options.origin && !options.connection
+                  ? "/"
+                  : "/sessions",
+            ],
+          }),
+        }
+      : {}),
     context: { ...options, address: address ?? options.address },
     defaultPreload: "intent",
     defaultPendingMs: 0,
   });
 }
-declare module "@tanstack/react-router" {
+
+export function getRouter() {
+  return makeRouter({ hosted: import.meta.env.MODE === "hosted" });
+}
+
+declare module "@octanejs/tanstack-router" {
   interface Register {
     router: ReturnType<typeof makeRouter>;
   }
@@ -52,3 +59,4 @@ export function WebApplication(options: EnvironmentOptions) {
   const [router] = useState(() => makeRouter(options, import.meta.env.MODE === "test"));
   return <RouterProvider router={router} />;
 }
+/** @jsxImportSource octane */

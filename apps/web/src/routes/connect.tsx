@@ -1,4 +1,4 @@
-import { createFileRoute, Navigate } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@octanejs/tanstack-router";
 import { useEnvironment } from "@/providers/environment";
 import { ConnectionPage } from "@/features/connection/connection-page";
 export const Route = createFileRoute("/connect")({ component: Connect });

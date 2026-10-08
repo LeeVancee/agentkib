@@ -1,6 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-react";
+import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "@octanejs/lucide";
 import { PairingLayout } from "@/features/connection/pairing-layout";
 import { useSession } from "@/features/sessions/session-context";
 import { codePairingCopy } from "./code-pairing-copy";
@@ -44,12 +44,12 @@ export function PairingPage() {
             maxLength={8}
             autoComplete="one-time-code"
             required
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+            onChange={(e) => setCode(e.currentTarget.value.replace(/\D/g, ""))}
           />
         </label>
         <label>
           {t.name}
-          <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+          <Input value={name} maxLength={80} onChange={(e) => setName(e.currentTarget.value)} />
         </label>
         <aside className="info">
           <ShieldCheck size={19} />

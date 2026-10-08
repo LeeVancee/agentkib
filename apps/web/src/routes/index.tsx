@@ -1,5 +1,5 @@
 import { HostedHome } from "@/features/connection/hosted-home";
-import { createFileRoute, Navigate } from "@tanstack/react-router";
+import { createFileRoute, Navigate } from "@octanejs/tanstack-router";
 import { useEnvironment } from "@/providers/environment";
 export const Route = createFileRoute("/")({ component: Index });
 function Index() {

@@ -1,4 +1,10 @@
 import {
+  historyMessageText,
+  historyReferenceKey,
+  referencesWithinBudget,
+} from "../history/history-reference-model";
+import type { ResolvedHistoryReference } from "@agentkib/web-client";
+import {
   createConversationStore,
   mergeConversationItems,
   type SessionStreamEvent,
@@ -82,6 +88,13 @@ export function useSessionController({
   client?: WebClient;
   embedded?: boolean;
 }) {
+  const [historySearchOpen, setHistorySearchOpen] = useState(false);
+  const [historyReferences, publishHistoryReferences] = useState<ResolvedHistoryReference[]>([]);
+  const historyReferencesValue = useRef<ResolvedHistoryReference[]>([]);
+  const setHistoryReferences = useCallback((references: ResolvedHistoryReference[]) => {
+    historyReferencesValue.current = references;
+    publishHistoryReferences(references);
+  }, []);
   const [capabilities, setCapabilities] = useState<CodexCapabilities>();
   const [capabilitiesEpoch, setCapabilitiesEpoch] = useState(0);
   const [client] = useState(
@@ -225,6 +238,8 @@ export function useSessionController({
     setCapabilities(undefined);
     setModal(undefined);
     setMessage("");
+    setHistoryReferences([]);
+    setHistorySearchOpen(false);
     setNotice(undefined);
     shownInteractions.current.clear();
     receipt.current = undefined;
@@ -242,7 +257,7 @@ export function useSessionController({
     uncertainOutcomes.current.clear();
     durableScope.current = undefined;
     durablePending.current = [];
-  }, [setPage]);
+  }, [setPage, setHistoryReferences]);
   const leaveSession = useCallback(() => {
     generation.current++;
     readinessEpoch.current++;
@@ -250,13 +265,15 @@ export function useSessionController({
     deferredRefresh.current = undefined;
     streamReady.current = false;
     setSelected("");
+    setHistoryReferences([]);
+    setHistorySearchOpen(false);
     setPage(undefined);
     setLive(undefined);
     setCapabilities(undefined);
     setModal(undefined);
     setControlReady(false);
     setOnline(false);
-  }, [setPage]);
+  }, [setPage, setHistoryReferences]);
   const acceptCatalog = useCallback(
     (records: ConversationSessionSummary[]) => {
       const excluded = new Set(
@@ -360,6 +377,15 @@ export function useSessionController({
         if (stillCurrent && !stillCurrent()) return;
         const old = accessRef.current;
         if (
+          old &&
+          (old.historySearchScope !== next.historySearchScope ||
+            !next.device?.send ||
+            !next.historySearch)
+        ) {
+          setHistoryReferences([]);
+          setHistorySearchOpen(false);
+        }
+        if (
           old?.status === "approved" &&
           (next.status !== "approved" ||
             old.bootId !== next.bootId ||
@@ -382,7 +408,7 @@ export function useSessionController({
       accessFlight.current = flight;
       return flight;
     },
-    [clear, client, origin, isLan],
+    [clear, client, origin, isLan, setHistoryReferences],
   );
   const reconcilePending = useCallback(
     async (sessionId?: string) => {
@@ -1029,6 +1055,8 @@ export function useSessionController({
       setLive(undefined);
       setModal(undefined);
       setMessage("");
+      setHistoryReferences([]);
+      setHistorySearchOpen(false);
       setNotice(undefined);
       setCatalogNotice(false);
       setOnline(false);
@@ -1107,6 +1135,7 @@ export function useSessionController({
       readHistory,
       readBusy,
       setPage,
+      setHistoryReferences,
       leaveSession,
     ],
   );
@@ -1311,6 +1340,52 @@ export function useSessionController({
     hasSupportedApproval,
     hasSupportedQuestion,
   ]);
+  useEffect(() => {
+    if (!historyReferences.length) return;
+    const abort = new AbortController();
+    const expectedScope = access?.historySearchScope;
+    let checking = false;
+    const verify = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const next = await client.access(abort.signal);
+        if (abort.signal.aborted) return;
+        if (
+          next.status !== "approved" ||
+          !next.historySearch ||
+          !next.device?.send ||
+          next.historySearchScope !== expectedScope
+        ) {
+          setHistoryReferences([]);
+          setHistorySearchOpen(false);
+          return;
+        }
+        await client.historyReferences(
+          historyReferences.map((item) => item.reference),
+          abort.signal,
+        );
+      } catch (error) {
+        // A connection failure does not authorize another send, but it also does
+        // not erase a user's draft. Definitive revocation/staleness removes quotes.
+        if (
+          !abort.signal.aborted &&
+          error instanceof ApiError &&
+          [400, 401, 403, 404, 409, 410].includes(error.status)
+        ) {
+          setHistoryReferences([]);
+          setHistorySearchOpen(false);
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = setInterval(() => void verify(), 5000);
+    return () => {
+      abort.abort();
+      clearInterval(timer);
+    };
+  }, [historyReferences, access?.historySearchScope, client, selected, setHistoryReferences]);
   async function codexAction(
     action: CodexAction,
     fields: Omit<
@@ -1377,6 +1452,7 @@ export function useSessionController({
       if (durableScope.current === scope) durablePending.current = readPending(scope);
       if (generation.current !== g) return;
       setNotice("accepted");
+      if (["steer", "queue-add"].includes(action)) setHistoryReferences([]);
       await refresh(true);
       return result;
     } catch (error) {
@@ -1424,7 +1500,11 @@ export function useSessionController({
     const text = message.trim();
     if (
       kind === "send" &&
-      (live.activity === "compacting" || !isValidMessage(message, !!extra?.attachmentIds?.length))
+      (live.activity === "compacting" ||
+        !isValidMessage(
+          historyMessageText(message, historyReferencesValue.current),
+          !!extra?.attachmentIds?.length,
+        ))
     )
       return;
     if (
@@ -1505,6 +1585,11 @@ export function useSessionController({
         ...(kind === "send"
           ? {
               text,
+              ...(historyReferencesValue.current.length
+                ? {
+                    historyReferences: historyReferencesValue.current.map((item) => item.reference),
+                  }
+                : {}),
               ...(extra?.attachmentIds?.length ? { attachmentIds: extra.attachmentIds } : {}),
               ...(extra?.resourceIds?.length ? { resourceIds: extra.resourceIds } : {}),
             }
@@ -1546,7 +1631,10 @@ export function useSessionController({
         observedActive: kind !== "send",
       };
       setNotice("accepted");
-      if (kind === "send") setMessage("");
+      if (kind === "send") {
+        setMessage("");
+        setHistoryReferences([]);
+      }
       setModal(undefined);
       await refresh();
       return true;
@@ -1630,7 +1718,32 @@ export function useSessionController({
                 : live?.reason
                   ? unavailableReasonText(live.reason, t)
                   : t.unknown;
+  function addHistoryReference(reference: ResolvedHistoryReference, targetId: string) {
+    if (
+      mutating.current ||
+      targetId !== selection.current ||
+      !targetId ||
+      !accessRef.current?.device?.send ||
+      !accessRef.current?.historySearch
+    )
+      throw new Error("history_reference_unavailable");
+    const prior = historyReferencesValue.current;
+    if (
+      prior.some(
+        (item) => historyReferenceKey(item.reference) === historyReferenceKey(reference.reference),
+      )
+    )
+      return;
+    const next = [...prior, reference];
+    if (!referencesWithinBudget(next)) throw new Error("history_reference_limit");
+    setHistoryReferences(next);
+  }
   return {
+    historySearchOpen,
+    setHistorySearchOpen,
+    historyReferences,
+    setHistoryReferences,
+    addHistoryReference,
     usageEpoch,
     liveContentVersion,
     client,

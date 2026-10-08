@@ -1,3 +1,37 @@
+import type {
+  HistorySearchQuery,
+  HistorySearchResult,
+  HistoryLocation,
+  HistoryLocatedRecord,
+  HistoryReference,
+  ResolvedHistoryReference,
+  HistorySearchStatus,
+} from "@agentkib/runtime-protocol";
+export type {
+  HistorySearchQuery,
+  HistorySearchResult,
+  HistoryLocation,
+  HistoryLocatedRecord,
+  HistoryReference,
+  ResolvedHistoryReference,
+  HistorySearchStatus,
+  HistorySearchHit,
+  HistoryRecordKind,
+} from "@agentkib/runtime-protocol";
+export {
+  formatHistoryReferences,
+  literalHistoryMatchRanges,
+  HISTORY_REFERENCE_LIMIT,
+  HISTORY_REFERENCE_BYTES,
+} from "@agentkib/runtime-protocol";
+
+/** These POSTs only read private history; aborting them never discards a command receipt. */
+export function isHistoryReadPath(path: string): boolean {
+  return ["history/search", "history/locate", "history/references"].includes(
+    path.replace(/^\//, "").split("?")[0],
+  );
+}
+
 export interface ConversationSessionSummary {
   /** Verified index identities that route to this managed session. */
   indexedSessionIds?: string[];
@@ -91,6 +125,9 @@ export interface ArtifactTicket {
   kind: ArtifactPreviewKind;
 }
 export interface Access {
+  /** Additive capability; absent on older hosts. */
+  historySearch?: true;
+  historySearchScope?: string;
   /** Missing on legacy hosts: history and receipts remain readable. */
   protocolVersion?: number;
   bearerToken?: string;
@@ -436,6 +473,7 @@ export interface CodexContextOptions {
   resources: CodexContextResource[];
 }
 export interface CodexActionBody {
+  historyReferences?: HistoryReference[];
   bootId: string;
   requestId: string;
   sessionId: string;
@@ -551,6 +589,7 @@ export class WebClient {
     const operation = path.split("?")[0];
     if (
       body !== undefined &&
+      !isHistoryReadPath(path) &&
       !["pair", "pair/cancel", "logout"].includes(operation) &&
       this.realtimeVersion !== 2
     )
@@ -877,6 +916,31 @@ export class WebClient {
       undefined,
       signal,
     );
+  }
+  historySearch(query: HistorySearchQuery, signal?: AbortSignal) {
+    return this.request<HistorySearchResult>("history/search", query, signal);
+  }
+  historyLocate(location: HistoryLocation, signal?: AbortSignal) {
+    return this.request<HistoryLocatedRecord>("history/locate", location, signal);
+  }
+  historyReferences(references: HistoryReference[], signal?: AbortSignal) {
+    return this.request<{ references: ResolvedHistoryReference[]; text: string }>(
+      "history/references",
+      { references },
+      signal,
+    );
+  }
+  historyStatus(signal?: AbortSignal) {
+    return this.request<HistorySearchStatus>("history/status", undefined, signal);
+  }
+  historyConfigure(enabled: boolean) {
+    return this.request<HistorySearchStatus>("history/configure", { enabled });
+  }
+  historyClear() {
+    return this.request<HistorySearchStatus>("history/clear", {});
+  }
+  historyRebuild() {
+    return this.request<HistorySearchStatus>("history/rebuild", {});
   }
   catalog(signal?: AbortSignal) {
     return this.request<ConversationCatalog>("catalog", undefined, signal);

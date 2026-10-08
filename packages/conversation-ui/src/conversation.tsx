@@ -1,3 +1,4 @@
+import { HistorySearchTrigger } from "./features/history/history-search-controls";
 import {
   createContext,
   useContext,
@@ -30,7 +31,7 @@ import { webLayoutCopy } from "./features/sessions/web-layout-copy";
 import { useSessionNavigate } from "./features/sessions/session-navigation";
 
 export type { ConversationClientBridge, WebClient } from "@agentkib/web-client";
-export type ConversationPanel = "files" | "actions";
+export type ConversationPanel = "files" | "actions" | "search";
 export interface EmbeddedConversationHandle {
   openPanel: (panel: ConversationPanel) => void;
 }
@@ -74,6 +75,10 @@ function EmbeddedShell() {
     props.controlsRef,
     () => ({
       openPanel(panel) {
+        if (panel === "search") {
+          session.setHistorySearchOpen(true);
+          return;
+        }
         if (!session.selected) return;
         if (panel === "files" && session.access?.device?.files) setFilesOpen(true);
         if (panel === "actions") setActionsOpen(true);
@@ -132,6 +137,7 @@ function EmbeddedShell() {
             initialOpen={props.create}
             onDismiss={props.onCreateClosed}
           />
+          <HistorySearchTrigger />
           <PendingCenter compact />
           {session.selected && (
             <>

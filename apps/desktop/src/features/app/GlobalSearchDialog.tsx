@@ -1,3 +1,12 @@
+import {
+  HistorySearchPanel,
+  historyAccessScope,
+} from "@agentkib/conversation-ui/features/history/history-search";
+import { historyCopy } from "@agentkib/conversation-ui/features/history/history-copy";
+import {
+  createDesktopConversationClient,
+  hasDesktopConversation,
+} from "@/core/conversation-bridge";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -75,7 +84,22 @@ export function GlobalSearchDialog({
   onOpenSession: (session: ConversationSessionSummary) => void;
   onSessionSettings: () => void;
 }) {
-  const { formatDateTime, tr } = useI18n();
+  const { formatDateTime, tr, locale } = useI18n();
+  const [historyClient] = useState(createDesktopConversationClient);
+  const [historyScope, setHistoryScope] = useState("");
+  const [historyMode, setHistoryMode] = useState(false);
+  useEffect(() => {
+    setHistoryMode(false);
+    if (!open || !hasDesktopConversation()) return;
+    const abort = new AbortController();
+    void historyClient
+      .access(abort.signal)
+      .then((value) => {
+        if (!abort.signal.aborted) setHistoryScope(historyAccessScope(value));
+      })
+      .catch(() => setHistoryScope(""));
+    return () => abort.abort();
+  }, [open, historyClient]);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string>();
   const [limits, setLimits] = useState<Record<string, number>>({});
@@ -252,7 +276,24 @@ export function GlobalSearchDialog({
           <DialogTitle>{tr("search.title")}</DialogTitle>
           <DialogDescription>{tr("search.description")}</DialogDescription>
         </DialogHeader>
-        {asset ? (
+        {historyMode && historyScope ? (
+          <div className="min-h-0 overflow-y-auto p-4">
+            <Button variant="ghost" onClick={() => setHistoryMode(false)}>
+              <ArrowLeft size={16} />
+              {tr("search.backResults")}
+            </Button>
+            <HistorySearchPanel
+              client={historyClient}
+              locale={locale}
+              scope={historyScope}
+              initialQuery={query}
+              onScopeEnded={() => {
+                setHistoryMode(false);
+                setHistoryScope("");
+              }}
+            />
+          </div>
+        ) : asset ? (
           <>
             <div className="flex items-center gap-3 border-b border-border p-3">
               <Button
@@ -327,6 +368,12 @@ export function GlobalSearchDialog({
               className="min-h-0 overflow-y-auto p-2"
               style={{ maxHeight: "min(520px, calc(80dvh - 56px))" }}
             >
+              {!!historyScope && (
+                <Button variant="ghost" onClick={() => setHistoryMode(true)}>
+                  <Search size={16} />
+                  {historyCopy[locale].title}
+                </Button>
+              )}
               {runtime && !enabled && (
                 <div className="flex items-center justify-between gap-3 p-3 text-sm text-muted-foreground">
                   <span>{tr("search.indexDisabled")}</span>

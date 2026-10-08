@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebContents, IpcMainInvokeEvent } from "electron";
 import type { WebAccessService } from "../web/service";
@@ -59,7 +60,12 @@ function setup() {
       return new Promise<SessionSubscription>((resolve) => completions.push(resolve));
     },
   );
-  const localRequest = vi.fn(async () => ({ status: 200, body: {} }));
+  const localRequest = vi.fn(
+    async (_path: string, _body?: unknown, _upload?: Uint8Array, _signal?: AbortSignal) => ({
+      status: 200,
+      body: {},
+    }),
+  );
   const hub = Object.assign(new EventEmitter(), { unsubscribe: vi.fn(async () => {}) });
   const assertTrustedRenderer = vi.fn();
   registerConversationIpc({
@@ -139,6 +145,115 @@ function expectOverflow(event: SessionStreamEvent | undefined) {
 }
 
 beforeEach(() => handlers.clear());
+
+describe("conversation IPC history read cancellation", () => {
+  function hold(fixture: ReturnType<typeof setup>) {
+    fixture.localRequest.mockImplementation(
+      (_path, _body, _upload, signal) =>
+        new Promise((resolve) => {
+          signal!.addEventListener("abort", () => resolve({ status: 408, body: {} }), {
+            once: true,
+          });
+        }),
+    );
+  }
+
+  it.each([
+    "history/search",
+    "/history/locate",
+    "/api/web/v1/history/references",
+    "history/status",
+  ])("cancels only the owning window's %s read even with the same nonce", async (path) => {
+    const fixture = setup();
+    hold(fixture);
+    const other = createSender(2);
+    const nonce = randomUUID();
+    const first = fixture.invoke("request", fixture.sender, path, {}, nonce);
+    const second = fixture.invoke("request", other, path, {}, nonce);
+    const signals = fixture.localRequest.mock.calls.map((call) => call[3]!);
+    await fixture.invoke("cancel-read", fixture.sender, randomUUID());
+    expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+    await fixture.invoke("cancel-read", fixture.sender, nonce);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
+    expect(await first).toMatchObject({ status: 408 });
+    await fixture.invoke("cancel-read", other, nonce);
+    expect(await second).toMatchObject({ status: 408 });
+    await fixture.invoke("cancel-read", fixture.sender, nonce);
+    expect(fixture.localRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["/send", "/codex/action", "/history/clear", "/history/search?requestId=foreign"])(
+    "rejects cancellation handles for %s before dispatch",
+    async (path) => {
+      const fixture = setup();
+      await expect(
+        fixture.invoke("request", fixture.sender, path, {}, randomUUID()),
+      ).rejects.toThrow("history_read_route_required");
+      expect(fixture.localRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps legacy and mutation requests outside the cancellation map", async () => {
+    const fixture = setup();
+    await fixture.invoke("request", fixture.sender, "/send", { requestId: "receipt" });
+    expect(fixture.localRequest).toHaveBeenCalledExactlyOnceWith("/send", { requestId: "receipt" });
+    await fixture.invoke("cancel-read", fixture.sender, randomUUID());
+    expect(fixture.localRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates the trusted sender before reading or cancelling a nonce", async () => {
+    const fixture = setup();
+    fixture.assertTrustedRenderer.mockImplementation(() => {
+      throw new Error("untrusted");
+    });
+    await expect(
+      fixture.invoke("request", fixture.sender, "/history/status", undefined, randomUUID()),
+    ).rejects.toThrow("untrusted");
+    expect(() => fixture.invoke("cancel-read", fixture.sender, randomUUID())).toThrow("untrusted");
+    expect(fixture.localRequest).not.toHaveBeenCalled();
+  });
+
+  it("bounds pending reads, rejects duplicate active nonces, and frees cancelled slots", async () => {
+    const fixture = setup();
+    hold(fixture);
+    const nonces = Array.from({ length: 8 }, () => randomUUID());
+    const pending = nonces.map((nonce) =>
+      fixture.invoke("request", fixture.sender, "/history/status", undefined, nonce),
+    );
+    await expect(
+      fixture.invoke("request", fixture.sender, "/history/status", undefined, nonces[0]),
+    ).rejects.toThrow("history_read_request_conflict");
+    await expect(
+      fixture.invoke("request", fixture.sender, "/history/status", undefined, randomUUID()),
+    ).rejects.toThrow("history_read_limit");
+    for (const nonce of nonces) await fixture.invoke("cancel-read", fixture.sender, nonce);
+    await Promise.all(pending);
+    fixture.localRequest.mockResolvedValueOnce({ status: 200, body: {} });
+    await expect(
+      fixture.invoke("request", fixture.sender, "/history/status", undefined, nonces[0]),
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
+  it.each(["navigation", "destroyed", "render-process-gone", "unavailable"])(
+    "cancels active reads on %s",
+    async (event) => {
+      const fixture = setup();
+      hold(fixture);
+      const pending = fixture.invoke(
+        "request",
+        fixture.sender,
+        "/history/status",
+        undefined,
+        randomUUID(),
+      );
+      if (event === "navigation")
+        fixture.sender.emit("did-start-navigation", {}, "http://local", false, true);
+      else if (event === "unavailable") fixture.hub.emit("unavailable");
+      else fixture.sender.emit(event);
+      expect(await pending).toMatchObject({ status: 408 });
+    },
+  );
+});
 
 describe("conversation IPC subscription lifetime", () => {
   it("counts pending subscriptions against the renderer limit", async () => {

@@ -1,3 +1,4 @@
+import { DesktopHistorySearch } from "./DesktopHistorySearch";
 import { useShallow } from "zustand/react/shallow";
 import { Ellipsis, X } from "lucide-react";
 import { useI18n } from "@/core/useI18n";
@@ -40,6 +41,7 @@ export function SessionDirectoryControls({
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
   return (
     <div className="session-directory-controls grid gap-2.5 py-3 pb-2.5">
+      <DesktopHistorySearch />
       <div className="flex min-h-8 items-center justify-between gap-2">
         <span className="text-sm font-medium text-muted-foreground">
           {tr("sessions.directory")}

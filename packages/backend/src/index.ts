@@ -19,6 +19,7 @@ import { planSessionHandoff } from "./session-handoff-plan";
 import { applySessionHandoff } from "./session-handoff-apply";
 import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-launch";
 import { SessionIndex } from "./session-index";
+import { HistorySearch } from "./history-search";
 import { InsightRefresh } from "./insight-refresh";
 import { ObsidianIntegration } from "./obsidian";
 import { SkillsWorker } from "./skills-worker";
@@ -66,9 +67,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   PROTOCOL_VERSION,
+  HISTORY_SEARCH_METHODS,
   RUNTIME_METHODS,
   SESSION_EVENT_NOTIFICATION,
   type RuntimeRpcError,
+  type SessionStreamEvent,
 } from "@agentkib/runtime-protocol";
 import { SessionStreamHub } from "./session-stream";
 import { BackendStore } from "./store";
@@ -122,6 +125,7 @@ export class TypeScriptBackend {
   #cursorBridge?: CursorBridge;
   #webRead?: WebReadRequests;
   #sessionIndex?: SessionIndex;
+  #historySearch?: HistorySearch;
   #insightRefresh?: InsightRefresh;
   #obsidian?: ObsidianIntegration;
   #skills?: SkillsWorker;
@@ -149,6 +153,7 @@ export class TypeScriptBackend {
   cancelPendingOperations(): void {
     this.#stopping = true;
     this.#skills?.stop();
+    this.#historySearch?.stop();
     this.#handoffQueue.stop();
     this.#storage?.cancel();
     this.#sessionIndex?.close();
@@ -170,6 +175,7 @@ export class TypeScriptBackend {
     this.#claudeManaged = undefined;
     this.#sessionIndex?.close();
     this.#sessionIndex = undefined;
+    this.#historySearch = undefined;
     this.#insightRefresh = undefined;
     this.#obsidian = undefined;
     this.#skills = undefined;
@@ -208,6 +214,7 @@ export class TypeScriptBackend {
     const closing = (async () => {
       const results = await Promise.allSettled([
         this.#skills?.close(),
+        this.#historySearch?.close(),
         this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
@@ -438,15 +445,26 @@ export class TypeScriptBackend {
           undefined,
           {
             publish: (sessionId, type, payload, live) =>
-              this.#sessionStream?.publish(sessionId, type, payload, live),
+              this.#publishSession(sessionId, type, payload, live),
             alias: (sessionId, previousId, itemId, live) =>
               this.#sessionStream?.aliasItem(sessionId, previousId, itemId, live),
           },
         );
-        this.#sessionIndex = new SessionIndex(store.sessions, this.#sessions, () => {
-          const value = readPreferences(dataDir).session_index_enabled;
-          return typeof value === "boolean" ? value : true;
-        });
+        this.#historySearch = new HistorySearch(
+          store,
+          dataDir,
+          { ...process.env, ...this.environment },
+          this.#cursorBridge,
+        );
+        this.#sessionIndex = new SessionIndex(
+          store.sessions,
+          this.#sessions,
+          () => {
+            const value = readPreferences(dataDir).session_index_enabled;
+            return typeof value === "boolean" ? value : true;
+          },
+          () => this.#historySearch?.refresh(),
+        );
         this.#stopping = false;
         const runtimeBootId = randomUUID();
         this.#sessionStream = new SessionStreamHub(
@@ -494,10 +512,18 @@ export class TypeScriptBackend {
               : [];
             return { live, items, completeItems: page.next_cursor === null };
           },
-          (event) => this.notify(SESSION_EVENT_NOTIFICATION, event),
+          (event) => {
+            this.notify(SESSION_EVENT_NOTIFICATION, event);
+            if (event.type === "invalidate") this.#historySearch?.refresh(event.sessionId);
+          },
         );
         this.#remoteAgent = new RemoteAgent(dataDir, store, this.#sessions, this.#sessionIndex);
-        return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
+        this.#historySearch.refresh();
+        return Promise.all([
+          this.#mcpHub.start(),
+          this.#remoteAgent.start(),
+          this.#historySearch.enabled() ? undefined : this.#historySearch.clear(),
+        ]);
       });
     }
     if (this.#stopping) throw new BackendTaskError("backend-closing");
@@ -706,7 +732,17 @@ export class TypeScriptBackend {
       return this.#obsidian!.openWorkspace(request.id);
     }
     if (method === RUNTIME_METHODS.sessionEvents) return this.#sessions!.events(params);
-    if (method === RUNTIME_METHODS.cursorBridge) return this.#cursorBridge!.request(params);
+    if (
+      Object.values(HISTORY_SEARCH_METHODS).includes(
+        method as (typeof HISTORY_SEARCH_METHODS)[keyof typeof HISTORY_SEARCH_METHODS],
+      )
+    )
+      return this.#historySearch!.request(method, params);
+    if (method === RUNTIME_METHODS.cursorBridge)
+      return this.#cursorBridge!.request(params).then((result) => {
+        if (params.action === "disconnect") this.#historySearch?.invalidate();
+        return result;
+      });
     if (method === RUNTIME_METHODS.sessionDocument) {
       const { sessionId } = parameters(z.object({ sessionId: z.string() }), params);
       return this.#sessions!.document(sessionId);
@@ -767,7 +803,8 @@ export class TypeScriptBackend {
       case RUNTIME_METHODS.refreshWorkspaceSessions:
         return this.#sessionIndex!.refresh(params);
       case RUNTIME_METHODS.clearSessionIndex:
-        return this.#sessionIndex!.clear(params);
+        this.#sessionIndex!.clear(params);
+        return this.#historySearch!.clear().then(() => null);
       case RUNTIME_METHODS.applyChanges: {
         const request = params as { launchRequest?: { mode?: unknown } };
         const environment = { ...process.env, ...this.environment };
@@ -857,6 +894,7 @@ export class TypeScriptBackend {
       }
       case RUNTIME_METHODS.excludeWorkspace:
         this.#store.workspaces.excludeWorkspace(string(params, "id"));
+        this.#historySearch?.invalidate();
         return null;
       case RUNTIME_METHODS.restoreExcludedWorkspace:
         this.#store.workspaces.restoreExcludedWorkspace(string(params, "path"));
@@ -941,8 +979,11 @@ export class TypeScriptBackend {
             ? { quota_auto_refresh_prompt_seen: true }
             : {}),
         });
-        if (method === RUNTIME_METHODS.setSessionIndexEnabled && !params[aliases[0]!])
+        if (method === RUNTIME_METHODS.setSessionIndexEnabled && !params[aliases[0]!]) {
           this.#store.sessions.clear(null);
+          return this.#historySearch!.clear().then(() => this.#preferences());
+        }
+        if (method === RUNTIME_METHODS.setSessionIndexEnabled) this.#historySearch?.refresh();
         return this.#preferences();
       }
       case RUNTIME_METHODS.updateOnboarding: {
@@ -1419,8 +1460,7 @@ export class TypeScriptBackend {
         dataDir,
         () => this.#sessionIndex?.generation() ?? -1n,
         { ...process.env, ...this.environment },
-        (sessionId, type, payload, live) =>
-          this.#sessionStream?.publish(sessionId, type, payload, live),
+        (sessionId, type, payload, live) => this.#publishSession(sessionId, type, payload, live),
         (sessionId) => this.#sessionStream?.hasSubscribers(sessionId) ?? false,
         this.#sessionIndex,
       );
@@ -1457,6 +1497,21 @@ export class TypeScriptBackend {
       invalid(`Invalid ${key}`);
     writePreference(this.#dataDir!, key, params.preference);
     return this.#preferences();
+  }
+
+  #publishSession(
+    sessionId: string,
+    type: SessionStreamEvent["type"],
+    payload: Record<string, unknown>,
+    live?: Record<string, unknown>,
+  ) {
+    this.#sessionStream?.publish(sessionId, type, payload, live);
+    if (
+      type === "invalidate" ||
+      (type === "state" &&
+        ["idle", "completed", "failed", "cancelled"].includes(String((live ?? payload).status)))
+    )
+      this.#historySearch?.refresh(sessionId);
   }
 
   #preferences() {

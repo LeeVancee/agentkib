@@ -1,3 +1,4 @@
+import { HistorySearchControls } from "../history/history-search-controls";
 import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
 import { Toaster } from "sonner";
 import { codexCopy } from "./codex-copy";
@@ -16,6 +17,7 @@ export function SessionProvider({
   return (
     <SessionContext value={value}>
       {children}
+      <HistorySearchControls />
       <Toaster
         position="top-right"
         offset={{ top: "calc(var(--window-toolbar-height, 0px) + 16px)" }}

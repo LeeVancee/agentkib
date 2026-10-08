@@ -1,3 +1,5 @@
+import { HistoryReferenceChips, HistorySearchTrigger } from "../history/history-search-controls";
+import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowUp, Square, X } from "lucide-react";
@@ -11,7 +13,7 @@ import { contextUsageCopy } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
 import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
-import { isValidMessage, MAX_MESSAGE_LENGTH } from "./session-model";
+import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
 
 type Upload = {
@@ -25,6 +27,8 @@ type Upload = {
 export function CodexComposer() {
   const session = useSession();
   const {
+    historyReferences = [],
+    setHistoryReferences,
     selected,
     current,
     live,
@@ -104,11 +108,12 @@ export function CodexComposer() {
       setPreviewKey(undefined);
       setUploads([]);
       setResources([]);
+      setHistoryReferences?.([]);
       count.current = 0;
       setMessage("");
       setSubmitted(false);
     } else if (notice === "notDispatched") setSubmitted(false);
-  }, [notice, submitted, setMessage]);
+  }, [notice, submitted, setMessage, setHistoryReferences]);
   function releasePreview(key: string) {
     const url = previewUrls.current.get(key);
     if (url) URL.revokeObjectURL(url);
@@ -194,8 +199,9 @@ export function CodexComposer() {
   const ready = uploads.every((item) => !!item.result);
   const attachmentIds = uploads.flatMap((item) => (item.result ? [item.result.id] : []));
   const resourceIds = resources.map((item) => item.id);
-  const valid = ready && isValidMessage(message, attachmentIds.length > 0);
-  const resourceNeedsMessage = resourceIds.length > 0 && !message.trim() && !attachmentIds.length;
+  const valid = ready && validHistoryMessage(message, historyReferences, attachmentIds.length > 0);
+  const resourceNeedsMessage =
+    resourceIds.length > 0 && !message.trim() && !attachmentIds.length && !historyReferences.length;
   async function send(action: "send" | "steer" | "queue-add") {
     if (!valid || busy || submitted || (live?.activity === "compacting" && action !== "queue-add"))
       return;
@@ -209,6 +215,9 @@ export function CodexComposer() {
           })
         : await codexAction(action, {
             text: message.trim(),
+            ...(historyReferences.length
+              ? { historyReferences: historyReferences.map((item) => item.reference) }
+              : {}),
             ...(attachmentIds.length ? { attachmentIds } : {}),
             ...(resourceIds.length ? { resourceIds } : {}),
             ...(action === "steer" ? { turnId: live?.turnId } : {}),
@@ -219,6 +228,7 @@ export function CodexComposer() {
       setPreviewKey(undefined);
       setUploads([]);
       setResources([]);
+      setHistoryReferences?.([]);
       count.current = 0;
       setMessage("");
       setSubmitted(false);
@@ -295,6 +305,8 @@ export function CodexComposer() {
           }
         }}
       />
+      <HistoryReferenceChips />
+      <HistorySearchTrigger />
       {uploads.length > 0 && (
         <ul className="space-y-2">
           {uploads.map((item) => (

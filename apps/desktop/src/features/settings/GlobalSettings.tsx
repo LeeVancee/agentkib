@@ -1,3 +1,4 @@
+import { HistorySearchSettings } from "./HistorySearchSettings";
 import { useTranslation } from "react-i18next";
 import { useI18n } from "@/core/useI18n";
 import { useMemo, useState, type ReactNode } from "react";
@@ -316,6 +317,7 @@ export function GlobalSettings({
     return (
       <SettingsPage variant="form">
         <SettingsPageHeader title={tr("settings.section.privacy")} />
+        <HistorySearchSettings />
         <SettingsSection title={tr("settings.localData")} target="privacy-local">
           <SettingsRow border={false}>
             <SettingsCopy>

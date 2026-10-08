@@ -104,6 +104,14 @@ app
       await fs.readFile(path.join(root, "library/skills", preview.library_id, "SKILL.md"), "utf8"),
       await fs.readFile(path.join(skill, "SKILL.md"), "utf8"),
     );
+    await rpc("sessions.setIndexEnabled", { enabled: true });
+    const searchStatus = await rpc("sessions.setContentSearchEnabled", { enabled: true });
+    assert.equal(searchStatus.enabled, true);
+    assert.deepEqual((await rpc("sessions.searchContent", { query: "中文正文 /src/main.ts" })).hits, []);
+    await rpc("sessions.setContentSearchEnabled", { enabled: false });
+    for (const suffix of ["", "-wal", "-shm"])
+      assert.equal(require("node:fs").existsSync(path.join(dataDir, "session-search.sqlite" + suffix)), false);
+    console.log("PASS Electron utilityProcess -> content index/query Workers: SQLite FTS5, scope, disable and cache removal");
     const exited = new Promise((resolve) => backend.once("exit", resolve));
     await rpc("agentkib.shutdown");
     assert.equal(await deadline(exited, "Backend shutdown"), 0);

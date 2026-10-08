@@ -25,6 +25,24 @@ afterEach(() => {
 });
 
 describe("WebClient transport boundaries", () => {
+  it("posts history search text without placing it in a URL", async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(json(access))
+      .mockResolvedValue(json({ hits: [] }));
+    const client = new WebClient(transport);
+    await client.access();
+    await client.historySearch({ query: "private query", kinds: ["tool-output"] });
+    expect(transport).toHaveBeenLastCalledWith(
+      "/api/web/v1/history/search",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ query: "private query", kinds: ["tool-output"] }),
+      }),
+    );
+    expect(transport.mock.calls.every(([url]) => !String(url).includes("private"))).toBe(true);
+  });
+
   it("explicit connection types preserve transport boundaries and legacy construction", async () => {
     const sameOrigin = vi.fn().mockResolvedValue(json(access));
     const local = new WebClient(sameOrigin, { type: "same-origin" });

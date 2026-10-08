@@ -430,7 +430,11 @@ importers:
         specifier: ^19.0.0
         version: 19.2.18
 
-  packages/web-client: {}
+  packages/web-client:
+    dependencies:
+      '@agentkib/runtime-protocol':
+        specifier: workspace:*
+        version: link:../runtime-protocol
 
 packages:
 

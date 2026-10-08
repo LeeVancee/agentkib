@@ -575,6 +575,15 @@ export class CursorIdeSessions {
       db.close();
     }
   }
+  /** Keep the verified graph and root identity, before UI clipping and import sanitization. */
+  searchSnapshot(nativeRef: string, workspace: string) {
+    const { db, header } = this.#locate(nativeRef, workspace);
+    try {
+      return db.read(header);
+    } finally {
+      db.close();
+    }
+  }
   verifyPromptProjection(
     nativeRef: string,
     workspace: string,

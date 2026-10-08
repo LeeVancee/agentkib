@@ -4,7 +4,7 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 const bundle = path.resolve(process.argv[2] ?? "apps/desktop/dist-electron");
-for (const filename of ["backend.cjs", "backend-skills.cjs", "backend-handoff-read.cjs"]) {
+for (const filename of ["backend.cjs", "backend-skills.cjs", "backend-handoff-read.cjs", "backend-history-search.cjs"]) {
   const metadata = await stat(path.join(bundle, filename));
   assert(metadata.isFile() && metadata.size > 0, `Missing built backend entry: ${filename}`);
 }
@@ -15,6 +15,13 @@ const nativePackage = path.join(bundle, "native", "koffi");
 assert((await stat(path.join(nativePackage, "package.json"))).isFile());
 const worker = new Worker(
   `const { parentPort, workerData } = require("node:worker_threads");
+   const { DatabaseSync } = require('node:sqlite');
+   const db = new DatabaseSync(':memory:');
+   db.exec("CREATE VIRTUAL TABLE documents USING fts5(body, tokenize='trigram');");
+   db.prepare('INSERT INTO documents(body) VALUES(?)').run('Unicode 中文正文 /src/main.ts');
+   if (db.prepare('SELECT count(*) AS n FROM documents WHERE documents MATCH ?').get('"中文正文"').n !== 1)
+     throw new Error('SQLite FTS5 trigram unavailable');
+   db.close();
    const koffi = require(workerData.nativePackage);
    const library = koffi.load(process.platform === "win32" ? "kernel32.dll" :
      process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6");

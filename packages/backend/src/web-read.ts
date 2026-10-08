@@ -4,6 +4,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { historyReferenceSchema, validHistoryControl } from "./history-control-schema";
 import type { BackendStore } from "./store";
 import type { SessionReaders } from "./session-readers";
 import type { SessionIndex } from "./session-index";
@@ -220,6 +221,11 @@ const managedControlSchema = z
       .max(128 * 1024)
       .optional(),
     input: z.array(z.unknown()).max(11).optional(),
+    historyReferences: z.array(historyReferenceSchema).max(5).optional(),
+    historyInputHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     resourceRefs: z
       .array(
         z
@@ -250,7 +256,8 @@ const managedControlSchema = z
     resetDefaults: z.boolean().optional(),
     goal: z.unknown().optional(),
   })
-  .strict();
+  .strict()
+  .refine(validHistoryControl);
 
 type ManagedRecord = z.infer<typeof managedRecordSchema>;
 
@@ -1675,6 +1682,7 @@ export class WebReadRequests {
       expectedRevision: request.expectedRevision,
       executionMode: "codex-managed",
       workspaceId: record.workspace_id,
+      ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
     };
     const claimed = claimManagedCommand(
       this.dataDir,
@@ -2363,6 +2371,7 @@ export class WebReadRequests {
           runtimeBootId: request.runtimeBootId,
           expectedRevision: request.expectedRevision,
           executionMode: "codex-follower",
+          ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
         },
       );
       if (claimed) return claimed;
@@ -3269,6 +3278,7 @@ export class WebReadRequests {
         turnId: request.turnId ?? null,
         nativeRequestId: request.approvalId ?? null,
         executionMode: "antigravity-acp-managed",
+        ...(request.historyInputHash ? { historyInputHash: request.historyInputHash } : {}),
       },
     );
     if (claimed) return claimed;

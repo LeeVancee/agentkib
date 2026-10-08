@@ -245,6 +245,7 @@ async function startApplication(): Promise<void> {
       conversationHub?.scopesChanged();
   });
   const sharedWebOptions = {
+    historyRequest: (method: string, params: unknown) => requestWhenRuntimeReady(method, params),
     conversationHub,
     desktopOrigin: process.env.VITE_DEV_SERVER_URL
       ? new URL(process.env.VITE_DEV_SERVER_URL).origin

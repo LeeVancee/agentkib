@@ -52,7 +52,11 @@
     "./i18n": "./src/i18n/index.ts",
     "./i18n/index": "./src/i18n/index.ts",
     "./lib/utils": "./src/lib/utils.ts",
-    "./live-status": "./src/live-status.ts"
+    "./live-status": "./src/live-status.ts",
+    "./features/history/history-copy": "./src/features/history/history-copy.ts",
+    "./features/history/history-reference-model": "./src/features/history/history-reference-model.ts",
+    "./features/history/history-search": "./src/features/history/history-search.tsx",
+    "./features/history/history-search-controls": "./src/features/history/history-search-controls.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

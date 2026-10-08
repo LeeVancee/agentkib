@@ -45,6 +45,17 @@ export class LocalConversationResponse extends EventEmitter implements Conversat
   }
 }
 
+/** Only bounded history reads can be cancelled through the trusted desktop bridge. */
+export function isHistoryReadConversationPath(path: string): boolean {
+  if (path.includes("\\")) return false;
+  if (!path.startsWith("/")) path = `/${path}`;
+  const url = new URL(path, "http://local");
+  if (url.origin !== "http://local" || url.search || url.hash) return false;
+  return ["/history/search", "/history/locate", "/history/references", "/history/status"].includes(
+    url.pathname.replace(/^\/api\/web\/v1(?=\/)/, ""),
+  );
+}
+
 // This is a closed application API, never an arbitrary Runtime or HTTP proxy.
 export function isConversationPath(path: string, post: boolean) {
   if (!path.startsWith("/") || path.includes("\\")) return false;
@@ -53,6 +64,12 @@ export function isConversationPath(path: string, post: boolean) {
   const name = url.pathname.replace(/^\/api\/web\/v1(?=\/)/, "");
   return post
     ? [
+        "/history/search",
+        "/history/locate",
+        "/history/references",
+        "/history/configure",
+        "/history/clear",
+        "/history/rebuild",
         "/send",
         "/stop",
         "/approve",
@@ -69,6 +86,7 @@ export function isConversationPath(path: string, post: boolean) {
           name,
         )
     : [
+        "/history/status",
         "/access",
         "/info",
         "/catalog",

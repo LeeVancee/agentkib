@@ -1,6 +1,8 @@
 import { dispatchClaude } from "./claude-dispatch";
 import { AttachmentStore } from "./attachments";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
+import { historyInputHash } from "./history-references";
+import type { HistoryReference } from "@agentkib/runtime-protocol";
 
 export const CLAUDE_LOCAL_OWNER = "agentkib-local-owner";
 const OWNER = CLAUDE_LOCAL_OWNER;
@@ -9,6 +11,12 @@ export interface LocalClaudeDependencies {
   runtime(params: unknown): Promise<unknown>;
   receipt(params: { requestId: string; deviceId: string }): Promise<unknown>;
   attachments: AttachmentStore;
+  history?: (body: Record<string, unknown>) => Promise<{
+    text: string;
+    references: HistoryReference[];
+    inputHash: string;
+    validate(): Promise<void>;
+  }>;
 }
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -191,10 +199,27 @@ async function localClaudeRequestInner(
   if (!Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 0)
     throw new Error("invalid_revision");
   const requestId = field(input.requestId);
+  const receipt = record(await deps.receipt({ requestId, deviceId: OWNER }));
+  if (
+    receipt.found === true &&
+    (input.historyReferences !== undefined || receipt.historyInputHash)
+  ) {
+    if (
+      receipt.sessionId !== sessionId ||
+      receipt.operation !== operation ||
+      receipt.historyInputHash !== historyInputHash(input, operation)
+    )
+      throw new Error("request_id_conflict");
+    if (receipt.status === "accepted" && receipt.ack) return receipt.ack;
+    throw new Error(
+      receipt.status === "not-dispatched" ? "control_preflight_rejected" : "outcome_unknown",
+    );
+  }
+  if (input.historyReferences !== undefined && operation !== "send")
+    throw new Error("history_references_not_supported");
   const live = record(
     await deps.managed({ operation: "live", sessionId, experimentalEnabled: true }),
   );
-  const receipt = record(await deps.receipt({ requestId, deviceId: OWNER }));
   const replay = receipt.found === true && receipt.sessionId === sessionId;
   if (!replay && live.revision !== input.expectedRevision) throw new Error("stale_state");
   const params: Record<string, unknown> = {
@@ -206,11 +231,21 @@ async function localClaudeRequestInner(
     expectedRevision: input.expectedRevision,
     experimentalEnabled: true,
   };
+  let validateHistory: (() => Promise<void>) | undefined;
   if (operation === "send") {
     if (input.resourceIds !== undefined) throw new Error("context_unavailable");
     if (!replay && live.sendEnabled !== true) throw new Error("control_unavailable");
-    const text = typeof input.text === "string" ? input.text : "";
-    if (Buffer.byteLength(text) > 16_384) throw new Error("invalid_text");
+    let text = typeof input.text === "string" ? input.text : "";
+    if (input.text !== undefined && typeof input.text !== "string") throw new Error("invalid_text");
+    if (text.length > 16_000 || Buffer.byteLength(text) > 16_384) throw new Error("invalid_text");
+    if (input.historyReferences !== undefined) {
+      if (!deps.history) throw new Error("capability_unavailable");
+      const history = await deps.history(input);
+      text = history.text;
+      params.historyReferences = history.references;
+      params.historyInputHash = history.inputHash;
+      validateHistory = history.validate;
+    }
     if (Array.isArray(input.attachmentIds) && input.attachmentIds.length) {
       const previous = await replayClaudeAttachments(deps.attachments, receipt, {
         deviceId: OWNER,
@@ -248,6 +283,7 @@ async function localClaudeRequestInner(
       params.answers = record(input.answers);
     }
   }
+  await validateHistory?.();
   const result = record(await deps.managed(params));
   if (result.requestId === requestId && result.controlOutcome === "not-dispatched")
     await deps.attachments.settle(OWNER, sessionId, requestId);

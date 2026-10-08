@@ -44,6 +44,17 @@ describe("MCP connection preload", () => {
 });
 
 describe("desktop conversation preload", () => {
+  it("forwards a read nonce and cancellation without replacing mutation receipt IDs", async () => {
+    await conversation.request("/history/search", { query: "needle" }, "nonce");
+    await conversation.cancelRead("nonce");
+    await conversation.request("/send", { requestId: "receipt", text: "input" });
+    expect(electron.invoke.mock.calls).toEqual([
+      ["agentkib:conversation:request", "/history/search", { query: "needle" }, "nonce"],
+      ["agentkib:conversation:cancel-read", "nonce"],
+      ["agentkib:conversation:request", "/send", { requestId: "receipt", text: "input" }],
+    ]);
+  });
+
   it("forwards the applied subscription cursor to the bounded ACK route", async () => {
     await conversation.acknowledge("subscription", "cursor");
     expect(electron.invoke).toHaveBeenCalledExactlyOnceWith(

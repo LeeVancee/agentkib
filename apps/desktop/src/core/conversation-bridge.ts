@@ -4,6 +4,7 @@ import {
 } from "@agentkib/conversation-state";
 import {
   ApiError,
+  isHistoryReadPath,
   WebClient,
   type ConversationClientBridge,
   type Live,
@@ -17,7 +18,8 @@ export interface DesktopConversationResponse {
 
 /** This bridge exposes the host's bounded conversation routes, never arbitrary RPC or paths. */
 export interface DesktopConversationBridge {
-  request(path: string, body?: unknown): Promise<DesktopConversationResponse>;
+  request(path: string, body?: unknown, requestId?: string): Promise<DesktopConversationResponse>;
+  cancelRead?(requestId: string): Promise<void>;
   upload(input: {
     sessionId: string;
     name: string;
@@ -57,17 +59,42 @@ function requireBridge(): DesktopConversationBridge {
   return bridge;
 }
 
-export async function desktopConversationRequest<Result>(
+async function bridgeRequest<Result>(
+  bridge: DesktopConversationBridge,
   path: string,
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<Result> {
   signal?.throwIfAborted();
-  const result = await requireBridge().request(path, body);
-  // Once a control was dispatched, its receipt must reach the caller even if
-  // navigation cancelled the view. Aborting a read cannot cancel a native turn.
-  if (body === undefined) signal?.throwIfAborted();
-  return decodeConversationResponse<Result>(result);
+  const historyRead =
+    isHistoryReadPath(path) || path.replace(/^\//, "").split("?")[0] === "history/status";
+  const read = body === undefined || historyRead;
+  const requestId = historyRead && bridge.cancelRead ? crypto.randomUUID() : undefined;
+  const cancel = () => {
+    if (requestId) void bridge.cancelRead!(requestId).catch(() => {});
+  };
+  if (requestId) signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const result = requestId
+      ? await bridge.request(path, body, requestId)
+      : await bridge.request(path, body);
+    // Dispatched controls retain their receipt even when the view navigates away.
+    if (read) signal?.throwIfAborted();
+    return decodeConversationResponse<Result>(result);
+  } catch (error) {
+    if (read) signal?.throwIfAborted();
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
+export async function desktopConversationRequest<Result>(
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<Result> {
+  return bridgeRequest<Result>(requireBridge(), path, body, signal);
 }
 
 export function createDesktopConversationAdapter(
@@ -75,10 +102,7 @@ export function createDesktopConversationAdapter(
 ): ConversationClientBridge {
   return {
     async request<Result>(path: string, body?: unknown, signal?: AbortSignal) {
-      signal?.throwIfAborted();
-      const result = await getBridge().request(path, body);
-      if (body === undefined) signal?.throwIfAborted();
-      return decodeConversationResponse<Result>(result);
+      return bridgeRequest<Result>(getBridge(), path, body, signal);
     },
     stream(sessionId, handlers) {
       const bridge = getBridge();

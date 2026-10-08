@@ -385,7 +385,11 @@ contextBridge.exposeInMainWorld("agentkibDesktop", desktopApi);
 contextBridge.exposeInMainWorld(
   "desktopConversation",
   Object.freeze({
-    request: (path, body) => ipcRenderer.invoke("agentkib:conversation:request", path, body),
+    request: (path, body, requestId) =>
+      requestId === undefined
+        ? ipcRenderer.invoke("agentkib:conversation:request", path, body)
+        : ipcRenderer.invoke("agentkib:conversation:request", path, body, requestId),
+    cancelRead: (requestId) => ipcRenderer.invoke("agentkib:conversation:cancel-read", requestId),
     upload: (input) => ipcRenderer.invoke("agentkib:conversation:upload", input),
     subscribe: (sessionId, cursor) =>
       ipcRenderer.invoke("agentkib:conversation:subscribe", sessionId, cursor),

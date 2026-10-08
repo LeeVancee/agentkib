@@ -1,4 +1,4 @@
-import { RUNTIME_METHODS } from "@agentkib/runtime-protocol";
+import { HISTORY_SEARCH_METHODS, RUNTIME_METHODS } from "@agentkib/runtime-protocol";
 
 export const BACKEND_INITIALIZE = "backend.initialize";
 export const BACKEND_PREFERENCES = "backend.preferences";
@@ -75,6 +75,7 @@ export const PREFERENCE_WRITE_METHODS = new Set<string>([
   RUNTIME_METHODS.updateOnboarding,
   RUNTIME_METHODS.openWorkspaceWithApp,
   RUNTIME_METHODS.updateMcpNetwork,
+  HISTORY_SEARCH_METHODS.configure,
 ]);
 
 export type {
@@ -141,6 +142,10 @@ export const TYPESCRIPT_SESSION_INDEX_METHODS = new Set<string>([
   RUNTIME_METHODS.refreshWorkspaceSessions,
   RUNTIME_METHODS.clearSessionIndex,
 ]);
+
+export const TYPESCRIPT_HISTORY_SEARCH_METHODS = new Set<string>(
+  Object.values(HISTORY_SEARCH_METHODS),
+);
 
 export const TYPESCRIPT_SESSION_HANDOFF_METHODS = new Set<string>([
   RUNTIME_METHODS.listNativeImports,

@@ -5,6 +5,7 @@ import type { Live } from "@agentkib/web-client";
 import {
   createDesktopConversationAdapter,
   decodeConversationResponse,
+  desktopConversationRequest,
   type DesktopConversationBridge,
 } from "./conversation-bridge";
 
@@ -41,6 +42,7 @@ function bridgeFixture() {
   const remove = vi.fn();
   const bridge: DesktopConversationBridge = {
     request: vi.fn(async () => ({ status: 200, body: {} })),
+    cancelRead: vi.fn(async () => {}),
     upload: vi.fn(async () => ({
       status: 200,
       body: { id: "file", name: "a.txt", mime: "text/plain", size: 1, version: "v1" },
@@ -88,6 +90,74 @@ const applyCursor = (type: string, data: string) =>
 afterEach(() => vi.useRealTimers());
 
 describe("desktop conversation bridge", () => {
+  it.each(["history/search", "history/locate", "history/references", "history/status"])(
+    "discards a cancelled body-bearing read for %s",
+    async (path) => {
+      const fixture = bridgeFixture();
+      const pending = deferred<{ status: number; body: unknown }>();
+      vi.mocked(fixture.bridge.request).mockReturnValue(pending.promise);
+      const adapter = createDesktopConversationAdapter(() => fixture.bridge);
+      const abort = new AbortController();
+      const read = adapter.request(path, { query: "sensitive" }, abort.signal);
+      const requestId = vi.mocked(fixture.bridge.request).mock.calls[0][2];
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+      abort.abort();
+      expect(fixture.bridge.cancelRead).toHaveBeenCalledExactlyOnceWith(requestId);
+      pending.resolve({ status: 200, body: { private: "late content" } });
+      await expect(read).rejects.toMatchObject({ name: "AbortError" });
+    },
+  );
+  it("retains a send receipt after cancellation", async () => {
+    const fixture = bridgeFixture();
+    const pending = deferred<{ status: number; body: unknown }>();
+    vi.mocked(fixture.bridge.request).mockReturnValue(pending.promise);
+    const adapter = createDesktopConversationAdapter(() => fixture.bridge);
+    const abort = new AbortController();
+    const sent = adapter.request("send", { text: "once" }, abort.signal);
+    abort.abort();
+    pending.resolve({ status: 200, body: { accepted: true } });
+    await expect(sent).resolves.toEqual({ accepted: true });
+    expect(fixture.bridge.cancelRead).not.toHaveBeenCalled();
+    expect(fixture.bridge.request).toHaveBeenCalledExactlyOnceWith("send", { text: "once" });
+  });
+  it("removes read cancellation listeners after completion and supports older bridges", async () => {
+    const fixture = bridgeFixture();
+    const adapter = createDesktopConversationAdapter(() => fixture.bridge);
+    const abort = new AbortController();
+    await adapter.request("history/status", undefined, abort.signal);
+    abort.abort();
+    expect(fixture.bridge.cancelRead).not.toHaveBeenCalled();
+    delete fixture.bridge.cancelRead;
+    vi.mocked(fixture.bridge.request).mockClear();
+    await adapter.request("history/search", { query: "legacy" });
+    expect(fixture.bridge.request).toHaveBeenCalledExactlyOnceWith("history/search", {
+      query: "legacy",
+    });
+  });
+  it("forwards cancellation through the direct desktop request entry", async () => {
+    const fixture = bridgeFixture();
+    const previous = window.desktopConversation;
+    window.desktopConversation = fixture.bridge;
+    try {
+      const pending = deferred<{ status: number; body: unknown }>();
+      vi.mocked(fixture.bridge.request).mockReturnValue(pending.promise);
+      const abort = new AbortController();
+      const result = desktopConversationRequest(
+        "history/search",
+        { query: "direct" },
+        abort.signal,
+      );
+      abort.abort();
+      expect(fixture.bridge.cancelRead).toHaveBeenCalledExactlyOnceWith(
+        vi.mocked(fixture.bridge.request).mock.calls[0][2],
+      );
+      pending.resolve({ status: 200, body: {} });
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      window.desktopConversation = previous;
+    }
+  });
+
   it("preserves control outcomes instead of converting uncertain sends to safe retries", async () => {
     const fixture = bridgeFixture();
     vi.mocked(fixture.bridge.request).mockResolvedValue({

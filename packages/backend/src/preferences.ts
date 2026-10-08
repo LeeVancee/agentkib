@@ -57,6 +57,10 @@ export function preferenceSnapshot(dataDir: string, environment: NodeJS.ProcessE
         : null,
     app_icon_preference: member(preferences.app_icon_preference, ICONS) ?? "white",
     session_index_enabled: booleanPreference(preferences.session_index_enabled, true),
+    session_content_search_enabled: booleanPreference(
+      preferences.session_content_search_enabled,
+      false,
+    ),
     quota_auto_refresh_enabled: booleanPreference(preferences.quota_auto_refresh_enabled, false),
     local_auto_refresh_enabled: booleanPreference(preferences.local_auto_refresh_enabled, true),
     quota_auto_refresh_prompt_seen: booleanPreference(

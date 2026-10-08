@@ -13,6 +13,7 @@ export class SessionIndex {
     readonly store: SessionStore,
     readonly readers: Pick<SessionReaders, "list">,
     readonly enabled: () => boolean,
+    readonly refreshed: () => void = () => {},
   ) {}
   invalidate(): void {
     this.#epoch++;
@@ -104,6 +105,10 @@ export class SessionIndex {
           "Some conversation sources could not be read; previous records were retained",
         );
     }
-    return current() ? this.store.list(workspaceId) : [];
+    if (current()) {
+      this.refreshed();
+      return this.store.list(workspaceId);
+    }
+    return [];
   }
 }

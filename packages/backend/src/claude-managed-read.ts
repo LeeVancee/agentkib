@@ -20,6 +20,7 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { resolveCommand } from "./command-resolution";
+import { validHistoryControl } from "./history-control-schema";
 import type { Commands } from "./commands";
 import type { SessionReaders } from "./session-readers";
 import type { BackendStore } from "./store";
@@ -263,6 +264,8 @@ export class ClaudeManagedReadOwner {
       "text",
       "input",
       "resourceRefs",
+      "historyReferences",
+      "historyInputHash",
       "turnId",
       "approvalId",
       "questionId",
@@ -282,6 +285,7 @@ export class ClaudeManagedReadOwner {
       value.experimentalEnabled !== true
     )
       throw new Error("invalid-managed-control");
+    if (!validHistoryControl({ ...value, operation })) throw new Error("invalid-history-reference");
 
     const record = this.#load(id);
     if (!record) throw new Error("session-unavailable");
@@ -319,10 +323,14 @@ export class ClaudeManagedReadOwner {
       executable = resolveCommand("claude", this.environment);
       if (!executable) throw new Error("claude-cli-unavailable");
       if (!existingRunner) {
-        const release = this.#tryLock(id);
-        if (!release) throw new Error("session-managed-by-another-runtime");
-        this.#ownerLocks.set(id, release);
-        newlyAcquiredOwnerLock = true;
+        // Creating/adopting an idle session already retains this runtime's lease.
+        // A second file-lock acquisition would reject our own first send.
+        if (!this.#ownerLocks.has(id)) {
+          const release = this.#tryLock(id);
+          if (!release) throw new Error("session-managed-by-another-runtime");
+          this.#ownerLocks.set(id, release);
+          newlyAcquiredOwnerLock = true;
+        }
         try {
           this.#ensureNoExternalOwner(record.nativeId);
           if (!record.fresh) {
@@ -331,8 +339,11 @@ export class ClaudeManagedReadOwner {
               throw new Error("Claude-history-changed-requires-handoff");
           }
         } catch (error) {
-          this.#ownerLocks.delete(id);
-          release();
+          if (newlyAcquiredOwnerLock) {
+            const release = this.#ownerLocks.get(id);
+            this.#ownerLocks.delete(id);
+            release?.();
+          }
           throw error;
         }
       }
@@ -347,6 +358,7 @@ export class ClaudeManagedReadOwner {
       turnId: value.turnId ?? null,
       inputFingerprint,
       executionMode: "claude-managed",
+      ...(value.historyInputHash ? { historyInputHash: value.historyInputHash } : {}),
     };
     let reservedRunnerSlot = false;
     try {

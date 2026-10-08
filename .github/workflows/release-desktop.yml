@@ -163,6 +163,8 @@ jobs:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
     needs: preflight
     runs-on: ${{ matrix.os }}
+    # Tag-scoped caches cannot be reused by later tags; avoid saving them after packaging.
+    cache-mode: read
     strategy:
       fail-fast: false
       matrix:

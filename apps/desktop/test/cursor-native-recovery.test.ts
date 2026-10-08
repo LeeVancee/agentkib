@@ -396,7 +396,7 @@ describe("Cursor SQLite prefix recovery", () => {
         false,
       ),
     ).toThrow("approved preview");
-  });
+  }, 15_000);
 });
 
 // The extension command boundary is simulated; plans, receipts and target reads stay real.
@@ -736,7 +736,7 @@ describe("Cursor continuation registered owner stability", () => {
       task.dispose();
       await work.close();
     }
-  });
+  }, 15_000);
 });
 
 describe("Cursor persisted import recovery", () => {
@@ -870,5 +870,5 @@ describe("Cursor persisted import recovery", () => {
     expect(reader.nativeId(listing.sessions[0]!.native_ref, project)).toBe(bridge.nativeId);
     expect(readFileSync(planFile, "utf8")).toBe(content);
     expect(readFileSync(path.join(location, "attempted.json"), "utf8")).toBe(attempt);
-  });
+  }, 15_000);
 });

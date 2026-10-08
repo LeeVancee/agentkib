@@ -15,9 +15,12 @@ export function useConversationNotificationPosition(
       const rect = anchor.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
       const fallback = rect.width === 0 || rect.height === 0;
-      const left = fallback
-        ? Math.max(containerRect.left + 8, 8)
-        : Math.max(8, rect.left - rect.width - 8);
+      const mobileAnchor = anchor.matches("[data-sidebar-mobile-trigger]");
+      const left = mobileAnchor
+        ? rect.right + 8
+        : fallback
+          ? Math.max(containerRect.left + 8, 8)
+          : Math.max(8, rect.left - rect.width - 8);
       bell.style.left = `${left}px`;
       bell.style.top = `${rect.top}px`;
       bell.style.width = `${fallback ? 36 : rect.width}px`;

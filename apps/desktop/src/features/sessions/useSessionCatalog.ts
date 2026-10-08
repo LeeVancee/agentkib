@@ -85,6 +85,7 @@ export function useSessionCatalog(
   );
   const sync = useMutation(
     {
+      networkMode: "always",
       mutationFn: ({
         request,
       }: {

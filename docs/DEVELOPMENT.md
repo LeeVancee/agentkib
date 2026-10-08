@@ -11,7 +11,7 @@ This guide covers local development, validation, and packaging for the current E
 ### Prerequisites
 
 - Node.js 22
-- pnpm 10.8.1, as pinned by the root `packageManager` field
+- pnpm 12.10.1, as pinned by the root `packageManager` field
 - Git
 
 Platform-native build dependencies:
@@ -25,7 +25,7 @@ Enable the pinned pnpm version, then install dependencies from the repository ro
 
 ```bash
 corepack enable
-corepack prepare pnpm@10.8.1 --activate
+corepack prepare pnpm@12.10.1 --activate
 pnpm install --frozen-lockfile
 ```
 
@@ -124,7 +124,7 @@ Do not publish local packages as official releases. Maintainers should follow th
 ### 环境要求
 
 - Node.js 22
-- 根目录 `packageManager` 固定的 pnpm 10.8.1
+- 根目录 `packageManager` 固定的 pnpm 12.10.1
 - Git
 
 各平台原生构建依赖：
@@ -138,7 +138,7 @@ Do not publish local packages as official releases. Maintainers should follow th
 
 ```bash
 corepack enable
-corepack prepare pnpm@10.8.1 --activate
+corepack prepare pnpm@12.10.1 --activate
 pnpm install --frozen-lockfile
 ```
 

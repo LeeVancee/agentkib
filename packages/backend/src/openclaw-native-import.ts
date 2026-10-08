@@ -8,6 +8,7 @@ import { resolveCommand } from "./command-resolution";
 import type { Commands } from "./commands";
 import { isReparseOrSymlink } from "./native-files";
 import { canonicalProject } from "./files";
+import { handoffCommit } from "./handoff-work";
 
 const VERSION = "2026.9.6";
 const ENVIRONMENT_KEYS = [
@@ -508,8 +509,10 @@ export async function openClawVerify(
   directory: string,
   commands: Commands,
   exact: boolean,
+  validateOwnership: () => void,
 ): Promise<string> {
   const result = await openClawBridge(plan, path.join(directory, "payload.json"), commands, false);
+  validateOwnership();
   const actual = result.events;
   const expected = JSON.parse(plan.payload) as unknown[];
   if (
@@ -528,14 +531,19 @@ export async function openClawVerify(
       throw new Error("OpenClaw target transcript generation changed");
   } else {
     const { openSync, writeSync, fsyncSync, closeSync } = await import("node:fs");
-    const fd = openSync(generationPath, "wx", 0o600);
-    try {
-      writeSync(fd, result.generation);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    const generation = result.generation;
+    await handoffCommit(() => {
+      validateOwnership();
+      const fd = openSync(generationPath, "wx", 0o600);
+      try {
+        writeSync(fd, generation);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    });
   }
+  validateOwnership();
   return plan.target_session_id;
 }
 

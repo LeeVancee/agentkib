@@ -242,6 +242,7 @@ export function AppSidebar(props: {
         aria-expanded={mobileOpen}
         aria-controls={sidebarId}
         aria-label={tr("common.primaryNavigation")}
+        data-sidebar-mobile-trigger=""
         onClick={() => setMobileOpen(true)}
       >
         <Menu size={19} />

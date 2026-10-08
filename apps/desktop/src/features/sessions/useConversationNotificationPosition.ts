@@ -13,18 +13,41 @@ export function useConversationNotificationPosition(
     const align = () => {
       if (!bell || !anchor) return;
       const rect = anchor.getBoundingClientRect();
-      bell.style.left = `${rect.left - rect.width - 8}px`;
+      const containerRect = container.getBoundingClientRect();
+      const fallback = rect.width === 0 || rect.height === 0;
+      const mobileAnchor = anchor.matches("[data-sidebar-mobile-trigger]");
+      const left = mobileAnchor
+        ? rect.right + 8
+        : fallback
+          ? Math.max(containerRect.left + 8, 8)
+          : Math.max(8, rect.left - rect.width - 8);
+      bell.style.left = `${left}px`;
       bell.style.top = `${rect.top}px`;
-      bell.style.width = `${rect.width}px`;
-      bell.style.height = `${rect.height}px`;
+      bell.style.width = `${fallback ? 36 : rect.width}px`;
+      bell.style.height = `${fallback ? 36 : rect.height}px`;
     };
     const resizeObserver = new ResizeObserver(align);
     const sync = () => {
-      const nextAnchor = document.querySelector<HTMLElement>("[data-session-directory-options]");
+      const anchors = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          "[data-session-directory-options], [data-sidebar-mobile-trigger]",
+        ),
+      );
+      const nextAnchor =
+        anchors.find((candidate) => {
+          const rect = candidate.getBoundingClientRect();
+          const style = getComputedStyle(candidate);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
+        }) ??
+        anchors[0] ??
+        null;
       const nextBell = container.querySelector<HTMLElement>("[data-conversation-pending-trigger]");
       const nextSidebar = nextAnchor?.closest(".app-context-sidebar") ?? null;
       // Streaming changes the transcript frequently, but does not move these controls.
-      if (anchor === nextAnchor && bell === nextBell && sidebar === nextSidebar) return;
+      if (anchor === nextAnchor && bell === nextBell && sidebar === nextSidebar) {
+        align();
+        return;
+      }
       anchor = nextAnchor;
       bell = nextBell;
       sidebar = nextSidebar;
@@ -35,8 +58,25 @@ export function useConversationNotificationPosition(
       align();
     };
     // Includes the sidebar because it can mount after the lazy conversation.
-    const mutationObserver = new MutationObserver(sync);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    const mutationObserver = new MutationObserver((mutations) => {
+      if (
+        mutations.every(
+          (mutation) =>
+            mutation.type === "attributes" &&
+            mutation.target === bell &&
+            mutation.attributeName === "style",
+        )
+      ) {
+        return;
+      }
+      sync();
+    });
+    mutationObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class", "style", "aria-expanded", "data-state", "inert"],
+      childList: true,
+      subtree: true,
+    });
     window.addEventListener("resize", align);
     sync();
     const frame = requestAnimationFrame(sync);

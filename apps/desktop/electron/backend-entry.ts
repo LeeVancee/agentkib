@@ -20,7 +20,19 @@ function shutdown(request: unknown): boolean {
   );
 }
 function dispatch(request: unknown, send: (response: unknown) => Promise<void>): void {
-  if (closing) return;
+  if (closing) {
+    const id = request && typeof request === "object" && "id" in request ? request.id : null;
+    void send({
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: -32000,
+        message: "AgentKib command failed",
+        data: { detail: "Backend is closing" },
+      },
+    }).catch(() => undefined);
+    return;
+  }
   const stopping = shutdown(request);
   if (stopping) closing = true;
   const task = (async () => {

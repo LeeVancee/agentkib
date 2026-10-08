@@ -1,23 +1,19 @@
+import { readHandoff, fingerprintHandoff, serializeHandoff } from "./handoff-work";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { pushChange, type ChangeSet, type FileChange } from "./change-plan";
-import { canonicalProject } from "./files";
 import { hash } from "./doctor-files";
 import { userHome } from "./mcp-config-read";
 import { buildSessionArchive } from "./session-archive";
-import {
-  fingerprintSessionDocument,
-  planSessionWindow,
-  renderHandoff,
-  sanitizeHandoffExport,
-} from "./session-handoff";
+import { planSessionWindow, renderHandoff, sanitizeHandoffExport } from "./session-handoff";
 import type { SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
 import { Commands } from "./commands";
 import { continuationMcpAvailable, nativeImportCapability } from "./session-continuation";
+import { resolveWorkspaceIdentity, requireUniqueContinuationWorkspace } from "./workspace-identity";
 import { isReparseOrSymlink } from "./native-files";
 import { inspectNativeImportTarget, planNativeImport } from "./session-native-import-owner";
 import { CursorIdeSessions, prepareCursorIdePayload } from "./cursor-ide-sessions";
@@ -105,7 +101,7 @@ function codexCompletedText(role: string, text: string, timestamp: string) {
   };
 }
 
-function renderNative(
+export function renderNative(
   document: SessionDocument,
   target: "codex" | "claude-code",
   sessionId: string,
@@ -254,22 +250,26 @@ export async function planSessionHandoff(
   if (!source || source.workspace_id !== request.workspaceId)
     throw new Error("Conversation metadata is no longer available");
   const original = await sessions.document(request.sessionId);
-  const workspace = z
-    .object({ id: z.string(), manifest_workspace_id: z.string().nullable() })
-    .parse(store.getWorkspace(request.workspaceId));
-  const continuationWorkspaceId = workspace.manifest_workspace_id ?? workspace.id;
+  const workspace = resolveWorkspaceIdentity(store, request.workspaceId);
+  const continuationWorkspaceId = workspace.archiveWorkspaceId;
   const document = structuredClone(original);
   document.source.workspace_id = continuationWorkspaceId;
-  if (fingerprintSessionDocument(document) !== request.sourceFingerprint)
+  if ((await fingerprintHandoff(document)) !== request.sourceFingerprint)
     throw new Error("Conversation changed after the continuation preview was prepared");
   if (document.losses.some((loss) => loss.code !== "reasoning-excluded") && !request.acceptLosses)
     throw new Error("Continuation losses must be acknowledged");
   const archiveId: string = request.archiveId ?? randomUUID();
-  const window = planSessionWindow(document, request.historyBudgetTokens, archiveId);
+  const window = await readHandoff(
+    "window",
+    [document, request.historyBudgetTokens, archiveId],
+    () => planSessionWindow(document, request.historyBudgetTokens, archiveId),
+  );
   const effectiveArchiveId = window.strategy === "windowed" ? archiveId : undefined;
   if (effectiveArchiveId !== (request.archiveId ?? undefined))
     throw new Error("Continuation window changed after the preview was prepared");
-  const project = canonicalProject(store.workspacePath(request.workspaceId));
+  const project = workspace.project;
+  if (effectiveArchiveId || request.mode === "native-session")
+    requireUniqueContinuationWorkspace(store, workspace.registeredId, project);
   if (request.targetAgent === "cursor" && request.targetSurface === "cursor-ide") {
     if (request.mode !== "native-session" || !request.bindingId || !cursorBridge)
       throw new Error("Cursor IDE import requires a connected window");
@@ -279,8 +279,14 @@ export async function planSessionHandoff(
     if (request.targetFingerprint !== contextFingerprint)
       throw new Error("Cursor binding changed after preview");
     const operationId = randomUUID();
-    const prepared = prepareCursorIdePayload(document, operationId, project);
-    const before = new CursorIdeSessions(cursorBridge).list(project);
+    const prepared = await readHandoff("cursor-projection", [document, operationId, project], () =>
+      prepareCursorIdePayload(document, operationId, project),
+    );
+    const before = await readHandoff(
+      "cursor-list",
+      { profiles: cursorBridge.profiles(project), workspace: project },
+      () => new CursorIdeSessions(cursorBridge).list(project),
+    );
     if (before.incomplete) throw new Error("Cursor IDE identity list is incomplete");
     const plan = {
       schema_version: 1,
@@ -298,8 +304,7 @@ export async function planSessionHandoff(
       payload: prepared.payload,
       marker: prepared.marker,
     };
-    const content = JSON.stringify(plan, null, 2);
-    const planHash = hash(content);
+    const { content, hash: planHash } = await serializeHandoff(plan, true, false);
     const directory = path.join(
       dataDir,
       "continuations",
@@ -346,8 +351,9 @@ export async function planSessionHandoff(
       !continuationMcpAvailable(
         project,
         request.targetAgent,
-        continuationWorkspaceId,
+        workspace.registeredId,
         mcpHubStatus.port,
+        store,
       )
     )
       throw new Error(
@@ -417,13 +423,12 @@ export async function planSessionHandoff(
       );
     }
     if (existsSync(target)) throw new Error("Native target session already exists");
-    const content = renderNative(
-      window.active_document,
-      request.targetAgent,
-      sessionId,
-      project,
-      generated,
-      notice,
+    const targetAgent = request.targetAgent;
+    const content = await readHandoff(
+      "native-render",
+      [window.active_document, targetAgent, sessionId, project, generated, notice],
+      () =>
+        renderNative(window.active_document, targetAgent, sessionId, project, generated, notice),
     );
     pushChange(changes, target, content, "agent-home", "high", "jsonl");
     launchRequest = {
@@ -466,12 +471,17 @@ export async function planSessionHandoff(
   }
   let archiveHash: string | undefined;
   if (effectiveArchiveId) {
-    const archive = buildSessionArchive(
-      document,
-      continuationWorkspaceId,
-      effectiveArchiveId,
-      fingerprint,
-      generated,
+    const archive = await readHandoff(
+      "archive",
+      [document, continuationWorkspaceId, effectiveArchiveId, fingerprint, generated],
+      () =>
+        buildSessionArchive(
+          document,
+          continuationWorkspaceId,
+          effectiveArchiveId,
+          fingerprint,
+          generated,
+        ),
     );
     archiveHash = archive.manifest.document_sha256;
     const directory = path.join(

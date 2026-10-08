@@ -1,3 +1,4 @@
+import { readHandoff, fingerprintHandoff } from "./handoff-work";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -26,6 +27,7 @@ import {
   type ImportTargetSnapshot,
 } from "./session-native-import-owner";
 import type { BackendStore } from "./store";
+import { resolveWorkspaceIdentity, requireUniqueContinuationWorkspace } from "./workspace-identity";
 import { z } from "zod";
 
 const hubSchema = z.object({ running: z.boolean(), port: z.number().int().min(1).max(65535) });
@@ -230,6 +232,7 @@ export function continuationMcpAvailable(
   target: string,
   workspaceId: string,
   port: number,
+  store: BackendStore,
 ): boolean {
   if (workspaceId === "." || workspaceId === "..") return false;
   let endpoint: string | undefined;
@@ -286,13 +289,31 @@ export function continuationMcpAvailable(
     endpoint = typeof fields.url === "string" ? fields.url : undefined;
   } else return false;
   if (!endpoint) return false;
-  const slug = target === "codex" ? "codex" : "claude-code";
-  const encoded = encodeURIComponent(workspaceId);
-  const suffix = `/mcp/v1/workspaces/${encoded}/agents/${slug}`;
-  return (
-    endpoint === `http://127.0.0.1:${port}${suffix}` ||
-    endpoint === `http://localhost:${port}${suffix}`
-  );
+  try {
+    const url = new URL(endpoint);
+    const match = /^\/mcp\/v1\/workspaces\/([^/]+)\/agents\/([^/]+)$/.exec(url.pathname);
+    if (
+      url.protocol !== "http:" ||
+      !["127.0.0.1", "localhost"].includes(url.hostname) ||
+      Number(url.port || 80) !== port ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !match ||
+      match[2] !== target
+    )
+      return false;
+    const expected = requireUniqueContinuationWorkspace(store, workspaceId, project);
+    const connected = requireUniqueContinuationWorkspace(
+      store,
+      decodeURIComponent(match[1]!),
+      project,
+    );
+    return expected.registeredId === connected.registeredId;
+  } catch {
+    return false;
+  }
 }
 
 function requireText(file: string): string {
@@ -345,12 +366,10 @@ export async function prepareSessionHandoff(
   const source = sessionStore.get(request.session_id);
   if (!source) throw new Error("Conversation metadata is no longer available");
   let document = await sessions.document(request.session_id);
-  const workspace = z
-    .object({ id: z.string(), manifest_workspace_id: z.string().nullable() })
-    .parse(store.getWorkspace(source.workspace_id));
-  const continuationWorkspaceId = workspace.manifest_workspace_id ?? workspace.id;
+  const workspace = resolveWorkspaceIdentity(store, source.workspace_id);
+  const continuationWorkspaceId = workspace.archiveWorkspaceId;
   document.source.workspace_id = continuationWorkspaceId;
-  const sourceFingerprint = createFingerprint(document);
+  const sourceFingerprint = await fingerprintHandoff(document);
   const candidateArchiveId = randomUUID();
   let nativeSnapshot: ImportTargetSnapshot | undefined;
   let nativeCapability: Capability;
@@ -363,7 +382,7 @@ export async function prepareSessionHandoff(
       nativeSnapshot = await inspectNativeImportTarget(
         request.target_agent as ImportTarget,
         document,
-        store.workspacePath(source.workspace_id),
+        workspace.project,
         commands,
         env,
       );
@@ -383,10 +402,7 @@ export async function prepareSessionHandoff(
   } else if (request.target_agent === "cursor" && request.target_surface === "cursor-ide") {
     try {
       if (!request.binding_id || !cursorBridge) throw new Error("cursor-binding-required");
-      const context = cursorBridge.context(
-        request.binding_id,
-        store.workspacePath(source.workspace_id),
-      );
+      const context = cursorBridge.context(request.binding_id, workspace.project);
       nativeCapability = {
         supported: true,
         beta: true,
@@ -402,7 +418,11 @@ export async function prepareSessionHandoff(
   } else {
     nativeCapability = await nativeImportCapability(request.target_agent, commands, env);
   }
-  const window = planSessionWindow(document, request.history_budget_tokens, candidateArchiveId);
+  const window = await readHandoff(
+    "window",
+    [document, request.history_budget_tokens, candidateArchiveId],
+    () => planSessionWindow(document, request.history_budget_tokens, candidateArchiveId),
+  );
   if (
     nativeCapability.supported &&
     request.target_agent === "cursor" &&
@@ -420,10 +440,11 @@ export async function prepareSessionHandoff(
   const mcpAvailable =
     window.strategy === "windowed" && mcpHubStatus.running
       ? continuationMcpAvailable(
-          store.workspacePath(source.workspace_id),
+          workspace.project,
           request.target_agent,
-          continuationWorkspaceId,
+          workspace.registeredId,
           mcpHubStatus.port,
+          store,
         )
       : false;
   const targetSupportsContinuation =
@@ -479,12 +500,23 @@ export async function prepareSessionHandoff(
     draft: {
       filename,
       format: request.format,
-      content: renderHandoff(
-        window.active_document,
-        request.target_agent,
-        request.format,
-        isoGenerated.replace(/Z$/, "+00:00"),
-        notice,
+      content: await readHandoff(
+        "render",
+        [
+          window.active_document,
+          request.target_agent,
+          request.format,
+          isoGenerated.replace(/Z$/, "+00:00"),
+          notice,
+        ],
+        () =>
+          renderHandoff(
+            window.active_document,
+            request.target_agent,
+            request.format,
+            isoGenerated.replace(/Z$/, "+00:00"),
+            notice,
+          ),
       ),
       redaction_count: document.redaction_count,
       source_fingerprint: sourceFingerprint,
@@ -494,7 +526,7 @@ export async function prepareSessionHandoff(
         ? { target_fingerprint: nativeCapability.target_fingerprint }
         : {}),
       capabilities,
-      stats: sessionImportStats(document),
+      stats: await readHandoff("stats", document, () => sessionImportStats(document)),
       history_budget_tokens: request.history_budget_tokens,
       window_strategy: window.strategy,
       window_stats: window.stats,
@@ -503,8 +535,4 @@ export async function prepareSessionHandoff(
       losses: document.losses,
     },
   };
-}
-
-function createFingerprint(document: SessionDocument): string {
-  return createHash("sha256").update(JSON.stringify(document)).digest("hex");
 }

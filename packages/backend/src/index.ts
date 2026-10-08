@@ -9,6 +9,8 @@ import { CursorBridge } from "./cursor-bridge";
 import { listNativeImports } from "./session-native-imports";
 import {
   continueNativeImport,
+  reconcileNativeImport,
+  NativeImportOutcomeUnknownError,
   validateNativeImportApplicationData,
 } from "./session-native-import-owner";
 import { handoffFormat, sanitizeHandoffExport } from "./session-handoff";
@@ -19,7 +21,9 @@ import { launchPreparedHandoff, prepareHandoffLaunch } from "./session-handoff-l
 import { SessionIndex } from "./session-index";
 import { InsightRefresh } from "./insight-refresh";
 import { ObsidianIntegration } from "./obsidian";
-import { Skills } from "./skills";
+import { SkillsWorker } from "./skills-worker";
+import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
+import { HandoffWork } from "./handoff-work";
 import { AgentTools } from "./agent-tools";
 import { McpManager } from "./mcp";
 import { McpBuiltins } from "./mcp-builtin";
@@ -99,6 +103,13 @@ import {
   BACKEND_PLAN_PROJECT_ASSETS,
 } from "./migration";
 
+const HANDOFF_TASK_METHODS = new Set<string>([
+  RUNTIME_METHODS.prepareSessionHandoff,
+  RUNTIME_METHODS.planSessionHandoff,
+  RUNTIME_METHODS.continueSessionHandoff,
+  RUNTIME_METHODS.launchSessionHandoff,
+]);
+
 export class TypeScriptBackend {
   #store?: BackendStore;
   #dataDir?: string;
@@ -113,7 +124,10 @@ export class TypeScriptBackend {
   #sessionIndex?: SessionIndex;
   #insightRefresh?: InsightRefresh;
   #obsidian?: ObsidianIntegration;
-  #skills?: Skills;
+  #skills?: SkillsWorker;
+  #handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
+  #handoffWork = new HandoffWork();
+  #stopping = false;
   #agentTools?: AgentTools;
   #mcp?: McpManager;
   #mcpHub?: McpHub;
@@ -133,6 +147,9 @@ export class TypeScriptBackend {
 
   /** Cancel producers before draining RPC requests; keep their stores open until they settle. */
   cancelPendingOperations(): void {
+    this.#stopping = true;
+    this.#skills?.stop();
+    this.#handoffQueue.stop();
     this.#storage?.cancel();
     this.#sessionIndex?.close();
     this.#commands.close();
@@ -190,6 +207,8 @@ export class TypeScriptBackend {
     this.#remoteAgent = undefined;
     const closing = (async () => {
       const results = await Promise.allSettled([
+        this.#skills?.close(),
+        this.#handoffQueue.drain().then(() => this.#handoffWork.close()),
         Promise.resolve().then(() => mcp?.closeAsync()),
         Promise.resolve().then(() => claudeManaged?.shutdown()),
         Promise.resolve().then(() => mcpHub?.close()),
@@ -325,6 +344,8 @@ export class TypeScriptBackend {
       return this.closeAsync().then(() => {
         const store = new BackendStore(path.join(dataDir, "agentkib.db"));
         this.#commands = new Commands();
+        this.#handoffQueue = new BoundedTaskQueue({ name: "Session handoff" });
+        this.#handoffWork = new HandoffWork();
         this.#store = store;
         this.#dataDir = dataDir;
         this.#cursorBridge = new CursorBridge(dataDir, store);
@@ -353,7 +374,7 @@ export class TypeScriptBackend {
           () => store.insights.achievements(),
         );
         this.#obsidian = new ObsidianIntegration(dataDir);
-        this.#skills = new Skills({ ...process.env, ...this.environment }, dataDir, () =>
+        this.#skills = new SkillsWorker({ ...process.env, ...this.environment }, dataDir, () =>
           store.listWorkspaces(),
         );
         this.#agentTools = new AgentTools(dataDir);
@@ -426,6 +447,7 @@ export class TypeScriptBackend {
           const value = readPreferences(dataDir).session_index_enabled;
           return typeof value === "boolean" ? value : true;
         });
+        this.#stopping = false;
         const runtimeBootId = randomUUID();
         this.#sessionStream = new SessionStreamHub(
           runtimeBootId,
@@ -478,6 +500,7 @@ export class TypeScriptBackend {
         return Promise.all([this.#mcpHub.start(), this.#remoteAgent.start()]);
       });
     }
+    if (this.#stopping) throw new BackendTaskError("backend-closing");
     if (!this.#store || !this.#dataDir)
       throw new RpcFault(-32000, "AgentKib command failed", {
         detail: "TypeScript backend has not been initialized",
@@ -716,57 +739,11 @@ export class TypeScriptBackend {
       const { workspaceId } = parameters(z.object({ workspaceId: z.string() }), params);
       return listNativeImports(this.#dataDir!, this.#store!, workspaceId);
     }
-    if (method === RUNTIME_METHODS.prepareSessionHandoff)
-      return prepareSessionHandoff(
-        params,
-        this.#sessions!,
-        this.#store.sessions,
-        this.#store,
-        this.#commands!,
-        { ...process.env, ...this.environment },
-        this.#cursorBridge,
-      );
-    if (method === RUNTIME_METHODS.planSessionHandoff)
-      return planSessionHandoff(
-        params,
-        this.#sessions!,
-        this.#store.sessions,
-        this.#store,
-        this.#dataDir,
-        { ...process.env, ...this.environment },
-        this.#commands,
-        this.#cursorBridge,
-      );
     if (method === RUNTIME_METHODS.planSessionMcpConnection)
       return planSessionMcpConnection(params, this.#store);
-    if (method === RUNTIME_METHODS.continueSessionHandoff)
-      return this.#continueSessionHandoff(params);
-    if (
-      method === RUNTIME_METHODS.launchSessionHandoff &&
-      params.mode === "native-import" &&
-      params.target_agent === "cursor"
-    )
-      return reconcileCursorNativeImport(
-        params,
-        this.#sessions!,
-        this.#store!.sessions,
-        this.#store!,
-        this.#dataDir!,
-        this.#cursorBridge!,
-        { ...process.env, ...this.environment },
-      );
-    if (method === RUNTIME_METHODS.launchSessionHandoff)
-      return prepareHandoffLaunch(
-        params,
-        this.#store,
-        this.#commands,
-        {
-          ...process.env,
-          ...this.environment,
-        },
-        this.#dataDir,
-      ).then((prepared) =>
-        launchPreparedHandoff(prepared, this.#dataDir!, { ...process.env, ...this.environment }),
+    if (HANDOFF_TASK_METHODS.has(method))
+      return this.#handoffQueue.run((task) =>
+        this.#handoffWork.run(task, () => this.#requestHandoff(method, params)),
       );
     if (method === RUNTIME_METHODS.sanitizeSessionHandoff) {
       const request = parameters(
@@ -1269,6 +1246,68 @@ export class TypeScriptBackend {
     }
   }
 
+  async #requestHandoff(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (method === RUNTIME_METHODS.prepareSessionHandoff)
+      return prepareSessionHandoff(
+        params,
+        this.#sessions!,
+        this.#store!.sessions,
+        this.#store!,
+        this.#handoffWork.commands,
+        { ...process.env, ...this.environment },
+        this.#cursorBridge,
+      );
+    if (method === RUNTIME_METHODS.planSessionHandoff)
+      return planSessionHandoff(
+        params,
+        this.#sessions!,
+        this.#store!.sessions,
+        this.#store!,
+        this.#dataDir!,
+        { ...process.env, ...this.environment },
+        this.#handoffWork.commands,
+        this.#cursorBridge,
+      );
+    if (method === RUNTIME_METHODS.continueSessionHandoff)
+      return this.#continueSessionHandoff(params);
+    if (
+      method === RUNTIME_METHODS.launchSessionHandoff &&
+      params.mode === "native-import" &&
+      params.target_agent === "cursor"
+    )
+      return reconcileCursorNativeImport(
+        params,
+        this.#sessions!,
+        this.#store!.sessions,
+        this.#store!,
+        this.#dataDir!,
+        this.#cursorBridge!,
+        { ...process.env, ...this.environment },
+      );
+    if (method === RUNTIME_METHODS.launchSessionHandoff && params.mode === "native-import")
+      await reconcileNativeImport(
+        this.#dataDir!,
+        params,
+        this.#handoffWork.commands,
+        { ...process.env, ...this.environment },
+        this.#store!,
+      );
+    if (method === RUNTIME_METHODS.launchSessionHandoff)
+      return prepareHandoffLaunch(
+        params,
+        this.#store!,
+        this.#handoffWork.commands,
+        {
+          ...process.env,
+          ...this.environment,
+        },
+        this.#dataDir,
+      ).then((prepared) =>
+        launchPreparedHandoff(prepared, this.#dataDir!, { ...process.env, ...this.environment }),
+      );
+    throw new Error("Unknown session handoff method");
+  }
+
   async #continueSessionHandoff(value: unknown): Promise<unknown> {
     const environment = { ...process.env, ...this.environment };
     const request = z.object({ launchRequest: z.unknown() }).passthrough().parse(value);
@@ -1305,9 +1344,10 @@ export class TypeScriptBackend {
           this.#store!,
           this.#dataDir!,
           environment,
-          this.#commands,
+          this.#handoffWork.commands,
         );
       } catch (error) {
+        if (!(error instanceof NativeImportOutcomeUnknownError)) throw error;
         return {
           status: "import-outcome-unknown",
           error: {
@@ -1321,7 +1361,7 @@ export class TypeScriptBackend {
         const prepared = await prepareHandoffLaunch(
           request.launchRequest,
           this.#store!,
-          this.#commands,
+          this.#handoffWork.commands,
           environment,
           this.#dataDir,
         );
@@ -1341,11 +1381,11 @@ export class TypeScriptBackend {
     const prepared = await prepareHandoffLaunch(
       request.launchRequest,
       this.#store!,
-      this.#commands,
+      this.#handoffWork.commands,
       environment,
       this.#dataDir,
     );
-    applySessionHandoff(value, this.#store!, this.#dataDir!, environment);
+    await commitTask(() => applySessionHandoff(value, this.#store!, this.#dataDir!, environment));
     try {
       const receipt = await launchPreparedHandoff(prepared, this.#dataDir!, environment);
       return { status: "launched", receipt };

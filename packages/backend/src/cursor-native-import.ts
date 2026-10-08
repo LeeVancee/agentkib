@@ -1,3 +1,17 @@
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  readHandoff,
+  fingerprintHandoff,
+  handoffCheckpoint,
+  handoffCommit,
+  handoffRemaining,
+  handoffSignal,
+} from "./handoff-work";
+import { readCursorSnapshot } from "./handoff-read-tasks";
+import {
+  assertContinuationWorkspaceIdentity,
+  requireUniqueContinuationWorkspace,
+} from "./workspace-identity";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -15,7 +29,6 @@ import { applyRequest } from "./changes";
 import { canonicalProject } from "./files";
 import { CursorBridge } from "./cursor-bridge";
 import { CursorIdeSessions, prepareCursorIdePayload } from "./cursor-ide-sessions";
-import { fingerprintSessionDocument } from "./session-handoff";
 import type { SessionDocument } from "./session-model";
 import type { SessionStore } from "./session-store";
 import type { BackendStore } from "./store";
@@ -28,12 +41,6 @@ export class CursorImportOutcomeUnknownError extends Error {
   }
 }
 
-function promptProjection(document: SessionDocument) {
-  return document.turns.map((turn) => ({
-    role: turn.role === "user" ? ("user" as const) : ("assistant" as const),
-    text: turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-  }));
-}
 const envelopeSchema = z
   .object({
     changeSet: z.unknown(),
@@ -95,6 +102,43 @@ function saveReceipt(
   }
 }
 
+export function validateCursorPlan(
+  dataDir: string,
+  request: z.infer<typeof envelopeSchema>["launchRequest"],
+  change: z.infer<typeof changeSetSchema>["changes"][number],
+) {
+  const directory = path.join(
+    dataDir,
+    "continuations",
+    hash(request.workspace_id).slice(0, 32),
+    request.operation_id,
+    "import",
+  );
+  const planFile = path.join(directory, "plan.json");
+  const content = change.after;
+  if (
+    change.scope !== "application-data" ||
+    change.validator !== "json" ||
+    change.target !== planFile ||
+    change.original_hash !== null ||
+    change.before !== "" ||
+    hash(content) !== request.plan_hash
+  )
+    throw new Error("Cursor import plan does not match the reviewed operation");
+  const plan = JSON.parse(content) as Plan;
+  const persisted = existsSync(planFile);
+  if (persisted) {
+    const metadata = lstatSync(planFile);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      readFileSync(planFile, "utf8") !== content
+    )
+      throw new Error("Persisted Cursor import plan changed");
+  }
+  return { directory, planFile, content, plan, persisted };
+}
+
 export async function continueCursorNativeImport(
   value: unknown,
   sessions: { document(id: string): Promise<SessionDocument> },
@@ -106,6 +150,9 @@ export async function continueCursorNativeImport(
 ): Promise<{ status: "launched"; receipt: { target_agent: "cursor"; terminal: string } }> {
   const input = envelopeSchema.parse(value);
   const request = input.launchRequest;
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const assertWorkspace = () =>
+    assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
   const changeSet = changeSetSchema.parse(input.changeSet);
   if (
     changeSet.id !== request.operation_id ||
@@ -114,31 +161,12 @@ export async function continueCursorNativeImport(
   )
     throw new Error("Cursor import requires one reviewed plan and Agent Home approval");
   const change = changeSet.changes[0]!;
-  const directory = path.join(
-    dataDir,
-    "continuations",
-    hash(request.workspace_id).slice(0, 32),
-    request.operation_id,
-    "import",
+  const { directory, planFile, content, plan, persisted } = await readHandoff(
+    "cursor-plan",
+    [dataDir, request, change],
+    () => validateCursorPlan(dataDir, request, change),
   );
-  const planFile = path.join(directory, "plan.json");
-  const content = Buffer.from(change.after);
-  if (
-    change.scope !== "application-data" ||
-    change.validator !== "json" ||
-    change.target !== planFile ||
-    change.original_hash !== null ||
-    change.before !== "" ||
-    hash(content) !== request.plan_hash
-  )
-    throw new Error("Cursor import plan does not match the reviewed operation");
-  const plan = JSON.parse(content.toString("utf8")) as Plan;
-  const persisted = existsSync(planFile);
-  if (persisted) {
-    const metadata = lstatSync(planFile);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || !readFileSync(planFile).equals(content))
-      throw new Error("Persisted Cursor import plan changed");
-  }
+  assertWorkspace();
   const sourceSummary = persisted ? null : sessionStore.get(plan.source_session_id);
   if (!persisted && !sourceSummary) throw new Error("Cursor import source is unavailable");
   const workspaceRecord = (
@@ -176,19 +204,30 @@ export async function continueCursorNativeImport(
     plan.document.source.workspace_id !== effectiveWorkspace
   )
     throw new Error("Cursor import plan identity mismatch");
+  assertWorkspace();
   bridge.validateContext(plan.context);
-  if (fingerprintSessionDocument(plan.document) !== plan.source_fingerprint)
+  const sourceFingerprint = await fingerprintHandoff(plan.document);
+  assertWorkspace();
+  if (sourceFingerprint !== plan.source_fingerprint)
     throw new Error("Persisted Cursor source snapshot changed");
   if (!persisted) {
     const current = await sessions.document(plan.source_session_id);
+    assertWorkspace();
     current.source.workspace_id = effectiveWorkspace;
-    if (fingerprintSessionDocument(current) !== plan.source_fingerprint)
+    const currentFingerprint = await fingerprintHandoff(current);
+    assertWorkspace();
+    if (currentFingerprint !== plan.source_fingerprint)
       throw new Error("Source changed after Cursor import preview");
   }
   const currentBinding = bridge.context(request.binding_id, workspace);
   if (JSON.stringify(currentBinding) !== JSON.stringify(plan.context))
     throw new Error("Cursor binding changed after preview");
-  const prepared = prepareCursorIdePayload(plan.document, plan.operation_id, plan.workspace);
+  const prepared = await readHandoff(
+    "cursor-projection",
+    [plan.document, plan.operation_id, plan.workspace],
+    () => prepareCursorIdePayload(plan.document, plan.operation_id, plan.workspace),
+  );
+  assertWorkspace();
   if (
     prepared.payload !== plan.payload ||
     prepared.marker !== plan.marker ||
@@ -197,26 +236,31 @@ export async function continueCursorNativeImport(
     throw new Error("Cursor import payload differs from the reviewed source");
 
   if (!persisted) {
-    applyRequest(
-      { changeSet, approveHome: true },
-      store,
-      dataDir,
-      environment,
-      (reviewed, applicationId, currentDataDir) => {
-        if (
-          applicationId !== request.workspace_id ||
-          currentDataDir !== dataDir ||
-          reviewed.id !== request.operation_id ||
-          reviewed.changes.length !== 1 ||
-          !reviewed.requires_home_approval ||
-          reviewed.changes[0]!.target !== planFile ||
-          reviewed.changes[0]!.after !== content.toString("utf8")
-        )
-          throw new Error("Cursor import plan changed before approval");
-        return [planFile];
-      },
-    );
+    await handoffCommit(() => {
+      assertWorkspace();
+      return applyRequest(
+        { changeSet, approveHome: true },
+        store,
+        dataDir,
+        environment,
+        (reviewed, applicationId, currentDataDir) => {
+          assertWorkspace();
+          if (
+            applicationId !== request.workspace_id ||
+            currentDataDir !== dataDir ||
+            reviewed.id !== request.operation_id ||
+            reviewed.changes.length !== 1 ||
+            !reviewed.requires_home_approval ||
+            reviewed.changes[0]!.target !== planFile ||
+            reviewed.changes[0]!.after !== content
+          )
+            throw new Error("Cursor import plan changed before approval");
+          return [planFile];
+        },
+      );
+    });
   }
+  assertWorkspace();
 
   const receiptFile = path.join(directory, "receipt.json");
   let receipt: {
@@ -246,113 +290,165 @@ export async function continueCursorNativeImport(
     )
       throw new Error("Cursor import receipt mismatch");
   }
+  const profiles = () => {
+    assertWorkspace();
+    const current = bridge.context(request.binding_id, workspace);
+    if (JSON.stringify(current) !== JSON.stringify(plan.context))
+      throw new Error("Cursor binding changed during import verification");
+    return [current.profile];
+  };
+  const listing = async () => {
+    const result = await readHandoff("cursor-list", { profiles: profiles(), workspace }, () =>
+      new CursorIdeSessions(bridge).list(workspace),
+    );
+    profiles();
+    return result;
+  };
+  const verify = async (native: import("./session-store").NativeSession, exact: boolean) => {
+    const input = {
+      profiles: profiles(),
+      workspace,
+      workspaceId: effectiveWorkspace,
+      native,
+      expected: plan.expected,
+      exact,
+    };
+    const result = await readHandoff("cursor-read", input, () => readCursorSnapshot(input));
+    profiles();
+    return result;
+  };
   if (!receipt.target_session_id) {
     const attemptFile = path.join(directory, "attempted.json");
-    if (!existsSync(attemptFile))
-      writeFileSync(attemptFile, JSON.stringify({ plan_hash: request.plan_hash }), {
-        flag: "wx",
-        mode: 0o600,
-      });
-    else if (JSON.parse(readFileSync(attemptFile, "utf8")).plan_hash !== request.plan_hash)
+    const attempted = existsSync(attemptFile);
+    if (attempted && JSON.parse(readFileSync(attemptFile, "utf8")).plan_hash !== request.plan_hash)
       throw new Error("Cursor import attempt fingerprint changed");
     try {
-      const importer = await bridge.call(plan.context, "import", {
-        operation_id: plan.operation_id,
-        plan_hash: request.plan_hash,
-        payload: plan.payload,
-        payload_hash: hash(plan.payload),
-      });
-      if (
-        !importer ||
-        typeof importer !== "object" ||
-        (importer as { consumed?: unknown }).consumed !== true
-      )
-        throw new Error("Cursor did not confirm consuming the import operation");
-      const provider = new CursorIdeSessions(bridge);
+      if (!attempted) {
+        handoffCheckpoint();
+        profiles();
+        await handoffCommit(() => {
+          profiles();
+          writeFileSync(attemptFile, JSON.stringify({ plan_hash: request.plan_hash }), {
+            flag: "wx",
+            mode: 0o600,
+          });
+        });
+        handoffCheckpoint();
+        profiles();
+        const importer = await bridge.call(plan.context, "import", {
+          operation_id: plan.operation_id,
+          plan_hash: request.plan_hash,
+          payload: plan.payload,
+          payload_hash: hash(plan.payload),
+        });
+        profiles();
+        if (
+          !importer ||
+          typeof importer !== "object" ||
+          (importer as { consumed?: unknown }).consumed !== true
+        )
+          throw new Error("Cursor did not confirm consuming the import operation");
+      }
+      // Existing attempts only inspect history. Lost replies never authorize another import.
       const before = new Set(plan.before_native_refs);
-      const deadline = Date.now() + 30_000;
+      const deadline = Date.now() + handoffRemaining(180_000);
       let found: string | undefined;
       while (Date.now() < deadline) {
-        const candidates = provider
-          .list(workspace)
-          .sessions.filter(
-            (session) =>
-              !before.has(session.native_ref) &&
-              (session.title === plan.marker || session.title === `(1) ${plan.marker}`),
-          );
+        handoffCheckpoint();
+        const candidates = (await listing()).sessions.filter(
+          (session) =>
+            !before.has(session.native_ref) &&
+            (session.title === plan.marker || session.title === `(1) ${plan.marker}`),
+        );
+        if (candidates.length > 1) throw new Error("Cursor import identity is ambiguous");
         if (candidates.length === 1) {
-          const actual = provider.document(candidates[0]!, effectiveWorkspace, workspace);
-          provider.verifyPromptProjection(
-            candidates[0]!.native_ref,
-            workspace,
-            promptProjection(plan.expected),
-          );
-          const projected = actual.turns.map((turn) => [
-            turn.role,
-            turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-          ]);
-          const expected = plan.expected.turns.map((turn) => [
-            turn.role,
-            turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-          ]);
-          if (JSON.stringify(projected) !== JSON.stringify(expected))
-            throw new Error("Cursor imported history differs from the approved preview");
+          await verify(candidates[0]!, true);
           found = candidates[0]!.native_ref;
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await delay(Math.min(150, handoffRemaining(150)), undefined, { signal: handoffSignal() });
       }
       if (!found) throw new Error("Cursor history readback is not yet available");
       receipt.target_session_id = found;
       receipt.verified = true;
-      saveReceipt(receiptFile, receipt);
+      await handoffCommit(() => {
+        profiles();
+        saveReceipt(receiptFile, receipt);
+      });
     } catch (error) {
+      if (!existsSync(attemptFile)) throw error;
       throw new CursorImportOutcomeUnknownError(
         `Cursor import outcome needs reconciliation: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
-  const provider = new CursorIdeSessions(bridge);
-  const actual = provider
-    .list(workspace)
-    .sessions.find((session) => session.native_ref === receipt.target_session_id);
-  if (!actual) throw new Error("Verified Cursor import is no longer readable");
-  const imported = provider.document(actual, effectiveWorkspace, workspace);
-  provider.verifyPromptProjection(
-    actual.native_ref,
-    workspace,
-    promptProjection(plan.expected),
-    !receipt.verified,
+  const actual = (await listing()).sessions.find(
+    (session) => session.native_ref === receipt.target_session_id,
   );
-  if (
-    (!receipt.verified && imported.turns.length !== plan.expected.turns.length) ||
-    JSON.stringify(
-      imported.turns
-        .slice(0, plan.expected.turns.length)
-        .map((turn) => [
-          turn.role,
-          turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-        ]),
-    ) !==
-      JSON.stringify(
-        plan.expected.turns.map((turn) => [
-          turn.role,
-          turn.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n\n"),
-        ]),
-      ) ||
-    (!receipt.verified && actual.title !== plan.marker && actual.title !== `(1) ${plan.marker}`)
-  )
+  if (!actual) throw new Error("Verified Cursor import is no longer readable");
+  if (!receipt.verified && actual.title !== plan.marker && actual.title !== `(1) ${plan.marker}`)
     throw new Error("Cursor imported history no longer matches its reviewed preview");
+  const { nativeId } = await verify(actual, !receipt.verified);
   receipt.verified = true;
-  const nativeId = new CursorIdeSessions(bridge).nativeId(receipt.target_session_id, workspace);
-  await bridge.call(plan.context, "open", { native_id: nativeId }).catch((error: unknown) => {
-    throw new Error(
-      `Cursor imported the session but could not reopen it: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
+  handoffCheckpoint();
+  profiles();
+  const opened = await bridge
+    .call(plan.context, "open", { native_id: nativeId })
+    .catch((error: unknown) => {
+      throw new Error(
+        `Cursor imported the session but could not reopen it: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  const selected =
+    opened && typeof opened === "object" ? (opened as { selected?: unknown }).selected : undefined;
+  if (!Array.isArray(selected) || selected.length !== 1 || selected[0] !== nativeId)
+    throw new Error("Cursor did not select the verified imported session");
+  profiles();
   receipt.launched = true;
-  saveReceipt(receiptFile, receipt);
+  await handoffCommit(() => {
+    profiles();
+    saveReceipt(receiptFile, receipt);
+  });
+  profiles();
   return { status: "launched", receipt: { target_agent: "cursor", terminal: "Cursor IDE" } };
+}
+
+export function loadCursorRecoveryPlan(
+  dataDir: string,
+  request: z.infer<typeof envelopeSchema>["launchRequest"],
+) {
+  const directory = path.join(
+    dataDir,
+    "continuations",
+    hash(request.workspace_id).slice(0, 32),
+    request.operation_id,
+    "import",
+  );
+  const planFile = path.join(directory, "plan.json");
+  const metadata = lstatSync(planFile);
+  if (!metadata.isFile() || metadata.isSymbolicLink())
+    throw new Error("Cursor import plan is unavailable");
+  const content = readFileSync(planFile, "utf8");
+  if (hash(content) !== request.plan_hash) throw new Error("Cursor import recovery plan changed");
+  const plan = JSON.parse(content) as Plan;
+  const changeSet = {
+    id: request.operation_id,
+    project_root: plan.workspace,
+    created_at: new Date().toISOString(),
+    requires_home_approval: true,
+    changes: [
+      {
+        target: planFile,
+        scope: "application-data",
+        original_hash: null,
+        before: "",
+        after: content,
+        risk: "high",
+        validator: "json",
+      },
+    ],
+  };
+  return changeSet;
 }
 
 export async function reconcileCursorNativeImport(
@@ -375,37 +471,11 @@ export async function reconcileCursorNativeImport(
     })
     .strict()
     .parse(requestValue);
-  const directory = path.join(
-    dataDir,
-    "continuations",
-    hash(request.workspace_id).slice(0, 32),
-    request.operation_id,
-    "import",
+  const identity = requireUniqueContinuationWorkspace(store, request.workspace_id);
+  const changeSet = await readHandoff("cursor-recovery", [dataDir, request], () =>
+    loadCursorRecoveryPlan(dataDir, request),
   );
-  const planFile = path.join(directory, "plan.json");
-  const metadata = lstatSync(planFile);
-  if (!metadata.isFile() || metadata.isSymbolicLink())
-    throw new Error("Cursor import plan is unavailable");
-  const content = readFileSync(planFile);
-  if (hash(content) !== request.plan_hash) throw new Error("Cursor import recovery plan changed");
-  const plan = JSON.parse(content.toString("utf8")) as Plan;
-  const changeSet = {
-    id: request.operation_id,
-    project_root: plan.workspace,
-    created_at: new Date().toISOString(),
-    requires_home_approval: true,
-    changes: [
-      {
-        target: planFile,
-        scope: "application-data",
-        original_hash: null,
-        before: "",
-        after: content.toString("utf8"),
-        risk: "high",
-        validator: "json",
-      },
-    ],
-  };
+  assertContinuationWorkspaceIdentity(store, request.workspace_id, identity);
   return continueCursorNativeImport(
     { changeSet, launchRequest: request, approveHome: true },
     sessions,

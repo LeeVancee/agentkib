@@ -4,6 +4,10 @@ This document describes AgentKib's current product surfaces and support boundari
 
 本文档描述 AgentKib 当前的产品界面与支持边界。安装方式和产品简介见[中文 README](../README.zh-CN.md)。
 
+Native acceptance is tied to each QA report's revision and Agent version. Current TypeScript backend automation and candidate-package checks are recorded separately in [TypeScript stability QA](../qa/typescript-stability-2026-10-07.md); older Rust evidence is not reused as migration acceptance.
+
+原生验收只适用于各 QA 记录的源码与 Agent 版本。当前 TypeScript 后端自动化和候选包检查单独记入[本轮稳定性 QA](../qa/typescript-stability-2026-10-07.md)，不将旧 Rust 证据当作迁移后的验收结果。
+
 ## English
 
 ### Across your machine
@@ -55,14 +59,14 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - Desktop and Remote display the latest native context report independently of settings support. Compaction blocks sending, steering, settings, goals, and ownership transfer until the native phase ends; unconfirmed post-compaction usage does not extend the send lock. See [conversation state and report sources](CONVERSATIONS.md).
 - Codex and Claude Code JSONL histories are read from the tail with bounded scanning and memory, rather than loading the entire transcript before pagination. Antigravity ACP histories are replayed through the official ACP server with bounded pages and update budgets. OpenCode is read through its bounded export command; OpenClaw, Hermes, and Grok Build use their verified local history sources. Page byte limits may return fewer than 50 records; an empty scan window can still offer earlier records.
 - Damaged or oversized log records produce a warning. Very distant message/tool associations or ambiguous legacy metadata may be shown conservatively with a warning instead of requiring a full-file scan.
-- History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor is limited to verified CLI stores, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Their offline native storage checks have passed; OpenCode/Hermes terminal history and restart checks also pass. New-target real replies remain unverified; one OpenClaw-to-Claude production-rendered history has a correct real reply, with full per-direction acceptance still pending. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
+- History pagination is read-only. All eight listed agents have source adapters with per-session validation; Cursor uses verified CLI stores or explicitly connected macOS IDE profiles, and OpenClaw supports schema-23 SQLite plus legacy JSONL when no authoritative SQLite store exists. Compressed or incomplete histories that cannot preserve required text are refused. OpenCode 1.18.32, Hermes 0.21.5, and offline OpenClaw 2026.9.6 native imports prepare a reviewed payload, reconcile durable operation records, and verify target content before launch. Historical QA records offline storage, native UI, restart, and representative text-reply results for specific directions. These do not cover all source/target pairs, rich content, or the migrated TypeScript backend. See [direction/version compatibility](SESSION-INTEROPERABILITY.md).
 
 ### MCP Hub and client connections
 
 - The MCP page separates upstream services managed by AgentKib from the client connection used by another agent. A `mcpServers` client configuration belongs in the target agent's configuration; the service editor expects one AgentKib server definition.
 - “Connect an Agent to the Hub” lets you choose a registered workspace and one of the eight writable agents, inspect the complete local Hub URL and native configuration path, copy the URL or configuration, or review a connection-only ChangeSet before writing it. A workspace does not need an existing manifest.
-- New connections use the workspace's unique registered ID. Legacy manifest URLs remain valid when they identify one workspace; ambiguous aliases are rejected. Review and write the connection again if cloned repositories or worktrees share a manifest ID.
-- Codex and Grok Build use TOML; Claude Code, Cursor, OpenCode, Antigravity and OpenClaw use their native JSON structures; Hermes uses YAML. Existing OpenCode configuration selection and JSONC/JSON5 compatibility are preserved. OpenClaw and Hermes write to Agent Home and require separate approval; their connection points to the selected workspace.
+- New connections use the workspace's unique registered ID. Legacy manifest URLs remain valid when they identify one physical workspace; ambiguous aliases are rejected. Rewriting a connection with its registered ID restores ordinary Hub access. Continuation archives keep their existing manifest namespace, so shared or conflicting ownership still blocks archive reads, long-history handoffs, and operation recovery; changing the URL alone does not resolve that ambiguity. The Hub rechecks ownership on every archive read.
+- Codex and Grok Build use TOML; Claude Code, Cursor, OpenCode, Antigravity and OpenClaw use their native JSON structures; Hermes uses YAML. Existing OpenCode configuration selection and JSONC/JSON5 compatibility are preserved. OpenClaw and Hermes write to Agent Home and require separate approval; their connection points to the selected workspace. OpenClaw honors its effective Home, profile, state directory, and config-path overrides; Hermes uses `HERMES_HOME` and the selected `active_profile` (or a directly selected profile Home). Planning and applying share the same path resolution, and a changed profile or config target requires a new plan.
 - A connection-only ChangeSet preserves other servers and client settings. It refuses conflicting same-name entries and unsafe paths, uses the normal hash/backup protections, and updates an existing tracked configuration hash when necessary. It does not generate Instructions or Skills.
 - After copying or writing, reload the target agent's MCP configuration and confirm that its tools are visible. AgentKib and the client must run on the same machine for the displayed loopback URL to work. Enabled global services are defaults; workspace services can override them, and each service's allowed-agent list controls publication.
 - “Verify Hub” performs an HTTP MCP handshake and reads the tool catalog without calling tools or probing upstream services. It distinguishes AgentKib built-in tools from external tools, whose directory comes from the most recent service probe. “Configuration written,” “Hub reachable,” and a successful service probe do not confirm that another agent has loaded the connection. An empty external directory suggests checking enabled services, allowed agents, and service probing.
@@ -81,6 +85,8 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 - OpenCode inspection includes native configuration directories and effective `skills.paths`, with project-disable settings and independent sources evaluated together. Deployment lists refresh current native readers without rewriting ownership receipts.
 - Local copy import preserves Skills that use their directory name instead of an explicit `name`. OpenCode compatibility inspection includes hidden, nested and ancestor sources without adding write targets.
 
+Skill operations run sequentially in a dedicated Worker, with one active request and at most eight waiting requests. Network work has a 180-second total deadline from admission; a full queue fails immediately. Started local writes finish or roll back before shutdown completes. Slow catalog and file work does not occupy the Runtime request loop.
+
 ### Tools and updates
 
 - Managed tools: Codex, Claude Code, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build. Antigravity CLI is detected and links to official installation documentation; its remote-script installer is not executed automatically. DeepSeek Harness is not exposed because it has no supported stable tool-management channel.
@@ -97,7 +103,7 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 | Codex | Yes | Yes | Yes | Yes | Yes |
 | Claude Code | Yes | Yes | Yes | Yes | Yes |
 | Antigravity | Yes | Yes | ACP sessions | ACP source only | Detect/docs |
-| Cursor | Yes | Yes | Verified CLI stores | CLI, per-session check | Yes |
+| Cursor           | Yes                     | Yes                          | Verified CLI stores / connected macOS IDE profiles | CLI / IDE, per-session check | Yes             |
 | OpenCode | Yes | Yes | Yes | Yes | Yes |
 | OpenClaw | Yes | Yes | Read-only | Per-session check | Yes |
 | Hermes | Yes | Yes | Read-only | Per-session check | Yes |
@@ -109,7 +115,7 @@ AgentKib distinguishes an installed app or CLI from local data left behind after
 ### Web access and continuation
 
 - Pairing grants read access first. Sending and approvals are separate per-browser permissions and also require the host control switch.
-- Claude Code desktop/Web control shares one execution service on macOS CLI versions at least `2.1.263`, with foreground Bash support at least `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Native identities, protocol shapes, and receipts remain validated; accepting a newer version does not imply real-device acceptance. LAN uploads remain disabled; Windows/Linux control remains unavailable. See [Claude usage](CLAUDE-WEB.md) and [current QA](../qa/claude-managed-2026-09-30.md).
+- Claude Code desktop/Web control shares one execution service on macOS CLI versions at least `2.1.263`, with foreground Bash support at least `2.1.285`: prepare new sessions without a model call, or explicitly adopt an existing UUID after stopping its terminal. Native identities, protocol shapes, and receipts remain validated; accepting a newer version does not imply real-device acceptance. LAN uploads remain disabled; Windows/Linux control remains unavailable. See [Claude usage](CLAUDE-WEB.md) and [historical native QA](../qa/claude-managed-2026-09-30.md) and [current TypeScript QA](../qa/typescript-stability-2026-10-07.md).
 - Codex Web control follows an already-open official owner session, with minimum Desktop versions `26.917.62051` for base control and `26.924.22138` for settings. Unknown or malformed versions, unsupported platforms, missing owners, and incompatible native protocols remain read-only; satisfying the version threshold does not replace native validation or acceptance testing.
 - Antigravity Web control manages only sessions returned by the official ACP server. It negotiates ACP v1 capabilities, checks the indexed session and workspace again, and requires exact revision, turn, request, and offered permission option matches.
 - A request receipt does not mean a turn or approval completed. Disconnects and uncertain outcomes are never retried automatically.
@@ -179,14 +185,14 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - 桌面与 Remote 独立于设置能力显示最近原生上下文报告。压缩期间阻止发送、steer、设置、目标修改与归属转移，直到原生阶段结束；压缩后用量未确认不会延长发送锁。详见[实时状态与报告来源](CONVERSATIONS.md)。
 - Codex 与 Claude Code 的 JSONL 历史从文件尾部开始有界读取，不再先读取完整文件才分页。Antigravity ACP 历史通过官方 ACP server 有界回放。OpenCode 通过有界导出命令读取；OpenClaw、Hermes 和 Grok Build 使用各自经过校验的本机历史来源。单页体积限制可能使结果少于 50 条；本次扫描窗口为空时，仍可能继续加载更早记录。
 - 损坏或超大的日志记录会显示提示；距离过远的消息/工具关联，以及无法明确判断的旧格式元数据，会保守展示并提示，而非要求扫描完整文件。
-- 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 限已验证 CLI 格式，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。离线原生存储检查已通过，OpenCode/Hermes 终端历史与重启检查也已通过；新目标真实回复仍未验收。新版 OpenClaw 到 Claude 的生产转换载荷已有一轮正确真实回复，全部方向的完整交接验收尚未完成，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
+- 历史分页只读，不修改原记录。表中八个 Agent 均有来源适配器，能否交接取决于具体会话解析；Cursor 使用已验证 CLI 格式或显式连接的 macOS IDE profile，OpenClaw 支持 schema-23 SQLite，并在不存在权威 SQLite 存储时兼容旧 JSONL。无法保留必要正文的压缩或不完整历史会被拒绝。OpenCode 1.18.32、Hermes 0.21.5 与离线 OpenClaw 2026.9.6 新增原生导入：审查临时载荷、保存操作记录、核对目标全文后才启动。历史 QA 分别记录了特定方向的离线存储、原生界面、重启与代表性文本回复结果，不代表所有来源×目标、富内容或迁移后的 TypeScript 后端均已验收，详见[方向与版本兼容矩阵](SESSION-INTEROPERABILITY.md)。
 
 ### MCP Hub 与客户端接入
 
 - MCP 页区分由 AgentKib 管理的上游服务，以及其他 Agent 使用的客户端连接。`mcpServers` 客户端配置应放入目标 Agent 的配置文件；服务编辑器接收单个 AgentKib 服务定义。
 - “连接 Agent 到 Hub”可选择已注册工作区和八个可写 Agent 之一，查看完整本机 Hub URL 与原生配置路径、复制地址或配置，或先审查仅包含连接变更的 ChangeSet 再写入。工作区无需已有 manifest。
-- 新连接使用工作区的唯一注册 ID。旧 manifest 地址只有在能唯一定位工作区时才兼容；存在歧义时拒绝连接。克隆仓库或 worktree 共享 manifest ID 时，可重新审查并写入连接配置。
-- Codex、Grok Build 使用 TOML；Claude Code、Cursor、OpenCode、Antigravity、OpenClaw 使用各自原生 JSON 结构；Hermes 使用 YAML。沿用已有 OpenCode 配置选择规则与 JSONC/JSON5 兼容行为。OpenClaw、Hermes 写入 Agent Home，需单独确认，连接会指向所选工作区。
+- 新连接使用工作区的唯一注册 ID。旧 manifest 地址只有在能唯一定位物理工作区时才兼容；存在歧义时拒绝。改用注册 ID 重写连接可恢复普通 Hub 访问。续接归档仍沿用旧 manifest namespace，共享或冲突归属会阻止归档读取、长历史交接和操作恢复；只改 URL 不能解决归档歧义。Hub 每次读取归档都会重新核对归属。
+- Codex、Grok Build 使用 TOML；Claude Code、Cursor、OpenCode、Antigravity、OpenClaw 使用各自原生 JSON 结构；Hermes 使用 YAML。沿用已有 OpenCode 配置选择规则与 JSONC/JSON5 兼容行为。OpenClaw、Hermes 写入 Agent Home，需单独确认，连接会指向所选工作区。OpenClaw 遵循有效的 Home、profile、state directory 和 config-path 覆盖配置；Hermes 使用 `HERMES_HOME` 与所选 `active_profile`，也支持直接选择 profile Home。规划与应用共用路径解析，profile 或配置目标变化后须重新规划。
 - 接入 ChangeSet 保留其他服务及客户端设置，拒绝同名冲突和不安全路径，并复用哈希检查与备份保护；必要时同步已跟踪配置的哈希，不生成 Instructions 或 Skills。
 - 复制或写入后，在目标 Agent 重新加载 MCP 配置并确认工具可见。页面显示的 loopback URL 要求 AgentKib 与客户端运行在同一台机器。已启用的全局服务作为默认配置，工作区服务可覆盖它们，各服务的允许 Agent 范围控制工具发布。
 - “验证 Hub”通过 HTTP 完成 MCP 握手并读取工具目录，不调用工具、不探测上游。结果区分 AgentKib 内置工具与外部工具，外部目录来自最近一次服务探测。“配置已写入”“Hub 可达”及服务探测成功均不代表其他 Agent 已加载连接。外部目录为空时，可检查服务启用状态、允许 Agent 范围并执行服务探测。
@@ -205,6 +211,8 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 - OpenCode 查看范围包含原生配置目录及生效的 `skills.paths`，综合项目禁用配置和独立来源判断可见性。部署列表刷新当前原生读取方，不重写所有权记录。
 - 本地复制入库支持以目录名代替显式 `name` 的 Skill。OpenCode 兼容来源扫描包含隐藏、嵌套和祖先目录，不增加写入目标。
 
+Skill 操作由独立 Worker 顺序处理，允许 1 个执行中请求和最多 8 个等待请求。网络任务从入队起采用 180 秒总期限，队列满立即返回错误。已启动的本地写入完成或回滚后才结束退出；慢目录请求和文件处理不占用 Runtime 主请求循环。
+
 ### 工具与更新
 
 - 管理 Codex、Claude Code、Cursor、OpenCode、OpenClaw、Hermes 和 Grok Build。Antigravity CLI 支持检测并提供官方安装文档，但不会自动执行远程脚本安装器。DeepSeek Harness 没有受支持的稳定工具管理渠道，因此不在此处展示。
@@ -221,7 +229,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | Codex | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Claude Code | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Antigravity | 支持 | 支持 | ACP 会话 | 仅作来源 | 检测/文档 |
-| Cursor | 支持 | 支持 | 已验证 CLI 存储 | CLI，逐会话核验 | 支持 |
+| Cursor           | 支持       | 支持             | 已验证 CLI 存储 / 已连接的 macOS IDE profile | CLI / IDE，逐会话核验 | 支持      |
 | OpenCode | 支持 | 支持 | 支持 | 支持 | 支持 |
 | OpenClaw | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
 | Hermes | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
@@ -233,7 +241,7 @@ AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉�
 ### Web 访问与续接
 
 - 配对首先授予读取权限；发送和审批是单独的浏览器权限，同时还需要打开主机控制开关。
-- Claude Code 桌面/Web 在 macOS CLI ≥ `2.1.263` 上共用执行服务，前台 Bash 契约要求 ≥ `2.1.285`：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。仍核验原生身份、协议结构和回执，新版通过最低门槛不代表真实设备验收通过；LAN 仍禁上传，Windows/Linux 控制保持不可用。详见 [Claude 使用说明](CLAUDE-WEB.md) 与[本轮 QA](../qa/claude-managed-2026-09-30.md)。
+- Claude Code 桌面/Web 在 macOS CLI ≥ `2.1.263` 上共用执行服务，前台 Bash 契约要求 ≥ `2.1.285`：准备新会话不调用模型，停止原终端并确认后可续接原 UUID。仍核验原生身份、协议结构和回执，新版通过最低门槛不代表真实设备验收通过；LAN 仍禁上传，Windows/Linux 控制保持不可用。详见 [Claude 使用说明](CLAUDE-WEB.md) 与[历史原生 QA](../qa/claude-managed-2026-09-30.md) 及[当前 TypeScript QA](../qa/typescript-stability-2026-10-07.md)。
 - Codex Web 控制跟随官方客户端中已打开的 owner 会话，Desktop 基础控制要求 ≥ `26.917.62051`，会话设置要求 ≥ `26.924.22138`。版本未知或格式异常、平台不支持、没有 owner 或原生协议不兼容时保持只读；满足门槛不能代替原生校验和真实验收。
 - Antigravity Web 控制只管理官方 ACP server 返回的会话。运行时协商 ACP v1 能力，重新核验索引会话和工作区，并要求 revision、turn、request 与服务端提供的权限选项全部精确匹配。
 - 请求回执不代表轮次或审批已经完成。断线或结果不明确时不会自动重试。

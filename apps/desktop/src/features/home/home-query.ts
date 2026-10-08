@@ -12,6 +12,9 @@ export const queryDefaults = {
   retry: false,
   refetchOnWindowFocus: false,
   refetchOnReconnect: false,
+  // Desktop queries use Electron IPC, which must keep running while the
+  // browser-style online manager reports an offline state.
+  networkMode: "always" as const,
   staleTime: 30_000,
 };
 

@@ -2,7 +2,15 @@ import { cn } from "@/lib/utils";
 import { sessionCollection } from "@agentkib/runtime-protocol";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, LayoutDashboard, MoreHorizontal, Plus, RefreshCw } from "lucide-react";
+import {
+  ArrowUpRight,
+  FolderOpen,
+  LayoutDashboard,
+  ListChecks,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -18,6 +26,7 @@ import { useSessionSourceCapability } from "./useSessionSourceCapability";
 import { useSessionHub } from "./SessionHubContext";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
 import { useSessionViewStore } from "./session-view-store";
+import { requestConversationPanel } from "./conversation-panel-commands";
 
 export function SessionWindowToolbar() {
   const { tr } = useI18n();
@@ -26,6 +35,11 @@ export function SessionWindowToolbar() {
   const selected = hub.selected;
   const workspace = hub.selectedWorkspace;
   const creating = useSessionViewStore((state) => state.creatingConversation);
+  const supportsEmbeddedConversation =
+    hasDesktopConversation() &&
+    !selected?.remote &&
+    selected?.availability === "readable" &&
+    ["codex", "claude-code", "antigravity"].includes(selected.agent);
   const createConversation = () => {
     useSessionViewStore.getState().setCreatingConversation(true);
     hub.select();
@@ -41,9 +55,14 @@ export function SessionWindowToolbar() {
           {tr(creating ? "sessions.newConversation" : "sessions.nav")}
         </div>
         {hasDesktopConversation() && hub.localEnabled && (
-          <Button variant="ghost" size="sm" onClick={createConversation}>
-            <Plus size={15} />
-            {tr("sessions.newConversation")}
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={tr("sessions.newConversation")}
+            title={tr("sessions.newConversation")}
+            onClick={createConversation}
+          >
+            <Plus size={17} />
           </Button>
         )}
       </div>
@@ -64,16 +83,29 @@ export function SessionWindowToolbar() {
     });
   };
   return (
-    <div className={cn(navigationStyles.appToolbarContent, "session-window-toolbar")}>
+    <div
+      className={cn(
+        navigationStyles.appToolbarContent,
+        "session-window-toolbar gap-2 [&>button]:shrink-0 [&>div]:shrink-0",
+      )}
+    >
       <AgentIcon agent={selected.agent} compact />
-      <h1 className="session-window-title" title={displaySessionTitle(selected.title, tr)}>
+      <h1
+        className="session-window-title min-w-0 flex-1 truncate text-sm font-semibold [-webkit-app-region:drag]"
+        title={displaySessionTitle(selected.title, tr)}
+      >
         {displaySessionTitle(selected.title, tr)}
       </h1>
-      <div className="session-window-actions">
+      <div className="session-window-actions flex shrink-0 items-center gap-2 max-[1050px]:hidden">
         {hasDesktopConversation() && hub.localEnabled && (
-          <Button variant="ghost" size="sm" onClick={createConversation}>
-            <Plus size={15} />
-            {tr("sessions.newConversation")}
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={tr("sessions.newConversation")}
+            title={tr("sessions.newConversation")}
+            onClick={createConversation}
+          >
+            <Plus size={17} />
           </Button>
         )}
         {canContinue && (
@@ -98,7 +130,7 @@ export function SessionWindowToolbar() {
           <RefreshCw size={15} className={hub.refreshing ? "animate-spin" : ""} />
         </Button>
       </div>
-      <div className="session-window-menu">
+      <div className="session-window-menu block shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger
             className={navigationStyles.appToolbarMore}
@@ -107,6 +139,18 @@ export function SessionWindowToolbar() {
             <MoreHorizontal size={18} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-56">
+            {supportsEmbeddedConversation && (
+              <>
+                <DropdownMenuItem onClick={() => requestConversationPanel("files")}>
+                  <FolderOpen size={15} />
+                  {tr("sessions.filesAndArtifacts")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => requestConversationPanel("actions")}>
+                  <ListChecks size={15} />
+                  {tr("sessions.conversationActions")}
+                </DropdownMenuItem>
+              </>
+            )}
             {hasDesktopConversation() && hub.localEnabled && (
               <DropdownMenuItem onClick={createConversation}>
                 <Plus size={15} />

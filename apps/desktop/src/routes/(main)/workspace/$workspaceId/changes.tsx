@@ -2,7 +2,7 @@ import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { WorkspaceChangesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
-import { api } from "../../../core/api";
+import { api } from "@/core/api";
 import { useWorkspaceStore, type ChangeSetOrigin } from "@/features/workspace/workspace-store";
 import {
   changesReturnPage,
@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { cn, withAsyncCleanup } from "@/lib/utils";
 import { diffLines } from "@/features/workspace/diff";
-import type { ChangeSet, SessionHandoffLaunchRequest } from "../../../core/types";
+import type { ChangeSet, SessionHandoffLaunchRequest } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 function Empty({
   icon: Icon,
@@ -381,7 +381,7 @@ function WorkspaceChangesRoute() {
   const { localizeMessage } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId/changes" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId/changes" });
   const search = useSearch({ strict: false });
   const {
     project,
@@ -551,6 +551,7 @@ function WorkspaceChangesRoute() {
   );
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId/changes")({
+export const Route = createFileRoute("/(main)/workspace/$workspaceId/changes")({
+  staticData: { appRoute: { kind: "workspace", page: "changes" } },
   component: WorkspaceChangesRoute,
 });

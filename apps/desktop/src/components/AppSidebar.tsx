@@ -242,6 +242,7 @@ export function AppSidebar(props: {
         aria-expanded={mobileOpen}
         aria-controls={sidebarId}
         aria-label={tr("common.primaryNavigation")}
+        data-sidebar-mobile-trigger=""
         onClick={() => setMobileOpen(true)}
       >
         <Menu size={19} />
@@ -395,7 +396,13 @@ export function AppSidebar(props: {
                 </h2>
               </div>
             )}
-            <div ref={scrollRef} className="context-sidebar-scroll">
+            <div
+              ref={scrollRef}
+              className={cn(
+                "context-sidebar-scroll",
+                active === "sessions" && "flex flex-col !overflow-hidden",
+              )}
+            >
               {active === "workspaces" && (
                 <nav
                   className="workspace-sidebar-directory grid gap-1.5"
@@ -563,7 +570,7 @@ export function AppSidebar(props: {
                 </div>
               )}
               {active === "sessions" && (
-                <div className="app-sidebar-session-directory">
+                <div className="app-sidebar-session-directory min-h-0 flex-1 mt-0 border-t-0">
                   <SessionDirectory />
                 </div>
               )}

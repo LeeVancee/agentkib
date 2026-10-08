@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/core/api";
@@ -12,7 +13,7 @@ import type {
   RuntimeInfo,
   WorkspaceSummary,
 } from "@/core/types";
-import { McpHubPage } from "@/routes/catalog";
+import { McpHubPage } from "@/routes/(main)/catalog";
 
 vi.mock("@/core/api", () => ({
   api: {
@@ -108,6 +109,12 @@ const connection: McpConnectionInfo = {
   hub_running: true,
 };
 const props = { runtime, workspaces, onRuntimeChanged: vi.fn(), onMigrationPlanned: vi.fn() };
+const renderHub = () =>
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <McpHubPage {...props} />
+    </QueryClientProvider>,
+  );
 
 describe("McpHubPage", () => {
   beforeEach(async () => {
@@ -130,7 +137,7 @@ describe("McpHubPage", () => {
     vi.mocked(api.mcpServers).mockImplementation((project) =>
       project ? Promise.resolve([server("Workspace service")]) : oldGlobal,
     );
-    render(<McpHubPage {...props} />);
+    renderHub();
     await user.click(screen.getByRole("combobox", { name: tr("mcp.scope") }));
     await user.click(await screen.findByRole("option", { name: "Workspace two" }));
     expect(await screen.findByText("Workspace service")).toBeVisible();
@@ -150,7 +157,7 @@ describe("McpHubPage", () => {
     vi.mocked(api.probeMcpRuntime).mockResolvedValue([
       { server_id: "blender", name: "get_scene_info", input_schema: {}, read_only: true },
     ]);
-    render(<McpHubPage {...props} />);
+    renderHub();
     await screen.findByText("Blender");
     await screen.findByTestId("mcp-connection-url");
     fireEvent.click(screen.getByRole("button", { name: tr("mcp.connection.verify") }));
@@ -166,7 +173,7 @@ describe("McpHubPage", () => {
   });
 
   it("explains the service editor format and rejects an mcpServers wrapper before saving", async () => {
-    const { container } = render(<McpHubPage {...props} />);
+    const { container } = renderHub();
     const ui = within(container);
     await ui.findByText("Blender");
     expect(ui.getByText(tr("mcp.editorDescription"))).toBeVisible();

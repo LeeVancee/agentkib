@@ -39,6 +39,22 @@ export type ParsedRoute =
   | { kind: "global"; page: GlobalPage }
   | { kind: "workspace"; workspaceId: string; page: Page };
 
+export type AppRouteMetadata =
+  | { kind: "settings" }
+  | { kind: "global"; page: GlobalPage }
+  | { kind: "workspace"; page: Page };
+
+type AppRouteMatch = {
+  staticData: { appRoute?: AppRouteMetadata };
+  params: object;
+};
+
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    appRoute?: AppRouteMetadata;
+  }
+}
+
 export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearch {
   const next = page === "git" ? current : { ...current, gitSubview: undefined };
   if (page === "sessions" || page === "changes") return next;
@@ -67,7 +83,23 @@ export function workspaceSearchForPage(current: AppSearch, page: Page): AppSearc
   return rest;
 }
 
-export function parseRoute(pathname: string): ParsedRoute {
+export function routeFromMatches<TMatch extends AppRouteMatch>(
+  matches: readonly TMatch[],
+): ParsedRoute {
+  for (const match of [...matches].reverse()) {
+    const metadata = match.staticData.appRoute;
+    if (!metadata) continue;
+    if (metadata.kind === "workspace") {
+      const workspaceId = (match.params as { workspaceId?: unknown }).workspaceId;
+      if (typeof workspaceId === "string") return { ...metadata, workspaceId };
+      continue;
+    }
+    return metadata;
+  }
+  return { kind: "global", page: "home" };
+}
+
+export function parseHistoryRoute(pathname: string): ParsedRoute {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "settings") return { kind: "settings" };
   if (segments[0] === "workspace" && segments[1]) {
@@ -95,3 +127,6 @@ export function parseRoute(pathname: string): ParsedRoute {
       : "home";
   return { kind: "global", page: globalPage };
 }
+
+// Keep the original name for isolated callers; live route identity comes from route matches.
+export const parseRoute = parseHistoryRoute;

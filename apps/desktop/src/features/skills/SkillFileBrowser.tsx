@@ -1,5 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
 import { Markdown } from "@tanstack/markdown/react";
-import { Fragment, useEffect, useMemo, useState, type ComponentProps } from "react";
+import { Fragment, useMemo, useState, type ComponentProps } from "react";
 import { FileCode2, Folder, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -146,18 +148,22 @@ export function SkillFileBrowser({
     readableFiles.find((file) => file.path === "SKILL.md")?.path ?? readableFiles[0]?.path ?? "";
   const [selected, setSelected] = useState(defaultPath);
   const [mode, setMode] = useState("preview");
-  const [result, setResult] = useState<{
-    path: string;
-    reader: typeof readFile;
-    value?: SkillReadableContent;
-    error?: unknown;
-  }>();
   const activePath = readableFiles.some((file) => file.path === selected) ? selected : defaultPath;
-  const currentResult =
-    result?.path === activePath && result.reader === readFile ? result : undefined;
-  const value = currentResult?.value;
-  const error = currentResult?.error;
-  const loading = Boolean(activePath && !currentResult);
+  const queryClient = useOptionalQueryClient();
+  const fileQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: ["skill-file", readerId(readFile), activePath],
+      queryFn: () => readFile(activePath),
+      enabled: !!activePath,
+      staleTime: Infinity,
+      gcTime: 0,
+    },
+    queryClient,
+  );
+  const value = activePath ? fileQuery.data : undefined;
+  const error = activePath ? fileQuery.error : null;
+  const loading = !!activePath && fileQuery.isPending;
   const tree = useMemo(() => {
     const root: FileNode = { name: "", path: "", children: new Map() };
     for (const file of files) {
@@ -175,20 +181,6 @@ export function SkillFileBrowser({
     }
     return root.children;
   }, [files]);
-  useEffect(() => {
-    let cancelled = false;
-    if (!activePath) return;
-    readFile(activePath)
-      .then((next) => {
-        if (!cancelled) setResult({ path: activePath, reader: readFile, value: next });
-      })
-      .catch((next) => {
-        if (!cancelled) setResult({ path: activePath, reader: readFile, error: next });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [readFile, activePath]);
   const content = value?.after ?? value?.content ?? "";
   const versions = (["before", "after"] as const).map((side) => {
     const text = side === "after" ? (value?.after ?? value?.content) : value?.before;
@@ -333,4 +325,17 @@ export function SkillFileBrowser({
       </div>
     </div>
   );
+}
+
+// File readers capture preview tokens or detail scopes. Never share content
+// between readers merely because both expose the same relative file path.
+const readerIds = new WeakMap<(path: string) => Promise<SkillReadableContent>, number>();
+let nextReaderId = 0;
+function readerId(reader: (path: string) => Promise<SkillReadableContent>) {
+  let id = readerIds.get(reader);
+  if (id === undefined) {
+    id = ++nextReaderId;
+    readerIds.set(reader, id);
+  }
+  return id;
 }

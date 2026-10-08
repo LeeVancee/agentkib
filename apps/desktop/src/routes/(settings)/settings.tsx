@@ -1,13 +1,13 @@
 import { useI18n } from "@/core/useI18n";
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../core/api";
+import { api } from "@/core/api";
 import { GlobalSettings } from "@/features/settings/GlobalSettings";
 import { SettingsContentSkeleton } from "@/features/settings/SettingsSkeleton";
 import type { SettingsPageVariant } from "@/features/settings/components/SettingsLayout";
 import type { SettingsSection, SettingsTarget } from "@/features/settings/SettingsSidebar";
 import { useSettingsTargetFocus } from "@/features/settings/useSettingsTargetFocus";
-import { useAppStore } from "../stores/app-store";
+import { useAppStore } from "@/stores/app-store";
 import {
   homeKeys,
   useHomeActivity,
@@ -20,7 +20,7 @@ import {
 } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { useQuotaStatus } from "@/features/quota/quota-query";
-import type { CloseBehavior, RefreshKind, RuntimeInfo } from "../core/types";
+import type { CloseBehavior, RefreshKind, RuntimeInfo } from "@/core/types";
 
 type SettingsSearch = { settingsSection?: SettingsSection; settingsTarget?: SettingsTarget };
 
@@ -153,4 +153,4 @@ function SettingsRoute() {
   );
 }
 
-export const Route = createFileRoute("/settings")({ component: SettingsRoute });
+export const Route = createFileRoute("/(settings)/settings")({ component: SettingsRoute });

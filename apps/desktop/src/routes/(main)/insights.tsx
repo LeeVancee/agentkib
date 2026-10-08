@@ -106,4 +106,7 @@ function InsightsRoute() {
   );
 }
 
-export const Route = createFileRoute("/insights")({ component: InsightsRoute });
+export const Route = createFileRoute("/(main)/insights")({
+  staticData: { appRoute: { kind: "global", page: "insights" } },
+  component: InsightsRoute,
+});

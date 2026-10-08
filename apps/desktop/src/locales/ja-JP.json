@@ -128,6 +128,8 @@
   "search.assetsLoading": "索引済みアセットを検索中…",
   "search.assetLimit": "アセット索引を最大 {{count}} 件取得し、同一アセットを統合しています。検索条件を絞ってください。",
   "sessions.directoryOptions": "セッション一覧のオプション",
+  "sessions.filesAndArtifacts": "ファイルと成果物",
+  "sessions.conversationActions": "会話の操作",
   "sessions.clearAgentFilter": "Agent フィルターを解除",
   "sessions.clearRecordFilter": "記録フィルターを解除",
   "sessions.nav": "セッション",

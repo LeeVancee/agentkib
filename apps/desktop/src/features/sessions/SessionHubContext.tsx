@@ -24,7 +24,6 @@ import {
   useRemoteCatalogEntries,
   refreshRemoteCatalog,
 } from "@/features/remote/remote-catalog-store";
-import "./sessions.css";
 
 // The catalog store retains the error for the page's retry notice.
 const refreshControlledCatalog = () => refreshConversationCatalog().catch(() => undefined);
@@ -209,7 +208,9 @@ function useHub(active: boolean) {
     navigate,
   ]);
   return {
-    ...catalog,
+    statuses: catalog.statuses,
+    errors: catalog.errors,
+    refreshing: catalog.refreshing,
     ready: catalog.ready && controlledCatalog.ready,
     loading: catalog.loading || (controlled && !controlledCatalog.ready),
     catalogError,

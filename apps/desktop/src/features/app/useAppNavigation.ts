@@ -11,8 +11,9 @@ import { refreshAgentTools } from "@/features/settings/agent-tools-query";
 import { requestSessionRefresh } from "@/features/sessions/session-refresh";
 import { withAsyncCleanup } from "@/lib/utils";
 import { createGlobalNavigation } from "./global-navigation";
+import { useWorkspaceTransitions } from "./useWorkspaceTransitions";
 import {
-  parseRoute,
+  parseHistoryRoute,
   type AppSearch,
   type GlobalPage,
   type Page,
@@ -31,13 +32,15 @@ const EMPTY_WORKSPACES: WorkspaceSummary[] = [];
 
 export type { AppSearch, GlobalPage, Page, ParsedRoute } from "./app-route";
 
-export function useAppNavigation() {
+export function useAppNavigation(activeRoute?: ParsedRoute) {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
   const location = useLocation();
   const search = useSearch({ strict: false }) as AppSearch;
-  const route = parseRoute(location.pathname);
+  // Route layouts pass the active identity from TanStack matches. The fallback
+  // keeps the hook usable in isolated tests and non-route utility surfaces.
+  const route = activeRoute ?? parseHistoryRoute(location.pathname);
   const workspaceRouteId = route.kind === "workspace" ? route.workspaceId : undefined;
   const workspaceRoutePage = route.kind === "workspace" ? route.page : undefined;
   const routeGlobalPage = route.kind === "global" ? route.page : "home";
@@ -67,16 +70,10 @@ export function useAppNavigation() {
     project,
     setProject,
     selectedWorkspace,
-    setSelectedWorkspace,
     setScan,
     manifest,
     setManifest,
-    setChangeSet,
-    setChangeSetOrigin,
-    setHandoffLaunchRequest,
-    baselineManifest,
     setBaselineManifest,
-    setWorkspaceDrafts,
     message,
     setMessage,
     setBusy,
@@ -86,7 +83,7 @@ export function useAppNavigation() {
     new Map<GlobalPage | "settings", { route: ParsedRoute; search: AppSearch }>(),
   );
   useLayoutEffect(() => {
-    const currentRoute = parseRoute(location.pathname);
+    const currentRoute = route;
     const key =
       currentRoute.kind === "workspace"
         ? "workspaces"
@@ -94,7 +91,7 @@ export function useAppNavigation() {
           ? "settings"
           : currentRoute.page;
     navigationLocations.current.set(key, { route: currentRoute, search: { ...search } });
-  }, [location.href, location.pathname, search]);
+  }, [location.href, location.pathname, search, route]);
 
   const updateSearch = useCallback(
     (patch: Partial<AppSearch>) => {
@@ -122,6 +119,16 @@ export function useAppNavigation() {
       updateSearch({ gitSubview: nextSubview }),
     [updateSearch],
   );
+  const clearGitSubview = useCallback(() => setGitSubview(undefined), [setGitSubview]);
+  const invalidatePendingLoad = useCallback(() => {
+    workspaceOpenRequest.current += 1;
+  }, []);
+  const { ensureWorkspaceChangeAllowed, leaveWorkspace, openWorkspace } = useWorkspaceTransitions({
+    route,
+    navigateWorkspacePageFor,
+    clearGitSubview,
+    invalidatePendingLoad,
+  });
 
   const load = async (path = project, draft?: Manifest) => {
     if (!path) return;
@@ -182,122 +189,15 @@ export function useAppNavigation() {
     }
   };
 
-  const hasUnsavedDraft = Boolean(
-    manifest && baselineManifest && JSON.stringify(manifest) !== baselineManifest,
-  );
-  const persistWorkspaceDraft = useCallback(() => {
-    if (selectedWorkspace && manifest && hasUnsavedDraft)
-      setWorkspaceDrafts((drafts) => ({ ...drafts, [selectedWorkspace.id]: manifest }));
-  }, [hasUnsavedDraft, manifest, selectedWorkspace, setWorkspaceDrafts]);
-
-  const ensureWorkspaceChangeAllowed = useCallback(async () => {
-    if (!useWorkspaceStore.getState().applyingChanges) return true;
-    await dialogs.notify(tr("dialog.quit.changesApplying"));
-    return false;
-  }, [dialogs, tr]);
-
-  const leaveWorkspace = async (next: () => void, clearRouteSearch = true): Promise<boolean> => {
-    if (useWorkspaceStore.getState().applyingChanges) {
-      await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return false;
-    }
-    if (
-      hasUnsavedDraft &&
-      !(await dialogs.confirm({
-        description: tr("workspace.leaveDraftConfirm"),
-        tone: "destructive",
-      }))
-    )
-      return false;
-    if (useWorkspaceStore.getState().applyingChanges) {
-      await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return false;
-    }
-    workspaceOpenRequest.current += 1;
-    if (selectedWorkspace)
-      setWorkspaceDrafts((drafts) => {
-        const nextDrafts = { ...drafts };
-        delete nextDrafts[selectedWorkspace.id];
-        return nextDrafts;
-      });
-    if (clearRouteSearch) setGitSubview(undefined);
-    setSelectedWorkspace(undefined);
-    setProject("");
-    setScan(undefined);
-    setManifest(undefined);
-    setChangeSet(undefined);
-    setChangeSetOrigin("standard");
-    setHandoffLaunchRequest(undefined);
-    setBaselineManifest("");
-    next();
-    return true;
-  };
-
   const prepareHistoryNavigation = async (target: AppHistoryEntry): Promise<boolean> => {
-    if (useWorkspaceStore.getState().applyingChanges) {
-      await dialogs.notify(tr("dialog.quit.changesApplying"));
-      return false;
-    }
+    if (!(await ensureWorkspaceChangeAllowed())) return false;
 
-    const targetRoute = parseRoute(target.pathname);
+    const targetRoute = parseHistoryRoute(target.pathname);
     if (selectedWorkspace && targetRoute.kind === "global") {
       return leaveWorkspace(() => undefined, false);
     }
     return true;
   };
-
-  const openWorkspace = useCallback(
-    async (
-      workspace: WorkspaceSummary,
-      initialPage: Page = "overview",
-      routeSearch?: AppSearch,
-    ) => {
-      if (!(await ensureWorkspaceChangeAllowed())) return false;
-      if (selectedWorkspace?.id === workspace.id && project === workspace.path) {
-        if (
-          route.kind !== "workspace" ||
-          workspaceRouteId !== workspace.id ||
-          workspaceRoutePage !== initialPage ||
-          routeSearch
-        )
-          navigateWorkspacePageFor(workspace.id, initialPage, routeSearch);
-        return true;
-      }
-      const requestId = ++workspaceOpenRequest.current;
-      persistWorkspaceDraft();
-      setMessage("");
-      if (requestId !== workspaceOpenRequest.current) return false;
-      setChangeSet(undefined);
-      setChangeSetOrigin("standard");
-      setHandoffLaunchRequest(undefined);
-      setProject(workspace.path);
-      setScan(undefined);
-      setManifest(undefined);
-      setBaselineManifest("");
-      setSelectedWorkspace(workspace);
-      navigateWorkspacePageFor(workspace.id, initialPage, routeSearch);
-      return true;
-    },
-    [
-      ensureWorkspaceChangeAllowed,
-      navigateWorkspacePageFor,
-      persistWorkspaceDraft,
-      project,
-      route.kind,
-      selectedWorkspace?.id,
-      setBaselineManifest,
-      setChangeSet,
-      setChangeSetOrigin,
-      setHandoffLaunchRequest,
-      setManifest,
-      setMessage,
-      setProject,
-      setScan,
-      setSelectedWorkspace,
-      workspaceRouteId,
-      workspaceRoutePage,
-    ],
-  );
 
   useEffect(() => {
     if (route.kind !== "workspace") {
@@ -306,8 +206,13 @@ export function useAppNavigation() {
     }
   }, [route.kind, setBusy]);
   useEffect(() => {
+    // The URL updates before the committed route matches during navigation.
+    // Do not restore the previous workspace while its matches are still rendered.
+    const locationRoute = parseHistoryRoute(location.pathname);
     if (
       route.kind !== "workspace" ||
+      locationRoute.kind !== "workspace" ||
+      locationRoute.workspaceId !== workspaceRouteId ||
       selectedWorkspace?.id === workspaceRouteId ||
       workspacesPending ||
       !workspaceRouteId
@@ -321,6 +226,7 @@ export function useAppNavigation() {
     }
   }, [
     route.kind,
+    location.pathname,
     workspaceRouteId,
     workspaceRoutePage,
     selectedWorkspace?.id,

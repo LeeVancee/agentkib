@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
 import { Input } from "@/components/ui/input";
 import {
@@ -39,6 +40,7 @@ import type {
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import {
   homeKeys,
+  queryDefaults,
   useHomeStorageOverview,
   useOptionalQueryClient,
 } from "@/features/home/home-query";
@@ -87,13 +89,46 @@ export function WorkspaceStoragePage({
   const [metric, setMetric] = useState<StorageMetric>("allocated");
   const [trail, setTrail] = useState<StorageLocation[]>([]);
   const [selected, setSelected] = useState<StorageSelection>();
-  const [expanding, setExpanding] = useState(false);
+  const [expansion, setExpansion] = useState<{
+    location: StorageLocation;
+    relativePath: string;
+    trail: StorageLocation[];
+  }>();
+  const childrenQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: [
+        "storage-children",
+        expansion?.location.workspaceId,
+        expansion?.relativePath,
+        overviewQuery.dataUpdatedAt,
+      ],
+      queryFn: () =>
+        api.workspaceStorageChildren(expansion!.location.workspaceId, expansion!.relativePath),
+      enabled: !!expansion,
+      staleTime: Infinity,
+    },
+    queryClient,
+  );
+  const expanding = !!expansion && childrenQuery.isPending;
+  useEffect(() => {
+    if (!expansion || !childrenQuery.data) return;
+    const next = { workspaceId: expansion.location.workspaceId, node: childrenQuery.data };
+    setTrail(
+      expansion.location.node.kind === "aggregate" && expansion.trail.length
+        ? [...expansion.trail.slice(0, -1), next]
+        : [...expansion.trail, next],
+    );
+    setExpansion(undefined);
+  }, [expansion, childrenQuery.data]);
   const [failure, setFailure] = useState<{ reason: unknown; expanding?: boolean }>();
   const error = failure
     ? `${failure.expanding ? `${tr("storage.expandFailed")}: ` : ""}${localizeMessage(failure.reason)}`
-    : overviewQuery.error
-      ? localizeMessage(overviewQuery.error)
-      : "";
+    : expansion && childrenQuery.error
+      ? `${tr("storage.expandFailed")}: ${localizeMessage(childrenQuery.error)}`
+      : overviewQuery.error
+        ? localizeMessage(overviewQuery.error)
+        : "";
   const [refreshPending, setRefreshPending] = useState(false);
   const active = refreshPending || job?.state === "queued" || job?.state === "running";
 
@@ -103,7 +138,10 @@ export function WorkspaceStoragePage({
       const tag = (event.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       if (selected) setSelected(undefined);
-      else if (trail.length) setTrail((value) => value.slice(0, -1));
+      else if (trail.length) {
+        setExpansion(undefined);
+        setTrail((value) => value.slice(0, -1));
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -198,26 +236,14 @@ export function WorkspaceStoragePage({
       location.node.kind === "aggregate"
         ? (current?.node.relative_path ?? "")
         : location.node.relative_path;
-    setExpanding(true);
     setFailure(undefined);
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const node = await api.workspaceStorageChildren(location.workspaceId, relativePath);
-          if (location.node.kind === "aggregate" && current) {
-            setTrail((value) => [
-              ...value.slice(0, -1),
-              { workspaceId: location.workspaceId, node },
-            ]);
-          } else {
-            setTrail((value) => [...value, { workspaceId: location.workspaceId, node }]);
-          }
-        } catch (reason) {
-          setFailure({ reason, expanding: true });
-        }
-      },
-      () => setExpanding(false),
-    );
+    setExpansion({ location, relativePath, trail });
+    if (
+      childrenQuery.isError &&
+      expansion?.location.workspaceId === location.workspaceId &&
+      expansion.relativePath === relativePath
+    )
+      void childrenQuery.refetch({ cancelRefetch: false });
   };
 
   const select = (location: StorageLocation) => {
@@ -251,6 +277,7 @@ export function WorkspaceStoragePage({
             onValueChange={(value) => {
               if (value === null) return;
               setAgent(String(value) as typeof agent);
+              setExpansion(undefined);
               setTrail([]);
               setSelected(undefined);
             }}
@@ -392,6 +419,7 @@ export function WorkspaceStoragePage({
                   variant="bare"
                   size="content"
                   onClick={() => {
+                    setExpansion(undefined);
                     setTrail([]);
                     setSelected(undefined);
                   }}
@@ -410,6 +438,7 @@ export function WorkspaceStoragePage({
                       className="min-w-0 truncate"
                       aria-current={index === trail.length - 1 ? "page" : undefined}
                       onClick={() => {
+                        setExpansion(undefined);
                         setTrail((value) => value.slice(0, index + 1));
                         setSelected(undefined);
                       }}

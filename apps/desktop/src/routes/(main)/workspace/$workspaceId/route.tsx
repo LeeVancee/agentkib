@@ -20,13 +20,13 @@ import {
   WorkspaceOverviewSkeleton,
   WorkspaceSessionsSkeleton,
 } from "@/features/workspace/WorkspaceSkeleton";
-import { useAppStore } from "../../../stores/app-store";
+import { useAppStore } from "@/stores/app-store";
 import { useHomeWorkspaces } from "@/features/home/home-query";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
-import { api } from "../../../core/api";
-import { tr } from "../../../core/i18n";
+import { api } from "@/core/api";
+import { tr } from "@/core/i18n";
 import { cn, withAsyncCleanup } from "@/lib/utils";
-import type { Manifest, WorkspaceSummary } from "../../../core/types";
+import type { Manifest, WorkspaceSummary } from "@/core/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -107,7 +107,7 @@ function WorkspaceLayout() {
   const { localizeMessage, tr } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
-  const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
+  const { workspaceId } = useParams({ from: "/(main)/workspace/$workspaceId" });
   const setRuntime = useAppStore((state) => state.setRuntime);
   const workspaceState = useWorkspaceStore();
   const { data: workspaces = [], isPending: workspacesPending } = useHomeWorkspaces();
@@ -334,4 +334,7 @@ function WorkspacePageSkeleton({ page }: { page: Page }) {
   }
 }
 
-export const Route = createFileRoute("/workspace/$workspaceId")({ component: WorkspaceLayout });
+export const Route = createFileRoute("/(main)/workspace/$workspaceId")({
+  staticData: { appRoute: { kind: "workspace", page: "overview" } },
+  component: WorkspaceLayout,
+});

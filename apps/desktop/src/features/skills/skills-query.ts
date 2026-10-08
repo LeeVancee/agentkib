@@ -7,6 +7,12 @@ export type SkillLibrary = { installed: InstalledSkill[]; removed: RemovedSkill[
 
 export const skillKeys = {
   all: ["skills"] as const,
+  inventory: () => [...skillKeys.all, "inventory"] as const,
+  deployments: () => [...skillKeys.all, "deployments"] as const,
+  catalog: () => [...skillKeys.all, "catalog"] as const,
+  detail: (request: unknown) => [...skillKeys.all, "detail", request] as const,
+  targets: () => [...skillKeys.all, "targets"] as const,
+  versions: (request: unknown) => [...skillKeys.all, "versions", request] as const,
   library: () => [...skillKeys.all, "library"] as const,
 };
 
@@ -26,5 +32,20 @@ export function useSkillLibrary() {
       },
     },
     queryClient,
+  );
+}
+
+export function useSkillInventory() {
+  const client = useOptionalQueryClient();
+  return useQuery(
+    { ...queryDefaults, queryKey: skillKeys.inventory(), queryFn: () => api.skillInventory() },
+    client,
+  );
+}
+export function useSkillDeployments() {
+  const client = useOptionalQueryClient();
+  return useQuery(
+    { ...queryDefaults, queryKey: skillKeys.deployments(), queryFn: () => api.skillDeployments() },
+    client,
   );
 }

@@ -128,6 +128,8 @@
   "search.assetsLoading": "正在搜尋已索引資產…",
   "search.assetLimit": "最多傳回 {{count}} 條資產索引記錄，並按邏輯資產合併；請縮小搜尋範圍以尋找其他結果。",
   "sessions.directoryOptions": "會話目錄選項",
+  "sessions.filesAndArtifacts": "檔案與產物",
+  "sessions.conversationActions": "對話操作",
   "sessions.clearAgentFilter": "清除 Agent 篩選",
   "sessions.clearRecordFilter": "清除記錄篩選",
   "sessions.nav": "會話",

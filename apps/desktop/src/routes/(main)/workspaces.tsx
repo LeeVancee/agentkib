@@ -18,9 +18,9 @@ import { useAppDialogs } from "@/components/AppDialogProvider";
 import { WorkspaceStoragePage } from "@/features/workspace/WorkspaceStoragePage";
 import { WorkspacesSkeleton } from "@/features/workspace/WorkspaceSkeleton";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { api } from "../core/api";
+import { api } from "@/core/api";
 import { groupCatalogAssets, workspaceAssetCounts } from "@/features/catalog/catalog";
-import { formatRelativeTime, tr } from "../core/i18n";
+import { formatRelativeTime, tr } from "@/core/i18n";
 import {
   homeKeys,
   useHomeCatalog,
@@ -38,7 +38,7 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
-import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "../core/types";
+import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "@/core/types";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
@@ -735,4 +735,7 @@ function relativeTime(value: string) {
   return formatRelativeTime(value);
 }
 
-export const Route = createFileRoute("/workspaces")({ component: WorkspacesRoute });
+export const Route = createFileRoute("/(main)/workspaces")({
+  staticData: { appRoute: { kind: "global", page: "workspaces" } },
+  component: WorkspacesRoute,
+});

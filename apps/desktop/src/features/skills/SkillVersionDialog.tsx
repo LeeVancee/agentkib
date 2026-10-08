@@ -1,3 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import { skillKeys } from "./skills-query";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,7 +19,6 @@ import type { SkillOperationPreview, SkillSource } from "@/core/types";
 import { useI18n } from "@/core/useI18n";
 
 type VersionType = "tag" | "branch" | "commit";
-type VersionList = Awaited<ReturnType<typeof api.listSkillVersions>>;
 
 export function SkillVersionDialog({
   name,
@@ -35,14 +37,24 @@ export function SkillVersionDialog({
   const [type, setType] = useState<VersionType>(source.ref_type ?? "tag");
   const [value, setValue] = useState(source.ref_type === "commit" ? source.resolved_commit : "");
   const [page, setPage] = useState(1);
-  const [revision, setRevision] = useState(0);
-  const [result, setResult] = useState<{
-    type: VersionType;
-    page: number;
-    revision: number;
-    list?: VersionList;
-    error?: unknown;
-  }>();
+
+  const queryClient = useOptionalQueryClient();
+  const versionRequest = {
+    ...(libraryId ? { library_id: libraryId } : { source }),
+    type: type === "commit" ? ("tag" as const) : type,
+    page,
+  };
+  const versionsQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: skillKeys.versions(versionRequest),
+      queryFn: () => api.listSkillVersions(versionRequest),
+      enabled: type !== "commit",
+      staleTime: 0,
+      gcTime: 0,
+    },
+    queryClient,
+  );
   const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<unknown>();
   const mounted = useRef(true);
@@ -52,24 +64,8 @@ export function SkillVersionDialog({
       mounted.current = false;
     };
   }, []);
-  useEffect(() => {
-    if (type === "commit") return;
-    let cancelled = false;
-    api
-      .listSkillVersions({ ...(libraryId ? { library_id: libraryId } : { source }), type, page })
-      .then(
-        (list) => !cancelled && setResult({ type, page, revision, list }),
-        (error) => !cancelled && setResult({ type, page, revision, error }),
-      );
-    return () => {
-      cancelled = true;
-    };
-  }, [libraryId, source, type, page, revision]);
-  const current =
-    result?.type === type && result.page === page && result.revision === revision
-      ? result
-      : undefined;
-  const loading = type !== "commit" && !current;
+  const current = { list: versionsQuery.data, error: versionsQuery.error };
+  const loading = type !== "commit" && versionsQuery.isPending;
   const valid = type === "commit" ? /^[0-9a-f]{7,40}$/i.test(value.trim()) : Boolean(value);
   const prepare = async () => {
     if (!valid || preparing || loading) return;
@@ -147,7 +143,10 @@ export function SkillVersionDialog({
         ) : current?.error ? (
           <div role="alert" className="grid gap-2 text-sm text-destructive">
             <p>{localizeMessage(current.error)}</p>
-            <Button variant="outline" onClick={() => setRevision((current) => current + 1)}>
+            <Button
+              variant="outline"
+              onClick={() => void versionsQuery.refetch({ cancelRefetch: false })}
+            >
               {tr("skills.versions.retry")}
             </Button>
           </div>

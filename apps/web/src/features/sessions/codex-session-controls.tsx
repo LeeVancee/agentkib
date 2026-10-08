@@ -421,6 +421,17 @@ export function CodexComposerControls({
   const displayedSettings = settings?.selected ?? settings?.current;
   const modeOptions = settings?.options.collaborationModes ?? [];
   const modeWritable = settings?.writable.mode?.available && modeOptions.length > 0;
+  const unavailableSettings = settings
+    ? [
+        [copy.model, settings.writable.model?.available],
+        [copy.effort, settings.writable.effort?.available],
+        [copy.mode, modeWritable],
+        [copy.serviceTier, settings.writable.serviceTier?.available],
+        [copy.executionPolicy, settings.writable.policy?.available],
+        [copy.restoreDefaults, settings.writable.restoreDefaults?.available],
+      ].flatMap(([label, available]) => (available === true ? [] : [label as string]))
+    : [];
+  const settingsFeatureUnavailable = feature("settings")?.available !== true;
   const currentModel =
     settings?.options.models?.find((item) => item.id === displayedSettings?.modelId)?.name ??
     displayedSettings?.modelId;
@@ -513,9 +524,6 @@ export function CodexComposerControls({
                     {copy.settingsWhileRunning}
                   </p>
                 )}
-                {!running &&
-                  feature("settings")?.available !== true &&
-                  reasonDetail(feature("settings")?.reason)}
                 <div className="flex flex-wrap gap-2">
                   <Button
                     type="button"
@@ -552,8 +560,6 @@ export function CodexComposerControls({
                     <RotateCcw size={15} /> {copy.restoreDefaults}
                   </Button>
                 </div>
-                {!settings.writable.restoreDefaults?.available &&
-                  reasonDetail(settings.writable.restoreDefaults?.reason)}
               </>
             ) : undefined
           }
@@ -575,8 +581,10 @@ export function CodexComposerControls({
               {reason(settings?.reason || settingsError)}
             </p>
           ) : (
-            <section className="space-y-4">
-              <ContextUsageDetails {...usageView} locale={locale} online={online} />
+            <section className="session-settings-layout space-y-5">
+              <div className="rounded-xl border bg-muted/20 p-4">
+                <ContextUsageDetails {...usageView} locale={locale} online={online} />
+              </div>
               <label className="block space-y-1 text-sm">
                 {copy.model}
                 <select

@@ -5,7 +5,7 @@ import { contextUsageCopy } from "./context-usage-copy";
 import { CodexComposer } from "./codex-composer";
 import { Textarea } from "../../components/ui/textarea";
 import { Button } from "../../components/ui/button";
-import { ArrowDown, ArrowUp, ChevronRight, ShieldCheck, Square } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, LoaderCircle, ShieldCheck, Square } from "lucide-react";
 import { SafeMarkdown, Transcript } from "@agentkib/session-ui";
 import { interactionCopy } from "../interactions/question-form";
 import { MAX_MESSAGE_LENGTH, isValidMessage } from "./session-model";
@@ -81,7 +81,7 @@ export function SessionReader() {
             onOpenChange={(open) => panels?.setActionsOpen(open)}
           />
           <section
-            className="reader-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 pt-3 [scrollbar-gutter:stable] md:px-10"
+            className="reader-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 pt-3 [scrollbar-gutter:stable] md:px-10"
             ref={scroll}
             onScroll={() => {
               const viewport = scroll.current;
@@ -91,45 +91,56 @@ export function SessionReader() {
               if (following.current) setHasNewMessages(false);
             }}
           >
-            {current?.agent === "claude-code" && (
-              <aside className="info mx-auto mb-5 max-w-3xl">{t.managedResumeInfo}</aside>
-            )}
-            {page?.warnings.length ? (
-              <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">
-                {t.warnings}: {page.warnings.join(" · ")}
-              </aside>
-            ) : null}
-            {page?.next_cursor && (
-              <Button
-                variant="ghost"
-                className="mx-auto mb-5 flex text-xs text-muted-foreground"
-                disabled={busy}
-                onClick={() => {
-                  following.current = false;
-                  void earlier();
-                }}
-              >
-                {t.earlier}
-              </Button>
-            )}
             {!page ? (
-              <p role="status">{t.loading}</p>
+              <div
+                role="status"
+                className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
+              >
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="size-6 animate-spin text-muted-foreground motion-reduce:animate-none"
+                />
+                <p className="text-sm text-muted-foreground">{t.loading}</p>
+              </div>
             ) : (
-              <Transcript
-                key={selected}
-                events={page.events}
-                incomplete={page.warnings.length > 0}
-                labels={t}
-                onTool={setModal}
-                locale={locale}
-              />
-            )}
-            {live?.streamText && live.status !== "idle" && !hasNativeReply && (
-              <article aria-label={t.streamingReply}>
-                <small>{t.streamingReply}</small>
-                <SafeMarkdown text={live.streamText} />
-                {live.streamTextTruncated && <p role="note">{t.streamingReplyTruncated}</p>}
-              </article>
+              <>
+                {current?.agent === "claude-code" && (
+                  <aside className="info mx-auto mb-5 max-w-3xl">{t.managedResumeInfo}</aside>
+                )}
+                {page?.warnings.length ? (
+                  <aside className="mx-auto mb-5 max-w-3xl rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-6 text-amber-600">
+                    {t.warnings}: {page.warnings.join(" · ")}
+                  </aside>
+                ) : null}
+                {page?.next_cursor && (
+                  <Button
+                    variant="ghost"
+                    className="mx-auto mb-5 flex text-xs text-muted-foreground"
+                    disabled={busy}
+                    onClick={() => {
+                      following.current = false;
+                      void earlier();
+                    }}
+                  >
+                    {t.earlier}
+                  </Button>
+                )}
+                <Transcript
+                  key={selected}
+                  events={page.events}
+                  incomplete={page.warnings.length > 0}
+                  labels={t}
+                  onTool={setModal}
+                  locale={locale}
+                />
+                {live?.streamText && live.status !== "idle" && !hasNativeReply && (
+                  <article aria-label={t.streamingReply}>
+                    <small>{t.streamingReply}</small>
+                    <SafeMarkdown text={live.streamText} />
+                    {live.streamTextTruncated && <p role="note">{t.streamingReplyTruncated}</p>}
+                  </article>
+                )}
+              </>
             )}
           </section>
           {hasNewMessages && (

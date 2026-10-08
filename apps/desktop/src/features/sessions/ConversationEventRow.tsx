@@ -18,7 +18,7 @@ export function ConversationEventRow({
         data-event-id={event.id}
         className={
           hub
-            ? "session-hub-event session-hub-tool flex min-h-[34px] items-center gap-2 px-1 py-1 text-sm text-muted-foreground"
+            ? "session-hub-event session-hub-tool flex min-h-[34px] max-w-full flex-wrap items-center gap-2 px-1 py-1 text-sm text-muted-foreground [overflow-wrap:anywhere]"
             : "text-xs flex min-h-[38px] items-center gap-2 rounded-lg border border-border/70 bg-background px-3 py-2 text-muted-foreground shadow-xs"
         }
       >
@@ -41,8 +41,8 @@ export function ConversationEventRow({
   const coloredUser = isUser && !hub;
   const messageClassName = hub
     ? isUser
-      ? "session-hub-event session-hub-message session-hub-user ml-auto max-w-[min(820px,92%)] self-start rounded-2xl border border-border/50 bg-muted px-4 py-3.5 text-foreground shadow-none"
-      : "session-hub-event session-hub-message session-hub-agent max-w-[min(820px,92%)] self-start px-1 py-1 text-foreground"
+      ? "session-hub-event session-hub-message session-hub-user ml-auto w-fit max-w-[82%] self-start rounded-2xl border border-border/50 bg-muted px-4 py-3.5 text-foreground shadow-none [overflow-wrap:anywhere]"
+      : "session-hub-event session-hub-message session-hub-agent w-full min-w-0 max-w-full self-start px-1 py-1 text-foreground [overflow-wrap:anywhere]"
     : `max-w-[min(820px,92%)] self-start rounded-2xl border px-4 py-3.5 shadow-xs ${coloredUser ? "ml-auto border-primary bg-primary text-primary-foreground" : isUser ? "ml-auto border-border/70 bg-muted text-foreground" : "border-border/70 bg-card text-foreground"}`;
   return (
     <article data-event-id={event.id} className={messageClassName}>

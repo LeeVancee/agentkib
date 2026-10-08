@@ -1,8 +1,8 @@
 import { lazy, Suspense } from "react";
 import { QuotaSkeleton } from "@/features/quota/QuotaSkeleton";
 import { createFileRoute, useSearch } from "@tanstack/react-router";
-import { useAppStore } from "../stores/app-store";
-import type { QuotaWindowSelector } from "../core/types";
+import { useAppStore } from "@/stores/app-store";
+import type { QuotaWindowSelector } from "@/core/types";
 
 const QuotaPageLazy = lazy(() =>
   import("@/features/quota/QuotaPage").then(({ QuotaPage }) => ({ default: QuotaPage })),
@@ -25,4 +25,7 @@ function QuotaRoute() {
   );
 }
 
-export const Route = createFileRoute("/quota")({ component: QuotaRoute });
+export const Route = createFileRoute("/(main)/quota")({
+  staticData: { appRoute: { kind: "global", page: "quota" } },
+  component: QuotaRoute,
+});

@@ -1,7 +1,14 @@
+import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "@/core/useI18n";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useOptionalQueryClient } from "@/features/home/home-query";
-import { skillKeys, useSkillLibrary, type SkillLibrary } from "./skills-query";
+import { useCallback, useMemo, useState } from "react";
+import { queryDefaults, useOptionalQueryClient } from "@/features/home/home-query";
+import {
+  skillKeys,
+  useSkillLibrary,
+  useSkillInventory,
+  useSkillDeployments,
+  type SkillLibrary,
+} from "./skills-query";
 import {
   ArchiveRestore,
   CircleAlert,
@@ -45,10 +52,7 @@ import type {
   InstalledSkill,
   RemovedSkill,
   SkillCandidate,
-  SkillCatalogSnapshot,
   SkillOperationPreview,
-  SkillInventory,
-  SkillDeployment,
   SkillDetailRequest,
   SkillSource,
   WorkspaceSummary,
@@ -144,7 +148,18 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const setRemoved = (next: (items: RemovedSkill[]) => RemovedSkill[]) =>
     updateLibrary((library) => ({ ...library, removed: next(library.removed) }));
   const libraryLoading = libraryQuery.isPending;
-  const [catalog, setCatalog] = useState<SkillCatalogSnapshot>();
+  const catalogQuery = useQuery(
+    {
+      ...queryDefaults,
+      queryKey: skillKeys.catalog(),
+      queryFn: () => api.skillCatalog(false),
+      enabled: section === "discover",
+    },
+    queryClient,
+  );
+  const catalog = catalogQuery.data;
+  const inventoryQuery = useSkillInventory();
+  const deploymentsQuery = useSkillDeployments();
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   const [url, setUrl] = useState("");
   const [query, setQuery] = useState("");
@@ -157,9 +172,9 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   }>();
   const [busy, setBusy] = useState<string>();
   const [errors, setErrors] = useState<unknown[]>([]);
-  const [inventory, setInventory] = useState<SkillInventory>({ observations: [], warnings: [] });
-  const [deployments, setDeployments] = useState<SkillDeployment[]>([]);
-  const [managerLoading, setManagerLoading] = useState(true);
+  const inventory = inventoryQuery.data ?? { observations: [], warnings: [] };
+  const deployments = deploymentsQuery.data ?? [];
+  const managerLoading = inventoryQuery.isPending || deploymentsQuery.isPending;
   const [librarySearch, setLibrarySearch] = useState("");
   const [librarySource, setLibrarySource] = useState("all");
   const [libraryStatus, setLibraryStatus] = useState("all");
@@ -169,7 +184,17 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
   const [success, setSuccess] = useState(false);
   const [addedLibraryId, setAddedLibraryId] = useState<string>();
   const [operationWarnings, setOperationWarnings] = useState<string[]>([]);
-  const visibleErrors = errors.length || !libraryQuery.error ? errors : [libraryQuery.error];
+  const visibleErrors = [
+    ...new Set([
+      ...errors,
+      ...[
+        libraryQuery.error,
+        inventoryQuery.error,
+        deploymentsQuery.error,
+        catalogQuery.error,
+      ].filter(Boolean),
+    ]),
+  ];
   const error = visibleErrors.map(localizeMessage).join(" · ");
 
   const loadLibrary = async () => {
@@ -182,7 +207,12 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
     return withAsyncCleanup(
       async () => {
         try {
-          setCatalog(await api.skillCatalog(force));
+          await queryClient.fetchQuery({
+            ...queryDefaults,
+            queryKey: skillKeys.catalog(),
+            queryFn: () => api.skillCatalog(force),
+            staleTime: 0,
+          });
           return [];
         } catch (nextError) {
           if (reportError) setErrors([nextError]);
@@ -193,24 +223,6 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
     );
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.allSettled([api.skillInventory(), api.skillDeployments()]).then(
-      ([nextInventory, nextDeployments]) => {
-        if (cancelled) return;
-        if (nextInventory.status === "fulfilled") setInventory(nextInventory.value);
-        if (nextDeployments.status === "fulfilled") setDeployments(nextDeployments.value);
-        const failures = [nextInventory, nextDeployments].flatMap((result) =>
-          result.status === "rejected" ? [result.reason] : [],
-        );
-        if (failures.length) setErrors((current) => [...current, ...failures]);
-        setManagerLoading(false);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
   const run = async (key: string, task: () => Promise<void>) => {
     setBusy(key);
     setErrors([]);
@@ -233,8 +245,8 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
     const refreshResults = await Promise.allSettled([
       loadLibrary(),
       onReload(),
-      api.skillInventory().then(setInventory),
-      api.skillDeployments().then(setDeployments),
+      inventoryQuery.refetch({ throwOnError: true }),
+      deploymentsQuery.refetch({ throwOnError: true }),
     ]);
     const refreshErrors = refreshResults.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -381,7 +393,6 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
           onValueChange={(value) => {
             const next = value as SkillHubSection;
             setSection(next);
-            if (next === "discover" && !catalog) void loadCatalog();
           }}
         >
           <TabsList className="segmented-control !h-auto" variant="default">
@@ -815,7 +826,7 @@ export function SkillHubPage({ workspaces, onOpen, onReload }: SkillHubPageProps
             </div>
           </div>
 
-          {busy === "catalog" && !catalog ? (
+          {(catalogQuery.isPending || busy === "catalog") && !catalog ? (
             <EmptyState title={tr("skills.loadingCatalog")} />
           ) : !availableEntries.length ? (
             <EmptyState title={tr("skills.noResults")} description={tr("skills.noResultsHint")} />

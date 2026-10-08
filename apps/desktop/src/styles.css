@@ -476,7 +476,7 @@ button {
 /* Application shell: layout variables are shared by the desktop and settings shells. */
 .app-shell {
   /* 与 :root 同名但必须在这里重新声明：自定义属性在声明它的元素上计算，
-     :root 版本只会用到默认的 250px；AppShell 在本元素内联设置
+     :root 版本只会用到默认的 250px；应用 route layout 在本元素内联设置
      --sidebar-expanded-width，这里重新计算才能跟随拖拽宽度。 */
   --sidebar-rail-width: 52px;
   --sidebar-panel-width: var(--sidebar-expanded-width);
@@ -631,6 +631,13 @@ button {
   overscroll-behavior: contain;
   scrollbar-width: none;
   -ms-overflow-style: none;
+}
+
+.content:has(> .session-hub-page) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
 .page-scroll-container::-webkit-scrollbar {
@@ -1016,16 +1023,6 @@ button {
 .app-sidebar-panel-collapsed .app-activity-bar {
   border-right: 0;
 }
-.app-sidebar-sessions .context-sidebar-scroll {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.app-sidebar-sessions .app-sidebar-session-directory {
-  margin-top: 0;
-  border-top: 0;
-}
-
 .settings-sidebar-content .app-sidebar-nav {
   overflow: visible;
   padding: 0;

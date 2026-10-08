@@ -1,7 +1,7 @@
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
@@ -27,11 +27,12 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "../core/api";
+import { api } from "@/core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
-import { useAppStore } from "../stores/app-store";
+import { useAppStore } from "@/stores/app-store";
 import {
   homeKeys,
+  queryDefaults,
   useHomeCatalog,
   useHomeMemories,
   useHomeWorkspaces,
@@ -59,13 +60,12 @@ import type {
   Manifest,
   McpInstallation,
   McpRegistryEntry,
-  McpRuntimeStatus,
   McpServerConfig,
   MemoryRecord,
   MemoryType,
   RuntimeInfo,
   WorkspaceSummary,
-} from "../core/types";
+} from "@/core/types";
 import { cn, withAsyncCleanup } from "@/lib/utils";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
@@ -444,60 +444,75 @@ export function McpHubPage({
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
   const navigate = useNavigate();
-  const [servers, setServers] = useState<McpServerConfig[]>([]);
-  const [installations, setInstallations] = useState<McpInstallation[]>([]);
-  const [runtimes, setRuntimes] = useState<McpRuntimeStatus[]>([]);
-  const [servicesRevision, setServicesRevision] = useState(0);
-  const [registry, setRegistry] = useState<McpRegistryEntry[]>([]);
+  const queryClient = useQueryClient();
+  const [registryRequest, setRegistryRequest] = useState<string>();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [actionBusy, setBusy] = useState(false);
+  const [actionError, setError] = useState("");
   const project = scope || undefined;
-  const scopeRef = useRef<string | undefined>(project);
-  const loadRequest = useRef(0);
-  const load = async () => {
-    if (project !== scopeRef.current) return;
-    const requestId = ++loadRequest.current;
-    const result = await Promise.all([
-      api.mcpServers(project),
-      api.mcpInstallations(),
-      api.mcpRuntimes(),
-      api.runtime(),
-    ]).catch((reason: unknown) => {
-      if (requestId === loadRequest.current && project === scopeRef.current) throw reason;
-    });
-    if (!result) return;
-    const [nextServers, nextInstallations, nextRuntimes, nextRuntime] = result;
-    if (requestId !== loadRequest.current || project !== scopeRef.current) return;
-    setServers(nextServers);
-    setInstallations(nextInstallations);
-    setRuntimes(nextRuntimes);
-    setServicesRevision((revision) => revision + 1);
-    onRuntimeChanged(nextRuntime);
-  };
+  const serversQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "servers", project],
+    queryFn: () => api.mcpServers(project),
+    staleTime: 0,
+  });
+  const installationsQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "installations"],
+    queryFn: () => api.mcpInstallations(),
+    staleTime: 0,
+  });
+  const runtimesQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "runtimes"],
+    queryFn: () => api.mcpRuntimes(),
+    staleTime: 0,
+  });
+  const runtimeQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "runtime"],
+    queryFn: () => api.runtime(),
+    staleTime: 0,
+  });
+  const registryQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "registry", registryRequest],
+    queryFn: () => api.searchMcpRegistry(registryRequest!),
+    enabled: registryRequest !== undefined,
+    staleTime: 0,
+  });
+  const registry = registryQuery.data ?? [];
+  const busy = actionBusy || registryQuery.isFetching;
+  const servers = serversQuery.data ?? [];
+  const installations = installationsQuery.data ?? [];
+  const runtimes = runtimesQuery.data ?? [];
+  const queryError =
+    serversQuery.error ??
+    installationsQuery.error ??
+    runtimesQuery.error ??
+    runtimeQuery.error ??
+    registryQuery.error;
+  const error = actionError || (queryError ? localizeMessage(queryError) : "");
+  const runtimeChanged = useRef(onRuntimeChanged);
   useEffect(() => {
-    const selectedScope = project;
-    void load().catch((reason) => {
-      if (scopeRef.current === selectedScope) setError(localizeMessage(reason));
-    });
-    return () => {
-      loadRequest.current += 1;
-    };
-  }, [scope]);
+    runtimeChanged.current = onRuntimeChanged;
+  }, [onRuntimeChanged]);
+  useEffect(() => {
+    if (runtimeQuery.data) runtimeChanged.current(runtimeQuery.data);
+  }, [runtimeQuery.data]);
+  const load = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["mcp", "servers", project], exact: true }),
+      queryClient.invalidateQueries({ queryKey: ["mcp", "installations"] }),
+      queryClient.invalidateQueries({ queryKey: ["mcp", "runtimes"] }),
+      queryClient.invalidateQueries({ queryKey: ["mcp", "runtime"] }),
+    ]);
+  };
   const searchRegistry = async () => {
-    setBusy(true);
     setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          setRegistry(await api.searchMcpRegistry(query));
-        } catch (reason) {
-          setError(localizeMessage(reason));
-        }
-      },
-      () => setBusy(false),
-    );
+    if (registryRequest === query) await registryQuery.refetch({ cancelRefetch: false });
+    else setRegistryRequest(query);
   };
   const install = async (entry: McpRegistryEntry) => {
     const command =
@@ -592,7 +607,7 @@ export function McpHubPage({
       <McpConnectionCard
         workspaces={workspaces}
         runtime={runtime}
-        servicesRevision={JSON.stringify([project, servers, servicesRevision])}
+        servicesRevision={JSON.stringify([project, servers, serversQuery.dataUpdatedAt])}
         onManageWorkspaces={() => void navigate({ to: "/workspaces" })}
       />
       {error && (
@@ -657,9 +672,6 @@ export function McpHubPage({
               if (value !== null) {
                 const nextScope = String(value);
                 const nextProject = nextScope === "__global_scope__" ? undefined : nextScope;
-                scopeRef.current = nextProject;
-                loadRequest.current += 1;
-                setServers([]);
                 setError("");
                 setScope(nextProject ?? "");
               }
@@ -1064,14 +1076,23 @@ function McpMigrationInventory({
 }) {
   const { tr, localizeMessage } = useI18n();
   const dialogs = useAppDialogs();
-  const [candidates, setCandidates] = useState<import("../core/types").McpMigrationCandidate[]>([]);
-  const [scanned, setScanned] = useState(false);
+  const candidatesQuery = useQuery({
+    ...queryDefaults,
+    queryKey: ["mcp", "migration-candidates", project],
+    queryFn: () => api.nativeMcpCandidates(project),
+    enabled: false,
+    staleTime: 0,
+  });
+  const candidates = candidatesQuery.data ?? [];
+  const scanned = candidatesQuery.isSuccess;
   const [selected, setSelected] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [planning, setBusy] = useState(false);
+  const [actionError, setError] = useState("");
+  const busy = planning || candidatesQuery.isFetching;
+  const error =
+    actionError || (candidatesQuery.error ? localizeMessage(candidatesQuery.error) : "");
   const scan = async () => {
-    setCandidates(await api.nativeMcpCandidates(project));
-    setScanned(true);
+    await candidatesQuery.refetch({ cancelRefetch: false });
   };
   const plan = async () => {
     if (!project || !selected.length) return;
@@ -1184,4 +1205,7 @@ function CatalogEmpty({ title, text }: { title: string; text: string }) {
   );
 }
 
-export const Route = createFileRoute("/catalog")({ component: CatalogRoute });
+export const Route = createFileRoute("/(main)/catalog")({
+  staticData: { appRoute: { kind: "global", page: "catalog" } },
+  component: CatalogRoute,
+});

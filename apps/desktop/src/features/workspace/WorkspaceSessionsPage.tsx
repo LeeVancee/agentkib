@@ -15,7 +15,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -40,13 +40,12 @@ import { useSessionSourceCapability } from "@/features/sessions/useSessionSource
 import { NativeImportRecoveryPanel } from "./NativeImportRecoveryPanel";
 import { CursorBridgePanel } from "./CursorBridgePanel";
 import { canContinueFromHistory } from "@/features/agents/agent-capabilities";
-import { withAsyncCleanup } from "@/lib/utils";
+import { useSessionCatalog } from "@/features/sessions/useSessionCatalog";
 
 import type {
   AgentKind,
   ChangeSet,
   ConversationEventPage,
-  ConversationIndexStatus,
   ConversationSessionSummary,
   CursorBridgeStatus,
   PlannedSessionHandoff,
@@ -149,7 +148,8 @@ export function WorkspaceSessionsPage({
   const cursorConnections = useRef<{ workspaceId: string; connected: Set<string> } | undefined>(
     undefined,
   );
-  const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
+  const catalog = useSessionCatalog([workspace], enabled);
+  const sessions = catalog.sessions;
   const [selectedId, setSelectedId] = useState<string>();
   const managedCatalog = useConversationCatalog(enabled && !workspace.remote);
   const indexedSessions = useMemo(
@@ -167,18 +167,20 @@ export function WorkspaceSessionsPage({
       selectedId,
     ],
   );
-  const [statuses, setStatuses] = useState<ConversationIndexStatus[]>([]);
+  const statuses = catalog.statuses;
   const [readRevision, setReadRevision] = useState(0);
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [agent, setAgent] = useState<AgentFilter>("all");
   const [filter, setFilter] = useState<SessionFilter>("current");
-  const [refreshing, setRefreshing] = useState(false);
+  const refreshing = catalog.loading || catalog.refreshing;
   const [slowLoading, setSlowLoading] = useState(false);
-  // 会话列表的错误（带发生时间）；会话记录的错误来自下面的 transcript 查询。
-  const [listError, setListError] = useState<{ reason: unknown; at: number }>();
-  const setError = (reason: unknown) =>
-    setListError(reason === "" ? undefined : { reason, at: Date.now() });
+  const [dismissedListErrorAt, setDismissedListErrorAt] = useState(0);
+  const listReason = catalog.errors[workspace.id];
+  const listError =
+    listReason && catalog.errorUpdatedAt > dismissedListErrorAt
+      ? { reason: listReason, at: catalog.errorUpdatedAt }
+      : undefined;
   const queryClient = useOptionalQueryClient();
   const [showDetail, setShowDetail] = useState(false);
   const [hiddenSessionNotice, setHiddenSessionNotice] = useState(false);
@@ -186,34 +188,8 @@ export function WorkspaceSessionsPage({
   const [resumedRequest, setResumedRequest] = useState<
     (SessionContinuationResume & { autoPrepare: boolean }) | undefined
   >();
-  const cacheSequence = useRef(0);
   const consumedInitialSession = useRef<string | undefined>(undefined);
   const revealSession = useSessionViewStore((state) => state.revealSession);
-
-  const refresh = async (force: boolean) => {
-    const sequence = ++cacheSequence.current;
-    setRefreshing(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, force);
-          if (sequence !== cacheSequence.current) return;
-          setSessions(nextSessions);
-          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-          if (sequence !== cacheSequence.current) return;
-          setStatuses(nextStatuses);
-        } catch (reason) {
-          if (sequence === cacheSequence.current) {
-            setError(reason);
-          }
-        }
-      },
-      () => {
-        if (sequence === cacheSequence.current) setRefreshing(false);
-      },
-    );
-  };
 
   const onCursorStatusChange = (status: CursorBridgeStatus | undefined) => {
     if (!status || workspace.remote) return;
@@ -226,57 +202,17 @@ export function WorkspaceSessionsPage({
       previous?.workspaceId === workspace.id &&
       [...connected].some((id) => !previous.connected.has(id))
     )
-      void refresh(true);
+      void catalog.refresh();
   };
 
   useEffect(() => {
-    let disposed = false;
     setCursorBridgeWorkspaceId(undefined);
     setCursorBindingId("");
     cursorConnections.current = undefined;
-    if (!enabled) {
-      setSessions([]);
-      setStatuses([]);
-      return;
-    }
-    setSessions([]);
-    setStatuses([]);
     setSelectedId(undefined);
     setHiddenSessionNotice(false);
-    setRefreshing(true);
     setSlowLoading(false);
-    setError("");
-    const sequence = ++cacheSequence.current;
-    void withAsyncCleanup(
-      async () => {
-        try {
-          const [cachedSessions, cachedStatuses] = await Promise.all([
-            api.workspaceSessions(workspace.id).catch(() => []),
-            api.workspaceSessionStatus(workspace.id).catch(() => []),
-          ]);
-          if (disposed || sequence !== cacheSequence.current) return;
-          setSessions(cachedSessions);
-          setStatuses(cachedStatuses);
-          const nextSessions = await api.refreshWorkspaceSessions(workspace.id, false);
-          if (disposed || sequence !== cacheSequence.current) return;
-          setSessions(nextSessions);
-          const nextStatuses = await api.workspaceSessionStatus(workspace.id);
-          if (disposed || sequence !== cacheSequence.current) return;
-          setStatuses(nextStatuses);
-        } catch (reason) {
-          if (!disposed && sequence === cacheSequence.current) {
-            setError(reason);
-          }
-        }
-      },
-      () => {
-        if (!disposed && sequence === cacheSequence.current) setRefreshing(false);
-      },
-    );
-    return () => {
-      disposed = true;
-      cacheSequence.current += 1;
-    };
+    setDismissedListErrorAt(0);
   }, [workspace.id, enabled]);
 
   useEffect(() => {
@@ -324,10 +260,11 @@ export function WorkspaceSessionsPage({
     ? sessionSourceDetails(selected, visibleSessions, tr, formatDateTime)
     : [];
   useEffect(() => {
+    if (initialSessionId && consumedInitialSession.current !== initialSessionId) return;
     if (selectedId && filtered.some((session) => session.id === selectedId)) return;
     setSelectedId(filtered[0]?.id);
     setShowDetail(false);
-  }, [filtered, selectedId]);
+  }, [filtered, selectedId, initialSessionId]);
 
   useEffect(() => {
     if (!initialSessionId || consumedInitialSession.current === initialSessionId) return;
@@ -406,10 +343,11 @@ export function WorkspaceSessionsPage({
   const [errorSessionId, setErrorSessionId] = useState(selected?.id);
   if (selected?.id !== errorSessionId) {
     setErrorSessionId(selected?.id);
-    setListError(undefined);
+    setDismissedListErrorAt(catalog.errorUpdatedAt);
   }
   const readableSessionId = selected?.availability === "readable" ? selected.id : undefined;
-  const transcriptKey = sessionTranscriptKey(readableSessionId ?? "");
+  const transcriptObserverId = useId();
+  const transcriptKey = [...sessionTranscriptKey(readableSessionId ?? ""), transcriptObserverId];
   // 第一页是最新的记录窗口，之后每一页都更早。staleTime 无限 + gcTime 0：
   // 选中时读取一次、取消选中即丢弃，与之前"每次选中重新读取"的行为一致，
   // 也避免后台按旧游标重取已失效的分页。
@@ -474,22 +412,14 @@ export function WorkspaceSessionsPage({
     );
   }
 
-  if (refreshing && !sessions.length && !error) {
-    return (
-      <div className="grid min-h-[calc(100vh-220px)] place-content-center justify-items-center gap-3 p-6 text-center">
-        <RefreshCw className="animate-spin text-muted-foreground" size={22} />
-        <strong className="text-sm text-foreground">{tr("conversations.scanning")}</strong>
-        {slowLoading && (
-          <span className="max-w-sm text-xs leading-relaxed text-muted-foreground">
-            {tr("conversations.scanningSlow")}
-          </span>
-        )}
-      </div>
-    );
-  }
-
   return (
     <>
+      {!catalog.ready && !error && (
+        <div role="status" className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <RefreshCw className="animate-spin" size={16} />
+          <span>{tr(slowLoading ? "conversations.scanningSlow" : "conversations.scanning")}</span>
+        </div>
+      )}
       {hiddenSessionNotice && (
         <p role="status" className="mb-3 text-sm text-muted-foreground">
           {tr("sessions.hiddenRecord")}
@@ -607,7 +537,7 @@ export function WorkspaceSessionsPage({
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground hover:bg-muted hover:text-foreground"
-                  onClick={() => void refresh(true)}
+                  onClick={() => void catalog.refresh()}
                   disabled={refreshing}
                   aria-label={tr("conversations.refresh")}
                   title={tr("conversations.refresh")}

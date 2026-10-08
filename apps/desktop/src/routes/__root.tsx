@@ -9,6 +9,7 @@ import { AppRuntimeBridge } from "@/features/app/AppRuntimeBridge";
 import { SidebarPanelProvider } from "@/features/app/SidebarPanel";
 import { ShortcutHelpDialog } from "@/features/app/ShortcutHelpDialog";
 import { ShortcutHelpProvider } from "@/features/app/ShortcutHelpContext";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAppHistory } from "@/features/app/useAppHistory";
 import { useAppNavigation } from "@/features/app/useAppNavigation";
 import { useAppShortcuts } from "@/features/app/useAppShortcuts";
@@ -49,31 +50,33 @@ function RootLayout() {
   });
 
   return (
-    <AppNavigationProvider
-      value={{ app, history, searchOpen, onOpenSearch: () => setSearchOpen(true) }}
-    >
-      <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
-        <AppRuntimeBridge />
-        <RemoteCatalogBridge />
-        <SidebarPanelProvider>
-          <Outlet />
-        </SidebarPanelProvider>
-        <GlobalSearchDialog
-          open={searchOpen}
-          onOpenChange={setSearchOpen}
-          entries={app.navigation}
-          workspaces={app.workspaces}
-          onNavigate={app.navigateGlobal}
-          onOpenWorkspace={(workspace) => void app.openWorkspace(workspace)}
-          onOpenSession={(session) => {
-            useSessionViewStore.getState().revealSession(session);
-            app.navigateGlobal("sessions", false, { sessionId: session.id });
-          }}
-          onSessionSettings={() => app.openSettings("privacy")}
-        />
-        <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
-      </ShortcutHelpProvider>
-    </AppNavigationProvider>
+    <TooltipProvider>
+      <AppNavigationProvider
+        value={{ app, history, searchOpen, onOpenSearch: () => setSearchOpen(true) }}
+      >
+        <ShortcutHelpProvider openShortcutHelp={() => setShortcutHelpOpen(true)}>
+          <AppRuntimeBridge />
+          <RemoteCatalogBridge />
+          <SidebarPanelProvider>
+            <Outlet />
+          </SidebarPanelProvider>
+          <GlobalSearchDialog
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+            entries={app.navigation}
+            workspaces={app.workspaces}
+            onNavigate={app.navigateGlobal}
+            onOpenWorkspace={(workspace) => void app.openWorkspace(workspace)}
+            onOpenSession={(session) => {
+              useSessionViewStore.getState().revealSession(session);
+              app.navigateGlobal("sessions", false, { sessionId: session.id });
+            }}
+            onSessionSettings={() => app.openSettings("privacy")}
+          />
+          <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+        </ShortcutHelpProvider>
+      </AppNavigationProvider>
+    </TooltipProvider>
   );
 }
 

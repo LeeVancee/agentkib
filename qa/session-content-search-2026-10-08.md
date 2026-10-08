@@ -557,3 +557,15 @@ HEAD 仍为 `4cdb33407d12142ada72ac054d7687a89859100d`，分支 `codex/session-c
 Windows ARM64 剩余 2 项失败、357 项通过、10 项既有跳过：仅 OpenCode damaged cached/forced 的完整快照恢复流程触及默认 5 秒测试预算（5038ms、5257ms）。相邻 bounded cached/forced 用例分别 4723ms、4408ms；该组流程包含多次真实 CLI 读取、Worker 重启及完整恢复索引。仅这六种参数化场景设置 15 秒测试预算，不改读取期限、断言或其他用例。两种 Windows 架构的四项 Codex 原生引用发送和四项真实文件锁回归均通过，原生崩溃已消除；ARM64 的生命周期及 Runtime 清理回归也全部通过。
 
 第二轮原始证据为 `ci-after.log`、`fedora-after.log`、`windows-x64-after.log`、`windows-arm64-after.log`；最后的预算调整本机专项见 `arm64-budget-focused.log`。最终平台结果以该调整后的 PR CI 为准，未将两个超时用例记录为通过。
+
+
+### Windows 集成测试预算收尾（2026-10-09）
+
+提交 `cfcbdf41e3bf5404215a10946a83abbf3a8e57f1` 的全量 CI（`37806858341`）及 Linux 两个平台（`37806858383`）通过。Windows（`37806858361`）每个平台均为 358 通过、10 既有跳过、1 失败；前述六项完整快照恢复全部通过。
+
+- x64 剩余失败是来源解析用例 `reports damaged 'array' 'text' tool text without reducing native Claude body coverage`，两次解析并索引超过 256 KiB 的正文合计 7937ms，触及默认 5 秒。相同用例此前 x64 为 2939ms，ARM64 为 2032ms。本轮仅在 Windows 稳定性 CI 设置默认测试预算 15 秒，保留用例自带的显式期限、`vi.waitFor` 期限及 800ms/1 秒响应断言。独立子代理核对全部 19 个文件：没有将 Vitest 默认 5 秒作为业务正确性条件的用例。默认无响应测试的失败检测会由 5 秒延长至 15 秒。
+- ARM64 剩余失败是独立 PowerShell/.NET ACL 核验进程超过 15 秒（`ETIMEDOUT`），同一脚本上一轮已成功。只将测试进程预算设为 30 秒、包含两次 ACL 读取的用例预算设为 75 秒；不重试，不修改生产权限逻辑、命令或任何权限断言。子代理未发现交互等待、循环或账户名称解析；现有日志不能区分 PowerShell 初始化与 ACL 读取耗时。
+
+本地 Node `22.23.3` / pnpm `10.8.1` 验证：`pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000` 为 19 文件、368 通过、1 既有跳过，耗时 46 秒；包含 staged Koffi/SQLite smoke。独立权限测试在 macOS 为 2 通过、1 Windows 专属跳过。本轮工作流和测试文件的 `oxfmt --check`、`git diff --check` 通过。生产代码没有再次变更，Windows 分支必须以本次提交后的 CI 为准。
+
+第三轮失败原始证据保留为 `windows-x64-final.log`、`windows-arm64-final.log`（文件名不表示通过），本轮本地结果为 `windows-budget-stability.log`，均位于前述私有 CI 证据目录。前三轮失败结论保持原样。

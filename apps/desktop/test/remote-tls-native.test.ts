@@ -64,7 +64,8 @@ $acl = if ($env:AGENTKIB_ACL_DIRECTORY -eq 'true') {
       },
       encoding: "utf8",
       windowsHide: true,
-      timeout: 15000,
+      // Allow cold PowerShell/.NET initialization on Windows ARM64.
+      timeout: 30_000,
     },
   );
   expect(result.error).toBeUndefined();
@@ -103,7 +104,7 @@ describe("native remote identity protection", () => {
       expect(statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
       expect(statSync(file).mode & 0o777).toBe(0o600);
     }
-  }, 40000);
+  }, 75_000);
 
   it("rejects a missing target with its native error", () => {
     const file = path.join(directory(), "missing.json");

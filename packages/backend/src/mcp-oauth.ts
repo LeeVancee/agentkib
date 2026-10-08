@@ -113,11 +113,10 @@ class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
-    const stored = readCredentials(this.server);
-    return (
-      stored?.client_information ??
-      (stored?.client_id ? { client_id: stored.client_id } : undefined)
-    );
+    const value = readCredentials(this.server)?.client_information;
+    // Legacy credentials were not bound to their authorization server. Require a new login
+    // rather than trusting an issuer advertised by the current server or cached discovery.
+    return hasIssuer(value) ? value : undefined;
   }
 
   saveClientInformation(value: OAuthClientInformationMixed): void {
@@ -129,7 +128,8 @@ class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   tokens(): OAuthTokens | undefined {
-    return readCredentials(this.server)?.token_response;
+    const value = readCredentials(this.server)?.token_response;
+    return hasIssuer(value) ? value : undefined;
   }
 
   saveTokens(value: OAuthTokens): void {
@@ -140,7 +140,7 @@ class StoredOAuthProvider implements OAuthClientProvider {
       token_response: value,
       granted_scopes: scopes,
       token_received_at: Math.floor(Date.now() / 1000),
-      issuer: this.discovery?.authorizationServerMetadata?.issuer,
+      issuer: value.issuer,
     }));
   }
 
@@ -171,8 +171,10 @@ class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
-    if (scope === "all") this.manager.clearOAuthCredentials(this.server.id, this.project);
-    else
+    if (scope === "all") {
+      this.manager.clearOAuthCredentials(this.server.id, this.project);
+      this.server.oauth_credentials = undefined;
+    } else
       this.#update((stored) => {
         const next = { ...stored };
         if (scope === "client") {
@@ -188,6 +190,8 @@ class StoredOAuthProvider implements OAuthClientProvider {
         return next;
       });
     if (scope === "verifier" || scope === "all") this.#verifier = undefined;
+    if (scope === "discovery" || scope === "all") this.discovery = undefined;
+    if (scope === "tokens" || scope === "all") this.hasTokens = false;
   }
 
   #verifier?: string;
@@ -205,6 +209,10 @@ function readCredentials(server: McpServer): StoredOAuthCredentials | undefined 
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as StoredOAuthCredentials)
     : undefined;
+}
+
+function hasIssuer(value: { issuer?: unknown } | undefined): boolean {
+  return typeof value?.issuer === "string" && value.issuer.trim().length > 0;
 }
 
 function safeEqual(left: string, right: string): boolean {

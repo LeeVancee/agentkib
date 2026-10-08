@@ -1,10 +1,13 @@
 import { Navigate, Outlet, useLocation } from "@tanstack/react-router";
 import { Settings2 } from "lucide-react";
 import { useEnvironment } from "@/providers/environment";
-import { SessionProvider, useSession } from "@/features/sessions/session-context";
-import { SessionDialogs } from "@/features/sessions/session-dialogs";
+import {
+  SessionProvider,
+  useSession,
+} from "@agentkib/conversation-ui/features/sessions/session-context";
+import { SessionDialogs } from "@agentkib/conversation-ui/features/sessions/session-dialogs";
 import { PairingPage } from "@/features/connection/pairing-page";
-import { Button } from "@/components/ui/button";
+import { Button } from "@agentkib/conversation-ui/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export function SessionLayout() {

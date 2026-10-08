@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dictionaries, type Locale } from "@/i18n";
-import { codexReason } from "./codex-copy";
+import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
+import { codexReason } from "@agentkib/conversation-ui/features/sessions/codex-copy";
 
 describe("Codex capability reasons", () => {
   const locales: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP"];

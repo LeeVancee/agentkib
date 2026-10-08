@@ -1,12 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadedAttachment } from "@agentkib/web-client";
-import { dictionaries } from "../../i18n";
-import { CodexComposer } from "./codex-composer";
-import { useSession } from "./session-context";
+import { dictionaries } from "@agentkib/conversation-ui/i18n";
+import { CodexComposer } from "@agentkib/conversation-ui/features/sessions/codex-composer";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-vi.mock("./codex-session-controls", () => ({ CodexComposerControls: () => null }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: vi.fn(),
+}));
+vi.mock("@agentkib/conversation-ui/features/sessions/codex-session-controls", () => ({
+  CodexComposerControls: () => null,
+}));
 
 let state: ReturnType<typeof useSession>;
 const createObjectURL = vi.fn<(blob: Blob) => string>();

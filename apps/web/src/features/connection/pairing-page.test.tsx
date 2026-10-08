@@ -1,14 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, it, expect, vi } from "vitest";
 import type { Access } from "@agentkib/web-client";
-import { dictionaries, type Locale } from "@/i18n";
+import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
 import { PairingPage } from "./pairing-page";
 import { codePairingCopy } from "./code-pairing-copy";
 
 let locale: Locale = "zh-CN";
 let pairingMode: Access["pairingMode"];
 let connectionType = "same-origin";
-vi.mock("@/features/sessions/session-context", () => ({
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
   useSession: () => ({
     t: dictionaries[locale],
     locale,

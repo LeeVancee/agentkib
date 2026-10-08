@@ -27,6 +27,7 @@ import {
   ListFilter,
   ListChecks,
   MessageSquareText,
+  PlugZap,
   RefreshCw,
   Search,
   X,
@@ -429,122 +430,139 @@ export function WorkspaceSessionsPage({
         <Card
           className={`flex min-h-0 min-w-0 flex-col self-start overflow-hidden rounded-2xl border-border/70 bg-card shadow-sm max-h-[calc(100vh-150px)] max-[760px]:absolute max-[760px]:inset-0 max-[760px]:h-full max-[760px]:max-h-none ${showDetail ? "max-[760px]:hidden" : ""}`}
         >
-          <div className="border-b border-border/70 px-3 py-3">
-            <div className="flex min-h-8 items-center gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <p className="truncate text-sm font-semibold text-foreground">
+          <div className="border-b border-border/70 bg-muted/15 px-3 py-2.5">
+            <div className="flex min-h-9 items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <MessageSquareText size={15} aria-hidden="true" />
+                </span>
+                <p className="min-w-0 truncate text-sm font-semibold text-foreground">
                   {tr("conversations.listTitle")}
                 </p>
                 <Badge
                   variant="outline"
                   className="shrink-0 border-transparent bg-muted text-muted-foreground !rounded-full !px-2 !py-0.5 !text-xs tabular-nums"
+                  aria-label={`${filtered.length} ${tr("conversations.listTitle")}`}
                 >
                   {filtered.length}
                 </Badge>
               </div>
-              <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-0.5">
-                <Button size="sm" variant="ghost" onClick={() => setShowClaude(true)}>
-                  Claude Code
+            </div>
+            <div className="mt-2 flex min-w-0 flex-wrap items-center justify-end gap-1 max-[520px]:justify-start">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 px-2.5"
+                onClick={() => setShowClaude(true)}
+              >
+                <MessageSquareText size={14} aria-hidden="true" />
+                <span>Claude Code</span>
+              </Button>
+              {!workspace.remote && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 px-2.5"
+                  onClick={() => setCursorBridgeWorkspaceId(workspace.id)}
+                >
+                  <PlugZap size={14} aria-hidden="true" />
+                  {tr("handoff.cursor.connect")}
                 </Button>
-                {!workspace.remote && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setCursorBridgeWorkspaceId(workspace.id)}
-                  >
-                    {tr("handoff.cursor.connect")}
-                  </Button>
-                )}
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
-                    aria-label={tr("conversations.agentFilter")}
-                    title={tr("conversations.agentFilter")}
-                  >
-                    <ListFilter size={16} />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-40">
-                    <DropdownMenuGroup>
-                      <DropdownMenuLabel>{tr("conversations.agentFilter")}</DropdownMenuLabel>
-                      {[
-                        ["all", tr("conversations.allAgents")],
-                        ...Object.entries(sessionAgentNames).filter(
-                          ([value]) =>
-                            visibleSessions.some((session) => session.agent === value) ||
-                            agent === value,
-                        ),
-                      ].map(([value, label]) => (
+              )}
+              <span className="mx-1 h-5 w-px bg-border max-[520px]:hidden" aria-hidden="true" />
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${agent !== "all" ? "bg-accent text-accent-foreground" : ""}`}
+                  aria-label={tr("conversations.agentFilter")}
+                  title={tr("conversations.agentFilter")}
+                >
+                  <ListFilter size={16} aria-hidden="true" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-40">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>{tr("conversations.agentFilter")}</DropdownMenuLabel>
+                    {[
+                      ["all", tr("conversations.allAgents")],
+                      ...Object.entries(sessionAgentNames).filter(
+                        ([value]) =>
+                          visibleSessions.some((session) => session.agent === value) ||
+                          agent === value,
+                      ),
+                    ].map(([value, label]) => (
+                      <DropdownMenuItem
+                        key={value}
+                        onClick={() => setAgent(value as AgentFilter)}
+                        className="pr-2"
+                      >
+                        <span className="grid size-4 place-items-center">
+                          {agent === value && <Check size={14} />}
+                        </span>
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${filter !== "current" ? "bg-accent text-accent-foreground" : ""}`}
+                  aria-label={tr("conversations.filterLabel")}
+                  title={tr(`conversations.filter.${filter}`)}
+                >
+                  <ListChecks size={16} aria-hidden="true" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-44">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>{tr("conversations.filterLabel")}</DropdownMenuLabel>
+                    {(["current", "archived", "metadata", "all"] as SessionFilter[]).map(
+                      (value) => (
                         <DropdownMenuItem
                           key={value}
-                          onClick={() => setAgent(value as AgentFilter)}
+                          onClick={() => setFilter(value)}
                           className="pr-2"
                         >
                           <span className="grid size-4 place-items-center">
-                            {agent === value && <Check size={14} />}
+                            {filter === value && <Check size={14} />}
                           </span>
-                          {label}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    className={`inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ${filter !== "current" ? "bg-accent text-accent-foreground" : ""}`}
-                    aria-label={tr("conversations.filterLabel")}
-                    title={tr(`conversations.filter.${filter}`)}
-                  >
-                    <ListChecks size={16} />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-44">
-                    <DropdownMenuGroup>
-                      <DropdownMenuLabel>{tr("conversations.filterLabel")}</DropdownMenuLabel>
-                      {(["current", "archived", "metadata", "all"] as SessionFilter[]).map(
-                        (value) => (
-                          <DropdownMenuItem
-                            key={value}
-                            onClick={() => setFilter(value)}
-                            className="pr-2"
+                          <span>{tr(`conversations.filter.${value}`)}</span>
+                          <Badge
+                            variant="outline"
+                            className="ml-auto border-transparent bg-muted text-muted-foreground !rounded-full !px-1.5 !py-0 !text-[10px] tabular-nums"
                           >
-                            <span className="grid size-4 place-items-center">
-                              {filter === value && <Check size={14} />}
-                            </span>
-                            <span>{tr(`conversations.filter.${value}`)}</span>
-                            <Badge
-                              variant="outline"
-                              className="ml-auto border-transparent bg-muted text-muted-foreground !rounded-full !px-1.5 !py-0 !text-[10px] tabular-nums"
-                            >
-                              {filterCounts[value]}
-                            </Badge>
-                          </DropdownMenuItem>
-                        ),
-                      )}
-                    </DropdownMenuGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className={`text-muted-foreground hover:bg-muted hover:text-foreground ${searchOpen ? "bg-muted text-foreground" : ""}`}
-                  onClick={() => setSearchOpen((open) => !open)}
-                  aria-label={tr("conversations.searchPlaceholder")}
-                  aria-expanded={searchOpen}
-                  title={tr("conversations.searchPlaceholder")}
-                >
-                  <Search size={16} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground hover:bg-muted hover:text-foreground"
-                  onClick={() => void catalog.refresh()}
-                  disabled={refreshing}
-                  aria-label={tr("conversations.refresh")}
-                  title={tr("conversations.refresh")}
-                >
-                  <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-                </Button>
-              </div>
+                            {filterCounts[value]}
+                          </Badge>
+                        </DropdownMenuItem>
+                      ),
+                    )}
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={`text-muted-foreground hover:bg-muted hover:text-foreground ${searchOpen ? "bg-muted text-foreground" : ""}`}
+                onClick={() => setSearchOpen((open) => !open)}
+                aria-label={tr("conversations.searchPlaceholder")}
+                aria-expanded={searchOpen}
+                title={tr("conversations.searchPlaceholder")}
+              >
+                <Search size={16} aria-hidden="true" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => void catalog.refresh()}
+                disabled={refreshing}
+                aria-label={tr("conversations.refresh")}
+                title={tr("conversations.refresh")}
+              >
+                <RefreshCw
+                  size={16}
+                  aria-hidden="true"
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </Button>
             </div>
             {searchOpen && (
               <label className="mt-3 flex h-9 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-3 text-muted-foreground transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">

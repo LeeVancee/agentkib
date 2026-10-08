@@ -1,8 +1,8 @@
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Input } from "@agentkib/conversation-ui/components/ui/input";
+import { Button } from "@agentkib/conversation-ui/components/ui/button";
 import { ChevronRight, MonitorSmartphone, ShieldCheck, Unlink } from "lucide-react";
 import { PairingLayout } from "@/features/connection/pairing-layout";
-import { useSession } from "@/features/sessions/session-context";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
 import { codePairingCopy } from "./code-pairing-copy";
 export function PairingPage() {
   const {

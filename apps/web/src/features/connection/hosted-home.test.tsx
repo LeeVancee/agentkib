@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebApplication, makeRouter } from "@/router";
 import { hostedCopy } from "./hosted-home";
-import type { Locale } from "@/i18n";
+import type { Locale } from "@agentkib/conversation-ui/i18n";
 
 beforeEach(() => {
   vi.stubGlobal("scrollTo", vi.fn());

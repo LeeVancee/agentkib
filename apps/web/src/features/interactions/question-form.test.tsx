@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { UserQuestionRequest } from "@agentkib/web-client";
-import { QuestionForm } from "./question-form";
+import { QuestionForm } from "@agentkib/conversation-ui/features/interactions/question-form";
 
 afterEach(cleanup);
 const request: UserQuestionRequest = {

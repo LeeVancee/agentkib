@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ConversationSessionSummary } from "@agentkib/web-client";
-import { SessionCatalog } from "./session-catalog";
+import { SessionCatalog } from "@agentkib/conversation-ui/features/catalog/session-catalog";
 
 const workspaces = [
   { id: "alpha", name: "project", path: "/work/client-a/project" },

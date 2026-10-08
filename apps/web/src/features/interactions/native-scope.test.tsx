@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { NativeScope } from "./native-scope";
+import { NativeScope } from "@agentkib/conversation-ui/features/interactions/native-scope";
 afterEach(cleanup);
 it("keeps permission paths and network scope visible while collapsing raw metadata", () => {
   const { container } = render(

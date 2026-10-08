@@ -1,13 +1,15 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage } from "@agentkib/web-client";
-import { ContextUsageGauge } from "./context-usage";
-import { useSession } from "./session-context";
-import { contextUsageCopy } from "./context-usage-copy";
-import { codexCopy } from "./codex-copy";
-import type { Locale } from "../../i18n";
+import { ContextUsageGauge } from "@agentkib/conversation-ui/features/sessions/context-usage";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
+import { contextUsageCopy } from "@agentkib/conversation-ui/features/sessions/context-usage-copy";
+import { codexCopy } from "@agentkib/conversation-ui/features/sessions/codex-copy";
+import type { Locale } from "@agentkib/conversation-ui/i18n";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: vi.fn(),
+}));
 let state: ReturnType<typeof useSession>;
 const report = (usedTokens = 20, reportId = 1, reportGeneration?: number): ContextUsage => ({
   available: true,

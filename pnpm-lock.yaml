@@ -32,15 +32,15 @@ importers:
       '@agentkib/conversation-state':
         specifier: workspace:*
         version: link:../../packages/conversation-state
+      '@agentkib/conversation-ui':
+        specifier: workspace:*
+        version: link:../../packages/conversation-ui
       '@agentkib/runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/runtime-protocol
       '@agentkib/session-catalog':
         specifier: workspace:*
         version: link:../../packages/session-catalog
-      '@agentkib/web':
-        specifier: workspace:*
-        version: link:../web
       '@agentkib/web-client':
         specifier: workspace:*
         version: link:../../packages/web-client
@@ -213,24 +213,18 @@ importers:
 
   apps/web:
     dependencies:
-      '@agentkib/agent-identity':
-        specifier: workspace:*
-        version: link:../../packages/agent-identity
       '@agentkib/conversation-state':
         specifier: workspace:*
         version: link:../../packages/conversation-state
-      '@agentkib/session-catalog':
+      '@agentkib/conversation-ui':
         specifier: workspace:*
-        version: link:../../packages/session-catalog
+        version: link:../../packages/conversation-ui
       '@agentkib/session-ui':
         specifier: workspace:*
         version: link:../../packages/session-ui
       '@agentkib/web-client':
         specifier: workspace:*
         version: link:../../packages/web-client
-      '@base-ui/react':
-        specifier: ^1.7.0
-        version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@fontsource-variable/geist':
         specifier: ^5.3.0
         version: 5.3.0
@@ -240,9 +234,6 @@ importers:
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.8)
@@ -252,12 +243,6 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.8(react@19.2.8)
-      sonner:
-        specifier: ^2.0.8
-        version: 2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      tailwind-merge:
-        specifier: ^3.6.0
-        version: 3.6.0
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.18
@@ -365,6 +350,58 @@ importers:
         version: 7.0.2
 
   packages/conversation-state: {}
+
+  packages/conversation-ui:
+    dependencies:
+      '@agentkib/agent-identity':
+        specifier: workspace:*
+        version: link:../agent-identity
+      '@agentkib/conversation-state':
+        specifier: workspace:*
+        version: link:../conversation-state
+      '@agentkib/session-catalog':
+        specifier: workspace:*
+        version: link:../session-catalog
+      '@agentkib/session-ui':
+        specifier: workspace:*
+        version: link:../session-ui
+      '@agentkib/web-client':
+        specifier: workspace:*
+        version: link:../web-client
+      '@base-ui/react':
+        specifier: ^1.7.0
+        version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-router':
+        specifier: ^1.170.31
+        version: 1.170.31(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      lucide-react:
+        specifier: ^0.468.0
+        version: 0.468.0(react@19.2.8)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.8
+      sonner:
+        specifier: ^2.0.8
+        version: 2.0.8(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.18
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vite:
+        specifier: ^8.2.2
+        version: 8.2.2(@types/node@24.13.3)(jiti@2.7.0)(yaml@2.9.1)
 
   packages/runtime-protocol: {}
 
@@ -1172,7 +1209,6 @@ packages:
   '@rolldown/binding-linux-x64-gnu@1.2.5':
     resolution: {integrity: sha512-Mgj59/HTuYeK9Gz2MA+mBWKnHsAgkBSec15ZMb1st3oIfFbX7gCjOae7GydHhzcyQi9Z/7M1QuN9bR3oFqF0jQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
-    cpu: [x64]
     os: [linux]
 
   '@rolldown/binding-linux-x64-musl@1.2.5':
@@ -1285,7 +1321,6 @@ packages:
   '@tailwindcss/oxide-linux-x64-gnu@4.3.3':
     resolution: {integrity: sha512-tx7us1muwOKAKWao2v/GaafFeQboE6aj88vC6ziN2NCGcRm8gWUhwjzg+YdVB1e4boAtdtma4L43onunI6NS4w==}
     engines: {node: '>= 20'}
-    cpu: [x64]
     os: [linux]
 
   '@tailwindcss/oxide-linux-x64-musl@4.3.3':
@@ -8750,6 +8785,19 @@ snapshots:
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 22.20.1
+      fsevents: 2.3.3
+      jiti: 2.7.0
+      yaml: 2.9.1
+
+  vite@8.2.2(@types/node@24.13.3)(jiti@2.7.0)(yaml@2.9.1):
+    dependencies:
+      lightningcss: 1.33.0
+      picomatch: 4.0.5
+      postcss: 8.5.26
+      rolldown: 1.2.5
+      tinyglobby: 0.2.17
+    optionalDependencies:
+      '@types/node': 24.13.3
       fsevents: 2.3.3
       jiti: 2.7.0
       yaml: 2.9.1

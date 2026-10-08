@@ -9,9 +9,13 @@ import type {
   Live,
   UserQuestionRequest,
 } from "@agentkib/web-client";
-import { pendingScope, readPending, rememberPending } from "./pending-controls";
+import {
+  pendingScope,
+  readPending,
+  rememberPending,
+} from "@agentkib/conversation-ui/features/sessions/pending-controls";
 import { WebApplication, makeRouter } from "@/router";
-import { catalogCopy } from "../catalog/catalog-copy";
+import { catalogCopy } from "@agentkib/conversation-ui/features/catalog/catalog-copy";
 
 class FakeEventSource {
   static instances: FakeEventSource[] = [];

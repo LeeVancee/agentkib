@@ -8,8 +8,8 @@ import {
 } from "@tanstack/react-router";
 import { routeTree } from "@/routeTree.gen";
 import type { EnvironmentOptions } from "@/providers/environment";
-export { Dialog } from "@/components/dialog";
-export { mergeLatestPage } from "@/features/sessions/session-model";
+export { Dialog } from "@agentkib/conversation-ui/components/dialog";
+export { mergeLatestPage } from "@agentkib/conversation-ui/features/sessions/session-model";
 
 export function makeRouter(options: EnvironmentOptions = {}, memory = false) {
   // Consume legacy connection links before the hash becomes the router's URL.

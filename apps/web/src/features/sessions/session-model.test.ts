@@ -7,7 +7,7 @@ import {
   mergePersistedHistory,
   mergeOrderedPersistedHistory,
   mergeNativeCoverage,
-} from "./session-model";
+} from "@agentkib/conversation-ui/features/sessions/session-model";
 
 describe("ordered persisted history", () => {
   const row = (id: string): ConversationEvent => ({

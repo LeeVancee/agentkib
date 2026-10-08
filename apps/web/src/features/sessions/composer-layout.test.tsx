@@ -1,13 +1,15 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexComposer } from "./codex-composer";
-import { useSession } from "./session-context";
-import { dictionaries, type Locale } from "@/i18n";
-import { composerLayoutCopy } from "./composer-layout-copy";
-import { codexCopy } from "./codex-copy";
-import { publishSessionInvalidation } from "./session-events";
+import { CodexComposer } from "@agentkib/conversation-ui/features/sessions/codex-composer";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
+import { dictionaries, type Locale } from "@agentkib/conversation-ui/i18n";
+import { composerLayoutCopy } from "@agentkib/conversation-ui/features/sessions/composer-layout-copy";
+import { codexCopy } from "@agentkib/conversation-ui/features/sessions/codex-copy";
+import { publishSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
 import type { CodexGoalState, CodexSessionSettings } from "@agentkib/web-client";
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: vi.fn(),
+}));
 let state: ReturnType<typeof useSession>;
 function settings(id = "s"): CodexSessionSettings {
   return {

@@ -1,9 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { Monitor, Smartphone, ShieldCheck, ArrowRight } from "lucide-react";
 import { ConnectionPreferences } from "./connection-preferences";
-import { useAppearance } from "@/features/preferences/use-appearance";
+import { useAppearance } from "@agentkib/conversation-ui/features/preferences/use-appearance";
 import { useEnvironment } from "@/providers/environment";
-import type { Locale } from "@/i18n";
+import type { Locale } from "@agentkib/conversation-ui/i18n";
 
 export const hostedCopy: Record<
   Locale,

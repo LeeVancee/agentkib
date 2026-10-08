@@ -1,12 +1,14 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { catalogCopy } from "./catalog-copy";
-import { dictionaries } from "@/i18n";
+import { catalogCopy } from "@agentkib/conversation-ui/features/catalog/catalog-copy";
+import { dictionaries } from "@agentkib/conversation-ui/i18n";
 
 const session = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
-vi.mock("@/features/sessions/session-context", () => ({ useSession: () => session.value }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: () => session.value,
+}));
 
-import { SessionDetailsDialog } from "./session-details-dialog";
+import { SessionDetailsDialog } from "@agentkib/conversation-ui/features/catalog/session-details-dialog";
 
 afterEach(cleanup);
 

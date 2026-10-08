@@ -1,14 +1,20 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationEvent } from "@agentkib/web-client";
-import { dictionaries } from "../../i18n";
-import { SessionReader } from "./session-reader";
-import { useSession } from "./session-context";
-import { webLayoutCopy } from "./web-layout-copy";
+import { dictionaries } from "@agentkib/conversation-ui/i18n";
+import { SessionReader } from "@agentkib/conversation-ui/features/sessions/session-reader";
+import { useSession } from "@agentkib/conversation-ui/features/sessions/session-context";
+import { webLayoutCopy } from "@agentkib/conversation-ui/features/sessions/web-layout-copy";
 
-vi.mock("./session-context", () => ({ useSession: vi.fn() }));
-vi.mock("./session-operations", () => ({ SessionOperations: () => null }));
-vi.mock("./artifact-browser", () => ({ ArtifactBrowser: () => null }));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+  useSession: vi.fn(),
+}));
+vi.mock("@agentkib/conversation-ui/features/sessions/session-operations", () => ({
+  SessionOperations: () => null,
+}));
+vi.mock("@agentkib/conversation-ui/features/sessions/artifact-browser", () => ({
+  ArtifactBrowser: () => null,
+}));
 
 let state: ReturnType<typeof useSession>;
 function message(id: string, content: string): ConversationEvent {

@@ -34,7 +34,7 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 
 以下命令在 PowerShell 中执行。推荐使用与项目 CI 一致的版本。
 
-### 1. Node.js 22 和 pnpm 10.8.1
+### 1. Node.js 22 和 pnpm 12.10.1
 
 ```powershell
 winget install --exact --id OpenJS.NodeJS.22 --source winget --accept-package-agreements --accept-source-agreements
@@ -44,12 +44,12 @@ winget install --exact --id OpenJS.NodeJS.22 --source winget --accept-package-ag
 
 ```powershell
 corepack enable
-corepack prepare pnpm@10.8.1 --activate
+corepack prepare pnpm@12.10.1 --activate
 node --version
 pnpm --version
 ```
 
-预期 Node.js 主版本为 `22`，pnpm 为 `10.8.1`。
+预期 Node.js 主版本为 `22`，pnpm 为 `12.10.1`。
 
 如果 PowerShell 提示无法加载 `pnpm.ps1`，可只为当前 Windows 用户启用常用的本地脚本策略，然后重新打开 PowerShell：
 

@@ -63,12 +63,12 @@ if ($nodeVersion -and $nodeVersion -match "^v22\.") {
 }
 
 $pnpmVersion = Get-CommandOutput "pnpm" @("--version")
-if ($pnpmVersion -eq "10.8.1") {
-  Add-Result "pnpm 10.8.1" "PASS" $pnpmVersion
+if ($pnpmVersion -eq "12.10.1") {
+  Add-Result "pnpm 12.10.1" "PASS" $pnpmVersion
 } elseif ($pnpmVersion) {
-  Add-Result "pnpm 10.8.1" "FAIL" "Found $pnpmVersion; run: corepack prepare pnpm@10.8.1 --activate"
+  Add-Result "pnpm 12.10.1" "FAIL" "Found $pnpmVersion; run: corepack prepare pnpm@12.10.1 --activate"
 } else {
-  Add-Result "pnpm 10.8.1" "FAIL" "pnpm was not found. Install Node.js 22 and enable Corepack."
+  Add-Result "pnpm 12.10.1" "FAIL" "pnpm was not found. Install Node.js 22 and enable Corepack."
 }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"

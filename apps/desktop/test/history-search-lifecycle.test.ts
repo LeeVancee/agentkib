@@ -24,6 +24,12 @@ import { OpenClawSessions } from "../../../packages/backend/src/openclaw-session
 import { CursorSessions } from "../../../packages/backend/src/cursor-sessions";
 import { HistorySearchWorker } from "../../../packages/backend/src/history-search-worker";
 
+// These cases start real workers and reopen SQLite caches; Windows CI can spend
+// several seconds in that setup before reaching the ownership assertions.
+vi.setConfig({ testTimeout: 15_000 });
+const waitForIndexing = (assertion: () => Promise<void>) =>
+  vi.waitFor(assertion, { timeout: 5000 });
+
 const tracked = vi.hoisted(() => ({ workers: [] as import("node:worker_threads").Worker[] }));
 vi.mock("node:worker_threads", async (original) => {
   const actual = await original<typeof import("node:worker_threads")>();
@@ -110,7 +116,7 @@ async function ownershipFixture() {
     target.request(methods.query, {
       query: "synthetic-ownership-marker",
     }) as Promise<HistorySearchResult>;
-  await vi.waitFor(async () => expect((await query()).status.coverage.ready).toBe(2));
+  await waitForIndexing(async () => expect((await query()).status.coverage.ready).toBe(2));
   const hits = (await query()).hits;
   const changed = hits.find((hit) => hit.title === "changed")!;
   const retained = hits.find((hit) => hit.title === "retained")!;
@@ -186,7 +192,7 @@ async function openClawReadFixture() {
     new OpenClawSessions(f.environment).list(f.project).sessions.map(({ session }) => session),
   );
   f.index.refresh();
-  await vi.waitFor(async () => expect((await f.query()).status.coverage.ready).toBe(3));
+  await waitForIndexing(async () => expect((await f.query()).status.coverage.ready).toBe(3));
   expect(tracked.workers).toHaveLength(2);
   const hits = (await f.query()).hits;
   const changed = hits.find((hit) => hit.agent === "open-claw")!;
@@ -324,7 +330,7 @@ async function cursorCliReadFixture() {
   expect(listing).toHaveLength(2);
   f.store.sessions.sync("registered", "cursor", listing);
   f.index.refresh();
-  await vi.waitFor(async () => expect((await f.query()).hits).toHaveLength(4));
+  await waitForIndexing(async () => expect((await f.query()).hits).toHaveLength(4));
   expect(tracked.workers).toHaveLength(2);
   const hits = (await f.query()).hits;
   const changed = hits.find((hit) => hit.title === "Cursor CLI changed")!;
@@ -375,7 +381,7 @@ it.each([methods.locate, methods.references, methods.refresh])(
     expect(f.store.sessions.get(f.changed.location.sessionId)?.workspace_id).toBe("registered");
     if (method === methods.refresh) {
       f.index.refresh();
-      await vi.waitFor(async () =>
+      await waitForIndexing(async () =>
         expect((await f.query()).status.coverage.limitations).toContain("source-owner-changed"),
       );
     } else {
@@ -398,7 +404,7 @@ it.each([methods.locate, methods.references, methods.refresh])(
     f.changedSource.change([f.project]);
     expect(f.ids(await f.query(reopened))).toEqual(f.safeIds);
     reopened.refresh();
-    await vi.waitFor(async () => expect(f.ids(await f.query(reopened))).toEqual(f.cachedIds));
+    await waitForIndexing(async () => expect(f.ids(await f.query(reopened))).toEqual(f.cachedIds));
     const restored = (await f.query(reopened)).hits.find(
       (hit) => hit.location.sessionId === f.changed.location.sessionId,
     )!;
@@ -437,7 +443,7 @@ it("retains Cursor CLI cache when a changed multi-workspace root still owns the 
     expect(f.ids(await f.query())).toEqual(f.cachedIds);
   }
   f.index.refresh();
-  await vi.waitFor(async () => {
+  await waitForIndexing(async () => {
     const changed = (await f.query()).hits.find(
       (hit) => hit.location.sessionId === f.changed.location.sessionId,
     )!;
@@ -544,7 +550,7 @@ it.each([methods.locate, methods.references])(
     // Recovery requires a successful full source read, not merely the old catalog identity.
     f.native.prepare("UPDATE sessions SET cwd=? WHERE id='changed'").run(f.project);
     reopened.refresh();
-    await vi.waitFor(async () => expect((await f.query(reopened)).hits).toHaveLength(2));
+    await waitForIndexing(async () => expect((await f.query(reopened)).hits).toHaveLength(2));
   },
 );
 
@@ -629,7 +635,7 @@ it("restores a quarantined source in the same host only after a successful reind
   f.native.prepare("UPDATE sessions SET cwd=? WHERE id='changed'").run(f.project);
   expect((await f.query()).hits).toHaveLength(1);
   f.index.refresh();
-  await vi.waitFor(async () => expect((await f.query()).hits).toHaveLength(2));
+  await waitForIndexing(async () => expect((await f.query()).hits).toHaveLength(2));
 });
 
 it("quarantines before cleanup waits and drains a stopped writer's fallback before close returns", async () => {

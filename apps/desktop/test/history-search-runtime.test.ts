@@ -10,7 +10,7 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { HermesSessions } from "../../../packages/backend/src/hermes-sessions";
 import { DesktopRuntimeHost } from "../electron/main/runtime-host";
 import { RuntimeRouter } from "../electron/main/runtime-router";
-import { createStdioTransport } from "../electron/main/runtime-transport";
+import { createStdioTransport, type RuntimeTransport } from "../electron/main/runtime-transport";
 import {
   HISTORY_SEARCH_METHODS as methods,
   RUNTIME_METHODS,
@@ -35,7 +35,7 @@ async function fixture(
   agent: "claude-code" | "hermes" = "claude-code",
 ) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "history-runtime-")));
-  cleanup.push(() => fs.rm(root, { recursive: true, force: true }));
+  cleanup.push(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dataDir = path.join(root, "data"),
     project = path.join(root, "project"),
     dist = path.join(root, "dist"),
@@ -209,16 +209,21 @@ fs.readSync=function(...args){if(workerData.writable&&!held){held=true;fs.writeF
 require('./history-real.cjs');`,
     );
   }
+  let transport: RuntimeTransport | undefined;
   const host = new DesktopRuntimeHost({
     executablePath: process.execPath,
     args: [path.join(dist, "backend.cjs")],
     clientVersion: "0.15.1",
     maxRestarts: 0,
     // Keep the real transport while excluding the host's inherited Agent settings.
-    createTransport: (options) => createStdioTransport({ ...options, environment }),
+    createTransport: (options) => (transport = createStdioTransport({ ...options, environment })),
   });
   const router = new RuntimeRouter(host, dataDir);
-  cleanup.push(() => router.stop());
+  cleanup.push(async () => {
+    await router.stop();
+    // File cleanup may retry a Windows image lock, but must not hide a live Runtime.
+    expect(transport?.hasExited).toBe(true);
+  });
   await router.start();
   const request = <T = unknown>(method: string, params: Record<string, unknown> = {}) =>
     router.request<T>(method, params);

@@ -533,3 +533,18 @@ HEAD 仍为 `4cdb33407d12142ada72ac054d7687a89859100d`，分支 `codex/session-c
 本轮按影响范围运行专项，未重跑全仓测试、Windows/Linux CI、安装包 GUI、手机或真实 Cursor 客户端验收。保留 Node SQLite experimental、路由生成器循环依赖及既有 lint 告警。
 
 独立子代理仅复核本轮三文件增量，未发现确定残留问题。使用独立打包 Worker 重跑上轮失败探针，定位及引用均返回改属错误，其后的搜索、显式刷新和重启旧命中均为 0；独立 Worker 的完整生命周期测试 29/29 通过。三文件与修复冻结清单哈希一致，修前 81 文件也逐项匹配。报告及证据见 `recheck/report.md`、`recheck/cursor-cli-result.json`、`recheck/tests.log`、`recheck/hash-end.json`。IDE 引用隔离和原 `resolve` 兼容来自静态核对；本轮复核不替代完整 WIP 再审查。
+
+
+## PR #105 首轮跨平台 CI 修复（2026-10-08）
+
+功能提交为 `273223037c0169e1f46fd354f95eb254dc352186`。首次 PR 合并检查基于 `6d71baf5c40c574ce3d013942ee6b966e8317f15`，包含主线的 pnpm `12.10.1` 和 Windows ARM64 Node 设置。全量 CI（run `37802702147`）及 Ubuntu ARM64 通过；Fedora（run `37802701997`）和两个 Windows 任务（run `37802701981`）失败，未将平台失败记为已通过。
+
+- Fedora 缺少 `/bin/ps`，真实 Claude 引用发送 fixture 在外部进程占用检查失败。CI 补装 `procps-ng`，保留生产检查和失败拒绝行为。
+- Windows Codex 的四个用例均在首次创建时以 `3221226505` 退出。锁代码将 Node 的文件描述符交给系统 `ucrtbase._get_osfhandle`，跨 CRT 描述符表可能触发 native invalid-parameter fast-fail。改为独立 `CreateFileW` 句柄，比较该句柄的 volume/file ID 与 Node fd 的 `fstat`，拒绝目录、重解析点和身份变化后，才执行原有 `LockFileEx`。失败及释放关闭全部句柄，保留占用错误与幂等释放。独立子代理核对清理、身份和 x64/ARM64 布局，未发现确定问题。新增四项真实锁回归。
+- OpenCode fixture 的隔离 PATH 只有合成 bin；Windows Worker 环境大小写敏感，cross-spawn 读取小写 `comspec` 失败后使用 `cmd.exe`，导致快照不可用。两个 CLI fixture 仅追加已保存 `SystemRoot` 下的 `System32`，继续排除用户 Agent PATH 和凭据。
+- 生命周期回归的后台初始化使用 Vitest 默认 1 秒等待，完整流程默认 5 秒；Windows 的同组通过项已经达到 4.57–4.85 秒。明确初始化等待 5 秒、该文件总预算 15 秒，保留业务断言。ARM64 初次运行有三个文件同时执行，叠加各自的真实 Backend Worker；Windows CI 限制测试文件并行为 1，不修改产品任务期限或 1 秒响应断言。
+- ARM64 清理 Runtime fixture 时暂存 `koffi.node` 返回 `EPERM`。fixture 现在先明确断言自有 Runtime 已退出，再有限重试删除临时目录；若进程仍存活或文件持续占用仍然报错，不隐藏生命周期问题。
+
+修复验证使用 Node `22.23.3`、pnpm `10.8.1`，macOS arm64。Backend 构建、format、lint、typecheck 均通过；三个失败相关测试文件 77/77 通过；新增锁回归 4/4 通过；`pnpm test:backend:stability --maxWorkers=1` 的 19 文件通过，368 项通过、1 项既有跳过，包含 staged Koffi/SQLite Worker smoke。保留既有 75 条 lint 告警及 Node SQLite experimental 提示。Windows/Fedora 修后结果须以新提交 CI 为准。
+
+本轮原始 CI 日志、本地检查与子代理报告位于权限受限的 `$CODEX_HOME/tmp/session-content-search-ci-20261008/`，初次失败日志保持原样。无真实模型调用、部署或版本调整。

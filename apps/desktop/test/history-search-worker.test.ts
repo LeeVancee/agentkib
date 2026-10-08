@@ -106,6 +106,14 @@ if (process.argv[2] === 'session') {
     archived: false,
     ownerKey: "synthetic-owner",
   };
+  const environment = createIsolatedWorkerEnvironment(root);
+  environment.PATH = bin;
+  if (process.platform === "win32") {
+    const systemRoot = environment.SystemRoot;
+    if (!systemRoot) throw new Error("Windows snapshot fixture requires SystemRoot");
+    // cross-spawn can fall back to cmd.exe in a case-sensitive Worker environment.
+    environment.PATH += path.delimiter + path.join(systemRoot, "System32");
+  }
   const source = {
     sessionId,
     summary: {
@@ -126,7 +134,7 @@ if (process.argv[2] === 'session') {
       availability: "readable",
     },
     workspacePath: project,
-    environment: { ...createIsolatedWorkerEnvironment(root), PATH: bin },
+    environment,
     profiles: [],
     identitySalt,
   };

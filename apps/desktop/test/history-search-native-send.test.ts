@@ -171,6 +171,11 @@ async function fixture(agent: "codex" | "claude-code" = "codex") {
     FIXTURE_FRAMES: framesFile,
     FIXTURE_MODE: modeFile,
   };
+  if (process.platform === "win32") {
+    if (!environment.SystemRoot) throw new Error("Windows fixture requires SystemRoot");
+    // Keep Agent discovery isolated while allowing the Windows command interpreter.
+    environment.PATH += path.delimiter + path.join(environment.SystemRoot, "System32");
+  }
   const listener = createServer();
   await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
   const port = (listener.address() as { port: number }).port;

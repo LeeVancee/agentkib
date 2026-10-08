@@ -33,7 +33,8 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
-        run: pnpm test:backend:stability
+        # Each fixture also starts real backend Workers; avoid oversubscribing the runner.
+        run: pnpm test:backend:stability --maxWorkers=1
 
   typecheck:
     name: Typecheck on Windows x64
@@ -54,4 +55,4 @@ jobs:
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
-        run: pnpm test:backend:stability
+        run: pnpm test:backend:stability --maxWorkers=1

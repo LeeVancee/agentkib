@@ -177,7 +177,7 @@ jobs:
           - name: macOS
             arch: x64
             updater_channel: x64
-            os: macos-15-intel
+            os: macos-15
             artifact: macos-x64
           - name: Windows
             arch: x64
@@ -247,6 +247,13 @@ jobs:
         shell: bash
         run: |
           rm -rf apps/desktop/release-electron apps/desktop/build/quota
+
+      - name: Set macOS x64 cross-compilation targets
+        if: matrix.name == 'macOS' && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          echo "AGENTKIB_PACKAGE_ARCH=x64" >> "$GITHUB_ENV"
+          echo "AGENTKIB_QUOTA_TARGET=x86_64-apple-darwin" >> "$GITHUB_ENV"
 
       - name: Prepare Apple notarization private key
         if: runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true'

@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const executable =
   process.platform === "win32" ? "agentkib-quota-sidecar.exe" : "agentkib-quota-sidecar";
-const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
+const target =
+  process.env.AGENTKIB_QUOTA_TARGET ??
+  `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
 const source =
   process.platform === "win32"
     ? path.join(desktopRoot, "resources/quota/resources/windows", executable)

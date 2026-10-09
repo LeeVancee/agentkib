@@ -163,8 +163,8 @@ jobs:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
     needs: preflight
     runs-on: ${{ matrix.os }}
-    # Branch builds reuse dependency caches; tag-scoped caches cannot be reused by later tags.
-    cache-mode: ${{ github.ref_type == 'tag' && 'read' || 'write' }}
+    # Allow branch builds to save dependency caches for subsequent runs.
+    cache-mode: write
     strategy:
       fail-fast: false
       matrix:

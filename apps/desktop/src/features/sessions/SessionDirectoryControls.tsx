@@ -53,7 +53,7 @@ export function SessionDirectoryControls({
         <DropdownMenu onOpenChange={onMenuOpenChange}>
           <DropdownMenuTrigger
             render={<Button variant="outline" size="sm" className="h-8 gap-2 px-2.5" />}
-            aria-label={tr("sessions.filters")}
+            aria-label={tr("sessions.directoryOptions")}
             data-session-directory-options=""
             disabled={!hub.enabled}
           >

@@ -468,7 +468,7 @@ pnpm build:web:hosted
 git diff --check
 ```
 
-相关回归 **26 文件、672 项通过**，不是全仓库测试；lint 保留既有 warning，未修改规则。日志位于本机 `/tmp/agentkib-mcp-review/three-findings-fix/`，分别为 `format.log`、`new-test-format.log`、`lint.log`、`typecheck.log`、`tests.log`、`build.log` 与 `hosted.log`。
+相关回归 **26 文件、672 项通过**，不是全仓库测试；lint 保留既有 warning，未修改规则。日志位于本机 `<QA_LOG_DIR>/three-findings-fix/`，分别为 `format.log`、`new-test-format.log`、`lint.log`、`typecheck.log`、`tests.log`、`build.log` 与 `hosted.log`。
 
 未参与实现的子代理定向复核报告 **no findings**，独立运行 7 文件 282 项项目测试以及 2 项隔离复现；其中包含 2,000 组随机重叠匹配与独立区间并集算法的对照。该结论包含写前预检修复，未覆盖整个分支、真实 Agent 重载或真实网络。实现和构建完成、追加本段 QA 前的 68 文件完整 dirty 补丁 SHA256 为 `c9af0169b4bec0ce239d2c2c1c0d7da3c66f20df81594f32591e7b6bbed5418f`。
 

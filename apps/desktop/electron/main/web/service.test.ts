@@ -196,6 +196,7 @@ describe("WebAccessService loopback security boundary", () => {
     });
   });
   afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await service.shutdown();
     await rm(dir, { recursive: true, force: true });
@@ -2268,29 +2269,42 @@ describe("WebAccessService loopback security boundary", () => {
     expect((await send).status).toBe(409);
   });
   it.each([
-    { accepted: true },
     {
-      accepted: false,
-      completed: false,
-      controlOutcome: "not-dispatched",
-      requestId: "r",
-      runtimeBootId: "r",
+      receipt: { accepted: true },
+    },
+    {
+      receipt: {
+        accepted: false,
+        completed: false,
+        controlOutcome: "not-dispatched",
+        requestId: "r",
+        runtimeBootId: "r",
+      },
     },
   ])(
     "retains unknown outcome after timeout, late receipt %j and runtime restart",
-    async (receipt) => {
+    async ({ receipt }) => {
       await bootstrap();
       await pair(true);
       let finish!: (value: unknown) => void;
+      let notifySendStarted!: () => void;
+      const sendStarted = new Promise<void>((resolve) => {
+        notifySendStarted = resolve;
+      });
       runtime.mockImplementation(async (p) =>
         (p as { operation: string }).operation === "send"
           ? new Promise((resolve) => {
               finish = resolve;
+              notifySendStarted();
             })
           : { runtimeBootId: "r", revision: 4, sendEnabled: true },
       );
       const body = { sessionId: "s", text: "x", requestId: "r", bootId, expectedRevision: 4 };
-      const timeout = await http("/api/web/v1/send", { method: "POST", body });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const timeoutRequest = http("/api/web/v1/send", { method: "POST", body });
+      await sendStarted;
+      await vi.advanceTimersByTimeAsync(20_000);
+      const timeout = await timeoutRequest;
       expect(timeout.status).toBe(504);
       expect(timeout.json().error).toBe("outcome_unknown");
       expect(

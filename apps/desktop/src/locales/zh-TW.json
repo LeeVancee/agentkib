@@ -530,6 +530,7 @@
   "agents.version": "版本",
   "agents.provider": "用量資料來源",
   "agents.name": "Agent 名稱",
+  "agents.sortBy": "排序方式",
   "agents.agentType": "類型",
   "agents.status": "狀態",
   "agents.manage": "設定",

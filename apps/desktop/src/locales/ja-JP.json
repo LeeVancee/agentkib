@@ -530,6 +530,7 @@
   "agents.version": "バージョン",
   "agents.provider": "使用量 Provider",
   "agents.name": "Agent 名称",
+  "agents.sortBy": "並べ替え",
   "agents.agentType": "種類",
   "agents.status": "状態",
   "agents.manage": "設定",

@@ -530,6 +530,7 @@
   "agents.version": "版本",
   "agents.provider": "用量数据源",
   "agents.name": "Agent 名称",
+  "agents.sortBy": "排序方式",
   "agents.agentType": "类型",
   "agents.status": "状态",
   "agents.manage": "设置",

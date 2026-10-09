@@ -530,6 +530,7 @@
   "agents.version": "Version",
   "agents.provider": "Usage provider",
   "agents.name": "Agent name",
+  "agents.sortBy": "Sort by",
   "agents.agentType": "Type",
   "agents.status": "Status",
   "agents.manage": "Configure",

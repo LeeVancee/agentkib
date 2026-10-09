@@ -19,6 +19,48 @@ const MAX_INTERACTIONS = 1024 * 1024;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type JsonObject = Record<string, any>;
+export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+export type ClaudeRunnerSettings = {
+  model: string | null;
+  effort: ClaudeEffort | null;
+  permissionMode: ClaudePermissionMode;
+};
+export type ClaudeRunnerEffectiveSettings = Omit<ClaudeRunnerSettings, "permissionMode"> & {
+  permissionMode: ClaudePermissionMode | null;
+};
+export type ClaudeModelOption = {
+  value: string;
+  resolvedModel?: string;
+  displayName: string;
+  description?: string;
+  supportedEffortLevels?: ClaudeEffort[];
+};
+export type ClaudeRunnerOptionsSnapshot = {
+  models: ClaudeModelOption[];
+  commands: Array<{ name: string; description?: string; argumentHint?: string }>;
+  settings: ClaudeRunnerEffectiveSettings;
+  settingsAcknowledged: boolean;
+};
+export type ClaudeRunnerTerminalResult = {
+  turnId: string;
+  success: boolean;
+  subtype: string;
+  terminalReason: string | null;
+  usage: Record<string, unknown> | null;
+  modelUsage: Record<string, unknown> | null;
+  costUsd: number | null;
+};
+export type ClaudeRunnerOptions = {
+  model?: string;
+  effort?: ClaudeEffort;
+  permissionMode?: ClaudePermissionMode;
+  forkSourceNativeId?: string;
+  forkCutoff?: string;
+  mcpConfig?: Record<string, unknown>;
+  onResult?: (result: ClaudeRunnerTerminalResult) => void;
+  controlTimeoutMs?: number;
+};
 export class ClaudeUndispatchedError extends Error {
   constructor() {
     super("session-compacting");
@@ -28,6 +70,7 @@ const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 export type ClaudeRunnerSnapshot = {
+  terminalResult: ClaudeRunnerTerminalResult | null;
   lastOutcome: string | null;
   model: string | null;
   tokenUsage: unknown;
@@ -82,6 +125,7 @@ export class ClaudeRunnerState {
   foregroundBashContract = false;
   bashToolIds = new Set<string>();
   foregroundTasks = new Map<string, string>();
+  terminalResult: ClaudeRunnerTerminalResult | null = null;
 
   constructor(readonly sessionId: string) {}
 
@@ -116,6 +160,7 @@ export class ClaudeRunnerState {
       foregroundBashContract: this.foregroundBashContract,
       bashToolIds: new Set(this.bashToolIds),
       foregroundTasks: new Map(this.foregroundTasks),
+      terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
     };
   }
 
@@ -142,7 +187,7 @@ export class ClaudeRunnerState {
     Object.assign(this, checkpoint, native);
   }
 
-  initialize(pendingUser: JsonObject): JsonObject {
+  initialize(pendingUser: JsonObject | null = null): JsonObject {
     if (this.initialized || this.pendingUser) throw new Error("Claude runner already initialized");
     this.initId = randomUUID();
     this.pendingUser = pendingUser;
@@ -162,6 +207,7 @@ export class ClaudeRunnerState {
       end = next;
     }
     return {
+      terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
       lastOutcome: this.lastOutcome,
       model: this.model,
       tokenUsage: this.usage,
@@ -199,6 +245,7 @@ export class ClaudeRunnerState {
     this.partial = false;
     this.reason = null;
     this.lastOutcome = null;
+    this.terminalResult = null;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
     this.status = "running";
@@ -209,6 +256,24 @@ export class ClaudeRunnerState {
       session_id: this.sessionId,
       parent_tool_use_id: null,
       uuid: turnId,
+      message: { role: "user", content },
+    };
+  }
+
+  steer(content: unknown, requestId: string, turnId: string, revision: number): JsonObject {
+    validateClaudeContent(content);
+    if (!uuidPattern.test(requestId) || requestId === turnId)
+      throw new Error("invalid Claude steering ID");
+    if (revision !== this.revision || turnId !== this.turnId) throw new Error("stale Claude turn");
+    if (!this.initialized || this.status !== "running" || this.reason !== null)
+      throw new Error("Claude steering requires an active turn");
+    if (this.activity === "compacting") throw new ClaudeUndispatchedError();
+    return {
+      type: "user",
+      session_id: this.sessionId,
+      parent_tool_use_id: null,
+      uuid: requestId,
+      priority: "next",
       message: { role: "user", content },
     };
   }
@@ -308,6 +373,7 @@ export class ClaudeRunnerState {
     this.foregroundTasks.clear();
     this.status = "idle";
     this.lastOutcome = "cancelled";
+    this.terminalResult = null;
     this.initialized = false;
     this.initId = "";
     this.seenRequests.clear();
@@ -460,8 +526,27 @@ export class ClaudeRunnerState {
           }
         }
         if (!this.initialized) throw new Error("Claude resume failed before initialization");
+        if (!this.turnId || this.status === "idle")
+          throw new Error("Claude result outside an active turn");
         if (this.approvals.length || this.questions.length)
           throw new Error("Claude result with unresolved approvals");
+        this.terminalResult = {
+          turnId: this.turnId,
+          success:
+            frame.is_error !== true &&
+            frame.subtype === "success" &&
+            (frame.terminal_reason === undefined || frame.terminal_reason === "completed"),
+          subtype: typeof frame.subtype === "string" ? frame.subtype : "unknown",
+          terminalReason: typeof frame.terminal_reason === "string" ? frame.terminal_reason : null,
+          usage: object(frame.usage) ? structuredClone(frame.usage) : null,
+          modelUsage: object(frame.modelUsage) ? structuredClone(frame.modelUsage) : null,
+          costUsd:
+            typeof frame.total_cost_usd === "number" &&
+            Number.isFinite(frame.total_cost_usd) &&
+            frame.total_cost_usd >= 0
+              ? frame.total_cost_usd
+              : null,
+        };
         if (frame.is_error === true || frame.subtype !== "success") {
           const detail = Array.isArray(frame.errors)
             ? frame.errors.filter((item: unknown) => typeof item === "string").join("; ")
@@ -472,6 +557,7 @@ export class ClaudeRunnerState {
         }
         if (!this.streamText && typeof frame.result === "string") this.#append(frame.result);
         this.status = "idle";
+        this.lastOutcome = this.terminalResult.success ? "succeeded" : "cancelled";
         if (this.activity === "compacting") this.#staleUsage();
         this.activity = null;
         this.streamText = "";
@@ -813,6 +899,7 @@ export class ClaudeManagedRunnerProcess {
   #tree?: ClaudeProcessTree;
   #lease?: RunnerLease;
   #stopping = false;
+  #terminating?: Promise<void>;
   #retiring = false;
   #closed = false;
   #initializing?: Promise<void>;
@@ -830,6 +917,27 @@ export class ClaudeManagedRunnerProcess {
   #serializedTail: Promise<void> = Promise.resolve();
   #pendingDispatch?: () => void;
   #toolItems = new Map<string, Record<string, unknown>>();
+  #controls = new Map<
+    string,
+    {
+      resolve: (value: Record<string, unknown>) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
+  #models: ClaudeModelOption[] = [];
+  #commands: ClaudeRunnerOptionsSnapshot["commands"] = [];
+  // Only explicit selections are relaunched; observing a host default does not select it.
+  #settings: ClaudeRunnerEffectiveSettings;
+  #effectiveSettings: ClaudeRunnerEffectiveSettings = {
+    model: null,
+    effort: null,
+    permissionMode: null,
+  };
+  #settingsAcknowledged = false;
+  #configuring = false;
+  #steeringIds = new Set<string>();
+  #reportedResult?: ClaudeRunnerTerminalResult;
 
   constructor(
     readonly workspace: string,
@@ -844,6 +952,7 @@ export class ClaudeManagedRunnerProcess {
       payload: Record<string, unknown>,
       live: ClaudeRunnerSnapshot,
     ) => void,
+    readonly options: ClaudeRunnerOptions = {},
   ) {
     if (process.platform !== "darwin" && process.platform !== "linux")
       throw new Error("managed Claude process groups require Unix");
@@ -851,14 +960,171 @@ export class ClaudeManagedRunnerProcess {
     this.state.revision = revision;
     this.state.foregroundBashContract = foregroundBashContract;
     this.#fresh = fresh;
+    this.#settings = {
+      model: options.model ?? null,
+      effort: options.effort ?? null,
+      permissionMode: options.permissionMode ?? null,
+    };
+    validateRunnerSettings(this.#settings);
+    if (
+      options.forkSourceNativeId !== undefined &&
+      (!uuidPattern.test(options.forkSourceNativeId) ||
+        !uuidPattern.test(sessionId) ||
+        options.forkSourceNativeId === sessionId ||
+        !fresh)
+    )
+      throw new Error("invalid Claude fork source");
+    if (
+      options.forkCutoff !== undefined &&
+      (!options.forkSourceNativeId || !uuidPattern.test(options.forkCutoff))
+    )
+      throw new Error("invalid Claude fork cutoff");
+    if (
+      options.controlTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.controlTimeoutMs) ||
+        options.controlTimeoutMs < 1 ||
+        options.controlTimeoutMs > 30_000)
+    )
+      throw new Error("invalid Claude control timeout");
   }
 
   snapshot(): ClaudeRunnerSnapshot {
     return this.state.snapshot();
   }
 
+  get optionsSnapshot(): ClaudeRunnerOptionsSnapshot {
+    return structuredClone({
+      models: this.#models,
+      commands: this.#commands,
+      settings: this.#effectiveSettings,
+      settingsAcknowledged: this.#settingsAcknowledged && this.state.initialized,
+    });
+  }
+
+  /** Discover capabilities with initialize only: never enqueue a user/model turn. */
+  async prepare(executable: string): Promise<ClaudeRunnerOptionsSnapshot> {
+    if (this.#retiring || this.state.status !== "idle" || this.#configuring)
+      throw new Error("Claude runner cannot prepare while busy");
+    if (this.#child) {
+      await this.#initializing;
+      return this.optionsSnapshot;
+    }
+    const checkpoint = this.state.checkpoint();
+    const init = this.state.initialize();
+    let started: ChildProcess | undefined;
+    try {
+      started = this.#start(executable);
+      await this.#write(init);
+      await this.#initializing;
+      return this.optionsSnapshot;
+    } catch (error) {
+      if (!started?.pid) this.state.restoreStartup(checkpoint, errorMessage(error));
+      else this.#fail(errorMessage(error));
+      throw error;
+    }
+  }
+
+  /** Only allow the three session-scoped settings; never persist user configuration. */
+  async configure(
+    settings: Partial<ClaudeRunnerSettings>,
+    revision: number,
+  ): Promise<ClaudeRunnerOptionsSnapshot> {
+    if (this.state.revision !== revision) throw new Error("stale Claude revision");
+    if (
+      !this.#child ||
+      !this.state.initialized ||
+      this.state.status !== "idle" ||
+      this.state.activity === "compacting" ||
+      this.#configuring ||
+      this.#retiring
+    )
+      throw new Error("Claude settings require an idle prepared session");
+    if (Object.keys(settings).some((key) => !["model", "effort", "permissionMode"].includes(key)))
+      throw new Error("unsupported Claude setting");
+    if (settings.permissionMode !== undefined && !isPermissionMode(settings.permissionMode))
+      throw new Error("unsupported Claude permission mode");
+    const next = { ...this.#settings, ...settings };
+    validateRunnerSettings(next);
+    if (
+      next.model !== null &&
+      settings.model !== undefined &&
+      !this.#models.some((entry) => entry.value === next.model)
+    )
+      throw new Error("unsupported Claude model");
+    const modelId = next.model ?? this.#effectiveSettings.model;
+    const model = this.#models.find(
+      (entry) => entry.value === modelId || entry.resolvedModel === modelId,
+    );
+    if (
+      settings.effort !== undefined &&
+      next.effort !== null &&
+      !model?.supportedEffortLevels?.includes(next.effort)
+    )
+      throw new Error("unsupported Claude effort");
+    this.#configuring = true;
+    this.#settingsAcknowledged = false;
+    try {
+      if (settings.model !== undefined)
+        await this.#requestControl({ subtype: "set_model", model: next.model ?? "default" });
+      if (settings.effort !== undefined)
+        await this.#requestControl({
+          subtype: "apply_flag_settings",
+          settings: { effortLevel: next.effort },
+        });
+      if (settings.permissionMode !== undefined)
+        await this.#requestControl({ subtype: "set_permission_mode", mode: next.permissionMode });
+      this.#settings = next;
+      this.#effectiveSettings = { ...this.#effectiveSettings, ...settings };
+      this.#settingsAcknowledged = true;
+      this.state.revision++;
+      this.#notify();
+      return this.optionsSnapshot;
+    } catch (error) {
+      // A partial or lost acknowledgement cannot be represented as the old effective settings.
+      this.#fail(`Claude settings unconfirmed: ${errorMessage(error)}`);
+      throw error;
+    } finally {
+      this.#configuring = false;
+    }
+  }
+
+  async steer(
+    content: unknown,
+    requestId: string,
+    turnId: string,
+    revision: number,
+    beforeDispatch?: () => void,
+  ): Promise<void> {
+    if (!this.#child || this.#retiring || this.#configuring || this.#steeringIds.has(requestId))
+      throw new Error("Claude steering unavailable or already dispatched");
+    const user = this.state.steer(content, requestId, turnId, revision);
+    // The serialized write guard rechecks the turn after any preceding writes/frames.
+    this.#steeringIds.add(requestId);
+    let dispatched = false;
+    try {
+      await this.#write(user, () => {
+        this.state.steer(content, requestId, turnId, revision);
+        beforeDispatch?.();
+        dispatched = true;
+      });
+      this.state.revision++;
+      this.#notify();
+    } catch (error) {
+      if (!dispatched) {
+        this.#steeringIds.delete(requestId);
+        throw error;
+      }
+      this.#fail(`Claude steering write failed: ${errorMessage(error)}`);
+      throw error;
+    }
+  }
+
   get hasWorker(): boolean {
     return this.#child !== undefined;
+  }
+
+  get processId(): number | null {
+    return this.#child?.pid ?? null;
   }
 
   get isRetiring(): boolean {
@@ -869,6 +1135,7 @@ export class ClaudeManagedRunnerProcess {
     if (
       !this.#child ||
       this.#retiring ||
+      this.#configuring ||
       this.state.status !== "idle" ||
       this.state.activity === "compacting"
     )
@@ -903,15 +1170,18 @@ export class ClaudeManagedRunnerProcess {
     revision: number,
     beforeDispatch?: () => void,
   ): Promise<void> {
-    if (this.#retiring) throw new Error("Claude runner is being retired");
+    if (this.#retiring || this.#configuring)
+      throw new Error("Claude runner is being retired or configured");
     const checkpoint = this.state.checkpoint();
     if (this.state.revision !== revision) throw new Error("stale Claude revision");
     if (this.#child && !this.state.initialized) throw new Error("Claude initialize is incomplete");
     const user = this.state.begin(content, requestId);
+    this.#steeringIds.clear();
     this.#pendingDispatch = beforeDispatch;
     if (this.#child) {
       try {
         await this.#write(user);
+        this.#fresh = false;
       } catch (error) {
         if (error instanceof ClaudeUndispatchedError) {
           this.#pendingDispatch = undefined;
@@ -987,12 +1257,22 @@ export class ClaudeManagedRunnerProcess {
   #start(executable: string): ChildProcess {
     if (this.#child) throw new Error("Claude runner already started");
     this.#acquireLease();
+    this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
     let child: ChildProcess;
     try {
       child = spawn(
         executable,
         [
-          `${this.#fresh ? "--session-id" : "--resume"}=${this.sessionId}`,
+          ...(this.#fresh && this.options.forkSourceNativeId
+            ? [
+                `--resume=${this.options.forkSourceNativeId}`,
+                "--fork-session",
+                `--session-id=${this.sessionId}`,
+                ...(this.options.forkCutoff
+                  ? [`--resume-session-at=${this.options.forkCutoff}`]
+                  : []),
+              ]
+            : [`${this.#fresh ? "--session-id" : "--resume"}=${this.sessionId}`]),
           "--print",
           "--input-format",
           "stream-json",
@@ -1004,6 +1284,14 @@ export class ClaudeManagedRunnerProcess {
           "host",
           "--permission-prompt-tool",
           "stdio",
+          ...(this.#settings.model ? ["--model", this.#settings.model] : []),
+          ...(this.#settings.effort ? ["--effort", this.#settings.effort] : []),
+          ...(this.#settings.permissionMode !== null
+            ? ["--permission-mode", this.#settings.permissionMode]
+            : []),
+          ...(this.options.mcpConfig
+            ? ["--mcp-config", JSON.stringify(this.options.mcpConfig)]
+            : []),
         ],
         {
           cwd: this.workspace,
@@ -1040,7 +1328,7 @@ export class ClaudeManagedRunnerProcess {
         const error = new Error("Claude initialize timed out");
         this.#rejectInitialization?.(error);
         this.#fail(error.message);
-      }, 30_000);
+      }, this.options.controlTimeoutMs ?? 30_000);
       this.#resolveInitialization = () => {
         if (this.#initializationTimer) clearTimeout(this.#initializationTimer);
         this.#initializationTimer = undefined;
@@ -1052,6 +1340,8 @@ export class ClaudeManagedRunnerProcess {
         reject(error);
       };
     });
+    // A process can fail while stdin's first write is still pending.
+    void this.#initializing.catch(() => undefined);
     child.stdout?.on("data", (chunk: Buffer) => this.#data(chunk));
     child.stdout?.on("end", () => {
       if (this.#bufferLength) {
@@ -1142,10 +1432,42 @@ export class ClaudeManagedRunnerProcess {
     this.#frameChain = this.#frameChain
       .then(async () => {
         const frame = parseClaudeFrame(line);
+        if (frame.session_id !== undefined && frame.session_id !== this.sessionId)
+          throw new Error("Claude session ID changed unexpectedly");
+        if (frame.type === "control_response" && frame.response?.request_id !== this.state.initId) {
+          this.#controlResponse(frame);
+          return;
+        }
         const wasInitialized = this.state.initialized;
         const previousItemId = this.state.streamItemId;
         const previousItemText = this.state.streamItemText;
-        const response = this.state.frame(frame);
+        let response: JsonObject | null;
+        try {
+          response = this.state.frame(frame);
+        } finally {
+          const result = this.state.terminalResult;
+          if (result && result !== this.#reportedResult) {
+            this.#reportedResult = result;
+            this.options.onResult?.(structuredClone(result));
+          }
+        }
+        if (!wasInitialized && this.state.initialized) {
+          this.#discoverOptions(frame.response?.response);
+          // Initialization confirms explicit launch options, never inherited host defaults.
+          this.#effectiveSettings = {
+            model: this.#effectiveSettings.model ?? this.#settings.model,
+            effort: this.#effectiveSettings.effort ?? this.#settings.effort,
+            permissionMode: this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode,
+          };
+          this.#settingsAcknowledged = true;
+        }
+        if (frame.type === "system" && frame.subtype === "init") {
+          if (shortString(frame.model, 256)) this.#effectiveSettings.model = frame.model;
+          if (isPermissionMode(frame.permissionMode))
+            this.#effectiveSettings.permissionMode = frame.permissionMode;
+        }
+        if (frame.type === "system" && frame.subtype === "commands_changed")
+          this.#commands = projectCommands(frame.commands);
         const live = this.state.snapshot();
         const itemId = this.state.streamItemId;
         const itemText = this.state.streamItemText;
@@ -1339,7 +1661,7 @@ export class ClaudeManagedRunnerProcess {
     return items;
   }
 
-  async #write(frame: JsonObject): Promise<void> {
+  async #write(frame: JsonObject, beforeWrite?: () => void): Promise<void> {
     const child = this.#child;
     if (!child?.stdin || this.#closed) throw new Error("Claude worker unavailable");
     if (++this.#writeCount > 32) {
@@ -1356,8 +1678,11 @@ export class ClaudeManagedRunnerProcess {
     this.#serializedTail = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      if (child !== this.#child || this.#closed)
+        throw new Error("Claude worker changed before write");
       if (frame.type === "user" && this.state.activity === "compacting")
         throw new ClaudeUndispatchedError();
+      beforeWrite?.();
       if (frame.type === "user") {
         this.#pendingDispatch?.();
         this.#pendingDispatch = undefined;
@@ -1380,6 +1705,94 @@ export class ClaudeManagedRunnerProcess {
     }
   }
 
+  #discoverOptions(value: unknown): void {
+    if (value !== undefined && !object(value))
+      throw new Error("invalid Claude initialization data");
+    const payload = object(value) ? value : {};
+    if (
+      payload.models !== undefined &&
+      (!Array.isArray(payload.models) || payload.models.length > 256)
+    )
+      throw new Error("invalid Claude model catalog");
+    this.#models = (payload.models ?? []).map((entry: unknown) => {
+      if (!object(entry) || !shortString(entry.value, 256) || !shortString(entry.displayName, 512))
+        throw new Error("invalid Claude model option");
+      if (entry.resolvedModel !== undefined && !shortString(entry.resolvedModel, 256))
+        throw new Error("invalid Claude resolved model");
+      const levels = entry.supportedEffortLevels;
+      if (
+        levels !== undefined &&
+        (!Array.isArray(levels) ||
+          levels.length > 5 ||
+          levels.some((level: unknown) => !effortLevels.includes(level as ClaudeEffort)))
+      )
+        throw new Error("invalid Claude model effort options");
+      return {
+        value: entry.value,
+        ...(entry.resolvedModel !== undefined ? { resolvedModel: entry.resolvedModel } : {}),
+        displayName: entry.displayName,
+        ...(shortString(entry.description, 4096) ? { description: entry.description } : {}),
+        ...(levels ? { supportedEffortLevels: [...new Set(levels)] as ClaudeEffort[] } : {}),
+      };
+    });
+    this.#commands = projectCommands(payload.commands);
+  }
+
+  async #requestControl(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.#child || !this.state.initialized || this.#controls.size >= 8)
+      throw new Error("Claude control unavailable");
+    const requestId = randomUUID();
+    const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#controls.delete(requestId);
+        const error = new Error("Claude control acknowledgement timed out");
+        reject(error);
+        this.#fail(error.message);
+      }, this.options.controlTimeoutMs ?? 30_000);
+      this.#controls.set(requestId, { resolve, reject, timer });
+    });
+    // Observe early transport failures even when the pipe write has not settled.
+    void response.catch(() => undefined);
+    try {
+      await this.#write({ type: "control_request", request_id: requestId, request });
+      return await response;
+    } catch (error) {
+      const pending = this.#controls.get(requestId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.#controls.delete(requestId);
+        pending.reject(error instanceof Error ? error : new Error(errorMessage(error)));
+      }
+      throw error;
+    }
+  }
+
+  #controlResponse(frame: JsonObject): void {
+    const response = frame.response;
+    const requestId = response?.request_id;
+    const pending = typeof requestId === "string" ? this.#controls.get(requestId) : undefined;
+    if (!pending) throw new Error("unexpected Claude control response");
+    this.#controls.delete(requestId);
+    clearTimeout(pending.timer);
+    if (response.subtype !== "success") {
+      pending.reject(new Error("Claude control request rejected"));
+      return;
+    }
+    if (response.response !== undefined && !object(response.response)) {
+      pending.reject(new Error("invalid Claude control acknowledgement"));
+      return;
+    }
+    pending.resolve(response.response ?? {});
+  }
+
+  #rejectControls(error: Error): void {
+    for (const pending of this.#controls.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.#controls.clear();
+  }
+
   #notify(): void {
     try {
       this.onSnapshot(this.state.snapshot());
@@ -1392,6 +1805,8 @@ export class ClaudeManagedRunnerProcess {
   }
 
   #fail(reason: string): void {
+    this.#settingsAcknowledged = false;
+    this.#rejectControls(new Error(reason));
     if (this.state.status !== "outcome-unknown") this.state.fail(reason);
     this.#notify();
     this.#rejectInitialization?.(new Error(reason));
@@ -1411,12 +1826,27 @@ export class ClaudeManagedRunnerProcess {
   }
 
   async #terminate(): Promise<void> {
+    // Failure cleanup and host shutdown can arrive together for the same owned process tree.
+    if (this.#terminating) return this.#terminating;
+    const terminating = this.#terminateWorker();
+    this.#terminating = terminating;
+    try {
+      await terminating;
+    } finally {
+      if (this.#terminating === terminating) this.#terminating = undefined;
+    }
+  }
+
+  async #terminateWorker(): Promise<void> {
     const child = this.#child;
     const tree = this.#tree;
     if (!child || !tree) return;
     this.#stopping = true;
     this.#closed = true;
     this.#intentional.add(child);
+    this.#settingsAcknowledged = false;
+    this.#rejectControls(new Error("Claude worker stopped before control acknowledgement"));
+    this.#rejectInitialization?.(new Error("Claude worker stopped before initialization"));
     try {
       await tree.terminate(child);
       this.#child = undefined;
@@ -1441,6 +1871,41 @@ export class ClaudeManagedRunnerProcess {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const effortLevels: ClaudeEffort[] = ["low", "medium", "high", "xhigh", "max"];
+const shortString = (value: unknown, max: number): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  Buffer.byteLength(value) <= max &&
+  !Array.from(value).some(
+    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+
+const isPermissionMode = (value: unknown): value is ClaudePermissionMode =>
+  value === "default" || value === "plan" || value === "acceptEdits";
+
+function validateRunnerSettings(value: ClaudeRunnerEffectiveSettings): void {
+  if (value.model !== null && !shortString(value.model, 256))
+    throw new Error("invalid Claude model");
+  if (value.effort !== null && !effortLevels.includes(value.effort))
+    throw new Error("invalid Claude effort");
+  if (value.permissionMode !== null && !isPermissionMode(value.permissionMode))
+    throw new Error("unsupported Claude permission mode");
+}
+
+function projectCommands(value: unknown): ClaudeRunnerOptionsSnapshot["commands"] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 2048)
+    throw new Error("invalid Claude command catalog");
+  return value.map((entry: unknown) => {
+    if (!object(entry) || !shortString(entry.name, 256)) throw new Error("invalid Claude command");
+    return {
+      name: entry.name,
+      ...(shortString(entry.description, 4096) ? { description: entry.description } : {}),
+      ...(shortString(entry.argumentHint, 1024) ? { argumentHint: entry.argumentHint } : {}),
+    };
+  });
 }
 
 export function parseClaudeFrame(line: string | Buffer): JsonObject {

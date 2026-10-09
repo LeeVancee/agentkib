@@ -430,6 +430,69 @@ describe("quota collection diagnostics and partial results", () => {
     });
   });
 
+  it.each([
+    JSON.stringify({ message: 'Upstream: {"accessToken"\n : "SYNTHETIC-VALUE"}' }),
+    JSON.stringify({ message: 'Upstream: {"refreshToken"\t: "SYNTHETIC-VALUE"}' }),
+    JSON.stringify({ message: 'Upstream: {"idToken"\r\n: "SYNTHETIC-VALUE"}' }),
+    JSON.stringify(JSON.stringify({ message: 'Upstream: {"accessToken"\n : "SYNTHETIC-VALUE"}' })),
+    String.raw`{"message":"Upstream: {\"refreshToken\"\u0020: \"SYNTHETIC-VALUE\"}"}`,
+  ])("redacts nested credential fields followed by encoded whitespace (%s)", async (error) => {
+    for (const mode of ["failure", "partial", "stderr"] as const) {
+      const f = fixture();
+      if (mode === "stderr") {
+        f.run.mockResolvedValue({
+          bytes: Buffer.alloc(0),
+          error,
+          success: false,
+          truncated: false,
+          exitCode: 1,
+        });
+      } else {
+        f.respond([
+          ...(mode === "partial" ? [provider("codex", { windows: [window()] })] : []),
+          provider("claude", {
+            error,
+            accountsError: error,
+            accounts: [{ id: "a", label: "Fixture", active: true, windows: [], error }],
+          }),
+        ]);
+      }
+      const refresh = f.owner.refresh();
+      if (mode === "partial") {
+        await expect(refresh).resolves.toMatchObject({ status: { state: "succeeded" } });
+        expect(JSON.stringify(f.owner.snapshot())).toContain("Upstream:");
+      } else {
+        await expect(refresh).rejects.toThrow("Upstream:");
+        await expect(refresh).rejects.not.toThrow("SYNTHETIC-VALUE");
+        expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
+      }
+      for (const stored of [f.owner.snapshot(), await f.owner.status()]) {
+        expect(JSON.stringify(stored)).not.toContain("SYNTHETIC-VALUE");
+      }
+      expect(f.run).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("retains ordinary nested fields with encoded whitespace", async () => {
+    const f = fixture();
+    const error = JSON.stringify({ message: 'Upstream: {"message"\n: "Usage unavailable"}' });
+    f.respond([provider("codex", { error })]);
+    await expect(f.owner.refresh()).rejects.toThrow(error);
+    expect(await f.owner.status()).toMatchObject({ error_detail: expect.stringContaining(error) });
+  });
+
+  it("bounds long encoded whitespace after a credential field", async () => {
+    const f = fixture();
+    const error = String.raw`Upstream: {\"accessToken\"${String.raw`\n`.repeat(100_000)}: \"SYNTHETIC-VALUE\"}`;
+    f.respond([provider("codex", { error })]);
+    const refresh = f.owner.refresh();
+    await expect(refresh).rejects.toThrow("Upstream:");
+    await expect(refresh).rejects.not.toThrow("SYNTHETIC-VALUE");
+    const status = (await f.owner.status()) as { error_detail: string };
+    expect(status.error_detail).not.toContain("SYNTHETIC-VALUE");
+    expect(status.error_detail.length).toBeLessThanOrEqual(1000);
+  });
+
   it.each(["refresh-token", "id-token"])(
     "redacts --%s values in every error field of partial-success snapshots",
     async (option) => {

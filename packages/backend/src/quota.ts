@@ -458,8 +458,13 @@ function redactCredentialFields(value: string): string {
   // "Upstream:" must not consume a later sensitive field. Overlapping candidates
   // also cover escaped JSON and spaced names such as "access key id".
   // CLI names use the same classification regardless of value quoting/separator.
-  const fields =
-    /(?=\\?"([^"\r\n]*?)\\?"\s*[:=]|\\?'([^'\r\n]*?)\\?'\s*[:=]|(?<![A-Za-z\d_$-])--?([A-Za-z_$][A-Za-z\d_$-]*)|(?<![A-Za-z\d_$-])([A-Za-z_$][A-Za-z\d_$-]*(?:[ \t]+[A-Za-z\d_$-]+){0,2})\s*[:=])/g;
+  // Nested diagnostic strings encode whitespace between the key and colon;
+  // recognize those separators without decoding or copying credential values.
+  const whitespace = String.raw`(?:\s|\\+(?:[nrt]|u00(?:09|0[aAdD]|20)))*`;
+  const fields = new RegExp(
+    String.raw`(?=\\?"([^"\r\n]*?)\\?"${whitespace}[:=]|\\?'([^'\r\n]*?)\\?'${whitespace}[:=]|(?<![A-Za-z\d_$-])--?([A-Za-z_$][A-Za-z\d_$-]*)|(?<![A-Za-z\d_$-])([A-Za-z_$][A-Za-z\d_$-]*(?:[ \t]+[A-Za-z\d_$-]+){0,2})${whitespace}[:=])`,
+    "g",
+  );
   for (const match of value.matchAll(fields)) {
     const key = (match[1] ?? match[2] ?? match[3] ?? match[4]).replace(/\\+$/, "");
     // Values can span lines or contain incomplete nested objects. Preserve the

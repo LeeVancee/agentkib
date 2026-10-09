@@ -40,7 +40,7 @@ import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
-import { ClaudeManagedReadOwner } from "./claude-managed-read";
+import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { WorkspaceApplications } from "./workspace-applications";
@@ -546,7 +546,7 @@ export class TypeScriptBackend {
       const receipt = readControlReceipt(this.#dataDir, params);
       return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
     }
-    if (method === RUNTIME_METHODS.claudeManaged) return this.#claudeManaged!.request(params);
+    if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
       return this.#withWebRead((owner) => owner.managedOptions());
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
@@ -604,11 +604,9 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (
-        params.operation === "live" ||
-        params.operation === "events" ||
-        params.operation === "usage"
-      ) {
+      // Resolve the provider from persisted identity, never from a browser-supplied agent.
+      // Fresh Claude sessions are not indexed until their first native transcript exists.
+      if (typeof params.sessionId === "string" && params.operation !== "catalog") {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
@@ -620,8 +618,14 @@ export class TypeScriptBackend {
             !this.#claudeManaged!.hasManagedSession(sessionId)
           )
             return this.#readIndexedClaudeEvents(params, sessionId);
-          return this.#claudeManaged!.request(params);
+          return this.#requestClaudeManaged(params);
         }
+      }
+      if (
+        params.operation === "live" ||
+        params.operation === "events" ||
+        params.operation === "usage"
+      ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
       if (params.operation === "settings-state")
@@ -1466,6 +1470,15 @@ export class TypeScriptBackend {
       );
     }
     return await operation(this.#webRead);
+  }
+
+  async #requestClaudeManaged(params: Record<string, unknown>) {
+    try {
+      return await this.#claudeManaged!.request(params);
+    } catch (error) {
+      if (error instanceof ClaudeHostControlPreflightError) return error.result;
+      throw error;
+    }
   }
 
   async #readIndexedClaudeEvents(params: Record<string, unknown>, sessionId: string) {

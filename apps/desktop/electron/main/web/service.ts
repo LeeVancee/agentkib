@@ -19,6 +19,8 @@ import { networkInterfaces } from "node:os";
 import { ArtifactService, ArtifactError } from "./artifacts";
 import { AttachmentStore, AttachmentError } from "./attachments";
 import { dispatchClaude } from "./claude-dispatch";
+import { ClaudeHostScheduler, type ClaudeScheduledSession } from "./claude-scheduler";
+import { attachManagedWebSocket, type ConversationDispatchControl } from "./managed-websocket";
 import { CLAUDE_LOCAL_OWNER, localClaudeRequest } from "./local-claude";
 import { replayClaudeAttachments, settleClaudeAttachments } from "./claude-attachment-receipts";
 import { markdownLinkTargets } from "./markdown-links";
@@ -41,6 +43,54 @@ import {
 } from "./relay/manager";
 
 export const HOSTED_ORIGIN = "https://remote.agentkib.com";
+/** Freeze browser-visible inputs so durable replay never needs to reopen resources. */
+function managedActionInputHash(operation: string, body: Record<string, unknown>): string {
+  const fields = [
+    "sessionId",
+    "expectedRevision",
+    "text",
+    "attachmentIds",
+    "resourceIds",
+    "historyReferences",
+    "turnId",
+    "queuedSubmissionId",
+    "queuedSubmissionIds",
+    "name",
+    "model",
+    "effort",
+    "permissionMode",
+    "mode",
+    "serviceTierId",
+    "policyId",
+    "restoreDefaults",
+    "objective",
+    "intent",
+    "tokenBudget",
+    "handoffConfirmed",
+  ];
+  const canonical = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.entries(value)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([key, item]) => [key, canonical(item)]),
+          )
+        : value;
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonical({
+          operation,
+          ...Object.fromEntries(
+            fields.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
+          ),
+        }),
+      ),
+    )
+    .digest("hex");
+}
 export function isPrivateIPv4(address: string): boolean {
   const parts = address.split(".");
   if (parts.length !== 4 || parts.some((p) => !/^(0|[1-9]\d{0,2})$/.test(p) || Number(p) > 255))
@@ -63,6 +113,7 @@ export function createWebControlState() {
     unconfirmedRequests: new Map<string, string>(),
     requests: new Set<string>(),
     events: new EventEmitter().setMaxListeners(64),
+    claudeScheduler: undefined as ClaudeHostScheduler | undefined,
   };
 }
 
@@ -266,6 +317,10 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/capabilities": { lan: true },
     "/managed/inspect": { lan: true },
     "/managed/context": { lan: true },
+    "/managed/settings": {},
+    "/managed/queue": {},
+    "/managed/goals": {},
+    "/managed/resources": {},
     "/files/workspaces": { lan: true },
     "/files/list": { lan: true },
     "/files/text": { lan: true },
@@ -294,6 +349,7 @@ const API_ROUTES: Record<"GET" | "POST", Record<string, RouteSpec>> = {
     "/managed/adopt": { lan: true, control: true },
     "/managed/release": { lan: true, control: true },
     "/managed/reconcile": { lan: true, control: true },
+    "/managed/action": { control: true },
     "/artifact-tickets": { lan: true },
     "/attachments": { lan: true },
     "/attachments/delete": { lan: true },
@@ -412,6 +468,9 @@ export class WebAccessService {
   private relayEpoch = 0;
   private disposed = false;
   private remotePairingInitialized = false;
+  private scheduler?: ClaudeHostScheduler;
+  private unregisterScheduler?: () => void;
+  private managedSocket?: { close(): void };
   private contextArtifactRefs = new Map<
     string,
     {
@@ -451,6 +510,7 @@ export class WebAccessService {
       verifiedCodex?: boolean;
       verifiedExperimental?: boolean;
       verifiedClaudeManaged?: boolean;
+      enableClaudeScheduler?: boolean;
       verifiedAntigravityManaged?: boolean;
       acceptanceSessionId?: string;
       mode?: "lan";
@@ -482,6 +542,12 @@ export class WebAccessService {
       !/^[a-f0-9]{64}$/.test(options.acceptanceSessionId)
     )
       throw new Error("invalid_acceptance_session");
+    if (options.enableClaudeScheduler && options.claudeManagedRequest) {
+      this.scheduler =
+        options.sharedControl?.claudeScheduler ??
+        new ClaudeHostScheduler(options.claudeManagedRequest);
+      if (options.sharedControl) options.sharedControl.claudeScheduler = this.scheduler;
+    }
   }
   private get admission() {
     return this.options.sharedControl?.admission ?? this.controlAdmission;
@@ -775,6 +841,80 @@ export class WebAccessService {
       }
     }
     if (this.config.enabled) await this.start();
+    if (this.scheduler && !this.unregisterScheduler) {
+      this.unregisterScheduler = this.scheduler.register({
+        owns: (deviceId) => this.ownsScheduledDevice(deviceId),
+        authorize: (session) => this.authorizeScheduledWork(session),
+        reserve: (sessionId) => {
+          if (
+            this.disposed ||
+            this.admission ||
+            this.active.has(sessionId) ||
+            this.unconfirmed.has(sessionId)
+          )
+            return false;
+          this.admission = true;
+          this.active.add(sessionId);
+          return true;
+        },
+        release: (sessionId) => {
+          this.active.delete(sessionId);
+          this.admission = false;
+          this.notifyControlChanged(sessionId);
+        },
+        settled: async (sessionId) => {
+          if (this.options.receiptRequest)
+            await settleClaudeAttachments(
+              this.attachmentStore,
+              this.options.receiptRequest,
+              sessionId,
+            );
+        },
+      });
+    }
+  }
+
+  private ownsScheduledDevice(deviceId: string) {
+    return (
+      this.options.mode !== "lan" &&
+      ([this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(deviceId) ||
+        this.credentials.some((credential) => credential.device.id === deviceId))
+    );
+  }
+
+  private async authorizeScheduledWork(session: ClaudeScheduledSession) {
+    const work = session.next;
+    if (
+      !work ||
+      this.disposed ||
+      !this.options.verifiedClaudeManaged ||
+      this.options.mode === "lan"
+    )
+      throw new Error("scheduled-control-unavailable");
+    const local = [this.localDevice.id, CLAUDE_LOCAL_OWNER].includes(work.deviceId);
+    const hash = local
+      ? "desktop-local"
+      : this.credentials.find((c) => c.device.id === work.deviceId)?.hash;
+    if (!hash) throw new Error("scheduled-device-unavailable");
+    const device = this.grant(hash, "send");
+    this.grant(hash, "advancedControl");
+    if (work.kind === "goal") this.fullAccess(hash);
+    if (work.requiresAttachments) {
+      this.grant(hash, "attachments");
+      if (work.originDeviceId && work.originDeviceId !== work.deviceId)
+        throw new Error("attachment-owner-changed");
+    }
+    if (!(await this.workspaceAllowed(session.workspaceId, device, true)))
+      throw new Error("workspace_not_authorized");
+    const current = this.grant(hash, "send");
+    this.grant(hash, "advancedControl");
+    if (work.kind === "goal") this.fullAccess(hash);
+    if (work.requiresAttachments) this.grant(hash, "attachments");
+    if (!this.controlsEnabled(session.sessionId, current)) throw new Error("control_unavailable");
+  }
+
+  private invalidateScheduledDevice(deviceId: string, reason: string) {
+    return this.scheduler?.invalidate(deviceId, reason) ?? Promise.resolve();
   }
 
   /** Called only after the Electron sender check; shares all command admission and receipts. */
@@ -795,7 +935,8 @@ export class WebAccessService {
         path.includes("/artifacts") ||
         path.includes("/artifact-tickets") ||
         path.includes("/diff") ||
-        path.includes("/codex/context-options")
+        path.includes("/codex/context-options") ||
+        path.includes("/managed/resources")
       )
         await this.startDesktopPreview();
       const bytes = upload ?? Buffer.from(body === undefined ? "" : JSON.stringify(body));
@@ -931,6 +1072,8 @@ export class WebAccessService {
    */
   dispose(): Promise<void> {
     this.disposed = true;
+    this.unregisterScheduler?.();
+    this.unregisterScheduler = undefined;
     const result = this.adminQueue.then(() => this.shutdown());
     this.adminQueue = result.catch(() => undefined);
     return result;
@@ -1068,6 +1211,8 @@ export class WebAccessService {
         if (!credential) throw new Error("device_not_found");
         const previous = credential.device;
         credential.device = { ...previous, ...CODE_ACCESS_PERMISSIONS[input.access] };
+        if (input.access === "read")
+          await this.invalidateScheduledDevice(input.id, "authorization-changed");
         try {
           await this.save();
         } catch (error) {
@@ -1123,6 +1268,7 @@ export class WebAccessService {
       case "revoke": {
         const revoked = this.credentials.filter((c) => c.device.id === input.id);
         this.credentials = this.credentials.filter((c) => c.device.id !== input.id);
+        await this.invalidateScheduledDevice(input.id, "authorization-revoked");
         for (const c of revoked) {
           const b = this.browsers.get(c.hash);
           if (b) b.ended = true;
@@ -1314,31 +1460,32 @@ export class WebAccessService {
     const server = createServer((req, res) => {
       const control = { request: false, dispatched: false, priorUncertain: false };
       void this.handle(req, res, control).catch((error) => {
-        if (!res.headersSent)
-          this.json(
-            res,
-            error instanceof HttpError ||
-              error instanceof ArtifactError ||
-              error instanceof AttachmentError
-              ? error.status
-              : 500,
-            {
-              error:
-                error instanceof HttpError ||
-                error instanceof ArtifactError ||
-                error instanceof AttachmentError
-                  ? error.message
-                  : "request_failed",
-              ...(control.request && {
-                // Error codes alone cannot distinguish a preflight rejection from
-                // a grant/boot recheck after dispatch, or a previous request.
-                controlOutcome:
-                  control.dispatched || control.priorUncertain ? "unknown" : "not-dispatched",
-              }),
-            },
-          );
-        else res.end();
+        this.respondControlError(res, control, error);
       });
+    });
+    this.managedSocket = attachManagedWebSocket(server, {
+      authorize: async (request) => {
+        if (this.options.mode === "lan" || this.disposed) return false;
+        const response = new LocalConversationResponse();
+        await this.handle(
+          {
+            headers: request.headers,
+            method: "GET",
+            url: "/api/web/v1/catalog",
+            async *[Symbol.asyncIterator]() {},
+          },
+          response,
+          { request: false, dispatched: false, priorUncertain: false },
+        );
+        return response.statusCode === 200;
+      },
+      dispatch: async (request, response, control) => {
+        try {
+          await this.handle(request, response, control);
+        } catch (error) {
+          this.respondControlError(response, control, error);
+        }
+      },
     });
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
@@ -1374,6 +1521,29 @@ export class WebAccessService {
         (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "port_in_use" : "web_start_failed";
     }
   }
+  private respondControlError(
+    res: ConversationResponse,
+    control: ConversationDispatchControl,
+    error: unknown,
+  ) {
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    const known =
+      error instanceof HttpError ||
+      error instanceof ArtifactError ||
+      error instanceof AttachmentError;
+    this.json(res, known ? error.status : 500, {
+      error: known ? error.message : "request_failed",
+      ...(control.request
+        ? {
+            controlOutcome:
+              control.dispatched || control.priorUncertain ? "unknown" : "not-dispatched",
+          }
+        : {}),
+    });
+  }
   /** Also called on OS resume and when settings request their current status. */
   async checkLanAddress(): Promise<void> {
     if (this.options.mode !== "lan" || !this.server) return;
@@ -1383,6 +1553,11 @@ export class WebAccessService {
     }
   }
   async shutdown() {
+    this.managedSocket?.close();
+    this.managedSocket = undefined;
+    await Promise.all(
+      this.credentials.map((c) => this.invalidateScheduledDevice(c.device.id, "host-stopped")),
+    );
     this.relayEpoch += 1;
     await this.relay?.stop();
     clearInterval(this.addressTimer);
@@ -1822,6 +1997,7 @@ export class WebAccessService {
             models?: unknown;
             policies?: unknown;
             serviceTiers?: unknown;
+            permissionModes?: unknown;
             revision?: unknown;
             reason?: unknown;
           })
@@ -1862,6 +2038,10 @@ export class WebAccessService {
           const id = this.optionalString(model.id, 128);
           if (!id) return [];
           const name = this.optionalString(model.name, 256);
+          const resolvedModel =
+            data.executionMode === "claude-managed"
+              ? this.optionalString(model.resolvedModel, 128)
+              : undefined;
           const defaultEffort = this.optionalString(
             model.defaultEffort ?? model.default_effort,
             128,
@@ -1870,6 +2050,7 @@ export class WebAccessService {
             {
               id,
               ...(name ? { name } : {}),
+              ...(resolvedModel ? { resolvedModel } : {}),
               efforts: stringList(model.efforts),
               ...(defaultEffort ? { defaultEffort } : {}),
               serviceTierIds: tierIds(
@@ -1922,6 +2103,9 @@ export class WebAccessService {
       ...(value(current, "effort") ? { effort: value(current, "effort") } : {}),
       ...(value(current, "mode") ? { mode: value(current, "mode") } : {}),
       ...(value(current, "policyId") ? { policyId: value(current, "policyId") } : {}),
+      ...(["default", "plan", "acceptEdits"].includes(value(current, "permissionMode") ?? "")
+        ? { permissionMode: value(current, "permissionMode") }
+        : {}),
       ...(value(current, "serviceTier", "serviceTierId")
         ? { serviceTierId: value(current, "serviceTier", "serviceTierId") }
         : {}),
@@ -1948,6 +2132,9 @@ export class WebAccessService {
           ? { modelId: value(defaults, "model", "modelId") }
           : {}),
         ...(value(defaults, "effort") ? { effort: value(defaults, "effort") } : {}),
+        ...(value(defaults, "permissionMode")
+          ? { permissionMode: value(defaults, "permissionMode") }
+          : {}),
         ...(value(defaults, "serviceTier", "serviceTierId")
           ? { serviceTierId: value(defaults, "serviceTier", "serviceTierId") }
           : {}),
@@ -1958,16 +2145,35 @@ export class WebAccessService {
         mode: this.availability(writable?.mode),
         policy: this.availability(writable?.policy),
         serviceTier: this.availability(writable?.serviceTier),
-        restoreDefaults: {
-          available:
-            this.availability(writable?.model).available && !!value(defaults, "model", "modelId"),
-          ...(!value(defaults, "model", "modelId") ? { reason: "defaults_unavailable" } : {}),
-        },
+        ...(data.executionMode === "claude-managed"
+          ? { permissionMode: this.availability(writable?.permissionMode) }
+          : {}),
+        restoreDefaults:
+          data.executionMode === "claude-managed"
+            ? this.availability(writable?.restoreDefaults)
+            : {
+                available:
+                  this.availability(writable?.model).available &&
+                  !!value(defaults, "model", "modelId"),
+                ...(!value(defaults, "model", "modelId") ? { reason: "defaults_unavailable" } : {}),
+              },
       },
       options: {
         models,
         policies,
         serviceTiers,
+        ...(data.executionMode === "claude-managed"
+          ? {
+              permissionModes: Array.isArray(data.permissionModes)
+                ? data.permissionModes.slice(0, 3).flatMap((value) => {
+                    if (!value || typeof value !== "object") return [];
+                    const mode = value as Record<string, unknown>;
+                    if (!["default", "plan", "acceptEdits"].includes(String(mode.id))) return [];
+                    return [{ id: mode.id, name: this.optionalString(mode.name, 128) ?? mode.id }];
+                  })
+                : [],
+            }
+          : {}),
         collaborationModes: Array.isArray(data.collaborationModes)
           ? data.collaborationModes.slice(0, 8).flatMap((entry) => {
               if (!entry || typeof entry !== "object") return [];
@@ -2128,7 +2334,7 @@ export class WebAccessService {
     add("skills", "skill");
     add("plugins", "plugin");
     add("apps", "app");
-    add("contextReferences", "file");
+    if (raw.executionMode !== "claude-managed") add("contextReferences", "file");
     let directory:
       | {
           directoryId: string;
@@ -2201,7 +2407,7 @@ export class WebAccessService {
       throw new HttpError(400, "invalid_resource_ids");
     const device = this.fullAccess(hash);
     const artifacts = this.artifactsFor(device.id);
-    const workspaceId = await this.codexScope(sessionId, hash, reserved);
+    const workspaceId = await this.codexScope(sessionId, hash, reserved, false);
     const { response, references } = await this.contextResources(
       sessionId,
       device,
@@ -2279,22 +2485,64 @@ export class WebAccessService {
       files: "files",
       attachments: "attachments",
       usage: "advancedControl",
+      "settings-state": "advancedControl",
+      settings: "settings",
+      context: "advancedControl",
+      resources: "advancedControl",
+      goal: "advancedControl",
+      "goal-set": "advancedControl",
+      "goal-pause": "advancedControl",
+      "goal-resume": "advancedControl",
+      "goal-clear": "advancedControl",
+      "queue-list": "advancedControl",
+      "queue-add": "advancedControl",
+      "queue-update": "advancedControl",
+      "queue-delete": "advancedControl",
+      "queue-reorder": "advancedControl",
+      "queue-pause": "advancedControl",
+      "queue-resume": "advancedControl",
+      steer: "advancedControl",
+      fork: "manage",
+      rename: "organize",
+      archive: "organize",
+      unarchive: "organize",
     };
     return {
       ...data,
       features: Object.fromEntries(
         Object.entries(data.features ?? {}).map(([operation, feature]) => {
           const permission = roles[operation];
-          const transport =
-            this.options.mode !== "lan" || !["files", "attachments"].includes(operation);
+          const advanced = ![
+            "send",
+            "stop",
+            "answer",
+            "approve",
+            "adopt",
+            "release",
+            "reconcile",
+            "inspect",
+          ].includes(operation);
+          const transport = this.options.mode !== "lan" || !advanced;
           const execution =
-            ["files", "inspect", "usage"].includes(operation) ||
+            [
+              "files",
+              "inspect",
+              "usage",
+              "settings-state",
+              "goal",
+              "queue-list",
+              "context",
+              "resources",
+            ].includes(operation) ||
             (this.options.verifiedClaudeManaged === true &&
               this.controlsEnabled(sessionId, device));
           const allowed =
             permission &&
             device[permission] === true &&
-            (operation !== "usage" || this.isFullAccess(device)) &&
+            ((!["usage", "settings-state", "goal", "context", "resources"].includes(operation) &&
+              !operation.startsWith("goal-")) ||
+              this.isFullAccess(device)) &&
+            (operation !== "fork" || device.organize === true) &&
             transport &&
             execution &&
             (operation !== "attachments" || device.send === true);
@@ -2351,6 +2599,7 @@ export class WebAccessService {
     operation: string,
     body: Record<string, unknown>,
     control: { request: boolean; dispatched: boolean; priorUncertain: boolean },
+    generic = false,
   ) {
     const actions = [
       "inspect",
@@ -2361,6 +2610,7 @@ export class WebAccessService {
       "queue-delete",
       "queue-reorder",
       "queue-start",
+      ...(generic ? ["queue-pause", "queue-resume"] : []),
       "rename",
       "archive",
       "unarchive",
@@ -2378,7 +2628,7 @@ export class WebAccessService {
     if (operation.startsWith("goal-")) this.fullAccess(hash);
     if (operation === "fork") this.grant(hash, "organize");
     const sessionId = this.field(body.sessionId);
-    if (this.isFullAccess(device)) await this.codexScope(sessionId, hash);
+    if (this.isFullAccess(device)) await this.codexScope(sessionId, hash, false, !generic);
     if (!this.controlsEnabled(sessionId, device))
       throw new HttpError(403, "session_control_not_allowed");
     if (operation === "inspect") {
@@ -2416,8 +2666,29 @@ export class WebAccessService {
       throw new HttpError(400, "history_references_not_supported");
     const prior = await this.controlReceipt(requestId, this.grant(hash, permission).id, control);
     this.grant(hash, permission);
+    const publicInputHash = generic ? managedActionInputHash(operation, body) : undefined;
+    if (generic && prior?.found === true && typeof prior.publicInputHash === "string") {
+      await this.codexScope(sessionId, hash, false, false);
+      if (body.attachmentIds !== undefined) this.grant(hash, "attachments");
+      this.grant(hash, permission);
+      if (
+        prior.sessionId !== sessionId ||
+        prior.operation !== operation ||
+        prior.publicInputHash !== publicInputHash
+      )
+        throw new HttpError(409, "request_id_conflict");
+      if (prior.status === "accepted" && prior.ack && typeof prior.ack === "object") {
+        control.priorUncertain = false;
+        return this.json(res, 200, prior.ack);
+      }
+      control.priorUncertain = prior.status !== "not-dispatched";
+      throw new HttpError(
+        409,
+        control.priorUncertain ? "outcome_unknown" : "control_preflight_rejected",
+      );
+    }
     if (body.historyReferences !== undefined || prior?.historyInputHash)
-      await this.codexScope(sessionId, hash);
+      await this.codexScope(sessionId, hash, false, !generic);
     const replay = this.historyReplay(prior, body, operation, control);
     if (replay !== undefined) return this.json(res, 200, replay);
     if (body.bootId !== this.bootId) throw new HttpError(409, "stale_boot");
@@ -2431,12 +2702,13 @@ export class WebAccessService {
       throw new HttpError(409, "outcome_unknown");
     }
     if (this.admission || this.active.has(sessionId)) throw new HttpError(409, "operation_busy");
-    const workspaceId = await this.codexScope(sessionId, hash);
+    const workspaceId = await this.codexScope(sessionId, hash, false, !generic);
     if (this.admission) throw new HttpError(409, "operation_busy");
     if (this.requests.size >= 10_000) throw new HttpError(429, "request_capacity");
     this.admission = true;
     this.active.add(sessionId);
     let dispatched = false;
+    let newlyPinnedDevice: string | undefined;
     let historyScopeKey: string | undefined;
     try {
       const capabilities = (await this.runtime(
@@ -2451,6 +2723,7 @@ export class WebAccessService {
       if (
         (operation !== "resume" &&
           capabilities.executionMode !== "codex-managed" &&
+          !(generic && capabilities.executionMode === "claude-managed") &&
           !(sessionSettingsAction && capabilities.executionMode === "codex-follower")) ||
         capabilities.features?.[operation]?.available !== true
       )
@@ -2470,7 +2743,7 @@ export class WebAccessService {
         !snapshot.runtimeBootId
       )
         throw new HttpError(409, "stale_state");
-      if (operation === "queue-add" && snapshot.status !== "running")
+      if (operation === "queue-add" && !generic && snapshot.status !== "running")
         throw new HttpError(409, "queue_requires_running_turn");
       const params: Record<string, unknown> = {
         operation,
@@ -2480,6 +2753,7 @@ export class WebAccessService {
         expectedRevision: body.expectedRevision,
         runtimeBootId: snapshot.runtimeBootId,
         experimentalEnabled: true,
+        ...(generic && capabilities.executionMode === "claude-managed" ? { publicInputHash } : {}),
       };
       // Every operation has an explicit public-field projection. Paths and raw RPC input never pass through.
       if (["steer", "queue-add", "queue-update"].includes(operation)) {
@@ -2487,6 +2761,8 @@ export class WebAccessService {
         if (body.attachmentIds !== undefined && !Array.isArray(body.attachmentIds))
           throw new HttpError(400, "invalid_attachments");
         const hasAttachments = Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0;
+        if (operation === "queue-update" && hasAttachments)
+          throw new HttpError(409, "queue_attachments_edit_unsupported");
         if (
           typeof rawText !== "string" ||
           rawText.length > 16000 ||
@@ -2508,29 +2784,43 @@ export class WebAccessService {
           this.grant(hash, "attachments");
           if (capabilities.features?.attachments?.available !== true)
             throw new HttpError(409, "attachments_unavailable");
-          params.input = await this.attachmentStore.input(
-            device.id,
-            sessionId,
-            body.attachmentIds,
-            text,
-          );
+          params.input =
+            capabilities.executionMode === "claude-managed"
+              ? await this.attachmentStore.inputForAgent(
+                  device.id,
+                  sessionId,
+                  body.attachmentIds,
+                  text,
+                  "claude",
+                  requestId,
+                )
+              : await this.attachmentStore.input(device.id, sessionId, body.attachmentIds, text);
+          if (capabilities.executionMode === "claude-managed" && prior?.found !== true)
+            newlyPinnedDevice = device.id;
           delete params.text;
         }
       }
-      if (operation === "queue-update") {
+      if (
+        operation === "queue-update" ||
+        (operation === "queue-delete" && capabilities.executionMode === "claude-managed")
+      ) {
         const queued = (await this.runtime(
           { operation: "queue-list", sessionId, limit: 100 },
           undefined,
           true,
-        )) as { data?: { id: string; input?: { type: string; text?: string }[] }[] };
+        )) as {
+          data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
+        };
         if (
           (queued as { reason?: string }).reason === "queue-too-large" ||
           (queued.data?.length ?? 0) > 100
         )
           throw new HttpError(409, "queue_too_large");
         const target = queued.data?.find((item) => item.id === body.queuedSubmissionId);
-        if (!target) throw new HttpError(409, "queue_item_unavailable");
+        if (!target || (target.status !== undefined && target.status !== "pending"))
+          throw new HttpError(409, "queue_item_unavailable");
         if (
+          operation === "queue-update" &&
           target.input?.some(
             (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
           )
@@ -2574,6 +2864,7 @@ export class WebAccessService {
           writable?: Record<string, unknown>;
           models?: {
             id?: string;
+            resolvedModel?: string;
             efforts?: string[];
             serviceTiers?: ({ id?: string } | string)[];
             serviceTierIds?: string[];
@@ -2583,15 +2874,23 @@ export class WebAccessService {
           revision?: number;
         };
         if (state.revision !== body.expectedRevision) throw new HttpError(409, "stale_state");
-        const current =
-          state.selected ?? state.settings?.selected ?? state.current ?? state.settings?.current;
+        const currentModel =
+          state.selected?.model ??
+          state.settings?.selected?.model ??
+          state.current?.model ??
+          state.settings?.current?.model;
         const writable = state.writable ?? state.settings?.writable;
         const ensureWritable = (key: string) => {
           if (!this.availability(writable?.[key]).available)
             throw new HttpError(409, "setting_unavailable");
         };
         const model = body.model === undefined ? undefined : this.field(body.model, 128);
-        const effort = body.effort === undefined ? undefined : this.field(body.effort, 128);
+        const effort =
+          body.effort === null && capabilities.executionMode === "claude-managed"
+            ? null
+            : body.effort === undefined
+              ? undefined
+              : this.field(body.effort, 128);
         const mode = body.mode === undefined ? undefined : this.field(body.mode, 128);
         const serviceTier =
           body.serviceTierId === undefined ? undefined : this.field(body.serviceTierId, 128);
@@ -2604,12 +2903,25 @@ export class WebAccessService {
             throw new HttpError(400, "unsupported_model");
           params.model = model;
         }
-        const selectedModel = state.models?.find((item) => item.id === (model ?? current?.model));
-        if (effort) {
+        const effectiveModel = model ?? currentModel;
+        const selectedModel =
+          state.models?.find((item) => item.id === effectiveModel) ??
+          (capabilities.executionMode === "claude-managed" && effectiveModel
+            ? state.models?.find((item) => item.resolvedModel === effectiveModel)
+            : undefined);
+        if (effort !== undefined) {
           ensureWritable("effort");
-          if (!selectedModel?.efforts?.includes(effort))
+          if (effort !== null && !selectedModel?.efforts?.includes(effort))
             throw new HttpError(400, "unsupported_effort");
           params.effort = effort;
+        }
+        if (body.permissionMode !== undefined) {
+          if (capabilities.executionMode !== "claude-managed")
+            throw new HttpError(400, "unsupported_permission_mode");
+          ensureWritable("permissionMode");
+          if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
+            throw new HttpError(400, "unsupported_permission_mode");
+          params.permissionMode = body.permissionMode;
         }
         if (mode) {
           ensureWritable("mode");
@@ -2646,10 +2958,11 @@ export class WebAccessService {
         }
         if (
           !model &&
-          !effort &&
+          effort === undefined &&
           !mode &&
           !serviceTier &&
           !policyId &&
+          body.permissionMode === undefined &&
           body.restoreDefaults !== true
         )
           throw new HttpError(400, "empty_settings");
@@ -2671,10 +2984,10 @@ export class WebAccessService {
         }
         params.goal = goal;
       }
-      if (operation === "resume") {
-        if (body.handoffConfirmed !== true)
+      if (["resume", "queue-resume", "goal-resume"].includes(operation)) {
+        if (operation === "resume" && body.handoffConfirmed !== true)
           throw new HttpError(400, "handoff_confirmation_required");
-        params.handoffConfirmed = true;
+        if (operation === "resume" || generic) params.handoffConfirmed = true;
       }
       if (body.resourceIds !== undefined) {
         if (!["steer", "queue-add", "queue-update"].includes(operation))
@@ -2728,6 +3041,8 @@ export class WebAccessService {
         if (result.requestId === requestId && result.controlOutcome === "not-dispatched") {
           this.clearUnconfirmed(sessionId);
           control.dispatched = false;
+          if (newlyPinnedDevice)
+            await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
           throw new HttpError(
             409,
             (result.reason ?? result.error) === "session-compacting"
@@ -2745,6 +3060,8 @@ export class WebAccessService {
       if (!dispatched) {
         this.active.delete(sessionId);
         this.admission = false;
+        if (newlyPinnedDevice)
+          await this.attachmentStore.settle(newlyPinnedDevice, sessionId, requestId);
       }
     }
   }
@@ -3039,6 +3356,15 @@ export class WebAccessService {
       if (agent === "codex" && body.model !== undefined) params.model = this.field(body.model, 128);
       if (agent === "codex" && body.effort !== undefined)
         params.effort = this.field(body.effort, 32);
+      if (agent === "claude-code") {
+        if (body.model !== undefined) params.model = this.field(body.model, 128);
+        if (body.effort !== undefined) params.effort = this.field(body.effort, 32);
+        if (body.permissionMode !== undefined) {
+          if (!["default", "plan", "acceptEdits"].includes(String(body.permissionMode)))
+            throw new HttpError(400, "unsupported_permission_mode");
+          params.permissionMode = body.permissionMode;
+        }
+      }
     } else {
       params.sessionId = this.field(body.sessionId);
       if (operation === "adopt") {
@@ -3648,6 +3974,8 @@ export class WebAccessService {
         // switch must not overwrite the new config with an old persistence snapshot.
         const logout = this.adminQueue.then(async () => {
           const loggedOut = this.credentials.find((c) => c.hash === hash);
+          if (loggedOut)
+            await this.invalidateScheduledDevice(loggedOut.device.id, "authorization-revoked");
           if (loggedOut) this.artifacts?.revokeDevice(loggedOut.device.id);
           this.credentials = this.credentials.filter((c) => c.hash !== hash);
           browser.ended = true;
@@ -3663,6 +3991,8 @@ export class WebAccessService {
           );
         return this.json(res, 200, { ok: true });
       }
+      if (path === "/managed/action")
+        return this.codexAction(res, hash, this.field(body.operation, 64), body, control, true);
       if (path.startsWith("/managed/"))
         return this.manage(req, res, hash, path.slice(9), body, control);
       if (path === "/artifact-tickets") {
@@ -4111,20 +4441,28 @@ export class WebAccessService {
     if (
       path === "/codex/session-settings" ||
       path === "/codex/goals" ||
-      path === "/codex/context-options"
+      path === "/codex/context-options" ||
+      path === "/managed/settings" ||
+      path === "/managed/goals" ||
+      path === "/managed/resources"
     ) {
       const sessionId = this.field(url.searchParams.get("sessionId"));
       // 与 projectCapabilities 一致：settings-state/usage/goal/context 都属于 advancedControl，
       // 只读设备即便是 full 模式也不能读取。
       const device = this.fullAccess(hash, "advancedControl");
-      const workspaceId = await this.codexScope(sessionId, hash);
+      const workspaceId = await this.codexScope(
+        sessionId,
+        hash,
+        false,
+        !path.startsWith("/managed/"),
+      );
       let result: unknown;
-      if (path === "/codex/session-settings") {
+      if (path === "/codex/session-settings" || path === "/managed/settings") {
         const settings = await this.runtime({ operation: "settings-state", sessionId });
         this.fullAccess(hash, "advancedControl");
         const usage = await this.runtime({ operation: "usage", sessionId });
         result = { sessionId, ...this.projectSettings(settings, usage) };
-      } else if (path === "/codex/goals") {
+      } else if (path === "/codex/goals" || path === "/managed/goals") {
         const goal = await this.runtime({ operation: "goal", sessionId });
         this.fullAccess(hash, "advancedControl");
         const capabilities = await this.runtime({
@@ -4145,14 +4483,16 @@ export class WebAccessService {
       }
       if (this.fullAccess(hash, "advancedControl").id !== device.id)
         throw new HttpError(401, "access_ended");
-      await this.codexScope(sessionId, hash);
+      await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
       return this.json(res, 200, result);
     }
-    if (path === "/codex/capabilities" || path === "/codex/queue") {
+    if (path === "/codex/capabilities" || path === "/codex/queue" || path === "/managed/queue") {
+      if (path === "/managed/queue" && this.options.mode === "lan")
+        throw new HttpError(403, "capability_unavailable");
       const sessionId = this.field(url.searchParams.get("sessionId"));
       const device = this.grant(hash, path.endsWith("queue") ? "advancedControl" : undefined);
       if (path.endsWith("queue") || this.isFullAccess(device))
-        await this.codexScope(sessionId, hash);
+        await this.codexScope(sessionId, hash, false, !path.startsWith("/managed/"));
       const result = await this.runtime({
         operation: path.endsWith("queue") ? "queue-list" : "capabilities",
         sessionId,
@@ -4179,12 +4519,24 @@ export class WebAccessService {
       if ((result as { reason?: string }).reason === "queue-too-large")
         throw new HttpError(409, "queue_too_large");
       const entries =
-        (result as { data?: { id: string; input?: { type: string; text?: string }[] }[] }).data ??
-        [];
+        (
+          result as {
+            data?: { id: string; status?: string; input?: { type: string; text?: string }[] }[];
+          }
+        ).data ?? [];
       return this.json(res, 200, {
         sessionId,
+        ...(path === "/managed/queue"
+          ? {
+              paused: snapshotField(result, "paused") === true,
+              requiresResume: snapshotField(result, "requiresResume") === true,
+            }
+          : {}),
         data: entries.map((item) => ({
           id: item.id,
+          ...(item.status && ["pending", "claimed", "dispatched", "unknown"].includes(item.status)
+            ? { status: item.status }
+            : {}),
           hasAttachments: (item.input ?? []).some(
             (input) => input.type !== "text" || input.text?.startsWith("User attached file "),
           ),
@@ -4256,6 +4608,8 @@ export class WebAccessService {
                     "queue-delete",
                     "queue-reorder",
                     "queue-start",
+                    "queue-pause",
+                    "queue-resume",
                     "rename",
                     "archive",
                     "unarchive",
@@ -4344,7 +4698,9 @@ export class WebAccessService {
       const catalog = (await this.runtime({ operation: "catalog" })) as {
         sessions: { id: string; workspace_id: string; agent: string }[];
       };
-      const session = catalog.sessions.find((entry) => entry.id === id && entry.agent === "codex");
+      const session = catalog.sessions.find(
+        (entry) => entry.id === id && ["codex", "claude-code"].includes(entry.agent),
+      );
       if (!session || !(await this.workspaceAllowed(session.workspace_id, device)))
         throw new HttpError(403, "workspace_not_authorized");
       const result = await this.runtime({ operation: "context", sessionId: id });

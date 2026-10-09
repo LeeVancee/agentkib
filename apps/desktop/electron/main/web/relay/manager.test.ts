@@ -8,6 +8,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { request, Server as TlsServer, type Server } from "node:https";
 import { Transform, type Duplex } from "node:stream";
 import { createServer as createTcpServer, connect, type Socket } from "node:net";
+import { connect as connectTls } from "node:tls";
 import {
   DEFAULT_RELAY_BROKER,
   RelayManager,
@@ -830,6 +831,301 @@ describe("relay TLS channels and certificate lifecycle", () => {
     expect(internal.sockets.size).toBe(0);
     expect(internal.servers.size).toBe(0);
     expect(manager.status.reason).toBe("revoked");
+  });
+});
+
+describe("relay managed WebSocket transport", () => {
+  async function fixture() {
+    const { path, key, cert } = await certificate();
+    const target = createHttpServer();
+    const targetSockets = new Set<Duplex>();
+    target.on("connection", (socket) => {
+      targetSockets.add(socket);
+      socket.on("error", () => {});
+      socket.once("close", () => targetSockets.delete(socket));
+    });
+    target.on("upgrade", (_req, socket) => {
+      socket.on("end", () => socket.end());
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+    stops.push(
+      () =>
+        new Promise<void>((resolve) => {
+          for (const socket of targetSockets) socket.destroy();
+          target.close(() => resolve());
+        }),
+    );
+    const { manager, internal } = setup(path, {
+      target: { host: "127.0.0.1", port: (target.address() as { port: number }).port },
+      preview: { host: "127.0.0.1", port: (target.address() as { port: number }).port },
+    });
+    internal.key = key;
+    internal.certificate = cert;
+    await internal.startTls("control", 1);
+    await internal.startTls("preview", 1);
+    const open = async (
+      options: {
+        channel?: "control" | "preview";
+        method?: string;
+        path?: string;
+        host?: string;
+        sni?: string;
+        head?: Buffer;
+      } = {},
+    ) => {
+      const channel = options.channel ?? "control";
+      const host = channel === "control" ? registration.controlHost : registration.previewHost;
+      const socket = connectTls({
+        host: "127.0.0.1",
+        port: (internal.servers.get(channel)!.address() as { port: number }).port,
+        servername: options.sni ?? host,
+        ca: cert,
+      });
+      socket.on("error", () => {});
+      const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+      const chunks: Buffer[] = [];
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      await new Promise<void>((resolve, reject) => {
+        socket.once("secureConnect", resolve);
+        socket.once("error", reject);
+      });
+      const headers = [
+        `${options.method ?? "GET"} ${options.path ?? "/api/web/v1/socket"} HTTP/1.1`,
+        `Host: ${options.host ?? host}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        `Origin: https://${registration.controlHost}`,
+        "Cookie: agentkib_pair=fixture-paired-device",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Protocol: agentkib.fixture",
+        "Forwarded: for=untrusted;proto=http",
+        "X-Forwarded-Host: untrusted.example.org",
+        "X-Forwarded-For: 192.0.2.1",
+        "X-Forwarded-Proto: http",
+      ];
+      socket.write(
+        Buffer.concat([
+          Buffer.from(headers.join("\r\n") + "\r\n\r\n"),
+          options.head ?? Buffer.alloc(0),
+        ]),
+      );
+      return { socket, closed, bytes: () => Buffer.concat(chunks) };
+    };
+    const accept = (socket: Duplex, first = "") =>
+      socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: agentkib.fixture\r\n\r\n" +
+          first,
+      );
+    return { manager, internal, target, targetSockets, open, accept };
+  }
+
+  it("preserves authenticated handshake fields, both initial heads and streaming backpressure", async () => {
+    const { target, open, accept } = await fixture();
+    const received = deferred<Buffer>();
+    const payload = Buffer.alloc(512 * 1024, "x");
+    target.on("upgrade", (req, socket, head) => {
+      expect(req.url).toBe("/api/web/v1/socket");
+      expect(req.headers).toMatchObject({
+        host: registration.controlHost,
+        origin: `https://${registration.controlHost}`,
+        cookie: "agentkib_pair=fixture-paired-device",
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "sec-websocket-protocol": "agentkib.fixture",
+        "x-forwarded-proto": "https",
+      });
+      for (const header of ["forwarded", "x-forwarded-host", "x-forwarded-for"])
+        expect(req.headers[header]).toBeUndefined();
+      const chunks: Buffer[] = head.length ? [head] : [];
+      let size = head.length;
+      socket.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        size += chunk.length;
+        if (size === payload.length + 5) received.resolve(Buffer.concat(chunks));
+      });
+      accept(socket, "first-from-server");
+      socket.write(payload);
+    });
+    const client = await open({ head: Buffer.from("first") });
+    client.socket.pause();
+    client.socket.write(payload);
+    expect(await received.promise).toEqual(Buffer.concat([Buffer.from("first"), payload]));
+    client.socket.resume();
+    await vi.waitFor(() =>
+      expect(client.bytes().length).toBeGreaterThan(payload.length + "first-from-server".length),
+    );
+    const bytes = client.bytes();
+    const boundary = bytes.indexOf("\r\n\r\n") + 4;
+    expect(bytes.subarray(0, boundary).toString()).toContain("101 Switching Protocols");
+    expect(bytes.subarray(0, boundary).toString()).toContain(
+      "Sec-WebSocket-Protocol: agentkib.fixture",
+    );
+    expect(bytes.subarray(boundary)).toEqual(
+      Buffer.concat([Buffer.from("first-from-server"), payload]),
+    );
+    client.socket.destroy();
+  });
+
+  it.each([
+    { path: "/api/web/v1/managed/action" },
+    { path: "/api/web/v1/socket?unexpected=1" },
+    { path: "/api/web/v1/socket/" },
+    { method: "POST" },
+    { channel: "preview" as const },
+    { host: registration.previewHost },
+    { sni: registration.previewHost },
+  ])("rejects a disallowed upgrade before contacting the local service: %j", async (options) => {
+    const { target, open } = await fixture();
+    const requested = vi.fn();
+    target.on("upgrade", requested);
+    target.on("request", requested);
+    const client = await open(options);
+    await client.closed;
+    expect(client.bytes().length).toBe(0);
+    expect(requested).not.toHaveBeenCalled();
+  });
+
+  it.each(["monotonic lease", "wall lease", "generation", "abort"])(
+    "rejects an upgrade with a stale %s before dispatch",
+    async (kind) => {
+      const { target, open, internal } = await fixture();
+      const requested = vi.fn();
+      target.on("upgrade", requested);
+      if (kind === "monotonic lease") internal.leaseUntil = 0;
+      else if (kind === "wall lease") internal.wallLeaseUntil = 0;
+      else if (kind === "generation") internal.generation++;
+      else internal.abort.abort();
+      const client = await open();
+      await client.closed;
+      expect(requested).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["monotonic lease", "wall lease", "generation"])(
+    "rejects a late local 101 after %s changed",
+    async (kind) => {
+      const { target, open, accept, internal } = await fixture();
+      const pending = deferred<Duplex>();
+      target.on("upgrade", (_req, socket) => pending.resolve(socket));
+      const client = await open();
+      const upstream = await pending.promise;
+      if (kind === "monotonic lease") internal.leaseUntil = 0;
+      else if (kind === "wall lease") internal.wallLeaseUntil = 0;
+      else internal.generation++;
+      accept(upstream, "must not reach the browser");
+      await client.closed;
+      expect(client.bytes().length).toBe(0);
+      await vi.waitFor(() => expect(upstream.destroyed).toBe(true));
+    },
+  );
+
+  it.each(["revoked", "lease-expired", "stop"] as const)(
+    "closes pending and upgraded connections together on %s",
+    async (reason) => {
+      const { target, open, accept, internal, manager, targetSockets } = await fixture();
+      const pending = deferred<void>();
+      let count = 0;
+      target.on("upgrade", (_req, socket) => {
+        if (++count === 1) accept(socket);
+        else pending.resolve();
+      });
+      const upgraded = await open();
+      await vi.waitFor(() => expect(upgraded.bytes().toString()).toContain("101"));
+      const waiting = await open();
+      await pending.promise;
+      if (reason === "stop") await manager.stop();
+      else internal.failClosed(reason, false);
+      await Promise.all([upgraded.closed, waiting.closed]);
+      expect(waiting.bytes().length).toBe(0);
+      expect(internal.sockets.size).toBe(0);
+      await vi.waitFor(() => expect(targetSockets.size).toBe(0));
+    },
+  );
+
+  it("returns a local authorization rejection with intact chunks, cookies and trailers", async () => {
+    const { target, open } = await fixture();
+    target.on("upgrade", (_req, socket) => {
+      socket.end(
+        "HTTP/1.1 403 Forbidden\r\nTransfer-Encoding: chunked\r\nSet-Cookie: fixture-a=1\r\nSet-Cookie: fixture-b=2\r\nTrailer: X-Fixture\r\n\r\n6\r\ndenied\r\n0\r\nX-Fixture: rejected\r\n\r\n",
+      );
+    });
+    const client = await open();
+    await client.closed;
+    const response = client.bytes().toString();
+    expect(response).toContain("403 Forbidden");
+    expect(response.toLowerCase()).toContain("set-cookie: fixture-a=1");
+    expect(response.toLowerCase()).toContain("set-cookie: fixture-b=2");
+    expect(response).toContain("\r\n6\r\ndenied\r\n0\r\nX-Fixture: rejected\r\n\r\n");
+  });
+
+  it.each([6, 2 * 1024 * 1024])(
+    "flushes a %i-byte rejection and releases sockets despite unread early client data",
+    async (size) => {
+      const { target, open, internal } = await fixture();
+      const payload = Buffer.alloc(size, "x");
+      target.on("upgrade", (_req, socket) => {
+        socket.end(
+          Buffer.concat([
+            Buffer.from(
+              `HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: ${size}\r\n\r\n`,
+            ),
+            payload,
+          ]),
+        );
+      });
+      const client = await open({ head: Buffer.alloc(512 * 1024, "x") });
+      await client.closed;
+      const bytes = client.bytes();
+      const boundary = bytes.indexOf("\r\n\r\n") + 4;
+      expect(bytes.subarray(0, boundary).toString()).toContain("403 Forbidden");
+      expect(bytes.subarray(boundary).equals(payload)).toBe(true);
+      await vi.waitFor(() => expect(internal.sockets.size).toBe(0));
+    },
+  );
+
+  it("expires the handshake at ten seconds without retrying the request", async () => {
+    const { target, open } = await fixture();
+    const pending = deferred<void>();
+    const upgraded = vi.fn(() => pending.resolve());
+    target.on("upgrade", upgraded);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const client = await open();
+    await pending.promise;
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(client.socket.destroyed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await client.closed;
+    expect(client.bytes().length).toBe(0);
+    expect(upgraded).toHaveBeenCalledOnce();
+  });
+
+  it.each(["client", "upstream"])("closes the opposite side when %s disconnects", async (side) => {
+    const { target, open, accept, targetSockets } = await fixture();
+    const accepted = deferred<Duplex>();
+    target.on("upgrade", (_req, socket) => {
+      accepted.resolve(socket);
+      accept(socket);
+    });
+    const client = await open();
+    const upstream = await accepted.promise;
+    await vi.waitFor(() => expect(client.bytes().toString()).toContain("101"));
+    if (side === "client") client.socket.destroy();
+    else upstream.destroy();
+    await client.closed;
+    await vi.waitFor(() => expect(targetSockets.size).toBe(0));
+  });
+
+  it("closes the browser when the upstream resets before accepting", async () => {
+    const { target, open } = await fixture();
+    const requested = vi.fn((_req, socket: Duplex) => socket.destroy());
+    target.on("upgrade", requested);
+    const client = await open();
+    await client.closed;
+    expect(client.bytes().length).toBe(0);
+    expect(requested).toHaveBeenCalledOnce();
   });
 });
 

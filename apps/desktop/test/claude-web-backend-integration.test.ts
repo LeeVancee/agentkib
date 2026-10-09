@@ -24,6 +24,7 @@ import { BackendStore } from "../../../packages/backend/src/store";
 import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { RemoteAgent } from "../../../packages/backend/src/remote-agent";
 import { HistorySearch } from "../../../packages/backend/src/history-search";
+import { claudeRelayEnabled, startClaudeRelay } from "./fixtures/claude-relay-harness";
 
 // The real backend starts this offline executable. No runner/owner/control method is mocked.
 const syntheticCli = String.raw`
@@ -416,6 +417,189 @@ describe.skipIf(process.platform !== "darwin")(
       });
       expect(conflict.status).not.toBe(200);
     });
+
+    it.skipIf(!claudeRelayEnabled)(
+      "cross-repository real broker/frp WSS → RelayManager TLS → real Claude owner: HTTP, WebSocket, pairing and replay",
+      async () => {
+        const relay = await startClaudeRelay(join(directory, "relay"), port);
+        try {
+          await service.setRelayOrigins(relay.origin, relay.previewOrigin);
+          let remoteCookie = "";
+          let remoteCsrf = "";
+          async function remote(
+            path: string,
+            body?: Record<string, unknown>,
+            headers: Record<string, string> = {},
+          ) {
+            const result = await relay.http(`/api/web/v1${path}`, body, {
+              Cookie: remoteCookie,
+              "X-CSRF-Token": remoteCsrf,
+              "X-AgentKib-Protocol": "2",
+              ...headers,
+            });
+            return { ...result, body: JSON.parse(result.text) };
+          }
+          const access = await remote("/access");
+          expect(access.status).toBe(200);
+          remoteCookie = access.cookies![0]!.split(";")[0]!;
+          remoteCsrf = access.body.csrfToken;
+          const remoteBoot = access.body.bootId;
+          const code = (await service.request({ operation: "generate-code", access: "full" })).code!
+            .value;
+          const paired = await remote("/pair", { code, name: "Offline relay phone" });
+          expect(paired.status, paired.text).toBe(200);
+
+          async function deniedSocket(headers: Record<string, string>) {
+            const ws = relay.socket(headers);
+            const [, response] = await once(ws, "unexpected-response");
+            response.resume();
+            ws.terminate();
+            return response.statusCode;
+          }
+          expect(
+            await deniedSocket({ Cookie: remoteCookie, Origin: "https://untrusted.example.org" }),
+          ).toBe(403);
+          expect(await deniedSocket({})).toBe(403);
+          const unpaired = await remote(
+            "/managed/create",
+            {
+              agent: "claude-code",
+              bootId: remoteBoot,
+              workspaceId: "workspace",
+              requestId: randomUUID(),
+            },
+            { Cookie: "" },
+          );
+          expect(unpaired.status).toBe(401);
+
+          const created = await remote("/managed/create", {
+            agent: "claude-code",
+            bootId: remoteBoot,
+            workspaceId: "workspace",
+            requestId: randomUUID(),
+            deviceId: "spoofed-relay-device",
+          });
+          expect(created.status, created.text).toBe(200);
+          const sessionId = created.body.sessionId as string;
+          const state = await remote(`/live?sessionId=${sessionId}`);
+          const requestId = randomUUID();
+          const body = {
+            sessionId,
+            bootId: remoteBoot,
+            requestId,
+            expectedRevision: state.body.revision,
+            text: "real relay offline input",
+          };
+          expect((await remote("/send", body)).status).toBe(200);
+          await expect
+            .poll(async () => (await remote(`/live?sessionId=${sessionId}`)).body.status)
+            .toBe("idle");
+          expect((await remote(`/requests/${requestId}`)).body).toMatchObject({
+            found: true,
+            completionObserved: true,
+            executionMode: "claude-managed",
+          });
+          expect(
+            await rpc("control.receipt", { deviceId: paired.body.device.id, requestId }),
+          ).toMatchObject({ found: true });
+          expect(
+            await rpc("control.receipt", { deviceId: "spoofed-relay-device", requestId }),
+          ).toMatchObject({ found: false });
+          expect((await remote("/send", body)).status).toBe(200);
+          expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+
+          async function openSocket() {
+            const ws = relay.socket({ Cookie: remoteCookie });
+            await once(ws, "open");
+            return {
+              ws,
+              async call(path: string, payload?: Record<string, unknown>, csrfToken = remoteCsrf) {
+                const response = once(ws, "message");
+                ws.send(
+                  JSON.stringify({
+                    id: randomUUID(),
+                    path,
+                    body: payload,
+                    csrfToken,
+                    protocolVersion: 2,
+                  }),
+                );
+                return JSON.parse(String((await response)[0]));
+              },
+            };
+          }
+          const client = await openSocket();
+          const options = await client.call(`/managed/settings?sessionId=${sessionId}`);
+          expect(options.status).toBe(200);
+          expect(options.body.options.models).toContainEqual(
+            expect.objectContaining({ id: "fixture-model" }),
+          );
+          const beforeSettings = await remote(`/live?sessionId=${sessionId}`);
+          expect(beforeSettings.status, beforeSettings.text).toBe(200);
+          expect(Number.isSafeInteger(beforeSettings.body.revision), beforeSettings.text).toBe(
+            true,
+          );
+          const settingsBody = {
+            sessionId,
+            bootId: remoteBoot,
+            requestId: randomUUID(),
+            expectedRevision: beforeSettings.body.revision,
+            operation: "settings",
+            permissionMode: "plan",
+            effort: "high",
+            model: "fixture-model",
+          };
+          expect(
+            (await client.call("/managed/action", settingsBody, "incorrect-csrf")).status,
+          ).toBe(403);
+          const changed = await client.call("/managed/action", settingsBody);
+          expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+          const settingsControls = frames().filter(
+            (frame) => frame.type === "control_request",
+          ).length;
+          const closed = once(client.ws, "close");
+          client.ws.close();
+          await closed;
+          const reconnect = await openSocket();
+          expect((await reconnect.call(`/requests/${settingsBody.requestId}`)).body).toMatchObject({
+            found: true,
+          });
+          expect((await reconnect.call(`/requests/${requestId}`)).body).toMatchObject({
+            found: true,
+            completionObserved: true,
+          });
+          expect(frames().filter((frame) => frame.type === "control_request")).toHaveLength(
+            settingsControls,
+          );
+          expect((await reconnect.call("/managed/action", settingsBody)).status).toBe(200);
+          expect((await reconnect.call("/send", body)).status).toBe(200);
+          expect(frames().filter((frame) => frame.type === "control_request")).toHaveLength(
+            settingsControls,
+          );
+          expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+          const confirmed = await reconnect.call(`/managed/settings?sessionId=${sessionId}`);
+          expect(confirmed.body.current).toMatchObject({
+            modelId: "fixture-model",
+            effort: "high",
+            permissionMode: "plan",
+          });
+          // A conflicting control request conservatively freezes the current host
+          // projection, so verify rejection after the successful continuation path.
+          expect((await remote("/send", { ...body, text: "conflicting payload" })).status).not.toBe(
+            200,
+          );
+          expect(frames().filter((frame) => frame.type === "user")).toHaveLength(1);
+          await service.request({ operation: "revoke", id: paired.body.device.id });
+          expect((await reconnect.call(`/requests/${requestId}`)).status).toBe(401);
+          const reconnectedClosed = once(reconnect.ws, "close");
+          reconnect.ws.close();
+          await reconnectedClosed;
+        } finally {
+          await relay.close();
+        }
+      },
+      45_000,
+    );
 
     it("applies actual discovered settings and next-priority input; replays advanced receipts without a second dispatch", async () => {
       const sessionId = await create();

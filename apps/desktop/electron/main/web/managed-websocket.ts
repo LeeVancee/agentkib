@@ -109,10 +109,14 @@ function boundedPath(path: string, post: boolean): string | undefined {
 }
 
 function rejectUpgrade(socket: Duplex, status: number) {
-  if (!socket.destroyed)
-    socket.end(
-      `HTTP/1.1 ${status} ${status === 404 ? "Not Found" : "Forbidden"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
-    );
+  if (socket.destroyed) return;
+  // Drain early frames after rejecting: destroying on finish can reset the TCP
+  // connection before the peer reads the response. The handshake deadline and
+  // adapter shutdown still bound peers that leave their write side open.
+  socket.resume();
+  socket.end(
+    `HTTP/1.1 ${status} ${status === 404 ? "Not Found" : "Forbidden"}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+  );
 }
 
 /** Uses the HTTP service's admission and receipts for every frame, never a backend RPC proxy. */
@@ -209,6 +213,12 @@ export function attachManagedWebSocket(server: Server, options: ManagedWebSocket
 
   const upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
+    sockets.add(socket);
+    const timeout = setTimeout(() => socket.destroy(), 10_000);
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      sockets.delete(socket);
+    });
     if (closed || req.url !== SOCKET_PATH) {
       rejectUpgrade(socket, 404);
       return;
@@ -221,12 +231,6 @@ export function attachManagedWebSocket(server: Server, options: ManagedWebSocket
       rejectUpgrade(socket, 403);
       return;
     }
-    sockets.add(socket);
-    const timeout = setTimeout(() => socket.destroy(), 10_000);
-    socket.once("close", () => {
-      clearTimeout(timeout);
-      sockets.delete(socket);
-    });
     void (async () => {
       try {
         if (!(await options.authorize(req))) {

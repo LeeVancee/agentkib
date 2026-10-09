@@ -283,16 +283,12 @@ export class McpHub {
       try {
         const name = rpcRequest.params.name;
         const args = rpcRequest.params.arguments ?? {};
-        // Recheck each tool read, including requests using a previously initialized transport.
-        const current =
-          name === "session_search" || name === "session_read_chunk"
-            ? requireUniqueContinuationWorkspace(this.store, scope.workspaceId, scope.project)
-            : resolveWorkspaceIdentity(this.store, scope.workspaceId);
+        const current = this.#assertScope(scope, name);
         if (
-          current.registeredId !== scope.registeredWorkspaceId ||
-          lexicalPathIdentity(current.project) !== lexicalPathIdentity(scope.project)
+          BUILTIN_MCP_TOOLS.some((tool) => tool.name === name) &&
+          !this.manager.builtinAllowed(project, scope.agent, name)
         )
-          throw new Error("MCP workspace identity changed; reconnect before reading");
+          throw new Error("AgentKib tool is not allowed by the current Agent policy");
         const payload = BUILTIN_MCP_TOOLS.some((tool) => tool.name === name)
           ? scope.remote
             ? (() => {
@@ -301,7 +297,9 @@ export class McpHub {
                 );
               })()
             : await this.builtins.call(project, current.archiveWorkspaceId, scope.agent, name, args)
-          : await this.manager.callHubTool(project, scope.agent, name, args, scope.remote);
+          : await this.manager.callHubTool(project, scope.agent, name, args, scope.remote, () => {
+              this.#assertScope(scope, name);
+            });
         if (isMcpToolResult(payload)) return payload;
         return {
           content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -326,7 +324,21 @@ export class McpHub {
     await transport.handleRequest(request, response);
   }
 
+  #assertScope(scope: Scope, name?: string) {
+    const current =
+      name === "session_search" || name === "session_read_chunk"
+        ? requireUniqueContinuationWorkspace(this.store, scope.workspaceId, scope.project)
+        : resolveWorkspaceIdentity(this.store, scope.workspaceId);
+    if (
+      current.registeredId !== scope.registeredWorkspaceId ||
+      lexicalPathIdentity(current.project) !== lexicalPathIdentity(scope.project)
+    )
+      throw new Error("MCP workspace identity changed; reconnect before reading");
+    return current;
+  }
+
   #listTools(project: string, scope: Scope) {
+    this.#assertScope(scope);
     const external = this.manager.hubTools(project, scope.agent, scope.remote).map((tool) => ({
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
@@ -336,7 +348,9 @@ export class McpHub {
     return scope.remote
       ? external
       : [
-          ...BUILTIN_MCP_TOOLS.map((tool) => ({
+          ...BUILTIN_MCP_TOOLS.filter((tool) =>
+            this.manager.builtinAllowed(project, scope.agent, tool.name),
+          ).map((tool) => ({
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,

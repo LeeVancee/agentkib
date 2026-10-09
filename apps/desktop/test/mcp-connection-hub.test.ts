@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Commands } from "../../../packages/backend/src/commands";
 import { Context } from "../../../packages/backend/src/context";
-import { McpManager } from "../../../packages/backend/src/mcp";
+import { McpManager, mcpToolCacheKey } from "../../../packages/backend/src/mcp";
 import { BUILTIN_MCP_TOOLS, McpBuiltins } from "../../../packages/backend/src/mcp-builtin";
 import { type McpServer } from "../../../packages/backend/src/mcp-config-read";
 import {
@@ -100,22 +100,24 @@ async function fixture(
     "healthy",
     "2026-10-06T00:00:00Z",
   );
-  for (const item of servers) {
-    for (const name of ["read", "write"]) {
-      store.sql.run(
-        "INSERT INTO mcp_tool_cache(server_id,tool_name,descriptor_json,probed_at) VALUES(?,?,?,?)",
-        item.id,
-        name,
-        JSON.stringify({
+  function seedCatalog(item: McpServer, scopedProject: string) {
+    store.sql.run(
+      "INSERT INTO mcp_tool_cache(server_id,tool_name,descriptor_json,probed_at) VALUES(?,?,?,?)",
+      mcpToolCacheKey(item, scopedProject, environment),
+      "",
+      JSON.stringify({
+        schema_version: 2,
+        tools: ["read", "write"].map((name) => ({
           server_id: item.id,
           name,
           input_schema: { type: "object" },
           read_only: name === "read",
-        }),
-        "2026-10-06T00:00:00Z",
-      );
-    }
+        })),
+      }),
+      "2026-10-06T00:00:00Z",
+    );
   }
+  for (const item of servers) seedCatalog(item, project);
   const commands = new Commands();
   cleanups.push(() => commands.close());
   const manager = new McpManager(store.sql, environment, data, commands);
@@ -152,6 +154,7 @@ async function fixture(
         "healthy",
         "2026-10-06T00:00:00Z",
       );
+      for (const item of servers) seedCatalog(item, directory);
       return directory;
     },
     setManifest(id: string, manifest: string) {
@@ -259,7 +262,7 @@ async function fixture(
       expect(runCommand).not.toHaveBeenCalled();
       expect(manager.runtimes()).toEqual([]);
       expect(store.sql.rows("SELECT server_id FROM mcp_tool_cache")).toHaveLength(
-        servers.length * 2,
+        servers.length * store.sql.rows("SELECT id FROM workspaces").length,
       );
     },
   };

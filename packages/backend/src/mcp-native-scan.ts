@@ -1,15 +1,18 @@
+import type { McpDiagnosticMessage } from "@agentkib/runtime-protocol";
+import { McpDiagnosticError, mcpDiagnostic } from "./mcp-diagnostics";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import JSON5 from "json5";
-import { parse as parseToml } from "smol-toml";
-import { parse as parseYaml } from "yaml";
 import { AGENTS } from "./rpc";
 import type { Agent } from "./doctor-files";
 import { canonicalize, pathIdentity } from "./paths";
 import { compareUtf8 } from "./workspaces";
 import type { BackendStore } from "./store";
+import { agentMcpHome, safeAgentHomePath } from "./agent-home";
+import { normalizeMcpImport, publicMcpConfig } from "./mcp-import";
+import type { McpServer } from "./mcp-config-read";
+import { parseNativeMcpDocument } from "./mcp-native-document";
 
 export type NativeMcpCandidate = {
   id: string;
@@ -22,16 +25,33 @@ export type NativeMcpCandidate = {
   has_secret_values: boolean;
   supported: boolean;
   warnings: string[];
+  warning_messages?: McpDiagnosticMessage[];
+  fingerprint?: string;
 };
 type Candidate = NativeMcpCandidate;
 type JsonObject = Record<string, unknown>;
+export type NativeMcpSnapshot = ReturnType<typeof parseNativeMcpDocument> & {
+  content: string;
+  fingerprint: string;
+};
+export type NativeMcpImportRead =
+  | { candidate: NativeMcpCandidate; snapshot: NativeMcpSnapshot; server: McpServer }
+  | { candidate: NativeMcpCandidate; error: unknown };
 type CandidateContext = {
   output: Candidate[];
   project?: string;
   home: string;
   opencodeHome: string;
   grokHome?: string;
+  environment: NodeJS.ProcessEnv;
 };
+const workingDirectoryWarning =
+  "Native MCP working directory cannot be determined equivalently; review the original configuration";
+class NativeWorkingDirectoryError extends McpDiagnosticError {
+  constructor() {
+    super(workingDirectoryWarning, "native_working_directory");
+  }
+}
 
 export function scanNativeMcp(
   request: unknown,
@@ -56,6 +76,7 @@ export function scanNativeMcp(
     project,
     home,
     opencodeHome,
+    environment,
     ...(isDirectory(grokRoot) ? { grokHome: canonicalPath(grokRoot) } : {}),
   };
   if (project) scanProject(context, project);
@@ -88,60 +109,99 @@ function registeredProject(store: BackendStore, value: string): string {
 }
 
 function scanProject(context: CandidateContext, project: string): void {
-  scanToml(path.join(project, ".codex/config.toml"), "codex", "project", context);
-  scanToml(path.join(project, ".grok/config.toml"), "grok-build", "project", context);
-  scanJson(path.join(project, ".mcp.json"), "claude-code", "project", ["mcpServers"], context);
-  scanJson(path.join(project, ".cursor/mcp.json"), "cursor", "project", ["mcpServers"], context);
-  scanJson(
-    path.join(project, ".agents/mcp_config.json"),
-    "antigravity",
-    "project",
-    ["mcpServers"],
-    context,
-  );
-  for (const name of ["opencode.json", "opencode.jsonc"])
-    scanOpenCode(path.join(project, name), "project", context);
-  for (const name of ["opencode.json", "opencode.jsonc"])
-    scanOpenCode(path.join(project, ".opencode", name), "project", context);
+  for (const [agent, relative] of [
+    ["codex", ".codex/config.toml"],
+    ["grok-build", ".grok/config.toml"],
+  ] as const) {
+    const file = path.join(project, relative);
+    scanSafely(context, agent, "project", file, () => scanConfig(file, agent, "project", context));
+  }
+  for (const [agent, relative] of [
+    ["claude-code", ".mcp.json"],
+    ["cursor", ".cursor/mcp.json"],
+    ["antigravity", ".agents/mcp_config.json"],
+  ] as const) {
+    const file = path.join(project, relative);
+    scanSafely(context, agent, "project", file, () => scanConfig(file, agent, "project", context));
+  }
+  for (const directory of [project, path.join(project, ".opencode")])
+    for (const name of ["opencode.json", "opencode.jsonc"]) {
+      const file = path.join(directory, name);
+      scanSafely(context, "opencode", "project", file, () =>
+        scanConfig(file, "opencode", "project", context),
+      );
+    }
 }
 
 function scanHome(context: CandidateContext): void {
   const home = context.home;
-  scanToml(path.join(home, ".codex/config.toml"), "codex", "home", context);
-  scanJson(path.join(home, ".claude.json"), "claude-code", "home", ["mcpServers"], context);
-  scanJson(path.join(home, ".cursor/mcp.json"), "cursor", "home", ["mcpServers"], context);
-  scanJson5(
-    path.join(home, ".openclaw/openclaw.json"),
-    "open-claw",
-    "home",
-    ["mcp", "servers"],
-    context,
+  scanSafely(context, "codex", "home", path.join(home, ".codex/config.toml"), () =>
+    scanConfig(path.join(home, ".codex/config.toml"), "codex", "home", context),
   );
-  scanHermes(path.join(home, ".hermes/config.yaml"), context);
-  scanJson(
-    path.join(home, ".gemini/config/mcp_config.json"),
-    "antigravity",
-    "home",
-    ["mcpServers"],
-    context,
+  for (const [agent, relative] of [
+    ["claude-code", ".claude.json"],
+    ["cursor", ".cursor/mcp.json"],
+    ["antigravity", ".gemini/config/mcp_config.json"],
+  ] as const) {
+    const file = path.join(home, relative);
+    scanSafely(context, agent, "home", file, () => scanConfig(file, agent, "home", context));
+  }
+  scanSafely(context, "open-claw", "home", "OpenClaw selected profile", () =>
+    scanConfig(agentMcpHome("open-claw", context.environment).config, "open-claw", "home", context),
+  );
+  scanSafely(context, "hermes", "home", "Hermes selected profile", () =>
+    scanConfig(agentMcpHome("hermes", context.environment).config, "hermes", "home", context),
   );
 }
 
 function scanOpenCodeHome(context: CandidateContext): void {
   for (const name of ["opencode.json", "opencode.jsonc"])
-    scanOpenCode(path.join(context.opencodeHome, name), "home", context);
+    scanSafely(context, "opencode", "home", path.join(context.opencodeHome, name), () =>
+      scanConfig(path.join(context.opencodeHome, name), "opencode", "home", context),
+    );
 }
 
 function scanGrokHome(context: CandidateContext): void {
   if (context.grokHome)
-    scanToml(path.join(context.grokHome, "config.toml"), "grok-build", "home", context);
+    scanSafely(context, "grok-build", "home", path.join(context.grokHome, "config.toml"), () =>
+      scanConfig(path.join(context.grokHome!, "config.toml"), "grok-build", "home", context),
+    );
 }
 
-function scanToml(file: string, agent: Agent, scope: string, context: CandidateContext): void {
-  const content = readConfig(file);
-  if (content === undefined) return;
-  const root = asObject(parseToml(content));
-  const servers = asObject(root?.mcp_servers);
+function scanSafely(
+  context: CandidateContext,
+  agent: Agent,
+  scope: string,
+  source: string,
+  scan: () => void,
+) {
+  try {
+    scan();
+  } catch {
+    context.output.push({
+      id: createHash("sha256").update(`${agent}:${source}`).digest("hex").slice(0, 24),
+      agent,
+      scope,
+      name: "Configuration unavailable",
+      source_path: source,
+      transport: "unknown",
+      endpoint: "unavailable",
+      has_secret_values: false,
+      supported: false,
+      warnings: ["Configuration or active profile is invalid, unsafe, or exceeds the read limit"],
+      warning_messages: [mcpDiagnostic("native_config_unavailable")],
+    });
+  }
+}
+
+function scanConfig(file: string, agent: Agent, scope: string, context: CandidateContext): void {
+  const snapshot = readNativeMcpSnapshot(file, agent);
+  if (!snapshot) return;
+  const { format, servers } = snapshot;
+  if (format !== "toml") {
+    collectJsonServers(file, agent, scope, snapshot, context);
+    return;
+  }
   if (!servers) return;
   for (const [name, raw] of Object.entries(servers)) {
     const server = asObject(raw);
@@ -155,52 +215,28 @@ function scanToml(file: string, agent: Agent, scope: string, context: CandidateC
         server && Object.hasOwn(server, "url") ? "http" : "stdio",
         endpoint,
         !!server && ["env", "headers", "http_headers"].some((key) => Object.hasOwn(server, key)),
+        snapshot,
+        context.project,
       ),
     );
   }
 }
 
-function scanJson(
-  file: string,
-  agent: Agent,
-  scope: string,
-  pointer: string[],
-  context: CandidateContext,
-): void {
+function readNativeMcpSnapshot(file: string, agent: Agent): NativeMcpSnapshot | undefined {
   const content = readConfig(file);
   if (content === undefined) return;
-  collectJsonServers(file, agent, scope, pointerValue(JSON.parse(content), pointer), context);
-}
-
-function scanJson5(
-  file: string,
-  agent: Agent,
-  scope: string,
-  pointer: string[],
-  context: CandidateContext,
-): void {
-  const content = readConfig(file);
-  if (content === undefined) return;
-  collectJsonServers(file, agent, scope, pointerValue(JSON5.parse(content), pointer), context);
-}
-
-function scanOpenCode(file: string, scope: string, context: CandidateContext): void {
-  const content = readConfig(file);
-  if (content === undefined) return;
-  const value: unknown = file.endsWith(".jsonc") ? JSON5.parse(content) : JSON.parse(content);
-  collectJsonServers(file, "opencode", scope, asObject(value)?.mcp, context);
-}
-
-function scanHermes(file: string, context: CandidateContext): void {
-  const content = readConfig(file);
-  if (content === undefined) return;
-  const value: unknown = parseYaml(content);
-  collectJsonServers(file, "hermes", "home", asObject(value)?.mcp_servers, context);
+  const document = parseNativeMcpDocument(content, agent, file);
+  // All candidates from this read share one document and fingerprint. Never keep
+  // this snapshot across scans or the fresh reads required by preview and apply.
+  return { ...document, content, fingerprint: createHash("sha256").update(content).digest("hex") };
 }
 
 function readConfig(file: string): string | undefined {
   try {
-    if (!statSync(file).isFile()) return undefined;
+    safeAgentHomePath(file);
+    const metadata = statSync(file);
+    if (!metadata.isFile() || metadata.size > 1024 * 1024)
+      throw new Error("Native MCP config must be a regular file of at most 1 MiB");
     const content = readFileSync(file, "utf8");
     return content.trim() ? content : undefined;
   } catch (error) {
@@ -213,10 +249,10 @@ function collectJsonServers(
   file: string,
   agent: Agent,
   scope: string,
-  value: unknown,
+  snapshot: NativeMcpSnapshot,
   context: CandidateContext,
 ): void {
-  const servers = asObject(value);
+  const servers = snapshot.servers;
   if (!servers) return;
   for (const [name, raw] of Object.entries(servers)) {
     const server = asObject(raw);
@@ -230,14 +266,26 @@ function collectJsonServers(
     const hasSecretValues =
       (!!server && ["env", "environment", "headers"].some((key) => hasValues(server[key]))) ||
       (!!server && asObject(server.oauth) !== undefined && hasValues(server.oauth));
-    const result = candidate(file, agent, scope, name, transport, endpoint, hasSecretValues);
+    const result = candidate(
+      file,
+      agent,
+      scope,
+      name,
+      transport,
+      endpoint,
+      hasSecretValues,
+      snapshot,
+      context.project,
+    );
     if (
       (agent === "opencode" && !opencodeServerCanBeMigrated(server)) ||
       (agent === "antigravity" && !antigravityPolicyCanBeMigrated(server))
     ) {
       result.supported = false;
-      if (!result.warnings.includes("Unsupported native MCP fields or transport"))
+      if (!result.warnings.includes("Unsupported native MCP fields or transport")) {
         result.warnings.push("Unsupported native MCP fields or transport");
+        result.warning_messages!.push(mcpDiagnostic("native_unsupported"));
+      }
     }
     context.output.push(result);
   }
@@ -260,13 +308,15 @@ function candidate(
   transport: string,
   endpoint: string,
   hasSecretValues: boolean,
+  snapshot: NativeMcpSnapshot,
+  project?: string,
 ): Candidate {
   const sourcePath = canonicalPath(file);
   const id = createHash("sha256").update(`${sourcePath}:${name}`).digest("hex").slice(0, 24);
   const supported =
-    ["stdio", "http", "streamable-http", "sse"].includes(transport) ||
+    ["stdio", "http", "streamable-http"].includes(transport) ||
     ((agent === "opencode" || agent === "antigravity") && ["local", "remote"].includes(transport));
-  return {
+  const result: Candidate = {
     id,
     agent,
     scope,
@@ -276,12 +326,133 @@ function candidate(
     endpoint,
     has_secret_values: hasSecretValues,
     supported,
+    warning_messages: hasSecretValues
+      ? [mcpDiagnostic("native_secret_required")]
+      : supported
+        ? []
+        : [mcpDiagnostic("native_unsupported")],
     warnings: hasSecretValues
       ? ["Secret values must be re-entered into mcp.local.json"]
       : supported
         ? []
         : ["Unsupported native MCP fields or transport"],
   };
+  if (supported) {
+    try {
+      const server = nativeMcpImportFromSnapshot(result, snapshot, project);
+      const publicConfig = publicMcpConfig(server);
+      result.endpoint =
+        publicConfig.transport === "stdio" ? publicConfig.command : publicConfig.url;
+      result.fingerprint = server.native_source!.fingerprint;
+    } catch (error) {
+      result.supported = false;
+      result.endpoint = "unavailable";
+      result.warning_messages!.push(
+        mcpDiagnostic(
+          error instanceof NativeWorkingDirectoryError
+            ? "native_working_directory"
+            : "native_review_configuration",
+        ),
+      );
+      result.warnings.push(
+        error instanceof NativeWorkingDirectoryError
+          ? workingDirectoryWarning
+          : "Unsupported native MCP fields or inline credentials; review the original configuration",
+      );
+    }
+  } else result.endpoint = "unavailable";
+  return result;
+}
+
+/** Caller must obtain candidates from a fresh registered-scope scan, never from Renderer paths. */
+export function readNativeMcpImport(
+  candidate: NativeMcpCandidate,
+  project?: string | null,
+): McpServer {
+  const snapshot = readNativeMcpSnapshot(candidate.source_path, candidate.agent);
+  if (!snapshot) throw new Error("Native MCP source is unavailable");
+  return nativeMcpImportFromSnapshot(candidate, snapshot, project);
+}
+
+/** Host-only batch of freshly scanned candidates. Snapshots live for this call;
+ * callers must read again at each preview/apply boundary and after async work. */
+export function readNativeMcpImports(
+  candidates: NativeMcpCandidate[],
+  project?: string | null,
+): NativeMcpImportRead[] {
+  const snapshots = new Map<string, { snapshot: NativeMcpSnapshot } | { error: unknown }>();
+  return candidates.map((candidate) => {
+    try {
+      if (!candidate.supported) throw new Error("Unsupported native MCP entry");
+      const key = JSON.stringify([candidate.source_path, candidate.agent]);
+      let result = snapshots.get(key);
+      if (!result) {
+        try {
+          const snapshot = readNativeMcpSnapshot(candidate.source_path, candidate.agent);
+          if (!snapshot) throw new Error("Native MCP source is unavailable");
+          result = { snapshot };
+        } catch (error) {
+          result = { error };
+        }
+        snapshots.set(key, result);
+      }
+      if ("error" in result) throw result.error;
+      return {
+        candidate,
+        snapshot: result.snapshot,
+        server: nativeMcpImportFromSnapshot(candidate, result.snapshot, project),
+      };
+    } catch (error) {
+      return { candidate, error };
+    }
+  });
+}
+
+function nativeMcpImportFromSnapshot(
+  candidate: NativeMcpCandidate,
+  snapshot: NativeMcpSnapshot,
+  project?: string | null,
+): McpServer {
+  const raw = snapshot.servers?.[candidate.name];
+  if (!raw) throw new Error("Native MCP entry no longer exists");
+  const server = normalizeMcpImport(candidate.name, raw, candidate.agent, true);
+  if (server.transport === "stdio")
+    server.cwd = nativeWorkingDirectory(candidate, server.cwd, project);
+  server.native_source = {
+    candidate_id: candidate.id,
+    fingerprint: snapshot.fingerprint,
+    agent: candidate.agent,
+  };
+  return server;
+}
+
+function nativeWorkingDirectory(
+  candidate: NativeMcpCandidate,
+  cwd: string | null | undefined,
+  project: string | null | undefined,
+): string {
+  if (cwd !== undefined) {
+    // These clients document an explicit cwd. Other native formats may ignore
+    // the same field; accepting it would activate behavior absent in the source.
+    if (
+      ["codex", "cursor", "antigravity", "open-claw"].includes(candidate.agent) &&
+      typeof cwd === "string" &&
+      path.isAbsolute(cwd)
+    )
+      return cwd;
+    // Relative paths depend on client-specific resolution; never resolve them
+    // against AgentKib's own process directory or a selected unrelated workspace.
+    throw new NativeWorkingDirectoryError();
+  }
+  // Freeze a known project execution context at collection. User-level sources
+  // and clients with an unknown launch directory cannot inherit this assumption.
+  if (
+    candidate.scope === "project" &&
+    project &&
+    ["claude-code", "opencode"].includes(candidate.agent)
+  )
+    return project;
+  throw new NativeWorkingDirectoryError();
 }
 
 function opencodeServerCanBeMigrated(server: JsonObject | undefined): boolean {
@@ -305,7 +476,7 @@ function opencodeServerCanBeMigrated(server: JsonObject | undefined): boolean {
       ) &&
       typeof server.url === "string" &&
       stringMapValid(server.headers) &&
-      (server.oauth === undefined || server.oauth === false)
+      server.oauth === undefined
     );
   }
   return false;
@@ -407,14 +578,11 @@ function markLayeredOpenCode(candidates: Candidate[]): void {
     candidate.supported = false;
     const warning =
       "Layered OpenCode MCP entries with the same name cannot be migrated automatically";
-    if (!candidate.warnings.includes(warning)) candidate.warnings.push(warning);
+    if (!candidate.warnings.includes(warning)) {
+      candidate.warnings.push(warning);
+      candidate.warning_messages!.push(mcpDiagnostic("native_layered_opencode"));
+    }
   }
-}
-
-function pointerValue(value: unknown, pathSegments: string[]): unknown {
-  let current: unknown = value;
-  for (const segment of pathSegments) current = asObject(current)?.[segment];
-  return current;
 }
 
 function stringField(value: JsonObject | undefined, keys: string[]): string | undefined {

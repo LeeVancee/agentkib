@@ -67,7 +67,7 @@ Browsing, previewing, and diagnostics do not create a manifest or modify agent c
 ### MCP Hub and client connections
 
 - HTTP MCP OAuth credentials are bound to the authorization server that issued them. After the MCP SDK security update to 1.31.0, saved credentials without this binding require a new sign-in; authorize the service again from its MCP entry.
-- The MCP page separates upstream services managed by AgentKib from the client connection used by another agent. A `mcpServers` client configuration belongs in the target agent's configuration; the service editor expects one AgentKib server definition.
+- The desktop MCP page separates service collection/editing, batch Agent connection setup, and per-Agent tool rules. It accepts reviewed native/pasted formats (including `mcpServers`) as disabled definitions, without starting services or copying native credentials. See [MCP management](MCP-MANAGEMENT.md).
 - “Connect an Agent to the Hub” lets you choose a registered workspace and one of the eight writable agents, inspect the complete local Hub URL and native configuration path, copy the URL or configuration, or review a connection-only ChangeSet before writing it. A workspace does not need an existing manifest.
 - New connections use the workspace's unique registered ID. Legacy manifest URLs remain valid when they identify one physical workspace; ambiguous aliases are rejected. Rewriting a connection with its registered ID restores ordinary Hub access. Continuation archives keep their existing manifest namespace, so shared or conflicting ownership still blocks archive reads, long-history handoffs, and operation recovery; changing the URL alone does not resolve that ambiguity. The Hub rechecks ownership on every archive read.
 - Codex and Grok Build use TOML; Claude Code, Cursor, OpenCode, Antigravity and OpenClaw use their native JSON structures; Hermes uses YAML. Existing OpenCode configuration selection and JSONC/JSON5 compatibility are preserved. OpenClaw and Hermes write to Agent Home and require separate approval; their connection points to the selected workspace. OpenClaw honors its effective Home, profile, state directory, and config-path overrides; Hermes uses `HERMES_HOME` and the selected `active_profile` (or a directly selected profile Home). Planning and applying share the same path resolution, and a changed profile or config target requires a new plan.
@@ -197,7 +197,7 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 ### MCP Hub 与客户端接入
 
 - HTTP MCP 的 OAuth 凭据会绑定签发它们的授权服务器。升级到 MCP SDK 1.31.0 安全修复版本后，缺少此绑定的旧凭据需要重新登录；请从对应 MCP 服务条目重新授权。
-- MCP 页区分由 AgentKib 管理的上游服务，以及其他 Agent 使用的客户端连接。`mcpServers` 客户端配置应放入目标 Agent 的配置文件；服务编辑器接收单个 AgentKib 服务定义。
+- 桌面 MCP 页区分服务收录／编辑、Agent 批量接入和按 Agent 分配具体工具。已验证原生／粘贴格式（包括 `mcpServers`）收录为停用定义，不启动服务、不复制原生凭据。参见 [MCP 管理说明](MCP-MANAGEMENT.md)。
 - “连接 Agent 到 Hub”可选择已注册工作区和八个可写 Agent 之一，查看完整本机 Hub URL 与原生配置路径、复制地址或配置，或先审查仅包含连接变更的 ChangeSet 再写入。工作区无需已有 manifest。
 - 新连接使用工作区的唯一注册 ID。旧 manifest 地址只有在能唯一定位物理工作区时才兼容；存在歧义时拒绝。改用注册 ID 重写连接可恢复普通 Hub 访问。续接归档仍沿用旧 manifest namespace，共享或冲突归属会阻止归档读取、长历史交接和操作恢复；只改 URL 不能解决归档歧义。Hub 每次读取归档都会重新核对归属。
 - Codex、Grok Build 使用 TOML；Claude Code、Cursor、OpenCode、Antigravity、OpenClaw 使用各自原生 JSON 结构；Hermes 使用 YAML。沿用已有 OpenCode 配置选择规则与 JSONC/JSON5 兼容行为。OpenClaw、Hermes 写入 Agent Home，需单独确认，连接会指向所选工作区。OpenClaw 遵循有效的 Home、profile、state directory 和 config-path 覆盖配置；Hermes 使用 `HERMES_HOME` 与所选 `active_profile`，也支持直接选择 profile Home。规划与应用共用路径解析，profile 或配置目标变化后须重新规划。

@@ -9,7 +9,8 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { McpServer } from "./mcp-config-read";
-import type { McpManager } from "./mcp";
+import { mcpToolCacheKey, type McpManager } from "./mcp";
+import { canonicalize } from "./paths";
 
 type StoredOAuthCredentials = {
   client_id?: string;
@@ -21,8 +22,15 @@ type StoredOAuthCredentials = {
   discovery_state?: OAuthDiscoveryState;
 };
 type HttpMcpServer = Extract<McpServer, { transport: "streamable-http" }>;
+type PersistCredentials = (write: () => void, invalidatesAuthorization: boolean) => void;
 
-type Pending = { server: HttpMcpServer; provider: StoredOAuthProvider; state: string };
+type Pending = {
+  server: HttpMcpServer;
+  provider: StoredOAuthProvider;
+  state: string;
+  completing: boolean;
+  assertCurrent: () => void;
+};
 
 export class McpOAuth {
   #pending = new Map<string, Pending>();
@@ -33,40 +41,88 @@ export class McpOAuth {
   ) {}
 
   async start(serverId: string, project?: string): Promise<{ authorization_url: string }> {
-    const server = this.manager.getPrivate(serverId, project);
+    const scope = project ? canonicalize(project) : null,
+      selectedProject = scope ?? undefined,
+      key = JSON.stringify([scope, serverId]),
+      server = this.manager.getPrivate(serverId, selectedProject);
     if (!server) throw new Error("Unknown MCP server");
     if (server.transport !== "streamable-http" || !("url" in server))
       throw new Error("OAuth is supported only for Streamable HTTP MCP servers");
     const serverUrl = server.url;
-    this.manager.ensureOAuthStore(server, project);
-    const provider = new StoredOAuthProvider(server, this.manager, project, this.port());
+    this.manager.ensureOAuthStore(server, selectedProject);
+    let fingerprint = mcpToolCacheKey(server, scope, this.manager.environment);
+    let pending: Pending;
+    const assertCurrent = () => {
+      if (this.#pending.get(key) !== pending)
+        throw new Error("OAuth authorization attempt was cancelled or replaced");
+      const current = this.manager.getPrivate(serverId, selectedProject);
+      if (!current || mcpToolCacheKey(current, scope, this.manager.environment) !== fingerprint)
+        throw new Error("MCP OAuth configuration changed; start authorization again");
+    };
+    const provider = new StoredOAuthProvider(
+      server,
+      this.manager,
+      selectedProject,
+      this.port(),
+      (write) => {
+        assertCurrent();
+        write();
+        const current = this.manager.getPrivate(serverId, selectedProject);
+        if (!current) throw new Error("MCP OAuth server was removed");
+        fingerprint = mcpToolCacheKey(current, scope, this.manager.environment);
+      },
+    );
     const state = randomBytes(32).toString("base64url");
     provider.stateValue = state;
     provider.authorizationUrl = undefined;
-    const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
-    const result = await auth(provider, { serverUrl });
-    const authorizationUrl = provider.getAuthorizationUrl();
-    if (result !== "REDIRECT" || !authorizationUrl)
-      throw new Error("MCP server did not begin an interactive OAuth flow");
-    this.#pending.set(server.id, { server, provider, state });
-    return { authorization_url: authorizationUrl.toString() };
+    // Install the attempt before discovery starts so cancellation or a newer
+    // login also invalidates metadata/registration writes that finish late.
+    pending = { server, provider, state, completing: false, assertCurrent };
+    this.#pending.set(key, pending);
+    try {
+      const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+      assertCurrent();
+      const result = await auth(provider, { serverUrl });
+      assertCurrent();
+      const authorizationUrl = provider.getAuthorizationUrl();
+      if (result !== "REDIRECT" || !authorizationUrl)
+        throw new Error("MCP server did not begin an interactive OAuth flow");
+      return { authorization_url: authorizationUrl.toString() };
+    } catch (error) {
+      if (this.#pending.get(key) === pending) this.#pending.delete(key);
+      throw error;
+    }
   }
 
   async complete(serverId: string, code: string, state: string, issuer?: string): Promise<void> {
-    const pending = this.#pending.get(serverId);
-    if (!pending) throw new Error("No pending OAuth authorization for this MCP server");
-    if (!safeEqual(state, pending.state)) throw new Error("OAuth state did not match");
+    const candidates = [...this.#pending].filter(([, pending]) => pending.server.id === serverId),
+      match = candidates.find(([, pending]) => safeEqual(state, pending.state));
+    if (!match)
+      throw new Error(
+        candidates.length
+          ? "OAuth state did not match"
+          : "No pending OAuth authorization for this MCP server",
+      );
+    const [key, pending] = match;
+    if (pending.completing) throw new Error("OAuth authorization is already being completed");
     const expectedIssuer = pending.provider.discovery?.authorizationServerMetadata?.issuer;
     if (issuer && expectedIssuer && issuer !== expectedIssuer)
       throw new Error("OAuth issuer did not match the discovered authorization server");
-    this.#pending.delete(serverId);
-    const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
-    await auth(pending.provider, { serverUrl: pending.server.url, authorizationCode: code });
-    if (!pending.provider.hasTokens) throw new Error("OAuth provider did not return credentials");
+    pending.completing = true;
+    try {
+      const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+      pending.assertCurrent();
+      await auth(pending.provider, { serverUrl: pending.server.url, authorizationCode: code });
+      pending.assertCurrent();
+      if (!pending.provider.hasTokens) throw new Error("OAuth provider did not return credentials");
+    } finally {
+      if (this.#pending.get(key) === pending) this.#pending.delete(key);
+    }
   }
 
   cancel(serverId: string): void {
-    this.#pending.delete(serverId);
+    for (const [key, pending] of this.#pending)
+      if (pending.server.id === serverId) this.#pending.delete(key);
   }
 }
 
@@ -75,8 +131,9 @@ export function oauthProvider(
   manager: McpManager,
   project: string | undefined,
   port: number,
+  persistCredentials?: PersistCredentials,
 ) {
-  return new StoredOAuthProvider(server, manager, project, port);
+  return new StoredOAuthProvider(server, manager, project, port, persistCredentials);
 }
 
 class StoredOAuthProvider implements OAuthClientProvider {
@@ -92,6 +149,7 @@ class StoredOAuthProvider implements OAuthClientProvider {
     readonly manager: McpManager,
     readonly project: string | undefined,
     port: number,
+    readonly persistCredentials?: PersistCredentials,
   ) {
     this.#redirectUrl = `http://127.0.0.1:${port}/oauth/callback/${encodeURIComponent(server.id)}`;
     this.clientMetadata = {
@@ -133,7 +191,6 @@ class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(value: OAuthTokens): void {
-    this.hasTokens = true;
     const scopes = value.scope?.split(/\s+/).filter(Boolean) ?? [];
     this.#update((stored) => ({
       ...stored,
@@ -142,6 +199,7 @@ class StoredOAuthProvider implements OAuthClientProvider {
       token_received_at: Math.floor(Date.now() / 1000),
       issuer: value.issuer,
     }));
+    this.hasTokens = true;
   }
 
   saveCodeVerifier(value: string): void {
@@ -162,8 +220,8 @@ class StoredOAuthProvider implements OAuthClientProvider {
   }
 
   saveDiscoveryState(value: OAuthDiscoveryState): void {
-    this.discovery = value;
     this.#update((stored) => ({ ...stored, discovery_state: value }));
+    this.discovery = value;
   }
 
   discoveryState(): OAuthDiscoveryState | undefined {
@@ -172,23 +230,28 @@ class StoredOAuthProvider implements OAuthClientProvider {
 
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
     if (scope === "all") {
-      this.manager.clearOAuthCredentials(this.server.id, this.project);
-      this.server.oauth_credentials = undefined;
+      this.#persist(() => {
+        this.manager.clearOAuthCredentials(this.server.id, this.project);
+        this.server.oauth_credentials = undefined;
+      }, true);
     } else
-      this.#update((stored) => {
-        const next = { ...stored };
-        if (scope === "client") {
-          delete next.client_id;
-          delete next.client_information;
-        }
-        if (scope === "tokens") {
-          delete next.token_response;
-          delete next.granted_scopes;
-          delete next.token_received_at;
-        }
-        if (scope === "discovery") delete next.discovery_state;
-        return next;
-      });
+      this.#update(
+        (stored) => {
+          const next = { ...stored };
+          if (scope === "client") {
+            delete next.client_id;
+            delete next.client_information;
+          }
+          if (scope === "tokens") {
+            delete next.token_response;
+            delete next.granted_scopes;
+            delete next.token_received_at;
+          }
+          if (scope === "discovery") delete next.discovery_state;
+          return next;
+        },
+        scope === "client" || scope === "tokens",
+      );
     if (scope === "verifier" || scope === "all") this.#verifier = undefined;
     if (scope === "discovery" || scope === "all") this.discovery = undefined;
     if (scope === "tokens" || scope === "all") this.hasTokens = false;
@@ -196,11 +259,21 @@ class StoredOAuthProvider implements OAuthClientProvider {
 
   #verifier?: string;
 
-  #update(transform: (value: StoredOAuthCredentials) => StoredOAuthCredentials): void {
+  #persist(write: () => void, invalidatesAuthorization = false): void {
+    if (this.persistCredentials) this.persistCredentials(write, invalidatesAuthorization);
+    else write();
+  }
+
+  #update(
+    transform: (value: StoredOAuthCredentials) => StoredOAuthCredentials,
+    invalidatesAuthorization = false,
+  ): void {
     const current = readCredentials(this.server) ?? {};
     const updated = transform(current);
-    this.manager.saveOAuthCredentials(this.server.id, updated, this.project);
-    this.server.oauth_credentials = updated;
+    this.#persist(() => {
+      this.manager.saveOAuthCredentials(this.server.id, updated, this.project);
+      this.server.oauth_credentials = updated;
+    }, invalidatesAuthorization);
   }
 }
 

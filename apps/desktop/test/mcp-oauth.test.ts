@@ -1,8 +1,19 @@
 import { createRequire } from "node:module";
-import { describe, expect, it, vi } from "vitest";
-import type { McpManager } from "../../../packages/backend/src/mcp";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { McpManager } from "../../../packages/backend/src/mcp";
 import type { McpServer } from "../../../packages/backend/src/mcp-config-read";
-import { oauthProvider } from "../../../packages/backend/src/mcp-oauth";
+import { McpOAuth, oauthProvider } from "../../../packages/backend/src/mcp-oauth";
+import { Commands } from "../../../packages/backend/src/commands";
+import { BackendStore } from "../../../packages/backend/src/store";
+
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanups.splice(0).reverse()) await close();
+  vi.unstubAllGlobals();
+});
 
 const requireBackend = createRequire(
   new URL("../../../packages/backend/package.json", import.meta.url),
@@ -66,6 +77,258 @@ const tokens = {
   refresh_token: "original-refresh",
   token_type: "Bearer",
 };
+
+function interactiveFixture() {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-interactive-oauth-"))),
+    home = path.join(root, "home"),
+    project = path.join(root, "project"),
+    project2 = path.join(root, "project2"),
+    data = path.join(root, "data"),
+    environment = { HOME: home, USERPROFILE: home };
+  for (const directory of [home, project, project2]) mkdirSync(directory);
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const store = new BackendStore(path.join(data, "agentkib.db"));
+  cleanups.push(() => store.close());
+  const commands = new Commands();
+  cleanups.push(() => commands.close());
+  const manager = new McpManager(store.sql, environment, data, commands);
+  cleanups.push(() => manager.closeAsync());
+  const server: McpServer = {
+      id: "oauth",
+      name: "OAuth",
+      transport: "streamable-http",
+      url: serverUrl,
+      enabled: true,
+      env: {},
+      headers: {},
+      targets: [],
+      allow_tools: [],
+      lan_allow_tools: [],
+      supports_parallel_tool_calls: false,
+    },
+    credentials = {
+      client_information: { ...client, issuer: trustedIssuer },
+      discovery_state: discovery(trustedIssuer),
+    },
+    oauth = new McpOAuth(manager, () => 47653),
+    events: string[] = [],
+    gates = new Map<string, Promise<void>>();
+  for (const [id, directory] of [
+    ["one", project],
+    ["two", project2],
+  ] as const)
+    store.sql.run(
+      "INSERT INTO workspaces(id,canonical_path,name,manifest_workspace_id,status,last_discovered_at) VALUES(?,?,?,?,?,?)",
+      id,
+      directory,
+      id,
+      id,
+      "healthy",
+      new Date().toISOString(),
+    );
+  for (const scope of [undefined, project, project2]) {
+    manager.save(server, scope);
+    manager.ensureOAuthStore(server, scope);
+    manager.saveOAuthCredentials(server.id, credentials, scope);
+  }
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (request.url === `${trustedIssuer}/token`) {
+      const params = new URLSearchParams(await request.text()),
+        code = params.get("code");
+      expect(params.get("grant_type")).toBe("authorization_code");
+      expect(params.get("code_verifier")).toBeTruthy();
+      events.push(`token:${code}`);
+      await gates.get("token");
+      return Response.json({ access_token: `access-${code}`, token_type: "Bearer" });
+    }
+    if (request.url.startsWith("https://mcp.example.com/.well-known/oauth-protected-resource")) {
+      events.push("discovery");
+      await gates.get("discovery");
+      return Response.json(discovery(trustedIssuer).resourceMetadata);
+    }
+    if (request.url === `${trustedIssuer}/.well-known/oauth-authorization-server`) {
+      events.push("metadata");
+      return Response.json(discovery(trustedIssuer).authorizationServerMetadata);
+    }
+    if (request.url === `${trustedIssuer}/register`) {
+      events.push("register");
+      const metadata = await request.json();
+      return Response.json({ ...metadata, client_id: "registered-client" });
+    }
+    throw new Error(`Unexpected OAuth fixture request: ${request.url}`);
+  });
+  return {
+    manager,
+    oauth,
+    project,
+    project2,
+    events,
+    start: async (scope: string | undefined = project) =>
+      new URL((await oauth.start("oauth", scope)).authorization_url).searchParams.get("state")!,
+    globalStart: async () =>
+      new URL((await oauth.start("oauth")).authorization_url).searchParams.get("state")!,
+    contents: (scope: string | undefined = project) =>
+      readFileSync(path.join(scope ?? home, ".agentkib/mcp.local.json"), "utf8"),
+    credentials: (scope: string | undefined = project) =>
+      manager.getPrivate("oauth", scope)?.oauth_credentials,
+    reset: () => manager.saveOAuthCredentials("oauth", {}, project),
+    hold(event: string) {
+      let release!: () => void;
+      gates.set(
+        event,
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      return () => {
+        gates.delete(event);
+        release();
+      };
+    },
+    waitFor(event: string) {
+      return vi.waitFor(() => expect(events).toContain(event), { timeout: 3000, interval: 5 });
+    },
+    change(kind: "url" | "credentials" | "clear" | "remove") {
+      if (kind === "url") manager.save({ ...server, url: `${serverUrl}/changed` }, project);
+      if (kind === "credentials")
+        manager.saveOAuthCredentials(
+          "oauth",
+          {
+            ...credentials,
+            client_information: { ...client, client_id: "another-account", issuer: trustedIssuer },
+          },
+          project,
+        );
+      if (kind === "clear") manager.clearOAuthCredentials("oauth", project);
+      if (kind === "remove") store.sql.run("DELETE FROM workspaces WHERE id='one'");
+    },
+  };
+}
+
+describe("interactive OAuth attempt ownership", () => {
+  it("completes independent same-ID authorizations in two workspaces and global scope", async () => {
+    const f = interactiveFixture(),
+      first = await f.start(),
+      second = await f.start(f.project2),
+      global = await f.globalStart();
+    await f.oauth.complete("oauth", "two", second);
+    await f.oauth.complete("oauth", "one", first);
+    await f.oauth.complete("oauth", "global", global);
+    expect(f.credentials()).toMatchObject({
+      token_response: { access_token: "access-one", issuer: trustedIssuer },
+    });
+    expect(f.credentials(f.project2)).toMatchObject({
+      token_response: { access_token: "access-two" },
+    });
+    expect(f.manager.getPrivate("oauth")?.oauth_credentials).toMatchObject({
+      token_response: { access_token: "access-global" },
+    });
+  });
+
+  it.each(["url", "credentials", "clear", "remove"] as const)(
+    "rejects %s changes before exchanging the authorization code",
+    async (kind) => {
+      const f = interactiveFixture(),
+        state = await f.start();
+      f.change(kind);
+      const before = f.contents();
+      await expect(f.oauth.complete("oauth", "old", state)).rejects.toThrow();
+      expect(f.events).toEqual([]);
+      expect(f.contents()).toBe(before);
+    },
+  );
+
+  it.each(["url", "credentials", "clear", "remove"] as const)(
+    "does not persist a delayed token exchange after %s changes",
+    async (kind) => {
+      const f = interactiveFixture(),
+        state = await f.start(),
+        release = f.hold("token"),
+        completion = f.oauth.complete("oauth", "old", state),
+        rejected = expect(completion).rejects.toThrow();
+      await f.waitFor("token:old");
+      f.change(kind);
+      const before = f.contents();
+      release();
+      await rejected;
+      expect(f.contents()).toBe(before);
+    },
+  );
+
+  it("cancels an in-progress token exchange without restoring credentials", async () => {
+    const f = interactiveFixture(),
+      state = await f.start(),
+      before = f.contents(),
+      release = f.hold("token"),
+      completion = f.oauth.complete("oauth", "old", state),
+      rejected = expect(completion).rejects.toThrow("cancelled");
+    await f.waitFor("token:old");
+    f.oauth.cancel("oauth");
+    release();
+    await rejected;
+    expect(f.contents()).toBe(before);
+  });
+
+  it("a new login replaces only its scope and rejects the old token exchange", async () => {
+    const f = interactiveFixture(),
+      old = await f.start(),
+      other = await f.start(f.project2),
+      release = f.hold("token"),
+      completion = f.oauth.complete("oauth", "old", old),
+      rejected = expect(completion).rejects.toThrow("replaced");
+    await f.waitFor("token:old");
+    const next = await f.start(),
+      before = f.contents();
+    release();
+    await rejected;
+    expect(f.contents()).toBe(before);
+    await f.oauth.complete("oauth", "new", next);
+    await f.oauth.complete("oauth", "other", other);
+    expect(f.credentials()).toMatchObject({ token_response: { access_token: "access-new" } });
+    expect(f.credentials(f.project2)).toMatchObject({
+      token_response: { access_token: "access-other" },
+    });
+  });
+
+  it.each(["cancel", "replace"])("rejects late discovery after %s during start", async (action) => {
+    const f = interactiveFixture();
+    f.reset();
+    const before = f.contents(),
+      release = f.hold("discovery"),
+      first = f.start(),
+      rejected = expect(first).rejects.toThrow(/cancelled|replaced/);
+    await f.waitFor("discovery");
+    if (action === "cancel") f.oauth.cancel("oauth");
+    release();
+    const next = action === "replace" ? f.start() : undefined;
+    await rejected;
+    if (next) {
+      const state = await next;
+      await f.oauth.complete("oauth", "new", state);
+      expect(f.credentials()).toMatchObject({ token_response: { access_token: "access-new" } });
+    } else {
+      expect(f.contents()).toBe(before);
+      expect(f.events).not.toContain("register");
+    }
+  });
+
+  it("keeps the matching attempt after invalid state/issuer and prevents duplicate exchange", async () => {
+    const f = interactiveFixture(),
+      state = await f.start();
+    await expect(f.oauth.complete("oauth", "old", "wrong-state")).rejects.toThrow("state");
+    await expect(f.oauth.complete("oauth", "old", state, otherIssuer)).rejects.toThrow("issuer");
+    expect(f.events).toEqual([]);
+    const release = f.hold("token"),
+      completion = f.oauth.complete("oauth", "one", state);
+    await f.waitFor("token:one");
+    await expect(f.oauth.complete("oauth", "duplicate", state)).rejects.toThrow("already");
+    release();
+    await completion;
+    expect(f.events).toEqual(["token:one"]);
+    await expect(f.oauth.complete("oauth", "replayed", state)).rejects.toThrow("No pending");
+  });
+});
 
 describe("MCP OAuth credential issuer binding", () => {
   it.each([undefined, null, "", "  ", 123])(

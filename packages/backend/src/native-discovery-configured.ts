@@ -153,7 +153,7 @@ export function discoverConfiguredWorkspaces(environment: NodeJS.ProcessEnv) {
   };
 }
 
-function agentInstallations(environment: NodeJS.ProcessEnv) {
+export function agentInstallations(environment: NodeJS.ProcessEnv) {
   const home = userHome(environment),
     xdg =
       environment.XDG_CONFIG_HOME && path.isAbsolute(environment.XDG_CONFIG_HOME)

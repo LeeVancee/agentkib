@@ -1,3 +1,14 @@
+import { mcpMigrationPreview } from "./mcp-management-validation";
+import {
+  mcpConnectionApply,
+  mcpConnectionBatch,
+  mcpImportApply,
+  mcpImportPreview,
+  mcpPolicySave,
+  mcpRemove,
+  mcpSave,
+  mcpScope,
+} from "./mcp-management-validation";
 import type { IpcMainInvokeEvent } from "electron";
 import { app, shell } from "electron";
 import path from "node:path";
@@ -469,6 +480,34 @@ export function registerRuntimeIpc({
       }),
     );
 
+    forward("agentkib:mcp:management-state", RUNTIME_METHODS.mcpManagementState, mcpScope);
+    forward("agentkib:mcp:save-configuration", RUNTIME_METHODS.saveMcpConfiguration, mcpSave);
+    forward("agentkib:mcp:remove-configuration", RUNTIME_METHODS.removeMcpConfiguration, mcpRemove);
+    forward("agentkib:mcp:preview-import", RUNTIME_METHODS.previewMcpImport, mcpImportPreview);
+    forward("agentkib:mcp:apply-import", RUNTIME_METHODS.applyMcpImport, mcpImportApply);
+    forward(
+      "agentkib:mcp:check-connections",
+      RUNTIME_METHODS.checkMcpConnections,
+      mcpConnectionBatch,
+    );
+    forward(
+      "agentkib:mcp:plan-connections",
+      RUNTIME_METHODS.planMcpConnections,
+      mcpConnectionBatch,
+    );
+    forward(
+      "agentkib:mcp:apply-connections",
+      RUNTIME_METHODS.applyMcpConnections,
+      mcpConnectionApply,
+    );
+    forward("agentkib:mcp:get-policy", RUNTIME_METHODS.getMcpPolicy, mcpScope);
+    forward("agentkib:mcp:save-policy", RUNTIME_METHODS.saveMcpPolicy, mcpPolicySave);
+    forward(
+      "agentkib:mcp:preview-migration",
+      RUNTIME_METHODS.previewMcpMigration,
+      mcpMigrationPreview,
+    );
+    forward("agentkib:mcp:apply-migration", RUNTIME_METHODS.applyMcpMigration, mcpConnectionApply);
     forward("agentkib:mcp:hub-status", RUNTIME_METHODS.mcpHubStatus);
     forward(
       "agentkib:mcp:connection-info",

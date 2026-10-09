@@ -53,6 +53,10 @@ The October 1 closeout adds an exact Codex 0.155.1 compatibility gate while pres
 
 These historical native results apply to the source revisions, Agent versions, and directions recorded in each QA report. The current TypeScript backend has separate [stability and packaging acceptance](qa/typescript-stability-2026-10-07.md); historical Rust Runtime or model-reply evidence does not certify the migrated backend.
 
+### Manage MCP services and Agent connections
+
+Collect native or pasted MCP configurations without starting services, explicitly enable and probe them, and review one batch to connect selected installed Agents to the Hub. Assign individual tools per Agent, with workspace overrides and checked configuration writes. See [MCP management](docs/MCP-MANAGEMENT.md).
+
 ### Keep local tools current
 
 Inspect Codex, Claude Code, Antigravity, Cursor, OpenCode, OpenClaw, Hermes, and Grok Build installations. AgentKib reports each installation's version, source, executable path, PATH default, and conflicts. Verified package-manager actions can run with a pinned target; channels that cannot pin an exact version, along with ambiguous, privileged, or remote-script flows, fall back to a command or official documentation.

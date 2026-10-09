@@ -236,7 +236,11 @@ function mergeGateway(
   for (const field of ["command", "args", "cwd"]) delete next[field];
   for (const [key, item] of Object.entries(entry))
     Object.defineProperty(next, key, {
-      value: item,
+      // Repairing the Hub address must not re-enable a connection the user disabled.
+      value:
+        (key === "enabled" || key === "disabled") && typeof next[key] === "boolean"
+          ? next[key]
+          : item,
       enumerable: true,
       writable: true,
       configurable: true,
@@ -517,7 +521,9 @@ function updateRecordedHash(
 ): void {
   const target = manifestPath(project);
   if (!safeTarget(project, target)) throw new Error(`Unsafe manifest path: ${target}`);
-  const before = readOptional(target);
+  const previous = changes.find((change) => change.target === target);
+  // A batch updates the shared manifest in memory, retaining one original snapshot.
+  const before = previous?.after ?? readOptional(target);
   if (before === null) return;
   const manifest = parseManifest(before);
   const hashes = manifest.adapters[info.target_agent]?.generated_hashes;
@@ -567,7 +573,139 @@ function updateRecordedHash(
   const after = doc.toString();
   // Expanding aliases can reveal duplicate keys outside the hash path as well.
   parseManifest(after);
-  if (after !== before) pushSnapshot(changes, target, before, after, "project", "low", "yaml");
+  if (after !== before) {
+    if (previous) previous.after = after;
+    else pushSnapshot(changes, target, before, after, "project", "low", "yaml");
+  }
+}
+
+/** Read a native entry without exposing its private extensions to the renderer. */
+export function inspectMcpConnection(
+  value: unknown,
+  store: WorkspaceStore,
+  hub: HubStatus,
+  environment: NodeJS.ProcessEnv,
+) {
+  const context = connectionContext(value, store, hub, environment),
+    { info, project } = context;
+  if (info.scope === "project" && !safeTarget(project, info.target))
+    throw new Error(`Unsafe MCP configuration path: ${info.target}`);
+  const before = readOptional(info.target);
+  let parsed: unknown;
+  if (info.format === "toml") parsed = parseToml(before ?? "");
+  else if (info.format === "yaml") {
+    const document = parseDocument(before ?? "{}", { uniqueKeys: true });
+    if (document.errors.length) throw new Error("Invalid MCP YAML configuration");
+    parsed = document.toJS();
+  } else
+    parsed =
+      info.target.endsWith(".jsonc") || info.target_agent === "open-claw"
+        ? JSON5.parse(before ?? "{}")
+        : JSON.parse(before ?? "{}");
+  // YAML aliases can form cycles; mergeYamlConnection performs its cycle-aware
+  // validation below. The JSON helper intentionally assumes an acyclic tree.
+  if (info.format !== "yaml") finiteJson(parsed);
+  if (!isObject(parsed)) throw new Error("MCP configuration root must be an object");
+  let parent: unknown = parsed;
+  const keys =
+    info.format === "toml" || info.format === "yaml"
+      ? ["mcp_servers"]
+      : info.target_agent === "opencode"
+        ? ["mcp"]
+        : info.target_agent === "open-claw"
+          ? ["mcp", "servers"]
+          : ["mcpServers"];
+  for (const key of keys) {
+    if (parent === undefined) break;
+    if (!isObject(parent)) throw new Error("MCP configuration must contain mappings");
+    parent = parent[key];
+  }
+  if (parent !== undefined && !isObject(parent)) throw new Error("MCP servers must be a mapping");
+  const existing = parent === undefined ? undefined : parent.agentkib;
+  let boundWorkspaceId: string | undefined;
+  if (existing !== undefined) {
+    if (
+      !recognizedGateway(existing, info.target_agent) ||
+      ["command", "args", "cwd"].some((key) => Object.hasOwn(existing, key)) ||
+      ["enabled", "disabled"].some(
+        (key) => existing[key] !== undefined && typeof existing[key] !== "boolean",
+      ) ||
+      (existing.type !== undefined &&
+        ![
+          "http",
+          "streamable-http",
+          ...(info.target_agent === "opencode" ? ["remote"] : []),
+        ].includes(String(existing.type))) ||
+      (existing.transport !== undefined &&
+        !["http", "streamable-http"].includes(String(existing.transport))) ||
+      ["httpUrl", info.target_agent === "antigravity" ? "url" : "serverUrl"].some((key) =>
+        Object.hasOwn(existing, key),
+      )
+    )
+      throw new Error("Unknown server named agentkib; rename or remove it explicitly");
+    const endpoint = existing[info.target_agent === "antigravity" ? "serverUrl" : "url"];
+    boundWorkspaceId = decodeURIComponent(new URL(String(endpoint)).pathname.split("/")[4]!);
+  }
+  // An apparently current URL can still have ambiguous YAML aliases or broken
+  // managed TOML markers. Validate the native representation even for no-op entries.
+  if (info.format === "toml") mergeTomlConnection(before, info);
+  else if (info.format === "yaml") mergeYamlConnection(before, info, context.entry);
+  else mergeJsonConnection(before, info, context.entry);
+  // Compare parsed fields using the same repair as the writer, preserving disabled
+  // state and extensions. TOML tables may have a null prototype, so normalize only
+  // the outer mapping instead of treating its representation as a configuration change.
+  const needsRepair =
+    existing === undefined ||
+    !isDeepStrictEqual({ ...existing }, mergeGateway(existing, context.entry, info.target_agent));
+  return { ...context, before, existing, boundWorkspaceId, needsRepair };
+}
+
+/** Build a single transaction, including one aggregate manifest hash update. */
+export function planMcpConnections(
+  values: unknown[],
+  store: WorkspaceStore,
+  hub: HubStatus,
+  environment: NodeJS.ProcessEnv,
+): ChangeSet {
+  if (!values.length) throw new Error("At least one MCP connection is required");
+  const contexts = values.map((value) => connectionContext(value, store, hub, environment));
+  const project = contexts[0]!.project;
+  if (contexts.some((context) => context.project !== project))
+    throw new Error("MCP connection batch must use one workspace");
+  const changes: ChangeSet["changes"] = [];
+  for (const { info, entry } of contexts) {
+    if (info.scope === "project" && !safeTarget(project, info.target))
+      throw new Error(`Unsafe MCP configuration path: ${info.target}`);
+    const before = readOptional(info.target);
+    const after =
+      info.format === "toml"
+        ? mergeTomlConnection(before, info)
+        : info.format === "yaml"
+          ? mergeYamlConnection(before, info, entry)
+          : mergeJsonConnection(before, info, entry);
+    const overlapping = changes.find(
+      (change) => lexicalPathIdentity(change.target) === lexicalPathIdentity(info.target),
+    );
+    if (overlapping) throw new Error("Selected Agent configurations overlap; connect separately");
+    if (before !== after)
+      pushSnapshot(
+        changes,
+        info.target,
+        before,
+        after,
+        info.scope,
+        info.scope === "agent-home" ? "high" : "medium",
+        info.target.endsWith(".jsonc") ? "jsonc" : info.format,
+      );
+  }
+  for (const { info } of contexts) updateRecordedHash(changes, project, info);
+  return {
+    id: randomUUID(),
+    project_root: project,
+    created_at: utcNow(),
+    changes,
+    requires_home_approval: changes.some((change) => change.scope === "agent-home"),
+  };
 }
 
 export function planMcpConnection(
@@ -643,6 +781,7 @@ export async function verifyMcpConnection(
     url: string;
     checked_at: string;
     builtin_tools: number;
+    builtin_tool_names: string[];
     external_tools: string[];
   };
   try {
@@ -667,6 +806,7 @@ export async function verifyMcpConnection(
       url: info.url,
       checked_at: utcNow(),
       builtin_tools: [...names].filter((name) => builtinNames.has(name)).length,
+      builtin_tool_names: [...names].filter((name) => builtinNames.has(name)).sort(),
       external_tools: [...names].filter((name) => !builtinNames.has(name)).sort(),
     };
   } catch (error) {

@@ -1,32 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import JSON5 from "json5";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { parseDocument, stringify as stringifyYaml } from "yaml";
+import { stringify as stringifyToml } from "smol-toml";
+import { stringify as stringifyYaml } from "yaml";
 import type { Agent } from "./doctor-files";
 import { safeTarget } from "./doctor-files";
 import { pushChange, type ChangeSet, type FileChange } from "./change-plan";
 import { effectiveMcp, mcpDocumentSchema, type McpServer } from "./mcp-config-read";
 import type { McpManager } from "./mcp";
-import type { NativeMcpCandidate } from "./mcp-native-scan";
-import { scanNativeMcp } from "./mcp-native-scan";
+import type { NativeMcpCandidate, NativeMcpSnapshot } from "./mcp-native-scan";
+import { readNativeMcpImports, scanNativeMcp } from "./mcp-native-scan";
 import type { BackendStore } from "./store";
 import { loadManifest } from "./manifest";
 import { canonicalize, pathIdentity } from "./paths";
+import { resolveWorkspaceIdentity } from "./workspace-identity";
+import { hash } from "./doctor-files";
+import { replaceNativeMcpServers } from "./mcp-native-document";
 
 type JsonObject = Record<string, unknown>;
-const POINTERS: Record<Agent, string[]> = {
-  codex: ["mcp_servers"],
-  "claude-code": ["mcpServers"],
-  cursor: ["mcpServers"],
-  opencode: ["mcp"],
-  "open-claw": ["mcp", "servers"],
-  hermes: ["mcp_servers"],
-  "grok-build": ["mcp_servers"],
-  antigravity: ["mcpServers"],
-  "deepseek-harness": ["mcpServers"],
-};
 
 export async function planNativeMcpMigration(
   params: unknown,
@@ -38,6 +29,7 @@ export async function planNativeMcpMigration(
     project?: unknown;
     candidateIds?: unknown;
     mcpHubStatus?: unknown;
+    collectedOnly?: unknown;
   } | null;
   if (!request || typeof request.project !== "string") throw new Error("Project is required");
   if (!Array.isArray(request.candidateIds) || request.candidateIds.length === 0)
@@ -55,6 +47,13 @@ export async function planNativeMcpMigration(
   const chosen = selected as NativeMcpCandidate[];
   if (chosen.some((item) => !item.supported))
     throw new Error("Unsupported native MCP candidates cannot be migrated automatically");
+  const imports = readNativeMcpImports(chosen, project).map((result) => {
+    if ("error" in result) throw result.error;
+    return result;
+  });
+  const sourceSnapshots = new Map(
+    imports.map(({ candidate, snapshot }) => [candidate.source_path, snapshot]),
+  );
 
   const hub = asObject(request.mcpHubStatus);
   if (
@@ -65,13 +64,55 @@ export async function planNativeMcpMigration(
     hub.port > 65535
   )
     throw new Error("MCP Hub settings are unavailable");
-  const manifest = loadManifest(project);
-  const gateway = `http://127.0.0.1:${hub.port}/mcp/v1/workspaces/${encodeSegment(manifest.workspace.id)}/agents/{agent}`;
+  const registration = store.sql
+    .rows("SELECT id,canonical_path FROM workspaces")
+    .filter((row) => pathIdentity(String(row.canonical_path)) === pathIdentity(project));
+  if (registration.length !== 1) throw new Error("Workspace ownership is ambiguous");
+  const registeredId = String(registration[0]!.id);
+  const workspaceId =
+    request.collectedOnly === true ? registeredId : loadManifest(project).workspace.id;
+  const gateway = `http://127.0.0.1:${hub.port}/mcp/v1/workspaces/${encodeSegment(workspaceId)}/agents/{agent}`;
   const effective = effectiveMcp(project, environment);
+  const effectiveFingerprint = hash(JSON.stringify(effective));
   const servers: McpServer[] = [];
   const serverIds = new Set<string>();
-  for (const candidate of chosen) {
-    const server = migrationServer(candidate);
+  for (const { candidate, snapshot, server: normalized } of imports) {
+    if (request.collectedOnly === true) {
+      const matching = effective.filter(
+        (item) =>
+          item.native_source?.candidate_id === candidate.id &&
+          item.native_source.agent === candidate.agent,
+      );
+      if (matching.length !== 1)
+        throw new Error(`Collect this exact native definition before migration: ${candidate.name}`);
+      const collected = matching[0]!;
+      if (collected.native_source?.fingerprint !== normalized.native_source?.fingerprint)
+        throw new Error("Native source changed since collection; collect and review again");
+      const connection = (server: McpServer) =>
+        server.transport === "stdio"
+          ? [server.transport, server.command, server.args, server.cwd ?? null]
+          : [server.transport, server.url];
+      if (JSON.stringify(connection(collected)) !== JSON.stringify(connection(normalized)))
+        throw new Error("Collected MCP connection differs from its native source");
+      if (
+        !collected.enabled ||
+        (collected.targets.length && !collected.targets.includes(candidate.agent))
+      )
+        throw new Error(`Enable the collected server for ${candidate.agent} before migration`);
+      if (
+        normalized.required_env?.some((key) => !Object.hasOwn(collected.env, key)) ||
+        normalized.required_headers?.some((key) => !Object.hasOwn(collected.headers, key))
+      )
+        throw new Error("Enter all required private values before migration");
+      if (JSON.stringify(collected.allow_tools) !== JSON.stringify(normalized.allow_tools))
+        throw new Error("Native and collected tool allow lists differ; review before migration");
+      assertMigrationGateway(candidate, snapshot, store, registeredId);
+      if (!manager.hasCurrentProbe(collected.id, project))
+        throw new Error("Probe the current collected configuration before migration");
+      servers.push(collected);
+      continue;
+    }
+    const server = migrationServer(candidate, snapshot, normalized);
     if (!server.id)
       throw new Error(`Native MCP server name cannot be converted to an ID: ${candidate.name}`);
     if (serverIds.has(server.id))
@@ -99,6 +140,26 @@ export async function planNativeMcpMigration(
     servers.push(server);
   }
 
+  // Probes may yield to external edits or switch the selected native profile.
+  // This new scan checks every source once; never reuse the pre-probe snapshot.
+  const currentCandidates = scanNativeMcp({ project }, store, environment);
+  if (
+    imports.some(
+      ({ candidate, snapshot }) =>
+        !currentCandidates.some(
+          (current) =>
+            current.id === candidate.id &&
+            current.agent === candidate.agent &&
+            current.supported &&
+            current.fingerprint === snapshot.fingerprint,
+        ),
+    ) ||
+    (request.collectedOnly === true &&
+      (hash(JSON.stringify(effectiveMcp(project, environment))) !== effectiveFingerprint ||
+        resolveWorkspaceIdentity(store, registeredId).project !== project))
+  )
+    throw new Error("MCP source, workspace, or collected configuration changed during probe");
+
   const configPath = path.join(project, ".agentkib/mcp.json");
   if (!safeTarget(project, configPath)) throw new Error(`Unsafe MCP config path: ${configPath}`);
   const before = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
@@ -114,7 +175,7 @@ export async function planNativeMcpMigration(
   parsed.servers.sort((left, right) => left.name.localeCompare(right.name));
   const changes: FileChange[] = [];
   const publicJson = JSON.stringify(parsed, null, 2) + "\n";
-  if (before !== publicJson)
+  if (request.collectedOnly !== true && before !== publicJson)
     pushChange(changes, configPath, publicJson, "project", "medium", "json");
 
   const bySource = new Map<string, NativeMcpCandidate[]>();
@@ -124,8 +185,11 @@ export async function planNativeMcpMigration(
     bySource.set(candidate.source_path, group);
   }
   for (const [source, sourceCandidates] of [...bySource].sort(([a], [b]) => a.localeCompare(b))) {
-    const sourceBefore = readFileSync(source, "utf8");
-    const sourceAfter = rewriteSource(source, sourceBefore, sourceCandidates, gateway);
+    const snapshot = sourceSnapshots.get(source)!,
+      sourceBefore = snapshot.content;
+    if (readFileSync(source, "utf8") !== sourceBefore)
+      throw new Error("Native source changed during migration planning; scan again");
+    const sourceAfter = rewriteSource(snapshot, sourceCandidates, gateway);
     if (sourceBefore === sourceAfter) continue;
     const inProject = isWithin(source, project);
     if (inProject && !safeTarget(project, source))
@@ -138,7 +202,19 @@ export async function planNativeMcpMigration(
       inProject ? "medium" : "high",
       validatorFor(source),
     );
+    const change = changes.at(-1)!;
+    change.before = sourceBefore;
+    change.original_hash = hash(sourceBefore);
   }
+  if (
+    request.collectedOnly === true &&
+    (hash(JSON.stringify(effectiveMcp(project, environment))) !== effectiveFingerprint ||
+      resolveWorkspaceIdentity(store, registeredId).project !== project ||
+      [...sourceSnapshots].some(
+        ([file, snapshot]) => readFileSync(file, "utf8") !== snapshot.content,
+      ))
+  )
+    throw new Error("MCP source or configuration changed while planning migration");
   return {
     id: randomUUID(),
     project_root: project,
@@ -148,26 +224,61 @@ export async function planNativeMcpMigration(
   };
 }
 
-function migrationServer(candidate: NativeMcpCandidate): McpServer {
-  const source = readFileSync(candidate.source_path, "utf8");
-  let value: unknown;
-  if (candidate.agent === "codex" || candidate.agent === "grok-build") value = parseToml(source);
-  else if (candidate.agent === "hermes") value = parseDocument(source).toJS();
-  else if (
-    candidate.agent === "open-claw" ||
-    (candidate.agent === "opencode" && candidate.source_path.endsWith(".jsonc"))
-  )
-    value = JSON5.parse(source);
-  else value = JSON.parse(source);
-  const pointer = POINTERS[candidate.agent];
-  const container = pointerValue(value, pointer);
+function assertMigrationGateway(
+  candidate: NativeMcpCandidate,
+  snapshot: NativeMcpSnapshot,
+  store: BackendStore,
+  registeredId: string,
+): void {
+  const container = snapshot.servers;
+  if (!container || !Object.hasOwn(container, "agentkib")) return;
+  try {
+    const gateway = asObject(container.agentkib);
+    if (!gateway) throw new Error("invalid gateway entry");
+    const raw = gateway.url ?? gateway.serverUrl;
+    if (typeof raw !== "string") throw new Error("missing URL");
+    const url = new URL(raw),
+      parts = url.pathname.match(/^\/mcp\/v1\/workspaces\/([^/]+)\/agents\/([^/]+)$/);
+    if (
+      url.protocol !== "http:" ||
+      !["localhost", "127.0.0.1"].includes(url.hostname) ||
+      !url.port ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !parts ||
+      parts[2] !== candidate.agent ||
+      resolveWorkspaceIdentity(store, decodeURIComponent(parts[1]!)).registeredId !== registeredId
+    )
+      throw new Error("wrong binding");
+    if (gateway.disabled === true || gateway.enabled === false) throw new Error("disabled gateway");
+    if (
+      Object.keys(gateway).some(
+        (key) => !["url", "serverUrl", "transport", "type", "enabled", "disabled"].includes(key),
+      )
+    )
+      throw new Error("custom gateway settings");
+  } catch {
+    throw new Error(
+      "Existing agentkib connection needs explicit connection repair or rebinding before migration",
+    );
+  }
+}
+
+function migrationServer(
+  candidate: NativeMcpCandidate,
+  snapshot: NativeMcpSnapshot,
+  normalized: McpServer,
+): McpServer {
+  const container = snapshot.servers;
   const raw = asObject(container?.[candidate.name]);
   if (!raw) throw new Error(`Native MCP candidate no longer exists: ${candidate.name}`);
   let transport: JsonObject;
   if (candidate.agent === "opencode") {
     if (raw.type === "remote") {
       if (typeof raw.url !== "string") throw new Error("OpenCode MCP URL is missing");
-      if (raw.oauth !== undefined && raw.oauth !== false)
+      if (raw.oauth !== undefined)
         throw new Error("OpenCode OAuth configuration cannot be migrated automatically");
       transport = { transport: "streamable-http", url: raw.url };
     } else if (
@@ -195,6 +306,10 @@ function migrationServer(candidate: NativeMcpCandidate): McpServer {
         ...(string(raw.cwd) ? { cwd: string(raw.cwd)! } : {}),
       };
     }
+  }
+  if (transport.transport === "stdio") {
+    if (normalized.transport !== "stdio") throw new Error("Native MCP transport changed");
+    transport.cwd = normalized.cwd;
   }
   const id = candidate.name
     .replace(/[^A-Za-z0-9_-]/g, "-")
@@ -227,8 +342,7 @@ function migrationServer(candidate: NativeMcpCandidate): McpServer {
 }
 
 function rewriteSource(
-  source: string,
-  before: string,
+  snapshot: NativeMcpSnapshot,
   candidates: NativeMcpCandidate[],
   gateway: string,
 ): string {
@@ -236,24 +350,23 @@ function rewriteSource(
   if (!agent || candidates.some((candidate) => candidate.agent !== agent))
     throw new Error("Native MCP source contains inconsistent Agent types");
   const names = new Set(candidates.map((candidate) => candidate.name));
-  const pointer = POINTERS[agent];
-  if (agent === "codex" || agent === "grok-build") {
-    const value = parseToml(before) as JsonObject;
-    const servers = pointerValue(value, pointer);
-    if (!servers) throw new Error("TOML mcp_servers table is missing");
+  const { format, root, servers: originalServers } = snapshot;
+  if (!originalServers)
+    throw new Error(
+      format === "toml"
+        ? "TOML mcp_servers table is missing"
+        : "Native MCP server object is missing",
+    );
+  // YAML anchors may share this map with unrelated settings. Edit an isolated
+  // container, then replace only the MCP path instead of mutating those aliases.
+  const servers = { ...originalServers },
+    value = replaceNativeMcpServers(root, agent, servers);
+  if (format === "toml") {
     for (const name of names) delete servers[name];
     delete servers.agentkib;
     const output = stringifyToml(value).replace(/\n*$/, "\n");
     return `${output}\n# agentkib:managed:start\n[mcp_servers.agentkib]\nurl = ${JSON.stringify(gatewayFor(gateway, agent))}\n# agentkib:managed:end\n`;
   }
-  const value =
-    agent === "hermes"
-      ? parseDocument(before).toJS()
-      : agent === "open-claw" || (agent === "opencode" && source.endsWith(".jsonc"))
-        ? JSON5.parse(before)
-        : JSON.parse(before);
-  const servers = pointerValue(value, pointer);
-  if (!servers) throw new Error("Native MCP server object is missing");
   for (const name of names) delete servers[name];
   const url = gatewayFor(gateway, agent);
   const gatewayEntry: JsonObject = { url };
@@ -274,15 +387,10 @@ function rewriteSource(
       );
   }
   servers.agentkib = gatewayEntry;
-  if (agent === "hermes") return stringifyYaml(value);
+  if (format === "yaml") return stringifyYaml(value);
   return JSON.stringify(value, null, 2) + "\n";
 }
 
-function pointerValue(root: unknown, pointer: string[]): JsonObject | undefined {
-  let current: unknown = root;
-  for (const segment of pointer) current = asObject(current)?.[segment];
-  return asObject(current);
-}
 function asObject(value: unknown): JsonObject | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonObject)

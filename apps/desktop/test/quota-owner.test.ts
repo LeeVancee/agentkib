@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendStore } from "../../../packages/backend/src/store";
 import { Commands } from "../../../packages/backend/src/commands";
 import { QuotaOwner } from "../../../packages/backend/src/quota";
+import { sanitizeHandoffExport } from "../../../packages/backend/src/session-handoff";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -149,6 +150,67 @@ describe("quota collection diagnostics and partial results", () => {
     },
   );
 
+  it.each(["codex", "claude"])(
+    "classifies complete raw %s errors before diagnostic truncation",
+    async (id) => {
+      const f = fixture();
+      f.respond([
+        provider(id, {
+          windows: [window()],
+          error: `${id} cost refresh timed out${"\n".repeat(12)}Authentication failed (401)`,
+        }),
+      ]);
+      await expect(f.owner.refresh()).rejects.toThrow("no usable quota");
+      expect(f.owner.snapshot()).toMatchObject({
+        fetched_at: previousTime,
+        freshness: "stale",
+        providers: [{ windows: [{ remaining_percent: 13 }] }],
+      });
+      expect(await f.owner.status()).toMatchObject({
+        last_success_at: (f.before as { last_success_at: string }).last_success_at,
+        error_key: "errors.quotaUnavailable",
+      });
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    {
+      error: {
+        message: `codex cost refresh timed out${"\n".repeat(12)}Usage failed`,
+      },
+    },
+    { error: `${"\n".repeat(12)}Authentication failed (401)` },
+    { accountsError: `${"\n".repeat(12)}Account lookup failed` },
+    { accountsError: `codex cost refresh timed out${"\n".repeat(12)}Account lookup failed` },
+    { error: "codex cost refresh timed out ", accountsError: "" },
+    {
+      windows: [],
+      accounts: [
+        {
+          id: "a",
+          label: "Fixture",
+          active: true,
+          windows: [window()],
+          error: `${"\n".repeat(12)}Authentication failed (401)`,
+        },
+      ],
+    },
+  ])("does not let diagnostic formatting hide raw errors (%j)", async (errors) => {
+    const f = fixture();
+    f.respond([provider("codex", { windows: [window()], ...errors })]);
+    await expect(f.owner.refresh()).rejects.toThrow("no usable quota");
+    expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
+    expect(f.run).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat a discarded null credit balance as usable quota", async () => {
+    const f = fixture();
+    f.respond([provider("codex", { credits: null })]);
+    await expect(f.owner.refresh()).rejects.toThrow("no usable quota");
+    expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime });
+  });
+
   it("does not turn a cost-only error with no quota into a success", async () => {
     const f = fixture();
     f.respond([provider("codex", { error: "codex cost refresh timed out" })]);
@@ -244,6 +306,361 @@ describe("quota collection diagnostics and partial results", () => {
     for (let i = 0; i < 8; i++) expect(status.error_detail).toContain(`provider-${i}:`);
     expect(status.error_detail).toContain("2 more providers omitted");
     expect(status.error_detail.length).toBeLessThanOrEqual(1000);
+  });
+
+  it.each([
+    '{"accessToken":"SYNTHETIC-ACCESS","refreshToken":"SYNTHETIC-REFRESH"}',
+    '{"Id_Token":\n  "SYNTHETIC-ID"\n}',
+    '{"refresh-token":\n  {"value":"SYNTHETIC-NESTED"}\n}',
+    '{"credentials":[{"value":"SYNTHETIC-ARRAY"}]}',
+    String.raw`{"\u0061ccessToken":"SYNTHETIC-ESCAPED-KEY"}`,
+    String.raw`{\"accessToken\":\"SYNTHETIC-ENCODED-JSON\"}`,
+    JSON.stringify({ message: 'Upstream: {"accessToken":"SYNTHETIC-EMBEDDED-JSON"}' }),
+    JSON.stringify({ message: String.raw`Upstream: {"\u0061ccessToken":"SYNTHETIC-NESTED-KEY"}` }),
+    "{'credential': 'SYNTHETIC-SINGLE-QUOTE'}",
+    '{"refreshToken": "SYNTHETIC-INCOMPLETE',
+    'Upstream: { accessToken: "SYNTHETIC-BARE" }',
+    'Upstream: refreshToken: "SYNTHETIC-PREFIX"',
+    'Upstream:{error:{idToken:"SYNTHETIC-NESTED-BARE"}}',
+    '{code:403, message:"Unavailable", credentials:\n {value:"SYNTHETIC-BARE-OBJECT"}}',
+    'Upstream: { access_token:\r\n "SYNTHETIC-SNAKE" }',
+    'Upstream: { refresh-token: "SYNTHETIC-KEBAB" }',
+    'Upstream: access token: "SYNTHETIC-SPACED"',
+    'Upstream: access key id: "SYNTHETIC-SPACED-KEY"',
+    'Collector --access-token="SYNTHETIC-FLAG"',
+    "Collector rejected --refresh-token SYNTHETIC-REFRESH-VALUE",
+    "Collector rejected --id-token SYNTHETIC-ID-VALUE",
+    "Collector --id-token SYNTHETIC-COLON: opaque",
+    'Collector --REFRESH_TOKEN\t"SYNTHETIC-TAB"',
+    "Collector --idToken\n'SYNTHETIC-LINE'",
+    'Collector --auth-token "SYNTHETIC-AUTH"',
+    "Collector --session-token 'SYNTHETIC-SESSION'",
+    "Collector --access-key-id SYNTHETIC-ACCESS",
+    "Collector --private-key SYNTHETIC-PRIVATE",
+    "Collector --dsn SYNTHETIC-DSN",
+    '["collector","--refresh-token","SYNTHETIC-ARGV"]',
+    '{_refreshToken: "SYNTHETIC-PRIVATE-FIELD"}',
+    '{"passphrase":\n"SYNTHETIC-VALUE-A"}',
+    '{"passphrase": {"value":"SYNTHETIC-VALUE-B"}}',
+    "Upstream: passphrase:\nSYNTHETIC-VALUE-C",
+    JSON.stringify({ message: 'Upstream: {accessToken:"SYNTHETIC-EMBEDDED-BARE"}' }),
+    '{"access\'Token":"SYNTHETIC-PUNCTUATED-KEY"}',
+  ])(
+    "redacts structured credential payloads before returning and persisting failures (%s)",
+    async (payload) => {
+      const f = fixture();
+      f.respond([provider("codex", { error: `Request failed (403)\n${payload}` })]);
+      const refresh = f.owner.refresh();
+      await expect(refresh).rejects.toThrow("Request failed (403)");
+      await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+      expect(await f.owner.status()).toMatchObject({
+        last_success_at: (f.before as { last_success_at: string }).last_success_at,
+        error_detail: expect.stringContaining("Request failed (403)"),
+      });
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+      expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])(
+    "redacts every account/provider error when collection succeeds=%s",
+    async (succeeds) => {
+      const f = fixture();
+      f.respond([
+        ...(succeeds ? [provider("codex", { windows: [window()] })] : []),
+        provider("claude", {
+          error: '{"accessToken":"SYNTHETIC-PROVIDER"}',
+          accountsError: '{"refreshToken":"SYNTHETIC-ACCOUNTS"}',
+          accounts: [
+            {
+              id: "a",
+              label: "Fixture",
+              active: true,
+              windows: [],
+              error: '{"idToken":"SYNTHETIC-ACCOUNT"}',
+            },
+          ],
+        }),
+      ]);
+      const refresh = f.owner.refresh();
+      if (succeeds) {
+        await expect(refresh).resolves.toMatchObject({ status: { state: "succeeded" } });
+        expect(f.owner.snapshot()).toMatchObject({
+          providers: [
+            { windows: [{ remaining_percent: 57 }] },
+            {
+              error: expect.stringContaining("redacted"),
+              accounts: [{ error: expect.stringContaining("redacted") }],
+            },
+          ],
+        });
+      } else {
+        await expect(refresh).rejects.toThrow("no usable quota");
+        await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+      }
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+      expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("redacts structured credentials from a failed collector process", async () => {
+    const f = fixture();
+    f.run.mockResolvedValue({
+      bytes: Buffer.alloc(0),
+      error: 'Request failed (403)\n{"accessToken":"SYNTHETIC-STDERR"}',
+      success: false,
+      truncated: false,
+      exitCode: 1,
+    });
+    const refresh = f.owner.refresh();
+    await expect(refresh).rejects.toThrow("Request failed (403)");
+    await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+    expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+    expect(f.run).toHaveBeenCalledOnce();
+  });
+
+  it("retains ordinary structured errors for diagnosis", async () => {
+    const f = fixture();
+    f.respond([provider("codex", { error: '{"code":403,"message":"Usage unavailable"}' })]);
+    await expect(f.owner.refresh()).rejects.toThrow('"message":"Usage unavailable"');
+    expect(await f.owner.status()).toMatchObject({
+      error_detail: expect.stringContaining('"message":"Usage unavailable"'),
+    });
+  });
+
+  it.each(["refresh-token", "id-token"])(
+    "redacts --%s values in every error field of partial-success snapshots",
+    async (option) => {
+      const f = fixture();
+      f.respond([
+        provider("codex", { windows: [window()] }),
+        provider("claude", {
+          error: `Collector rejected --${option} SYNTHETIC-PROVIDER`,
+          accountsError: `Collector rejected --${option} "SYNTHETIC-ACCOUNTS"`,
+          accounts: [
+            {
+              id: "a",
+              label: "Fixture",
+              active: true,
+              windows: [],
+              error: `Collector rejected --${option}\n'SYNTHETIC-ACCOUNT'`,
+            },
+          ],
+        }),
+      ]);
+      await expect(f.owner.refresh()).resolves.toMatchObject({ status: { state: "succeeded" } });
+      expect(f.owner.snapshot()).toMatchObject({
+        freshness: "fresh",
+        providers: [
+          { windows: [{ remaining_percent: 57 }] },
+          {
+            error: expect.stringContaining("Collector rejected"),
+            accounts: [{ error: expect.stringContaining("Collector rejected") }],
+          },
+        ],
+      });
+      expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["refresh-token", "id-token"])(
+    "redacts --%s values from failed collector stderr",
+    async (option) => {
+      const f = fixture();
+      f.run.mockResolvedValue({
+        bytes: Buffer.alloc(0),
+        error: `Request failed (403): collector --${option} SYNTHETIC-STDERR`,
+        success: false,
+        truncated: false,
+        exitCode: 1,
+      });
+      const refresh = f.owner.refresh();
+      await expect(refresh).rejects.toThrow("Request failed (403)");
+      await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+      expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains ordinary CLI options and their values", async () => {
+    const f = fixture();
+    const error = "Collector failed (403): --timeout 25 --retry-policy never --format json";
+    f.respond([provider("codex", { error })]);
+    await expect(f.owner.refresh()).rejects.toThrow(error);
+    expect(await f.owner.status()).toMatchObject({ error_detail: expect.stringContaining(error) });
+  });
+
+  it.each([false, true])(
+    "redacts bare keys and multiline passphrases when succeeds=%s",
+    async (succeeds) => {
+      const f = fixture();
+      f.respond([
+        ...(succeeds ? [provider("codex", { windows: [window()] })] : []),
+        provider("claude", {
+          error: 'Upstream: {accessToken:"SYNTHETIC-PROVIDER"}',
+          accountsError: '{"passphrase":\n{"value":"SYNTHETIC-ACCOUNTS"}}',
+          accounts: [
+            {
+              id: "a",
+              label: "Fixture",
+              active: true,
+              windows: [],
+              error: 'Upstream: refreshToken:\n"SYNTHETIC-ACCOUNT"',
+            },
+          ],
+        }),
+      ]);
+      const refresh = f.owner.refresh();
+      if (succeeds) {
+        await expect(refresh).resolves.toMatchObject({ status: { state: "succeeded" } });
+        expect(f.owner.snapshot()).toMatchObject({
+          providers: [
+            { windows: [{ remaining_percent: 57 }] },
+            {
+              error: expect.stringContaining("redacted"),
+              accounts: [{ error: expect.stringContaining("redacted") }],
+            },
+          ],
+        });
+      } else {
+        await expect(refresh).rejects.toThrow("no usable quota");
+        await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+      }
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+      expect(JSON.stringify(f.owner.snapshot())).not.toContain("SYNTHETIC-");
+      expect(f.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['Upstream: {accessToken:"SYNTHETIC-STDERR"}', '{"passphrase":\n"SYNTHETIC-STDERR"}'])(
+    "redacts credential fields in failed collector stderr (%s)",
+    async (payload) => {
+      const f = fixture();
+      f.run.mockResolvedValue({
+        bytes: Buffer.alloc(0),
+        error: `Request failed (403)\n${payload}`,
+        success: false,
+        truncated: false,
+        exitCode: 1,
+      });
+      const refresh = f.owner.refresh();
+      await expect(refresh).rejects.toThrow("Request failed (403)");
+      await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+      expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+    },
+  );
+
+  it("safely bounds deeply encoded diagnostic keys", async () => {
+    const f = fixture();
+    const key = String.raw`\u005c` + "u005c".repeat(20_000) + "u0061ccessToken";
+    f.respond([provider("codex", { error: `Request failed (403)\n{"${key}":"SYNTHETIC-DEEP"}` })]);
+    const refresh = f.owner.refresh();
+    await expect(refresh).rejects.toThrow("Request failed (403)");
+    await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+    expect(JSON.stringify(await f.owner.status())).not.toContain("SYNTHETIC-");
+  });
+
+  it("keeps ordinary long hyphenated diagnostic text bounded", async () => {
+    const f = fixture();
+    f.respond([
+      provider("codex", { error: `Request failed (403)\n${"retry-rejected-".repeat(15_000)}` }),
+    ]);
+    await expect(f.owner.refresh()).rejects.toThrow("Request failed (403)");
+    expect(
+      ((await f.owner.status()) as { error_detail: string }).error_detail.length,
+    ).toBeLessThanOrEqual(1000);
+  });
+
+  it("redacts email accounts without hiding the surrounding failure", async () => {
+    const f = fixture();
+    f.respond([
+      provider("codex", {
+        error: "Request failed (403) for user.name+quota-test@example.test; Usage unavailable",
+      }),
+    ]);
+    const refresh = f.owner.refresh();
+    await expect(refresh).rejects.toThrow(
+      "Request failed (403) for [account redacted]; Usage unavailable",
+    );
+    expect(JSON.stringify(await f.owner.status())).not.toContain("example.test");
+  });
+
+  it.each([
+    "https://example.test/usage?session=SYNTHETIC-VALUE",
+    String.raw`https:\/\/example.test\/usage?session=SYNTHETIC-VALUE`,
+    String.raw`HTTP:\/\/example.test\/usage?session=SYNTHETIC-VALUE`,
+    String.raw`https:/\/example.test/usage?session=SYNTHETIC-VALUE`,
+    JSON.stringify({ url: String.raw`https:\/\/example.test\/usage?session=SYNTHETIC-VALUE` }),
+    JSON.stringify(
+      JSON.stringify({ url: String.raw`https:\/\/example.test\/usage?session=SYNTHETIC-VALUE` }),
+    ),
+  ])("redacts plain and JSON-escaped URLs across diagnostic paths (%s)", async (url) => {
+    for (const mode of ["failure", "partial", "stderr"] as const) {
+      const f = fixture();
+      const error = `Request failed (403): ${url}`;
+      if (mode === "stderr") {
+        f.run.mockResolvedValue({
+          bytes: Buffer.alloc(0),
+          error,
+          success: false,
+          truncated: false,
+          exitCode: 1,
+        });
+      } else {
+        f.respond([
+          ...(mode === "partial" ? [provider("codex", { windows: [window()] })] : []),
+          provider("claude", {
+            error,
+            accountsError: error,
+            accounts: [{ id: "a", label: "Fixture", active: true, windows: [], error }],
+          }),
+        ]);
+      }
+      const refresh = f.owner.refresh();
+      if (mode === "partial") {
+        await expect(refresh).resolves.toMatchObject({ status: { state: "succeeded" } });
+        expect(JSON.stringify(f.owner.snapshot())).toContain("[URL redacted]");
+      } else {
+        await expect(refresh).rejects.toThrow("Request failed (403)");
+        await expect(refresh).rejects.toThrow("[URL redacted]");
+        await expect(refresh).rejects.not.toThrow("SYNTHETIC-");
+        expect(f.owner.snapshot()).toMatchObject({ fetched_at: previousTime, freshness: "stale" });
+      }
+      for (const stored of [f.owner.snapshot(), await f.owner.status()]) {
+        expect(JSON.stringify(stored)).not.toContain("SYNTHETIC-");
+        expect(JSON.stringify(stored)).not.toContain("example.test");
+      }
+      expect(f.run).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(["json", "markdown"] as const)(
+    "shares passphrase protection with %s handoff exports",
+    (format) => {
+      const input =
+        format === "json"
+          ? JSON.stringify({ status: "unavailable", auth: { passphrase: "SYNTHETIC-VALUE" } })
+          : "status: unavailable\npassphrase: SYNTHETIC-VALUE\n";
+      const output = sanitizeHandoffExport(input, format);
+      expect(output).not.toContain("SYNTHETIC-VALUE");
+      expect(output).toContain("unavailable");
+    },
+  );
+
+  it("bounds diagnostics containing large runs of escaped quotes", async () => {
+    const f = fixture();
+    f.respond([
+      provider("codex", { error: `Request failed (403)\n${String.raw`\"`.repeat(100_000)}` }),
+    ]);
+    await expect(f.owner.refresh()).rejects.toThrow("Request failed (403)");
+    const status = (await f.owner.status()) as { error_detail: string };
+    expect(status.error_detail.length).toBeLessThanOrEqual(1000);
+    expect(f.run).toHaveBeenCalledOnce();
   });
 
   it.each([

@@ -6,7 +6,7 @@ import type { Commands } from "./commands";
 import type { BackendStore } from "./store";
 import { utcNow } from "./workspaces";
 import { timestamp } from "./timestamps";
-import { sanitizeSessionText } from "./session-handoff";
+import { isSensitiveSessionKey, sanitizeSessionText } from "./session-handoff";
 
 type Backend = "codex-bar-cli" | "win-codex-bar";
 type RecordValue = Record<string, unknown>;
@@ -75,8 +75,8 @@ export class QuotaOwner {
             : "quota collector command failed",
         );
       }
-      const snapshot = parseSnapshot(output.bytes, backend);
-      if (!hasUsableQuota(snapshot)) throw new Error(unavailableDiagnostics(snapshot));
+      const { snapshot, usable } = parseSnapshot(output.bytes, backend);
+      if (!usable) throw new Error(unavailableDiagnostics(snapshot));
       this.store.saveQuotaSnapshot(snapshot);
       return {
         kind: "quota",
@@ -242,7 +242,10 @@ async function writePrivateJson(file: string, value: unknown): Promise<void> {
   }
 }
 
-function parseSnapshot(bytes: Buffer, backendName: Backend): RecordValue {
+function parseSnapshot(
+  bytes: Buffer,
+  backendName: Backend,
+): { snapshot: RecordValue; usable: boolean } {
   const input = JSON.parse(bytes.toString("utf8")) as RecordValue;
   if (
     input.schemaVersion !== 1 ||
@@ -258,7 +261,7 @@ function parseSnapshot(bytes: Buffer, backendName: Backend): RecordValue {
   const providers = Array.isArray(input.providers) ? input.providers.map(normalizeProvider) : [];
   const fetched = utcNow();
   const generated = timestamp(input.generatedAt)!;
-  return {
+  const snapshot = {
     schema_version: 1,
     backend: backendName,
     ...(typeof host.codexBarVersion === "string" ? { backend_version: host.codexBarVersion } : {}),
@@ -268,6 +271,9 @@ function parseSnapshot(bytes: Buffer, backendName: Backend): RecordValue {
     freshness: Date.now() > Date.parse(generated) + Math.max(1, stale) * 1000 ? "stale" : "fresh",
     providers,
   };
+  // Classification uses complete collector errors; formatting may redact or
+  // discard text. Only the normalized snapshot is persisted or returned.
+  return { snapshot, usable: hasUsableQuota(input) };
 }
 
 function normalizeProvider(value: unknown): RecordValue {
@@ -316,12 +322,7 @@ function normalizeProvider(value: unknown): RecordValue {
         unit: String(value.credits.unit ?? ""),
       }
     : undefined;
-  const rawError =
-    typeof value.error === "string"
-      ? value.error
-      : isRecord(value.error) && typeof value.error.message === "string"
-        ? value.error.message
-        : undefined;
+  const rawError = providerErrorMessage(value);
   const error = [
     rawError,
     typeof value.accountsError === "string" ? value.accountsError : undefined,
@@ -367,6 +368,13 @@ function normalizeIdentity(value: unknown): RecordValue | undefined {
   if (typeof value.plan === "string") result.plan = value.plan;
   return Object.keys(result).length ? result : undefined;
 }
+function providerErrorMessage(provider: RecordValue): string | undefined {
+  return typeof provider.error === "string"
+    ? provider.error
+    : isRecord(provider.error) && typeof provider.error.message === "string"
+      ? provider.error.message
+      : undefined;
+}
 function hasUsableQuota(snapshot: RecordValue): boolean {
   const providers = Array.isArray(snapshot.providers) ? snapshot.providers : [];
   return providers.some(
@@ -374,7 +382,7 @@ function hasUsableQuota(snapshot: RecordValue): boolean {
       isRecord(p) &&
       p.enabled === true &&
       ((quotaErrorAllowsData(p, snapshot) &&
-        ((Array.isArray(p.windows) && p.windows.length > 0) || p.credits !== undefined)) ||
+        ((Array.isArray(p.windows) && p.windows.length > 0) || isRecord(p.credits))) ||
         (Array.isArray(p.accounts) &&
           p.accounts.some(
             (a) => isRecord(a) && !a.error && Array.isArray(a.windows) && a.windows.length > 0,
@@ -383,21 +391,22 @@ function hasUsableQuota(snapshot: RecordValue): boolean {
 }
 
 function quotaErrorAllowsData(provider: RecordValue, snapshot: RecordValue): boolean {
-  if (!provider.error) return true;
+  if (!provider.error && !provider.accountsError) return true;
   // CodexBar dashboard-v1 folds the separate local cost scan into the provider
   // error even when usage succeeded. Only these verified cost-only failures
   // may retain quota; authentication, usage and unknown failures still reject it.
   if (
     !["codex", "claude"].includes(String(provider.id)) ||
-    provider.error !== `${provider.id} cost refresh timed out`
+    providerErrorMessage(provider) !== `${provider.id} cost refresh timed out` ||
+    Boolean(provider.accountsError)
   )
     return false;
-  const updated = typeof provider.updated_at === "string" ? Date.parse(provider.updated_at) : NaN;
-  const generated = Date.parse(String(snapshot.generated_at));
+  const updated = typeof provider.updatedAt === "string" ? Date.parse(provider.updatedAt) : NaN;
+  const generated = Date.parse(String(snapshot.generatedAt));
   return (
     Number.isFinite(updated) &&
     updated <= generated &&
-    updated >= generated - Number(snapshot.stale_after_seconds) * 1000
+    updated >= generated - Number(snapshot.staleAfterSeconds) * 1000
   );
 }
 
@@ -428,6 +437,39 @@ function unavailableDiagnostics(snapshot: RecordValue): string {
   return [heading, ...details].join("\n");
 }
 
+function isSensitiveDiagnosticKey(key: string): boolean {
+  // Bound nested JSON decoding: an escape chain can shrink only five characters
+  // per pass. Conservatively redact candidates still encoded after eight passes.
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (isSensitiveSessionKey(key)) return true;
+    try {
+      const decoded = JSON.parse(`"${key}"`) as string;
+      if (decoded.length >= key.length) return false;
+      key = decoded;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function redactCredentialFields(value: string): string {
+  // Scan field/option names only, never values: a normal prefix such as
+  // "Upstream:" must not consume a later sensitive field. Overlapping candidates
+  // also cover escaped JSON and spaced names such as "access key id".
+  // CLI names use the same classification regardless of value quoting/separator.
+  const fields =
+    /(?=\\?"([^"\r\n]*?)\\?"\s*[:=]|\\?'([^'\r\n]*?)\\?'\s*[:=]|(?<![A-Za-z\d_$-])--?([A-Za-z_$][A-Za-z\d_$-]*)|(?<![A-Za-z\d_$-])([A-Za-z_$][A-Za-z\d_$-]*(?:[ \t]+[A-Za-z\d_$-]+){0,2})\s*[:=])/g;
+  for (const match of value.matchAll(fields)) {
+    const key = (match[1] ?? match[2] ?? match[3] ?? match[4]).replace(/\\+$/, "");
+    // Values can span lines or contain incomplete nested objects. Preserve the
+    // ordinary error prefix, but do not guess where sensitive content ends.
+    if (isSensitiveDiagnosticKey(key))
+      return `${value.slice(0, match.index)}[credential diagnostic redacted]`;
+  }
+  return value;
+}
+
 function sanitize(value: string): string {
   const markers = [
     "authorization",
@@ -445,17 +487,20 @@ function sanitize(value: string): string {
     "passwd",
     "passphrase",
   ];
-  const withoutPrivateKeys = value.replace(
+  const withoutPrivateKeys = redactCredentialFields(value).replace(
     /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?(?:-----END(?: [A-Z0-9]+)* PRIVATE KEY-----|$)/gi,
     "[credential diagnostic redacted]",
   );
   return sanitizeSessionText(withoutPrivateKeys, { value: 0 })
-    .replace(/https?:\/\/[^\s<>"']+/gi, "[URL redacted]")
+    .replace(/https?:(?:\\*\/){2}[^\s<>"']+/gi, "[URL redacted]")
     .replace(
       /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
       "[credential diagnostic redacted]",
     )
-    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[account redacted]")
+    .replace(
+      /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+      "[account redacted]",
+    )
     .split(/\r?\n/)
     .slice(0, 12)
     .map((line) =>

@@ -63,3 +63,83 @@ git diff --check
 独立子代理核验了上游合约并审查实现；复核发现的 JSON 密码和标准 PRIVATE KEY 脱敏缺口已修复并补回归，复核未发现剩余确定问题。
 
 本轮原生证据限于 macOS 上一次采集器查询。修改后的安装包尚未发布或替换；Windows/Linux 原生采集器未实测。没有重新执行费用统计以探测其具体性能瓶颈，不能把超时进一步归因为网络或某个历史文件。
+
+## 后续审查修复：结构化诊断脱敏
+
+基于本地提交 `2789b7a78fcb1af6b5b90e0ff0957f5b04ab3a90` 的独立审查发现：带引号的 camelCase `accessToken`、`refreshToken` 等字段会绕过文本脱敏，进入失败异常和 SQLite 诊断。这是后续发现，不沿用前次“无剩余问题”的结论。
+
+本次复用现有敏感键分类，在逐行处理或限长之前检查结构化字段；识别后保留普通错误前缀，屏蔽从敏感字段起的后续载荷，避免跨行、嵌套或不完整结构漏值。键名支持转义及嵌套诊断字符串；扫描遇到引号即停止候选，避免长串转义引号导致反复扫描。普通错误、精确费用超时分类及共享会话脱敏行为保持不变。
+
+回归通过真实 `QuotaOwner` 和临时 `BackendStore`，仅模拟采集进程响应。覆盖 provider、账户列表、单账户和进程 stderr 错误；分别检查失败异常、持久化诊断与部分成功快照，并保留旧缓存和正常错误原因断言。首批新增用例在修复前有 11 项失败；最终包含 15 项新增用例，包括嵌套转义和 20 万字符转义引号输入。
+
+本次实际检查（Node `22.23.3`、pnpm `12.10.1`，Vitest 命令在 `apps/desktop` 执行）：
+
+```sh
+pnpm install --frozen-lockfile --offline
+pnpm --filter @agentkib/desktop backend:build
+node node_modules/vitest/vitest.mjs run test/quota-owner.test.ts src/features/quota electron/main/refresh-coordinator.test.ts src/core/i18n.test.ts test/handoff-executor.test.ts
+# 在 packages/backend 执行
+node_modules/.bin/tsc --noEmit
+# 在仓库根目录执行
+node_modules/.bin/oxlint packages/backend/src/quota.ts packages/backend/src/session-handoff.ts
+node_modules/.bin/oxfmt --check packages/backend/src/quota.ts packages/backend/src/session-handoff.ts apps/desktop/test/quota-owner.test.ts
+git diff --check
+```
+
+结果：11 个测试文件、85 项测试通过，后端构建、后端类型检查、定向 lint/format 与 diff 检查通过。首次扩展检查遇到旧本地依赖（MCP SDK `1.30.0`，锁文件要求 `1.31.0`）及缺少 `backend-handoff-read.cjs`；按锁文件离线恢复依赖并构建后消失，未修改锁文件或依赖声明。没有重新执行真实额度采集、读取凭据、替换应用或发布。
+
+独立子代理复核并运行 10 组合成探针，确认嵌套转义、普通错误保留及大型转义文本边界，无剩余确定发现。
+
+## 再次审查修复：裸键、多行 passphrase 与诊断耗时
+
+后续以 `origin/main`（`fb9c39469e4600f9a94e175adc1f06e75df4921d`）为基准的审查发现两个遗漏：普通前缀后的裸键（如 `Upstream: {accessToken: ...}`）未被识别，且 `passphrase` 不在共享敏感键集合中，跨行值可能保留。本轮在 `main` 提交 `2789b7a78fcb1af6b5b90e0ff0957f5b04ab3a90` 及已有未提交修复上继续；前节复核结论仅代表当时覆盖范围。
+
+字段扫描现只匹配键与分隔符，不消费值，因此普通前缀不会吞掉后续敏感字段。支持带引号和裸键、常见大小写及分隔形式、CLI 参数和嵌套诊断；识别后保守屏蔽后续载荷。`passphrase` 加入共享分类，交接 JSON 和 Markdown 导出也按此规则保护，已补相应回归。包含 `token(s)` 等敏感键词组的普通诊断可能被保守屏蔽。
+
+独立复核还定位了两类耗时退化：深层转义逐次解码，以及长连字符文本中的候选重试。解码现限制为八次，仍未展开的候选保守屏蔽；裸键与邮箱匹配增加完整标识符边界。保留 10 万字符深层转义、21 万字符连字符诊断和 20 万字符转义引号的真实 `QuotaOwner` 回归，不以放宽测试超时处理。
+
+测试同时检查失败异常、SQLite `error_detail`、部分成功快照及采集进程 stderr；合成 passphrase 值不含敏感关键字，避免值自身被其他规则遮蔽造成假通过。初次运行新增回归复现 13 项失败；最终本轮新增 24 项用例，额度测试共 59 项。
+
+实际验证环境仍为 Node `22.23.3`、pnpm `12.10.1`，执行以下命令：
+
+```sh
+pnpm --filter @agentkib/desktop backend:build
+# 在 apps/desktop 执行
+node node_modules/vitest/vitest.mjs run test/quota-owner.test.ts src/features/quota electron/main/refresh-coordinator.test.ts src/core/i18n.test.ts test/handoff-executor.test.ts
+# 在 packages/backend 执行
+node_modules/.bin/tsc --noEmit
+# 在仓库根目录执行
+node_modules/.bin/oxlint packages/backend/src/quota.ts packages/backend/src/session-handoff.ts
+node_modules/.bin/oxfmt --check packages/backend/src/quota.ts packages/backend/src/session-handoff.ts apps/desktop/test/quota-owner.test.ts
+git diff --check
+```
+
+结果：11 个文件、109 项测试通过；后端构建、类型检查、定向 lint/format 与 diff 检查通过。独立子代理复核原触发条件，另运行 9 个敏感输入和 5 个普通诊断探针，未发现剩余阻塞问题；其本机合成性能探针约 2–5 ms 完成上述大型输入，不作为跨平台性能保证。
+
+本轮未重新执行真实额度采集或模型调用，未读取凭据、修改配置、替换应用、提交或发布。既有 `prototypes/`、`target/` 未触碰。
+
+## CLI 空格参数脱敏补充修复
+
+再次独立审查发现：`--refresh-token 值`、`--id-token 值` 未被仅接受 `:`／`=` 的字段扫描识别。新增失败汇总会将这些值带入异常和 SQLite `error_detail`；先前的复核未覆盖该输入，旧结论不作为此次通过依据。
+
+额度诊断现单独识别完整 CLI 参数名，并复用现有敏感键分类，不依赖值的引号或分隔方式；识别后沿用保守屏蔽后续载荷的策略。CLI 候选先于裸多词字段检查，避免值中的冒号被误作键分隔符。普通参数及错误原因保留，共享会话脱敏、费用超时放行条件及配置均未因本次修复改动。
+
+新增 16 项回归，通过真实 `QuotaOwner` 与临时 SQLite `BackendStore` 检查全失败异常及落库详情、部分成功快照的 Provider／账户错误、进程 stderr、空格／制表符／换行、带引号值、argv 数组及值中冒号，同时确认普通 CLI 参数保留。首批 15 个新增用例在修改前有 13 项失败；修复后额度测试共 75 项通过。
+
+实际执行上一节列出的后端构建、后端 `tsc --noEmit`、定向 `oxlint`／`oxfmt --check`、11 文件 Vitest 命令及 `git diff --check`，全部通过；相关测试总计 **125 项**。Node、pnpm、源码 HEAD 与 dirty 基线同上一节。本轮未修改真实配置、调用采集器或模型、提交或发布。
+
+独立子代理复核当前源码，额度测试 75 项通过；另执行 745 组合成输入及 61 组参数边界探针，未发现本次 P2 范围内的剩余问题。210–260KB 长参数合成诊断约 6–26ms 完成，作为本机边界证据，不外推跨平台性能。
+
+## 完整错误分类与 JSON 转义 URL 修复
+
+后续审查又确认两项原测试未覆盖的问题：费用超时后附加 12 个换行及认证失败，会因展示文本截断而被误判为费用超时成功；JSON 转义斜杠 URL 的参数可能保留在失败异常及 SQLite 诊断中。前节复核结果不代表这两个输入已通过。
+
+当前采集流程分别生成脱敏快照及内部可用性判断。后者读取完整原始 dashboard 的 Provider、账户列表和单账户错误，不再依赖展示文本；费用超时例外只接受原 Provider 的精确已知错误，且不能同时存在账户列表错误。持久化及返回数据仍只使用原有脱敏快照结构，原始错误不新增到数据库或公共接口。原始 `credits: null` 仍不能被视为可用额度。
+
+URL 脱敏同时识别普通斜杠、JSON 转义斜杠及嵌套 JSON 的多层转义，不通过解码整段错误来改变普通诊断。新增 15 项测试，覆盖 Codex／Claude 混合错误、对象形式错误、被限行丢弃的账户错误、精确匹配及旧缓存保留；URL 用例逐一检查全失败、部分成功和进程 stderr，包括普通、混合、大小写及嵌套转义。均使用真实 `QuotaOwner` 和临时 SQLite，仅模拟采集进程。
+
+修改前新增用例复现 13 项失败；修复后额度测试 **90 项**通过，相关 11 文件测试总计 **140 项**通过。实际执行的命令为前节列明的 `backend:build`、后端 `tsc --noEmit`、定向 `oxlint`／`oxfmt --check`、11 文件 Vitest 及 `git diff --check`，均通过。Node `22.23.3`、pnpm `12.10.1`，仍基于 `2789b7a78fcb1af6b5b90e0ff0957f5b04ab3a90` 的已有 dirty 工作区。
+
+独立子代理复核通过：仓库外 87 个合成探针及额度测试 90 项通过，直接检查 SQLite 行中的诊断和快照，并验证空错误、超长空白、时间门限和 20 万反斜杠输入；未发现本轮两项 P2 范围内的剩余问题。纯空白错误及带额外空白的费用超时按完整原文保守拒绝，空字符串继续表示无错误。
+
+本轮未读取真实凭据、调用真实采集器或模型、修改配置、替换应用、提交或发布；未触碰 `prototypes/`、`target/`。

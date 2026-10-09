@@ -163,6 +163,8 @@ jobs:
     name: Build ${{ matrix.name }} ${{ matrix.arch }}
     needs: preflight
     runs-on: ${{ matrix.os }}
+    # Allow branch builds to save dependency caches for subsequent runs.
+    cache-mode: write
     strategy:
       fail-fast: false
       matrix:
@@ -175,7 +177,7 @@ jobs:
           - name: macOS
             arch: x64
             updater_channel: x64
-            os: macos-15-intel
+            os: macos-15
             artifact: macos-x64
           - name: Windows
             arch: x64
@@ -246,6 +248,13 @@ jobs:
         run: |
           rm -rf apps/desktop/release-electron apps/desktop/build/quota
 
+      - name: Set macOS x64 cross-compilation targets
+        if: matrix.name == 'macOS' && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          echo "AGENTKIB_PACKAGE_ARCH=x64" >> "$GITHUB_ENV"
+          echo "AGENTKIB_QUOTA_TARGET=x86_64-apple-darwin" >> "$GITHUB_ENV"
+
       - name: Prepare Apple notarization private key
         if: runner.os == 'macOS' && env.SHOULD_PUBLISH == 'true'
         shell: bash
@@ -285,6 +294,9 @@ jobs:
           args=(--publish never)
           if [[ "$RUNNER_OS" == macOS ]]; then
             args+=(--mac dmg zip)
+            if [[ "${{ matrix.arch }}" == x64 ]]; then
+              args+=(--x64)
+            fi
             if [[ "$SHOULD_PUBLISH" == true ]]; then
               export CSC_LINK="$APPLE_CERTIFICATE"
               export CSC_KEY_PASSWORD="$APPLE_CERTIFICATE_PASSWORD"

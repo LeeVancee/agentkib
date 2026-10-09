@@ -13,3 +13,6 @@ overrides:
 allowBuilds:
   electron-winstaller: true
   koffi: true
+
+minimumReleaseAgeExclude:
+  - vite@8.3.4

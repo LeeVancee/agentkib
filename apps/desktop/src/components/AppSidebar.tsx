@@ -583,7 +583,7 @@ export function AppSidebar(props: {
                 </div>
               )}
               {active === "sessions" && (
-                <div className="app-sidebar-session-directory min-h-0 flex-1 mt-0 border-t-0">
+                <div className="app-sidebar-session-directory min-h-0 flex flex-1 flex-col mt-0 border-t-0">
                   <SessionDirectory />
                 </div>
               )}

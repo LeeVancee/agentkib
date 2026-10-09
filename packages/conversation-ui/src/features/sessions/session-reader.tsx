@@ -1,4 +1,4 @@
-import { HistoryReferenceChips, HistorySearchTrigger } from "../history/history-search-controls";
+import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { SessionOperations } from "./session-operations";
 import { useSessionPanels } from "./session-panels";
@@ -84,7 +84,7 @@ export function SessionReader() {
             onOpenChange={(open) => panels?.setActionsOpen(open)}
           />
           <section
-            className="reader-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 pt-3 [scrollbar-gutter:stable] md:px-10"
+            className="reader-scroll relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 pt-0 [scrollbar-gutter:stable] md:px-10"
             ref={scroll}
             onScroll={() => {
               const viewport = scroll.current;
@@ -219,7 +219,6 @@ export function SessionReader() {
                 }}
               >
                 <HistoryReferenceChips />
-                <HistorySearchTrigger />
                 <label className="sr-only" htmlFor="message">
                   {t.message}
                 </label>

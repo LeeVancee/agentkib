@@ -34,7 +34,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
+      - name: Typecheck on Windows ARM64
+        if: matrix.shard == 1
+        run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership

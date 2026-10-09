@@ -2336,7 +2336,16 @@ describe("WebAccessService loopback security boundary", () => {
   it("reports a read-only preflight timeout as not dispatched and permits a fresh request", async () => {
     await bootstrap();
     await pair(true);
-    runtime.mockImplementationOnce(() => new Promise(() => {}));
+    let notifyPreflightStarted!: () => void;
+    const preflightStarted = new Promise<void>((resolve) => {
+      notifyPreflightStarted = resolve;
+    });
+    runtime.mockImplementationOnce(
+      () =>
+        new Promise(() => {
+          notifyPreflightStarted();
+        }),
+    );
     const body = {
       sessionId: "s",
       text: "x",
@@ -2344,7 +2353,11 @@ describe("WebAccessService loopback security boundary", () => {
       bootId,
       expectedRevision: 4,
     };
-    const timeout = await http("/api/web/v1/send", { method: "POST", body });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const timeoutRequest = http("/api/web/v1/send", { method: "POST", body });
+    await preflightStarted;
+    await vi.advanceTimersByTimeAsync(20_000);
+    const timeout = await timeoutRequest;
     expect(timeout.status).toBe(504);
     expect(timeout.json()).toMatchObject({
       error: "outcome_unknown",

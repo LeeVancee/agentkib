@@ -43,6 +43,7 @@ import type {
 } from "@/core/types";
 import { ProviderIcon, QuotaWindowRow } from "./QuotaDisplay";
 import { QuotaAutoRefreshPrompt } from "./QuotaAutoRefreshPrompt";
+import { QuotaDiagnostics } from "./QuotaDiagnostics";
 import {
   DEFAULT_QUOTA_PREFERENCES,
   useQuotaPreferences,
@@ -334,6 +335,14 @@ export function QuotaPage({
           )}
         </>
       )}
+      <Collapsible className="overflow-hidden rounded-xl border border-border bg-card">
+        <CollapsibleTrigger className="w-full px-5 py-3 text-left text-sm font-medium">
+          {tr("quota.diagnostics")}
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <QuotaDiagnostics status={status} />
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }
@@ -475,7 +484,12 @@ function QuotaProviderDetail({
       {direct.length > 0 && (
         <div className="grid gap-3 px-1 pt-5">
           {direct.map((item) => (
-            <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
+            <QuotaWindowRow
+              key={item.key}
+              item={item}
+              snapshot={snapshot}
+              target={item.key === targetKey}
+            />
           ))}
         </div>
       )}
@@ -505,7 +519,12 @@ function QuotaProviderDetail({
               </header>
               <div className="grid gap-3">
                 {accountWindows.map((item) => (
-                  <QuotaWindowRow key={item.key} item={item} target={item.key === targetKey} />
+                  <QuotaWindowRow
+                    key={item.key}
+                    item={item}
+                    snapshot={snapshot}
+                    target={item.key === targetKey}
+                  />
                 ))}
               </div>
               {account.error && (

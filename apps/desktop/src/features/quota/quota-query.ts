@@ -70,7 +70,7 @@ export function useQuotaRefreshJob() {
 
   useEffect(() => {
     const job = query.data;
-    if (job?.state !== "succeeded" || !job.request_id) return;
+    if (!job || !["succeeded", "failed"].includes(job.state) || !job.request_id) return;
     if (invalidatedRequest.current === job.request_id) return;
     invalidatedRequest.current = job.request_id;
     void invalidateQuotaData(queryClient);
@@ -86,7 +86,8 @@ export function useQuotaRefreshMutation() {
     mutationFn: () => api.refreshQuota(),
     onSuccess: (receipt) => {
       queryClient.setQueryData(quotaKeys.refreshJob(), receipt.status);
-      if (receipt.status.state === "succeeded") void invalidateQuotaData(queryClient);
+      if (["succeeded", "failed"].includes(receipt.status.state))
+        void invalidateQuotaData(queryClient);
     },
   });
 }
@@ -123,7 +124,7 @@ export function useQuotaQueryEvents() {
     const unlistenRefresh = desktop.events.onRefreshState((status) => {
       if (status.kind !== "quota") return;
       queryClient.setQueryData(quotaKeys.refreshJob(), status);
-      if (status.state === "succeeded") void invalidateQuotaData(queryClient);
+      if (["succeeded", "failed"].includes(status.state)) void invalidateQuotaData(queryClient);
     });
     return () => {
       unlistenQuota();

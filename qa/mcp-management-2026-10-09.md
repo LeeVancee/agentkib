@@ -502,3 +502,22 @@ git diff --check
 ```
 
 本机 macOS 两次定向测试合计 **16 文件、578 项通过**（15 文件 444 项，旧连接文件 134 项），格式与类型检查通过；另对修改测试文件及 `package.json` 执行 `oxfmt --check` 并通过。独立子代理逐项审核两个架构的失败集合与修复，确认未发现另一独立根因或校验放宽。原始日志为 `<QA_LOG_DIR>/pr111-ci/windows-fixture-targeted.log`、`windows-fixture-connection.log`、`fix-format.log` 和 `fix-typecheck.log`。本段记录提交前本机验证，Windows 两种架构须以修复提交后的 PR 检查为准，不能用 macOS 结果替代。
+
+## PR #111 排队期限测试的确定性修复
+
+路径修复提交 `86a9639a37b6fbcfec28de6338ec748ee0059b14` 的 Windows x64、Fedora x64 及主 CI 通过。[Linux run 37943850110](https://github.com/starroyhq/agentkib/actions/runs/37943850110) 中 Ubuntu ARM64 的 MCP 用例全部通过，但既有 `history-search-worker.test.ts` 的排队期限用例出现 `expected 'dispatched' to be 'expired'`，该架构合计 871 项通过、1 项失败、5 项既有跳过。原始失败日志另存为 `<QA_LOG_DIR>/pr111-ci/linux-fix-failed.log`。
+
+`BoundedTaskQueue` 为每次请求单独计算入队期限。旧用例连续创建两个请求，却假设 active 取消完成时，较晚入队的 queued 也一定到期；当两次入队跨越时钟刻度时，queued 尚未到期并被合法派发。生产行为没有违背队列期限，不应通过放宽或提前取消生产请求来适应测试。
+
+本次仅调整该用例：冻结父线程时钟，让两个请求具有相同期限；等待真实 Worker 进入未完成的 verify，然后推进 250 ms。在关闭前明确断言 queued 因 `deadline-exceeded` 拒绝，防止将退出取消误判成排队过期。保留真实线程、消息、文件日志以及未决 verify 的关闭流程，并确认日志只有 `hold`。测试清理恢复真实时钟，未增加 sleep、重试或测试期限。
+
+Node **22.23.3**、pnpm **12.10.1** 下执行并通过：
+
+```sh
+pnpm --filter @agentkib/desktop exec vitest run test/history-search-worker.test.ts -t 'counts queue time toward the deadline and closes with unresolved verification'
+pnpm --filter @agentkib/desktop exec vitest run test/history-search-worker.test.ts test/backend-task-executor.test.ts
+pnpm exec oxfmt --check apps/desktop/test/history-search-worker.test.ts
+git diff --check
+```
+
+两个完整测试文件 **47 项通过**。独立子代理只读复核确认根因、时钟清理及真实 Worker 关闭边界，无新增发现。该结果是本机验证；修复提交后的跨平台运行继续以 PR 检查为准。

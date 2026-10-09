@@ -59,7 +59,7 @@ import type {
   WorkspaceSummary,
 } from "@/core/types";
 import type { CatalogAssetGroup } from "@/features/catalog/catalog";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { isSkillDirectory, SkillFileBrowser } from "./SkillFileBrowser";
 import {
   readableSkillFile,

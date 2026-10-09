@@ -20,7 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import {
   ChevronLeft,

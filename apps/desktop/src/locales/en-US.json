@@ -1301,6 +1301,7 @@
   "quota.accounts": "Accounts",
   "quota.activeAccount": "Current",
   "quota.remaining": "{{value}}% remaining",
+  "quota.lowestRemaining": "Lowest remaining",
   "quota.resets": "Resets {{time}}",
   "quota.resetElapsed": "Reset time reached; refresh quota",
   "quota.staleReset": "Stale data; refresh quota",

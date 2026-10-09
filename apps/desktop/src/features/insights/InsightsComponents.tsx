@@ -6,7 +6,7 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { insightsMetadataLabel, buildHeatmapMonthMarkers, trimHeatmapMonthMarkers } from "@/features/insights/insights";
 import type { AgentUsageBreakdown, HeatmapPoint } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { HeatmapMetric } from "./InsightsTypes";
 
 export function RankingLimit({ shown, total }: { shown: number; total: number }) {

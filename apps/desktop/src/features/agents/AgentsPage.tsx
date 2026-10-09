@@ -25,7 +25,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { tr } from "@/core/i18n";
 import type {
   AgentInstallation,

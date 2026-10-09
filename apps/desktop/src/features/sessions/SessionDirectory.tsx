@@ -1,6 +1,6 @@
 import { useI18n } from "@/core/useI18n";
 import { sessionCollection } from "@agentkib/runtime-protocol";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Fragment, useLayoutEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Folder, FolderOpen, GitBranch, MessageSquare, Monitor } from "lucide-react";

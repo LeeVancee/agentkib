@@ -34,7 +34,8 @@ import type {
 import { useI18n } from "@/core/useI18n";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { diffLines } from "@/features/workspace/diff";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 
 const CONNECTION_AGENTS = AGENT_KINDS.filter((agent) => agent !== "deepseek-harness");
 type Operation = "plan" | "apply" | "verify";

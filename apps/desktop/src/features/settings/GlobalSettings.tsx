@@ -74,7 +74,7 @@ import type {
 } from "@/core/types";
 import { activityPresentation } from "@/features/activity/activity-presentation";
 import { agentSupportsInsights } from "@/features/insights/insights";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import appIconBlack from "../../../resources/icons/app-icon-black.png";
 import appIconWhite from "../../../resources/icons/app-icon-white.png";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";

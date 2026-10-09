@@ -53,7 +53,8 @@ import type {
   AgentToolStatus,
   AppUpdateInfo,
 } from "@/core/types";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 import { useWorkspaceStore } from "@/features/workspace/workspace-store";
 import { acquireAgentToolsExecution, refreshAgentTools, useAgentTools } from "./agent-tools-query";
 import {

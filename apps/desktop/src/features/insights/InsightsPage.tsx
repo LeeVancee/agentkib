@@ -9,7 +9,7 @@ import type { AgentKind, HeatmapPoint, InsightsQuery, WorkspaceSummary } from "@
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useInsightsRefreshJob, useInsightsView } from "./insights-query";
 import { InsightsFilters } from "./InsightsFilters";
 import {

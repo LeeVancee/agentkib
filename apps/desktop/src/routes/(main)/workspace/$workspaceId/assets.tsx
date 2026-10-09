@@ -21,7 +21,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileCode2, Search, ShieldCheck, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import type { AgentKind, ConnectionDefinition, Manifest, WorkspaceScan } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 type WorkspaceAssetSection = "instructions" | "skills" | "mcp" | "native";

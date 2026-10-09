@@ -1301,6 +1301,7 @@
   "quota.accounts": "アカウント",
   "quota.activeAccount": "現在",
   "quota.remaining": "残り {{value}}%",
+  "quota.lowestRemaining": "最小残量",
   "quota.resets": "{{time}}にリセット",
   "quota.resetElapsed": "リセット時刻を過ぎました。クォータを更新してください",
   "quota.staleReset": "古いデータです。クォータを更新してください",

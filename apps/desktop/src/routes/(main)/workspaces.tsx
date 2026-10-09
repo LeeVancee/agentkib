@@ -41,7 +41,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { AgentKind, DiscoveryReport, RefreshJobStatus, WorkspaceSummary } from "@/core/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { useAppStore } from "@/stores/app-store";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 

@@ -49,7 +49,7 @@ import type {
   GitWorkspaceSummary,
   WorkspaceSummary,
 } from "@/core/types";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 
 type GitSection = "history" | "worktree";
 

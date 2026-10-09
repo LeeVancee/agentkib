@@ -1301,6 +1301,7 @@
   "quota.accounts": "帳號",
   "quota.activeAccount": "目前帳號",
   "quota.remaining": "剩餘 {{value}}%",
+  "quota.lowestRemaining": "最低額度",
   "quota.resets": "{{time}}重設",
   "quota.resetElapsed": "重設時間已到，請重新整理額度",
   "quota.staleReset": "資料已過期，請重新整理額度",

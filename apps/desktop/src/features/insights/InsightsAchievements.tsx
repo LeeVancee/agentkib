@@ -16,7 +16,7 @@ import {
   type AchievementTrack,
   type AchievementWallItem,
 } from "@/features/insights/achievements";
-import { cn } from "@/lib/utils";
+import { cn } from "cn";
 import { Empty } from "./InsightsComponents";
 
 const milestoneIcons: Record<AchievementCategory, typeof Activity> = {

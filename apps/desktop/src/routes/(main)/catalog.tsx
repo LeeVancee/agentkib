@@ -65,7 +65,8 @@ import type {
   RuntimeInfo,
   WorkspaceSummary,
 } from "@/core/types";
-import { cn, withAsyncCleanup } from "@/lib/utils";
+import { cn } from "cn";
+import { withAsyncCleanup } from "@/lib/utils";
 
 type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 type CatalogSearch = { assetSection?: AssetSection };

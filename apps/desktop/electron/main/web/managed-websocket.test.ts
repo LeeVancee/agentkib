@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
+import { connect, type Socket } from "node:net";
 import { WebSocket } from "ws";
 import { attachManagedWebSocket, type ManagedWebSocketOptions } from "./managed-websocket";
 
@@ -16,6 +17,11 @@ async function fixture(overrides: Partial<ManagedWebSocketOptions> = {}) {
     res.end(JSON.stringify({ accepted: true }));
   });
   const server: Server = createServer((_req, res) => res.end());
+  const sockets = new Set<Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
   const adapter = attachManagedWebSocket(server, { authorize, dispatch, ...overrides });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -41,10 +47,39 @@ async function fixture(overrides: Partial<ManagedWebSocketOptions> = {}) {
   cleanups.push(async () => {
     adapter.close();
     for (const ws of clients) ws.terminate();
+    for (const socket of sockets) socket.destroy();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
-  return { authorize, dispatch, server, adapter, origin, connect, client };
+  return { authorize, dispatch, server, adapter, origin, connect, client, sockets };
+}
+
+async function rawUpgrade(
+  host: { server: Server; origin: string },
+  options: { path?: string; origin?: boolean } = {},
+) {
+  const port = (host.server.address() as { port: number }).port;
+  const raw = connect({ host: "127.0.0.1", port, allowHalfOpen: true });
+  raw.on("error", () => {});
+  cleanups.push(async () => {
+    raw.destroy();
+  });
+  let response = "";
+  raw.on("data", (chunk: Buffer) => (response += chunk.toString()));
+  await once(raw, "connect");
+  raw.write(
+    Buffer.concat([
+      Buffer.from(
+        `GET ${options.path ?? "/api/web/v1/socket"} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+          "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n" +
+          (options.origin === false ? "" : `Origin: ${host.origin}\r\n`) +
+          "\r\n",
+      ),
+      Buffer.alloc(512 * 1024, 65),
+    ]),
+  );
+  return { raw, response: () => response };
 }
 
 function request(extra: Record<string, unknown> = {}) {
@@ -136,6 +171,61 @@ describe("managed WebSocket HTTP adapter", () => {
       expect(host.authorize).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["wrong path", "missing Origin", "authorization denied", "authorization error"])(
+    "stops with rejected upgrades and unread input without waiting for the client: %s",
+    async (kind) => {
+      const host = await fixture({
+        authorize: async () => {
+          if (kind === "authorization error") throw new Error("private auth failure");
+          return kind !== "authorization denied";
+        },
+      });
+      const input = await rawUpgrade(host, {
+        path: kind === "wrong path" ? "/wrong" : undefined,
+        origin: kind !== "missing Origin",
+      });
+      const status = kind === "wrong path" ? "404 Not Found" : "403 Forbidden";
+      await vi.waitFor(() =>
+        expect(input.response()).toBe(
+          `HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+        ),
+      );
+      // Keep the client write side open: shutdown must release its own connection.
+      host.adapter.close();
+      host.server.closeAllConnections();
+      let stopped = false;
+      host.server.close(() => (stopped = true));
+      await vi.waitFor(() => {
+        expect(host.sockets.size).toBe(0);
+        expect(stopped).toBe(true);
+      });
+      expect(host.dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("expires a half-open rejected upgrade after the handshake deadline without stopping the server", async () => {
+    const host = await fixture();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const input = await rawUpgrade(host, { origin: false });
+      if (!input.raw.readableEnded) await once(input.raw, "end");
+      expect(input.response()).toBe(
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      expect(host.sockets.size).toBe(1);
+      const closed = once([...host.sockets][0], "close");
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(host.sockets.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await closed;
+      expect(host.sockets.size).toBe(0);
+      expect(host.server.listening).toBe(true);
+      expect(host.authorize).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each([
     { headers: { cookie: "different-owner" } },

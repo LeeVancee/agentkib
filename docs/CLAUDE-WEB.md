@@ -57,6 +57,8 @@
 - 帧结构为 `{ id, path, body?, csrfToken, protocolVersion: 2 }`；`body` 存在时为 POST，否则为 GET。不能提供 headers 或 deviceId。响应为 `{ id, status, body }`。
 - 只允许受限的 managed/Codex 操作、设置/队列/目标/资源读取及回执查询。历史长读、SSE/实时流、附件字节上传、文件正文及任意路径继续走各自的 HTTP 服务。
 - 单连接同一时刻最多一项请求；输入最大 64 KiB，响应最大 1 MiB。忙碌帧被拒绝而不进入队列；服务关闭时终止连接。断线、超时或未知结果不会触发自动重发。
+- 公网 Relay 仅在 control 通道转发 `GET /api/web/v1/socket`，preview 通道与其他升级路径拒绝。桌面 TLS 代理在握手前后核对代次、租约、Host 和 SNI；Origin、Cookie 和帧权限继续由同一 WebAccessService 校验。握手上限 10 秒，撤销、租约过期或停止会关闭待连接和已升级的上下游。
+- VPS 保持 TLS 密文透传，外层 frp WSS 与内层应用 WebSocket 各自独立。通用 managed 接口、队列、目标与回执仍属于桌面，不增加 broker API 或 VPS 存储；旧桌面必须包含对应转发实现才能使用公网 socket。
 
 ## 桌面、附件与恢复
 
@@ -73,6 +75,7 @@
 
 - 自动化测试默认不调用真实模型。旧 `claude-real.test.ts` 是历史验收脚本，不能作为本期通过证据；本期用隔离数据和合成历史重新验收。
 - 本次通用协议、前端、宿主调度和 WebSocket 的验收见 [2026-10-09 QA](../qa/claude-remote-parity-2026-10-09.md)；早期原生执行证据保留在 [2026-09-30 QA](../qa/claude-managed-2026-09-30.md)，不外推到新增能力。代码测试通过不等于真实模型、桌面/Web 全工作流、生产中继或实体手机已验收。
+- 公网 Relay 转发的两仓库同步另见 [Relay 离线验收](../qa/claude-relay-sync-2026-10-09.md)，包括真实 frp、桌面 TLS、WebAccessService、Backend 与合成 CLI。跨仓测试显式启用，默认测试中的跳过不计为真实隧道通过。
 - 真实测试每例单轮，保留 attempt 记录；超时或结果未知后不自动重试、切换模型或复制凭据。
 - 公开分发前仍需另行确认第三方接入边界。本机 CLI 验证不表示已获得订阅额度接入许可。
 

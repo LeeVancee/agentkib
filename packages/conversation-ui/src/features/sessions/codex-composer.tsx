@@ -1,4 +1,4 @@
-import { HistoryReferenceChips, HistorySearchTrigger } from "../history/history-search-controls";
+import { HistoryReferenceChips } from "../history/history-search-controls";
 import { validHistoryMessage } from "../history/history-reference-model";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -306,7 +306,6 @@ export function CodexComposer() {
         }}
       />
       <HistoryReferenceChips />
-      <HistorySearchTrigger />
       {uploads.length > 0 && (
         <ul className="space-y-2">
           {uploads.map((item) => (

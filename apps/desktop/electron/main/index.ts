@@ -263,6 +263,7 @@ async function startApplication(): Promise<void> {
     runtimeRequest: (params) => requestWhenRuntimeReady(RUNTIME_METHODS.webRequest, params),
     verifiedCodex: process.platform === "darwin",
     verifiedClaudeManaged: process.platform === "darwin",
+    enableClaudeScheduler: process.platform === "darwin",
     verifiedAntigravityManaged: true,
   } satisfies Partial<ConstructorParameters<typeof WebAccessService>[0]>;
   webAccess = new WebAccessService({

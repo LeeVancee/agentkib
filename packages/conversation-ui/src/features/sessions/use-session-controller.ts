@@ -34,8 +34,8 @@ import {
   type Access,
   type WebConnection,
   type CodexCapabilities,
-  type CodexAction,
-  type CodexActionBody,
+  type SessionAction,
+  type SessionActionBody,
   type Approval,
   type ConversationEvent,
   type ConversationEventPage,
@@ -1387,9 +1387,9 @@ export function useSessionController({
     };
   }, [historyReferences, access?.historySearchScope, client, selected, setHistoryReferences]);
   async function codexAction(
-    action: CodexAction,
+    action: SessionAction,
     fields: Omit<
-      Partial<CodexActionBody>,
+      Partial<SessionActionBody>,
       "requestId" | "bootId" | "sessionId" | "expectedRevision"
     > = {},
   ) {
@@ -1415,9 +1415,15 @@ export function useSessionController({
     const requestId = crypto.randomUUID();
     const id = selected;
     const g = generation.current;
+    const perform = (body: SessionActionBody) =>
+      sessions.find((session) => session.id === id)?.agent === "claude-code"
+        ? client.sessionAction(action, body, "claude-code")
+        : action === "queue-pause" || action === "queue-resume"
+          ? Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"))
+          : client.codexAction(action, body);
     if (action === "inspect") {
       try {
-        const result = await client.codexAction(action, {
+        const result = await perform({
           sessionId: id,
           bootId: access.bootId,
           expectedRevision: live.revision ?? 0,
@@ -1441,7 +1447,7 @@ export function useSessionController({
       } catch {
         throw new ApiError(409, "pending_storage_unavailable", "not-dispatched");
       }
-      const result = await client.codexAction(action, {
+      const result = await perform({
         ...fields,
         sessionId: id,
         bootId: access.bootId,

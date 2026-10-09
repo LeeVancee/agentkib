@@ -303,6 +303,8 @@ export type CodexAction =
   | "goal-pause"
   | "goal-resume"
   | "goal-clear";
+export type SessionAction = CodexAction | "queue-pause" | "queue-resume";
+export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
 export interface CodexCapabilities {
   sessionId: string;
   executionMode: string;
@@ -310,7 +312,16 @@ export interface CodexCapabilities {
   reason?: string;
   features: Partial<
     Record<
-      CodexAction | "attachments" | "context" | "resources" | "send" | "files" | "usage",
+      | SessionAction
+      | "settings-state"
+      | "goal"
+      | "queue-list"
+      | "attachments"
+      | "context"
+      | "resources"
+      | "send"
+      | "files"
+      | "usage",
       { available: boolean; reason?: string }
     >
   >;
@@ -322,6 +333,7 @@ export interface ManagedOptions {
   reason?: string;
   cliVersion?: string;
   models?: { id: string; name?: string; efforts?: string[] }[];
+  permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
   workspaces: { id: string; name: string }[];
 }
 export interface ManagedInspection {
@@ -340,6 +352,7 @@ export interface ManagedActionBody {
   name?: string;
   model?: string;
   effort?: string;
+  permissionMode?: ClaudePermissionMode;
   handoffConfirmed?: boolean;
   handoffFingerprint?: string;
 }
@@ -359,6 +372,7 @@ export interface UploadedAttachment {
 }
 export interface CodexQueueItem {
   id: string;
+  status?: "pending" | "claimed" | "dispatched" | "unknown";
   hasAttachments?: boolean;
   clientUserMessageId?: string;
   text?: string;
@@ -367,7 +381,10 @@ export interface CodexQueueItem {
 export interface CodexQueue {
   sessionId?: string;
   data: CodexQueueItem[];
+  paused?: boolean;
+  requiresResume?: boolean;
 }
+export type SessionQueue = CodexQueue;
 export interface CodexOptions {
   available: boolean;
   reason?: string;
@@ -400,6 +417,7 @@ export interface CodexSettingValues {
   mode?: string;
   policyId?: string;
   serviceTierId?: string;
+  permissionMode?: ClaudePermissionMode;
 }
 export interface CodexSessionSettings {
   sessionId: string;
@@ -411,7 +429,12 @@ export interface CodexSessionSettings {
   current: CodexSettingValues;
   selected?: CodexSettingValues;
   applicationStatus?: "pending" | "confirmed" | "unknown";
-  defaults: { modelId?: string; effort?: string; serviceTierId?: string };
+  defaults: {
+    modelId?: string;
+    effort?: string;
+    serviceTierId?: string;
+    permissionMode?: ClaudePermissionMode;
+  };
   writable: {
     model: CodexAvailability;
     effort: CodexAvailability;
@@ -419,11 +442,13 @@ export interface CodexSessionSettings {
     policy: CodexAvailability;
     serviceTier: CodexAvailability;
     restoreDefaults: CodexAvailability;
+    permissionMode?: CodexAvailability;
   };
   options: {
     collaborationModes?: { id: "plan" | "default"; name: string }[];
     models: {
       id: string;
+      resolvedModel?: string;
       name?: string;
       efforts: string[];
       defaultEffort?: string;
@@ -431,9 +456,11 @@ export interface CodexSessionSettings {
     }[];
     policies: { id: string; name: string; description?: string }[];
     serviceTiers: { id: string; name: string; description?: string }[];
+    permissionModes?: { id: ClaudePermissionMode; name: string; description?: string }[];
   };
   usage?: CodexTokenUsage;
 }
+export type SessionSettings = CodexSessionSettings;
 export interface CodexGoal {
   objective: string;
   status: string;
@@ -454,6 +481,7 @@ export interface CodexGoalState {
     clear: CodexAvailability;
   };
 }
+export type SessionGoalState = CodexGoalState;
 export type CodexContextResourceKind = "file" | "directory" | "skill" | "plugin" | "app";
 export interface CodexContextResource {
   id: string;
@@ -472,6 +500,8 @@ export interface CodexContextOptions {
   parentId?: string;
   resources: CodexContextResource[];
 }
+export type SessionResource = CodexContextResource;
+export type SessionResources = CodexContextOptions;
 export interface CodexActionBody {
   historyReferences?: HistoryReference[];
   bootId: string;
@@ -495,6 +525,16 @@ export interface CodexActionBody {
   objective?: string;
   intent?: "start" | "update";
   tokenBudget?: number | null;
+}
+export interface SessionActionBody extends Omit<CodexActionBody, "effort"> {
+  effort?: string | null;
+  permissionMode?: ClaudePermissionMode;
+}
+export interface SessionActionResult {
+  accepted?: boolean;
+  sessionId?: string;
+  reconciled?: boolean;
+  context?: unknown;
 }
 
 export type WebConnection = { type: "same-origin" } | { type: "lan-http"; origin: string };
@@ -792,6 +832,63 @@ export class WebClient {
           signal,
         );
   }
+  sessionAction(
+    action: SessionAction,
+    body: SessionActionBody,
+    agent: ManagedAgent,
+  ): Promise<SessionActionResult> {
+    if (agent === "codex") {
+      if (action === "queue-pause" || action === "queue-resume")
+        return Promise.reject(new ApiError(409, "operation_unavailable", "not-dispatched"));
+      return this.codexAction(action, body);
+    }
+    if (action === "inspect")
+      return this.managedInspect(body.sessionId, agent).then((context) => ({ context }));
+    return this.request<{
+      accepted?: boolean;
+      sessionId?: string;
+      reconciled?: boolean;
+      context?: unknown;
+    }>("managed/action", { ...body, operation: action, agent });
+  }
+  sessionSettings(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+    return agent === "codex"
+      ? this.codexSessionSettings(sessionId, signal)
+      : this.request<SessionSettings>(
+          `managed/settings?${new URLSearchParams({ sessionId, agent })}`,
+          undefined,
+          signal,
+        );
+  }
+  sessionQueue(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+    return agent === "codex"
+      ? this.codexQueue(sessionId, signal)
+      : this.request<SessionQueue>(
+          `managed/queue?${new URLSearchParams({ sessionId, agent })}`,
+          undefined,
+          signal,
+        );
+  }
+  sessionGoals(sessionId: string, agent: ManagedAgent, signal?: AbortSignal) {
+    return agent === "codex"
+      ? this.codexGoals(sessionId, signal)
+      : this.request<SessionGoalState>(
+          `managed/goals?${new URLSearchParams({ sessionId, agent })}`,
+          undefined,
+          signal,
+        );
+  }
+  sessionResources(
+    sessionId: string,
+    agent: ManagedAgent,
+    directoryId?: string,
+    signal?: AbortSignal,
+  ) {
+    if (agent === "codex") return this.codexContextOptions(sessionId, directoryId, signal);
+    const query = new URLSearchParams({ sessionId, agent });
+    if (directoryId) query.set("directoryId", directoryId);
+    return this.request<SessionResources>(`managed/resources?${query}`, undefined, signal);
+  }
   codexCapabilities(sessionId: string, signal?: AbortSignal) {
     return this.request<CodexCapabilities>(
       `codex/capabilities?${new URLSearchParams({ sessionId })}`,
@@ -825,7 +922,9 @@ export class WebClient {
     if (directoryId) query.set("directoryId", directoryId);
     return this.request<CodexContextOptions>(`codex/context-options?${query}`, undefined, signal);
   }
-  codexAction(action: CodexAction, body: CodexActionBody) {
+  codexAction(action: CodexAction, body: SessionActionBody) {
+    if (body.effort === null)
+      return Promise.reject(new ApiError(400, "invalid_effort", "not-dispatched"));
     return this.request<{
       accepted?: boolean;
       sessionId?: string;

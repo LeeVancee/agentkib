@@ -1,4 +1,4 @@
-import type { CodexAction, ManagedAgent } from "@agentkib/web-client";
+import type { SessionAction, ManagedAgent } from "@agentkib/web-client";
 /** Only command identity is persisted; never prompts, answers, tokens or approval details. */
 export type PendingControl = {
   requestId: string;
@@ -14,7 +14,7 @@ export type PendingControl = {
     | "adopt"
     | "release"
     | "reconcile"
-    | CodexAction;
+    | SessionAction;
 };
 // Keep persisted identities exhaustive when native actions are added.
 const pendingKinds = {
@@ -34,6 +34,8 @@ const pendingKinds = {
   "queue-delete": true,
   "queue-reorder": true,
   "queue-start": true,
+  "queue-pause": true,
+  "queue-resume": true,
   rename: true,
   archive: true,
   unarchive: true,

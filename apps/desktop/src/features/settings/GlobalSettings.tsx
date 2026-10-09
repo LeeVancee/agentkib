@@ -292,7 +292,6 @@ export function GlobalSettings({
       <SettingsPage variant="management">
         <SettingsPageHeader
           title={tr("settings.section.integrations")}
-          description={tr("settings.page.integrations.description")}
         />
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <SettingsRow border={false}>
@@ -359,7 +358,6 @@ export function GlobalSettings({
     <SettingsPage variant="management">
       <SettingsPageHeader
         title={tr("settings.section.diagnostics")}
-        description={tr("settings.page.diagnostics.description")}
         action={
           <Button variant="outline" onClick={() => void onRefreshDiagnostics()}>
             <RefreshCw size={15} />
@@ -371,7 +369,6 @@ export function GlobalSettings({
         <SettingsRow border={false}>
           <SettingsCopy>
             <strong>{tr("settings.diagnostics.healthStatus")}</strong>
-            <small>{tr("settings.diagnostics.healthDescription")}</small>
           </SettingsCopy>
           <SettingsStatus tone={diagnosticsHealthy ? "success" : "warning"}>
             {tr(

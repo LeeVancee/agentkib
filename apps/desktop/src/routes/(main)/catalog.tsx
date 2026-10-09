@@ -1,3 +1,4 @@
+import { McpDisclosure } from "@/features/mcp/McpControls";
 import { navigationStyles } from "@/components/navigationStyles";
 import { useI18n } from "@/core/useI18n";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
@@ -7,15 +8,13 @@ import { AgentIcon } from "@/features/agents/AgentIcon";
 import { SidebarPanel } from "@/features/app/SidebarPanel";
 import { AssetCatalogPage } from "@/features/catalog/AssetCatalogPage";
 import { SkillHubPage } from "@/features/skills/SkillHubPage";
-import { McpConnectionCard } from "@/features/mcp/McpConnectionCard";
-import { McpRuntimeProbe } from "@/features/mcp/McpRuntimeProbe";
+import { McpManagementPanel, type McpEditorState } from "@/features/mcp/McpManagementPanel";
 import { CatalogSkeleton } from "@/features/catalog/CatalogSkeleton";
 import { useAppDialogs } from "@/components/AppDialogProvider";
 import { MemoryCard } from "@/features/catalog/MemoryCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,7 +25,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/core/api";
 import { groupCatalogAssets } from "@/features/catalog/catalog";
 import { useAppStore } from "@/stores/app-store";
@@ -60,14 +58,12 @@ import type {
   Manifest,
   McpInstallation,
   McpRegistryEntry,
-  McpServerConfig,
   MemoryRecord,
   MemoryType,
   RuntimeInfo,
   WorkspaceSummary,
 } from "@/core/types";
 import { cn, withAsyncCleanup } from "@/lib/utils";
-import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 type AssetSection = "instructions" | "skills" | "mcp" | "memory" | "other";
 type CatalogSearch = { assetSection?: AssetSection };
@@ -434,7 +430,6 @@ export function McpHubPage({
   runtime,
   workspaces,
   onRuntimeChanged,
-  onMigrationPlanned,
 }: {
   runtime?: RuntimeInfo;
   workspaces: WorkspaceSummary[];
@@ -443,20 +438,14 @@ export function McpHubPage({
 }) {
   const { localizeMessage, tr } = useI18n();
   const dialogs = useAppDialogs();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [registryRequest, setRegistryRequest] = useState<string>();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("");
+  const [drafts] = useState(() => new Map<string, McpEditorState>());
   const [actionBusy, setBusy] = useState(false);
   const [actionError, setError] = useState("");
   const project = scope || undefined;
-  const serversQuery = useQuery({
-    ...queryDefaults,
-    queryKey: ["mcp", "servers", project],
-    queryFn: () => api.mcpServers(project),
-    staleTime: 0,
-  });
   const installationsQuery = useQuery({
     ...queryDefaults,
     queryKey: ["mcp", "installations"],
@@ -484,15 +473,11 @@ export function McpHubPage({
   });
   const registry = registryQuery.data ?? [];
   const busy = actionBusy || registryQuery.isFetching;
-  const servers = serversQuery.data ?? [];
   const installations = installationsQuery.data ?? [];
-  const runtimes = runtimesQuery.data ?? [];
+  // Older runtimes do not report ownership; never infer it from the selected scope.
+  const runtimes = (runtimesQuery.data ?? []).filter((item) => item.project === (project ?? null));
   const queryError =
-    serversQuery.error ??
-    installationsQuery.error ??
-    runtimesQuery.error ??
-    runtimeQuery.error ??
-    registryQuery.error;
+    installationsQuery.error ?? runtimesQuery.error ?? runtimeQuery.error ?? registryQuery.error;
   const error = actionError || (queryError ? localizeMessage(queryError) : "");
   const runtimeChanged = useRef(onRuntimeChanged);
   useEffect(() => {
@@ -503,7 +488,7 @@ export function McpHubPage({
   }, [runtimeQuery.data]);
   const load = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["mcp", "servers", project], exact: true }),
+      queryClient.invalidateQueries({ queryKey: ["mcp", "management", project], exact: true }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "installations"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtimes"] }),
       queryClient.invalidateQueries({ queryKey: ["mcp", "runtime"] }),
@@ -594,73 +579,8 @@ export function McpHubPage({
       setError(localizeMessage(reason));
     }
   };
-  const authorize = async (serverId: string) => {
-    try {
-      const result = await api.startMcpOAuth(serverId, project);
-      await api.openExternal(result.authorization_url);
-    } catch (reason) {
-      setError(localizeMessage(reason));
-    }
-  };
   return (
     <div className="grid gap-5">
-      <McpConnectionCard
-        workspaces={workspaces}
-        runtime={runtime}
-        servicesRevision={JSON.stringify([project, servers, serversQuery.dataUpdatedAt])}
-        onManageWorkspaces={() => void navigate({ to: "/workspaces" })}
-      />
-      {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <CircleAlert size={16} />
-          {error}
-        </div>
-      )}
-      <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 md:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="grid gap-1.5">
-          <span className="text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
-            STREAMABLE HTTP MCP HUB
-          </span>
-          <h2>{tr("mcp.title")}</h2>
-        </div>
-        <div className="grid gap-1.5 text-right text-sm text-muted-foreground">
-          <span
-            className={cn(
-              "font-medium",
-              runtime?.mcp_hub?.running ? "text-emerald-600" : "text-destructive",
-            )}
-          >
-            {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
-          </span>
-          <code>{runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}</code>
-          <small>{tr("mcp.runtimeCount", { count: runtime?.mcp_hub?.runtime_count ?? 0 })}</small>
-        </div>
-      </div>
-      <div className="grid gap-5 rounded-2xl border border-border bg-card p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="grid gap-1.5">
-          <h2>{tr("mcp.network")}</h2>
-        </div>
-        <div className="flex flex-wrap items-end gap-4">
-          <Label className="!grid gap-2">
-            <span>{tr("mcp.port")}</span>
-            <Input
-              className="w-32"
-              type="number"
-              min="1"
-              max="65535"
-              defaultValue={runtime?.mcp_network?.port ?? 47653}
-              onBlur={(event) => void updatePort(Number(event.target.value))}
-            />
-          </Label>
-          <Label className="!grid gap-2">
-            <span>{tr("mcp.lanMode")}</span>
-            <Switch
-              checked={runtime?.mcp_network?.lan_enabled ?? false}
-              onCheckedChange={(checked) => void updateNetwork(checked)}
-            />
-          </Label>
-        </div>
-      </div>
       <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
         <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
           <div className="grid gap-1.5">
@@ -694,507 +614,254 @@ export function McpHubPage({
           </Select>
         </div>
       </div>
-      <McpServerEditor key={`editor:${project ?? "global"}`} project={project} onSaved={load} />
-      <McpMigrationInventory
+      <McpManagementPanel
         key={project ?? "global"}
         project={project}
-        onPlanned={onMigrationPlanned}
+        workspaces={workspaces}
+        onChanged={load}
+        drafts={drafts}
       />
-      <div className="grid gap-5 lg:grid-cols-2">
-        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-            <div className="grid gap-1.5">
-              <h2>{tr("mcp.registry")}</h2>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 p-5">
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void searchRegistry();
-              }}
-              placeholder={tr("mcp.searchPlaceholder")}
-            />
-            <Button
-              className="bg-primary text-primary-foreground hover:bg-primary/90"
-              disabled={busy}
-              onClick={() => void searchRegistry()}
-            >
-              <Search size={14} />
-              {tr("common.search")}
-            </Button>
-          </div>
-          <div className="grid divide-y divide-border px-5">
-            {registry.map((entry) => (
-              <article
-                className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                key={`${entry.name}-${entry.version}`}
-              >
-                <div className="grid gap-1">
-                  <strong>{entry.name}</strong>
-                  <small>{entry.description}</small>
-                  <span>
-                    {entry.package_kind} · {entry.version}
-                    {entry.required_env.length
-                      ? ` · ${tr("mcp.requiredEnv", { count: entry.required_env.length })}`
-                      : ""}
-                  </span>
-                </div>
-                <Button
-                  className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                  onClick={() => void install(entry)}
-                >
-                  {tr("mcp.install")}
-                </Button>
-              </article>
-            ))}
-            {!registry.length && (
-              <p className="py-6 text-sm text-muted-foreground">{tr("mcp.registryEmpty")}</p>
-            )}
-          </div>
-        </div>
-        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-            <div className="grid gap-1.5">
-              <h2>{tr("mcp.configured")}</h2>
-            </div>
-            <Badge variant="outline">{servers.length}</Badge>
-          </div>
-          <div className="grid divide-y divide-border px-5">
-            {servers.map((server) => (
-              <article
-                className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                key={`${project ?? "global"}:${server.id}`}
-              >
-                <div className="grid gap-1">
-                  <strong>{server.name}</strong>
-                  <small>{server.transport === "stdio" ? server.command : server.url}</small>
-                  <span>
-                    {server.targets.length
-                      ? server.targets.map((agent) => agentLabels[agent]).join(" · ")
-                      : tr("mcp.allAgents")}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {server.transport === "streamable-http" && (
-                    <Button
-                      className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                      onClick={() => void authorize(server.id)}
-                    >
-                      {tr("mcp.authorize")}
-                    </Button>
-                  )}
-                  <McpRuntimeProbe
-                    key={JSON.stringify([project, server])}
-                    serverId={server.id}
-                    project={project}
-                    onProbed={load}
-                  />
-                  <Button
-                    className="text-destructive hover:bg-destructive/10"
-                    onClick={async () => {
-                      await api.removeMcpServer(server.id, project);
-                      await load();
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              </article>
-            ))}
-            {!servers.length && (
-              <p className="py-6 text-sm text-muted-foreground">{tr("mcp.configuredEmpty")}</p>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="grid gap-5 lg:grid-cols-2">
-        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-            <div className="grid gap-1.5">
-              <h2>{tr("mcp.installations")}</h2>
-              <p>{runtime?.mcp_package_root}</p>
-            </div>
-            <Badge variant="outline">{installations.length}</Badge>
-          </div>
-          <div className="grid divide-y divide-border px-5">
-            {installations.map((item) => {
-              const update = registry.find(
-                (entry) =>
-                  entry.package_kind === item.package_kind &&
-                  entry.identifier === item.identifier &&
-                  entry.version !== item.version,
-              );
-              return (
-                <article
-                  className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                  key={item.id}
-                >
-                  <div className="grid gap-1">
-                    <strong>{item.name}</strong>
-                    <small>{item.identifier}</small>
-                    <span>
-                      {item.package_kind} · {item.version ?? "—"}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {update && (
-                      <Button
-                        className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                        disabled={busy}
-                        onClick={() => void updateInstallation(item, update)}
-                      >
-                        {tr("mcp.update")}
-                      </Button>
-                    )}
-                    <Button
-                      className="text-destructive hover:bg-destructive/10"
-                      onClick={async () => {
-                        if (
-                          !(await dialogs.confirm({
-                            description: tr("mcp.uninstallConfirm", { name: item.name }),
-                            tone: "destructive",
-                          }))
-                        )
-                          return;
-                        await api.uninstallMcp(item.id);
-                        await load();
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </Button>
-                  </div>
-                </article>
-              );
-            })}
-            {!installations.length && (
-              <p className="py-6 text-sm text-muted-foreground">{tr("mcp.installationsEmpty")}</p>
-            )}
-          </div>
-        </div>
-        <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-          <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-            <div className="grid gap-1.5">
-              <h2>{tr("mcp.runtimes")}</h2>
-            </div>
-            <Button
-              className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-              onClick={() => void load()}
-            >
-              <RefreshCw size={13} />
-              {tr("common.refresh")}
-            </Button>
-          </div>
-          <div className="grid divide-y divide-border px-5">
-            {runtimes.map((item) => (
-              <article
-                className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
-                key={item.config_hash}
-              >
-                <div className="grid gap-1">
-                  <strong>{item.server_name}</strong>
-                  <small>{item.config_hash.slice(0, 16)}…</small>
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-md text-xs font-medium",
-                      item.state === "running" ? "text-emerald-600" : "text-destructive",
-                    )}
-                  >
-                    {tr(`mcp.runtime.${item.state}`)}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                    onClick={async () => {
-                      try {
-                        await api.restartMcpRuntime(item.server_id, project);
-                        await load();
-                      } catch (reason) {
-                        setError(localizeMessage(reason));
-                      }
-                    }}
-                  >
-                    {tr("mcp.restart")}
-                  </Button>
-                  <Button
-                    className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-                    onClick={async () => {
-                      await api.stopMcpRuntime(item.server_id);
-                      await load();
-                    }}
-                  >
-                    {tr("mcp.stop")}
-                  </Button>
-                </div>
-              </article>
-            ))}
-            {!runtimes.length && (
-              <p className="py-6 text-sm text-muted-foreground">{tr("mcp.runtimesEmpty")}</p>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function McpServerEditor({ project, onSaved }: { project?: string; onSaved: () => Promise<void> }) {
-  const { tr, localizeMessage } = useI18n();
-  const defaultConfig = JSON.stringify(
-    {
-      id: "my-server",
-      name: "My Server",
-      enabled: true,
-      transport: "streamable-http",
-      url: "https://example.com/mcp",
-      targets: [],
-      allow_tools: [],
-      lan_allow_tools: [],
-      supports_parallel_tool_calls: false,
-    },
-    null,
-    2,
-  );
-  const [config, setConfig] = useState(defaultConfig);
-  const [env, setEnv] = useState("");
-  const [headers, setHeaders] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const parseSecretLines = (value: string) =>
-    Object.fromEntries(
-      value
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const separator = line.indexOf("=");
-          if (separator <= 0) throw new Error(tr("mcp.secretFormatError"));
-          return [line.slice(0, separator).trim(), line.slice(separator + 1)];
-        }),
-    );
-  const save = async () => {
-    setSaving(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          const parsed = JSON.parse(config) as unknown;
-          if (typeof parsed === "object" && parsed !== null && "mcpServers" in parsed) {
-            setError(tr("mcp.wrapperUnsupported"));
-            return;
-          }
-          const server = parsed as McpServerConfig;
-          if (!server.id || !server.name || !server.transport) {
-            setError(tr("mcp.configRequired"));
-            return;
-          }
-          if (server.transport === "sse") {
-            setError(tr("mcp.sseImportOnly"));
-            return;
-          }
-          await api.saveMcpServer(server, project);
-          await api.saveMcpLocalValues(
-            server.id,
-            parseSecretLines(env),
-            parseSecretLines(headers),
-            project,
-          );
-          setEnv("");
-          setHeaders("");
-          await onSaved();
-        } catch (reason) {
-          setError(localizeMessage(reason));
-        }
-      },
-      () => setSaving(false),
-    );
-  };
-  return (
-    <Card className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-      <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-        <div className="grid gap-1.5">
-          <h2>{tr("mcp.editor")}</h2>
-          <p className="text-sm text-muted-foreground">{tr("mcp.editorDescription")}</p>
-        </div>
-        <Button
-          className="bg-primary text-primary-foreground hover:bg-primary/90"
-          disabled={saving}
-          onClick={() => void save()}
-        >
-          {tr("common.save")}
-        </Button>
-      </div>
-      {error && (
-        <div className="mx-5 mt-5 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <CircleAlert size={16} />
-          {error}
-        </div>
-      )}
-      <div className="grid gap-5 p-5 lg:grid-cols-2">
-        <Label className="!grid !items-stretch gap-2.5">
-          <span className="text-sm font-medium">{tr("mcp.publicJson")}</span>
-          <Textarea
-            className="min-h-[230px]"
-            value={config}
-            onChange={(event) => setConfig(event.target.value)}
-            spellCheck={false}
-          />
-        </Label>
-        <div className="grid gap-5">
-          <Label className="!grid !items-stretch gap-2.5">
-            <span className="text-sm font-medium">{tr("mcp.environmentSecrets")}</span>
-            <Textarea
-              value={env}
-              onChange={(event) => setEnv(event.target.value)}
-              placeholder="API_TOKEN=…"
-              spellCheck={false}
-            />
-          </Label>
-          <Label className="!grid !items-stretch gap-2.5">
-            <span className="text-sm font-medium">{tr("mcp.headerSecrets")}</span>
-            <Textarea
-              value={headers}
-              onChange={(event) => setHeaders(event.target.value)}
-              placeholder="Authorization=Bearer …"
-              spellCheck={false}
-            />
-          </Label>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function McpMigrationInventory({
-  project,
-  onPlanned,
-}: {
-  project?: string;
-  onPlanned: (project: string, changeSet: ChangeSet) => Promise<void>;
-}) {
-  const { tr, localizeMessage } = useI18n();
-  const dialogs = useAppDialogs();
-  const candidatesQuery = useQuery({
-    ...queryDefaults,
-    queryKey: ["mcp", "migration-candidates", project],
-    queryFn: () => api.nativeMcpCandidates(project),
-    enabled: false,
-    staleTime: 0,
-  });
-  const candidates = candidatesQuery.data ?? [];
-  const scanned = candidatesQuery.isSuccess;
-  const [selected, setSelected] = useState<string[]>([]);
-  const [planning, setBusy] = useState(false);
-  const [actionError, setError] = useState("");
-  const busy = planning || candidatesQuery.isFetching;
-  const error =
-    actionError || (candidatesQuery.error ? localizeMessage(candidatesQuery.error) : "");
-  const scan = async () => {
-    await candidatesQuery.refetch({ cancelRefetch: false });
-  };
-  const plan = async () => {
-    if (!project || !selected.length) return;
-    if (!(await dialogs.confirm(tr("mcp.migrationConfirm", { count: selected.length })))) return;
-    setBusy(true);
-    setError("");
-    await withAsyncCleanup(
-      async () => {
-        try {
-          await onPlanned(project, await api.planMcpMigration(project, selected));
-        } catch (reason) {
-          setError(localizeMessage(reason));
-        }
-      },
-      () => setBusy(false),
-    );
-  };
-  const toggle = (id: string, checked: boolean) =>
-    setSelected((current) =>
-      checked ? [...current, id] : current.filter((value) => value !== id),
-    );
-  return (
-    <Card className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
-      <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
-        <div className="grid gap-1.5">
-          <h2>{tr("mcp.migration")}</h2>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            className="border border-transparent bg-transparent text-foreground hover:bg-muted"
-            onClick={() => void scan()}
-          >
-            <Search size={13} />
-            {tr("common.scan")}
-          </Button>
-          <Button
-            className="bg-primary text-primary-foreground hover:bg-primary/90"
-            disabled={!project || !selected.length || busy}
-            onClick={() => void plan()}
-          >
-            {tr("mcp.planMigration")}
-          </Button>
-        </div>
-      </div>
-      <div className="grid gap-3 px-5 py-5">
-        {!project && (
-          <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-3 text-sm text-amber-700">
-            <CircleAlert size={14} />
-            {tr("mcp.projectRequired")}
-          </div>
-        )}
+      <McpDisclosure
+        className="grid gap-4 rounded-xl border p-4"
+        title={<>{tr("mcp.manage.advanced")}</>}
+      >
         {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-3 text-sm text-destructive">
+          <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             <CircleAlert size={16} />
             {error}
           </div>
         )}
-      </div>
-      {scanned && (
-        <div className="grid divide-y divide-border px-5 pb-5">
-          {candidates.map((candidate) => (
-            <article
-              className="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
-              key={candidate.id}
+        <div className="grid gap-4 rounded-2xl border border-border bg-card p-5 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="grid gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[.12em] text-muted-foreground">
+              STREAMABLE HTTP MCP HUB
+            </span>
+            <h2>{tr("mcp.title")}</h2>
+          </div>
+          <div className="grid gap-1.5 text-right text-sm text-muted-foreground">
+            <span
+              className={cn(
+                "font-medium",
+                runtime?.mcp_hub?.running ? "text-emerald-600" : "text-destructive",
+              )}
             >
-              <Label className="!grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
-                <Checkbox
-                  className="mt-0.5"
-                  disabled={!candidate.supported || !project}
-                  checked={selected.includes(candidate.id)}
-                  onCheckedChange={(checked) => toggle(candidate.id, checked)}
-                />
-                <span className="grid gap-1">
-                  <strong>{candidate.name}</strong>
-                  <small>
-                    {agentLabels[candidate.agent]} · {candidate.source_path}
-                  </small>
-                  <em>
-                    {candidate.transport} · {candidate.endpoint}
-                    {candidate.has_secret_values ? ` · ${tr("mcp.secretReentry")}` : ""}
-                  </em>
-                </span>
-              </Label>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md text-xs font-medium",
-                  candidate.supported ? "text-emerald-600" : "text-destructive",
-                )}
-              >
-                {tr(candidate.supported ? "mcp.importable" : "mcp.unsupported")}
-              </span>
-            </article>
-          ))}
-          {!candidates.length && (
-            <p className="py-5 text-sm text-muted-foreground">{tr("mcp.migrationEmpty")}</p>
-          )}
+              {tr(runtime?.mcp_hub?.running ? "mcp.running" : "mcp.stopped")}
+            </span>
+            <code>{runtime?.mcp_hub ? runtime.mcp_hub.accessible_addresses.join(" · ") : "—"}</code>
+            <small>{tr("mcp.runtimeCount", { count: runtime?.mcp_hub?.runtime_count ?? 0 })}</small>
+          </div>
         </div>
-      )}
-    </Card>
+        <div className="grid gap-5 rounded-2xl border border-border bg-card p-5 shadow-sm md:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="grid gap-1.5">
+            <h2>{tr("mcp.network")}</h2>
+          </div>
+          <div className="flex flex-wrap items-end gap-4">
+            <Label className="!grid gap-2">
+              <span>{tr("mcp.port")}</span>
+              <Input
+                className="w-32"
+                type="number"
+                min="1"
+                max="65535"
+                defaultValue={runtime?.mcp_network?.port ?? 47653}
+                onBlur={(event) => void updatePort(Number(event.target.value))}
+              />
+            </Label>
+            <Label className="!grid gap-2">
+              <span>{tr("mcp.lanMode")}</span>
+              <Switch
+                checked={runtime?.mcp_network?.lan_enabled ?? false}
+                onCheckedChange={(checked) => void updateNetwork(checked)}
+              />
+            </Label>
+          </div>
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+            <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
+              <div className="grid gap-1.5">
+                <h2>{tr("mcp.registry")}</h2>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 p-5">
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void searchRegistry();
+                }}
+                placeholder={tr("mcp.searchPlaceholder")}
+              />
+              <Button
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
+                disabled={busy}
+                onClick={() => void searchRegistry()}
+              >
+                <Search size={14} />
+                {tr("common.search")}
+              </Button>
+            </div>
+            <div className="grid divide-y divide-border px-5">
+              {registry.map((entry) => (
+                <article
+                  className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+                  key={`${entry.name}-${entry.version}`}
+                >
+                  <div className="grid gap-1">
+                    <strong>{entry.name}</strong>
+                    <small>{entry.description}</small>
+                    <span>
+                      {entry.package_kind} · {entry.version}
+                      {entry.required_env.length
+                        ? ` · ${tr("mcp.requiredEnv", { count: entry.required_env.length })}`
+                        : ""}
+                    </span>
+                  </div>
+                  <Button
+                    className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                    onClick={() => void install(entry)}
+                  >
+                    {tr("mcp.install")}
+                  </Button>
+                </article>
+              ))}
+              {!registry.length && (
+                <p className="py-6 text-sm text-muted-foreground">{tr("mcp.registryEmpty")}</p>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+            <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
+              <div className="grid gap-1.5">
+                <h2>{tr("mcp.installations")}</h2>
+                <p>{runtime?.mcp_package_root}</p>
+              </div>
+              <Badge variant="outline">{installations.length}</Badge>
+            </div>
+            <div className="grid divide-y divide-border px-5">
+              {installations.map((item) => {
+                const update = registry.find(
+                  (entry) =>
+                    entry.package_kind === item.package_kind &&
+                    entry.identifier === item.identifier &&
+                    entry.version !== item.version,
+                );
+                return (
+                  <article
+                    className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+                    key={item.id}
+                  >
+                    <div className="grid gap-1">
+                      <strong>{item.name}</strong>
+                      <small>{item.identifier}</small>
+                      <span>
+                        {item.package_kind} · {item.version ?? "—"}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {update && (
+                        <Button
+                          className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                          disabled={busy}
+                          onClick={() => void updateInstallation(item, update)}
+                        >
+                          {tr("mcp.update")}
+                        </Button>
+                      )}
+                      <Button
+                        className="text-destructive hover:bg-destructive/10"
+                        onClick={async () => {
+                          if (
+                            !(await dialogs.confirm({
+                              description: tr("mcp.uninstallConfirm", { name: item.name }),
+                              tone: "destructive",
+                            }))
+                          )
+                            return;
+                          await api.uninstallMcp(item.id);
+                          await load();
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+              {!installations.length && (
+                <p className="py-6 text-sm text-muted-foreground">{tr("mcp.installationsEmpty")}</p>
+              )}
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+            <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-5">
+              <div className="grid gap-1.5">
+                <h2>{tr("mcp.runtimes")}</h2>
+              </div>
+              <Button
+                className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                onClick={() => void load()}
+              >
+                <RefreshCw size={13} />
+                {tr("common.refresh")}
+              </Button>
+            </div>
+            <div className="grid divide-y divide-border px-5">
+              {runtimes.map((item) => (
+                <article
+                  className="grid gap-4 py-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+                  key={item.config_hash}
+                >
+                  <div className="grid gap-1">
+                    <strong>{item.server_name}</strong>
+                    <small>{item.config_hash.slice(0, 16)}…</small>
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md text-xs font-medium",
+                        item.state === "running" ? "text-emerald-600" : "text-destructive",
+                      )}
+                    >
+                      {tr(`mcp.runtime.${item.state}`)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                      onClick={async () => {
+                        try {
+                          await api.restartMcpRuntime(item.server_id, item.project ?? undefined);
+                          await load();
+                        } catch (reason) {
+                          setError(localizeMessage(reason));
+                        }
+                      }}
+                    >
+                      {tr("mcp.restart")}
+                    </Button>
+                    <Button
+                      className="border border-transparent bg-transparent text-foreground hover:bg-muted"
+                      onClick={async () => {
+                        await api.stopMcpRuntime(item.server_id);
+                        await load();
+                      }}
+                    >
+                      {tr("mcp.stopAllScopes")}
+                    </Button>
+                  </div>
+                </article>
+              ))}
+              {!runtimes.length && (
+                <p className="py-6 text-sm text-muted-foreground">{tr("mcp.runtimesEmpty")}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </McpDisclosure>
+    </div>
   );
 }
-
 function CatalogEmpty({ title, text }: { title: string; text: string }) {
   return (
     <div className="grid min-h-[260px] place-content-center justify-items-center gap-1.5 p-[30px] text-center text-muted-foreground">

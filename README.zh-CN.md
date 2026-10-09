@@ -27,6 +27,10 @@ Coding Agent 会在项目指令、Skills、MCP 连接、原生配置和会话历
 
 AgentKib 把这些状态汇集到一个本地、可检查的桌面界面中。基础发现、诊断、Skill 管理和会话交接不需要 AgentKib 账号、云端数据库或模型 API。**KIB** 代表 **Knowledge & Instruction Base（知识与指令底座）**。
 
+### 管理 MCP 服务与 Agent 接入
+
+收录原生或粘贴的 MCP 配置后默认停用，再显式启用和探测。集中预览可一次补齐多个已安装 Agent 的 Hub 连接，并按 Agent 分配具体工具，支持工作区覆盖与版本化写入。参见 [MCP 管理说明](docs/MCP-MANAGEMENT.md)。
+
 ## AgentKib 能做什么
 
 ### 检查实际生效的上下文

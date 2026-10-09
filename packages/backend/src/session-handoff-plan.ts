@@ -354,6 +354,7 @@ export async function planSessionHandoff(
         workspace.registeredId,
         mcpHubStatus.port,
         store,
+        environment,
       )
     )
       throw new Error(

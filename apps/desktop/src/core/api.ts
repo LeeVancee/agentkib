@@ -1,3 +1,10 @@
+import type {
+  McpBatchConnectionRequest,
+  McpImportApplyRequest,
+  McpImportRequest,
+  McpSaveRequest,
+  McpToolPolicyRule,
+} from "@agentkib/runtime-protocol";
 import { desktopApi } from "./desktop";
 import { DEFAULT_SESSION_PAGE_SIZE } from "./session-history";
 import type { RemoteRequest } from "./remote-types";
@@ -94,6 +101,25 @@ export const api = {
   checkAppUpdate: () => desktopApi().updates.check(),
   installAppUpdate: (version: string, onEvent: (event: AppUpdateProgress) => void) =>
     desktopApi().updates.install(version, onEvent),
+  mcpManagementState: (request: { project?: string }) => desktopApi().mcp.managementState(request),
+  saveMcpConfiguration: (request: McpSaveRequest) => desktopApi().mcp.saveConfiguration(request),
+  removeMcpConfiguration: (request: { project?: string; revision: string; id: string }) =>
+    desktopApi().mcp.removeConfiguration(request),
+  previewMcpImport: (request: McpImportRequest) => desktopApi().mcp.previewImport(request),
+  applyMcpImport: (request: McpImportApplyRequest) => desktopApi().mcp.applyImport(request),
+  checkMcpConnections: (request: McpBatchConnectionRequest) =>
+    desktopApi().mcp.checkConnections(request),
+  planMcpConnections: (request: McpBatchConnectionRequest) =>
+    desktopApi().mcp.planConnections(request),
+  applyMcpConnections: (request: { token: string; approveHome: boolean }) =>
+    desktopApi().mcp.applyConnections(request),
+  getMcpPolicy: (request: { project?: string }) => desktopApi().mcp.getPolicy(request),
+  saveMcpPolicy: (request: { project?: string; revision: string; rules: McpToolPolicyRule[] }) =>
+    desktopApi().mcp.savePolicy(request),
+  previewMcpMigration: (request: { project: string; revision: string; candidateIds: string[] }) =>
+    desktopApi().mcp.previewMigration(request),
+  applyMcpMigration: (request: { token: string; approveHome: boolean }) =>
+    desktopApi().mcp.applyMigration(request),
   mcpHubStatus: () => desktopApi().mcp.hubStatus(),
   mcpConnectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
     desktopApi().mcp.connectionInfo(workspaceId, targetAgent),

@@ -206,6 +206,7 @@ export interface McpConnectionVerification {
   url: string;
   checked_at: string;
   builtin_tools: number;
+  builtin_tool_names?: string[];
   external_tools: string[];
 }
 export type McpRuntimeState = "stopped" | "starting" | "running" | "error";
@@ -213,6 +214,8 @@ export interface McpRuntimeStatus {
   server_id: string;
   server_name: string;
   config_hash: string;
+  /** Canonical workspace path, null for global; absent on older runtimes. */
+  project?: string | null;
   state: McpRuntimeState;
   started_at?: string;
   last_used_at?: string;
@@ -276,6 +279,7 @@ export interface McpMigrationCandidate {
   has_secret_values: boolean;
   supported: boolean;
   warnings: string[];
+  warning_messages?: import("@agentkib/runtime-protocol").McpDiagnosticMessage[];
 }
 export interface McpOAuthStart {
   authorization_url: string;

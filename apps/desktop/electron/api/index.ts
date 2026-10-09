@@ -1,3 +1,18 @@
+import type { McpMigrationPreview, McpMigrationResult } from "@agentkib/runtime-protocol";
+import type {
+  McpBatchConnectionCheck,
+  McpBatchConnectionPlan,
+  McpBatchConnectionReport,
+  McpBatchConnectionRequest,
+  McpImportApplyRequest,
+  McpImportPreview,
+  McpImportReport,
+  McpImportRequest,
+  McpManagementState,
+  McpSaveRequest,
+  McpToolPolicyRule,
+  McpToolPolicySnapshot,
+} from "@agentkib/runtime-protocol";
 import type { DesktopAccountRequest, DesktopAccountStatus } from "../main/account/state";
 import type {
   RuntimeHandshakeResult,
@@ -218,6 +233,35 @@ export interface DesktopApi {
     applyDeployment(token: string, approveHome: boolean): Promise<SkillDeploymentReport>;
   };
   mcp: {
+    previewMigration(request: {
+      project: string;
+      revision: string;
+      candidateIds: string[];
+    }): Promise<McpMigrationPreview>;
+    applyMigration(request: { token: string; approveHome: boolean }): Promise<McpMigrationResult>;
+
+    managementState(request: { project?: string }): Promise<McpManagementState>;
+    saveConfiguration(request: McpSaveRequest): Promise<McpManagementState>;
+    removeConfiguration(request: {
+      project?: string;
+      revision: string;
+      id: string;
+    }): Promise<McpManagementState>;
+    previewImport(request: McpImportRequest): Promise<McpImportPreview>;
+    applyImport(request: McpImportApplyRequest): Promise<McpImportReport>;
+    checkConnections(request: McpBatchConnectionRequest): Promise<McpBatchConnectionCheck>;
+    planConnections(request: McpBatchConnectionRequest): Promise<McpBatchConnectionPlan>;
+    applyConnections(request: {
+      token: string;
+      approveHome: boolean;
+    }): Promise<McpBatchConnectionReport>;
+    getPolicy(request: { project?: string }): Promise<McpToolPolicySnapshot>;
+    savePolicy(request: {
+      project?: string;
+      revision: string;
+      rules: McpToolPolicyRule[];
+    }): Promise<McpToolPolicySnapshot>;
+
     hubStatus(): Promise<McpHubStatus>;
     connectionInfo(workspaceId: string, targetAgent: AgentKind): Promise<McpConnectionInfo>;
     planConnection(workspaceId: string, targetAgent: AgentKind): Promise<ChangeSet>;

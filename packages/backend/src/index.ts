@@ -26,6 +26,8 @@ import { SkillsWorker } from "./skills-worker";
 import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
 import { HandoffWork } from "./handoff-work";
 import { AgentTools } from "./agent-tools";
+import { McpManagement } from "./mcp-management";
+import { McpConnectionBatch } from "./mcp-connection-batch";
 import { McpManager } from "./mcp";
 import { McpBuiltins } from "./mcp-builtin";
 import { McpHub, type McpNetworkSettings } from "./mcp-hub";
@@ -134,6 +136,8 @@ export class TypeScriptBackend {
   #stopping = false;
   #agentTools?: AgentTools;
   #mcp?: McpManager;
+  #mcpManagement?: McpManagement;
+  #mcpConnections?: McpConnectionBatch;
   #mcpHub?: McpHub;
   #mcpOAuth?: McpOAuth;
   #remoteGateways?: RemoteGateways;
@@ -182,6 +186,8 @@ export class TypeScriptBackend {
     this.#agentTools = undefined;
     this.#mcp?.close();
     this.#mcp = undefined;
+    this.#mcpManagement = undefined;
+    this.#mcpConnections = undefined;
     this.#mcpHub = undefined;
     this.#mcpOAuth = undefined;
     this.#remoteGateways = undefined;
@@ -418,6 +424,18 @@ export class TypeScriptBackend {
           new McpBuiltins(store, this.#context, dataDir),
           this.#mcpOAuth,
           network,
+        );
+        this.#mcpManagement = new McpManagement(
+          store,
+          { ...process.env, ...this.environment },
+          dataDir,
+          this.#mcp,
+        );
+        this.#mcpConnections = new McpConnectionBatch(
+          store,
+          dataDir,
+          { ...process.env, ...this.environment },
+          () => this.#mcpHub!.status(),
         );
         this.#remoteGateways = new RemoteGateways(dataDir);
         this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
@@ -780,7 +798,7 @@ export class TypeScriptBackend {
       return listNativeImports(this.#dataDir!, this.#store!, workspaceId);
     }
     if (method === RUNTIME_METHODS.planSessionMcpConnection)
-      return planSessionMcpConnection(params, this.#store);
+      return planSessionMcpConnection(params, this.#store, { ...process.env, ...this.environment });
     if (HANDOFF_TASK_METHODS.has(method))
       return this.#handoffQueue.run((task) =>
         this.#handoffWork.run(task, () => this.#requestHandoff(method, params)),
@@ -1105,6 +1123,46 @@ export class TypeScriptBackend {
   async #mcpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
     const manager = this.#mcp!;
     switch (method) {
+      case RUNTIME_METHODS.previewMcpMigration:
+        return this.#mcpManagement!.previewMigration(params, this.#mcpHub!.status());
+      case RUNTIME_METHODS.applyMcpMigration:
+        return this.#mcpManagement!.applyMigration(params, this.#mcpHub!.status());
+      case RUNTIME_METHODS.mcpManagementState:
+        return this.#mcpManagement!.state(params);
+      case RUNTIME_METHODS.saveMcpConfiguration:
+        return this.#mcpManagement!.save(params);
+      case RUNTIME_METHODS.removeMcpConfiguration:
+        return this.#mcpManagement!.remove(params);
+      case RUNTIME_METHODS.previewMcpImport:
+        return this.#mcpManagement!.previewImport(params);
+      case RUNTIME_METHODS.applyMcpImport:
+        return this.#mcpManagement!.applyImport(params);
+      case RUNTIME_METHODS.checkMcpConnections:
+        return this.#mcpConnections!.check(params);
+      case RUNTIME_METHODS.planMcpConnections:
+        return this.#mcpConnections!.plan(params);
+      case RUNTIME_METHODS.applyMcpConnections:
+        return this.#mcpConnections!.apply(params);
+      case RUNTIME_METHODS.getMcpPolicy: {
+        const request = parameters(z.object({ project: z.string().optional() }).strict(), params);
+        return manager.getPolicy(request.project);
+      }
+      case RUNTIME_METHODS.saveMcpPolicy: {
+        const request = parameters(
+          z
+            .object({
+              project: z.string().optional(),
+              revision: z.string(),
+              rules: z.array(z.unknown()),
+            })
+            .strict(),
+          params,
+        );
+        return manager.savePolicy(
+          { revision: request.revision, rules: request.rules },
+          request.project,
+        );
+      }
       case RUNTIME_METHODS.listMcpServers: {
         const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
         return manager.list(request.project ?? undefined);

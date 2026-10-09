@@ -120,7 +120,9 @@ export function InsightsFilters({
               <SelectGroup>
                 <SelectLabel>{tr("insights.agentFilter")}</SelectLabel>
                 {agentItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>
@@ -141,7 +143,9 @@ export function InsightsFilters({
               <SelectGroup>
                 <SelectLabel>{tr("insights.workspaceFilter")}</SelectLabel>
                 {workspaceItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>
@@ -162,7 +166,9 @@ export function InsightsFilters({
               <SelectGroup>
                 <SelectLabel>{tr("insights.repositoryFilter")}</SelectLabel>
                 {repositoryItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>
@@ -183,7 +189,9 @@ export function InsightsFilters({
               <SelectGroup>
                 <SelectLabel>{tr("insights.range")}</SelectLabel>
                 {rangeItems.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>

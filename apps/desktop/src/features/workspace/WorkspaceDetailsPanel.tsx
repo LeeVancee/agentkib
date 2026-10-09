@@ -25,10 +25,11 @@ export function WorkspaceDetailsPanel({
   onExclude: (id: string) => Promise<void>;
 }) {
   const { tr, formatRelativeTime } = useI18n();
-  const agents = workspace.sources
-    .flatMap((source) => (source.agent ? [agentLabels[source.agent]] : []))
-    .filter((value, index, values) => values.indexOf(value) === index)
-    .join(" · ") || tr("workspace.source.manual");
+  const agents =
+    workspace.sources
+      .flatMap((source) => (source.agent ? [agentLabels[source.agent]] : []))
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .join(" · ") || tr("workspace.source.manual");
 
   return (
     <section className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
@@ -42,12 +43,19 @@ export function WorkspaceDetailsPanel({
               <h2 className="truncate text-lg font-semibold">{workspace.name}</h2>
               <Badge
                 variant={workspace.status === "attention" ? "destructive" : "secondary"}
-                className={workspace.status === "healthy" ? "bg-emerald-500/10 text-emerald-700" : "text-[10px]"}
+                className={
+                  workspace.status === "healthy"
+                    ? "bg-emerald-500/10 text-emerald-700"
+                    : "text-[10px]"
+                }
               >
                 {tr(`status.workspace.${workspace.status}`)}
               </Badge>
             </div>
-            <code className="mt-1 block truncate text-xs text-muted-foreground" title={workspace.path}>
+            <code
+              className="mt-1 block truncate text-xs text-muted-foreground"
+              title={workspace.path}
+            >
               {workspace.path}
             </code>
           </div>
@@ -60,13 +68,12 @@ export function WorkspaceDetailsPanel({
       <div className="grid grid-cols-3 divide-x divide-border border-b border-border">
         {[
           [tr("workspace.agentColumn"), workspace.sources.length],
-          [
-            tr("workspace.assetsColumn"),
-            catalogPending ? "…" : catalogError ? "—" : assetCount,
-          ],
+          [tr("workspace.assetsColumn"), catalogPending ? "…" : catalogError ? "—" : assetCount],
           [
             tr("workspace.activityColumn"),
-            workspace.last_active_at ? formatRelativeTime(workspace.last_active_at) : tr("common.never"),
+            workspace.last_active_at
+              ? formatRelativeTime(workspace.last_active_at)
+              : tr("common.never"),
           ],
         ].map(([label, value]) => (
           <div className="grid min-h-[84px] content-center gap-1 px-4" key={label}>
@@ -90,7 +97,11 @@ export function WorkspaceDetailsPanel({
             <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
             {refreshing ? tr("common.loading") : tr("common.scan")}
           </Button>
-          <Button variant="outline" className="text-destructive" onClick={() => void onExclude(workspace.id)}>
+          <Button
+            variant="outline"
+            className="text-destructive"
+            onClick={() => void onExclude(workspace.id)}
+          >
             <Trash2 size={15} />
             {tr("workspace.ignore")}
           </Button>

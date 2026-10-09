@@ -98,33 +98,46 @@ export function WorkspaceFilters({
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={agent} onValueChange={(value) => {
-            if (value !== null) onAgentChange(String(value) as "all" | AgentKind);
-          }}>
+          <Select
+            value={agent}
+            onValueChange={(value) => {
+              if (value !== null) onAgentChange(String(value) as "all" | AgentKind);
+            }}
+          >
             <SelectTrigger
               aria-label={tr("workspace.allAgents")}
               className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
             >
-              <SelectValue>{agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}</SelectValue>
+              <SelectValue>
+                {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
                 <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
                 {Object.entries(agentLabels).map(([value, label]) => (
-                  <SelectItem value={value} key={value}>{label}</SelectItem>
+                  <SelectItem value={value} key={value}>
+                    {label}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>
           </Select>
-          <Select value={status} onValueChange={(value) => {
-            if (value !== null) onStatusChange(String(value) as "all" | WorkspaceSummary["status"]);
-          }}>
+          <Select
+            value={status}
+            onValueChange={(value) => {
+              if (value !== null)
+                onStatusChange(String(value) as "all" | WorkspaceSummary["status"]);
+            }}
+          >
             <SelectTrigger
               aria-label={tr("workspace.allStatuses")}
               className="h-10 min-w-[146px] max-[520px]:min-w-0 max-[520px]:flex-1"
             >
-              <SelectValue>{status === "all" ? tr("workspace.allStatuses") : tr(`status.workspace.${status}`)}</SelectValue>
+              <SelectValue>
+                {status === "all" ? tr("workspace.allStatuses") : tr(`status.workspace.${status}`)}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>

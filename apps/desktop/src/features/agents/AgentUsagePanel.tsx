@@ -42,7 +42,9 @@ export function AgentUsagePanel({
           </CollapsibleTrigger>
           {provider.error && (
             <CollapsibleContent className="pt-3">
-              <pre className="rounded-lg bg-muted p-3 text-xs whitespace-pre-wrap">{provider.error}</pre>
+              <pre className="rounded-lg bg-muted p-3 text-xs whitespace-pre-wrap">
+                {provider.error}
+              </pre>
             </CollapsibleContent>
           )}
         </Collapsible>

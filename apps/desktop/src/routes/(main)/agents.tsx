@@ -41,7 +41,10 @@ function AgentsRoute() {
   if (installationsQuery.isPending) return <AgentsSkeleton />;
   if (installationsQuery.isError && installationsQuery.data === undefined) {
     return (
-      <section role="alert" className="grid min-h-[420px] place-content-center justify-items-center gap-3 rounded-2xl border border-border bg-card p-8 text-center">
+      <section
+        role="alert"
+        className="grid min-h-[420px] place-content-center justify-items-center gap-3 rounded-2xl border border-border bg-card p-8 text-center"
+      >
         <h2 className="text-base font-semibold">{tr("nav.agents")}</h2>
         <p className="text-sm text-muted-foreground">{tr("errors.generic")}</p>
         <Button onClick={() => void installationsQuery.refetch()}>{tr("runtime.retry")}</Button>

@@ -4,7 +4,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import type { InsightsStatus } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
-export function ProviderRow({ provider }: { provider: NonNullable<InsightsStatus["providers"]>[number] }) {
+export function ProviderRow({
+  provider,
+}: {
+  provider: NonNullable<InsightsStatus["providers"]>[number];
+}) {
   const { localizeMessage, tr } = useI18n();
   const summary = provider.coverage_from
     ? `${provider.coverage_from} — ${provider.coverage_to}`
@@ -37,4 +41,3 @@ export function ProviderRow({ provider }: { provider: NonNullable<InsightsStatus
     </div>
   );
 }
-

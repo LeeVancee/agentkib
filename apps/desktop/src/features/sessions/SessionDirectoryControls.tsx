@@ -40,9 +40,7 @@ export function SessionDirectoryControls({
   );
   const agents = [...new Set(hub.sessions.map((session) => session.agent))];
   const activeFilterCount =
-    Number(view.agent !== "all") +
-    Number(view.filter !== "current") +
-    Number(view.host !== "all");
+    Number(view.agent !== "all") + Number(view.filter !== "current") + Number(view.host !== "all");
   return (
     <div className="session-directory-controls grid gap-2.5 py-3 pb-2.5">
       <DesktopHistorySearch />

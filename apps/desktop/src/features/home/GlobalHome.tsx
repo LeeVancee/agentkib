@@ -117,12 +117,10 @@ export function GlobalHome({
     (total, summary) => total + summary.error_count + summary.warning_count,
     0,
   );
-  const legacyAttentionCount = attention.filter(
-    (workspace) => {
-      const summary = doctorSummaries[workspace.id];
-      return !summary || summary.error_count + summary.warning_count === 0;
-    },
-  ).length;
+  const legacyAttentionCount = attention.filter((workspace) => {
+    const summary = doctorSummaries[workspace.id];
+    return !summary || summary.error_count + summary.warning_count === 0;
+  }).length;
   const issueCount = doctorIssueCount + legacyAttentionCount + pending;
   const metrics = [
     {
@@ -153,6 +151,7 @@ export function GlobalHome({
       pending={pending}
       issueCount={issueCount}
       issuesPending={issuesPending}
+      workspaces={workspaces}
       attention={attention}
       doctorSummaries={doctorSummaries}
       onOpenDoctor={onOpenDoctor}
@@ -208,11 +207,21 @@ export function GlobalHome({
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="grid gap-6">
             {issuesPending || issueCount > 0 ? (
-              <>{pendingTasksCard}{continueWorkCard}</>
+              <>
+                {pendingTasksCard}
+                {continueWorkCard}
+              </>
             ) : (
-              <>{continueWorkCard}{pendingTasksCard}</>
+              <>
+                {continueWorkCard}
+                {pendingTasksCard}
+              </>
             )}
-            <RecentActivitySection activity={activity} pending={activityPending} onShowInsights={onShowInsights} />
+            <RecentActivitySection
+              activity={activity}
+              pending={activityPending}
+              onShowInsights={onShowInsights}
+            />
           </div>
           <RecentWorkspacesCard
             workspaces={workspaces}

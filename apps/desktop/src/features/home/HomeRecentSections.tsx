@@ -31,14 +31,18 @@ export function RecentActivitySection({
         </p>
       ) : activity.length > 0 ? (
         <div className="grid divide-y divide-border">
-          {activity.slice(0, 3).map((item) => <ActivityRow key={item.id} record={item} />)}
+          {activity.slice(0, 3).map((item) => (
+            <ActivityRow key={item.id} record={item} />
+          ))}
         </div>
       ) : (
         <div className="flex items-start gap-3 py-4">
           <History size={16} className="mt-0.5 text-muted-foreground" />
           <span>
             <strong className="block text-sm">{tr("home.noImportantActivity")}</strong>
-            <p className="mt-1 text-xs text-muted-foreground">{tr("home.noImportantActivityText")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {tr("home.noImportantActivityText")}
+            </p>
           </span>
         </div>
       )}
@@ -64,7 +68,11 @@ export function RecentWorkspacesCard({
     <Card className="overflow-hidden rounded-xl border-border bg-card shadow-none">
       <CardHeader className="flex flex-row items-center justify-between border-b border-border px-5 py-4">
         <h2 className="text-base font-semibold">{tr("home.recentWorkspaces")}</h2>
-        <Button variant="link" className="h-auto p-0 text-xs text-primary" onClick={onShowWorkspaces}>
+        <Button
+          variant="link"
+          className="h-auto p-0 text-xs text-primary"
+          onClick={onShowWorkspaces}
+        >
           {tr("home.viewAll")}
         </Button>
       </CardHeader>
@@ -148,7 +156,10 @@ function ActivityRow({ record }: { record: ActivityRecord }) {
       <FileText size={16} className="text-muted-foreground" />
       <div className="min-w-0">
         <strong className="block truncate text-sm font-medium">{presentation.title}</strong>
-        <small className="mt-0.5 block truncate text-xs text-muted-foreground" title={presentation.detail}>
+        <small
+          className="mt-0.5 block truncate text-xs text-muted-foreground"
+          title={presentation.detail}
+        >
           {presentation.detail}
         </small>
       </div>

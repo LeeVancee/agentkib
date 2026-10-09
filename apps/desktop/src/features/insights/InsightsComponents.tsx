@@ -3,7 +3,11 @@ import { useI18n } from "@/core/useI18n";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { AgentIcon } from "@/features/agents/AgentIcon";
-import { insightsMetadataLabel, buildHeatmapMonthMarkers, trimHeatmapMonthMarkers } from "@/features/insights/insights";
+import {
+  insightsMetadataLabel,
+  buildHeatmapMonthMarkers,
+  trimHeatmapMonthMarkers,
+} from "@/features/insights/insights";
 import type { AgentUsageBreakdown, HeatmapPoint } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
 import { cn } from "cn";
@@ -147,7 +151,15 @@ export function ActivityHeatmap({
   });
   const moveFocus = (index: number, event: KeyboardEvent<HTMLSpanElement>) => {
     const offset =
-      event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" ? -7 : event.key === "ArrowRight" ? 7 : 0;
+      event.key === "ArrowUp"
+        ? -1
+        : event.key === "ArrowDown"
+          ? 1
+          : event.key === "ArrowLeft"
+            ? -7
+            : event.key === "ArrowRight"
+              ? 7
+              : 0;
     if (!offset) return;
     event.preventDefault();
     const nextIndex = index + offset;
@@ -165,6 +177,7 @@ export function ActivityHeatmap({
             columns={columns}
             year={range === "year" ? year : undefined}
           />
+          <span role="img" aria-label={summary} className="sr-only" />
           <div
             role="group"
             aria-label={summary}
@@ -176,7 +189,10 @@ export function ActivityHeatmap({
             }}
           >
             {Array.from({ length: padding }, (_, index) => (
-              <span className="invisible block size-[11px] rounded-[3px]" key={`padding-${index}`} aria-hidden="true" />
+              <span
+                className="invisible block size-[11px] rounded-[3px]"
+                key={`padding-${index}`}
+              />
             ))}
             {points.map((point, index) => {
               const value = point[metric];
@@ -186,7 +202,9 @@ export function ActivityHeatmap({
               return (
                 <span
                   key={point.date}
-                  ref={(element) => { cellRefs.current[index] = element; }}
+                  ref={(element) => {
+                    cellRefs.current[index] = element;
+                  }}
                   role="img"
                   className={cn(
                     heatmapCellClass(level),
@@ -313,9 +331,15 @@ export function TokenTrendCard({
               {series.map(([key, value]) => {
                 const month = monthFormatter.format(new Date(`${key}-01T00:00:00`));
                 return (
-                  <span className="grid min-w-0 gap-0.5" key={key} title={`${month}: ${formatNumber(value)}`}>
+                  <span
+                    className="grid min-w-0 gap-0.5"
+                    key={key}
+                    title={`${month}: ${formatNumber(value)}`}
+                  >
                     <span className="truncate">{month}</span>
-                    <strong className="font-medium tabular-nums text-foreground">{formatCompactNumber(value)}</strong>
+                    <strong className="font-medium tabular-nums text-foreground">
+                      {formatCompactNumber(value)}
+                    </strong>
                   </span>
                 );
               })}

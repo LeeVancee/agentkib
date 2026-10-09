@@ -84,17 +84,16 @@ export function WorkspacesPage({
   }, [paginatedWorkspaces, selectedId]);
   const selectedWorkspace =
     paginatedWorkspaces.find((workspace) => workspace.id === selectedId) ?? paginatedWorkspaces[0];
-  const discoveryStatus = discoveryStatusSummary(
-    discovery,
-    discoveryRefreshing,
-    tr,
-    relativeTime,
-  );
+  const discoveryStatus = discoveryStatusSummary(discovery, discoveryRefreshing, tr, relativeTime);
 
   if (view === "storage") {
     return (
       <div className="grid gap-5">
-        <WorkspacePageHeader view={view} onAddWorkspace={onAddWorkspace} onViewChange={onViewChange} />
+        <WorkspacePageHeader
+          view={view}
+          onAddWorkspace={onAddWorkspace}
+          onViewChange={onViewChange}
+        />
         <WorkspaceStoragePage workspaces={workspaces} job={storageJob} />
       </div>
     );
@@ -102,7 +101,11 @@ export function WorkspacesPage({
 
   return (
     <div className="grid gap-4">
-      <WorkspacePageHeader view={view} onAddWorkspace={onAddWorkspace} onViewChange={onViewChange} />
+      <WorkspacePageHeader
+        view={view}
+        onAddWorkspace={onAddWorkspace}
+        onViewChange={onViewChange}
+      />
       <WorkspaceFilters
         query={query}
         status={status}
@@ -230,7 +233,10 @@ export function discoveryStatusSummary(
 export function WorkspacesLoadError({ onRetry }: { onRetry: () => void }) {
   const { tr } = useI18n();
   return (
-    <section role="alert" className="grid min-h-64 place-content-center justify-items-center gap-3 rounded-2xl border border-destructive/30 bg-card p-8 text-center">
+    <section
+      role="alert"
+      className="grid min-h-64 place-content-center justify-items-center gap-3 rounded-2xl border border-destructive/30 bg-card p-8 text-center"
+    >
       <FolderGit2 size={26} className="text-destructive" />
       <h2 className="text-base font-semibold">{tr("nav.workspaces")}</h2>
       <p className="max-w-md text-sm text-muted-foreground">{tr("errors.generic")}</p>

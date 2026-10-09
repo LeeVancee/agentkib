@@ -7,8 +7,17 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Check, ChevronDown, X } from "lucide-react";
 import { api } from "@/core/api";
 import { cn } from "cn";
-import { flattenQuotaWindows, isQuotaProviderSupported, quotaWindowKey } from "@/features/quota/quota";
-import type { QuotaPopoverPreferences, QuotaProvider, QuotaSnapshot, QuotaWindowSelector } from "@/core/types";
+import {
+  flattenQuotaWindows,
+  isQuotaProviderSupported,
+  quotaWindowKey,
+} from "@/features/quota/quota";
+import type {
+  QuotaPopoverPreferences,
+  QuotaProvider,
+  QuotaSnapshot,
+  QuotaWindowSelector,
+} from "@/core/types";
 import { ProviderIcon } from "./QuotaDisplay";
 import { useSetQuotaPreferencesMutation } from "./quota-query";
 
@@ -199,4 +208,3 @@ function QuotaDisplayProviderOption({
     </Collapsible>
   );
 }
-

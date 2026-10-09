@@ -82,6 +82,7 @@ export function PendingTasksCard({
   pending,
   issueCount,
   issuesPending,
+  workspaces,
   attention,
   doctorSummaries,
   onOpenDoctor,
@@ -90,6 +91,7 @@ export function PendingTasksCard({
   pending: number;
   issueCount: number;
   issuesPending: boolean;
+  workspaces: WorkspaceSummary[];
   attention: WorkspaceSummary[];
   doctorSummaries: Record<string, ContextDoctorSummary>;
   onOpenDoctor: (workspace: WorkspaceSummary) => Promise<void>;
@@ -98,7 +100,10 @@ export function PendingTasksCard({
   const { tr } = useI18n();
 
   return (
-    <Card id="home-pending-tasks" className="scroll-mt-6 overflow-hidden rounded-xl border-border bg-card shadow-none">
+    <Card
+      id="home-pending-tasks"
+      className="scroll-mt-6 overflow-hidden rounded-xl border-border bg-card shadow-none"
+    >
       <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-4">
         <h2 className="text-base font-semibold">{tr("home.pendingTasks")}</h2>
         <span className="text-sm tabular-nums text-muted-foreground">
@@ -107,7 +112,11 @@ export function PendingTasksCard({
       </CardHeader>
       <CardContent className="p-0">
         {issuesPending ? (
-          <div role="status" aria-live="polite" className="flex min-h-28 items-center gap-3 px-5 py-5">
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex min-h-28 items-center gap-3 px-5 py-5"
+          >
             <RefreshCw size={16} className="animate-spin text-muted-foreground" />
             <span className="text-sm text-muted-foreground">{tr("common.loading")}</span>
           </div>
@@ -172,8 +181,11 @@ export function PendingTasksCard({
             <span className="min-w-0 flex-1">
               <strong className="block text-sm">{tr("home.allClear")}</strong>
             </span>
-            {attention[0] && (
-              <Button variant="outline" onClick={() => void onOpenDoctor(attention[0])}>
+            {(attention[0] ?? workspaces[0]) && (
+              <Button
+                variant="outline"
+                onClick={() => void onOpenDoctor(attention[0] ?? workspaces[0])}
+              >
                 {tr("home.openDoctor")}
               </Button>
             )}
@@ -202,7 +214,11 @@ function ContinuationEmptyState({
   const { tr } = useI18n();
   if (state === "loading") {
     return (
-      <div role="status" aria-live="polite" className="flex items-start gap-3 px-5 py-5 text-sm text-muted-foreground">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-start gap-3 px-5 py-5 text-sm text-muted-foreground"
+      >
         <RefreshCw className="mt-0.5 shrink-0 animate-spin" size={16} />
         <span>
           <strong className="block text-foreground">{tr("home.continuationsScanning")}</strong>

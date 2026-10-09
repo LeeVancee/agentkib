@@ -4,7 +4,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Gauge } from "lucide-react";
 import { cn } from "cn";
-import { flattenQuotaWindows, lowestRemaining, providerHasPartialData, providerIsUnavailable, quotaSeverity, quotaWindowKey } from "@/features/quota/quota";
+import {
+  flattenQuotaWindows,
+  lowestRemaining,
+  providerHasPartialData,
+  providerIsUnavailable,
+  quotaSeverity,
+  quotaWindowKey,
+} from "@/features/quota/quota";
 import type { QuotaProvider, QuotaSnapshot, QuotaWindowSelector } from "@/core/types";
 import { ProviderIcon, QuotaWindowRow } from "./QuotaDisplay";
 import { formatDateTime, formatNumber } from "./quota-format";

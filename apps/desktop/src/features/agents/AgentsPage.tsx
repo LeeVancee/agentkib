@@ -90,27 +90,39 @@ export function AgentsPage({
   const [assetKind, setAssetKind] = useState("all");
   const installation = installations.find((item) => item.agent === selected);
   const provider = insightsStatus?.providers.find((item) => item.agent === selected);
-  const homeAssets = useMemo(() => assets.filter((item) => item.agent === selected), [assets, selected]);
+  const homeAssets = useMemo(
+    () => assets.filter((item) => item.agent === selected),
+    [assets, selected],
+  );
   const assetKinds = useMemo(
     () => [...new Set(homeAssets.map((item) => item.kind))].sort(),
     [homeAssets],
   );
   const visibleHomeAssets = useMemo(
-    () => homeAssets.filter(
-      (item) =>
-        `${item.name} ${item.path} ${item.kind}`.toLowerCase().includes(assetQuery.toLowerCase()) &&
-        (assetKind === "all" || item.kind === assetKind),
-    ),
+    () =>
+      homeAssets.filter(
+        (item) =>
+          `${item.name} ${item.path} ${item.kind}`
+            .toLowerCase()
+            .includes(assetQuery.toLowerCase()) &&
+          (assetKind === "all" || item.kind === assetKind),
+      ),
     [assetKind, assetQuery, homeAssets],
   );
   const linkedWorkspaces = useMemo(
-    () => workspaces.filter((workspace) => workspace.sources.some((source) => source.agent === selected)),
+    () =>
+      workspaces.filter((workspace) =>
+        workspace.sources.some((source) => source.agent === selected),
+      ),
     [selected, workspaces],
   );
   const recentLinkedWorkspaces = useMemo(
-    () => [...linkedWorkspaces]
-      .sort((left, right) => (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""))
-      .slice(0, 5),
+    () =>
+      [...linkedWorkspaces]
+        .sort((left, right) =>
+          (right.last_active_at ?? "").localeCompare(left.last_active_at ?? ""),
+        )
+        .slice(0, 5),
     [linkedWorkspaces],
   );
   const homeAssetKinds = useMemo(() => {
@@ -126,20 +138,26 @@ export function AgentsPage({
   );
   const support = agentSupport(installation);
   const visibleAgentKinds = useMemo(
-    () => agentKinds
-      .filter((agent) => {
-        const item = installations.find((value) => value.agent === agent);
-        if (!agentLabels[agent].toLowerCase().includes(agentQuery.trim().toLowerCase())) return false;
-        if (filter === "enabled") return Boolean(item?.installed);
-        if (filter === "available") return Boolean(item?.configured && !item.installed);
-        return true;
-      })
-      .sort((left, right) => {
-        if (agentSort === "name") return agentLabels[left].localeCompare(agentLabels[right]);
-        const leftInstalled = installations.find((item) => item.agent === left)?.installed ? 1 : 0;
-        const rightInstalled = installations.find((item) => item.agent === right)?.installed ? 1 : 0;
-        return rightInstalled - leftInstalled;
-      }),
+    () =>
+      agentKinds
+        .filter((agent) => {
+          const item = installations.find((value) => value.agent === agent);
+          if (!agentLabels[agent].toLowerCase().includes(agentQuery.trim().toLowerCase()))
+            return false;
+          if (filter === "enabled") return Boolean(item?.installed);
+          if (filter === "available") return Boolean(item?.configured && !item.installed);
+          return true;
+        })
+        .sort((left, right) => {
+          if (agentSort === "name") return agentLabels[left].localeCompare(agentLabels[right]);
+          const leftInstalled = installations.find((item) => item.agent === left)?.installed
+            ? 1
+            : 0;
+          const rightInstalled = installations.find((item) => item.agent === right)?.installed
+            ? 1
+            : 0;
+          return rightInstalled - leftInstalled;
+        }),
     [agentQuery, agentSort, filter, installations],
   );
 
@@ -188,11 +206,16 @@ export function AgentsPage({
                 placeholder={tr("common.search")}
               />
             </label>
-            <Select value={agentSort} onValueChange={(value) => {
-              if (value !== null) setAgentSort(String(value) as typeof agentSort);
-            }}>
+            <Select
+              value={agentSort}
+              onValueChange={(value) => {
+                if (value !== null) setAgentSort(String(value) as typeof agentSort);
+              }}
+            >
               <SelectTrigger className="h-9" aria-label={tr("agents.sortBy")}>
-                <SelectValue>{agentSort === "status" ? tr("agents.status") : tr("agents.name")}</SelectValue>
+                <SelectValue>
+                  {agentSort === "status" ? tr("agents.status") : tr("agents.name")}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -239,13 +262,25 @@ export function AgentsPage({
                   <span className="min-w-0">
                     <strong className="flex items-center gap-1 truncate text-sm text-foreground">
                       {agentLabels[agent]}
-                      {agent === "deepseek-harness" && <Badge variant="outline">{tr("common.beta")}</Badge>}
+                      {agent === "deepseek-harness" && (
+                        <Badge variant="outline">{tr("common.beta")}</Badge>
+                      )}
                     </strong>
                     <small className="mt-1 block text-xs text-muted-foreground">
-                      {tr(item?.installed ? "common.installed" : item?.configured ? "agents.localDataFound" : "common.notInstalled")}
+                      {tr(
+                        item?.installed
+                          ? "common.installed"
+                          : item?.configured
+                            ? "agents.localDataFound"
+                            : "common.notInstalled",
+                      )}
                       {" · "}
-                      {loading.workspaces || loading.gateways ? "…" : errors.workspaces || errors.gateways ? "—" : count}
-                      {" "}{tr("common.workspaces")}
+                      {loading.workspaces || loading.gateways
+                        ? "…"
+                        : errors.workspaces || errors.gateways
+                          ? "—"
+                          : count}{" "}
+                      {tr("common.workspaces")}
                     </small>
                   </span>
                 </Button>
@@ -254,7 +289,9 @@ export function AgentsPage({
             {!visibleAgentKinds.length && (
               <div className="grid justify-items-center gap-2 px-3 py-8 text-center">
                 <p className="text-sm text-muted-foreground">{tr("agents.noAgents")}</p>
-                <Button variant="outline" size="sm" onClick={clearFilters}>{tr("common.clear")}</Button>
+                <Button variant="outline" size="sm" onClick={clearFilters}>
+                  {tr("common.clear")}
+                </Button>
               </div>
             )}
           </div>
@@ -266,21 +303,43 @@ export function AgentsPage({
           <Card className="grid min-h-[420px] place-content-center justify-items-center gap-3 rounded-2xl border-border p-8 text-center shadow-sm">
             <Search size={28} className="text-muted-foreground" />
             <h2 className="text-base font-semibold">{tr("agents.noAgents")}</h2>
-            <Button variant="outline" onClick={clearFilters}>{tr("common.clear")}</Button>
+            <Button variant="outline" onClick={clearFilters}>
+              {tr("common.clear")}
+            </Button>
           </Card>
         ) : (
           <Card className="min-h-[420px] overflow-hidden rounded-2xl border-border shadow-sm">
             <CardHeader className="flex min-h-[78px] flex-row items-center gap-3 border-b border-border px-5 py-4 max-[720px]:flex-wrap">
               <AgentIcon agent={selected} />
               <div className="mr-auto min-w-0">
-                <h2 className="truncate text-lg font-semibold tracking-tight">{agentLabels[selected]}</h2>
-                {installation?.version && <span className="mt-1 block text-xs text-muted-foreground">{installation.version}</span>}
+                <h2 className="truncate text-lg font-semibold tracking-tight">
+                  {agentLabels[selected]}
+                </h2>
+                {installation?.version && (
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {installation.version}
+                  </span>
+                )}
               </div>
-              {selected === "deepseek-harness" && <Badge variant="outline">{tr("common.beta")}</Badge>}
-              <Tabs value={section} onValueChange={(value) => setSection(value as AgentDetailSection)} className="max-w-full shrink-0">
-                <TabsList className="segmented-control !h-auto w-fit max-w-full justify-start overflow-x-auto" variant="default" aria-label={agentLabels[selected]}>
+              {selected === "deepseek-harness" && (
+                <Badge variant="outline">{tr("common.beta")}</Badge>
+              )}
+              <Tabs
+                value={section}
+                onValueChange={(value) => setSection(value as AgentDetailSection)}
+                className="max-w-full shrink-0"
+              >
+                <TabsList
+                  className="segmented-control !h-auto w-fit max-w-full justify-start overflow-x-auto"
+                  variant="default"
+                  aria-label={agentLabels[selected]}
+                >
                   {pageTabs.map((value) => (
-                    <TabsTrigger className="segmented-control-item h-9 min-h-9 flex-none px-3" value={value} key={value}>
+                    <TabsTrigger
+                      className="segmented-control-item h-9 min-h-9 flex-none px-3"
+                      value={value}
+                      key={value}
+                    >
                       {tr(`agents.section.${value}`)}
                     </TabsTrigger>
                   ))}
@@ -334,7 +393,11 @@ export function AgentsPage({
                 loading={(loading.workspaces ?? false) || (loading.gateways ?? false)}
                 error={(errors.workspaces ?? false) || (errors.gateways ?? false)}
                 onOpen={onOpen}
-                onRetry={errors.workspaces ? onRetry.workspaces ?? (() => undefined) : onRetry.gateways ?? (() => undefined)}
+                onRetry={
+                  errors.workspaces
+                    ? (onRetry.workspaces ?? (() => undefined))
+                    : (onRetry.gateways ?? (() => undefined))
+                }
               />
             )}
             {section === "usage" && (

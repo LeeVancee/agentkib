@@ -38,7 +38,10 @@ export function AgentWorkspacesPanel({
           </span>
           <span className="min-w-0 truncate">
             <strong className="block truncate">{workspace.name}</strong>
-            <small className="mt-1 block truncate text-xs text-muted-foreground" title={workspace.path}>
+            <small
+              className="mt-1 block truncate text-xs text-muted-foreground"
+              title={workspace.path}
+            >
               {workspace.path}
             </small>
           </span>

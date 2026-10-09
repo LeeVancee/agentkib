@@ -76,7 +76,10 @@ export function WorkspaceListPanel({
                   <FolderGit2 size={16} aria-hidden="true" />
                 </span>
                 <span className="min-w-0">
-                  <strong className="block truncate text-sm font-semibold text-foreground" title={workspace.name}>
+                  <strong
+                    className="block truncate text-sm font-semibold text-foreground"
+                    title={workspace.name}
+                  >
                     {workspace.name}
                   </strong>
                   <small className="mt-1 block truncate text-xs" title={workspace.path}>
@@ -95,10 +98,17 @@ export function WorkspaceListPanel({
                       aria-label={tr("status.workspace.healthy")}
                     />
                   )}
-                  <span className="flex items-center gap-0.5" aria-label={sourceLabel} title={sourceLabel}>
+                  <span
+                    className="flex items-center gap-0.5"
+                    aria-label={sourceLabel}
+                    title={sourceLabel}
+                  >
                     {sourceAgents.length ? (
                       sourceAgents.slice(0, 3).map((value) => (
-                        <span className="grid size-5 place-items-center rounded-md border border-border bg-background" key={value}>
+                        <span
+                          className="grid size-5 place-items-center rounded-md border border-border bg-background"
+                          key={value}
+                        >
                           <AgentIcon agent={value} compact />
                         </span>
                       ))
@@ -117,9 +127,13 @@ export function WorkspaceListPanel({
                 variant="ghost"
                 size="icon-sm"
                 className="mr-2 shrink-0 opacity-60 transition-opacity hover:opacity-100 group-hover/workspace:opacity-100 focus-visible:opacity-100"
-                aria-label={tr(favorite ? "workspace.removeFavorite" : "workspace.addFavorite", { name: workspace.name })}
+                aria-label={tr(favorite ? "workspace.removeFavorite" : "workspace.addFavorite", {
+                  name: workspace.name,
+                })}
                 aria-pressed={favorite}
-                title={tr(favorite ? "workspace.removeFavorite" : "workspace.addFavorite", { name: workspace.name })}
+                title={tr(favorite ? "workspace.removeFavorite" : "workspace.addFavorite", {
+                  name: workspace.name,
+                })}
                 onClick={() => onToggleFavorite(workspace.id)}
               >
                 <Star size={15} className={favorite ? "fill-current" : ""} />
@@ -137,7 +151,11 @@ export function WorkspaceListPanel({
             {pageStart}–{pageEnd} / {filteredCount}
           </span>
           {totalPages > 1 && (
-            <div className="flex items-center gap-1" role="group" aria-label={tr("workspace.pagination")}>
+            <div
+              className="flex items-center gap-1"
+              role="group"
+              aria-label={tr("workspace.pagination")}
+            >
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -147,7 +165,10 @@ export function WorkspaceListPanel({
               >
                 <ChevronLeft size={15} />
               </Button>
-              <span className="min-w-[52px] text-center text-xs tabular-nums text-muted-foreground" aria-live="polite">
+              <span
+                className="min-w-[52px] text-center text-xs tabular-nums text-muted-foreground"
+                aria-live="polite"
+              >
                 {activePage} / {totalPages}
               </span>
               <Button

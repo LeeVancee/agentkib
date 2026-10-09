@@ -7,13 +7,7 @@ import { QuotaSkeleton } from "./QuotaSkeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  CircleAlert,
-  Gauge,
-  RefreshCw,
-  Search,
-  Settings2,
-} from "lucide-react";
+import { CircleAlert, Gauge, RefreshCw, Search, Settings2 } from "lucide-react";
 import { api } from "@/core/api";
 import { desktopApi } from "@/core/desktop";
 
@@ -268,7 +262,7 @@ export function QuotaPage({
               </Badge>
             )}
             <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-              {busy ? refreshLabel ?? tr("quota.refreshPreparing") : ""}
+              {busy ? (refreshLabel ?? tr("quota.refreshPreparing")) : ""}
             </span>
           </div>
         </div>

@@ -6,7 +6,27 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Activity, Award, Brain, CalendarCheck2, Check, ChevronRight, Flame, FolderGit2, GitCommitHorizontal, LockKeyhole, MessageSquareText, Moon, Network, PlugZap, RotateCcw, ShieldCheck, Sparkles, Workflow, X } from "lucide-react";
+import {
+  Activity,
+  Award,
+  Brain,
+  CalendarCheck2,
+  Check,
+  ChevronRight,
+  Flame,
+  FolderGit2,
+  GitCommitHorizontal,
+  LockKeyhole,
+  MessageSquareText,
+  Moon,
+  Network,
+  PlugZap,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  Workflow,
+  X,
+} from "lucide-react";
 import type { Achievement } from "@/core/types";
 import {
   achievementReached,
@@ -38,7 +58,6 @@ const specialAchievementIcons: Record<string, typeof Activity> = {
   "special-comeback": RotateCcw,
   "special-same-day-delivery": Workflow,
 };
-
 
 export function AchievementWall({ achievements }: { achievements: Achievement[] }) {
   const { formatNumber, tr } = useI18n();

@@ -4,7 +4,14 @@ import { Badge } from "@/components/ui/badge";
 import { InsightsSkeleton } from "./InsightsSkeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useEffect, useMemo, useState } from "react";
-import { Award, CalendarDays, CircleAlert, Flame, GitCommitHorizontal, Sparkles } from "lucide-react";
+import {
+  Award,
+  CalendarDays,
+  CircleAlert,
+  Flame,
+  GitCommitHorizontal,
+  Sparkles,
+} from "lucide-react";
 import type { AgentKind, HeatmapPoint, InsightsQuery, WorkspaceSummary } from "@/core/types";
 import { agentSupportsInsights } from "@/features/insights/insights";
 import { AgentIcon } from "@/features/agents/AgentIcon";
@@ -104,7 +111,6 @@ export function InsightsPage({
       ? (Date.UTC(heatmapYear + 1, 0, 1) - Date.UTC(heatmapYear, 0, 1)) / 86_400_000
       : points.length;
   const heatmapColumns = Math.max(1, Math.ceil((heatmapPadding + heatmapDays) / 7));
-
 
   if (!view) {
     // 首次加载（或切换筛选后）失败时没有旧数据可显示；不能一直停在骨架屏，要给出错误和重试入口。

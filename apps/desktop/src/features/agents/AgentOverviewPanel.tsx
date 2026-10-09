@@ -62,7 +62,10 @@ export function AgentOverviewPanel({
   onRetryGateways: () => void;
 }) {
   const { tr, formatRelativeTime } = useI18n();
-  const remoteWorkspaceCount = remoteGateways.reduce((total, gateway) => total + gateway.workspaces.length, 0);
+  const remoteWorkspaceCount = remoteGateways.reduce(
+    (total, gateway) => total + gateway.workspaces.length,
+    0,
+  );
   const providerValue = insightsPending
     ? tr("common.loading")
     : insightsError
@@ -82,10 +85,23 @@ export function AgentOverviewPanel({
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-busy={assetsPending || workspacesPending || insightsPending}>
+      <div
+        className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+        aria-busy={assetsPending || workspacesPending || insightsPending}
+      >
         {[
-          [tr("agents.linkedWorkspaces"), workspacesPending || gatewaysPending ? tr("common.loading") : workspacesError || gatewaysError ? "—" : linkedWorkspaces.length + remoteWorkspaceCount],
-          [tr("agents.homeAssets"), assetsPending ? tr("common.loading") : assetsError ? "—" : homeAssets.length],
+          [
+            tr("agents.linkedWorkspaces"),
+            workspacesPending || gatewaysPending
+              ? tr("common.loading")
+              : workspacesError || gatewaysError
+                ? "—"
+                : linkedWorkspaces.length + remoteWorkspaceCount,
+          ],
+          [
+            tr("agents.homeAssets"),
+            assetsPending ? tr("common.loading") : assetsError ? "—" : homeAssets.length,
+          ],
           [tr("agents.provider"), providerValue],
           [
             tr("agents.continuationCapability"),
@@ -96,7 +112,10 @@ export function AgentOverviewPanel({
                 : tr("agents.capability.unavailable"),
           ],
         ].map(([label, value]) => (
-          <div className="grid min-h-[92px] content-center gap-2 rounded-xl border border-border bg-muted/20 p-4" key={label}>
+          <div
+            className="grid min-h-[92px] content-center gap-2 rounded-xl border border-border bg-muted/20 p-4"
+            key={label}
+          >
             <span className="text-xs text-muted-foreground">{label}</span>
             <strong className="text-lg tracking-tight">{value}</strong>
           </div>
@@ -106,7 +125,9 @@ export function AgentOverviewPanel({
       <section className="grid gap-3 rounded-xl border border-border bg-background p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold">{tr("agents.capabilities")}</h3>
-          <span className="text-xs text-muted-foreground">{tr("agents.capabilitiesDescription")}</span>
+          <span className="text-xs text-muted-foreground">
+            {tr("agents.capabilitiesDescription")}
+          </span>
         </div>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-2">
           {[
@@ -119,14 +140,29 @@ export function AgentOverviewPanel({
             const known = typeof value === "boolean";
             const enabled = value === true;
             return (
-              <div className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm" key={key}>
+              <div
+                className="grid min-h-[68px] content-center gap-2 rounded-lg bg-muted/25 px-3 py-2 text-sm"
+                key={key}
+              >
                 <span className="min-w-0 text-muted-foreground">{label}</span>
-                <span className={cn(
-                  "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium",
-                  !known ? "text-muted-foreground" : enabled ? "text-emerald-600" : "text-muted-foreground",
-                )}>
+                <span
+                  className={cn(
+                    "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium",
+                    !known
+                      ? "text-muted-foreground"
+                      : enabled
+                        ? "text-emerald-600"
+                        : "text-muted-foreground",
+                  )}
+                >
                   {!known ? null : enabled ? <Check size={14} /> : <X size={14} />}
-                  {tr(!known ? "agents.capability.unknown" : enabled ? "agents.capability.supported" : "agents.capability.unavailable")}
+                  {tr(
+                    !known
+                      ? "agents.capability.unknown"
+                      : enabled
+                        ? "agents.capability.supported"
+                        : "agents.capability.unavailable",
+                  )}
                 </span>
               </div>
             );
@@ -135,7 +171,11 @@ export function AgentOverviewPanel({
             <span className="min-w-0 text-muted-foreground">{tr("agents.capability.control")}</span>
             <span className="inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
               <LockKeyhole size={14} />
-              {tr(support ? `agents.capability.control.${support.control}` : "agents.capability.unknown")}
+              {tr(
+                support
+                  ? `agents.capability.control.${support.control}`
+                  : "agents.capability.unknown",
+              )}
             </span>
           </div>
         </div>
@@ -144,11 +184,16 @@ export function AgentOverviewPanel({
       {installation?.home && (
         <div className="flex min-w-0 items-center gap-3 rounded-xl border border-border bg-background px-4 py-3">
           <FolderGit2 size={16} className="shrink-0 text-muted-foreground" />
-          <code className="block min-w-0 truncate text-xs text-muted-foreground">{installation.home}</code>
+          <code className="block min-w-0 truncate text-xs text-muted-foreground">
+            {installation.home}
+          </code>
         </div>
       )}
       {installation?.warnings.map((warning) => (
-        <div className="flex items-center gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive" key={warning}>
+        <div
+          className="flex items-center gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          key={warning}
+        >
           <CircleAlert size={16} />
           {installationWarningLabel(warning, tr)}
         </div>
@@ -162,18 +207,35 @@ export function AgentOverviewPanel({
           ) : (
             <div className="grid gap-1">
               {recentLinkedWorkspaces.map((workspace) => (
-                <Button variant="bare" size="content" className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted/40" key={workspace.id} onClick={() => void onOpenWorkspace(workspace)}>
+                <Button
+                  variant="bare"
+                  size="content"
+                  className="grid min-h-[58px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted/40"
+                  key={workspace.id}
+                  onClick={() => void onOpenWorkspace(workspace)}
+                >
                   <FolderGit2 size={15} className="text-muted-foreground" />
                   <span className="min-w-0 truncate">
                     {workspace.name}
-                    <small className="mt-1 block truncate text-xs text-muted-foreground" title={workspace.path}>{workspace.path}</small>
+                    <small
+                      className="mt-1 block truncate text-xs text-muted-foreground"
+                      title={workspace.path}
+                    >
+                      {workspace.path}
+                    </small>
                   </span>
                   <small className="text-xs text-muted-foreground">
-                    {workspace.last_active_at ? formatRelativeTime(workspace.last_active_at) : tr("common.never")}
+                    {workspace.last_active_at
+                      ? formatRelativeTime(workspace.last_active_at)
+                      : tr("common.never")}
                   </small>
                 </Button>
               ))}
-              {!recentLinkedWorkspaces.length && <p className="px-2 py-4 text-sm text-muted-foreground">{tr("agents.noRecentWorkspaces")}</p>}
+              {!recentLinkedWorkspaces.length && (
+                <p className="px-2 py-4 text-sm text-muted-foreground">
+                  {tr("agents.noRecentWorkspaces")}
+                </p>
+              )}
             </div>
           )}
         </section>
@@ -185,7 +247,10 @@ export function AgentOverviewPanel({
           ) : (
             <dl className="grid gap-1">
               {homeAssetKinds.map(([kind, count]) => (
-                <div className="flex min-h-[42px] items-center justify-between rounded-lg px-2 text-sm odd:bg-muted/20" key={kind}>
+                <div
+                  className="flex min-h-[42px] items-center justify-between rounded-lg px-2 text-sm odd:bg-muted/20"
+                  key={kind}
+                >
                   <dt className="text-muted-foreground">{tr(`status.asset.${kind}`)}</dt>
                   <dd className="font-medium">{count}</dd>
                 </div>

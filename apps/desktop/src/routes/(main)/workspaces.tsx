@@ -122,7 +122,7 @@ function WorkspacesRoute() {
   };
 
   const refreshWorkspace = async (id: string) => {
-    setRefreshingWorkspaceIds((current) => current.includes(id) ? current : [...current, id]);
+    setRefreshingWorkspaceIds((current) => (current.includes(id) ? current : [...current, id]));
     try {
       await api.refreshWorkspace(id);
       await queryClient.invalidateQueries({ queryKey: homeKeys.workspaces() });

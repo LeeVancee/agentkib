@@ -53,18 +53,28 @@ export function AgentAssetsPanel({
           />
         </label>
         {assetKinds.length > 1 && (
-          <Select value={kind} onValueChange={(value) => {
-            if (value !== null) onKindChange(String(value));
-          }}>
-            <SelectTrigger aria-label={tr("catalog.allTypes")} className="h-9 w-full md:w-auto md:min-w-[150px]">
-              <SelectValue>{kind === "all" ? tr("catalog.allTypes") : tr(`status.asset.${kind}`)}</SelectValue>
+          <Select
+            value={kind}
+            onValueChange={(value) => {
+              if (value !== null) onKindChange(String(value));
+            }}
+          >
+            <SelectTrigger
+              aria-label={tr("catalog.allTypes")}
+              className="h-9 w-full md:w-auto md:min-w-[150px]"
+            >
+              <SelectValue>
+                {kind === "all" ? tr("catalog.allTypes") : tr(`status.asset.${kind}`)}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 <SelectLabel>{tr("catalog.allTypes")}</SelectLabel>
                 <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
                 {assetKinds.map((value) => (
-                  <SelectItem key={value} value={value}>{tr(`status.asset.${value}`)}</SelectItem>
+                  <SelectItem key={value} value={value}>
+                    {tr(`status.asset.${value}`)}
+                  </SelectItem>
                 ))}
               </SelectGroup>
             </SelectContent>
@@ -82,14 +92,16 @@ export function AgentAssetsPanel({
             </span>
             <span className="min-w-0 truncate">
               <strong className="block truncate">{asset.name}</strong>
-              <small className="mt-1 block truncate text-xs text-muted-foreground">{shortPath(asset.path)}</small>
+              <small className="mt-1 block truncate text-xs text-muted-foreground">
+                {shortPath(asset.path)}
+              </small>
             </span>
-            <em className="not-italic text-xs text-muted-foreground">{tr(`status.asset.${asset.kind}`)}</em>
+            <em className="not-italic text-xs text-muted-foreground">
+              {tr(`status.asset.${asset.kind}`)}
+            </em>
           </div>
         ))}
-        {!visibleAssets.length && (
-          <EmptyAssetState hasAssets={homeAssets.length > 0} />
-        )}
+        {!visibleAssets.length && <EmptyAssetState hasAssets={homeAssets.length > 0} />}
       </div>
     </div>
   );

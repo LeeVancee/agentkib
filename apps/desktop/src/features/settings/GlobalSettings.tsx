@@ -290,9 +290,7 @@ export function GlobalSettings({
   if (section === "integrations")
     return (
       <SettingsPage variant="management">
-        <SettingsPageHeader
-          title={tr("settings.section.integrations")}
-        />
+        <SettingsPageHeader title={tr("settings.section.integrations")} />
         <SettingsSection title={tr("settings.search.localService")} target="integrations-mcp">
           <SettingsRow border={false}>
             <SettingsCopy>

@@ -154,10 +154,7 @@ export function useSessionDirectoryOrder(hub: {
     }
     finishDrag();
   };
-  const moveByKeyboard = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    target: DirectoryDragEntry,
-  ) => {
+  const moveByKeyboard = (event: KeyboardEvent<HTMLButtonElement>, target: DirectoryDragEntry) => {
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     event.preventDefault();
     const after = event.key === "ArrowDown";
@@ -167,9 +164,7 @@ export function useSessionDirectoryOrder(hub: {
         hub.workspaces.find((workspace) => workspace.id === target.workspaceId)?.remote?.host_id ??
         "local";
       const siblings = orderedGroups
-        .filter(
-          (group) => (group.workspace.remote?.host_id ?? "local") === hostId,
-        )
+        .filter((group) => (group.workspace.remote?.host_id ?? "local") === hostId)
         .map((group) => group.workspace.id);
       const index = siblings.indexOf(target.workspaceId);
       const neighbor = siblings[index + (after ? 1 : -1)];

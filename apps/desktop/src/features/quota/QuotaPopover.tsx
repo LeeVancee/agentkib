@@ -262,6 +262,7 @@ export function QuotaPopover() {
                   )}
                   <QuotaWindowRow
                     item={item}
+                    snapshot={snapshot}
                     onOpen={() => void openDashboard(selected, false, index)}
                   />
                 </div>

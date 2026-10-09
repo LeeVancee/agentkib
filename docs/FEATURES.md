@@ -23,6 +23,8 @@ Native acceptance is tied to each QA report's revision and Agent version. Curren
 | Insights | Token, session, Git activity, heatmaps, and achievements derived locally |
 | Settings | Discovery roots, tool updates, integrations, privacy controls, and diagnostics |
 
+Quota diagnostics show the last attempt, last success, automatic-refresh setting and redacted provider failures. Verified Codex/Claude cost-scan timeouts can retain successfully collected quota windows with a partial-data warning. A complete failure retains the last-good snapshot as stale; expired reset times request a refresh instead of showing a future countdown.
+
 ### Inside a workspace
 
 | Area | What it provides |
@@ -150,6 +152,8 @@ Platform setup and known limitations are documented in the [Windows guide](WINDO
 | 额度 | 本机可读取的额度窗口、余额和重置时间 |
 | 洞察 | 本地派生的 Token、会话、Git 活动、热力图和成就 |
 | 设置 | 发现目录、工具更新、集成、隐私控制和诊断 |
+
+额度诊断显示最近尝试、最近成功、自动刷新设置及脱敏后的 Provider 错误。已验证的 Codex/Claude 费用统计超时不会丢弃成功取得的额度窗口，同时保留部分数据失败提示。完全失败时保留并标记上次成功快照；已过期的重置时间提示刷新，不再显示未来倒计时。
 
 ### 工作区内
 

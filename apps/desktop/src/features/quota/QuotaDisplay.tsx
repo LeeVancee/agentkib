@@ -1,9 +1,10 @@
 import { useI18n } from "@/core/useI18n";
 import { Button } from "@/components/ui/button";
 import { Gauge } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { quotaSeverity, type QuotaDisplayWindow } from "@/features/quota/quota";
-import type { AgentKind, QuotaProvider } from "@/core/types";
+import type { AgentKind, QuotaProvider, QuotaSnapshot } from "@/core/types";
 import { AgentIcon } from "@/features/agents/AgentIcon";
 import { cn } from "@/lib/utils";
 
@@ -20,14 +21,22 @@ export function ProviderIcon({ provider }: { provider: QuotaProvider }) {
 
 export function QuotaWindowRow({
   item,
+  snapshot,
   target = false,
   onOpen,
 }: {
   item: QuotaDisplayWindow;
+  snapshot?: QuotaSnapshot;
   target?: boolean;
   onOpen?: (item: QuotaDisplayWindow) => void;
 }) {
   const { tr } = useI18n();
+  const resetAt = item.window.reset_at ? Date.parse(item.window.reset_at) : NaN;
+  const staleAt = snapshot
+    ? Date.parse(snapshot.generated_at) + snapshot.stale_after_seconds * 1000
+    : NaN;
+  const now = useQuotaClock(resetAt, staleAt);
+  const stale = snapshot && (snapshot.freshness !== "fresh" || !(staleAt > now));
   const remaining = item.window.remaining_percent;
   const severity = quotaSeverity(remaining);
   const content = (
@@ -67,9 +76,13 @@ export function QuotaWindowRow({
       <div className="flex items-baseline justify-between gap-4 text-xs text-muted-foreground">
         <span>{tr("quota.remaining", { value: Math.round(remaining) })}</span>
         <span>
-          {item.window.reset_at
-            ? tr("quota.resets", { time: relativeReset(item.window.reset_at, tr) })
-            : tr("quota.noReset")}
+          {stale
+            ? tr("quota.staleReset")
+            : !Number.isFinite(resetAt)
+              ? tr("quota.noReset")
+              : resetAt <= now
+                ? tr("quota.resetElapsed")
+                : tr("quota.resets", { time: relativeReset(resetAt - now, tr) })}
         </span>
       </div>
     </>
@@ -111,8 +124,25 @@ function providerAgent(id: string, name: string): AgentKind | undefined {
   return undefined;
 }
 
-function relativeReset(value: string, tr: ReturnType<typeof useI18n>["tr"]) {
-  const seconds = Math.max(0, Math.round((new Date(value).getTime() - Date.now()) / 1000));
+function useQuotaClock(resetAt: number, staleAt: number) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => {
+      const current = Date.now();
+      setNow(current);
+      const upcoming = [resetAt, staleAt].filter((time) => time > current);
+      if (upcoming.length)
+        timer = setTimeout(tick, Math.min(60_000, ...upcoming.map((time) => time - current)));
+    };
+    tick();
+    return () => clearTimeout(timer);
+  }, [resetAt, staleAt]);
+  return now;
+}
+
+function relativeReset(milliseconds: number, tr: ReturnType<typeof useI18n>["tr"]) {
+  const seconds = Math.round(milliseconds / 1000);
   if (seconds < 3600)
     return tr("quota.duration.minutes", { value: Math.max(1, Math.round(seconds / 60)) });
   if (seconds < 86400) return tr("quota.duration.hours", { value: Math.round(seconds / 3600) });

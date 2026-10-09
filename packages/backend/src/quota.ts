@@ -6,6 +6,7 @@ import type { Commands } from "./commands";
 import type { BackendStore } from "./store";
 import { utcNow } from "./workspaces";
 import { timestamp } from "./timestamps";
+import { sanitizeSessionText } from "./session-handoff";
 
 type Backend = "codex-bar-cli" | "win-codex-bar";
 type RecordValue = Record<string, unknown>;
@@ -75,8 +76,7 @@ export class QuotaOwner {
         );
       }
       const snapshot = parseSnapshot(output.bytes, backend);
-      if (!hasUsableQuota(snapshot))
-        throw new Error("quota collector returned no usable quota for enabled providers");
+      if (!hasUsableQuota(snapshot)) throw new Error(unavailableDiagnostics(snapshot));
       this.store.saveQuotaSnapshot(snapshot);
       return {
         kind: "quota",
@@ -322,11 +322,13 @@ function normalizeProvider(value: unknown): RecordValue {
       : isRecord(value.error) && typeof value.error.message === "string"
         ? value.error.message
         : undefined;
-  const error = rawError
-    ? sanitize(rawError)
-    : typeof value.accountsError === "string"
-      ? sanitize(value.accountsError)
-      : undefined;
+  const error = [
+    rawError,
+    typeof value.accountsError === "string" ? value.accountsError : undefined,
+  ]
+    .filter((message): message is string => Boolean(message))
+    .map(sanitize)
+    .join("\n");
   return {
     id: value.id,
     name: value.name,
@@ -371,7 +373,7 @@ function hasUsableQuota(snapshot: RecordValue): boolean {
     (p) =>
       isRecord(p) &&
       p.enabled === true &&
-      ((!p.error &&
+      ((quotaErrorAllowsData(p, snapshot) &&
         ((Array.isArray(p.windows) && p.windows.length > 0) || p.credits !== undefined)) ||
         (Array.isArray(p.accounts) &&
           p.accounts.some(
@@ -379,6 +381,53 @@ function hasUsableQuota(snapshot: RecordValue): boolean {
           ))),
   );
 }
+
+function quotaErrorAllowsData(provider: RecordValue, snapshot: RecordValue): boolean {
+  if (!provider.error) return true;
+  // CodexBar dashboard-v1 folds the separate local cost scan into the provider
+  // error even when usage succeeded. Only these verified cost-only failures
+  // may retain quota; authentication, usage and unknown failures still reject it.
+  if (
+    !["codex", "claude"].includes(String(provider.id)) ||
+    provider.error !== `${provider.id} cost refresh timed out`
+  )
+    return false;
+  const updated = typeof provider.updated_at === "string" ? Date.parse(provider.updated_at) : NaN;
+  const generated = Date.parse(String(snapshot.generated_at));
+  return (
+    Number.isFinite(updated) &&
+    updated <= generated &&
+    updated >= generated - Number(snapshot.stale_after_seconds) * 1000
+  );
+}
+
+function unavailableDiagnostics(snapshot: RecordValue): string {
+  const providers = (Array.isArray(snapshot.providers) ? snapshot.providers : []).filter(
+    (provider): provider is RecordValue => isRecord(provider) && provider.enabled === true,
+  );
+  const heading = "quota collector returned no usable quota for enabled providers";
+  if (!providers.length) return `${heading}\nNo providers are enabled.`;
+  const shown = providers.slice(0, 8);
+  // Leave room in the existing 1000-character failure field for each provider.
+  const budget = Math.floor(850 / shown.length);
+  const details = shown.map((provider) => {
+    const errors = [
+      provider.error,
+      ...(Array.isArray(provider.accounts)
+        ? provider.accounts.filter(isRecord).map((account) => account.error)
+        : []),
+    ].filter((error): error is string => typeof error === "string" && Boolean(error));
+    const detail = errors.length
+      ? [...new Set(errors)].join("; ")
+      : "No usable quota windows or credits were returned.";
+    const line = sanitize(`${String(provider.id).slice(0, 48)}: ${detail}`).replace(/\s+/g, " ");
+    return line.length > budget ? `${line.slice(0, budget - 1)}…` : line;
+  });
+  if (providers.length > shown.length)
+    details.push(`${providers.length - shown.length} more providers omitted.`);
+  return [heading, ...details].join("\n");
+}
+
 function sanitize(value: string): string {
   const markers = [
     "authorization",
@@ -392,8 +441,21 @@ function sanitize(value: string): string {
     "cookie",
     "bearer ",
     "secret",
+    "password",
+    "passwd",
+    "passphrase",
   ];
-  return value
+  const withoutPrivateKeys = value.replace(
+    /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?(?:-----END(?: [A-Z0-9]+)* PRIVATE KEY-----|$)/gi,
+    "[credential diagnostic redacted]",
+  );
+  return sanitizeSessionText(withoutPrivateKeys, { value: 0 })
+    .replace(/https?:\/\/[^\s<>"']+/gi, "[URL redacted]")
+    .replace(
+      /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+      "[credential diagnostic redacted]",
+    )
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[account redacted]")
     .split(/\r?\n/)
     .slice(0, 12)
     .map((line) =>

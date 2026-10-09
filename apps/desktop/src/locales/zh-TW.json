@@ -935,6 +935,7 @@
   "insights.recordedSessions": "{{count}} 個已記錄工作階段",
   "insights.longestStreak": "最長 {{count}} 天",
   "insights.heatmap": "活動熱力圖",
+  "insights.heatmapKeyboardHelp": "使用方向鍵逐日移動並查看數值；左右鍵以一週為單位移動。",
   "insights.trend": "{{metric}}趨勢",
   "insights.byMonth": "按月",
   "insights.waiting": "等待首次本機採集",

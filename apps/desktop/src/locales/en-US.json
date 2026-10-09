@@ -938,6 +938,7 @@
   "insights.recordedSessions": "{{count}} recorded sessions",
   "insights.longestStreak": "Longest: {{count}} days",
   "insights.heatmap": "Activity Heatmap",
+  "insights.heatmapKeyboardHelp": "Use the arrow keys to move by day; left and right move by one week.",
   "insights.trend": "{{metric}} Trend",
   "insights.byMonth": "By month",
   "insights.waiting": "Waiting for the first local import",

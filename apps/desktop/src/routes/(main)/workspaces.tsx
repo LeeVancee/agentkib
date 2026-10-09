@@ -9,7 +9,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -325,12 +327,15 @@ function WorkspacesPage({
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-                {Object.entries(agentLabels).map(([value, label]) => (
-                  <SelectItem value={value} key={value}>
-                    {label}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>{tr("workspace.allAgents")}</SelectLabel>
+                  <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
+                  {Object.entries(agentLabels).map(([value, label]) => (
+                    <SelectItem value={value} key={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select
@@ -348,9 +353,12 @@ function WorkspacesPage({
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{tr("workspace.allStatuses")}</SelectItem>
-                <SelectItem value="healthy">{workspaceStatusLabel("healthy")}</SelectItem>
-                <SelectItem value="attention">{workspaceStatusLabel("attention")}</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("workspace.allStatuses")}</SelectLabel>
+                  <SelectItem value="all">{tr("workspace.allStatuses")}</SelectItem>
+                  <SelectItem value="healthy">{workspaceStatusLabel("healthy")}</SelectItem>
+                  <SelectItem value="attention">{workspaceStatusLabel("attention")}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Badge

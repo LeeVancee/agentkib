@@ -992,6 +992,7 @@
   "assets.sharedInstructions": "Shared Project Instructions",
   "assets.preview": "Preview",
   "assets.name": "Name",
+  "assets.transport": "Transport",
   "assets.searchPlaceholder": "Search files, types, or Agents",
   "assets.asset": "Asset",
   "assets.type": "Type",

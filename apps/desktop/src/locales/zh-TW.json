@@ -987,6 +987,7 @@
   "assets.sharedInstructions": "共用專案指令",
   "assets.preview": "預覽",
   "assets.name": "名稱",
+  "assets.transport": "傳輸方式",
   "assets.searchPlaceholder": "搜尋檔案、類型或 Agent",
   "assets.asset": "資產",
   "assets.type": "類型",

@@ -3,7 +3,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -171,8 +173,11 @@ export function AgentsPage({
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="status">{tr("agents.status")}</SelectItem>
-                <SelectItem value="name">{tr("agents.name")}</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("agents.status")}</SelectLabel>
+                  <SelectItem value="status">{tr("agents.status")}</SelectItem>
+                  <SelectItem value="name">{tr("agents.name")}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -495,12 +500,15 @@ export function AgentsPage({
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
-                      {assetKinds.map((value) => (
-                        <SelectItem key={value} value={value}>
-                          {tr(`status.asset.${value}`)}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        <SelectLabel>{tr("catalog.allTypes")}</SelectLabel>
+                        <SelectItem value="all">{tr("catalog.allTypes")}</SelectItem>
+                        {assetKinds.map((value) => (
+                          <SelectItem key={value} value={value}>
+                            {tr(`status.asset.${value}`)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 )}

@@ -15,7 +15,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -247,11 +249,14 @@ export function McpConnectionCard({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {workspaces.map((workspace) => (
-                      <SelectItem key={workspace.id} value={workspace.id}>
-                        {workspace.name}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>{tr("mcp.connection.workspace")}</SelectLabel>
+                      {workspaces.map((workspace) => (
+                        <SelectItem key={workspace.id} value={workspace.id}>
+                          {workspace.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Label>
@@ -271,12 +276,15 @@ export function McpConnectionCard({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {CONNECTION_AGENTS.map((agent) => (
-                      <SelectItem key={agent} value={agent}>
-                        <AgentIcon agent={agent} compact />
-                        {AGENT_LABELS[agent]}
-                      </SelectItem>
-                    ))}
+                    <SelectGroup>
+                      <SelectLabel>{tr("mcp.connection.agent")}</SelectLabel>
+                      {CONNECTION_AGENTS.map((agent) => (
+                        <SelectItem key={agent} value={agent}>
+                          <AgentIcon agent={agent} compact />
+                          {AGENT_LABELS[agent]}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Label>

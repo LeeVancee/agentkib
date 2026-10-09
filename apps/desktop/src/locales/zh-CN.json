@@ -987,6 +987,7 @@
   "assets.sharedInstructions": "共享项目指令",
   "assets.preview": "预览",
   "assets.name": "名称",
+  "assets.transport": "传输方式",
   "assets.searchPlaceholder": "搜索文件、类型或 Agent",
   "assets.asset": "资产",
   "assets.type": "类型",

@@ -23,7 +23,9 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -803,11 +805,16 @@ function LanguageSetting({
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map((locale) => (
-            <SelectItem key={locale} value={locale}>
-              {tr(`settings.language.${locale}`)}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            <SelectLabel>{tr("settings.language")}</SelectLabel>
+            {(["system", "zh-CN", "zh-TW", "ja-JP", "en-US"] as LocalePreference[]).map(
+              (locale) => (
+                <SelectItem key={locale} value={locale}>
+                  {tr(`settings.language.${locale}`)}
+                </SelectItem>
+              ),
+            )}
+          </SelectGroup>
         </SelectContent>
       </Select>
     </SettingsRow>
@@ -900,11 +907,14 @@ function CloseBehaviorSelect({
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
-        <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
-          {tr(trayKey)}
-        </SelectItem>
-        <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+        <SelectGroup>
+          <SelectLabel>{tr("settings.closeBehavior")}</SelectLabel>
+          <SelectItem value="ask">{tr("settings.close.ask")}</SelectItem>
+          <SelectItem value="minimize-to-tray" disabled={!trayAvailable}>
+            {tr(trayKey)}
+          </SelectItem>
+          <SelectItem value="quit">{tr("settings.close.quit")}</SelectItem>
+        </SelectGroup>
       </SelectContent>
     </Select>
   );

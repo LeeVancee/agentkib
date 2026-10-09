@@ -2,7 +2,9 @@ import { useI18n } from "@/core/useI18n";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -47,7 +49,6 @@ import {
   type AchievementTrack,
   type AchievementWallItem,
 } from "@/features/insights/achievements";
-
 import {
   agentSupportsInsights,
   buildHeatmapMonthMarkers,
@@ -160,11 +161,23 @@ export function InsightsPage({
         .map((value) => [value.repository_group_id!, value.name]),
     ).entries(),
   ];
+  const agentItems = [
+    { label: tr("workspace.allAgents"), value: "all" },
+    ...insightsAgentKinds.map((value) => ({ label: agentLabels[value], value })),
+  ];
+  const workspaceItems = [
+    { label: tr("workspace.all"), value: "all" },
+    ...workspaces.map((value) => ({ label: value.name, value: value.id })),
+  ];
+  const repositoryItems = [
+    { label: tr("insights.allRepositories"), value: "all" },
+    ...repositoryOptions.map(([value, label]) => ({ label, value })),
+  ];
+  const rangeItems = Object.entries(rangeLabels).map(([value, label]) => ({ value, label }));
   const showTokenFilters = section === "overview" || section === "tokens";
   const showCommitFilters = section === "overview" || section === "commits";
   const showRange = !["milestones", "sources"].includes(section);
   const showMetricTabs = section === "overview";
-  const filterClass = "h-10 min-w-[132px] max-[520px]:min-w-0 max-[520px]:flex-1";
 
   if (!view) {
     // 首次加载（或切换筛选后）失败时没有旧数据可显示；不能一直停在骨架屏，要给出错误和重试入口。
@@ -245,87 +258,93 @@ export function InsightsPage({
           <div className="flex shrink-0 flex-nowrap items-center justify-end gap-2">
             {showTokenFilters && (
               <Select
+                items={agentItems}
                 value={agent}
                 onValueChange={(value) => {
                   if (value !== null) setAgent(String(value) as typeof agent);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.agentFilter")}>
-                  <SelectValue>
-                    {agent === "all" ? tr("workspace.allAgents") : agentLabels[agent]}
-                  </SelectValue>
+                <SelectTrigger aria-label={tr("insights.agentFilter")}>
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{tr("workspace.allAgents")}</SelectItem>
-                  {insightsAgentKinds.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {agentLabels[value]}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>{tr("insights.agentFilter")}</SelectLabel>
+                    {agentItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             )}
             {showTokenFilters && (
               <Select
+                items={workspaceItems}
                 value={activeWorkspaceId}
                 onValueChange={(value) => {
                   if (value !== null) setWorkspaceId(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.workspaceFilter")}>
-                  <SelectValue>
-                    {activeWorkspaceId === "all"
-                      ? tr("workspace.all")
-                      : workspaces.find((value) => value.id === activeWorkspaceId)?.name}
-                  </SelectValue>
+                <SelectTrigger aria-label={tr("insights.workspaceFilter")}>
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{tr("workspace.all")}</SelectItem>
-                  {workspaces.map((value) => (
-                    <SelectItem key={value.id} value={value.id}>
-                      {value.name}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>{tr("insights.workspaceFilter")}</SelectLabel>
+                    {workspaceItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             )}
             {showCommitFilters && (
               <Select
+                items={repositoryItems}
                 value={activeRepository}
                 onValueChange={(value) => {
                   if (value !== null) setRepository(String(value));
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.repositoryFilter")}>
-                  <SelectValue>
-                    {activeRepository === "all"
-                      ? tr("insights.allRepositories")
-                      : repositoryOptions.find(([id]) => id === activeRepository)?.[1]}
-                  </SelectValue>
+                <SelectTrigger aria-label={tr("insights.repositoryFilter")}>
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">{tr("insights.allRepositories")}</SelectItem>
-                  {repositoryOptions.map(([id, name]) => (
-                    <SelectItem key={id} value={id}>
-                      {name}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    <SelectLabel>{tr("insights.repositoryFilter")}</SelectLabel>
+                    {repositoryItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             )}
             {showRange && (
               <Select
+                items={rangeItems}
                 value={range}
                 onValueChange={(value) => {
                   if (value !== null) setRange(String(value) as typeof range);
                 }}
               >
-                <SelectTrigger className={filterClass} aria-label={tr("insights.range")}>
-                  <SelectValue>{rangeLabels[range]}</SelectValue>
+                <SelectTrigger aria-label={tr("insights.range")}>
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="52w">{rangeLabels["52w"]}</SelectItem>
-                  <SelectItem value="year">{rangeLabels.year}</SelectItem>
+                  <SelectGroup>
+                    <SelectLabel>{tr("insights.range")}</SelectLabel>
+                    {rangeItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             )}

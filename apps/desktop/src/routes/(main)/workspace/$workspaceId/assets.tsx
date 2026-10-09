@@ -12,7 +12,9 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -264,8 +266,11 @@ function Assets({
                 <SelectValue>{transport === "stdio" ? "stdio" : "HTTP"}</SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="stdio">stdio</SelectItem>
-                <SelectItem value="http">HTTP</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{tr("assets.transport")}</SelectLabel>
+                  <SelectItem value="stdio">stdio</SelectItem>
+                  <SelectItem value="http">HTTP</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Input

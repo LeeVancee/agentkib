@@ -21,7 +21,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -684,12 +686,15 @@ export function McpHubPage({
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
-              {workspaces.map((workspace) => (
-                <SelectItem key={workspace.id} value={workspace.path}>
-                  {workspace.name}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                <SelectLabel>{tr("mcp.scope")}</SelectLabel>
+                <SelectItem value="__global_scope__">{tr("mcp.globalScope")}</SelectItem>
+                {workspaces.map((workspace) => (
+                  <SelectItem key={workspace.id} value={workspace.path}>
+                    {workspace.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </div>

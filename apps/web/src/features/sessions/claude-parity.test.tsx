@@ -423,8 +423,12 @@ describe("Claude Remote parity", () => {
       for (const source of ClaudeEventSource.instances)
         source.emit({ ...host.state.live, settings: host.state.settings });
     });
-    await screen.findByText(copy.settingsSaved);
-    expect(screen.getByLabelText(copy.model)).toHaveValue("sonnet");
+    await waitFor(() => {
+      expect(screen.getByText(copy.settingsSaved)).toBeInTheDocument();
+      const model = screen.getByLabelText(copy.model);
+      expect(model).toBeEnabled();
+      expect(model).toHaveValue("sonnet");
+    });
     expect(host.state.mutations[0]).not.toHaveProperty("effort");
     expect(host.state.mutations[0]).not.toHaveProperty("permissionMode");
   });

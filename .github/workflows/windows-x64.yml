@@ -14,14 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  arm64_stability:
-    name: Windows ARM64 stability (${{ matrix.shard }}/2)
+  typecheck-arm64:
+    name: Typecheck on Windows ARM64
     runs-on: windows-11-arm
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -34,24 +30,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - name: Typecheck on Windows ARM64
-        if: matrix.shard == 1
-        run: pnpm typecheck
+      - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
       - name: Test backend workers, native bindings and MCP ownership
         # Each fixture also starts real backend Workers; avoid oversubscribing the runner.
         # Allow Windows integration startup time; explicit deadlines and latency assertions remain.
-        run: pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000 --shard=${{ matrix.shard }}/2
-
-  typecheck-arm64:
-    name: Typecheck on Windows ARM64
-    needs: arm64_stability
-    if: always()
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Require every Windows ARM64 shard to pass
-        run: test '${{ needs.arm64_stability.result }}' = success
+        run: pnpm test:backend:stability --maxWorkers=1 --testTimeout=15000
 
   typecheck:
     name: Typecheck on Windows x64

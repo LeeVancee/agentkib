@@ -8,11 +8,13 @@ import {
   isLegacyPreparedReceipt,
   type ManagedAgent,
   type ManagedOptions,
+  type ClaudePermissionMode,
 } from "@agentkib/web-client";
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { useSession } from "./session-context";
 import { catalogCopy } from "../catalog/catalog-copy";
+import { sessionAgentCopy } from "./session-agent-copy";
 import {
   forgetPending,
   pendingScope,
@@ -58,6 +60,7 @@ export function ManagedTasks({
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode | "">("");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -217,6 +220,7 @@ export function ManagedTasks({
         setWorkspaceId(value.workspaces[0]?.id ?? "");
         setModel("");
         setEffort("");
+        setPermissionMode("");
       })
       .catch((e: unknown) => {
         if (!abort.signal.aborted) setError(e instanceof ApiError ? e.code : "connection_failed");
@@ -295,8 +299,9 @@ export function ManagedTasks({
           ...(operation === "create"
             ? {
                 workspaceId,
-                ...(agent === "codex" && model ? { model } : {}),
-                ...(agent === "codex" && effort ? { effort } : {}),
+                ...(model ? { model } : {}),
+                ...(effort ? { effort } : {}),
+                ...(agent === "claude-code" && permissionMode ? { permissionMode } : {}),
               }
             : { sessionId: selected }),
           ...(operation === "adopt"
@@ -438,11 +443,13 @@ export function ManagedTasks({
                   )}
                 </p>
               )}
-              {agent === "codex" && (
+              {(agent === "codex" || !!options.models?.length) && (
                 <>
-                  <p className="text-xs text-muted-foreground">
-                    {catalogCopy[locale].codexContextNote}
-                  </p>
+                  {agent === "codex" && (
+                    <p className="text-xs text-muted-foreground">
+                      {catalogCopy[locale].codexContextNote}
+                    </p>
+                  )}
                   <label>
                     {managedText(locale, "Model", "模型")}
                     <select
@@ -480,12 +487,33 @@ export function ManagedTasks({
                   )}
                 </>
               )}
+              {agent === "claude-code" && !!options.permissionModes?.length && (
+                <label>
+                  {sessionAgentCopy[locale].permission}
+                  <select
+                    className="mt-2 w-full rounded border bg-background p-2"
+                    value={permissionMode}
+                    onChange={(event) =>
+                      setPermissionMode(event.target.value as ClaudePermissionMode | "")
+                    }
+                  >
+                    <option value="">{managedText(locale, "Host default", "主机默认")}</option>
+                    {options.permissionModes
+                      .filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
               {agent === "claude-code" && (
                 <p className="text-xs text-muted-foreground">
                   {managedText(
                     locale,
-                    "Uses the host Claude Code model and tool permissions. Creating a task does not start a model request.",
-                    "沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。",
+                    "Uses the host Claude Code model and tool permissions by default. Creating a task does not start a model request.",
+                    "默认沿用主机 Claude Code 的模型与工具权限。创建任务不会调用模型。",
                   )}
                 </p>
               )}

@@ -1,3 +1,4 @@
+import { requireContinuationToolPolicy } from "./mcp-policy";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -12,7 +13,11 @@ const TOML_START = "# agentkib:managed:start";
 const TOML_END = "# agentkib:managed:end";
 const CONTINUATION_ARCHIVE_TOOLS = ["session_search", "session_read_chunk"];
 
-export function planSessionMcpConnection(value: unknown, store: BackendStore): ChangeSet {
+export function planSessionMcpConnection(
+  value: unknown,
+  store: BackendStore,
+  environment: NodeJS.ProcessEnv = process.env,
+): ChangeSet {
   if (!object(value)) throw new Error("Invalid MCP continuation request");
   const workspaceId = value.workspaceId;
   const targetAgent = value.targetAgent;
@@ -34,6 +39,7 @@ export function planSessionMcpConnection(value: unknown, store: BackendStore): C
     throw new Error("AgentKib MCP Hub is not running");
 
   const project = canonicalProject(store.workspacePath(workspaceId));
+  requireContinuationToolPolicy(project, targetAgent, environment);
   const workspace = store.sql.rows(
     "SELECT manifest_workspace_id FROM workspaces WHERE id=?",
     workspaceId,

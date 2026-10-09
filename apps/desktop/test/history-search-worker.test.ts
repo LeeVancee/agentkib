@@ -30,6 +30,7 @@ const { createIsolatedWorkerEnvironment } = createRequire(import.meta.url)(
 const roots: string[] = [],
   workers: HistorySearchWorker[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(workers.splice(0).map((w) => w.close()));
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
@@ -893,17 +894,31 @@ describe("history worker lifecycle and bounded admission", () => {
   });
   it("counts queue time toward the deadline and closes with unresolved verification", async () => {
     const { root, worker } = await fixture(250);
-    const active = worker.request("hold", {}, { verify: () => new Promise<boolean>(() => {}) });
+    // Both requests must share a deadline, independent of worker startup and scheduling.
+    vi.useFakeTimers();
+    let entered!: () => void;
+    const verifying = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const active = worker.request(
+      "hold",
+      {},
+      {
+        verify: () => {
+          entered();
+          return new Promise<boolean>(() => {});
+        },
+      },
+    );
     const stopped = expect(active).rejects.toThrow();
     const queued = worker.request("queued", {});
-    // Active cancellation receives a terminal response; the queued request is already expired.
-    const queuedResult = queued.then(
-      () => "dispatched",
-      () => "expired",
-    );
+    const expired = expect(queued).rejects.toMatchObject({ reason: "deadline-exceeded" });
+    await verifying;
+    vi.advanceTimersByTime(250);
+    // Verify expiry before closing so shutdown cancellation cannot satisfy the assertion.
+    await expired;
     await stopped;
     await worker.close();
-    expect(await queuedResult).toBe("expired");
     expect(await fs.readFile(path.join(root, "cache.requests"), "utf8")).toBe("hold\n");
   });
   it("reports a crashed worker once and never replays accepted requests", async () => {

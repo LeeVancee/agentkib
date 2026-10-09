@@ -26,6 +26,8 @@ import { SkillsWorker } from "./skills-worker";
 import { BoundedTaskQueue, BackendTaskError, commitTask } from "./task-executor";
 import { HandoffWork } from "./handoff-work";
 import { AgentTools } from "./agent-tools";
+import { McpManagement } from "./mcp-management";
+import { McpConnectionBatch } from "./mcp-connection-batch";
 import { McpManager } from "./mcp";
 import { McpBuiltins } from "./mcp-builtin";
 import { McpHub, type McpNetworkSettings } from "./mcp-hub";
@@ -40,7 +42,7 @@ import { RemoteGateways } from "./remote-gateways";
 import { RemoteAgent } from "./remote-agent";
 import { WorkspaceStorageOwner } from "./storage";
 import { QuotaOwner } from "./quota";
-import { ClaudeManagedReadOwner } from "./claude-managed-read";
+import { ClaudeHostControlPreflightError, ClaudeManagedReadOwner } from "./claude-managed-read";
 import { createRelayCsr } from "./relay-csr";
 import { readControlReceipt } from "./control-receipt";
 import { WorkspaceApplications } from "./workspace-applications";
@@ -134,6 +136,8 @@ export class TypeScriptBackend {
   #stopping = false;
   #agentTools?: AgentTools;
   #mcp?: McpManager;
+  #mcpManagement?: McpManagement;
+  #mcpConnections?: McpConnectionBatch;
   #mcpHub?: McpHub;
   #mcpOAuth?: McpOAuth;
   #remoteGateways?: RemoteGateways;
@@ -182,6 +186,8 @@ export class TypeScriptBackend {
     this.#agentTools = undefined;
     this.#mcp?.close();
     this.#mcp = undefined;
+    this.#mcpManagement = undefined;
+    this.#mcpConnections = undefined;
     this.#mcpHub = undefined;
     this.#mcpOAuth = undefined;
     this.#remoteGateways = undefined;
@@ -419,6 +425,18 @@ export class TypeScriptBackend {
           this.#mcpOAuth,
           network,
         );
+        this.#mcpManagement = new McpManagement(
+          store,
+          { ...process.env, ...this.environment },
+          dataDir,
+          this.#mcp,
+        );
+        this.#mcpConnections = new McpConnectionBatch(
+          store,
+          dataDir,
+          { ...process.env, ...this.environment },
+          () => this.#mcpHub!.status(),
+        );
         this.#remoteGateways = new RemoteGateways(dataDir);
         this.#doctor = new Doctor(this.#context, (id) => store.workspacePath(id));
         this.#workspaceApplications = new WorkspaceApplications(
@@ -546,7 +564,7 @@ export class TypeScriptBackend {
       const receipt = readControlReceipt(this.#dataDir, params);
       return this.#claudeManaged ? this.#claudeManaged.receipt(receipt) : receipt;
     }
-    if (method === RUNTIME_METHODS.claudeManaged) return this.#claudeManaged!.request(params);
+    if (method === RUNTIME_METHODS.claudeManaged) return this.#requestClaudeManaged(params);
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "options")
       return this.#withWebRead((owner) => owner.managedOptions());
     if (method === RUNTIME_METHODS.codexManaged && params.operation === "reconcile")
@@ -604,11 +622,9 @@ export class TypeScriptBackend {
     }
     if (method === RUNTIME_METHODS.webRequest) {
       if (params.operation === "diff") return webDiff(params, this.#store, this.#git!);
-      if (
-        params.operation === "live" ||
-        params.operation === "events" ||
-        params.operation === "usage"
-      ) {
+      // Resolve the provider from persisted identity, never from a browser-supplied agent.
+      // Fresh Claude sessions are not indexed until their first native transcript exists.
+      if (typeof params.sessionId === "string" && params.operation !== "catalog") {
         const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
         const claudeSession =
           this.#store!.sessions.get(sessionId)?.agent === "claude-code" ||
@@ -620,8 +636,14 @@ export class TypeScriptBackend {
             !this.#claudeManaged!.hasManagedSession(sessionId)
           )
             return this.#readIndexedClaudeEvents(params, sessionId);
-          return this.#claudeManaged!.request(params);
+          return this.#requestClaudeManaged(params);
         }
+      }
+      if (
+        params.operation === "live" ||
+        params.operation === "events" ||
+        params.operation === "usage"
+      ) {
         return this.#withWebRead((owner) => owner.request(params));
       }
       if (params.operation === "settings-state")
@@ -776,7 +798,7 @@ export class TypeScriptBackend {
       return listNativeImports(this.#dataDir!, this.#store!, workspaceId);
     }
     if (method === RUNTIME_METHODS.planSessionMcpConnection)
-      return planSessionMcpConnection(params, this.#store);
+      return planSessionMcpConnection(params, this.#store, { ...process.env, ...this.environment });
     if (HANDOFF_TASK_METHODS.has(method))
       return this.#handoffQueue.run((task) =>
         this.#handoffWork.run(task, () => this.#requestHandoff(method, params)),
@@ -1101,6 +1123,46 @@ export class TypeScriptBackend {
   async #mcpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
     const manager = this.#mcp!;
     switch (method) {
+      case RUNTIME_METHODS.previewMcpMigration:
+        return this.#mcpManagement!.previewMigration(params, this.#mcpHub!.status());
+      case RUNTIME_METHODS.applyMcpMigration:
+        return this.#mcpManagement!.applyMigration(params, this.#mcpHub!.status());
+      case RUNTIME_METHODS.mcpManagementState:
+        return this.#mcpManagement!.state(params);
+      case RUNTIME_METHODS.saveMcpConfiguration:
+        return this.#mcpManagement!.save(params);
+      case RUNTIME_METHODS.removeMcpConfiguration:
+        return this.#mcpManagement!.remove(params);
+      case RUNTIME_METHODS.previewMcpImport:
+        return this.#mcpManagement!.previewImport(params);
+      case RUNTIME_METHODS.applyMcpImport:
+        return this.#mcpManagement!.applyImport(params);
+      case RUNTIME_METHODS.checkMcpConnections:
+        return this.#mcpConnections!.check(params);
+      case RUNTIME_METHODS.planMcpConnections:
+        return this.#mcpConnections!.plan(params);
+      case RUNTIME_METHODS.applyMcpConnections:
+        return this.#mcpConnections!.apply(params);
+      case RUNTIME_METHODS.getMcpPolicy: {
+        const request = parameters(z.object({ project: z.string().optional() }).strict(), params);
+        return manager.getPolicy(request.project);
+      }
+      case RUNTIME_METHODS.saveMcpPolicy: {
+        const request = parameters(
+          z
+            .object({
+              project: z.string().optional(),
+              revision: z.string(),
+              rules: z.array(z.unknown()),
+            })
+            .strict(),
+          params,
+        );
+        return manager.savePolicy(
+          { revision: request.revision, rules: request.rules },
+          request.project,
+        );
+      }
       case RUNTIME_METHODS.listMcpServers: {
         const request = parameters(z.object({ project: z.string().nullable().optional() }), params);
         return manager.list(request.project ?? undefined);
@@ -1466,6 +1528,15 @@ export class TypeScriptBackend {
       );
     }
     return await operation(this.#webRead);
+  }
+
+  async #requestClaudeManaged(params: Record<string, unknown>) {
+    try {
+      return await this.#claudeManaged!.request(params);
+    } catch (error) {
+      if (error instanceof ClaudeHostControlPreflightError) return error.result;
+      throw error;
+    }
   }
 
   async #readIndexedClaudeEvents(params: Record<string, unknown>, sessionId: string) {

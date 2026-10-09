@@ -386,7 +386,7 @@ export function CodexComposer() {
             event.target.value = "";
           }}
         />
-        {!isClaude && (
+        {access?.device?.accessMode === "full" && (
           <CodexComposerControls
             resources={resources}
             setResources={setResources}
@@ -395,7 +395,7 @@ export function CodexComposer() {
             action={primaryAction}
           />
         )}
-        {(isClaude || access?.device?.accessMode !== "full") && (
+        {access?.device?.accessMode !== "full" && (
           <div className="flex min-w-0 items-center justify-between gap-2">
             <Button
               type="button"
@@ -418,44 +418,47 @@ export function CodexComposer() {
             </div>
           </div>
         )}
-        {(running || compacting) && !isClaude && (
-          <div className="space-y-2 border-t pt-2">
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                size="sm"
-                className="min-h-11"
-                variant="outline"
-                disabled={
-                  compacting ||
-                  !canAdvanced ||
-                  !capabilities?.features.steer?.available ||
-                  !valid ||
-                  submitted
-                }
-                onClick={() => void send("steer")}
-              >
-                {copy.steer}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                className="min-h-11"
-                variant="outline"
-                disabled={
-                  !canAdvanced ||
-                  !capabilities?.features["queue-add"]?.available ||
-                  !valid ||
-                  submitted
-                }
-                onClick={() => void send("queue-add")}
-              >
-                {copy.queueAdd}
-              </Button>
+        {(running || compacting) &&
+          (!isClaude ||
+            capabilities?.features.steer?.available ||
+            capabilities?.features["queue-add"]?.available) && (
+            <div className="space-y-2 border-t pt-2">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="min-h-11"
+                  variant="outline"
+                  disabled={
+                    compacting ||
+                    !canAdvanced ||
+                    !capabilities?.features.steer?.available ||
+                    !valid ||
+                    submitted
+                  }
+                  onClick={() => void send("steer")}
+                >
+                  {copy.steer}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="min-h-11"
+                  variant="outline"
+                  disabled={
+                    !canAdvanced ||
+                    !capabilities?.features["queue-add"]?.available ||
+                    !valid ||
+                    submitted
+                  }
+                  onClick={() => void send("queue-add")}
+                >
+                  {copy.queueAdd}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">{layout.queue}</p>
             </div>
-            <p className="text-xs text-muted-foreground">{layout.queue}</p>
-          </div>
-        )}
+          )}
       </div>
       {compacting && (
         <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">

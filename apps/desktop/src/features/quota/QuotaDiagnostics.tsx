@@ -1,10 +1,12 @@
 import { useI18n } from "@/core/useI18n";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useAppStore } from "@/stores/app-store";
 
 import type { QuotaCollectorStatus, QuotaSnapshot } from "@/core/types";
 
 export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) {
   const { locale, tr } = useI18n();
+  const autoRefreshEnabled = useAppStore((state) => state.runtime?.quota_auto_refresh_enabled);
   if (!status)
     return (
       <div className="px-4 py-3 text-xs text-muted-foreground">{tr("quota.statusUnavailable")}</div>
@@ -22,6 +24,18 @@ export function QuotaDiagnostics({ status }: { status?: QuotaCollectorStatus }) 
       <DiagnosticRow
         label={tr("quota.configSource")}
         value={tr(`quota.config.${status.config_source}`)}
+      />
+      <DiagnosticRow
+        label={tr("settings.quotaAutoRefresh")}
+        value={
+          autoRefreshEnabled === undefined
+            ? "—"
+            : tr(autoRefreshEnabled ? "common.enabled" : "common.disabled")
+        }
+      />
+      <DiagnosticRow
+        label={tr("quota.lastAttempt")}
+        value={status.last_attempt_at ? formatDateTime(status.last_attempt_at, locale) : "—"}
       />
       <DiagnosticRow
         label={tr("quota.lastSuccess")}

@@ -97,6 +97,10 @@ export function readControlReceipt(dataDir: string, value: unknown) {
       /^[a-f0-9]{64}$/.test(evidenceRecord.historyInputHash)
         ? { historyInputHash: evidenceRecord.historyInputHash }
         : {}),
+      ...(typeof evidenceRecord.publicInputHash === "string" &&
+      /^[a-f0-9]{64}$/.test(evidenceRecord.publicInputHash)
+        ? { publicInputHash: evidenceRecord.publicInputHash }
+        : {}),
       status,
       ack,
       completionObserved: false,

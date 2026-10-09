@@ -10,9 +10,9 @@ import {
 } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 import { createServer, request as httpsRequest, type Server } from "node:https";
-import type { Duplex } from "node:stream";
+import { Transform, type Duplex } from "node:stream";
 import { join, resolve } from "node:path";
 import { rootCertificates, type TLSSocket } from "node:tls";
 import { promisify } from "node:util";
@@ -113,6 +113,24 @@ const RENEW_BEFORE = 21 * 86_400_000;
 /** 本机 runtime 生成 CSR 的上限；runtime 卡住但没退出时，请求不能无限挂着。 */
 const CSR_TIMEOUT_MS = 30_000;
 const CHANNELS: Channel[] = ["control", "preview"];
+const SOCKET_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+function forwardedHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
+  const result: IncomingHttpHeaders = { ...headers, "x-forwarded-proto": "https" };
+  delete result.forwarded;
+  delete result["x-forwarded-host"];
+  delete result["x-forwarded-for"];
+  return result;
+}
+
+function upgradeResponseHead(response: IncomingMessage, close = false): string {
+  let result = `HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n`;
+  for (let index = 0; index < response.rawHeaders.length; index += 2) {
+    if (close && response.rawHeaders[index].toLowerCase() === "connection") continue;
+    result += `${response.rawHeaders[index]}: ${response.rawHeaders[index + 1]}\r\n`;
+  }
+  return result + (close ? "Connection: close\r\n\r\n" : "\r\n");
+}
 
 class RelayHttpError extends Error {}
 class RelayIdentityError extends Error {}
@@ -824,6 +842,128 @@ export class RelayManager {
     this.sockets.add(socket);
     socket.once("close", () => this.sockets.delete(socket));
   }
+  private forwardUpgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    channel: Channel,
+    generation: number,
+    expectedHost: string,
+    target: Target,
+  ) {
+    socket.on("error", () => socket.destroy());
+    const allowed = () =>
+      generation === this.generation &&
+      !!this.abort &&
+      !this.abort.signal.aborted &&
+      this.liveLease() &&
+      request.headers.host === expectedHost &&
+      (request.socket as TLSSocket).servername === expectedHost;
+    if (
+      channel !== "control" ||
+      request.method !== "GET" ||
+      request.url !== "/api/web/v1/socket" ||
+      !allowed()
+    ) {
+      socket.destroy();
+      return;
+    }
+
+    // Preserve bytes received during the local handshake without allowing an
+    // unbounded flowing stream while WebAccessService checks the paired device.
+    socket.pause();
+    let upgradedSocket: Duplex | undefined;
+    const upstream = httpRequest({
+      hostname: target.host,
+      port: target.port,
+      method: request.method,
+      path: request.url,
+      headers: forwardedHeaders(request.headers),
+      agent: false,
+      signal: this.abort!.signal,
+    });
+    const close = () => {
+      clearTimeout(deadline);
+      upstream.destroy();
+      upgradedSocket?.destroy();
+      socket.destroy();
+    };
+    const deadline = setTimeout(close, SOCKET_HANDSHAKE_TIMEOUT_MS);
+    deadline.unref();
+    socket.once("close", close);
+    upstream.on("error", close);
+    upstream.on("socket", (outgoing) => {
+      this.track(outgoing);
+      if (!allowed() || socket.destroyed) {
+        outgoing.destroy();
+        close();
+        return;
+      }
+      outgoing.prependOnceListener("connect", () => {
+        if (!allowed() || socket.destroyed) close();
+      });
+    });
+    upstream.once("response", (incoming) => {
+      if (!allowed() || socket.destroyed) {
+        incoming.destroy();
+        close();
+        return;
+      }
+      socket.write(upgradeResponseHead(incoming, true));
+      socket.once("finish", () => {
+        clearTimeout(deadline);
+        // No parser will consume early client frames after a rejected upgrade.
+        // Flush the rejection and then close both halves even if reads are paused.
+        request.socket.destroySoon();
+      });
+      incoming.on("error", close);
+      // Discard rejected input so unread TLS records cannot stall a large reply.
+      socket.resume();
+      // IncomingMessage has removed chunk framing. Re-encode it (including
+      // trailers) while letting pipe enforce backpressure on the raw TLS socket.
+      if (/\bchunked\s*$/i.test(incoming.headers["transfer-encoding"] ?? "")) {
+        const framed = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            callback(
+              null,
+              Buffer.concat([
+                Buffer.from(`${chunk.length.toString(16)}\r\n`),
+                chunk,
+                Buffer.from("\r\n"),
+              ]),
+            );
+          },
+          flush(callback) {
+            let ending = "0\r\n";
+            for (let index = 0; index < incoming.rawTrailers.length; index += 2)
+              ending += `${incoming.rawTrailers[index]}: ${incoming.rawTrailers[index + 1]}\r\n`;
+            callback(null, ending + "\r\n");
+          },
+        });
+        framed.on("error", close);
+        incoming.pipe(framed).pipe(socket);
+      } else incoming.pipe(socket);
+    });
+    upstream.once("upgrade", (incoming, outgoing, upstreamHead) => {
+      upgradedSocket = outgoing;
+      outgoing.on("error", close);
+      outgoing.once("close", close);
+      if (!allowed() || socket.destroyed) {
+        close();
+        return;
+      }
+      clearTimeout(deadline);
+      outgoing.pause();
+      socket.write(upgradeResponseHead(incoming));
+      // unshift lets pipe handle both first-packet bytes and later traffic with
+      // the same ordering and backpressure in either direction.
+      if (head.length) socket.unshift(head);
+      if (upstreamHead.length) outgoing.unshift(upstreamHead);
+      socket.pipe(outgoing);
+      outgoing.pipe(socket);
+    });
+    upstream.end();
+  }
   private async startTls(channel: Channel, generation: number) {
     if (this.servers.has(channel)) return;
     const expectedHost =
@@ -849,17 +989,13 @@ export class RelayManager {
           response.end(this.probeToken);
           return;
         }
-        const headers: IncomingHttpHeaders = { ...request.headers, "x-forwarded-proto": "https" };
-        delete headers.forwarded;
-        delete headers["x-forwarded-host"];
-        delete headers["x-forwarded-for"];
         const upstream = httpRequest(
           {
             hostname: target.host,
             port: target.port,
             method: request.method,
             path: request.url,
-            headers,
+            headers: forwardedHeaders(request.headers),
             agent: false,
           },
           (incoming) => {
@@ -882,7 +1018,9 @@ export class RelayManager {
     );
     server.on("connection", (socket) => this.track(socket));
     server.on("secureConnection", (socket) => this.track(socket));
-    server.on("upgrade", (_request, socket) => socket.destroy());
+    server.on("upgrade", (request, socket, head) =>
+      this.forwardUpgrade(request, socket, head, channel, generation, expectedHost, target),
+    );
     server.on("tlsClientError", () => {});
     this.servers.set(channel, server);
     try {

@@ -192,6 +192,20 @@ export const TYPESCRIPT_AGENT_TOOL_METHODS = new Set<string>([
 ]);
 
 export const TYPESCRIPT_MCP_METHODS = new Set<string>([
+  RUNTIME_METHODS.previewMcpMigration,
+  RUNTIME_METHODS.applyMcpMigration,
+
+  RUNTIME_METHODS.mcpManagementState,
+  RUNTIME_METHODS.saveMcpConfiguration,
+  RUNTIME_METHODS.removeMcpConfiguration,
+  RUNTIME_METHODS.previewMcpImport,
+  RUNTIME_METHODS.applyMcpImport,
+  RUNTIME_METHODS.checkMcpConnections,
+  RUNTIME_METHODS.planMcpConnections,
+  RUNTIME_METHODS.applyMcpConnections,
+  RUNTIME_METHODS.getMcpPolicy,
+  RUNTIME_METHODS.saveMcpPolicy,
+
   RUNTIME_METHODS.mcpConnectionInfo,
   RUNTIME_METHODS.planMcpConnection,
   RUNTIME_METHODS.verifyMcpConnection,

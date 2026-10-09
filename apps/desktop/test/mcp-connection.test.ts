@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -33,6 +32,7 @@ import {
 import { applyRequest } from "../../../packages/backend/src/changes";
 import { hash } from "../../../packages/backend/src/doctor-files";
 import type { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import * as files from "../../../packages/backend/src/files";
 
 // Resolve backend-owned dependencies without adding them to the desktop package.
@@ -56,7 +56,7 @@ afterEach(async () => {
 });
 
 function fixture(manifestId: string | null = "manifest-id") {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-connection-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-connection-")));
   roots.push(root);
   const project = path.join(root, "project"),
     home = path.join(root, "home");

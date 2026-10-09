@@ -202,7 +202,7 @@ describe("WebAccessService loopback security boundary", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("reads only an authorized Codex session context", async () => {
+  it("reads only authorized Codex and Claude session contexts", async () => {
     runtime.mockImplementation(async (params) => {
       const operation = (params as { operation: string }).operation;
       if (operation === "catalog")
@@ -236,7 +236,8 @@ describe("WebAccessService loopback security boundary", () => {
       branchAtCreation: "main",
     });
     expect(runtime).toHaveBeenLastCalledWith({ operation: "context", sessionId: "codex-session" });
-    expect((await http("/api/web/v1/managed/context?sessionId=other-agent")).status).toBe(403);
+    expect((await http("/api/web/v1/managed/context?sessionId=other-agent")).status).toBe(200);
+    expect(runtime).toHaveBeenLastCalledWith({ operation: "context", sessionId: "other-agent" });
     expect((await http("/api/web/v1/managed/context?sessionId=unknown")).status).toBe(403);
   });
 

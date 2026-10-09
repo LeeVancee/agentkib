@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   chmodSync,
   mkdirSync,
@@ -10,6 +11,7 @@ import {
   rmSync,
 } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { canonicalize, pathIdentity } from "./paths";
@@ -24,9 +26,16 @@ import {
   userHome,
 } from "./mcp-config-read";
 import { oauthProvider } from "./mcp-oauth";
+import { BUILTIN_MCP_TOOLS } from "./mcp-builtin";
+import {
+  mcpToolAllowed,
+  readMcpPolicy,
+  saveMcpPolicy,
+  type McpToolPolicyState,
+} from "./mcp-policy";
 
 type NetworkSettings = { port: number; lan_enabled: boolean; lan_risk_accepted: boolean };
-type ToolDescriptor = {
+export type ToolDescriptor = {
   server_id: string;
   name: string;
   description?: string;
@@ -56,6 +65,22 @@ type Installation = {
   installed_at: string;
   updated_at: string;
 };
+type ConnectionIdentity = { key: string; fingerprint: string };
+type ActiveConnection = {
+  client: Client;
+  transport: Transport;
+  server_id: string;
+  tools: ToolDescriptor[];
+  scope: string;
+  identity: ConnectionIdentity;
+};
+type ToolDispatch = {
+  identity: ConnectionIdentity;
+  toolName: string;
+  requestId?: string | number;
+  check: () => void;
+};
+class McpDispatchDenied extends Error {}
 
 const AGENTS = new Set([
   "codex",
@@ -74,17 +99,22 @@ export class McpManager {
   static readonly #failureWindowMs = 5 * 60_000;
   static readonly #failureLimit = 3;
   #network: NetworkSettings = { port: 47653, lan_enabled: false, lan_risk_accepted: false };
-  #active = new Map<
-    string,
-    { client: Client; transport: Transport; server_id: string; tools: ToolDescriptor[] }
-  >();
+  #active = new Map<string, ActiveConnection>();
   #starting = new Map<
     string,
-    { serverId: string; controller: AbortController; promise: Promise<ToolDescriptor[]> }
+    {
+      serverId: string;
+      controller: AbortController;
+      promise: Promise<ToolDescriptor[]>;
+      scope: string;
+      identity: ConnectionIdentity;
+    }
   >();
   #callQueues = new Map<string, Promise<void>>();
+  #toolDispatch = new AsyncLocalStorage<ToolDispatch>();
   #connecting = new Set<{
     serverId: string;
+    scope: string;
     controller: AbortController;
     promise: Promise<ToolDescriptor[]>;
   }>();
@@ -93,13 +123,14 @@ export class McpManager {
   #restarting = new Map<string, Promise<void>>();
   #closed = false;
   #reaper: NodeJS.Timeout;
-  #failures = new Map<string, { serverId: string; count: number; since: number }>();
+  #failures = new Map<string, { serverId: string; count: number; since: number; scope: string }>();
   #runtimeStatus = new Map<
     string,
     {
       server_id: string;
       server_name: string;
       config_hash: string;
+      project: string | null;
       state: string;
       started_at?: string;
       last_used_at?: string;
@@ -156,7 +187,7 @@ export class McpManager {
     const file = this.#configPath(selectedProject, true);
     const local = readMcpDocument(file);
     if (local.some((item) => item.id === server.id)) return;
-    local.push({ ...server, oauth_credentials: undefined });
+    local.push({ ...server, local_values_only: true, oauth_credentials: undefined });
     this.#write(file, local, true);
   }
 
@@ -167,6 +198,7 @@ export class McpManager {
     const server = local.find((item) => item.id === serverId);
     if (!server) throw new Error("MCP local server entry is missing");
     server.oauth_credentials = credentials;
+    delete server.clear_oauth;
     this.#write(file, local, true);
   }
 
@@ -175,7 +207,10 @@ export class McpManager {
     const file = this.#configPath(selectedProject, true);
     const local = readMcpDocument(file);
     const server = local.find((item) => item.id === serverId);
-    if (server) server.oauth_credentials = undefined;
+    if (server) {
+      server.oauth_credentials = undefined;
+      server.clear_oauth = true;
+    }
     this.#write(file, local, true);
   }
 
@@ -187,16 +222,113 @@ export class McpManager {
     );
   }
 
+  getPolicy(project?: string) {
+    const scope = this.#project(project);
+    const policy = readMcpPolicy(scope, this.environment);
+    return {
+      ...policy,
+      catalog: [
+        {
+          server_id: null,
+          name: "AgentKib",
+          probed: true,
+          tools: BUILTIN_MCP_TOOLS.map((tool) => ({
+            server_id: "agentkib",
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.inputSchema,
+            read_only: tool.readOnlyHint,
+          })),
+        },
+        ...effectiveMcp(scope, this.environment).map((server) => {
+          const cached = this.#cachedCatalog(server, scope);
+          return {
+            server_id: server.id,
+            name: server.name,
+            probed: cached !== null,
+            tools: cached ?? [],
+          };
+        }),
+      ],
+    };
+  }
+
+  savePolicy(value: unknown, project?: string) {
+    const scope = this.#project(project);
+    saveMcpPolicy(value, scope, this.environment, this.dataDir);
+    return this.getPolicy(project);
+  }
+
+  builtinAllowed(project: string, agent: string, tool: string): boolean {
+    if (!AGENTS.has(agent)) throw new Error("Unsupported MCP target agent");
+    return mcpToolAllowed(
+      readMcpPolicy(this.#project(project), this.environment),
+      agent,
+      null,
+      tool,
+    );
+  }
+
   hubTools(project: string, agent: string, remote: boolean): ToolDescriptor[] {
+    const scope = this.#project(project);
+    const policy = readMcpPolicy(scope, this.environment);
+    const namespace = this.#publicToolNamespace(project);
     return this.serversForHub(project, agent).flatMap((server) =>
-      this.cachedTools(server.id)
-        .filter(
-          (tool) =>
-            (!server.allow_tools.length || server.allow_tools.includes(tool.name)) &&
-            (!remote || server.lan_allow_tools.includes(tool.name)),
-        )
+      (this.#cachedCatalog(server, scope) ?? [])
+        .filter((tool) => this.#toolAllowed(server, policy, agent, tool.name, remote))
+        .filter((tool) => {
+          try {
+            const resolved = this.#resolvePublicTool(namespace, `${server.id}__${tool.name}`);
+            return resolved.serverId === server.id && resolved.toolName === tool.name;
+          } catch {
+            return false;
+          }
+        })
         .map((tool) => ({ ...tool, name: `${server.id}__${tool.name}` })),
     );
+  }
+
+  #toolAllowed(
+    server: McpServer,
+    policy: McpToolPolicyState,
+    agent: string,
+    name: string,
+    remote: boolean,
+  ) {
+    return (
+      (!server.allow_tools.length || server.allow_tools.includes(name)) &&
+      (!remote || server.lan_allow_tools.includes(name)) &&
+      mcpToolAllowed(policy, agent, server.id, name)
+    );
+  }
+
+  #publicToolNamespace(project: string) {
+    const scope = this.#project(project);
+    return effectiveMcp(scope, this.environment).map((server) => {
+      const catalog = this.#cachedCatalog(server, scope);
+      return {
+        serverId: server.id,
+        prefix: `${server.id}__`,
+        tools: catalog === null ? null : new Set(catalog.map((tool) => tool.name)),
+      };
+    });
+  }
+
+  #resolvePublicTool(
+    namespace: Array<{ serverId: string; prefix: string; tools: Set<string> | null }>,
+    publicName: string,
+  ) {
+    const candidates = namespace.flatMap(({ serverId, prefix, tools }) => {
+      if (!publicName.startsWith(prefix) || publicName.length === prefix.length) return [];
+      const toolName = publicName.slice(prefix.length);
+      // An unprobed overlapping namespace cannot safely be presumed empty. This
+      // includes disabled services, so permission changes cannot reroute old names.
+      return tools === null || tools.has(toolName) ? [{ serverId, toolName }] : [];
+    });
+    if (candidates.length > 1)
+      throw new Error("Ambiguous MCP tool name; rename the conflicting service before calling it");
+    if (!candidates.length) throw new Error("Unknown MCP tool");
+    return candidates[0]!;
   }
 
   async callHubTool(
@@ -205,32 +337,72 @@ export class McpManager {
     publicName: string,
     arguments_: Record<string, unknown>,
     remote: boolean,
+    assertIdentity: () => void = () => undefined,
   ): Promise<unknown> {
-    const separator = publicName.indexOf("__");
-    if (separator <= 0) throw new Error("Unknown MCP tool");
-    const serverId = publicName.slice(0, separator);
-    const toolName = publicName.slice(separator + 2);
-    const server = this.serversForHub(project, agent).find((item) => item.id === serverId);
-    if (!server) throw new Error("MCP server is not visible in this scope");
-    if (remote && !server.lan_allow_tools.includes(toolName))
-      throw new Error("Tool is not allowed over LAN");
-    return this.callTool(server, toolName, arguments_, project);
+    const { serverId, toolName } = this.#resolvePublicTool(
+      this.#publicToolNamespace(project),
+      publicName,
+    );
+    const assertAllowed = () => {
+      assertIdentity();
+      const resolved = this.#resolvePublicTool(this.#publicToolNamespace(project), publicName);
+      if (resolved.serverId !== serverId || resolved.toolName !== toolName)
+        throw new Error("MCP tool identity changed before dispatch");
+      const server = this.serversForHub(project, agent).find((item) => item.id === serverId);
+      if (!server) throw new Error("MCP server is not visible in this scope");
+      if (
+        !this.#toolAllowed(
+          server,
+          readMcpPolicy(this.#project(project), this.environment),
+          agent,
+          toolName,
+          remote,
+        )
+      )
+        throw new Error("MCP tool is not allowed by the current Agent policy");
+      return server;
+    };
+    const server = assertAllowed();
+    return this.callTool(server, toolName, arguments_, project, () => {
+      assertAllowed();
+    });
   }
 
-  cachedTools(serverId: string): ToolDescriptor[] {
-    return this.sql
-      .rows(
-        "SELECT descriptor_json FROM mcp_tool_cache WHERE server_id=? ORDER BY tool_name",
-        serverId,
+  cachedTools(serverId: string, project?: string): ToolDescriptor[] {
+    const scope = this.#project(project);
+    const server = effectiveMcp(scope, this.environment).find((item) => item.id === serverId);
+    return server ? (this.#cachedCatalog(server, scope) ?? []) : [];
+  }
+
+  hasCurrentProbe(serverId: string, project?: string): boolean {
+    const scope = this.#project(project);
+    const server = effectiveMcp(scope, this.environment).find((item) => item.id === serverId);
+    return server !== undefined && this.#cachedCatalog(server, scope) !== null;
+  }
+
+  #cachedCatalog(server: McpServer, project: string | null): ToolDescriptor[] | null {
+    const row = this.sql.rows(
+      "SELECT descriptor_json FROM mcp_tool_cache WHERE server_id=? AND tool_name=''",
+      mcpToolCacheKey(server, project, this.environment),
+    )[0];
+    if (!row) return null;
+    try {
+      const value = JSON.parse(String(row.descriptor_json)) as {
+        schema_version?: unknown;
+        tools?: ToolDescriptor[];
+      };
+      if (value.schema_version !== 2 || !Array.isArray(value.tools)) return null;
+      if (
+        !value.tools.every(
+          (tool) =>
+            tool.server_id === server.id && typeof tool.name === "string" && tool.name.length > 0,
+        )
       )
-      .flatMap((row) => {
-        try {
-          const value = JSON.parse(String(row.descriptor_json)) as ToolDescriptor;
-          return typeof value.name === "string" && value.server_id === serverId ? [value] : [];
-        } catch {
-          return [];
-        }
-      });
+        return null;
+      return value.tools;
+    } catch {
+      return null;
+    }
   }
 
   async callTool(
@@ -238,24 +410,49 @@ export class McpManager {
     toolName: string,
     arguments_: Record<string, unknown>,
     project?: string,
+    assertAllowed: () => void = () => undefined,
   ): Promise<unknown> {
+    assertAllowed();
     if (server.allow_tools.length && !server.allow_tools.includes(toolName))
       throw new Error("Tool is not allowed by this MCP server configuration");
-    const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    const fingerprint = mcpToolCacheKey(server, this.#project(project), this.environment),
+      configHash = this.#runtimeKey(fingerprint);
     if (this.#closed) throw new Error("MCP manager is closed");
     this.#assertRestartAllowed(configHash);
     let active = this.#active.get(configHash);
+    if (active?.identity.fingerprint !== fingerprint) active = undefined;
     if (!active) {
       await this.#start(server, project);
       active = this.#active.get(configHash);
     }
     if (!active) throw new Error("MCP server connection was not retained");
     const connection = active;
-    const execute = () => {
+    const assertDispatch = () => {
       if (this.#closed || this.#active.get(configHash) !== connection)
         throw new Error("MCP server connection was stopped");
-      return this.#callTool(configHash, connection, server, toolName, arguments_);
+      assertAllowed();
+      const current = this.getPrivate(server.id, project);
+      if (
+        !current ||
+        mcpToolCacheKey(current, this.#project(project), this.environment) !==
+          connection.identity.fingerprint
+      )
+        throw new Error("MCP connection configuration changed before dispatch");
+      if (current.allow_tools.length && !current.allow_tools.includes(toolName))
+        throw new Error("Tool is not allowed by this MCP server configuration");
+      if (!connection.tools.some((tool) => tool.name === toolName))
+        throw new Error("Unknown MCP tool");
+      return current;
     };
+    const execute = () =>
+      this.#callTool(
+        configHash,
+        connection,
+        assertDispatch(),
+        toolName,
+        arguments_,
+        assertDispatch,
+      );
     if (server.supports_parallel_tool_calls) return execute();
     const result = (this.#callQueues.get(configHash) ?? Promise.resolve()).then(execute);
     const queued = result.then(
@@ -271,28 +468,29 @@ export class McpManager {
 
   async #callTool(
     configHash: string,
-    active: {
-      client: Client;
-      transport: Transport;
-      server_id: string;
-      tools: ToolDescriptor[];
-    },
+    active: ActiveConnection,
     server: McpServer,
     toolName: string,
     arguments_: Record<string, unknown>,
+    assertDispatch: () => void,
   ): Promise<unknown> {
     try {
       const status = this.#runtimeStatus.get(configHash);
       if (status && this.#active.get(configHash) === active)
         this.#runtimeStatus.set(configHash, { ...status, last_used_at: new Date().toISOString() });
-      const result = await active.client.callTool(
-        { name: toolName, arguments: arguments_ },
-        undefined,
-        { timeout: 60_000 },
+      const result = await this.#toolDispatch.run(
+        { identity: active.identity, toolName, check: assertDispatch },
+        () =>
+          active.client.callTool({ name: toolName, arguments: arguments_ }, undefined, {
+            timeout: 60_000,
+          }),
       );
       return result;
     } catch (error) {
-      this.#recordFailure(configHash, server.id);
+      // A local revocation only rejects this request, not other Agents sharing
+      // the same transport or their already dispatched parallel calls.
+      if (error instanceof McpDispatchDenied) throw error;
+      this.#recordFailure(configHash, server.id, active.scope);
       const status = this.#runtimeStatus.get(configHash);
       if (status && this.#active.get(configHash) === active)
         this.#runtimeStatus.set(configHash, {
@@ -335,8 +533,22 @@ export class McpManager {
     );
     if (!current) throw new Error("Unknown MCP server");
     const file = this.#configPath(selectedProject, true);
-    const servers = readMcpDocument(file).filter((item) => item.id !== serverId);
-    servers.push({ ...current, env: stringMap(env), headers: stringMap(headers) });
+    const local = readMcpDocument(file);
+    const existing = local.find((item) => item.id === serverId);
+    const servers = local.filter((item) => item.id !== serverId);
+    // Legacy local entries can define the service itself or override its endpoint.
+    // Only a newly created entry is known to contain private values alone.
+    const updated: McpServer = {
+      ...(existing ?? { ...current, local_values_only: true }),
+      env: stringMap(env),
+      headers: stringMap(headers),
+    };
+    // Explicit replacements restore only those keys, preserving other inherited-value revocations.
+    updated.deleted_env = updated.deleted_env?.filter((key) => !Object.hasOwn(updated.env, key));
+    updated.deleted_headers = updated.deleted_headers?.filter(
+      (key) => !Object.hasOwn(updated.headers, key),
+    );
+    servers.push(updated);
     this.#write(file, servers, true);
   }
 
@@ -684,21 +896,23 @@ export class McpManager {
   }
 
   restart(serverId: string, project?: string): Promise<ToolDescriptor[]> {
-    const previous = this.#restarting.get(serverId) ?? Promise.resolve();
+    const scope = this.#connectionScope(project),
+      restartKey = JSON.stringify([scope, serverId]);
+    const previous = this.#restarting.get(restartKey) ?? Promise.resolve();
     const restart = previous.then(async () => {
       const connecting = [...this.#connecting]
-        .filter((item) => item.serverId === serverId)
+        .filter((item) => item.serverId === serverId && item.scope === scope)
         .map((item) => item.promise);
       const children = [...this.#active.values()]
-        .filter((item) => item.server_id === serverId)
+        .filter((item) => item.server_id === serverId && item.scope === scope)
         .map(
           (item) =>
             (item.transport as Transport & { _process?: import("node:child_process").ChildProcess })
               ._process,
         )
         .filter((child) => child !== undefined);
-      this.stop(serverId);
-      await Promise.allSettled([...connecting, ...this.#closingClients]);
+      const closing = this.#stop(serverId, scope);
+      await Promise.allSettled([...connecting, ...closing]);
       if (children.some((child) => child.exitCode === null && child.signalCode === null))
         throw new Error("MCP server did not exit before restart");
       const server = effectiveMcp(this.#project(project), this.environment).find(
@@ -711,46 +925,97 @@ export class McpManager {
       () => undefined,
       () => undefined,
     );
-    this.#restarting.set(serverId, completed);
+    this.#restarting.set(restartKey, completed);
     void completed.then(() => {
-      if (this.#restarting.get(serverId) === completed) this.#restarting.delete(serverId);
+      if (this.#restarting.get(restartKey) === completed) this.#restarting.delete(restartKey);
     });
     return restart;
   }
 
   stop(serverId?: string): void {
+    // The legacy explicit stop operation still addresses all scopes.
+    this.#stop(serverId);
+  }
+
+  #stop(serverId?: string, scope?: string): Promise<void>[] {
+    const closing: Promise<void>[] = [];
     for (const [configHash, failure] of this.#failures) {
-      if (!serverId || failure.serverId === serverId) this.#failures.delete(configHash);
+      if ((!serverId || failure.serverId === serverId) && (!scope || failure.scope === scope))
+        this.#failures.delete(configHash);
     }
     for (const connecting of this.#connecting) {
-      if (!serverId || connecting.serverId === serverId) connecting.controller.abort();
+      if ((!serverId || connecting.serverId === serverId) && (!scope || connecting.scope === scope))
+        connecting.controller.abort();
     }
     for (const starting of this.#starting.values()) {
-      if (!serverId || starting.serverId === serverId) starting.controller.abort();
+      if ((!serverId || starting.serverId === serverId) && (!scope || starting.scope === scope))
+        starting.controller.abort();
     }
     for (const [configHash, active] of this.#active) {
-      if (!serverId || active.server_id === serverId) {
-        this.#dispose(active);
+      if ((!serverId || active.server_id === serverId) && (!scope || active.scope === scope)) {
+        closing.push(this.#dispose(active));
         this.#active.delete(configHash);
         const state = this.#runtimeStatus.get(configHash);
         if (state) this.#runtimeStatus.set(configHash, { ...state, state: "stopped" });
       }
     }
+    return closing;
+  }
+
+  #connectionScope(project?: string): string {
+    const selected = this.#project(project);
+    return JSON.stringify([
+      selected === null ? "global" : "workspace",
+      pathIdentity(selected ?? userHome(this.environment)),
+    ]);
+  }
+
+  #runtimeKey(fingerprint: string): string {
+    // A connection's queue stays stable while its own SDK rotates credentials.
+    // Only the latest, fully verified fingerprint may find that connection.
+    for (const [key, connection] of [...this.#active, ...this.#starting])
+      if (connection.identity.fingerprint === fingerprint) return key;
+    return fingerprint;
   }
 
   #start(server: McpServer, project?: string, bypassRestart = false): Promise<ToolDescriptor[]> {
-    const restarting = this.#restarting.get(server.id);
-    if (restarting && !bypassRestart) return restarting.then(() => this.#start(server, project));
-    const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    const scope = this.#connectionScope(project),
+      fingerprint = mcpToolCacheKey(server, this.#project(project), this.environment),
+      configHash = this.#runtimeKey(fingerprint);
+    const restarting = this.#restarting.get(JSON.stringify([scope, server.id]));
+    if (restarting && !bypassRestart)
+      return restarting.then(() => {
+        const active = this.#active.get(configHash),
+          current = this.getPrivate(server.id, project);
+        // Restart may have rotated credentials while this request was waiting.
+        // Reuse only that retained connection and its verified current snapshot.
+        if (
+          active &&
+          current &&
+          mcpToolCacheKey(current, this.#project(project), this.environment) ===
+            active.identity.fingerprint
+        )
+          return active.tools;
+        return this.#start(server, project);
+      });
     this.#assertRestartAllowed(configHash);
     const active = this.#active.get(configHash);
-    if (active) return Promise.resolve(active.tools);
+    if (active?.identity.fingerprint === fingerprint) return Promise.resolve(active.tools);
+    if (active) {
+      void this.#dispose(active);
+      this.#active.delete(configHash);
+    }
     const existing = this.#starting.get(configHash);
-    if (existing && !existing.controller.signal.aborted) return existing.promise;
-    if (existing) this.#starting.delete(configHash);
+    if (existing?.identity.fingerprint === fingerprint && !existing.controller.signal.aborted)
+      return existing.promise;
+    if (existing) {
+      existing.controller.abort();
+      this.#starting.delete(configHash);
+    }
     const controller = new AbortController();
-    const promise = this.#connect(server, true, project, controller.signal);
-    const starting = { serverId: server.id, controller, promise };
+    const identity = { key: configHash, fingerprint };
+    const promise = this.#connect(server, true, project, controller.signal, identity);
+    const starting = { serverId: server.id, scope, controller, promise, identity };
     this.#starting.set(configHash, starting);
     void promise
       .finally(() => {
@@ -760,10 +1025,11 @@ export class McpManager {
     return promise;
   }
 
-  #dispose(active: { client: Client; transport: Transport }): void {
+  #dispose(active: { client: Client; transport: Transport }): Promise<void> {
     const closing = this.#closeClient(active).catch(() => undefined);
     this.#closingClients.add(closing);
     void closing.finally(() => this.#closingClients.delete(closing));
+    return closing;
   }
 
   async #closeClient(active: { client: Client; transport: Transport }): Promise<void> {
@@ -787,13 +1053,22 @@ export class McpManager {
     retain: boolean,
     project?: string,
     signal?: AbortSignal,
+    identity?: ConnectionIdentity,
   ): Promise<ToolDescriptor[]> {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) controller.abort();
-    const connection = this.#connectNow(server, retain, project, controller.signal);
-    const attempt = { serverId: server.id, controller, promise: connection };
+    const scope = this.#connectionScope(project);
+    const fingerprint = mcpToolCacheKey(server, this.#project(project), this.environment);
+    const connection = this.#connectNow(
+      server,
+      retain,
+      project,
+      controller.signal,
+      identity ?? { key: fingerprint, fingerprint },
+    );
+    const attempt = { serverId: server.id, scope, controller, promise: connection };
     this.#connecting.add(attempt);
     this.#pendingConnections.add(connection);
     try {
@@ -810,12 +1085,29 @@ export class McpManager {
     retain: boolean,
     project: string | undefined,
     signal: AbortSignal,
+    identity: ConnectionIdentity,
   ): Promise<ToolDescriptor[]> {
+    const selectedProject = this.#project(project),
+      configHash = identity.key;
+    let retained = false;
     const checkCurrent = () => {
-      if (this.#closed || signal?.aborted) throw new Error("MCP server connection was stopped");
+      if (
+        this.#closed ||
+        signal.aborted ||
+        (retained && this.#active.get(configHash)?.identity !== identity)
+      )
+        throw new Error("MCP server connection was stopped");
+      if (retain) {
+        const current = this.getPrivate(server.id, project);
+        if (
+          !current ||
+          mcpToolCacheKey(current, selectedProject, this.environment) !== identity.fingerprint
+        )
+          throw new Error("MCP connection configuration changed before dispatch");
+      }
     };
     checkCurrent();
-    const configHash = createHash("sha256").update(JSON.stringify(server)).digest("hex");
+    const scope = this.#connectionScope(project);
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     let transport: Transport;
     if (server.transport === "stdio") {
@@ -836,8 +1128,114 @@ export class McpManager {
       const headers = { ...server.headers };
       transport = new StreamableHTTPClientTransport(url, {
         requestInit: { headers },
+        fetch: async (input, init) => {
+          // The SDK can retry tools/call after awaiting OAuth. Its custom fetch
+          // is the last boundary before each actual HTTP dispatch, including retries.
+          const request = input as string | URL | Request,
+            endpoint = request instanceof Request ? request.url : String(request),
+            method = init?.method ?? (request instanceof Request ? request.method : "GET");
+          if (new URL(endpoint).href === url.href && method.toUpperCase() === "POST") {
+            const serialized =
+              init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+            let body: unknown;
+            try {
+              if (typeof serialized === "string") body = JSON.parse(serialized);
+            } catch {
+              /* OAuth form bodies are not RPC. */
+            }
+            for (const value of Array.isArray(body) ? body : [body]) {
+              if (value === null || typeof value !== "object") continue;
+              const message = value as {
+                method?: unknown;
+                id?: unknown;
+                params?: { name?: unknown };
+              };
+              if (message.method !== "tools/call") continue;
+              const dispatch = this.#toolDispatch.getStore();
+              if (
+                !dispatch ||
+                dispatch.identity !== identity ||
+                message.params?.name !== dispatch.toolName ||
+                (typeof message.id !== "string" && typeof message.id !== "number") ||
+                (dispatch.requestId !== undefined && dispatch.requestId !== message.id)
+              )
+                throw new McpDispatchDenied("MCP tool dispatch context is unavailable or changed");
+              dispatch.requestId = message.id;
+              try {
+                dispatch.check();
+              } catch (error) {
+                throw new McpDispatchDenied(
+                  error instanceof Error ? error.message : "MCP tool dispatch denied",
+                  { cause: error },
+                );
+              }
+            }
+          }
+          return fetch(input, init);
+        },
         ...(server.transport === "streamable-http"
-          ? { authProvider: oauthProvider(server, this, project, this.#network.port) }
+          ? {
+              authProvider: oauthProvider(
+                server,
+                this,
+                project,
+                this.#network.port,
+                (write, invalidatesAuthorization) => {
+                  checkCurrent();
+                  const current = this.getPrivate(server.id, project);
+                  // The provider holds its original credential snapshot. Never let a
+                  // delayed refresh overwrite a user edit, account change or revocation.
+                  if (
+                    !current ||
+                    mcpToolCacheKey(current, selectedProject, this.environment) !==
+                      identity.fingerprint
+                  )
+                    throw new Error("MCP OAuth configuration changed before saving credentials");
+                  const previous = identity.fingerprint;
+                  write();
+                  const updated = this.getPrivate(server.id, project);
+                  if (!updated) throw new Error("MCP OAuth server was removed");
+                  identity.fingerprint = mcpToolCacheKey(
+                    updated,
+                    selectedProject,
+                    this.environment,
+                  );
+                  const sameAuthorization =
+                    !invalidatesAuthorization &&
+                    isDeepStrictEqual(
+                      oauthAuthorizationIdentity(current.oauth_credentials),
+                      oauthAuthorizationIdentity(updated.oauth_credentials),
+                    );
+                  if (retain && (previous !== identity.fingerprint || !sameAuthorization))
+                    this.sql.transaction(() => {
+                      this.sql.run(
+                        "DELETE FROM mcp_tool_cache WHERE server_id=?",
+                        identity.fingerprint,
+                      );
+                      if (sameAuthorization)
+                        this.sql.run(
+                          "UPDATE mcp_tool_cache SET server_id=? WHERE server_id=?",
+                          identity.fingerprint,
+                          previous,
+                        );
+                      else this.sql.run("DELETE FROM mcp_tool_cache WHERE server_id=?", previous);
+                    });
+                  // An invalid grant or a changed authorization identity needs a new
+                  // connection and discovery, not the directory of the previous login.
+                  if (!sameAuthorization && retained) {
+                    const active = this.#active.get(configHash);
+                    if (active?.identity === identity) {
+                      this.#active.delete(configHash);
+                      void this.#dispose(active);
+                      const status = this.#runtimeStatus.get(configHash);
+                      if (status)
+                        this.#runtimeStatus.set(configHash, { ...status, state: "stopped" });
+                    }
+                    throw new Error("MCP OAuth authorization changed; reconnect before dispatch");
+                  }
+                },
+              ),
+            }
           : {}),
       });
     }
@@ -851,6 +1249,7 @@ export class McpManager {
       server_id: server.id,
       server_name: server.name,
       config_hash: configHash,
+      project: selectedProject,
       state: "starting",
       started_at: started,
     });
@@ -868,27 +1267,26 @@ export class McpManager {
         if (!cursor) break;
         if (page === 99) throw new Error("MCP tool listing exceeded the pagination limit");
       }
-      const tools = allTools
-        .filter((tool) => server.allow_tools.length === 0 || server.allow_tools.includes(tool.name))
-        .map((tool) => ({
-          server_id: server.id,
-          name: tool.name,
-          ...(tool.description ? { description: tool.description } : {}),
-          input_schema: tool.inputSchema,
-          read_only: tool.annotations?.readOnlyHint === true,
-        }));
-      this.sql.transaction(() => {
-        this.sql.run("DELETE FROM mcp_tool_cache WHERE server_id=?", server.id);
-        const probedAt = new Date().toISOString();
-        for (const tool of tools)
+      const tools = allTools.map((tool) => ({
+        server_id: server.id,
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        input_schema: tool.inputSchema,
+        read_only: tool.annotations?.readOnlyHint === true,
+      }));
+      // Cache the raw directory. Revocation must not depend on probing again, and
+      // a same-named service in another workspace must never borrow this catalog.
+      if (retain)
+        this.sql.transaction(() => {
+          this.sql.run("DELETE FROM mcp_tool_cache WHERE server_id=?", identity.fingerprint);
           this.sql.run(
             "INSERT INTO mcp_tool_cache(server_id,tool_name,descriptor_json,probed_at) VALUES(?,?,?,?)",
-            server.id,
-            tool.name,
-            JSON.stringify(tool),
-            probedAt,
+            identity.fingerprint,
+            "",
+            JSON.stringify({ schema_version: 2, tools }),
+            new Date().toISOString(),
           );
-      });
+        });
       const previousOnclose = transport.onclose;
       const previousOnerror = transport.onerror;
       transport.onclose = () => {
@@ -900,6 +1298,7 @@ export class McpManager {
         this.#active.delete(configHash);
       };
       transport.onerror = (transportError) => {
+        if (transportError instanceof McpDispatchDenied) return;
         previousOnerror?.(transportError);
         if (this.#active.get(configHash)?.client !== client) return;
         const current = this.#runtimeStatus.get(configHash);
@@ -914,25 +1313,36 @@ export class McpManager {
         server_id: server.id,
         server_name: server.name,
         config_hash: configHash,
+        project: selectedProject,
         state: "running",
         started_at: started,
         last_used_at: new Date().toISOString(),
       });
       this.#failures.delete(configHash);
-      if (retain) this.#active.set(configHash, { client, transport, server_id: server.id, tools });
-      else {
+      if (retain) {
+        this.#active.set(configHash, {
+          client,
+          transport,
+          server_id: server.id,
+          tools,
+          scope,
+          identity,
+        });
+        retained = true;
+      } else {
         await this.#closeClient({ client, transport });
         this.#runtimeStatus.set(configHash, {
           server_id: server.id,
           server_name: server.name,
           config_hash: configHash,
+          project: selectedProject,
           state: "stopped",
           started_at: started,
         });
       }
       return tools;
     } catch (error) {
-      if (!this.#closed && !signal.aborted) this.#recordFailure(configHash, server.id);
+      if (!this.#closed && !signal.aborted) this.#recordFailure(configHash, server.id, scope);
       await this.#closeClient({ client, transport }).catch(() => undefined);
       const detail = redactMcpError(error, server);
       if (!this.#closed)
@@ -940,6 +1350,7 @@ export class McpManager {
           server_id: server.id,
           server_name: server.name,
           config_hash: configHash,
+          project: selectedProject,
           state: signal?.aborted ? "stopped" : "error",
           started_at: started,
           error: detail,
@@ -950,14 +1361,14 @@ export class McpManager {
     }
   }
 
-  #recordFailure(configHash: string, serverId: string): void {
+  #recordFailure(configHash: string, serverId: string, scope: string): void {
     const now = Date.now();
     const previous = this.#failures.get(configHash);
     this.#failures.set(
       configHash,
       previous && now - previous.since <= McpManager.#failureWindowMs
         ? { ...previous, count: previous.count + 1 }
-        : { serverId, count: 1, since: now },
+        : { serverId, scope, count: 1, since: now },
     );
   }
 
@@ -1206,4 +1617,53 @@ function validateRegistryEntry(entry: RegistryEntry): void {
   for (const value of [...entry.package_arguments, ...entry.runtime_arguments])
     if (typeof value !== "string" || value.includes("\0"))
       throw new Error("Invalid MCP package argument");
+}
+
+function oauthAuthorizationIdentity(value: unknown) {
+  const record = (input: unknown): Record<string, unknown> =>
+    input !== null && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  const credentials = record(value),
+    tokens = record(credentials.token_response),
+    client = record(credentials.client_information),
+    discovery = record(credentials.discovery_state);
+  return {
+    client,
+    issuer: tokens.issuer ?? client.issuer ?? null,
+    authorizationServer: discovery.authorizationServerUrl ?? tokens.issuer ?? client.issuer ?? null,
+    scopes:
+      typeof tokens.scope === "string" ? tokens.scope.split(/\s+/).filter(Boolean).sort() : [],
+  };
+}
+
+/** A derived key in the existing cache table; old ID-only catalogs have no verified owner. */
+export function mcpToolCacheKey(
+  server: McpServer,
+  project: string | null,
+  environment: NodeJS.ProcessEnv,
+): string {
+  const scope = pathIdentity(project ?? userHome(environment));
+  const connection =
+    server.transport === "stdio"
+      ? {
+          transport: server.transport,
+          command: server.command,
+          args: server.args,
+          cwd: server.cwd ?? null,
+        }
+      : { transport: server.transport, url: server.url };
+  return `mcp-v2:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        scope,
+        project === null ? "global" : "workspace",
+        server.id,
+        connection,
+        Object.entries(server.env).sort(),
+        Object.entries(server.headers).sort(),
+        server.oauth_credentials ?? null,
+      ]),
+    )
+    .digest("hex")}`;
 }

@@ -1,3 +1,4 @@
+import { requireContinuationToolPolicy } from "./mcp-policy";
 import { readHandoff, fingerprintHandoff } from "./handoff-work";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -233,7 +234,9 @@ export function continuationMcpAvailable(
   workspaceId: string,
   port: number,
   store: BackendStore,
+  environment: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  requireContinuationToolPolicy(project, target, environment);
   if (workspaceId === "." || workspaceId === "..") return false;
   let endpoint: string | undefined;
   if (target === "codex") {
@@ -445,6 +448,7 @@ export async function prepareSessionHandoff(
           workspace.registeredId,
           mcpHubStatus.port,
           store,
+          env,
         )
       : false;
   const targetSupportsContinuation =

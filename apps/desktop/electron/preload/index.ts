@@ -129,6 +129,28 @@ const desktopApi = Object.freeze({
       ipcRenderer.invoke("agentkib:skills:apply-deployment", token, approveHome),
   }),
   mcp: Object.freeze({
+    previewMigration: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:preview-migration", request),
+    applyMigration: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:apply-migration", request),
+
+    managementState: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:management-state", request),
+    saveConfiguration: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:save-configuration", request),
+    removeConfiguration: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:remove-configuration", request),
+    previewImport: (request: unknown) => ipcRenderer.invoke("agentkib:mcp:preview-import", request),
+    applyImport: (request: unknown) => ipcRenderer.invoke("agentkib:mcp:apply-import", request),
+    checkConnections: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:check-connections", request),
+    planConnections: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:plan-connections", request),
+    applyConnections: (request: unknown) =>
+      ipcRenderer.invoke("agentkib:mcp:apply-connections", request),
+    getPolicy: (request: unknown) => ipcRenderer.invoke("agentkib:mcp:get-policy", request),
+    savePolicy: (request: unknown) => ipcRenderer.invoke("agentkib:mcp:save-policy", request),
+
     hubStatus: () => ipcRenderer.invoke("agentkib:mcp:hub-status"),
     connectionInfo: (workspaceId: string, targetAgent: AgentKind) =>
       ipcRenderer.invoke("agentkib:mcp:connection-info", workspaceId, targetAgent),

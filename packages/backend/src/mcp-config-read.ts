@@ -1,6 +1,7 @@
 import path from "node:path";
 import { homedir } from "node:os";
-import { statSync } from "node:fs";
+import { lstatSync } from "node:fs";
+import { isReparseOrSymlink } from "./native-files";
 import { z } from "zod";
 import { agentSchema, unsigned } from "./rpc";
 import { readText } from "./files";
@@ -19,6 +20,15 @@ const common = {
   allow_tools: z.array(z.string()).default([]),
   lan_allow_tools: z.array(z.string()).default([]),
   supports_parallel_tool_calls: z.boolean().default(false),
+  required_env: z.array(z.string()).optional(),
+  required_headers: z.array(z.string()).optional(),
+  native_source: z
+    .object({ candidate_id: z.string(), fingerprint: z.string(), agent: agentSchema })
+    .optional(),
+  local_values_only: z.literal(true).optional(),
+  deleted_env: z.array(z.string()).optional(),
+  deleted_headers: z.array(z.string()).optional(),
+  clear_oauth: z.literal(true).optional(),
   package: z
     .object({
       kind: z.enum(["npm", "pypi", "remote", "local"]),
@@ -28,7 +38,7 @@ const common = {
     .nullable()
     .optional(),
 };
-const serverSchema = z.discriminatedUnion("transport", [
+export const serverSchema = z.discriminatedUnion("transport", [
   z.object({
     ...common,
     transport: z.literal("stdio"),
@@ -47,12 +57,13 @@ export type McpServer = z.infer<typeof serverSchema>;
 export function readMcpDocument(file: string): McpServer[] {
   let metadata;
   try {
-    metadata = statSync(file);
+    metadata = lstatSync(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw new Error(`Unable to inspect MCP config ${file}`);
   }
-  if (!metadata.isFile()) throw new Error(`MCP config must be a regular file: ${file}`);
+  if (!metadata.isFile() || isReparseOrSymlink(file, metadata))
+    throw new Error(`MCP config must be a regular file: ${file}`);
   if (metadata.size > 1024 * 1024)
     throw new Error(`MCP config exceeds the 1 MiB read limit: ${file}`);
   let parsed: unknown;
@@ -91,29 +102,55 @@ export function readMcpDocument(file: string): McpServer[] {
 }
 export function effectiveMcp(project: string | null, environment: NodeJS.ProcessEnv): McpServer[] {
   const global = path.join(userHome(environment), ".agentkib"),
-    roots = project === null ? [global] : [global, path.join(project, ".agentkib")],
-    servers = new Map<string, McpServer>();
-  for (const root of roots)
-    for (const name of ["mcp.json", "mcp.local.json"])
-      for (const overlay of readMcpDocument(path.join(root, name))) {
-        const base = servers.get(overlay.id);
-        if (!base) {
-          servers.set(overlay.id, overlay);
-          continue;
-        }
+    roots = project === null ? [global] : [global, path.join(project, ".agentkib")];
+  return mergeMcpDocuments(
+    roots.flatMap((root) =>
+      ["mcp.json", "mcp.local.json"].map((name) => readMcpDocument(path.join(root, name))),
+    ),
+  );
+}
+
+/** Shared by reads and write preflight so inherited private values have identical semantics. */
+export function mergeMcpDocuments(documents: readonly (readonly McpServer[])[]): McpServer[] {
+  const servers = new Map<string, McpServer>();
+  for (const document of documents)
+    for (const overlay of document) {
+      const base = servers.get(overlay.id);
+      if (overlay.local_values_only) {
+        if (!base) continue;
+        const env = { ...base.env, ...overlay.env },
+          headers = { ...base.headers, ...overlay.headers };
+        for (const key of overlay.deleted_env ?? []) delete env[key];
+        for (const key of overlay.deleted_headers ?? []) delete headers[key];
         servers.set(overlay.id, {
-          ...overlay,
-          targets: overlay.targets.length ? overlay.targets : base.targets,
-          allow_tools: overlay.allow_tools.length ? overlay.allow_tools : base.allow_tools,
-          lan_allow_tools: overlay.lan_allow_tools.length
-            ? overlay.lan_allow_tools
-            : base.lan_allow_tools,
-          package: overlay.package ?? base.package,
-          env: { ...base.env, ...overlay.env },
-          headers: { ...base.headers, ...overlay.headers },
-          oauth_credentials: overlay.oauth_credentials ?? base.oauth_credentials,
+          ...base,
+          env,
+          headers,
+          oauth_credentials: overlay.clear_oauth
+            ? undefined
+            : (overlay.oauth_credentials ?? base.oauth_credentials),
         });
+        continue;
       }
+      if (!base) {
+        servers.set(overlay.id, overlay);
+        continue;
+      }
+      servers.set(overlay.id, {
+        ...overlay,
+        targets: overlay.targets.length ? overlay.targets : base.targets,
+        allow_tools: overlay.allow_tools.length ? overlay.allow_tools : base.allow_tools,
+        lan_allow_tools: overlay.lan_allow_tools.length
+          ? overlay.lan_allow_tools
+          : base.lan_allow_tools,
+        package: overlay.package ?? base.package,
+        env: { ...base.env, ...overlay.env },
+        headers: { ...base.headers, ...overlay.headers },
+        oauth_credentials: overlay.clear_oauth
+          ? undefined
+          : (overlay.oauth_credentials ?? base.oauth_credentials),
+      });
+    }
   return [...servers.entries()].sort(([a], [b]) => compareUtf8(a, b)).map(([, server]) => server);
 }
 export function visibleMcpNames(

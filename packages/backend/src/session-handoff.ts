@@ -39,12 +39,16 @@ const sensitiveKeys = new Set([
   "passwords",
   "passwordhash",
   "passwd",
+  "passphrase",
   "credential",
   "credentials",
   "databaseurl",
   "dsn",
 ]);
 const normalizeKey = (key: string) => key.replace(/[^a-z\d]/gi, "").toLowerCase();
+export function isSensitiveSessionKey(key: string): boolean {
+  return sensitiveKeys.has(normalizeKey(key));
+}
 function redactPrefixedCredentials(value: string, count: { value: number }): string {
   return value.replace(
     /(^|[^A-Za-z0-9_-])(sk-|ghp_|github_pat_|xoxb-|xoxp-)([A-Za-z0-9_-]{12,})/gi,
@@ -68,7 +72,7 @@ function sanitizeLine(line: string, count: { value: number }): string {
   output = output.replace(
     keyValue,
     (match, before: string, key: string, delimiter: string, raw: string) => {
-      if (!sensitiveKeys.has(normalizeKey(key))) return match;
+      if (!isSensitiveSessionKey(key)) return match;
       const value = raw.trim();
       if (!value || value.startsWith("[REDACTED]")) return match;
       count.value += 1;
@@ -117,7 +121,7 @@ export function sanitizeSessionText(value: string, redactions: { value: number }
 }
 
 function sanitizeJson(value: unknown, count: { value: number }, key?: string): unknown {
-  if (key && sensitiveKeys.has(normalizeKey(key))) {
+  if (key && isSensitiveSessionKey(key)) {
     count.value += 1;
     return "[REDACTED]";
   }

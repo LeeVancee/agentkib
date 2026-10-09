@@ -294,6 +294,9 @@ jobs:
           args=(--publish never)
           if [[ "$RUNNER_OS" == macOS ]]; then
             args+=(--mac dmg zip)
+            if [[ "${{ matrix.arch }}" == x64 ]]; then
+              args+=(--x64)
+            fi
             if [[ "$SHOULD_PUBLISH" == true ]]; then
               export CSC_LINK="$APPLE_CERTIFICATE"
               export CSC_KEY_PASSWORD="$APPLE_CERTIFICATE_PASSWORD"

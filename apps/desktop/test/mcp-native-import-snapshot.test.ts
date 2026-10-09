@@ -2,7 +2,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -13,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { Commands } from "../../../packages/backend/src/commands";
 import { McpManager } from "../../../packages/backend/src/mcp";
 import { McpManagement } from "../../../packages/backend/src/mcp-management";
@@ -39,7 +39,7 @@ function write(file: string, content: string) {
   writeFileSync(file, content);
 }
 function fixture() {
-  const root = realpathSync(
+  const root = canonicalize(
     mkdtempSync(path.join(os.tmpdir(), "agentkib-native-import-snapshot-")),
   );
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));

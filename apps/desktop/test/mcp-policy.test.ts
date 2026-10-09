@@ -4,7 +4,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -27,6 +26,7 @@ import {
   type McpToolPolicyRule,
 } from "../../../packages/backend/src/mcp-policy";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const requireBackend = createRequire(
   new URL("../../../packages/backend/package.json", import.meta.url),
@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-tool-policy-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-tool-policy-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { McpManager } from "../../../packages/backend/src/mcp";
 import { serverSchema, type McpServer } from "../../../packages/backend/src/mcp-config-read";
 import { McpManagement } from "../../../packages/backend/src/mcp-management";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -19,7 +20,7 @@ const originalCredentials = { fixture: "original" };
 const replacementCredentials = { fixture: "replacement" };
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-legacy-local-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-legacy-local-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

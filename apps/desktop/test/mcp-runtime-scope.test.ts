@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { Commands } from "../../../packages/backend/src/commands";
 import { McpManager } from "../../../packages/backend/src/mcp";
 import type { McpServer } from "../../../packages/backend/src/mcp-config-read";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -13,7 +14,7 @@ afterEach(async () => {
 });
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-runtime-scope-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-runtime-scope-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

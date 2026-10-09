@@ -1,12 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +8,7 @@ import { McpManagement } from "../../../packages/backend/src/mcp-management";
 import { scanNativeMcp } from "../../../packages/backend/src/mcp-native-scan";
 import { McpStdioTransport } from "../../../packages/backend/src/mcp-stdio-transport";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -24,7 +17,7 @@ afterEach(async () => {
 });
 
 function fixture(realProbe = false) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-migration-privacy-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-migration-privacy-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

@@ -1,13 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +8,7 @@ import { McpManager } from "../../../packages/backend/src/mcp";
 import { McpManagement } from "../../../packages/backend/src/mcp-management";
 import * as nativeFiles from "../../../packages/backend/src/native-files";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 const secret = "synthetic-gitignore-private-value";
@@ -26,7 +19,7 @@ afterEach(async () => {
 });
 
 function fixture(ignore?: string) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-gitignore-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-gitignore-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
@@ -19,6 +19,7 @@ import { McpHub } from "../../../packages/backend/src/mcp-hub";
 import { McpOAuth } from "../../../packages/backend/src/mcp-oauth";
 import { buildSessionArchive } from "../../../packages/backend/src/session-archive";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const requireBackend = createRequire(
   new URL("../../../packages/backend/package.json", import.meta.url),
@@ -75,7 +76,7 @@ async function fixture(
   manifestId: string = "manifest-workspace",
   workspaceId: string = "registered-workspace",
 ) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-hub-check-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-hub-check-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const project = path.join(root, "project");

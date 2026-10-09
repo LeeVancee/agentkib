@@ -3,7 +3,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -12,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { McpManagement } from "../../../packages/backend/src/mcp-management";
 import { McpManager } from "../../../packages/backend/src/mcp";
 import { Commands } from "../../../packages/backend/src/commands";
@@ -38,7 +38,7 @@ function write(file: string, text: string) {
   writeFileSync(file, text);
 }
 function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-management-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-management-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import type { McpServer } from "../../../packages/backend/src/mcp-config-read";
 import { McpOAuth, oauthProvider } from "../../../packages/backend/src/mcp-oauth";
 import { Commands } from "../../../packages/backend/src/commands";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -79,7 +80,7 @@ const tokens = {
 };
 
 function interactiveFixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-interactive-oauth-"))),
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-interactive-oauth-"))),
     home = path.join(root, "home"),
     project = path.join(root, "project"),
     project2 = path.join(root, "project2"),

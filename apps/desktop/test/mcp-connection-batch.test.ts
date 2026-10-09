@@ -1,18 +1,11 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { McpConnectionBatch } from "../../../packages/backend/src/mcp-connection-batch";
 import {
   MCP_CONNECTION_AGENTS,
@@ -35,7 +28,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 function fixture(agents: readonly McpConnectionAgent[] = MCP_CONNECTION_AGENTS) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-batch-"))),
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-batch-"))),
     project = path.join(root, "project"),
     home = path.join(root, "home"),
     data = path.join(root, "data");

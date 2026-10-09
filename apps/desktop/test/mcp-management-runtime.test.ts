@@ -4,7 +4,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -27,6 +26,7 @@ import {
 import { TypeScriptBackend } from "../../../packages/backend/src/index";
 import { BACKEND_INITIALIZE } from "../../../packages/backend/src/migration";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { Commands } from "../../../packages/backend/src/commands";
 import { McpManager } from "../../../packages/backend/src/mcp";
 
@@ -58,7 +58,7 @@ function write(file: string, value: string) {
   writeFileSync(file, value);
 }
 async function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-rpc-")));
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-mcp-rpc-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home"),
     project = path.join(root, "project"),

@@ -482,3 +482,23 @@ git diff --check
 | `apps/web/dist-hosted/index.html` | `32af8b13872b1cd89c4c663267fc49a20c78d0bc1f675cf27869d6785be933a2` |
 
 本轮未重做图形、真实 Agent 重载、模型、OAuth、LAN 或 Windows/Linux 实机验收；没有访问个人 Agent 配置、增加生产依赖或修改数据库表。未覆盖安装、提交、推送或发布。
+
+## PR #111 Windows CI 路径夹具修复
+
+失败源码为 `4e598bd788a9e8ec7e515b65f27442aa0d849a52`。[Windows CI run 37941810233](https://github.com/starroyhq/agentkib/actions/runs/37941810233) 的 x64 与 ARM64 均在后端稳定性测试中报告 **7 文件、95 项失败**；主 CI 和两个 Linux 检查通过。完整失败日志保存在本机 `<QA_LOG_DIR>/pr111-ci/windows-failed.log`。
+
+Windows runner 的临时目录包含 8.3 短路径别名。新增 MCP 测试使用 `fs.realpathSync` 构造根目录并直接登记为 `canonical_path`，但生产的 `canonicalize` 使用 `fs.realpathSync.native`，返回展开后的完整路径。因此测试登记的身份与真实注册流程不一致，触发工作区路径变化拒绝；相同原因还导致来源路径查找、读取次数统计和回滚注入的精确路径比较失配。
+
+本次将该 PR 中 15 个 MCP 测试及一个相邻旧连接测试的根目录统一为现有 `canonicalize`，与真实工作区注册及已有 MCP 交接测试一致。保留全部路径、身份、回滚、调用次数和性能断言；未修改生产实现、跳过条件或测试期限。相邻的 `mcp-connection.test.ts` 原先不在 Windows/Linux stability 选集中，现补入既有命令，防止同类遗漏。
+
+Node **22.23.3**、pnpm **12.10.1** 下执行：
+
+```sh
+pnpm --filter @agentkib/desktop exec vitest run test/mcp-connection-batch.test.ts test/mcp-connection-hub.test.ts test/mcp-legacy-local.test.ts test/mcp-management-gitignore.test.ts test/mcp-management-runtime.test.ts test/mcp-management.test.ts test/mcp-migration-alias.test.ts test/mcp-migration-privacy.test.ts test/mcp-native-import-snapshot.test.ts test/mcp-native-scan-snapshot.test.ts test/mcp-oauth.test.ts test/mcp-policy-oauth.test.ts test/mcp-policy.test.ts test/mcp-public-redaction.test.ts test/mcp-runtime-scope.test.ts
+pnpm --filter @agentkib/desktop exec vitest run test/mcp-connection.test.ts
+pnpm format:check
+pnpm typecheck
+git diff --check
+```
+
+本机 macOS 两次定向测试合计 **16 文件、578 项通过**（15 文件 444 项，旧连接文件 134 项），格式与类型检查通过；另对修改测试文件及 `package.json` 执行 `oxfmt --check` 并通过。独立子代理逐项审核两个架构的失败集合与修复，确认未发现另一独立根因或校验放宽。原始日志为 `<QA_LOG_DIR>/pr111-ci/windows-fixture-targeted.log`、`windows-fixture-connection.log`、`fix-format.log` 和 `fix-typecheck.log`。本段记录提交前本机验证，Windows 两种架构须以修复提交后的 PR 检查为准，不能用 macOS 结果替代。

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { Commands } from "../../../packages/backend/src/commands";
 import { McpManager, mcpToolCacheKey } from "../../../packages/backend/src/mcp";
 import type { McpServer } from "../../../packages/backend/src/mcp-config-read";
 import { BackendStore } from "../../../packages/backend/src/store";
+import { canonicalize } from "../../../packages/backend/src/paths";
 import { StreamableHTTPClientTransport } from "../../../packages/backend/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -16,7 +17,7 @@ afterEach(async () => {
 });
 
 function fixture(parallel = false) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "agentkib-policy-oauth-"))),
+  const root = canonicalize(mkdtempSync(path.join(os.tmpdir(), "agentkib-policy-oauth-"))),
     home = path.join(root, "home"),
     project = path.join(root, "project"),
     project2 = path.join(root, "project2"),

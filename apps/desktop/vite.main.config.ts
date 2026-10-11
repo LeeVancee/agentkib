@@ -24,11 +24,7 @@ export default defineConfig({
     rollupOptions: {
       // `ws` exposes a browser conditional export; Electron's main process needs
       // the Node implementation that provides WebSocketServer.
-      external: [
-        "electron",
-        ...builtinModules,
-        ...builtinModules.map((name) => `node:${name}`),
-      ],
+      external: ["electron", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
     },
   },
 });

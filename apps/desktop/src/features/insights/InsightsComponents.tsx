@@ -136,6 +136,7 @@ export function ActivityHeatmap({
 }) {
   const { formatCompactNumber, formatNumber, locale, tr } = useI18n();
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const tabStopIndex = Math.min(focusedIndex, Math.max(0, points.length - 1));
   const cellRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const metricLabel = metricLabelFor(metric, tr);
   const formatDay = (value: string) =>
@@ -212,7 +213,7 @@ export function ActivityHeatmap({
                   )}
                   title={accessibleValue}
                   aria-label={accessibleValue}
-                  tabIndex={index === focusedIndex ? 0 : -1}
+                  tabIndex={index === tabStopIndex ? 0 : -1}
                   onFocus={() => setFocusedIndex(index)}
                   onKeyDown={(event) => moveFocus(index, event)}
                 />

@@ -1,3 +1,4 @@
+import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { FileCode2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -119,7 +120,4 @@ function EmptyAssetState({ hasAssets }: { hasAssets: boolean }) {
   );
 }
 
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
-}
+

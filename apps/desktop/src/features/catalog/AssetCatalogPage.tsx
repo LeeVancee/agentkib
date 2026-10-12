@@ -1,3 +1,4 @@
+import { shortPath } from "@/lib/path-display";
 import { useI18n } from "@/core/useI18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,10 +41,7 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const ASSETS_PER_PAGE = 6;
 
-function shortPath(path: string) {
-  const parts = path.split("/").filter(Boolean);
-  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : path;
-}
+
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;

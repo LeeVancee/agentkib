@@ -23,6 +23,7 @@
 - `pnpm test`：桌面 210 个测试文件，3110 项通过、2 项既有跳过；Web 36 个文件，683 项通过。
 - `pnpm build`、`pnpm build:web:hosted`：通过。
 - `node --test .github/scripts/*.test.mjs`：14/14 通过。
+- 首次 PR CI 发现既有 Skills 测试死锁：第八个请求若为 `SKILL.md`，测试等待的 barrier 不会被释放。保持原断言，把释放移到共同路径，并参数化首个／最后到达；旧逻辑确定性重现超时，修正后 `skills-lifecycle.test.ts` 96/96 通过。只改测试，无生产逻辑变化。
 - 已安装 v0.17.0 的隔离负向：默认空配置可启动；启用本机 Web 后未产生就绪报告，探针在 75 秒期限内判定失败并清理自有进程。负向日志没有输出 JS 堆栈，因此该次实验只证明启动门槛能拦截，具体模块根因依据安装包检查与构建负向测试。
 - `bash -n .github/scripts/smoke-test-linux-installed.sh`、工作流 YAML 解析、`git diff --check`：通过。
 - 独立子代理复核：no finding；Windows/Linux 实际进程与 macOS x64 执行仍由 CI 候选包检验。Windows 超时清理使用活跃父进程的 `taskkill /T`，不宣称提供父进程已经消失后的通用孤儿进程追踪。

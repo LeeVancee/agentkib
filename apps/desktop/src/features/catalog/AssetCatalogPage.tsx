@@ -41,8 +41,6 @@ import { AGENT_LABELS as agentLabels } from "@/core/agents";
 
 const ASSETS_PER_PAGE = 6;
 
-
-
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

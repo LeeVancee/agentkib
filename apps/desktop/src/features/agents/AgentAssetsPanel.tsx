@@ -119,5 +119,3 @@ function EmptyAssetState({ hasAssets }: { hasAssets: boolean }) {
     </div>
   );
 }
-
-

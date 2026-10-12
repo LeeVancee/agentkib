@@ -29,6 +29,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - name: Test packaged startup readiness probe
+        run: node --test .github/scripts/run-desktop-startup-smoke.test.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build
@@ -54,6 +56,8 @@ jobs:
           pnpm_version=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).packageManager.replace(/^pnpm@/, '')")
           npm install --global "pnpm@$pnpm_version"
       - run: pnpm install --frozen-lockfile
+      - name: Test packaged startup readiness probe
+        run: node --test .github/scripts/run-desktop-startup-smoke.test.mjs
       - run: pnpm typecheck
       - name: Build backend and stage native bindings
         run: pnpm --filter @agentkib/desktop backend:build

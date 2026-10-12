@@ -138,7 +138,7 @@ export class Catalog {
     workspaceId?: string | null;
     limit: number;
   }) {
-    const pattern = `%${params.query.trim().replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const pattern = `%${params.query.trim().replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
     return this.sql
       .rows(
         "SELECT id,scope,workspace_id,agent,kind,name,path,summary,size,modified_at,summary_key,summary_params FROM catalog_assets WHERE (name LIKE ?1 ESCAPE '\\' OR path LIKE ?1 ESCAPE '\\' OR summary LIKE ?1 ESCAPE '\\' OR COALESCE(summary_key,'') LIKE ?1 ESCAPE '\\') AND (?2 IS NULL OR agent=?2) AND (?3 IS NULL OR workspace_id=?3) ORDER BY modified_at DESC,name ASC LIMIT ?4",

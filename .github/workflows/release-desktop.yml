@@ -389,7 +389,9 @@ jobs:
           set -euo pipefail
           app=$(find apps/desktop/release-electron -type d -name '*.app' -print -quit)
           test -n "$app"
-          node .github/scripts/run-desktop-startup-smoke.mjs "$app/Contents/MacOS/AgentKib"
+          # The synthetic HOME has no login keychain; avoid an unattended native
+          # authorization dialog. This smoke does not validate account storage.
+          node .github/scripts/run-desktop-startup-smoke.mjs "$app/Contents/MacOS/AgentKib" --use-mock-keychain
 
       - name: Remove Apple notarization private key
         if: runner.os == 'macOS' && always()

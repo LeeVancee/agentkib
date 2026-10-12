@@ -24,7 +24,9 @@
 - `pnpm build`、`pnpm build:web:hosted`：通过。
 - `node --test .github/scripts/*.test.mjs`：14/14 通过。
 - 首次 PR CI 发现既有 Skills 测试死锁：第八个请求若为 `SKILL.md`，测试等待的 barrier 不会被释放。保持原断言，把释放移到共同路径，并参数化首个／最后到达；旧逻辑确定性重现超时，修正后 `skills-lifecycle.test.ts` 96/96 通过。只改测试，无生产逻辑变化。
-- 已安装 v0.17.0 的隔离负向：默认空配置可启动；启用本机 Web 后未产生就绪报告，探针在 75 秒期限内判定失败并清理自有进程。负向日志没有输出 JS 堆栈，因此该次实验只证明启动门槛能拦截，具体模块根因依据安装包检查与构建负向测试。
+- 已安装 v0.17.0 的首次隔离负向：默认空配置可启动；启用本机 Web 后未产生就绪报告，探针在 75 秒期限内判定失败并清理自有进程。当时日志没有 JS 堆栈，不作为 WebSocket 根因证据。
+- 首次 artifact-only 运行 `38239069412`：Windows 双架构、Ubuntu 双架构及 Fedora 安装启动均通过；macOS 双架构被 75 秒就绪期限拦截。独立本机重现采样显示主线程停在 `SecItemAdd → defaultKeychainUI → AuthorizationCopyRights`，隔离 HOME 没有登录钥匙串，引发同步原生授权等待。相同已安装 v0.17.0 加 `--use-mock-keychain` 后立即退出 1，准确输出 `import_browser.WebSocketServer is not a constructor`。这证明测试钥匙串不会掩盖本次模块错误。仅 macOS 合成 CI 启动添加此参数；正式应用启动和安全存储代码不变，不宣称通过真实钥匙串或账号登录验收。
+- 本机构建临时未签名 `.app`，使用相同开启 Web 的隔离探针及测试钥匙串，三个就绪标记全部出现，正常退出 0。构建位置 `/tmp/agentkib-release-v0.17.1/local-candidate/mac-arm64/AgentKib.app`；报告 `local-package-ready.json`。此本地诊断包未暂存 quota sidecar，不替代 CI 完整候选包；没有下载 CI 安装包或覆盖 `/Applications/AgentKib.app`。
 - `bash -n .github/scripts/smoke-test-linux-installed.sh`、工作流 YAML 解析、`git diff --check`：通过。
 - 独立子代理复核：no finding；Windows/Linux 实际进程与 macOS x64 执行仍由 CI 候选包检验。Windows 超时清理使用活跃父进程的 `taskkill /T`，不宣称提供父进程已经消失后的通用孤儿进程追踪。
 

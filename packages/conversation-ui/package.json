@@ -36,6 +36,8 @@
     "./features/sessions/managed-tasks": "./src/features/sessions/managed-tasks.tsx",
     "./features/sessions/pending-center": "./src/features/sessions/pending-center.tsx",
     "./features/sessions/pending-controls": "./src/features/sessions/pending-controls.ts",
+    "./features/sessions/permission-mode-copy": "./src/features/sessions/permission-mode-copy.ts",
+    "./features/sessions/permission-mode-notice": "./src/features/sessions/permission-mode-notice.tsx",
     "./features/sessions/session-activity": "./src/features/sessions/session-activity.ts",
     "./features/sessions/session-context": "./src/features/sessions/session-context.tsx",
     "./features/sessions/session-dialogs": "./src/features/sessions/session-dialogs.tsx",

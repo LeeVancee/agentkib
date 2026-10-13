@@ -21,6 +21,16 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}
 type JsonObject = Record<string, any>;
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudePermissionMode = "default" | "plan" | "acceptEdits";
+/**
+ * Modes the CLI can report in stream-json (`system/init` and `system/status` carry
+ * `permissionMode`). Only `ClaudePermissionMode` can be selected from AgentKib; the rest are
+ * observed and displayed, never offered as choices.
+ */
+export type ClaudeObservedPermissionMode =
+  | ClaudePermissionMode
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
 export type ClaudeRunnerSettings = {
   model: string | null;
   effort: ClaudeEffort | null;
@@ -935,6 +945,9 @@ export class ClaudeManagedRunnerProcess {
     permissionMode: null,
   };
   #settingsAcknowledged = false;
+  // What the CLI says it runs in (null until the current worker reports). Kept apart from
+  // #settings, which records only explicit selections and is what a relaunch replays.
+  #observedPermissionMode: ClaudeObservedPermissionMode | null = null;
   #configuring = false;
   #steeringIds = new Set<string>();
   #reportedResult?: ClaudeRunnerTerminalResult;
@@ -999,6 +1012,15 @@ export class ClaudeManagedRunnerProcess {
       settings: this.#effectiveSettings,
       settingsAcknowledged: this.#settingsAcknowledged && this.state.initialized,
     });
+  }
+
+  /**
+   * The permission mode the current worker reported, or null while none has. This is a getter,
+   * not part of optionsSnapshot: snapshots clone the model and command catalogs, and the host
+   * reads this on every CLI frame.
+   */
+  get observedPermissionMode(): ClaudeObservedPermissionMode | null {
+    return this.#observedPermissionMode;
   }
 
   /** Discover capabilities with initialize only: never enqueue a user/model turn. */
@@ -1075,6 +1097,8 @@ export class ClaudeManagedRunnerProcess {
         await this.#requestControl({ subtype: "set_permission_mode", mode: next.permissionMode });
       this.#settings = next;
       this.#effectiveSettings = { ...this.#effectiveSettings, ...settings };
+      // The CLI acknowledged the change, so this is the mode it now runs in.
+      if (settings.permissionMode !== undefined) this.#observePermission(settings.permissionMode);
       this.#settingsAcknowledged = true;
       this.state.revision++;
       this.#notify();
@@ -1258,6 +1282,7 @@ export class ClaudeManagedRunnerProcess {
     if (this.#child) throw new Error("Claude runner already started");
     this.#acquireLease();
     this.#effectiveSettings = { model: null, effort: null, permissionMode: null };
+    this.#observedPermissionMode = null;
     let child: ChildProcess;
     try {
       child = spawn(
@@ -1457,14 +1482,22 @@ export class ClaudeManagedRunnerProcess {
           this.#effectiveSettings = {
             model: this.#effectiveSettings.model ?? this.#settings.model,
             effort: this.#effectiveSettings.effort ?? this.#settings.effort,
-            permissionMode: this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode,
+            // A mode the CLI already reported (system/init can precede this response) wins
+            // over the launch selection, including an unselectable one that left this null.
+            permissionMode:
+              this.#observedPermissionMode !== null
+                ? this.#effectiveSettings.permissionMode
+                : (this.#effectiveSettings.permissionMode ?? this.#settings.permissionMode),
           };
           this.#settingsAcknowledged = true;
         }
         if (frame.type === "system" && frame.subtype === "init") {
           if (shortString(frame.model, 256)) this.#effectiveSettings.model = frame.model;
-          if (isPermissionMode(frame.permissionMode))
-            this.#effectiveSettings.permissionMode = frame.permissionMode;
+        }
+        if (frame.type === "system" && (frame.subtype === "init" || frame.subtype === "status")) {
+          // Unknown or malformed values are ignored: observing never ends the process.
+          const mode = normalizeObservedPermissionMode(frame.permissionMode);
+          if (mode !== null) this.#observePermission(mode);
         }
         if (frame.type === "system" && frame.subtype === "commands_changed")
           this.#commands = projectCommands(frame.commands);
@@ -1705,6 +1738,16 @@ export class ClaudeManagedRunnerProcess {
     }
   }
 
+  /**
+   * Record the mode the CLI runs in. A mode that cannot be selected clears the effective
+   * selection, so `settings.current` never shows a stale plan or default beside an observed
+   * auto mode. Must not throw: it runs on the frame path, where an error ends the session.
+   */
+  #observePermission(mode: ClaudeObservedPermissionMode): void {
+    this.#observedPermissionMode = mode;
+    this.#effectiveSettings.permissionMode = isPermissionMode(mode) ? mode : null;
+  }
+
   #discoverOptions(value: unknown): void {
     if (value !== undefined && !object(value))
       throw new Error("invalid Claude initialization data");
@@ -1806,6 +1849,9 @@ export class ClaudeManagedRunnerProcess {
 
   #fail(reason: string): void {
     this.#settingsAcknowledged = false;
+    // A failed process no longer runs in any mode; the next worker reports its own.
+    this.#observedPermissionMode = null;
+    this.#effectiveSettings.permissionMode = null;
     this.#rejectControls(new Error(reason));
     if (this.state.status !== "outcome-unknown") this.state.fail(reason);
     this.#notify();
@@ -1884,6 +1930,25 @@ const shortString = (value: unknown, max: number): value is string =>
 
 const isPermissionMode = (value: unknown): value is ClaudePermissionMode =>
   value === "default" || value === "plan" || value === "acceptEdits";
+
+/**
+ * Maps a `permissionMode` the CLI reported to the closed set AgentKib can show. The CLI's
+ * `--permission-mode manual` spelling means `default`; anything else, including values a newer
+ * CLI might add, is unknown (null) rather than guessed.
+ */
+export function normalizeObservedPermissionMode(
+  value: unknown,
+): ClaudeObservedPermissionMode | null {
+  if (value === "manual") return "default";
+  if (
+    isPermissionMode(value) ||
+    value === "auto" ||
+    value === "dontAsk" ||
+    value === "bypassPermissions"
+  )
+    return value;
+  return null;
+}
 
 function validateRunnerSettings(value: ClaudeRunnerEffectiveSettings): void {
   if (value.model !== null && !shortString(value.model, 256))

@@ -1051,6 +1051,108 @@ describe("WebAccessService loopback security boundary", () => {
     },
   );
 
+  it.each([
+    { name: "a newly observed auto mode", raw: { mode: "auto" }, expected: { mode: "auto" } },
+    { name: "dontAsk", raw: { mode: "dontAsk" }, expected: { mode: "dontAsk" } },
+    {
+      name: "bypassPermissions",
+      raw: { mode: "bypassPermissions" },
+      expected: { mode: "bypassPermissions" },
+    },
+    { name: "a selectable mode", raw: { mode: "plan" }, expected: { mode: "plan" } },
+    { name: "an explicit clear", raw: { mode: null }, expected: { mode: null } },
+    {
+      name: "the unknown-mode hint",
+      raw: { mode: null, possiblyAuto: true },
+      expected: { mode: null, possiblyAuto: true },
+    },
+    {
+      name: "a previously observed mode",
+      raw: { mode: "auto", previous: true },
+      expected: { mode: "auto", previous: true },
+    },
+    {
+      name: "unknown extra keys, which are stripped",
+      raw: { mode: "auto", note: "x", nested: { deep: 1 } },
+      expected: { mode: "auto" },
+    },
+    { name: "an unlisted mode word", raw: { mode: "yolo" }, expected: undefined },
+    { name: "the CLI manual alias", raw: { mode: "manual" }, expected: undefined },
+    { name: "a mode in a different case", raw: { mode: "AUTO" }, expected: undefined },
+    { name: "a numeric mode", raw: { mode: 1 }, expected: undefined },
+    { name: "a missing mode", raw: {}, expected: undefined },
+    { name: "a bare string", raw: "auto", expected: undefined },
+    { name: "an array", raw: [{ mode: "auto" }], expected: undefined },
+    { name: "null", raw: null, expected: undefined },
+    { name: "previous=false", raw: { mode: "auto", previous: false }, expected: undefined },
+    { name: "previous as a string", raw: { mode: "auto", previous: "true" }, expected: undefined },
+    {
+      name: "previous without a mode",
+      raw: { mode: null, previous: true },
+      expected: undefined,
+    },
+    {
+      name: "possiblyAuto=false",
+      raw: { mode: null, possiblyAuto: false },
+      expected: undefined,
+    },
+    {
+      name: "possiblyAuto beside a known mode",
+      raw: { mode: "auto", possiblyAuto: true },
+      expected: undefined,
+    },
+  ])(
+    "projects only a well-formed permission view in HTTP, snapshots and state patches: $name",
+    async ({ raw, expected }) => {
+      await bootstrap();
+      await pair();
+      await service.request({
+        operation: "configure",
+        enabled: true,
+        port,
+        externalOrigin: "",
+        experimentalEnabled: true,
+        allowedWorkspaceIds: ["workspace"],
+      });
+      runtime.mockImplementation(async (params) =>
+        (params as { operation: string }).operation === "catalog"
+          ? { sessions: [{ id: "s", workspace_id: "workspace", agent: "claude-code" }] }
+          : {
+              executionMode: "claude-managed",
+              workspaceId: "workspace",
+              runtimeBootId: "runtime-one",
+              revision: 4,
+              sendEnabled: true,
+              permission: raw,
+            },
+      );
+      const live = (await http("/api/web/v1/live?sessionId=s")).json();
+      if (expected) expect(live.permission).toEqual(expected);
+      else expect(live).not.toHaveProperty("permission");
+      // The rest of the live object is passed through unchanged.
+      expect(live).toMatchObject({ executionMode: "claude-managed", revision: 4 });
+      const stream = openStream();
+      try {
+        await vi.waitFor(() => expect(stream.chunks.join("")).toContain("event: session-ready"));
+        const snapshot = streamEvents(stream.chunks)[0].payload.live as Record<string, unknown>;
+        if (expected) expect(snapshot.permission).toEqual(expected);
+        else expect(snapshot).not.toHaveProperty("permission");
+        pushEvent("state", { revision: 5, permission: raw });
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(2));
+        const patch = streamEvents(stream.chunks)[1].payload;
+        expect(patch.revision).toBe(5);
+        if (expected) expect(patch.permission).toEqual(expected);
+        else expect(patch).not.toHaveProperty("permission");
+        // A patch without the field leaves the client's previous value alone.
+        pushEvent("state", { revision: 6 }, 2);
+        await vi.waitFor(() => expect(streamEvents(stream.chunks)).toHaveLength(3));
+        expect(streamEvents(stream.chunks)[2].payload).toEqual({ revision: 6 });
+      } finally {
+        stream.close();
+      }
+    },
+  );
+
   it.each(
     ["codex-managed", "claude-managed"].flatMap((executionMode) =>
       [false, true].map((allowed) => ({ executionMode, allowed })),

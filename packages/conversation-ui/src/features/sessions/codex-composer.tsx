@@ -17,6 +17,7 @@ import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
+import { PermissionModeNotice } from "./permission-mode-notice";
 
 type Upload = {
   key: string;
@@ -288,6 +289,7 @@ export function CodexComposer() {
             .join(" · ")}
         </p>
       )}
+      {isClaude && <PermissionModeNotice permission={live?.permission} locale={locale} />}
       <label className="sr-only" htmlFor="message">
         {t.message}
       </label>

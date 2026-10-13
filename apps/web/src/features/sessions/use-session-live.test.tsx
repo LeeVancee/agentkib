@@ -934,6 +934,59 @@ describe("native conversation event delivery", () => {
       });
     },
   );
+  it.each([
+    ["a newly observed mode", { mode: "auto" }, undefined],
+    ["a mode change", { mode: "bypassPermissions" }, { mode: "auto" }],
+    ["an explicit clear", { mode: null }, { mode: "auto" }],
+    ["the unknown-mode hint", { mode: null, possiblyAuto: true }, undefined],
+  ] as const)(
+    "treats a permission-only state patch as native progress, not a control boundary (%s)",
+    async (_name, permission, previous) => {
+      const view = setup();
+      view.emit(0, "snapshot", {
+        live: { ...initial, stopEnabled: true, ...(previous ? { permission: previous } : {}) },
+      });
+      let finish!: (live: Live) => void;
+      vi.mocked(view.client.live).mockImplementationOnce(
+        () => new Promise((resolve) => (finish = resolve)),
+      );
+      act(() => view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })));
+      view.emit(1, "state", { revision: 11, permission });
+      // The older HTTP response predates the patch and must not erase the observation.
+      await act(async () =>
+        finish({ ...initial, stopEnabled: true, ...(previous ? { permission: previous } : {}) }),
+      );
+      expect(view.client.live).toHaveBeenCalledOnce();
+      expect(view.result.current.ready).toBe(true);
+      expect(view.result.current.live).toMatchObject({
+        revision: 11,
+        stopEnabled: true,
+        permission,
+      });
+      // Later permission-only patches do not reread controls either.
+      view.emit(2, "state", { revision: 12, permission: { mode: "plan" } });
+      view.emit(3, "state", { revision: 13, permission: { mode: null } });
+      expect(view.client.live).toHaveBeenCalledOnce();
+      expect(view.result.current.ready).toBe(true);
+      expect(view.result.current.live?.permission).toEqual({ mode: null });
+    },
+  );
+  it("still rereads when an unclassified field changes beside a permission patch", async () => {
+    const view = setup();
+    view.emit(0, "snapshot", { live: { ...initial, stopEnabled: true } });
+    const finishes: ((live: Live) => void)[] = [];
+    vi.mocked(view.client.live).mockImplementation(
+      () => new Promise((resolve) => finishes.push(resolve)),
+    );
+    act(() => view.handlers[0].event("control-changed", JSON.stringify({ sessionId: "s" })));
+    // Same shape as the permission-only patch, but the extra field is an unknown boundary.
+    view.emit(1, "state", { revision: 11, permission: { mode: "auto" }, unclassified: true });
+    await act(async () => finishes[0]({ ...initial, stopEnabled: true }));
+    expect(view.client.live).toHaveBeenCalledTimes(2);
+    expect(view.result.current.ready).toBe(false);
+    await act(async () => finishes[1]({ ...initial, stopEnabled: true, revision: 11 }));
+    expect(view.result.current.ready).toBe(true);
+  });
   it("ignores a superseded control read and a read invalidated by disconnect", async () => {
     const view = setup();
     view.emit(0, "snapshot", { live: initial });

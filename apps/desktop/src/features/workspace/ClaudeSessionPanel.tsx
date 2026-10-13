@@ -17,6 +17,7 @@ import {
   useObservedContextUsage,
 } from "@agentkib/conversation-ui/features/sessions/context-usage";
 import { contextUsageCopy } from "@agentkib/conversation-ui/features/sessions/context-usage-copy";
+import { PermissionModeNotice } from "@agentkib/conversation-ui/features/sessions/permission-mode-notice";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
@@ -567,6 +568,7 @@ export function ClaudeSessionPanel({
             {[live?.model, live?.cliVersion || options?.cliVersion].filter(Boolean).join(" · ")}
           </p>
         )}
+        <PermissionModeNotice permission={live?.permission} locale={locale} />
         {!options?.available && options?.reason && <p role="status">{options.reason}</p>}
         <label>
           {text("会话", "Session")}

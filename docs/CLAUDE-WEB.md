@@ -17,6 +17,7 @@
 - 新建先保存工作区、请求身份和原生 UUID，新 CLI 使用 `--session-id=<UUID>`；接管已有会话使用 `--resume=<UUID>`。接管确认绑定 UUID、工作区及日志指纹；确认后新增历史会要求重新核对。不会通过“最新会话”猜测身份。
 - 这是 **AgentKib 托管的续接执行**，不是控制已有终端。使用前应关闭同一会话的其他 Claude 终端；私有操作锁只约束 AgentKib 实例，无法约束官方 CLI。
 - CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
+- 未选择权限模式时，AgentKib 不传 `--permission-mode`，会话沿用 CLI 自己的配置；用户设置、供应商和组织策略都可能让实际模式是 `auto`、`dontAsk` 或 `bypassPermissions`。AgentKib 只读取 CLI 在 `system/init` 与 `system/status` 帧里报告的 `permissionMode`（`manual` 视为 `default`）并如实显示：这三种模式下不会再逐项审批，桌面端和 Web 的会话输入区会显示带图标的文字提示（`bypassPermissions` 样式更醒目），只提示、不阻止发送。它们不是可选项，不进入权限选择控件，也不出现在“当前值”里。CLI 没有报告模式时保持未知，不推断；若检测到的 Claude Code 为 2.1.285 或更新、该会话在本次 Backend 运行中从未观察到模式、用户也没有选过权限，则补一句“可能以 auto 模式启动”的警示。依据是官方说明：拿不到功能开关的 `-p`/SDK 会话（例如第三方 provider 或关闭遥测）从 2.1.285 起默认 `auto`；组织策略也可能改变起始模式，所以这是提示，不是判定。Worker 空闲退休后继续显示上次观察到的模式并标注“上次观察”，会话释放或 Backend 重启后清除，不持久化。该字段目前只经合成帧验证，未用真实 CLI 确认 `system/init` 是否总带 `permissionMode` 及其出现时机。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
 
 ## 审批行为
@@ -38,7 +39,7 @@
 
 | 操作 | Claude / AgentKib 的行为 |
 | --- | --- |
-| 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限只开放 `default`、`plan`、`acceptEdits`，与 Codex `policyId` 分开。仅提交用户修改的字段；未选择权限时继承 CLI 配置，原生未回报时保持未知，不假定为 `default`。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
+| 模型、effort、工具权限 | 模型和 effort 来自原生初始化发现，不写死供应商列表。会话级设置分别调用 `set_model`、`apply_flag_settings`、`set_permission_mode`；权限只开放 `default`、`plan`、`acceptEdits`，与 Codex `policyId` 分开。仅提交用户修改的字段；未选择权限时不传 `--permission-mode`，继承 CLI 配置，不假定为 `default`。实际模式取自 CLI 的报告并如实显示，CLI 没有报告时保持未知；观察到不可选择的 `auto`、`dontAsk`、`bypassPermissions` 时，“当前值”里的权限项置空并给出界面提示（见“使用与边界”）。保留已选值、已确认当前值及 pending/unknown 状态，不把“已提交”当成生效。模型能力匹配同时识别原生别名及实际模型 ID。单独选择 effort 默认值会清除该项覆盖并重新继承 CLI 配置，保留模型和权限；切换模型时也会清除不兼容的旧 effort。完整恢复默认清除全部会话覆盖，不写用户全局配置。 |
 | 执行中插入 | 用原生 `priority: "next"` 用户帧绑定当前轮次及 revision；它不等于 Codex 的原生 steering 契约，也不等于 AgentKib 的持久队列。 |
 | 重命名 | 更新 AgentKib 标题，并向已验证的原生主会话日志追加 `custom-title`。新建空会话在产生原生日志后再同步标题。 |
 | 分叉 | 从已验证的原生主会话及已结束的 assistant 截止点，使用 `--resume`、`--fork-session`、`--resume-session-at` 准备新 UUID。准备后释放、重新接管或重启仍保留来源及截止点；接管指纹绑定这些信息。未产生历史的空会话、无法验证的截止点不开放分叉。 |

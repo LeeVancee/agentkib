@@ -26,6 +26,8 @@ import { createHistoryPagination, recordLatestHistoryPage } from "./history-pagi
 type Setter<T> = Dispatch<SetStateAction<T>>;
 // These fields cannot grant control or remove an execution/authorization fence.
 // Unknown fields conservatively count as control boundaries.
+// `permission` only describes the mode the CLI reports: it is shown to the user and neither
+// grants nor revokes control, so a permission-only patch must not force a control re-read.
 const nativeProgressFields = new Set([
   "revision",
   "streamText",
@@ -35,6 +37,7 @@ const nativeProgressFields = new Set([
   "tokenUsage",
   "activity",
   "goal",
+  "permission",
 ]);
 type ProgressPatch = Map<string, { value: unknown; revision: number }>;
 const nativeRevision = (value: unknown): value is number =>

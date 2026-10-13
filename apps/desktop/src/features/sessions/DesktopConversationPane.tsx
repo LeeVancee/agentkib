@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import type { EmbeddedConversationHandle } from "@agentkib/conversation-ui/conversation";
+import type { EmbeddedConversationHandle } from "./conversation/conversation";
 import { useConversationNotificationPosition } from "./useConversationNotificationPosition";
 import { RefreshCw } from "lucide-react";
 import { createDesktopConversationClient } from "@/core/conversation-bridge";
@@ -11,7 +11,7 @@ import { cn } from "cn";
 import { subscribeConversationPanel } from "./conversation-panel-commands";
 
 const EmbeddedConversation = lazy(() =>
-  import("@agentkib/conversation-ui/conversation").then((module) => ({
+  import("./conversation/conversation").then((module) => ({
     default: module.EmbeddedConversation,
   })),
 );

@@ -33,7 +33,7 @@
     "@agentkib/agent-identity": "workspace:*",
     "@agentkib/backend": "workspace:*",
     "@agentkib/conversation-state": "workspace:*",
-    "@agentkib/conversation-ui": "workspace:*",
+    "@agentkib/session-ui": "workspace:*",
     "@agentkib/runtime-protocol": "workspace:*",
     "@agentkib/session-catalog": "workspace:*",
     "@agentkib/web-client": "workspace:*",

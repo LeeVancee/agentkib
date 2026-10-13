@@ -15,8 +15,8 @@ import type {
 import {
   ContextUsageIndicator,
   useObservedContextUsage,
-} from "@agentkib/conversation-ui/features/sessions/context-usage";
-import { contextUsageCopy } from "@agentkib/conversation-ui/features/sessions/context-usage-copy";
+} from "@/features/sessions/conversation/features/sessions/context-usage";
+import { contextUsageCopy } from "@/features/sessions/conversation/features/sessions/context-usage-copy";
 import { ClaudeFilesPanel } from "./ClaudeFilesPanel";
 import { api } from "@/core/api";
 import { hasDesktopConversation } from "@/core/conversation-bridge";
@@ -37,10 +37,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { isClaudeReadBusy, useClaudeSessionObservation } from "./useClaudeSessionObservation";
-import {
-  mergeNativeCoverage,
-  mergeOrderedPersistedHistory,
-} from "@agentkib/conversation-ui/features/sessions/session-model";
+import { mergeNativeCoverage, mergeOrderedPersistedHistory } from "@agentkib/conversation-state";
 
 type Pending = { requestId: string; operation: string; sessionId?: string; workspaceId: string };
 type Interaction = Approval | UserQuestionRequest;

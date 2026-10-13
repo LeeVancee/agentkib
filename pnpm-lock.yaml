@@ -191,15 +191,15 @@ importers:
       '@agentkib/conversation-state':
         specifier: workspace:*
         version: link:../../packages/conversation-state
-      '@agentkib/conversation-ui':
-        specifier: workspace:*
-        version: link:../../packages/conversation-ui
       '@agentkib/runtime-protocol':
         specifier: workspace:*
         version: link:../../packages/runtime-protocol
       '@agentkib/session-catalog':
         specifier: workspace:*
         version: link:../../packages/session-catalog
+      '@agentkib/session-ui':
+        specifier: workspace:*
+        version: link:../../packages/session-ui
       '@agentkib/web-client':
         specifier: workspace:*
         version: link:../../packages/web-client
@@ -571,9 +571,9 @@ importers:
 
   packages/session-ui:
     dependencies:
-      '@agentkib/web-client':
+      '@agentkib/conversation-state':
         specifier: workspace:*
-        version: link:../web-client
+        version: link:../conversation-state
       react:
         specifier: ^19.1.0
         version: 19.2.8

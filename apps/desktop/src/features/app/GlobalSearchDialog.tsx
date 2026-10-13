@@ -1,8 +1,8 @@
 import {
   HistorySearchPanel,
   historyAccessScope,
-} from "@agentkib/conversation-ui/features/history/history-search";
-import { historyCopy } from "@agentkib/conversation-ui/features/history/history-copy";
+} from "@/features/sessions/conversation/features/history/history-search";
+import { historyCopy } from "@/features/sessions/conversation/features/history/history-copy";
 import {
   createDesktopConversationClient,
   hasDesktopConversation,

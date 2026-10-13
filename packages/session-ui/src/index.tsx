@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
-import type { ConversationEvent } from "@agentkib/web-client";
+import { groupConversationEvents, type ConversationEvent } from "@agentkib/conversation-state";
 export interface ReaderLabels {
   process: string;
   tools: string;
@@ -31,38 +31,7 @@ export function toolStatusLabel(status: string | undefined, locale: string): str
   return status ?? "";
 }
 export function groupEvents(events: ConversationEvent[], incomplete = false) {
-  const runs: ConversationEvent[][] = [];
-  for (const event of events) {
-    const last = runs.at(-1);
-    if (last && (last[0].turn_id?.trim() || undefined) === (event.turn_id?.trim() || undefined))
-      last.push(event);
-    else runs.push([event]);
-  }
-  return runs.map((run) => {
-    const complete =
-      !incomplete &&
-      !!run[0].turn_id?.trim() &&
-      run[0].kind === "user-message" &&
-      run.some((e) => e.message_phase === "final_answer" && e.kind === "agent-message") &&
-      !run.some((e) => e.truncated);
-    const segments: { key: string; process: boolean; events: ConversationEvent[] }[] = [];
-    for (const e of run) {
-      const process =
-        e.kind === "tool-summary" ||
-        (complete && e.kind === "agent-message" && e.message_phase === "commentary");
-      const last = segments.at(-1);
-      if (process && last?.process) {
-        last.events.push(e);
-      } else segments.push({ key: e.id, process, events: [e] });
-    }
-    return {
-      key: run[0].id,
-      complete,
-      turnId: run[0].turn_id,
-      time: run.find((e) => e.timestamp)?.timestamp,
-      segments,
-    };
-  });
+  return groupConversationEvents(events, incomplete);
 }
 
 type TranscriptGroup = ReturnType<typeof groupEvents>[number];

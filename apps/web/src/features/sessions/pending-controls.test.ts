@@ -4,7 +4,7 @@ import {
   pendingScope,
   readPending,
   rememberPending,
-} from "@agentkib/conversation-ui/features/sessions/pending-controls";
+} from "@/features/conversation/features/sessions/pending-controls";
 
 beforeEach(() => sessionStorage.clear());
 describe("pending Codex identities", () => {

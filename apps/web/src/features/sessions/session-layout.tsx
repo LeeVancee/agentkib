@@ -4,10 +4,10 @@ import { useEnvironment } from "@/providers/environment";
 import {
   SessionProvider,
   useSession,
-} from "@agentkib/conversation-ui/features/sessions/session-context";
-import { SessionDialogs } from "@agentkib/conversation-ui/features/sessions/session-dialogs";
+} from "@/features/conversation/features/sessions/session-context";
+import { SessionDialogs } from "@/features/conversation/features/sessions/session-dialogs";
 import { PairingPage } from "@/features/connection/pairing-page";
-import { Button } from "@agentkib/conversation-ui/components/ui/button";
+import { Button } from "@/features/conversation/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 export function SessionLayout() {

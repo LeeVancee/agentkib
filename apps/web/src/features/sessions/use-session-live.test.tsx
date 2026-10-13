@@ -8,18 +8,18 @@ import type {
   SessionStreamHandlers,
   WebClient,
 } from "@agentkib/web-client";
-import { useSessionLive } from "@agentkib/conversation-ui/features/sessions/use-session-live";
-import { subscribeSessionInvalidation } from "@agentkib/conversation-ui/features/sessions/session-events";
+import { useSessionLive } from "@/features/conversation/features/sessions/use-session-live";
+import { subscribeSessionInvalidation } from "@/features/conversation/features/sessions/session-events";
 import {
   createHistoryPagination,
   recordLatestHistoryPage,
-} from "@agentkib/conversation-ui/features/sessions/history-pagination";
+} from "@/features/conversation/features/sessions/history-pagination";
 import {
   beginHistoryRead,
   completeHistoryRead,
   failHistoryRead,
   type NativeCoverage,
-} from "@agentkib/conversation-ui/features/sessions/session-model";
+} from "@/features/conversation/features/sessions/session-model";
 
 const access: Access = {
   protocolVersion: 2,

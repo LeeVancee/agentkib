@@ -28,6 +28,7 @@ type CodexComposerControlsProps = {
   openPhoneFiles: () => void;
   disabled: boolean;
   action?: ReactNode;
+  advancedActions?: ReactNode;
 };
 
 const selectClass =
@@ -61,6 +62,7 @@ export function CodexComposerControls({
   openPhoneFiles,
   disabled,
   action,
+  advancedActions,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -582,6 +584,7 @@ export function CodexComposerControls({
             )}
           </Button>
         )}
+        {advancedActions}
         <ContextUsageGauge
           fallback={settings?.sessionId === selected ? settings.usage : undefined}
         />

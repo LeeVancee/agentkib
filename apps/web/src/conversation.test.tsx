@@ -19,15 +19,15 @@ import {
   type HistorySearchStatus,
   type ResolvedHistoryReference,
 } from "@agentkib/web-client";
-import { EmbeddedConversation } from "@agentkib/conversation-ui/conversation";
-import { HistoryCoverageStatus } from "@agentkib/conversation-ui/features/history/history-search";
-import { useSessionController } from "@agentkib/conversation-ui/features/sessions/use-session-controller";
+import { EmbeddedConversation } from "@/features/conversation/conversation";
+import { HistoryCoverageStatus } from "@/features/conversation/features/history/history-search";
+import { useSessionController } from "@/features/conversation/features/sessions/use-session-controller";
 import {
   pendingScope,
   readPending,
   rememberPending,
-} from "@agentkib/conversation-ui/features/sessions/pending-controls";
-import { catalogCopy } from "@agentkib/conversation-ui/features/catalog/catalog-copy";
+} from "@/features/conversation/features/sessions/pending-controls";
+import { catalogCopy } from "@/features/conversation/features/catalog/catalog-copy";
 
 afterEach(cleanup);
 beforeEach(() => {

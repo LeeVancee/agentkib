@@ -2,8 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { SessionWorkspace } from "./session-workspace";
-import { useSessionPanels } from "@agentkib/conversation-ui/features/sessions/session-panels";
-import { dictionaries } from "@agentkib/conversation-ui/i18n";
+import { useSessionPanels } from "@/features/conversation/features/sessions/session-panels";
+import { dictionaries } from "@/features/conversation/i18n";
 const fixture = vi.hoisted(() => ({
   pathname: "/sessions",
   selected: "",
@@ -20,7 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
     return <div data-testid="panels">{panels?.filesOpen ? "files-open" : "files-closed"}</div>;
   },
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
+vi.mock("@/features/conversation/features/sessions/session-context", () => ({
   useSession: () => ({
     t: dictionaries["zh-CN"],
     locale: "zh-CN",
@@ -42,7 +42,7 @@ vi.mock("@agentkib/conversation-ui/features/sessions/session-context", () => ({
     leaveSession: vi.fn(),
   }),
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/pending-center", () => ({
+vi.mock("@/features/conversation/features/sessions/pending-center", () => ({
   PendingCenter: () => {
     useEffect(() => {
       fixture.mounts++;
@@ -50,10 +50,10 @@ vi.mock("@agentkib/conversation-ui/features/sessions/pending-center", () => ({
     return <button>pending-center</button>;
   },
 }));
-vi.mock("@agentkib/conversation-ui/features/sessions/managed-tasks", () => ({
+vi.mock("@/features/conversation/features/sessions/managed-tasks", () => ({
   ManagedTasks: () => null,
 }));
-vi.mock("@agentkib/conversation-ui/features/catalog/session-catalog", () => ({
+vi.mock("@/features/conversation/features/catalog/session-catalog", () => ({
   SessionCatalog: () => null,
 }));
 afterEach(() => {

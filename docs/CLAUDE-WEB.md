@@ -11,7 +11,7 @@
 - 未接管且没有原生用量报告时，上下文用量显示“暂无数据”。这不代表额度耗尽；执行后的用量以 CLI 实际报告为准，AgentKib 不估算比例。
 - Claude 目录优先保留有效索引标题。没有标题时，在日志头部最多 2 MiB／256 行内读取匹配会话身份的自定义标题，否则使用首条有效用户文本；工具结果、内部消息和附件不会成为标题。刷新目录即可更新，无需修改原生日志。读取范围外的原生改名不保证同步。
 
-- 基础托管执行保留 macOS Claude Code `2.1.263` 起的兼容检查；2026-10-09 新增高级控制要求 `2.1.286` 或更新版本。版本需完整匹配原生版本输出格式。版本门槛只决定是否尝试，实际帧、会话身份、模型选项及权限契约仍逐次校验，不代表所有后续 CLI 版本均完成真实验收。用户需自行安装并完成 Claude 登录或供应商配置；AgentKib 不读取、复制或下发登录凭据。
+- 基础托管执行保留 macOS Claude Code `2.1.263` 起的兼容检查；2026-10-09 新增高级控制要求 `2.1.286` 或更新版本。版本需完整匹配原生版本输出格式。版本门槛只决定是否尝试，实际帧、会话身份、模型选项及权限契约仍逐次校验，不代表所有后续 CLI 版本均完成真实验收。用户需自行安装并完成 Claude 登录或供应商配置；托管执行不读取、复制或下发登录凭据。额度采集是另一条路径，由第三方 sidecar 完成，可能读取凭据，见下文“额度采集与凭据”。
 - 桌面启动时按项目统一的 CLI 发现规则查找 Claude（包括 macOS 的 `~/.local/bin`、Homebrew 等安装目录），并用同一解析路径完成版本验证和启动，不要求从终端启动 AgentKib，也不修改全局 PATH。找不到 CLI 或版本未经验证时仍禁用控制；不会跳过版本检查或自动安装 CLI。
 - 在桌面开启 Web 与实验控制，再按需授予浏览器发送、审批、管理、组织、设置及高级控制权限。默认关闭，读取授权不包含工具审批；高级设置/目标/资源读取仍受 full access 和高级控制权限约束。
 - 新建先保存工作区、请求身份和原生 UUID，新 CLI 使用 `--session-id=<UUID>`；接管已有会话使用 `--resume=<UUID>`。接管确认绑定 UUID、工作区及日志指纹；确认后新增历史会要求重新核对。不会通过“最新会话”猜测身份。
@@ -19,6 +19,26 @@
 - CLI 会加载其正常配置、CLAUDE.md、MCP 与 hooks；只对可信项目启用托管执行。保留 CLI 的权限配置，不启用跳过权限；CLI 自动允许的操作可能不会弹出审批，只有 CLI 实际请求的审批才展示。
 - 未选择权限模式时，AgentKib 不传 `--permission-mode`，会话沿用 CLI 自己的配置；用户设置、供应商和组织策略都可能让实际模式是 `auto`、`dontAsk` 或 `bypassPermissions`。AgentKib 只读取 CLI 在 `system/init` 与 `system/status` 帧里报告的 `permissionMode`（`manual` 视为 `default`）并如实显示：这三种模式下不会再逐项审批，桌面端和 Web 的会话输入区会显示带图标的文字提示（`bypassPermissions` 样式更醒目），只提示、不阻止发送。它们不是可选项，不进入权限选择控件，也不出现在“当前值”里。CLI 没有报告模式时保持未知，不推断；若检测到的 Claude Code 为 2.1.285 或更新、该会话在本次 Backend 运行中从未观察到模式、用户也没有选过权限，则补一句“可能以 auto 模式启动”的警示。依据是官方说明：拿不到功能开关的 `-p`/SDK 会话（例如第三方 provider 或关闭遥测）从 2.1.285 起默认 `auto`；组织策略也可能改变起始模式，所以这是提示，不是判定。Worker 空闲退休后继续显示上次观察到的模式并标注“上次观察”，会话释放或 Backend 重启后清除，不持久化。该字段目前只经合成帧验证，未用真实 CLI 确认 `system/init` 是否总带 `permissionMode` 及其出现时机。
 - 浏览器断线不等于终止模型执行；重连只同步快照，不重发请求。macOS 取消或退出会按父子关系捕获自有 Claude 进程树，核对 PID 与启动时间后清理，覆盖使用独立进程组的前台 Bash。无法确认完整清理时保留“结果待核对”，不报告安全释放；已脱离父子关系成为独立外部服务的进程不在清理保证内。
+
+## 额度采集与凭据
+
+托管执行和额度采集是两条独立路径，对凭据的处理不同。
+
+- **托管执行不读取凭据。** AgentKib 只启动本机 `claude` CLI（`--print`，输入输出为 `stream-json`），沿用 CLI 自己的登录状态和供应商配置。AgentKib 不读取、复制或下发 Claude 的登录凭据，也不访问 Claude Code 的凭据文件或 Keychain 项。
+- **额度采集由第三方 sidecar 完成，sidecar 可能读取凭据。** 额度由随应用打包的 CodexBar 采集（macOS 与 Linux 为 CodexBarCLI 0.49.5，Windows x64 为 Win-CodexBar 0.60.3）。它以你的用户环境运行 `dashboard` 命令，只在你手动刷新额度，或开启“自动获取额度”（默认关闭）后启动。AgentKib 自身不读取下列来源：它解析 sidecar 输出的 JSON，保留标准化后的额度窗口、余额、重置时间以及 sidecar 报告的账号邮箱和套餐，并对错误信息脱敏。
+
+据 CodexBar 文档（v0.49.5 的 `docs/claude.md` 与 `docs/refactor/claude-current-baseline.md`），Claude 的数据源有：
+
+- **网页 API：** claude.ai 的 `sessionKey` Cookie，从浏览器配置文件导入（文档列出的位置是 macOS 的 Safari、Chrome 系浏览器和 Firefox），或使用手动提供的 Cookie 头；请求发往 `claude.ai`。
+- **CLI PTY：** 在伪终端里启动 `claude`，发送 `/usage`（可选 `/status`）并解析输出。工作目录是 CodexBar 自己的探测目录，探测留下的会话日志由它清理。
+- **OAuth API：** 凭据来自 CodexBar 自己的 OAuth 缓存、文件 `~/.claude/.credentials.json`，以及作为后备的 Keychain 项 `Claude Code-credentials`；请求发往 `api.anthropic.com`。
+- **本地日志统计：** 扫描 Claude Code 的 `projects/**/*.jsonl`（`$CLAUDE_CONFIG_DIR`、`~/.config/claude`、`~/.claude` 等位置下），读取助手消息里按模型记录的 Token 用量，用于计算费用。`dashboard` 命令在取得用量之后，会为已启用的 Claude 另做一次这样的统计。
+
+对 macOS 与 Linux 上打包的 CodexBarCLI，文档记载的自动顺序是先用网页 API、再用 CLI PTY；OAuth API 在 CodexBar 配置里显式选择时才生效。文档同时说明个别内部代码路径仍使用不同的自动顺序，所以这是上游文档记载的行为，不是 AgentKib 的保证，具体采用哪个来源由 CodexBar 的自动选择和你的 CodexBar 设置决定。没有 CodexBar 配置时，AgentKib 生成的配置（应用数据目录下的 `quota/codexbar-config.json`，仅当前用户可读写）只启用已安装的 Provider，检测到 Claude Code 时启用 `claude`，不选择数据源，也不写入密钥或 Cookie。已有的 CodexBar 配置（`$XDG_CONFIG_HOME/codexbar/config.json`、`~/.config/codexbar/config.json` 或 `~/.codexbar/config.json`）或环境变量 `CODEXBAR_CONFIG` 优先，额度页的采集器诊断会显示实际使用的配置来源。
+
+Windows x64 使用的 Win-CodexBar 是独立的 Windows 移植版，有自己的 Claude provider。AgentKib 在 Windows 上不生成配置，由它使用自己的设置（`%APPDATA%\CodexBar\settings.json`）。其文档和源码（v0.60.3）同样涉及浏览器 Cookie（Chrome、Edge、Brave、Firefox）、`claude` CLI 和 OAuth，自动顺序为网页 Cookie、OAuth、`claude` CLI（已配置 Admin API 密钥时先用它）；读取 Claude Code 自己的凭据文件或凭据管理器条目，要先启用一项默认关闭的设置。
+
+不希望 sidecar 触碰这些来源时，保持“自动获取额度”关闭，也不要手动刷新额度。
 
 ## 审批行为
 

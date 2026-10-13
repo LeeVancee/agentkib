@@ -48,10 +48,12 @@ Claude Code 在手动或自动压缩时写入 `compact_boundary` 记录，并把
 | Antigravity Desktop / CLI  | Desktop `2.12.2`、CLI `1.2.12`；官方自身 Desktop→CLI 迁移不等于外来历史导入                                                         | 外来原生目标禁用；保留 ACP 来源                                                                                                                                              |
 | OpenClaw                  | `2026.9.6` npm 安装 / SQLite schema 23；官方状态锁及事务写入；仅现有且工作区唯一匹配的本地 Agent；通过 `tui --local --session` 恢复 | 历史隔离写入、Gateway/TUI 恢复及 Grok→OpenClaw 单轮回复有逐项记录；后者原严格 false 与完整整句独立审计分别保留。免费 403、旧遗漏决策回复仍失败，不外推其他方向或迁移后的后端                                                   |
 
-Claude Code 原生导入除版本门限外还有两项只读校验，任何一项无法确认都会关闭原生导入、回退为交接文件，并在界面显示原因：
+Claude Code 原生导入的版本门限要求 `claude --version` 报告 2.1.x，此外还有两项只读校验，任何一项无法确认都会关闭原生导入、回退为交接文件，并在界面显示原因：
 
-- **会话格式探针（`session-format-unverified`）：** 只看 `projects/<项目目录>/<UUID>.jsonl` 主会话文件（不含 `<UUID>/subagents/` 下的子代理文件），取最近修改的一个，读取开头最多 64 行 / 4 MiB，跳过所有不是 user/assistant 的元数据记录（不枚举类型，未知类型不会导致失败），遇到含 `sessionId`、`uuid` 和 `message` 的 user/assistant 记录即通过。窗口内找不到这样的记录、出现损坏或超长的行、记录结构不符，都判为未验证。`projects/` 下还没有任何主会话时不构成矛盾。
-- **项目目录名（`project-directory-unverified`）：** 会话文件写入 `projects/<目录名>/`，目录名是工作区路径中字母和数字之外的每个字符（按 UTF-16 码元）替换成 `-`。该规则不在官方文档里，来自对已发布二进制的公开解读。编码后超过 200 个字符时 Claude Code 会截断并追加未公开的哈希，同时设置 `CLAUDE_CONFIG_DIR` 与 `CLAUDE_CODE_PROJECT_DIR_NAME` 时目录名由 CLI 另行决定，AgentKib 都无法确定目录，因此拒绝原生导入。
+- **会话格式探针（`session-format-unverified`）：** 在 `projects/` 下所有项目目录里，只看 `<项目目录>/<UUID>.jsonl` 主会话文件（不含 `<UUID>/subagents/` 下的子代理文件，也不限于目标工作区），取最近修改的一个，读取开头最多 64 行 / 4 MiB。探针跳过所有不是 user/assistant 的元数据记录（不枚举类型，未知类型不会导致失败）和标为子代理（`isSidechain`）的记录，遇到含非空 `sessionId`、`uuid` 和 `message` 对象的 user/assistant 记录即通过。窗口内找不到这样的记录、文件为空或不可读、读到损坏或超长的行、记录结构不符，都判为未验证（失败即关闭）。`projects/` 下还没有任何主会话时不构成矛盾；最新的主会话若还只有元数据、没有消息（例如刚创建的新会话），原生导入会暂时关闭，该会话写入消息后恢复。
+- **项目目录名（`project-directory-unverified`）：** 会话文件写入 `projects/<目录名>/`，目录名是工作区路径中字母和数字之外的每个字符（按 UTF-16 码元）替换成 `-`。该规则不在官方文档里，来自对已发布二进制的公开解读，对齐的是当前版本的 CLI；公开 issue 报告较早的版本会保留路径中的空格（只替换路径分隔符），而 2.1.x 版本门限不区分它们。编码后超过 200 个字符时 Claude Code 会截断并追加未公开的哈希，同时设置 `CLAUDE_CONFIG_DIR` 与 `CLAUDE_CODE_PROJECT_DIR_NAME` 时目录名由 CLI 另行决定，AgentKib 都无法确定目录，因此拒绝原生导入。
+
+这两项规则的自动化测试只使用手工构造的合成会话，没有用真实 CLI 确认导入后的会话能被 `claude --resume` 找到。
 
 Cursor IDE 本机连接需要在会话页选择“连接 Cursor 窗口”，检查随应用打包的 VSIX 并手动安装到选定 profile，再在目标单文件夹窗口运行 `AgentKib: Connect This Workspace` 并输入限时挑战。AgentKib 不自动安装扩展，也不猜测默认 profile；多个窗口须显式选择。连接恢复沿用原 binding，CLI 与 Agents Window 保持独立能力边界。
 

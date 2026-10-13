@@ -56,6 +56,9 @@ jobs:
       - name: Test frontend
         run: pnpm test
 
+      - name: Test release startup checks
+        run: node --test .github/scripts/*.test.mjs
+
       - name: Typecheck frontend
         run: pnpm typecheck
 

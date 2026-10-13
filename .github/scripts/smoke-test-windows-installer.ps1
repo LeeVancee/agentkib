@@ -153,10 +153,9 @@ if (-not $SkipQuota) {
 }
 
 if (-not $SkipLaunch) {
-  $app = Start-Process -FilePath $executable.FullName -PassThru
-  Start-Sleep -Seconds 8
-  if ($app.HasExited) {
-    throw "Installed AgentKib exited during startup with code $($app.ExitCode)"
+  & node (Join-Path $PSScriptRoot "run-desktop-startup-smoke.mjs") $executable.FullName
+  if ($LASTEXITCODE -ne 0) {
+    throw "Installed AgentKib failed the startup readiness probe"
   }
   Stop-AgentKibProcesses
 }

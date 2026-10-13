@@ -1424,62 +1424,77 @@ describe("Skill failed remote download cleanup", () => {
     },
   );
 
-  it("stops queued downloads after the first error, drains later failures and preserves the first error", async () => {
-    const resources = Array.from({ length: 17 }, (_, index) => `resources/hold-${index}.txt`);
-    github(["skills/reviewer"], resources);
-    const { backend, root } = await fixture();
-    const allStarted = checkpoint();
-    const release = checkpoint();
-    const failed = checkpoint();
-    const fetchFixture = vi.mocked(fetch).getMockImplementation()!;
-    const downloads: string[] = [];
-    vi.mocked(fetch).mockImplementation(async (...args) => {
-      const url = new URL(String(args[0]));
-      if (url.hostname !== "raw.githubusercontent.com") return fetchFixture(...args);
-      downloads.push(url.pathname);
-      if (url.pathname.endsWith("/SKILL.md")) {
-        await allStarted.promise;
-        return failedResponse(500, failed);
+  it.each(["first", "last"] as const)(
+    "stops queued downloads after the first error, drains later failures and preserves the first error when SKILL.md starts %s",
+    async (skillStart) => {
+      const resources = Array.from({ length: 17 }, (_, index) => `resources/hold-${index}.txt`);
+      github(["skills/reviewer"], resources);
+      const { backend, root } = await fixture();
+      const allStarted = checkpoint();
+      const skillStarted = checkpoint();
+      const resourcesStarted = checkpoint();
+      let resourceCount = 0;
+      const release = checkpoint();
+      const failed = checkpoint();
+      const fetchFixture = vi.mocked(fetch).getMockImplementation()!;
+      const downloads: string[] = [];
+      vi.mocked(fetch).mockImplementation(async (...args) => {
+        const url = new URL(String(args[0]));
+        if (url.hostname !== "raw.githubusercontent.com") return fetchFixture(...args);
+        const isSkill = url.pathname.endsWith("/SKILL.md");
+        // mkdir before fetch may finish in any order; exercise both boundary arrivals.
+        if (isSkill && skillStart === "last") await resourcesStarted.promise;
+        if (!isSkill && skillStart === "first") await skillStarted.promise;
+        downloads.push(url.pathname);
+        if (isSkill) skillStarted.resolve();
+        else if (++resourceCount === 7) resourcesStarted.resolve();
+        if (downloads.length === 8) allStarted.resolve();
+        if (isSkill) {
+          await allStarted.promise;
+          return failedResponse(500, failed);
+        }
+        await release.promise;
+        if (url.pathname.endsWith("/hold-0.txt"))
+          return new Response("Later failure", { status: 502 });
+        return fetchFixture(...args);
+      });
+      let settled = false;
+      const pending = backend.prepareInstall(source()).then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
+      );
+      try {
+        await vi.waitFor(() => expect(failed.reached).toBe(true), { timeout: 2_000 });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        expect(downloads).toHaveLength(8);
+        expect(downloads.findIndex((file) => file.endsWith("/SKILL.md"))).toBe(
+          skillStart === "first" ? 0 : 7,
+        );
+      } finally {
+        release.resolve();
+        await pending;
       }
-      if (downloads.length === 8) allStarted.resolve();
-      await release.promise;
-      if (url.pathname.endsWith("/hold-0.txt"))
-        return new Response("Later failure", { status: 502 });
-      return fetchFixture(...args);
-    });
-    let settled = false;
-    const pending = backend.prepareInstall(source()).then(
-      () => {
-        settled = true;
-        return undefined;
-      },
-      (error: unknown) => {
-        settled = true;
-        return error;
-      },
-    );
-    try {
-      await vi.waitFor(() => expect(failed.reached).toBe(true), { timeout: 2_000 });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(settled).toBe(false);
+      expect(String(await pending)).toContain("GitHub download failed (500)");
       expect(downloads).toHaveLength(8);
-    } finally {
-      release.resolve();
-      await pending;
-    }
-    expect(String(await pending)).toContain("GitHub download failed (500)");
-    expect(downloads).toHaveLength(8);
-    expect(await fs.readdir(path.join(root, ".staging/skills"))).toEqual([]);
-    expect(await fs.lstat(path.join(root, "skills.lock.json")).catch(() => null)).toBeNull();
-    expect(await backend.installed()).toEqual([]);
-    vi.mocked(fetch).mockImplementation(fetchFixture);
-    const retry = (await backend.prepareInstall(source())) as Preview;
-    await backend.request("skills.applyOperation", { token: retry.token, confirmed: true });
-    expect(
-      await fs.readFile(path.join(root, "skills/reviewer/resources/hold-16.txt"), "utf8"),
-    ).toBe("late");
-    expect(await fs.readdir(path.join(root, ".staging/skills"))).toEqual([]);
-  });
+      expect(await fs.readdir(path.join(root, ".staging/skills"))).toEqual([]);
+      expect(await fs.lstat(path.join(root, "skills.lock.json")).catch(() => null)).toBeNull();
+      expect(await backend.installed()).toEqual([]);
+      vi.mocked(fetch).mockImplementation(fetchFixture);
+      const retry = (await backend.prepareInstall(source())) as Preview;
+      await backend.request("skills.applyOperation", { token: retry.token, confirmed: true });
+      expect(
+        await fs.readFile(path.join(root, "skills/reviewer/resources/hold-16.txt"), "utf8"),
+      ).toBe("late");
+      expect(await fs.readdir(path.join(root, ".staging/skills"))).toEqual([]);
+    },
+  );
 
   it("keeps discovering valid metadata after individual downloads or metadata parsing fail", async () => {
     const packagePaths = Array.from({ length: 10 }, (_, index) => `skills/skill-${index}`);

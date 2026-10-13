@@ -16,6 +16,202 @@ afterEach(() => {
 });
 
 describe("desktop embedded conversation", () => {
+  it("opens Claude handoff through the trusted bridge without sending or discarding the draft", async () => {
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    sessionStorage.clear();
+    const state: { live: Live; owned: boolean } = {
+      owned: false,
+      live: {
+        sessionId: "claude-session",
+        status: "idle",
+        revision: 1,
+        sendEnabled: false,
+        approvals: [],
+        questions: [],
+        executionMode: "managed-resume",
+        reason: "handoff-required",
+        cliVersion: "2.1.296 (Claude Code)",
+      },
+    };
+    const access: Access = {
+      protocolVersion: 2,
+      status: "approved",
+      csrfToken: "local",
+      bootId: "boot",
+      experimentalEnabled: true,
+      device: {
+        id: "local",
+        name: "Desktop",
+        accessMode: "full",
+        send: true,
+        approve: true,
+        advancedControl: true,
+        manage: true,
+      },
+    };
+    const bridge: DesktopConversationBridge = {
+      request: vi.fn(async (path) => {
+        const operation = path.split("?")[0];
+        if (operation === "access") return { status: 200, body: access };
+        if (operation === "catalog")
+          return {
+            status: 200,
+            body: {
+              indexEnabled: true,
+              workspaces: [{ id: "workspace", name: "Project", path: "/isolated/project" }],
+              sessions: [
+                {
+                  id: "claude-session",
+                  workspace_id: "workspace",
+                  agent: "claude-code",
+                  title: "Native Claude conversation",
+                  availability: "readable",
+                  archived: false,
+                  sidechain: false,
+                },
+              ],
+            },
+          };
+        if (operation === "events")
+          return {
+            status: 200,
+            body: {
+              events: [
+                {
+                  id: "history",
+                  kind: "agent-message",
+                  content: "Existing Claude history",
+                  attachment_count: 0,
+                  truncated: false,
+                },
+              ],
+              warnings: [],
+            },
+          };
+        if (operation === "live") return { status: 200, body: state.live };
+        if (operation === "managed/capabilities")
+          return {
+            status: 200,
+            body: {
+              sessionId: "claude-session",
+              executionMode: state.live.executionMode,
+              status: "idle",
+              features: {
+                send: { available: state.owned },
+                adopt: { available: !state.owned },
+                inspect: { available: true },
+              },
+            },
+          };
+        if (operation === "managed/options")
+          return {
+            status: 200,
+            body: {
+              available: true,
+              workspaces: [{ id: "workspace", name: "Project" }],
+              models: [],
+            },
+          };
+        if (operation === "managed/inspect")
+          return {
+            status: 200,
+            body: { sessionId: "claude-session", handoffFingerprint: "verified-history" },
+          };
+        if (operation === "managed/adopt") {
+          state.owned = true;
+          state.live = {
+            ...state.live,
+            revision: 2,
+            executionMode: "claude-managed",
+            reason: undefined,
+            sendEnabled: true,
+          };
+          return { status: 200, body: { accepted: true, sessionId: "claude-session" } };
+        }
+        return { status: 200, body: {} };
+      }),
+      upload: vi.fn(async () => ({ status: 400, body: { error: "not-used" } })),
+      subscribe: vi.fn(async (sessionId): Promise<ConversationSubscription<Live>> => ({
+        subscriptionId: "claude-subscription",
+        events: [
+          {
+            protocolVersion: 2,
+            sessionId,
+            subscriptionId: "claude-subscription",
+            runtimeBootId: "runtime",
+            epoch: "epoch",
+            seq: 0,
+            cursor: "cursor-0",
+            type: "snapshot",
+            payload: { live: { ...state.live, sessionId } },
+          },
+        ],
+        cursor: "cursor-0",
+      })),
+      acknowledge: vi.fn(async () => {}),
+      unsubscribe: vi.fn(async () => {}),
+      onEvent: () => () => {},
+      onUnavailable: () => () => {},
+      onControlChanged: () => () => {},
+    };
+    const mutations = () =>
+      vi.mocked(bridge.request).mock.calls.filter(([, body]) => body !== undefined);
+    const client = new WebClient(
+      undefined,
+      { type: "same-origin" },
+      createDesktopConversationAdapter(() => bridge),
+    );
+    render(
+      <EmbeddedConversation
+        client={client}
+        sessionId="claude-session"
+        locale="zh-CN"
+        onSessionChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Existing Claude history")).toBeVisible();
+    const draft = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(draft, { target: { value: "保留桌面草稿" } });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(
+      (await screen.findAllByText("尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。"))
+        .length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "确认续接" }));
+    const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(mutations()).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(draft).toHaveValue("保留桌面草稿");
+    expect(mutations()).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument(),
+    );
+    expect(draft).toHaveValue("保留桌面草稿");
+    expect(mutations()).toEqual([
+      [
+        "managed/adopt",
+        expect.objectContaining({
+          agent: "claude-code",
+          sessionId: "claude-session",
+          handoffConfirmed: true,
+          handoffFingerprint: "verified-history",
+          requestId: expect.any(String),
+        }),
+      ],
+    ]);
+    expect(vi.mocked(bridge.request).mock.calls.some(([path]) => path === "send")).toBe(false);
+    expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+  });
+
   it("uses the trusted bridge for history, streaming and sends without pairing or a second application shell", async () => {
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     const live: Live = {

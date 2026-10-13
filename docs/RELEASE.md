@@ -27,6 +27,16 @@ branch pushes run platform checks but do not publish installers.
    verifies the complete asset manifest, SHA-256 checksums, and Electron updater
    metadata, uploads the files, checks their remote names and sizes,
    and then publishes the release.
+
+   Every platform also launches the packaged or installed app with isolated
+   application data. The startup probe requires a successful exit after the
+   backend handshake, window display, and home-data readiness marks. An error
+   window or a process that merely stays alive does not pass. macOS x64 uses
+   the runner's Intel compatibility support when built on Apple Silicon. The
+   macOS smoke uses `--use-mock-keychain` only for its empty synthetic profile
+   to avoid native login-keychain authorization dialogs; it does not validate
+   account login or real secure storage. Production launch options are unchanged.
+
 6. Complete the release-only signing, notarization, installation, and updater
    checks in the [Beta acceptance guide](BETA.md) against the published,
    immutable Release assets. If a defect is found, publish a new patch version;

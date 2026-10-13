@@ -215,7 +215,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .release-helpers
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            apps/desktop/scripts
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -379,6 +381,17 @@ jobs:
           grep -F "TeamIdentifier=${APPLE_TEAM_ID}" <<< "$signing_details"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Smoke test macOS application readiness
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find apps/desktop/release-electron -type d -name '*.app' -print -quit)
+          test -n "$app"
+          # The synthetic HOME has no login keychain; avoid an unattended native
+          # authorization dialog. This smoke does not validate account storage.
+          node .github/scripts/run-desktop-startup-smoke.mjs "$app/Contents/MacOS/AgentKib" --use-mock-keychain
 
       - name: Remove Apple notarization private key
         if: runner.os == 'macOS' && always()
@@ -583,7 +596,9 @@ jobs:
           ref: ${{ github.sha }}
           path: .release-workflow-source
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            apps/desktop/scripts
 
       - name: Test release workflow helpers
         shell: bash

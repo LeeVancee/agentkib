@@ -272,8 +272,10 @@ describe("McpConnectionCard", () => {
       const requests = vi.mocked(api.mcpConnectionInfo).mock.calls.length;
       rerender(<McpConnectionCard {...props} workspaces={remaining} runtime={runtime(47654)} />);
       await waitFor(() => expect(api.mcpConnectionInfo).toHaveBeenCalledTimes(requests + 1));
-      expect(screen.getByTestId("mcp-connection-url")).toHaveTextContent(
-        info("two", "codex", 47654).url,
+      await waitFor(() =>
+        expect(screen.getByTestId("mcp-connection-url")).toHaveTextContent(
+          info("two", "codex", 47654).url,
+        ),
       );
 
       vi.mocked(api.verifyMcpConnection).mockResolvedValue({
@@ -343,8 +345,10 @@ describe("McpConnectionCard", () => {
     await act(async () => newWriting.resolve());
     await waitFor(() => expect(api.mcpConnectionInfo).toHaveBeenCalledTimes(requests + 1));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByTestId("mcp-connection-url")).toHaveTextContent(
-      info("two", "codex", 47654).url,
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-connection-url")).toHaveTextContent(
+        info("two", "codex", 47654).url,
+      ),
     );
     expect(api.apply).toHaveBeenCalledTimes(2);
   });

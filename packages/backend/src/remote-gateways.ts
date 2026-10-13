@@ -434,6 +434,14 @@ async function refreshOpenClaw(gateway: StoredGateway) {
     const agents = await openClawRpc(socket, "agents.list", {});
     const workspaces = parseOpenClawAgents(agents);
     const assets: z.infer<typeof assetSchema>[] = [];
+    // These reads are optional, so a rejected one must not fail the whole refresh, but the
+    // result is then incomplete and has to say so instead of looking like an empty gateway.
+    let failedReads = 0,
+      firstFailure: string | undefined;
+    const readFailed = (error: unknown) => {
+      failedReads++;
+      firstFailure ??= redactGatewayError(error, gateway);
+    };
     for (const workspace of workspaces) {
       if (!workspace.agent_id) continue;
       if (methods.has("agents.files.list")) {
@@ -445,7 +453,9 @@ async function refreshOpenClaw(gateway: StoredGateway) {
               await openClawRpc(socket, "agents.files.list", { agentId: workspace.agent_id }),
             ),
           );
-        } catch {}
+        } catch (error) {
+          readFailed(error);
+        }
       }
       if (methods.has("skills.status")) {
         try {
@@ -456,7 +466,9 @@ async function refreshOpenClaw(gateway: StoredGateway) {
               await openClawRpc(socket, "skills.status", { agentId: workspace.agent_id }),
             ),
           );
-        } catch {}
+        } catch (error) {
+          readFailed(error);
+        }
       }
     }
     if (methods.has("sessions.list")) {
@@ -465,7 +477,9 @@ async function refreshOpenClaw(gateway: StoredGateway) {
           workspaces,
           await openClawRpc(socket, "sessions.list", { limit: 500 }),
         );
-      } catch {}
+      } catch (error) {
+        readFailed(error);
+      }
     }
     gateway.session_count = workspaces.reduce((sum, workspace) => sum + workspace.session_count, 0);
     gateway.capabilities = [
@@ -479,7 +493,9 @@ async function refreshOpenClaw(gateway: StoredGateway) {
     gateway.assets = assets;
     gateway.state = "connected";
     gateway.pairing_request_id = undefined;
-    gateway.last_error = undefined;
+    gateway.last_error = failedReads
+      ? `OpenClaw data is incomplete: ${failedReads} ${failedReads === 1 ? "request" : "requests"} failed (${firstFailure})`
+      : undefined;
     gateway.last_connected_at = new Date().toISOString();
   } finally {
     await socket.close();

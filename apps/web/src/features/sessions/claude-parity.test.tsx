@@ -60,7 +60,7 @@ class ClaudeEventSource {
 const available = { available: true };
 const unavailable = { available: false };
 const copy = codexCopy["zh-CN"];
-function createHost({ staleSettingsAfterMutation = false } = {}) {
+function createHost({ staleSettingsAfterMutation = false, unmanaged = false } = {}) {
   const settings: SessionSettings = {
     sessionId: "session",
     revision: 1,
@@ -172,6 +172,16 @@ function createHost({ staleSettingsAfterMutation = false } = {}) {
     if (init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       state.mutations.push({ path, ...body });
+      if (path === "managed/adopt") {
+        state.live = {
+          ...state.live,
+          executionMode: "claude-managed",
+          reason: undefined,
+          sendEnabled: true,
+        };
+        state.features.send = available;
+        state.features.adopt = unavailable;
+      }
       if (body.operation === "settings" && !staleSettingsAfterMutation) {
         const selected = { ...state.settings.selected };
         if (body.effort === null) delete selected.effort;
@@ -255,7 +265,18 @@ function createHost({ staleSettingsAfterMutation = false } = {}) {
   vi.stubGlobal("fetch", fetcher);
   vi.stubGlobal("EventSource", ClaudeEventSource);
   ClaudeEventSource.live = () => state.live;
-  return { state, fetcher };
+  if (unmanaged) {
+    state.live = {
+      ...state.live,
+      executionMode: "managed-resume",
+      reason: "handoff-required",
+      sendEnabled: false,
+    };
+    for (const key of Object.keys(state.features)) state.features[key] = unavailable;
+    state.features.adopt = available;
+    state.features.inspect = available;
+  }
+  return { state, fetcher, access };
 }
 async function openSession() {
   render(<WebApplication />);
@@ -271,6 +292,60 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("Claude history handoff shortcut", () => {
+  it("opens the existing confirmation without dispatching or losing the draft", async () => {
+    const { state } = createHost({ unmanaged: true });
+    await openSession();
+    const draft = screen.getByRole("textbox", { name: "发送消息" });
+    fireEvent.change(draft, { target: { value: "Keep this draft" } });
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(
+      screen.getAllByText("尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。").length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "确认续接" }));
+    const confirm = await screen.findByRole("button", { name: "交给 AgentKib" });
+    expect(confirm).toBeDisabled();
+    expect(state.mutations).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(draft).toHaveValue("Keep this draft");
+    expect(state.mutations).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "确认续接" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /我已结束当前轮次/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "交给 AgentKib" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "交给 AgentKib" }));
+    await waitFor(() => expect(state.mutations).toHaveLength(1));
+    expect(state.mutations[0]).toMatchObject({
+      path: "managed/adopt",
+      agent: "claude-code",
+      sessionId: "session",
+      handoffConfirmed: true,
+      handoffFingerprint: "verified-history",
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "交给 AgentKib" })).not.toBeInTheDocument(),
+    );
+    expect(draft).toHaveValue("Keep this draft");
+    expect(state.mutations).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+  });
+
+  it.each(["manage", "capability", "unknown"])(
+    "does not offer handoff with %s unavailable",
+    async (reason) => {
+      const { state, access } = createHost({ unmanaged: true });
+      if (reason === "manage") access.device!.manage = false;
+      if (reason === "capability") state.features.adopt = unavailable;
+      if (reason === "unknown") state.live.reason = "control-outcome-unconfirmed";
+      await openSession();
+      expect(screen.queryByRole("button", { name: "确认续接" })).not.toBeInTheDocument();
+      expect(state.mutations).toEqual([]);
+    },
+  );
 });
 
 describe("Claude Remote parity", () => {

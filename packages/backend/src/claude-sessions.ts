@@ -6,6 +6,7 @@ import { isFile, readText, within } from "./files";
 import { isDirectory, isProbeWorkspace } from "./paths";
 import { jsonLines } from "./jsonl";
 import { sessionTitle, type NativeSessionSource } from "./codex-sessions";
+import { isClaudeEcho } from "./session-document-providers";
 import { timestamp } from "./timestamps";
 import { compareTimes, compareUtf8 } from "./workspaces";
 function record(value: unknown): Record<string, unknown> | null {
@@ -64,6 +65,24 @@ function scan(root: string, errors: string[]): string[] {
   visit(root, 1);
   return files;
 }
+function userTitle(row: Record<string, unknown>): string | null {
+  if (row.type !== "user") return null;
+  const message = record(row.message);
+  if (!message || (message.role !== undefined && message.role !== "user")) return null;
+  const titleText = (value: unknown) =>
+    typeof value === "string" && !isClaudeEcho(value) ? sessionTitle(value) : null;
+  if (typeof message.content === "string") return titleText(message.content);
+  if (!Array.isArray(message.content)) return null;
+  return sessionTitle(
+    message.content
+      .map((value) => {
+        const block = record(value);
+        return block?.type === "text" ? titleText(block.text) : null;
+      })
+      .filter((value) => value !== null)
+      .join("\n"),
+  );
+}
 function transcriptHeader(
   file: string,
   probeWorkspace = isProbeWorkspace,
@@ -74,9 +93,20 @@ function transcriptHeader(
     updated = fileTime(file),
     branch: string | null = null,
     sidechain: boolean | null = null;
+  const customTitles = new Map<string, string>();
+  const firstPrompts = new Map<string, string>();
   for (const { value } of jsonLines(file, { bytes: 2 * 1024 * 1024, lines: 256 })) {
     const row = record(value);
     if (!row) continue;
+    const internal =
+      row.isMeta === true || row.isCompactSummary === true || row.isSidechain === true;
+    if (row.type === "custom-title") {
+      const id = text(row.sessionId),
+        title = sessionTitle(row.customTitle);
+      // A title names a session; it is not evidence for changing the transcript's identity.
+      if (!internal && id && title) customTitles.set(id, title);
+      continue;
+    }
     nativeRef = text(row.sessionId) ?? nativeRef;
     cwd ??= text("cwd" in row ? row.cwd : row.projectPath);
     branch ??= text(row.gitBranch);
@@ -85,6 +115,10 @@ function transcriptHeader(
     const at = parseTime(row.timestamp);
     created = earliest(created, at);
     updated = latest(updated, at);
+    if (!internal && !firstPrompts.has(nativeRef)) {
+      const title = userTitle(row);
+      if (title) firstPrompts.set(nativeRef, title);
+    }
   }
   if (cwd === null || probeWorkspace(cwd)) return null;
   return {
@@ -93,7 +127,9 @@ function transcriptHeader(
     session: {
       native_ref: nativeRef,
       agent: "claude-code",
-      title: null,
+      title: sidechain
+        ? null
+        : (customTitles.get(nativeRef) ?? firstPrompts.get(nativeRef) ?? null),
       origin: sidechain === null ? "unknown" : sidechain ? "auxiliary" : "interactive",
       created_at: created,
       updated_at: updated,
@@ -187,10 +223,23 @@ export class ClaudeSessions {
         });
       }
     }
-    const update = (session: NativeSessionSource, file: string) => {
+    const update = (
+      session: NativeSessionSource,
+      file: string,
+      header?: NativeSessionSource | null,
+    ) => {
       session.transcript = file;
       session.session.updated_at = latest(session.session.updated_at, fileTime(file));
       session.session.availability = readable(file) ? "readable" : "metadata-only";
+      if (!session.session.title && !session.session.sidechain) {
+        try {
+          header ??= transcriptHeader(file, probeWorkspace);
+          if (header?.session.native_ref === session.session.native_ref)
+            session.session.title = header.session.title;
+        } catch (error) {
+          errors.push(String(error));
+        }
+      }
     };
     for (const file of paths.filter((file) => path.extname(file) === ".jsonl")) {
       const indexed = sessions.get(path.basename(file, ".jsonl"));
@@ -202,7 +251,7 @@ export class ClaudeSessions {
         const session = transcriptHeader(file, probeWorkspace);
         if (!session) continue;
         const previous = sessions.get(session.session.native_ref);
-        if (previous) update(previous, file);
+        if (previous) update(previous, file, session);
         else sessions.set(session.session.native_ref, session);
       } catch (error) {
         errors.push(String(error));

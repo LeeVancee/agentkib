@@ -226,7 +226,9 @@ export function mergeToml(
     let config: any;
     try {
       config = parseToml(existing);
-    } catch {}
+    } catch {
+      throw new Error(`Invalid TOML: ${file}`);
+    }
     for (const connection of selected) {
       const key = safeKey(connection.name),
         table = `[mcp_servers.${key}]`;

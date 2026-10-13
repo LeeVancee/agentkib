@@ -34,6 +34,8 @@ import { composerLayoutCopy } from "./composer-layout-copy";
 import { codexCopy, codexReason } from "./codex-copy";
 import { MAX_MESSAGE_LENGTH } from "./session-model";
 import { CodexComposerControls, type CodexResource } from "./codex-session-controls";
+import { useSessionPanels } from "./session-panels";
+import { canConfirmClaudeHandoff } from "./claude-handoff";
 
 type Upload = {
   key: string;
@@ -45,6 +47,7 @@ type Upload = {
 };
 export function SessionComposer() {
   const session = useSession();
+  const panels = useSessionPanels();
   const {
     historyReferences = [],
     setHistoryReferences,
@@ -500,6 +503,11 @@ export function SessionComposer() {
           <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
             {display.reason}
           </p>
+        )}
+        {panels && canConfirmClaudeHandoff(session) && (
+          <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
+            {t.confirmHandoff}
+          </Button>
         )}
         {!isClaude && access?.device?.accessMode !== "full" && (
           <Disclosure className="px-1 text-xs text-muted-foreground">

@@ -78,6 +78,7 @@ describe("session display state", () => {
     expect(sessionDisplayState(state).reason).toBe("");
   });
   it.each([
+    ["handoff-required", dictionaries["zh-CN"].handoffRequired],
     ["unverified-installation", dictionaries["zh-CN"].unverifiedInstallation],
     ["open-in-original-client", dictionaries["zh-CN"].openOriginalClient],
   ])("explains %s from live state or send capability", (reason, expected) => {

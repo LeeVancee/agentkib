@@ -946,7 +946,14 @@ describe("Claude managed workflow", () => {
       ...idleLive,
       sendEnabled: false,
       executionMode: "managed-resume",
+      reason: "handoff-required",
     });
+    server.state.capabilities = {
+      sessionId: "session",
+      executionMode: "managed-resume",
+      status: "idle",
+      features: { adopt: { available: true } },
+    };
     server.state.access = {
       ...approvedAccess,
       device: { ...approvedAccess.device!, manage: true },

@@ -8,6 +8,8 @@ import { Button } from "../../components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { Textarea } from "../../components/ui/textarea";
 import { useSession } from "./session-context";
+import { useSessionPanels } from "./session-panels";
+import { canConfirmClaudeHandoff } from "./claude-handoff";
 import { ContextUsageGauge } from "./context-usage";
 import { contextUsageCopy } from "./context-usage-copy";
 import { sessionDisplayState } from "./session-display-state";
@@ -26,6 +28,7 @@ type Upload = {
 };
 export function CodexComposer() {
   const session = useSession();
+  const panels = useSessionPanels();
   const {
     historyReferences = [],
     setHistoryReferences,
@@ -469,6 +472,11 @@ export function CodexComposer() {
         <p role="status" className="px-1 text-xs leading-5 text-muted-foreground">
           {display.reason}
         </p>
+      )}
+      {panels && canConfirmClaudeHandoff(session) && (
+        <Button type="button" variant="outline" onClick={() => panels.setActionsOpen(true)}>
+          {t.confirmHandoff}
+        </Button>
       )}
       {!isClaude && access?.device?.accessMode !== "full" && (
         <details className="px-1 text-xs text-muted-foreground">

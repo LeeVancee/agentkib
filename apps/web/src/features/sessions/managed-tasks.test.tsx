@@ -24,10 +24,20 @@ let session: {
     status: string;
     bootId: string;
     experimentalEnabled: boolean;
-    device: { id: string; manage: boolean };
+    device: { id: string; manage: boolean; send: boolean };
   };
-  current: { agent: string };
-  live: { executionMode: string; status?: string; revision?: number };
+  current: { id: string; agent: string };
+  live: {
+    sessionId: string;
+    executionMode: string;
+    status?: string;
+    revision?: number;
+    reason?: string;
+  };
+  capabilities: { sessionId: string; features: { adopt: { available: boolean } } };
+  online: boolean;
+  controlReady: boolean;
+  busy: boolean;
   selected: string;
   refresh: ReturnType<typeof vi.fn>;
   locale: string;
@@ -68,10 +78,19 @@ describe("ManagedTasks", () => {
         protocolVersion: 2,
         bootId: "boot",
         experimentalEnabled: true,
-        device: { id: "browser", manage: true },
+        device: { id: "browser", manage: true, send: true },
       },
-      current: { agent: "codex" },
-      live: { executionMode: "external" },
+      current: { id: "original-session", agent: "codex" },
+      live: {
+        sessionId: "original-session",
+        executionMode: "external",
+        status: "idle",
+        reason: "handoff-required",
+      },
+      capabilities: { sessionId: "original-session", features: { adopt: { available: true } } },
+      online: true,
+      controlReady: true,
+      busy: false,
       selected: "original-session",
       refresh: vi.fn().mockResolvedValue(undefined),
       locale: "en-US",
@@ -144,6 +163,57 @@ describe("ManagedTasks", () => {
       expect(session.client.request).not.toHaveBeenCalled();
     },
   );
+  it.each(["offline", "capability", "unknown", "stale-session", "send-permission"])(
+    "blocks an already open Claude confirmation after %s changes",
+    async (reason) => {
+      session.current.agent = "claude-code";
+      const view = await show();
+      fireEvent.click(screen.getByRole("checkbox"));
+      const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
+      expect(button).toBeEnabled();
+      if (reason === "offline") session.online = false;
+      if (reason === "capability") session.capabilities.features.adopt.available = false;
+      if (reason === "unknown") session.live.reason = "control-outcome-unconfirmed";
+      if (reason === "stale-session") session.capabilities.sessionId = "previous-session";
+      if (reason === "send-permission") session.access.device.send = false;
+      view.rerender(<ManagedTasks />);
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(mutations()).toEqual([]);
+    },
+  );
+  it("ignores a late Claude inspection after selecting another session", async () => {
+    session.current.agent = "claude-code";
+    let finish!: (value: { sessionId: string; handoffFingerprint: string }) => void;
+    session.client.managedInspect.mockImplementation((id: string) =>
+      id === "original-session"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve({ sessionId: id, handoffFingerprint: "second-history" }),
+    );
+    const view = await show();
+    fireEvent.click(screen.getByRole("checkbox"));
+    session.selected = "second-session";
+    session.current.id = "second-session";
+    session.live.sessionId = "second-session";
+    session.capabilities.sessionId = "second-session";
+    view.rerender(<ManagedTasks />);
+    await act(async () =>
+      finish({ sessionId: "original-session", handoffFingerprint: "old-history" }),
+    );
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    const button = screen.getByRole("button", { name: "Hand over to AgentKib" });
+    expect(button).toBeDisabled();
+    expect(mutations()).toEqual([]);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(button);
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    expect(mutations()[0][1]).toMatchObject({
+      sessionId: "second-session",
+      handoffFingerprint: "second-history",
+    });
+  });
   it("requires an explicit handoff confirmation and keeps the existing session id", async () => {
     await show();
     const handoff = screen.getByRole("button", { name: "Hand over to AgentKib" });
@@ -368,7 +438,7 @@ describe("ManagedTasks", () => {
     );
     const view = await show(true);
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    session.access = { ...session.access, device: { id: "browser", manage: false } };
+    session.access = { ...session.access, device: { id: "browser", manage: false, send: false } };
     view.rerender(<ManagedTasks create />);
     await act(async () => {
       finish({ sessionId: "late-session" });

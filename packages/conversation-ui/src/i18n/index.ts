@@ -55,6 +55,8 @@ const zh = {
   unavailable: "实时控制暂不可用，请在桌面端检查连接状态。",
   openOriginalClient: "未检测到此会话的原生执行客户端。请在原客户端打开后刷新。",
   unverifiedInstallation: "未能确认主机上的 Agent 安装或版本，控制已禁用。请在桌面端检查安装。",
+  handoffRequired: "尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。",
+  confirmHandoff: "确认续接",
   unsupportedControl: "当前平台或 Agent 尚不支持实时控制，仍可阅读历史。",
   process: "执行过程",
   tools: "次工具调用",
@@ -177,6 +179,9 @@ const en: Words = {
     "No native execution client was found for this conversation. Open it in the original client and refresh.",
   unverifiedInstallation:
     "The host Agent installation or version could not be verified. Control is disabled. Check the installation in the desktop app.",
+  handoffRequired:
+    "This session has not been handed over to AgentKib. Stop it in the original terminal, then confirm resuming.",
+  confirmHandoff: "Confirm resuming",
   unsupportedControl:
     "Live control is not supported for this platform or Agent. History remains readable.",
   process: "Execution process",
@@ -299,6 +304,8 @@ const tw: Words = {
   unavailable: "即時控制暫時無法使用，請在桌面端檢查連線狀態。",
   openOriginalClient: "未偵測到此對話的原生執行客戶端。請在原客戶端開啟後重新整理。",
   unverifiedInstallation: "無法確認主機上的 Agent 安裝或版本，控制已停用。請在桌面端檢查安裝。",
+  handoffRequired: "尚未交接給 AgentKib，請先停止原終端中的同一會話，再確認續接。",
+  confirmHandoff: "確認續接",
   unsupportedControl: "目前平台或 Agent 尚不支援即時控制，仍可閱讀歷史。",
   process: "執行過程",
   tools: "次工具呼叫",
@@ -419,6 +426,9 @@ const ja: Words = {
     "この会話のネイティブ実行クライアントが見つかりません。元のクライアントで開いて更新してください。",
   unverifiedInstallation:
     "ホストの Agent のインストールまたはバージョンを確認できないため、制御は無効です。デスクトップアプリでインストールを確認してください。",
+  handoffRequired:
+    "この会話はまだ AgentKib に引き継がれていません。元のターミナルで同じ会話を停止してから、再開を確認してください。",
+  confirmHandoff: "再開を確認",
   unsupportedControl:
     "このプラットフォームまたは Agent はリアルタイム制御に対応していません。履歴は閲覧できます。",
   process: "実行過程",

@@ -313,6 +313,7 @@ export interface CodexCapabilities {
   features: Partial<
     Record<
       | SessionAction
+      | "adopt"
       | "settings-state"
       | "goal"
       | "queue-list"

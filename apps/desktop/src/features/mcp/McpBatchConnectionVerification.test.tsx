@@ -174,7 +174,7 @@ describe("MCP batch connection verification", () => {
     fireEvent.click(verifyButton());
     await screen.findByText("workspace_read, external_read");
     await user.click(screen.getByRole("combobox", { name: "mcp.manage.workspace" }));
-    await user.click(screen.getByRole("option", { name: "Two" }));
+    await user.click(await screen.findByRole("option", { name: "Two" }));
     expect(screen.queryByText("workspace_read, external_read")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "mcp.manage.verifyHub" })).not.toBeInTheDocument();
     vi.mocked(api.planMcpConnections).mockResolvedValue({ ...correctPlan, workspace_id: "two" });

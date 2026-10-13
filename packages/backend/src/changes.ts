@@ -175,6 +175,10 @@ export function applyRequest(
         success ? "changeset.apply" : "changeset.apply_failed",
         plan.id,
       );
-    } catch {}
+    } catch {
+      // The change set already ran: never replace its result or error with an audit failure,
+      // but do not let the gap in the audit trail go unnoticed. Static text only, no IDs or paths.
+      console.warn("Change set audit event could not be recorded");
+    }
   }
 }

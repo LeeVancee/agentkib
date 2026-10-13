@@ -4,24 +4,31 @@ import {
   Dialog as DialogRoot,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 
 export function Dialog({
   title,
+  description,
   closeLabel,
   onClose,
   children,
   panel = false,
   footer,
+  className,
+  bodyClassName,
 }: {
   title: string;
+  description?: ReactNode;
   closeLabel: string;
   onClose: () => void;
   children: ReactNode;
   panel?: boolean;
   footer?: ReactNode;
+  className?: string;
+  bodyClassName?: string;
 }) {
   const returnFocus = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
@@ -45,33 +52,40 @@ export function Dialog({
         className={cn(
           !panel && "sm:max-w-xl",
           panel &&
-            "top-0 left-0 flex h-dvh max-h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 md:top-1/2 md:left-1/2 md:h-auto md:max-h-[85dvh] md:max-w-xl md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl",
+            "flex max-h-[min(85dvh,760px)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-xl",
+          className,
         )}
       >
         <DialogHeader
           className={cn(
-            "flex-row items-center justify-between gap-3 pr-8",
-            panel && "relative shrink-0 border-b p-4 pr-16",
+            "relative flex-row items-start justify-between gap-3 pr-10",
+            panel && "shrink-0 px-6 pt-6",
           )}
         >
-          <DialogTitle>{title}</DialogTitle>
+          <div className="min-w-0 space-y-1">
+            <DialogTitle className="text-lg font-semibold tracking-tight">{title}</DialogTitle>
+            {description && <DialogDescription>{description}</DialogDescription>}
+          </div>
           <DialogClose
-            className="absolute top-4 right-4 grid size-11 place-items-center rounded-md hover:bg-accent"
+            className="absolute top-4 right-4 grid size-8 place-items-center rounded-md text-muted-foreground opacity-70 hover:bg-accent hover:text-foreground hover:opacity-100"
             aria-label={closeLabel}
           >
-            <span aria-hidden="true">×</span>
+            <span aria-hidden="true" className="text-xl leading-none">
+              ×
+            </span>
           </DialogClose>
         </DialogHeader>
         <div
           className={cn(
             "dialog-body agentkib-conversation-dialog min-w-0 space-y-4",
-            panel && "min-h-0 flex-1 overflow-y-auto overscroll-contain p-4",
+            panel && "min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5",
+            bodyClassName,
           )}
         >
           {children}
         </div>
         {footer && (
-          <div className="shrink-0 border-t bg-background p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          <div className="shrink-0 border-t bg-muted/30 px-6 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             {footer}
           </div>
         )}

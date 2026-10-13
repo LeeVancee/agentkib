@@ -1,4 +1,4 @@
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 const copy: Record<string, [string, string]> = {
   "无法读取已保存的请求标识。": [
     "無法讀取已儲存的請求識別碼。",

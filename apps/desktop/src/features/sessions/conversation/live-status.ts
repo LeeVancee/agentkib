@@ -1,4 +1,4 @@
-import type { Words } from "./i18n";
+import type { ConversationWords as Words } from "@/core/i18n";
 
 /** Only known reason codes get specific advice; never render raw runtime errors. */
 export function unavailableReasonText(reason: string, words: Words): string {

@@ -1,4 +1,4 @@
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 
 const zh = {
   actions: "会话操作",

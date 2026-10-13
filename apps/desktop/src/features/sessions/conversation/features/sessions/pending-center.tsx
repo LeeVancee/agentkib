@@ -1,5 +1,6 @@
 import { Bell } from "lucide-react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSessionNavigate } from "./session-navigation";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
@@ -31,6 +32,7 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<PendingControl[]>([]);
   const [failed, setFailed] = useState(false);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const navigate = useSessionNavigate();
   useEffect(() => {
     if (access?.status !== "approved" || !access.device?.id) {
@@ -49,6 +51,14 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
     read();
     return subscribePending(read);
   }, [origin, access?.status, access?.device?.id, open, live?.revision]);
+  useEffect(() => {
+    const sync = () =>
+      setPortalTarget(document.querySelector<HTMLElement>("[data-session-directory-pending-slot]"));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
   if (access?.status !== "approved") return null;
   const pendingIds = new Set([
     ...Object.keys(pendingSessions).filter((id) => pendingSessions[id]),
@@ -60,28 +70,31 @@ export function PendingCenter({ compact = false }: { compact?: boolean }) {
     ? [...(live?.approvals ?? []), ...(live?.questions ?? [])]
     : [];
   if (interactions.length && selected) pendingIds.add(selected);
+  const trigger = (
+    <Button
+      data-conversation-pending-trigger
+      variant="ghost"
+      className={compact ? "relative !size-9 !min-w-0 !p-0" : "min-h-11"}
+      aria-label={`${copy.pending}${pendingIds.size ? ` (${pendingIds.size})` : ""}`}
+      onClick={() => setOpen(true)}
+    >
+      {compact ? <Bell size={18} /> : copy.pending}
+      {pendingIds.size > 0 && (
+        <span
+          className={
+            compact
+              ? "absolute right-0 top-0 rounded-full bg-primary px-1 text-xs text-primary-foreground"
+              : ""
+          }
+        >
+          {pendingIds.size}
+        </span>
+      )}
+    </Button>
+  );
   return (
     <>
-      <Button
-        data-conversation-pending-trigger
-        variant="ghost"
-        className={compact ? "relative size-11 p-0" : "min-h-11"}
-        aria-label={`${copy.pending}${pendingIds.size ? ` (${pendingIds.size})` : ""}`}
-        onClick={() => setOpen(true)}
-      >
-        {compact ? <Bell size={18} /> : copy.pending}
-        {pendingIds.size > 0 && (
-          <span
-            className={
-              compact
-                ? "absolute right-0 top-0 rounded-full bg-primary px-1 text-xs text-primary-foreground"
-                : ""
-            }
-          >
-            {pendingIds.size}
-          </span>
-        )}
-      </Button>
+      {portalTarget && compact ? createPortal(trigger, portalTarget) : trigger}
       {open && (
         <Dialog panel title={copy.pending} closeLabel={copy.close} onClose={() => setOpen(false)}>
           <p className="text-xs text-muted-foreground">{copy.pendingInfo}</p>

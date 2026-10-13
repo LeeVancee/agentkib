@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { NativeCheckbox } from "@/components/ui/native-checkbox";
 import { codexCopy } from "../sessions/codex-copy";
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 const labels: Record<Locale, Record<string, string>> = {
   "zh-CN": {
     accept: "允许执行",

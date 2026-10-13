@@ -20,7 +20,8 @@ import {
   isSessionVisible,
 } from "@agentkib/session-catalog";
 import type { ConversationSessionSummary } from "@agentkib/web-client";
-import { dictionaries, type Locale } from "../../i18n";
+import { conversationWords } from "@/core/i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 import { catalogCopy } from "./catalog-copy";
 import { interactionCopy } from "../interactions/question-form";
 
@@ -46,7 +47,7 @@ export function SessionCatalog({
   indexEnabled?: boolean;
   pendingSessions?: Record<string, boolean>;
 }) {
-  const t = dictionaries[locale],
+  const t = conversationWords(locale),
     c = catalogCopy[locale];
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");

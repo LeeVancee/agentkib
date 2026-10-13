@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { UserQuestionRequest } from "@agentkib/web-client";
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 
 export const MAX_ANSWER_LENGTH = 4096;
 export const MAX_ANSWER_BYTES = 8192;

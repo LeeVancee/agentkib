@@ -14,11 +14,19 @@ import {
 } from "@agentkib/web-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 import { NativeCheckbox } from "@/components/ui/native-checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog } from "../../components/dialog";
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 import { historyCopy } from "./history-copy";
 
 export function historyAccessScope(access: Access | undefined): string {
@@ -384,64 +392,103 @@ export function HistorySearchPanel({
     }
   }
   return (
-    <div className="flex min-h-0 flex-col gap-3" data-history-search>
-      <p className="text-xs text-muted-foreground">{c.local}</p>
+    <div className="flex min-h-0 flex-col gap-4" data-history-search>
       <form
-        className="flex gap-2"
+        className="flex items-center gap-2"
         onSubmit={(event) => {
           event.preventDefault();
           void search();
         }}
       >
-        <Input
-          aria-label={c.query}
-          placeholder={c.query}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
+        <div className="relative min-w-0 flex-1">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            aria-label={c.query}
+            placeholder={c.query}
+            value={query}
+            className="h-10 pl-9"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
         <Button type="submit" disabled={!query.trim() || !queryValid || busy || !status?.enabled}>
           {c.search}
         </Button>
       </form>
-      <div className="flex flex-wrap gap-2">
-        <NativeSelect
-          aria-label={c.allWorkspaces}
-          value={workspace}
-          onChange={(e) => setWorkspace(e.target.value)}
-        >
-          <option value="">{c.allWorkspaces}</option>
-          {catalog?.workspaces?.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name.trim() || w.id}
-            </option>
-          ))}
-        </NativeSelect>
-        <NativeSelect
-          aria-label={c.allAgents}
-          value={agent}
-          onChange={(e) => setAgent(e.target.value)}
-        >
-          <option value="">{c.allAgents}</option>
-          {[...new Set(catalog?.sessions.map((s) => s.agent) ?? [])].map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </NativeSelect>
-        <NativeSelect
-          aria-label={c.allKinds}
-          value={kind}
-          onChange={(e) => setKind(e.target.value)}
-        >
-          <option value="">{c.allKinds}</option>
-          <option value="messages">{c.messages}</option>
-          <option value="tools">{c.tools}</option>
-        </NativeSelect>
-        <label className="flex items-center gap-2 text-xs">
+      <fieldset className="space-y-3 rounded-lg border p-4">
+        <legend className="px-1 text-sm font-medium">{c.source}</legend>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <Select
+            value={workspace || "__all_workspaces__"}
+            onValueChange={(value) =>
+              setWorkspace(value === "__all_workspaces__" ? "" : (value ?? ""))
+            }
+          >
+            <SelectTrigger className="h-10 w-full" aria-label={c.allWorkspaces}>
+              <SelectValue>
+                {workspace
+                  ? (catalog?.workspaces?.find((item) => item.id === workspace)?.name.trim() ??
+                    workspace)
+                  : c.allWorkspaces}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>{c.workspace}</SelectLabel>
+                <SelectItem value="__all_workspaces__">{c.allWorkspaces}</SelectItem>
+                {catalog?.workspaces?.map((w) => (
+                  <SelectItem key={w.id} value={w.id}>
+                    {w.name.trim() || w.id}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <Select
+            value={agent || "__all_agents__"}
+            onValueChange={(value) => setAgent(value === "__all_agents__" ? "" : (value ?? ""))}
+          >
+            <SelectTrigger className="h-10 w-full" aria-label={c.allAgents}>
+              <SelectValue>{agent || c.allAgents}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>{c.allAgents}</SelectLabel>
+                <SelectItem value="__all_agents__">{c.allAgents}</SelectItem>
+                {[...new Set(catalog?.sessions.map((s) => s.agent) ?? [])].map((a) => (
+                  <SelectItem key={a} value={a}>
+                    {a}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <Select
+            value={kind || "__all_kinds__"}
+            onValueChange={(value) => setKind(value === "__all_kinds__" ? "" : (value ?? ""))}
+          >
+            <SelectTrigger className="h-10 w-full" aria-label={c.allKinds}>
+              <SelectValue>
+                {kind === "messages" ? c.messages : kind === "tools" ? c.tools : c.allKinds}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>{c.allKinds}</SelectLabel>
+                <SelectItem value="__all_kinds__">{c.allKinds}</SelectItem>
+                <SelectItem value="messages">{c.messages}</SelectItem>
+                <SelectItem value="tools">{c.tools}</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
+        <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
           <NativeCheckbox checked={archived} onChange={(e) => setArchived(e.target.checked)} />
           {c.archived}
         </label>
-      </div>
+      </fieldset>
       {status && <HistoryCoverageStatus status={status} locale={locale} />}
       {status?.enabled === false && <p role="status">{c.disabled}</p>}
       {!queryValid && (
@@ -460,10 +507,16 @@ export function HistorySearchPanel({
         </p>
       )}
       {located ? (
-        <section className="space-y-3 rounded-lg border p-3" aria-label={c.source}>
-          <div className="flex flex-wrap items-center gap-2">
+        <section className="space-y-4 rounded-lg border p-4" aria-label={c.source}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-muted-foreground">{c.source}</p>
+              <strong className="mt-1 block min-w-0 break-words text-sm">
+                {located.title || located.agent}
+              </strong>
+            </div>
             <Button
-              variant="ghost"
+              variant="outline"
               onClick={() => {
                 request.current++;
                 inFlight.current?.abort();
@@ -473,26 +526,25 @@ export function HistorySearchPanel({
             >
               {c.back}
             </Button>
-            <strong className="min-w-0 break-words text-sm">
-              {located.title || located.agent}
-            </strong>
-            <span className="text-xs text-muted-foreground">
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-md bg-muted px-2 py-1">
+              {c.workspace}: {workspaceName(located.workspaceId)}
+            </span>
+            <span className="rounded-md bg-muted px-2 py-1">
               {c[located.kind]} {located.toolName}
             </span>
           </div>
-          <p className="break-words text-xs text-muted-foreground">
-            {c.workspace}: {workspaceName(located.workspaceId)}
-          </p>
           <pre
             tabIndex={0}
-            className="max-h-[35dvh] overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-3 text-xs"
+            className="max-h-[35dvh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-4 text-xs leading-6"
           >
             <HighlightedHistoryText
               text={located.content}
               ranges={literalHistoryMatchRanges(located.content, query)}
             />
           </pre>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               disabled={!located.before || busy}
@@ -589,7 +641,14 @@ export function HistorySearchPanel({
 export function HistorySearchDialog(props: HistorySearchPanelProps & { onClose: () => void }) {
   const c = historyCopy[props.locale];
   return (
-    <Dialog panel title={c.title} closeLabel={c.close} onClose={props.onClose}>
+    <Dialog
+      panel
+      className="md:max-w-2xl"
+      title={c.title}
+      description={c.local}
+      closeLabel={c.close}
+      onClose={props.onClose}
+    >
       <HistorySearchPanel
         {...props}
         onScopeEnded={() => {
@@ -671,8 +730,14 @@ export function HistorySearchLauncher({
   if (!scope) return null;
   return (
     <>
-      <Button type="button" variant="ghost" disabled={pending} onClick={() => void openSearch()}>
-        <Search size={16} />
+      <Button
+        type="button"
+        variant="outline"
+        className="h-10 w-full justify-start gap-2 rounded-xl bg-background px-3 text-sm font-normal shadow-sm"
+        disabled={pending}
+        onClick={() => void openSearch()}
+      >
+        <Search size={16} className="text-muted-foreground" />
         {historyCopy[locale].title}
       </Button>
       {error && (

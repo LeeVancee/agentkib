@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Settings2, X } from "lucide-react";
+import { ArrowLeft, ChevronRight, Goal, Plus, RotateCcw, Search, Settings2, X } from "lucide-react";
 import {
   ApiError,
   type SessionAction,
@@ -14,8 +14,16 @@ import { Button } from "@/components/ui/button";
 import { Disclosure, DisclosureSummary } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
 import { NativeCheckbox } from "@/components/ui/native-checkbox";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";
 import { composerLayoutCopy, composerTerm } from "./composer-layout-copy";
@@ -32,10 +40,14 @@ type CodexComposerControlsProps = {
   openPhoneFiles: () => void;
   disabled: boolean;
   action?: ReactNode;
+  advancedActions?: ReactNode;
 };
 
-const selectClass =
-  "block h-11 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-50";
+const selectClass = "h-11 w-full";
+const defaultModelValue = "__agentkib_default_model__";
+const defaultEffortValue = "__agentkib_default_effort__";
+const unknownModeValue = "__agentkib_unknown_mode__";
+const defaultServiceTierValue = "__agentkib_default_service_tier__";
 
 function unavailable(error: unknown) {
   return error instanceof ApiError ? error.code : "request_failed";
@@ -65,6 +77,7 @@ export function CodexComposerControls({
   openPhoneFiles,
   disabled,
   action,
+  advancedActions,
 }: CodexComposerControlsProps) {
   const {
     current,
@@ -586,6 +599,7 @@ export function CodexComposerControls({
             )}
           </Button>
         )}
+        {advancedActions}
         <ContextUsageGauge
           fallback={settings?.sessionId === selected ? settings.usage : undefined}
         />
@@ -607,6 +621,8 @@ export function CodexComposerControls({
       {dialog === "settings" && (
         <Dialog
           panel
+          className="md:max-w-2xl"
+          bodyClassName="space-y-5 bg-muted/5"
           footer={
             settings?.available ? (
               <>
@@ -715,14 +731,12 @@ export function CodexComposerControls({
               </div>
               <label className="block space-y-1 text-sm">
                 {copy.model}
-                <NativeSelect
-                  className={selectClass}
-                  value={model}
+                <Select
+                  value={model || defaultModelValue}
                   disabled={settingDisabled || !settings.writable.model?.available}
-                  title={reasonTitle(settings.writable.model?.reason)}
-                  onChange={(event) => {
+                  onValueChange={(value) => {
                     editSettings("model");
-                    const next = event.target.value;
+                    const next = value === defaultModelValue ? "" : (value ?? "");
                     const option = settings.options.models?.find((item) => item.id === next);
                     setModel(next);
                     if (!option?.efforts?.includes(effort)) {
@@ -738,63 +752,93 @@ export function CodexComposerControls({
                     }
                   }}
                 >
-                  <option value="">{copy.defaultOption}</option>
-                  {settings.options.models?.map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.name || item.id}
-                    </option>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger
+                    className={selectClass}
+                    title={reasonTitle(settings.writable.model?.reason)}
+                  >
+                    <SelectValue placeholder={copy.defaultOption} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectLabel>{copy.model}</SelectLabel>
+                      <SelectItem value={defaultModelValue}>{copy.defaultOption}</SelectItem>
+                      {settings.options.models?.map((item) => (
+                        <SelectItem value={item.id} key={item.id}>
+                          {item.name || item.id}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
                 {!settings.writable.model?.available &&
                   reasonDetail(settings.writable.model?.reason)}
               </label>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block space-y-1 text-sm">
                   {copy.effort}
-                  <NativeSelect
-                    className={selectClass}
-                    value={effort}
+                  <Select
+                    value={effort || defaultEffortValue}
                     disabled={settingDisabled || !settings.writable.effort?.available}
-                    title={reasonTitle(settings.writable.effort?.reason)}
-                    onChange={(event) => {
+                    onValueChange={(value) => {
                       editSettings("effort");
-                      setEffort(event.target.value);
+                      setEffort(value === defaultEffortValue ? "" : (value ?? ""));
                     }}
                   >
-                    <option value="">{copy.defaultOption}</option>
-                    {selectedModel?.efforts?.map((item) => (
-                      <option key={item} value={item}>
-                        {term(item)}
-                      </option>
-                    ))}
-                  </NativeSelect>
+                    <SelectTrigger
+                      className={selectClass}
+                      title={reasonTitle(settings.writable.effort?.reason)}
+                    >
+                      <SelectValue placeholder={copy.defaultOption} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectLabel>{copy.effort}</SelectLabel>
+                        <SelectItem value={defaultEffortValue}>{copy.defaultOption}</SelectItem>
+                        {selectedModel?.efforts?.map((item) => (
+                          <SelectItem key={item} value={item}>
+                            {term(item)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                   {!settings.writable.effort?.available &&
                     reasonDetail(settings.writable.effort?.reason)}
                 </label>
                 {isClaude ? (
                   <label className="block space-y-1 text-sm">
                     {agentCopy.permission}
-                    <NativeSelect
-                      className={selectClass}
-                      value={permissionMode}
+                    <Select
+                      value={permissionMode || unknownModeValue}
                       disabled={settingDisabled || !settings.writable.permissionMode?.available}
-                      title={reasonTitle(settings.writable.permissionMode?.reason)}
-                      onChange={(event) => {
+                      onValueChange={(value) => {
                         editSettings("permissionMode");
-                        setPermissionMode(event.target.value as ClaudePermissionMode);
+                        if (value && value !== unknownModeValue)
+                          setPermissionMode(value as ClaudePermissionMode);
                       }}
                     >
-                      <option value="" disabled>
-                        {layout.modeUnknown}
-                      </option>
-                      {settings.options.permissionModes
-                        ?.filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
-                        .map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                    </NativeSelect>
+                      <SelectTrigger
+                        className={selectClass}
+                        title={reasonTitle(settings.writable.permissionMode?.reason)}
+                      >
+                        <SelectValue placeholder={layout.modeUnknown} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectLabel>{agentCopy.permission}</SelectLabel>
+                          <SelectItem value={unknownModeValue} disabled>
+                            {layout.modeUnknown}
+                          </SelectItem>
+                          {settings.options.permissionModes
+                            ?.filter((item) => ["default", "plan", "acceptEdits"].includes(item.id))
+                            .map((item) => (
+                              <SelectItem key={item.id} value={item.id}>
+                                {item.name}
+                              </SelectItem>
+                            ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
                     {!settings.writable.permissionMode?.available &&
                       reasonDetail(settings.writable.permissionMode?.reason)}
                     {settings.options.permissionModes?.find((item) => item.id === permissionMode)
@@ -812,25 +856,35 @@ export function CodexComposerControls({
                   <>
                     <label className="block space-y-1 text-sm">
                       {copy.mode}
-                      <NativeSelect
-                        className={selectClass}
-                        value={mode}
+                      <Select
+                        value={mode || unknownModeValue}
                         disabled={settingDisabled || !modeWritable}
-                        title={reasonTitle(settings.writable.mode?.reason)}
-                        onChange={(event) => {
+                        onValueChange={(value) => {
                           editSettings();
-                          setMode(event.target.value as "" | "default" | "plan");
+                          if (value && value !== unknownModeValue)
+                            setMode(value as "default" | "plan");
                         }}
                       >
-                        <option value="" disabled>
-                          {layout.modeUnknown}
-                        </option>
-                        {modeOptions.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.id === "plan" ? copy.plan : copy.normal}
-                          </option>
-                        ))}
-                      </NativeSelect>
+                        <SelectTrigger
+                          className={selectClass}
+                          title={reasonTitle(settings.writable.mode?.reason)}
+                        >
+                          <SelectValue placeholder={layout.modeUnknown} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectLabel>{copy.mode}</SelectLabel>
+                            <SelectItem value={unknownModeValue} disabled>
+                              {layout.modeUnknown}
+                            </SelectItem>
+                            {modeOptions.map((item) => (
+                              <SelectItem key={item.id} value={item.id}>
+                                {item.id === "plan" ? copy.plan : copy.normal}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
                       {!modeWritable &&
                         reasonDetail(
                           settings.writable.mode?.reason || "collaboration-modes-unavailable",
@@ -838,29 +892,40 @@ export function CodexComposerControls({
                     </label>
                     <label className="block space-y-1 text-sm">
                       {copy.serviceTier}
-                      <NativeSelect
-                        className={selectClass}
-                        value={serviceTier}
+                      <Select
+                        value={serviceTier || defaultServiceTierValue}
                         disabled={settingDisabled || !settings.writable.serviceTier?.available}
-                        title={reasonTitle(settings.writable.serviceTier?.reason)}
-                        onChange={(event) => {
+                        onValueChange={(value) => {
                           editSettings();
-                          setServiceTier(event.target.value);
+                          setServiceTier(value === defaultServiceTierValue ? "" : (value ?? ""));
                         }}
                       >
-                        <option value="">{copy.defaultOption}</option>
-                        {settings.options.serviceTiers
-                          ?.filter(
-                            (item) =>
-                              !selectedModel?.serviceTierIds?.length ||
-                              selectedModel.serviceTierIds.includes(item.id),
-                          )
-                          .map((item) => (
-                            <option value={item.id} key={item.id}>
-                              {item.name || item.id}
-                            </option>
-                          ))}
-                      </NativeSelect>
+                        <SelectTrigger
+                          className={selectClass}
+                          title={reasonTitle(settings.writable.serviceTier?.reason)}
+                        >
+                          <SelectValue placeholder={copy.defaultOption} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectLabel>{copy.serviceTier}</SelectLabel>
+                            <SelectItem value={defaultServiceTierValue}>
+                              {copy.defaultOption}
+                            </SelectItem>
+                            {settings.options.serviceTiers
+                              ?.filter(
+                                (item) =>
+                                  !selectedModel?.serviceTierIds?.length ||
+                                  selectedModel.serviceTierIds.includes(item.id),
+                              )
+                              .map((item) => (
+                                <SelectItem value={item.id} key={item.id}>
+                                  {item.name || item.id}
+                                </SelectItem>
+                              ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
                       {!settings.writable.serviceTier?.available &&
                         reasonDetail(settings.writable.serviceTier?.reason)}
                       {!!settings.options.serviceTiers?.find((item) => item.id === serviceTier)
@@ -875,22 +940,31 @@ export function CodexComposerControls({
                     </label>
                     <label className="block space-y-1 text-sm">
                       {copy.executionPolicy}
-                      <NativeSelect
-                        className={selectClass}
-                        value={policy}
+                      <Select
+                        value={policy || null}
                         disabled={settingDisabled || !settings.writable.policy?.available}
-                        title={reasonTitle(settings.writable.policy?.reason)}
-                        onChange={(event) => {
+                        onValueChange={(value) => {
                           editSettings();
-                          setPolicy(event.target.value);
+                          setPolicy(value ?? "");
                         }}
                       >
-                        {settings.options.policies?.map((item) => (
-                          <option value={item.id} key={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </NativeSelect>
+                        <SelectTrigger
+                          className={selectClass}
+                          title={reasonTitle(settings.writable.policy?.reason)}
+                        >
+                          <SelectValue placeholder={copy.defaultOption} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectLabel>{copy.executionPolicy}</SelectLabel>
+                            {settings.options.policies?.map((item) => (
+                              <SelectItem value={item.id} key={item.id}>
+                                {item.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
                       {!settings.writable.policy?.available &&
                         reasonDetail(settings.writable.policy?.reason)}
                       {!!settings.options.policies?.find((item) => item.id === policy)
@@ -937,6 +1011,7 @@ export function CodexComposerControls({
       {dialog === "goal" && (
         <Dialog
           panel
+          description={`${layout.selected}: ${resources.length}`}
           footer={
             goal?.available ? (
               <div className="flex flex-wrap gap-2">
@@ -1149,20 +1224,20 @@ export function CodexComposerControls({
           closeLabel={copy.close}
           onClose={() => setDialog(undefined)}
         >
-          <section className="space-y-4">
+          <section className="space-y-5">
             {goalReadable && (
               <Button
                 type="button"
                 variant="outline"
-                className="min-h-11 w-full justify-start"
+                className="min-h-10 w-full justify-start"
                 onClick={() => openControls("goal")}
               >
                 <Goal size={16} />
                 {copy.goals}
               </Button>
             )}
-            <Disclosure className="text-xs text-muted-foreground">
-              <DisclosureSummary className="min-h-11 cursor-pointer content-center">
+            <Disclosure className="rounded-lg border px-3 text-xs text-muted-foreground">
+              <DisclosureSummary className="min-h-10 cursor-pointer content-center">
                 {layout.help}
               </DisclosureSummary>
               <p className="pb-2 leading-5">{copy.composerHint}</p>
@@ -1170,7 +1245,7 @@ export function CodexComposerControls({
             <Button
               type="button"
               variant="outline"
-              className="min-h-11 w-full justify-start"
+              className="min-h-10 w-full justify-start"
               disabled={disabled || capabilities?.features.attachments?.available !== true}
               onClick={() => {
                 setDialog(undefined);
@@ -1179,18 +1254,18 @@ export function CodexComposerControls({
             >
               {copy.uploadFromPhone}
             </Button>
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2 rounded-lg border p-2">
               <Button
                 type="button"
                 variant="outline"
-                className="min-h-11 shrink-0"
+                className="min-h-9 shrink-0"
                 disabled={!context?.parentId || contextLoading || !online}
                 onClick={() => void loadContext(context?.parentId, contextNames.slice(0, -1))}
               >
                 <ArrowLeft size={16} />
                 {layout.parentDirectory}
               </Button>
-              <span className="min-w-0 break-words text-sm">
+              <span className="min-w-0 break-words px-1 text-xs text-muted-foreground">
                 {[layout.contextRoot, ...contextNames].join(" / ")}
               </span>
             </div>
@@ -1220,13 +1295,20 @@ export function CodexComposerControls({
               </p>
             ) : (
               <>
-                <Input
-                  aria-label={copy.resourceSearch}
-                  placeholder={copy.resourceSearch}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">{copy.directoryReference}</p>
+                <div className="relative">
+                  <Search
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <Input
+                    aria-label={copy.resourceSearch}
+                    placeholder={copy.resourceSearch}
+                    value={query}
+                    className="h-10 pl-9"
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </div>
+                <p className="text-sm text-muted-foreground">{copy.directoryReference}</p>
                 <div className="space-y-2">
                   {availableResources.length === 0 && (
                     <p className="text-sm text-muted-foreground">{copy.resourceEmpty}</p>
@@ -1243,7 +1325,7 @@ export function CodexComposerControls({
                             return (
                               <div
                                 key={item.id}
-                                className="flex items-center gap-2 rounded-lg border p-3 text-sm"
+                                className={`flex items-center gap-2 rounded-lg border p-3 text-sm transition-colors ${checked ? "border-primary/40 bg-primary/5" : "hover:bg-muted/30"}`}
                               >
                                 <label className="flex min-w-0 flex-1 items-start gap-3">
                                   <NativeCheckbox

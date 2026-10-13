@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 
 export function useAppearance(locale: Locale, theme: string, accent = "blue", enabled = true) {
   useEffect(() => {

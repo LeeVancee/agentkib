@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Gauge } from "lucide-react";
 import type { ContextUsage, Live } from "@agentkib/web-client";
-import type { Locale } from "../../i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "../../components/dialog";
 import { useSession } from "./session-context";

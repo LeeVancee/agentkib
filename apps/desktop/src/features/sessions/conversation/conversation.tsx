@@ -19,7 +19,7 @@ import {
 } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
 import type { WebClient } from "@agentkib/web-client";
-import type { Locale } from "./i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 import { SessionProvider, useSession } from "./features/sessions/session-context";
 import { SessionReader } from "./features/sessions/session-reader";
 import { SessionDialogs } from "./features/sessions/session-dialogs";

@@ -48,7 +48,8 @@ import { displaySessionTitle, isSessionVisible } from "@agentkib/session-catalog
 import { answerRequestBody, interactionCopy } from "../interactions/question-form";
 import type { CatalogWorkspace } from "../catalog/session-catalog";
 import { catalogCopy } from "../catalog/catalog-copy";
-import { dictionaries, type Locale } from "../../i18n";
+import { conversationWords } from "@/core/i18n";
+import type { SupportedLocale as Locale } from "@/core/types";
 import { unavailableReasonText } from "../../live-status";
 import {
   isValidMessage,
@@ -118,7 +119,7 @@ export function useSessionController({
   const [locale, setLocale] = useState<Locale>(initialLocale),
     [theme, setTheme] = useState(initialTheme),
     [accent, setAccent] = useState("blue");
-  const t = dictionaries[locale];
+  const t = conversationWords(locale);
   const c = catalogCopy[locale];
   const [access, setAccess] = useState<Access>(),
     [sessions, setSessions] = useState<ConversationSessionSummary[]>([]),

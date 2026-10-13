@@ -78,6 +78,13 @@ export class ClaudeUndispatchedError extends Error {
 }
 const object = (value: unknown): value is JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+/**
+ * The spawning Agent call's tool_use ID when a frame belongs to a sub-agent, else null. Main-thread
+ * frames carry parent_tool_use_id null (Agent SDK stream-json); anything that is not a bounded
+ * non-empty string cannot be shown to be a sub-agent's, so callers keep treating it as main-thread.
+ */
+const subagentSpawner = (parent: unknown): string | null =>
+  typeof parent === "string" && parent !== "" && Buffer.byteLength(parent) <= 256 ? parent : null;
 
 export type ClaudeRunnerSnapshot = {
   terminalResult: ClaudeRunnerTerminalResult | null;
@@ -135,6 +142,11 @@ export class ClaudeRunnerState {
   foregroundBashContract = false;
   bashToolIds = new Set<string>();
   foregroundTasks = new Map<string, string>();
+  // What sub-agents did, observed only: Bash tool ID -> spawning Agent call, task ID -> Bash tool
+  // ID. They never feed bashToolIds or foregroundTasks, which gate `result` and the stop
+  // semantics of the current top-level turn, and nothing here can end the session.
+  subagentBashToolIds = new Map<string, string>();
+  subagentTasks = new Map<string, string>();
   terminalResult: ClaudeRunnerTerminalResult | null = null;
 
   constructor(readonly sessionId: string) {}
@@ -170,6 +182,8 @@ export class ClaudeRunnerState {
       foregroundBashContract: this.foregroundBashContract,
       bashToolIds: new Set(this.bashToolIds),
       foregroundTasks: new Map(this.foregroundTasks),
+      subagentBashToolIds: new Map(this.subagentBashToolIds),
+      subagentTasks: new Map(this.subagentTasks),
       terminalResult: this.terminalResult ? structuredClone(this.terminalResult) : null,
     };
   }
@@ -258,6 +272,8 @@ export class ClaudeRunnerState {
     this.terminalResult = null;
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
+    this.subagentBashToolIds.clear();
+    this.subagentTasks.clear();
     this.status = "running";
     this.#pendingUsage();
     this.revision++;
@@ -381,6 +397,8 @@ export class ClaudeRunnerState {
     this.assertCanStop(turnId, revision);
     this.bashToolIds.clear();
     this.foregroundTasks.clear();
+    this.subagentBashToolIds.clear();
+    this.subagentTasks.clear();
     this.status = "idle";
     this.lastOutcome = "cancelled";
     this.terminalResult = null;
@@ -792,12 +810,79 @@ export class ClaudeRunnerState {
 
   #observeBash(block: JsonObject, parent: unknown): void {
     if (!this.foregroundBashContract || block?.type !== "tool_use" || block.name !== "Bash") return;
+    const spawner = subagentSpawner(parent);
+    if (spawner !== null) {
+      this.#observeSubagentBash(block, spawner);
+      return;
+    }
     if (!this.initialized || this.status !== "running" || !this.turnId || parent !== null)
       throw new Error("Claude Bash outside current top-level turn");
     if (typeof block.id !== "string" || !block.id || Buffer.byteLength(block.id) > 256)
       throw new Error("invalid Claude Bash tool ID");
     if (this.bashToolIds.size >= 4096) throw new Error("too many Claude Bash tools");
     this.bashToolIds.add(block.id);
+  }
+
+  /**
+   * A Bash call made inside a sub-agent is the sub-agent's own tool call; the current turn only
+   * sees the Agent call that spawned it. It is recorded for display and never tracked as a
+   * foreground task of this turn, so it can neither end the session nor change what `result`
+   * and stop require. A call that cannot be recorded is skipped, not rejected.
+   */
+  #observeSubagentBash(block: JsonObject, spawner: string): void {
+    const id = block.id;
+    if (typeof id !== "string" || !id || Buffer.byteLength(id) > 256) return;
+    if (this.subagentBashToolIds.size >= 4096 && !this.subagentBashToolIds.has(id)) return;
+    this.subagentBashToolIds.set(id, spawner);
+  }
+
+  /**
+   * Observes the foreground Bash task lifecycle of a sub-agent and returns true, or returns false
+   * for any other task frame, which then follows the main-thread rules unchanged. Only frames that
+   * are positively a sub-agent's foreground local_bash task are taken: the CLI marks the owner
+   * (`owned_by_subagent`, 2.1.285), and a Bash call first seen inside a sub-agent's frames is the
+   * same fact when the flag is absent. A main-thread call or task is never reassigned, an explicit
+   * contradiction falls back to the main-thread rules, and backgrounding keeps its meaning for
+   * every Bash task: it would outlive the turn, so it still ends the session.
+   */
+  #observeSubagentTask(frame: JsonObject, subtype: string): boolean {
+    const task = frame.task_id;
+    if (typeof task !== "string" || !task || Buffer.byteLength(task) > 256) return false;
+    if (subtype === "task_started") {
+      const tool = frame.tool_use_id;
+      if (
+        frame.task_type !== "local_bash" ||
+        frame.is_backgrounded !== false ||
+        typeof tool !== "string" ||
+        !tool ||
+        Buffer.byteLength(tool) > 256 ||
+        !(
+          frame.owned_by_subagent === true ||
+          (frame.owned_by_subagent == null && this.subagentBashToolIds.has(tool))
+        ) ||
+        this.bashToolIds.has(tool) ||
+        this.foregroundTasks.has(task)
+      )
+        return false;
+      if (this.subagentTasks.size < 4096 || this.subagentTasks.has(task))
+        this.subagentTasks.set(task, tool);
+      return true;
+    }
+    if (this.foregroundTasks.has(task) || !this.subagentTasks.has(task)) return false;
+    if (subtype === "task_updated") {
+      if (
+        object(frame.patch) &&
+        frame.patch.is_backgrounded !== undefined &&
+        frame.patch.is_backgrounded !== false
+      )
+        throw new Error("Claude background tasks are unsupported in managed sessions");
+      return true;
+    }
+    if (subtype === "task_notification") {
+      if (this.subagentTasks.get(task) === frame.tool_use_id) this.subagentTasks.delete(task);
+      return true;
+    }
+    return false;
   }
 
   #taskFrame(frame: JsonObject): void {
@@ -809,6 +894,7 @@ export class ClaudeRunnerState {
         throw new Error("Claude background tasks are unsupported in managed sessions");
       return;
     }
+    if (this.#observeSubagentTask(frame, subtype)) return;
     if (
       !this.initialized ||
       !["running", "waiting-approval", "waiting-input"].includes(this.status)
@@ -1173,6 +1259,8 @@ export class ClaudeManagedRunnerProcess {
         this.state.seenRequests.clear();
         this.state.bashToolIds.clear();
         this.state.foregroundTasks.clear();
+        this.state.subagentBashToolIds.clear();
+        this.state.subagentTasks.clear();
         this.state.contextUsage = {
           ...this.state.contextUsage,
           state: this.state.contextUsage.available ? "stale" : "unavailable",

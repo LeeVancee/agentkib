@@ -2078,6 +2078,8 @@
   "conversation.claudeDecisionInfo": "请检查工具名称与完整输入。仅允许或拒绝此次操作，不保存权限规则。",
   "conversation.claudeContextInfo": "审批上下文（只读）。权限建议仅供查看，不会应用或保存。",
   "conversation.managedResumeInfo": "Claude 托管续接由 AgentKib 运行，并非控制原终端。使用前请关闭原终端中的同一会话，避免并发运行。",
+  "conversation.handoffRequired": "尚未交接给 AgentKib，请先停止原终端中的同一会话，再确认续接。",
+  "conversation.confirmHandoff": "确认续接",
   "conversation.streamingReply": "当前实时回复",
   "conversation.streamingReplyTruncated": "实时预览已截断，仅显示开头部分；请在历史记录中查看已保存的内容。",
   "conversation.decline": "拒绝",

@@ -2078,6 +2078,8 @@
   "conversation.claudeDecisionInfo": "請檢查工具名稱與完整輸入。僅允許或拒絕此次操作，不儲存權限規則。",
   "conversation.claudeContextInfo": "審批情境（唯讀）。權限建議僅供查看，不會套用或儲存。",
   "conversation.managedResumeInfo": "Claude 託管續接由 AgentKib 執行，並非控制原終端。使用前請關閉原終端中的同一會話，避免並行執行。",
+  "conversation.handoffRequired": "尚未交接給 AgentKib，請先停止原終端中的同一會話，再確認續接。",
+  "conversation.confirmHandoff": "確認續接",
   "conversation.streamingReply": "目前即時回覆",
   "conversation.streamingReplyTruncated": "即時預覽已截斷，僅顯示開頭部分；請在歷史記錄中查看已儲存的內容。",
   "conversation.decline": "拒絕",

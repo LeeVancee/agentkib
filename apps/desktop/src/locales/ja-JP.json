@@ -2078,6 +2078,8 @@
   "conversation.deny": "今回の操作を拒否",
   "conversation.claudeDecisionInfo": "ツール名と入力全体を確認してください。今回の操作のみ許可または拒否し、権限ルールは保存しません。",
   "conversation.managedResumeInfo": "Claude の再開は AgentKib が実行し、元のターミナルは操作しません。同時実行を避けるため、使用前に元のターミナルで同じセッションを閉じてください。",
+  "conversation.handoffRequired": "まだ AgentKib に引き継がれていません。同じセッションを元のターミナルで停止してから再開を確認してください。",
+  "conversation.confirmHandoff": "再開を確認",
   "conversation.streamingReply": "現在のリアルタイム応答",
   "conversation.streamingReplyTruncated": "リアルタイムプレビューは先頭部分のみ表示しています。保存済みの内容は履歴で確認してください。",
   "conversation.decline": "拒否",

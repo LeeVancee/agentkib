@@ -2078,6 +2078,8 @@
   "conversation.deny": "Deny this operation",
   "conversation.claudeDecisionInfo": "Review the tool name and full input. Allow or deny this operation only; no permission rules are saved.",
   "conversation.managedResumeInfo": "Claude managed resume runs through AgentKib; it does not control the original terminal. Close the same session in the original terminal before use to avoid concurrent runs.",
+  "conversation.handoffRequired": "This session has not been handed over to AgentKib. Stop the same session in the original terminal before resuming.",
+  "conversation.confirmHandoff": "Confirm resume",
   "conversation.streamingReply": "Current live reply",
   "conversation.streamingReplyTruncated": "Live preview truncated: only the beginning is shown. Check the history for saved content.",
   "conversation.decline": "Decline",

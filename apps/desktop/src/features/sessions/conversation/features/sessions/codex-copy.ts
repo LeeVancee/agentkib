@@ -504,7 +504,11 @@ const reasons: Record<Locale, Record<string, string>> = {
   },
 };
 export function codexReason(locale: Locale, reason?: string): { text: string; technical?: string } {
-  if (reason === "unverified-installation" || reason === "open-in-original-client") {
+  if (
+    reason === "unverified-installation" ||
+    reason === "open-in-original-client" ||
+    reason === "handoff-required"
+  ) {
     return { text: unavailableReasonText(reason, conversationWords(locale)) };
   }
   const text = reason ? reasons[locale][reason] : undefined;

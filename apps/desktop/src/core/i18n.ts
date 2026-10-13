@@ -92,6 +92,8 @@ const conversationKeys = [
   "deny",
   "claudeDecisionInfo",
   "managedResumeInfo",
+  "handoffRequired",
+  "confirmHandoff",
   "streamingReply",
   "streamingReplyTruncated",
   "decline",

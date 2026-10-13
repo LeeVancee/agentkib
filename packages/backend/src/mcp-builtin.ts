@@ -124,11 +124,16 @@ export class McpBuiltins {
   ): Promise<unknown> {
     switch (name) {
       case "workspace_get_context":
-        return this.context.request({
-          project,
-          cwd: typeof arguments_.cwd === "string" ? arguments_.cwd : project,
-          agent,
-        });
+        // The connected Agent gets no contents of imports outside the project: Claude Code asks
+        // the user before loading those, and this tool must not be a way around that question.
+        return this.context.request(
+          {
+            project,
+            cwd: typeof arguments_.cwd === "string" ? arguments_.cwd : project,
+            agent,
+          },
+          { externalBodies: false },
+        );
       case "asset_list":
         return scanWorkspace(project).assets;
       case "asset_get":

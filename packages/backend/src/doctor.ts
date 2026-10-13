@@ -7,6 +7,7 @@ import { scanWorkspace } from "./asset-scanner";
 import { withinLexical } from "./files";
 import { isDirectory, pathIdentity } from "./paths";
 import { loadManifest, manifestPath, type Manifest } from "./manifest";
+import { CONTEXT_NOTE_PREFIX } from "./context-files";
 import { effectiveMcp, type McpServer } from "./mcp-config-read";
 import { compareUtf8, utcNow } from "./workspaces";
 import {
@@ -286,7 +287,9 @@ export class Doctor {
               if (truncated) indeterminate.add(index);
             }
             for (const warning of preview.warnings) {
-              if (warning.startsWith("Agent home: ")) continue;
+              // Notes only inform (for example "directories above the root were not checked").
+              if (warning.startsWith("Agent home: ") || warning.startsWith(CONTEXT_NOTE_PREFIX))
+                continue;
               const missing = warning.includes("No project instruction");
               if (
                 warning.includes("semantic conflicts") ||

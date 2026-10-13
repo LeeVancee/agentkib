@@ -201,6 +201,8 @@
   "assets.summary.grokBuildInstructions": "Grok Build project instructions",
   "context.deepseekCustomRules": "Custom DeepSeek Harness instruction or Skill loading rules were detected. This preview uses the public default rules.",
   "context.deepseekClaudeImport": "DeepSeek Harness treats @AGENTS.md in CLAUDE.md as plain text, not as a Claude Code import.",
+  "context.claudeAgentsAboveRoot": "Directories above the workspace root were not checked for CLAUDE.md. If one exists there, Claude Code reads CLAUDE.md files only and ignores AGENTS.md.",
+  "context.claudeAgentsVersionUnknown": "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277.",
   "errors.deepseekWorkspaceVersion": "The DeepSeek Harness workspace data version is not supported",
   "errors.deepseekProjectionVersion": "The DeepSeek Harness Token data version is not supported",
   "handoff.changeSetWarning": "This ignored file may still contain project context. Review the complete Diff before applying it.",

@@ -28,11 +28,15 @@ import {
   CircleAlert,
   FileCode2,
   FolderOpen,
+  Info,
   RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
 import type { AgentKind, ContextPreview } from "@/core/types";
 import { AGENT_LABELS as agentLabels } from "@/core/agents";
+// 与后端 CONTEXT_NOTE_PREFIX 同值（渲染进程不能引用 backend 包，后端测试断言该常量不变）。
+// 以它开头的条目只是提示，不是问题：用中性样式渲染并去掉前缀。
+const NOTE_PREFIX = "Note: ";
 function Pills({ values, empty }: { values: string[]; empty: string }) {
   return values.length ? (
     <div className="flex flex-wrap gap-2">
@@ -185,15 +189,26 @@ export function ContextPage({
             {error}
           </div>
         )}
-        {preview?.warnings.map((warning) => (
-          <div
-            className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700"
-            key={warning}
-          >
-            <CircleAlert size={15} />
-            {contextWarningLabel(warning)}
-          </div>
-        ))}
+        {preview?.warnings.map((warning) =>
+          warning.startsWith(NOTE_PREFIX) ? (
+            <div
+              role="note"
+              className="mx-4 mt-4 flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm break-words text-muted-foreground"
+              key={warning}
+            >
+              <Info size={15} className="mt-0.5 shrink-0" />
+              {contextWarningLabel(warning.slice(NOTE_PREFIX.length))}
+            </div>
+          ) : (
+            <div
+              className="mx-4 mt-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700"
+              key={warning}
+            >
+              <CircleAlert size={15} />
+              {contextWarningLabel(warning)}
+            </div>
+          ),
+        )}
         {empty && (
           <div className="mx-4 mt-4 flex items-center gap-3 rounded-xl border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
             <FileCode2 size={18} />
@@ -267,6 +282,17 @@ function contextWarningLabel(warning: string) {
     "DeepSeek Harness reads @AGENTS.md in CLAUDE.md as literal text, not as a Claude Code import"
   )
     return tr("context.deepseekClaudeImport");
+  // 后端静态文案（context-claude.ts）：A1 在去掉 Note: 前缀之后匹配，A2 本身是警告。
+  if (
+    warning ===
+    "Directories above the workspace root were not checked for CLAUDE.md. If one exists there, Claude Code reads CLAUDE.md files only and ignores AGENTS.md."
+  )
+    return tr("context.claudeAgentsAboveRoot");
+  if (
+    warning ===
+    "AGENTS.md may not be loaded: the Claude Code version could not be detected, and Claude Code reads AGENTS.md only from v2.1.277."
+  )
+    return tr("context.claudeAgentsVersionUnknown");
   return warning;
 }
 

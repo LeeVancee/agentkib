@@ -201,6 +201,8 @@
   "assets.summary.grokBuildInstructions": "Grok Build 專案指令",
   "context.deepseekCustomRules": "偵測到 DeepSeek Harness 自訂指令或 Skill 載入規則，目前預覽仍依公開預設規則模擬。",
   "context.deepseekClaudeImport": "DeepSeek Harness 會將 CLAUDE.md 中的 @AGENTS.md 視為一般文字，不會依 Claude Code 匯入語法處理。",
+  "context.claudeAgentsAboveRoot": "沒有檢查工作區根目錄以上的目錄是否有 CLAUDE.md。如果該處存在 CLAUDE.md，Claude Code 只會讀取 CLAUDE.md 檔案，並忽略 AGENTS.md。",
+  "context.claudeAgentsVersionUnknown": "AGENTS.md 可能不會被載入：無法偵測到 Claude Code 的版本，而 Claude Code 從 v2.1.277 起才會讀取 AGENTS.md。",
   "errors.deepseekWorkspaceVersion": "暫不支援目前版本的 DeepSeek Harness 工作區資料",
   "errors.deepseekProjectionVersion": "暫不支援目前版本的 DeepSeek Harness Token 資料",
   "handoff.changeSetWarning": "此檔案雖預設由 Git 忽略，仍可能包含專案內容；套用前請檢查完整 Diff。",

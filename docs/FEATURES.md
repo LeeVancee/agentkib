@@ -107,7 +107,7 @@ Skill operations run sequentially in a dedicated Worker, with one active request
 | Agent | Discovery and inventory | Context diagnostics and sync | Session history | Handoff source | Tool management |
 | --- | --- | --- | --- | --- | --- |
 | Codex | Yes | Yes | Yes | Yes | Yes |
-| Claude Code | Yes | Yes | Yes | Yes | Yes |
+| Claude Code | Yes | Partial | Yes | Yes | Yes |
 | Antigravity | Yes | Yes | ACP sessions | ACP source only | Detect/docs |
 | Cursor           | Yes                     | Yes                          | Verified CLI stores / connected macOS IDE profiles | CLI / IDE, per-session check | Yes             |
 | OpenCode | Yes | Yes | Yes | Yes | Yes |
@@ -115,6 +115,8 @@ Skill operations run sequentially in a dedicated Worker, with one active request
 | Hermes | Yes | Yes | Read-only | Per-session check | Yes |
 | Grok Build | Yes | Yes | Read-only | Per-session check | Yes |
 | DeepSeek Harness | Beta, read-only | Diagnostics only | — | — | — |
+
+Claude Code context diagnostics are partial. Covered: the project `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` files from the workspace root down to the working directory; the `AGENTS.md` fallback that Claude Code applies when none of them exists (version 2.1.277 and later); one level of `.claude/rules` at the workspace root; and `@import` expansion up to four hops, with imports outside the project read through a sensitive-file filter and flagged because Claude Code asks for approval first. Not modeled yet: user-level and managed instructions, auto memory, the settings layers, path-scoped rules, directories above the workspace root, and the exact load order of files within one directory. Before Claude Code 2.1.281, some sessions (for example Bedrock or telemetry disabled) still read only CLAUDE.md.
 
 AgentKib distinguishes an installed app or CLI from local data left behind after uninstalling it. Agent Home writes require separate approval. Antigravity ACP sessions are not claimed to be the complete Desktop/IDE or CLI history store, and current stable interfaces cannot import foreign history into an Antigravity-native session. DeepSeek Harness remains a read-only Beta target and is never written to, configured for MCP, or included in tool management.
 
@@ -239,7 +241,7 @@ Skill 操作由独立 Worker 顺序处理，允许 1 个执行中请求和最多
 | Agent | 发现与盘点 | 上下文诊断与同步 | 会话历史 | 交接来源 | 工具管理 |
 | --- | --- | --- | --- | --- | --- |
 | Codex | 支持 | 支持 | 支持 | 支持 | 支持 |
-| Claude Code | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Claude Code | 支持 | 部分支持 | 支持 | 支持 | 支持 |
 | Antigravity | 支持 | 支持 | ACP 会话 | 仅作来源 | 检测/文档 |
 | Cursor           | 支持       | 支持             | 已验证 CLI 存储 / 已连接的 macOS IDE profile | CLI / IDE，逐会话核验 | 支持      |
 | OpenCode | 支持 | 支持 | 支持 | 支持 | 支持 |
@@ -247,6 +249,8 @@ Skill 操作由独立 Worker 顺序处理，允许 1 个执行中请求和最多
 | Hermes | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
 | Grok Build | 支持 | 支持 | 只读 | 逐会话核验 | 支持 |
 | DeepSeek Harness | Beta，只读 | 仅诊断 | — | — | — |
+
+Claude Code 的上下文诊断目前是部分支持。已覆盖：从工作区根到工作目录的项目 `CLAUDE.md`、`.claude/CLAUDE.md` 与 `CLAUDE.local.md`；这些文件都不存在时 Claude Code 回退读取的 `AGENTS.md`（2.1.277 及以后的版本）；工作区根下一层 `.claude/rules`；最多四跳的 `@import` 展开，其中项目外的导入经过敏感文件过滤，并因为 Claude Code 会先请求批准而加以标注。尚未建模：用户级与 managed 指令、自动记忆、settings 层级、按路径生效的规则、工作区根以上的目录，以及同一目录内文件的精确加载顺序。Claude Code 2.1.281 之前的部分会话（如 Bedrock 或关闭遥测）仍只读 CLAUDE.md。
 
 AgentKib 会区分“已安装”和“卸载后仍留有本地数据”。涉及 Agent Home 的写入会单独请求授权。Antigravity ACP 会话不代表完整的 Desktop/IDE 或 CLI 历史；当前稳定接口也不能把外部历史导入 Antigravity 原生会话。DeepSeek Harness 仍是只读 Beta 目标，不会被写入、配置 MCP 或纳入工具管理。
 

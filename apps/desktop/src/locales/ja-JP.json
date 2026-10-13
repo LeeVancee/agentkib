@@ -201,6 +201,8 @@
   "assets.summary.grokBuildInstructions": "Grok Build プロジェクト指示",
   "context.deepseekCustomRules": "DeepSeek Harness のカスタム指示または Skill 読み込み規則を検出しました。このプレビューは公開されている既定規則を使用します。",
   "context.deepseekClaudeImport": "DeepSeek Harness は CLAUDE.md 内の @AGENTS.md を Claude Code のインポートではなく通常のテキストとして扱います。",
+  "context.claudeAgentsAboveRoot": "ワークスペースのルートより上のディレクトリでは CLAUDE.md を確認していません。そこに CLAUDE.md がある場合、Claude Code は CLAUDE.md ファイルだけを読み込み、AGENTS.md は無視します。",
+  "context.claudeAgentsVersionUnknown": "AGENTS.md が読み込まれない可能性があります。Claude Code のバージョンを検出できず、Claude Code が AGENTS.md を読み込むのは v2.1.277 以降のみです。",
   "errors.deepseekWorkspaceVersion": "このバージョンの DeepSeek Harness ワークスペースデータには対応していません",
   "errors.deepseekProjectionVersion": "このバージョンの DeepSeek Harness Token データには対応していません",
   "handoff.changeSetWarning": "このファイルは Git の対象外ですが、プロジェクト情報を含む可能性があります。適用前に Diff 全体を確認してください。",

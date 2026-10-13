@@ -13,6 +13,11 @@ import { isFile, within } from "./files";
 import { compareUtf8 } from "./workspaces";
 export const FILE_CHARS = 128 * 1024,
   TOTAL_CHARS = 512 * 1024;
+/**
+ * A warning that starts with this is an advisory note rather than a problem: the Context page
+ * shows it in a neutral style without the prefix, and the Doctor does not report it.
+ */
+export const CONTEXT_NOTE_PREFIX = "Note: ";
 export function lines(text: string): string[] {
   if (!text) return [];
   const result = text.split(/\r?\n/);

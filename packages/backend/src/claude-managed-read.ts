@@ -28,7 +28,7 @@ import type { BackendStore } from "./store";
 import { canonicalize, pathIdentity } from "./paths";
 import { restrictRemotePath } from "./remote-tls";
 import { acquirePortableFileLease } from "./managed-session-lock";
-import { versionAtLeast } from "./native-version";
+import { readClaudeVersion, supportsClaudeVersion } from "./claude-version";
 import {
   ClaudeHostStateStore,
   validClaudeDeviceId,
@@ -54,10 +54,8 @@ import {
   openManagedLedger,
 } from "./managed-ledger";
 
-export function supportsClaudeVersion(value: string, minimum = "2.1.263"): boolean {
-  const match = /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(value);
-  return match !== null && versionAtLeast(match[1]!, minimum);
-}
+// Defined in claude-version.ts (imported above for this file's own checks); still exported from here.
+export { supportsClaudeVersion } from "./claude-version";
 
 /** The requested mutation is durably rejected before any external effect. */
 export class ClaudeHostControlPreflightError extends Error {
@@ -2548,27 +2546,10 @@ export class ClaudeManagedReadOwner {
 
   async #installationVersion(): Promise<string | null> {
     if (this.#version && Date.now() - this.#version.at < 30_000) return this.#version.value;
-    const executable = resolveCommand("claude", this.environment);
-    if (!executable) {
-      this.#version = { at: Date.now(), value: null };
-      return null;
-    }
-    try {
-      const output = await this.commands.run(executable, ["--version"], {
-        env: this.environment,
-        timeout: 5000,
-        limit: 4096,
-        strictOutput: true,
-        allowFailure: true,
-      });
-      const version = output.bytes.toString("utf8").trim();
-      const value = output.success && supportsClaudeVersion(version) ? version : null;
-      this.#version = { at: Date.now(), value };
-      return value;
-    } catch {
-      this.#version = { at: Date.now(), value: null };
-      return null;
-    }
+    const version = await readClaudeVersion(this.commands, this.environment);
+    const value = version !== null && supportsClaudeVersion(version) ? version : null;
+    this.#version = { at: Date.now(), value };
+    return value;
   }
 
   async options(): Promise<Record<string, unknown>> {

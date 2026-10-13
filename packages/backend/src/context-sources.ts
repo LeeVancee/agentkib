@@ -7,7 +7,7 @@ import { firstExisting, sortedFiles, cursorAlways, FILE_CHARS } from "./context-
 import { openCodeInstructionPatterns } from "./default-manifest";
 import { globMatches } from "./context-glob";
 import { userHome } from "./mcp-config-read";
-function sensitive(value: string): boolean {
+export function sensitive(value: string): boolean {
   const name = path.basename(value).toLowerCase();
   return name === ".env" || /credential|token|secret/.test(name) || /\.(pem|key)$/.test(name);
 }
@@ -113,15 +113,6 @@ export function sources(
         const file = firstExisting(dir, ["AGENTS.override.md", "AGENTS.md"]);
         return file ? [file] : [];
       });
-    case "claude-code":
-      return [
-        ...dirs.flatMap((dir) =>
-          ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"]
-            .map((name) => path.join(dir, name))
-            .filter(isFile),
-        ),
-        ...sortedFiles(path.join(root, ".claude/rules"), ".md"),
-      ];
     case "cursor":
       return dirs.flatMap((dir) => [
         ...[path.join(dir, "AGENTS.md")].filter(isFile),

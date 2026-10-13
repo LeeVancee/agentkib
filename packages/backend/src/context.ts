@@ -8,6 +8,8 @@ import { Catalog } from "./catalog";
 import { Commands } from "./commands";
 import { sources } from "./context-sources";
 import { antigravitySources } from "./context-antigravity";
+import { claudeSections } from "./context-claude";
+import { readClaudeVersion } from "./claude-version";
 import { budgetWarning, loadImports, TOTAL_CHARS } from "./context-files";
 import {
   deepseekRoot,
@@ -17,13 +19,37 @@ import {
   type Section,
 } from "./context-special";
 import { visibleMcpNames } from "./mcp-config-read";
+export interface ContextOptions {
+  /**
+   * Whether the contents of Claude Code imports outside the project are returned. In-process
+   * only, never part of an RPC payload: the MCP tool turns it off so that a connected Agent
+   * cannot read through the preview what Claude Code itself would ask the user about.
+   */
+  externalBodies?: boolean;
+}
 export class Context {
+  #version?: { at: number; value: string | null };
+  #probe?: Promise<string | null>;
   constructor(
     readonly catalog: Catalog,
     readonly commands: Commands,
     readonly environment: NodeJS.ProcessEnv,
   ) {}
-  async request(value: unknown) {
+  /** `claude --version`, cached for 30 seconds; concurrent callers share one probe. */
+  #claudeVersion(): Promise<string | null> {
+    if (this.#version && Date.now() - this.#version.at < 30_000)
+      return Promise.resolve(this.#version.value);
+    this.#probe ??= readClaudeVersion(this.commands, this.environment)
+      .then((value) => {
+        this.#version = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => {
+        this.#probe = undefined;
+      });
+    return this.#probe;
+  }
+  async request(value: unknown, options: ContextOptions = {}) {
     const { project, cwd, agent } = parameters(
       z.object({ project: z.string(), cwd: z.string(), agent: agentSchema }),
       value,
@@ -39,7 +65,7 @@ export class Context {
           .memories(manifest.workspace.id, "approved")
           .map((value) => value.content);
       } catch {}
-    const preview = await this.resolve(project, cwd, agent, manifest, memories);
+    const preview = await this.resolve(project, cwd, agent, manifest, memories, options);
     preview.visible_connections = visibleMcpNames(project, agent, this.environment);
     return preview;
   }
@@ -49,6 +75,7 @@ export class Context {
     agent: string,
     manifest: Manifest | null,
     approvedMemories: string[],
+    options: ContextOptions = {},
   ) {
     const root = canonicalProject(project),
       requested = path.isAbsolute(workingDirectory)
@@ -75,6 +102,17 @@ export class Context {
       sections = deepseekSections(contextRoot, dirs, warnings, this.environment);
     else if (agent === "grok-build")
       sections = await grokSections(root, dirs, warnings, this.environment, this.commands);
+    else if (agent === "claude-code")
+      sections = await claudeSections({
+        root,
+        cwd,
+        dirs,
+        environment: this.environment,
+        budget: { remaining: TOTAL_CHARS },
+        warnings,
+        externalBodies: options.externalBodies !== false,
+        version: () => this.#claudeVersion(),
+      });
     else {
       const files =
           agent === "antigravity"

@@ -23,12 +23,14 @@ AgentKib 是一个本地优先的 Coding Agent 资产中心。它发现 Codex、
 | Agent            | 发现与盘点 | 上下文诊断与同步 | 会话浏览与交接 |
 | ---------------- | ---------- | ---------------- | -------------- |
 | Codex            | 支持       | 支持             | 支持           |
-| Claude Code      | 支持       | 支持             | 支持           |
+| Claude Code      | 支持       | 部分支持         | 支持           |
 | Cursor           | 支持       | 支持             | —              |
 | OpenCode         | 支持       | 支持             | —              |
 | OpenClaw         | 支持       | 支持             | —              |
 | Hermes           | 支持       | 支持             | —              |
 | DeepSeek Harness | Beta，只读 | 仅诊断，不写入   | —              |
+
+Claude Code 的“上下文诊断与同步”为部分支持：项目 `CLAUDE.md`、`AGENTS.md` 回退、一层 `.claude/rules` 和 `@import` 已覆盖，其余层级尚未建模，覆盖范围详见 [功能说明](FEATURES.md)。
 
 ## 一、安装编译环境
 
